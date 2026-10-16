@@ -78,16 +78,30 @@ export async function fetchPullRequestSnapshot(octokit: AutoMergeGateOctokit, ow
 }
 
 /**
+ * Strict evaluation (the Routing resume resync): a GitHub read that failed, or
+ * returned something that cannot be trusted, throws instead of becoming an
+ * ordinary "invalid"/deny decision. Proved state (a missing or malformed
+ * workflow file, a protected path, a truncated file list) still decides.
+ */
+export interface AutoMergeEvaluationOptions {
+    strict?: boolean;
+}
+
+/**
  * Read the auto-merge policy from the PR's base branch through the GitHub API,
  * never from the head branch or a worktree the agent could have edited.
  * A missing workflow file is the default policy; anything unreadable is invalid.
  */
-export async function loadBaseAutoMergePolicy(octokit: AutoMergeGateOctokit, owner: string, repo: string, baseRef: string): Promise<AutoMergePolicyInput> {
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
+export async function loadBaseAutoMergePolicy(
+    octokit: AutoMergeGateOctokit, owner: string, repo: string, baseRef: string, options: AutoMergeEvaluationOptions = {},
+): Promise<AutoMergePolicyInput> {
     let response;
     try {
         response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path: WORKFLOW_PATH, ref: baseRef });
     } catch (error) {
         if ((error as { status?: number }).status === 404) return { status: 'valid' };
+        if (options.strict) throw error;
         return { status: 'invalid', error: `Could not read ${WORKFLOW_PATH} on ${baseRef}: ${(error as Error).message}` };
     }
     const file = response.data as { type?: string; encoding?: string; content?: string; size?: number } | unknown[];
@@ -106,17 +120,26 @@ export async function loadBaseAutoMergePolicy(octokit: AutoMergeGateOctokit, own
  * Freshly list the PR's changed files from GitHub (renames contribute both paths).
  * Returns null when the list is incomplete, or when the head moved or the PR was
  * retargeted while listing (the policy read for the old base no longer applies).
+ * Strict: only a listing GitHub truncated is null; a malformed page, an unknown
+ * file count or a head that moved meanwhile throws, so the caller re-reads the PR.
  */
-export async function fetchPullRequestChangedFiles(octokit: AutoMergeGateOctokit, owner: string, repo: string, pr: PullRequestSnapshot): Promise<string[] | null> {
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
+export async function fetchPullRequestChangedFiles(
+    octokit: AutoMergeGateOctokit, owner: string, repo: string, pr: PullRequestSnapshot, options: AutoMergeEvaluationOptions = {},
+): Promise<string[] | null> {
+    const untrusted = (reason: string): null => {
+        if (options.strict) throw new Error(`Changed files of ${owner}/${repo}#${pr.number} are unreadable: ${reason}`);
+        return null;
+    };
     const paths = new Set<string>();
     let listed = 0;
     for (let page = 1; page <= MAX_FILE_PAGES; page++) {
         const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', {
             owner, repo, pull_number: pr.number, per_page: FILES_PER_PAGE, page,
         });
-        if (!Array.isArray(data)) return null;
+        if (!Array.isArray(data)) return untrusted('malformed page');
         for (const file of data as Array<{ filename?: string; previous_filename?: string }>) {
-            if (typeof file.filename !== 'string') return null;
+            if (typeof file.filename !== 'string') return untrusted('malformed entry');
             listed++;
             paths.add(file.filename);
             if (typeof file.previous_filename === 'string') paths.add(file.previous_filename);
@@ -124,32 +147,39 @@ export async function fetchPullRequestChangedFiles(octokit: AutoMergeGateOctokit
         if (data.length < FILES_PER_PAGE) break;
     }
     // A truncated or unknown file count could hide a protected path.
-    if (pr.changedFiles < 0 || listed !== pr.changedFiles) return null;
+    if (pr.changedFiles < 0) return untrusted('unknown file count');
+    if (listed !== pr.changedFiles) return null;
     const current = await fetchPullRequestSnapshot(octokit, owner, repo, pr.number);
-    if (current.headSha !== pr.headSha || current.baseRef !== pr.baseRef) return null;
+    if (current.headSha !== pr.headSha || current.baseRef !== pr.baseRef) return untrusted('the head moved or the base changed while listing');
     return [...paths];
 }
 
-/** Evaluate the policy for a PR's current head without side effects on GitHub. */
+/**
+ * Evaluate the policy for a PR's current head without side effects on GitHub.
+ * Strict (see AutoMergeEvaluationOptions): a failed read throws instead of denying.
+ */
 export async function evaluatePullRequestAutoMerge(input: {
-    owner: string; repo: string; prNumber: number; opportunity: AutoMergeOpportunity;
+    owner: string; repo: string; prNumber: number; opportunity: AutoMergeOpportunity; strict?: boolean;
 }, deps: AutoMergeGateDependencies = {}): Promise<AutoMergeEvaluation> {
     const { owner, repo, prNumber, opportunity } = input;
+    const options: AutoMergeEvaluationOptions = { strict: input.strict };
     let pullRequest: PullRequestSnapshot | null = null;
     let octokit: AutoMergeGateOctokit;
     try {
         octokit = await gateOctokit(deps);
         pullRequest = await fetchPullRequestSnapshot(octokit, owner, repo, prNumber);
     } catch (error) {
+        if (options.strict) throw error;
         // Without the PR there is no base branch to read policy from.
         return { decision: decideAutoMerge({ status: 'invalid', error: (error as Error).message }, null, { opportunity }), pullRequest };
     }
-    const policy = await loadBaseAutoMergePolicy(octokit, owner, repo, pullRequest.baseRef);
+    const policy = await loadBaseAutoMergePolicy(octokit, owner, repo, pullRequest.baseRef, options);
     let changedFiles: string[] | null = null;
     if (policy.status === 'valid' && policy.config?.enabled !== false) {
         try {
-            changedFiles = await fetchPullRequestChangedFiles(octokit, owner, repo, pullRequest);
-        } catch {
+            changedFiles = await fetchPullRequestChangedFiles(octokit, owner, repo, pullRequest, options);
+        } catch (error) {
+            if (options.strict) throw error;
             changedFiles = null;
         }
     }

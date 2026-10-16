@@ -3,13 +3,19 @@ import { isAutoCiFollowupEnabledForRepository, getNonBlockingChecksForRepository
 import { isNonBlockingCheck } from './nonBlockingChecks.js';
 import { isFailingCheckRunConclusion, postCiFailureFollowup, type CiFailureEvidence } from './ciFailureFollowup.js';
 
-/** Reconcile failures observed while waiting for CI, including missed webhooks. */
+/**
+ * Reconcile failures observed while waiting for CI, including missed webhooks.
+ * Strict (the Routing resume resync): an unreadable repository configuration
+ * throws instead of reading as "disabled" or "no non-blocking checks".
+ */
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
 export async function recoverCiFailureFollowups(
-    owner: string, repo: string, prNumber: number, headSha: string,
+    owner: string, repo: string, prNumber: number, headSha: string, options: { strict?: boolean } = {},
 ): Promise<void> {
-    if (!await isAutoCiFollowupEnabledForRepository(owner, repo)) return;
+    const isEnabled = (o: string, r: string) => isAutoCiFollowupEnabledForRepository(o, r, undefined, options);
+    if (!await isEnabled(owner, repo)) return;
     const octokit = await getAuthenticatedOctokit();
-    const nonBlocking = await getNonBlockingChecksForRepository(owner, repo);
+    const nonBlocking = await getNonBlockingChecksForRepository(owner, repo, undefined, options);
     const checks = await octokit.paginate('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
         owner, repo, ref: headSha, filter: 'latest', per_page: 100,
     });
@@ -42,8 +48,13 @@ export async function recoverCiFailureFollowups(
         const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner, repo, pull_number: prNumber,
         });
-        if (pr.state !== 'open' || pr.head.sha !== headSha) return;
+        if (pr.state !== 'open') return;
+        if (pr.head.sha !== headSha) {
+            // Strict: the head listed for this pass is stale, so the caller must re-read the PR.
+            if (options.strict) throw new Error(`Head of ${owner}/${repo}#${prNumber} moved during CI-failure recovery`);
+            return;
+        }
         // Shares the webhook's atomic claim and durable comment deduplication.
-        await postCiFailureFollowup({ owner, repo, prNumber, evidence }, `ci-recovery-${prNumber}`);
+        await postCiFailureFollowup({ owner, repo, prNumber, evidence }, `ci-recovery-${prNumber}`, { isEnabled });
     }
 }

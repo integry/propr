@@ -39,13 +39,15 @@ export function isMonitoredRepository(repository: string, repos: readonly string
  * Returns whether automatic failed-CI follow-up is enabled for a repository.
  * Missing or malformed options are treated as disabled so legacy repository
  * configurations cannot opt into autonomous follow-up work after an upgrade.
+ * Strict (the Routing resume resync): an unreadable configuration throws.
  */
 export async function isAutoCiFollowupEnabledForRepository(
     owner: string,
     repo: string,
     loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+    options: { strict?: boolean } = {},
 ): Promise<boolean> {
-    return isRepositoryOptionEnabled({ owner, repo, option: 'autoFollowupOnFailedCi', description: 'automatic CI follow-up' }, loadConfiguredRepos);
+    return isRepositoryOptionEnabled({ owner, repo, option: 'autoFollowupOnFailedCi', description: 'automatic CI follow-up', strict: options.strict }, loadConfiguredRepos);
 }
 
 /**
@@ -65,12 +67,13 @@ export async function isCancelCiDuringFollowupEnabledForRepository(
  * Check runs that never block automation for a repository (see
  * RepoToMonitor.nonBlockingChecks). Branch-specific entries share a repository
  * name, so every entry's list counts. An unreadable configuration yields none:
- * every check keeps blocking until it can be read.
+ * every check keeps blocking until it can be read (strict: it throws).
  */
 export async function getNonBlockingChecksForRepository(
     owner: string,
     repo: string,
     loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+    options: { strict?: boolean } = {},
 ): Promise<string[]> {
     const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
     try {
@@ -85,6 +88,7 @@ export async function getNonBlockingChecksForRepository(
         return patterns;
     } catch (error) {
         logger.warn({ repository, error: (error as Error).message }, 'Failed to load non-blocking checks; every check keeps blocking');
+        if (options.strict) throw error;
         return [];
     }
 }
@@ -181,10 +185,11 @@ async function isRepositoryOptionEnabled(
         repo: string;
         option: 'autoFollowupOnFailedCi' | 'cancelCiDuringFollowup';
         description: string;
+        strict?: boolean;
     },
     loadConfiguredRepos: typeof loadMonitoredReposRaw,
 ): Promise<boolean> {
-    const { owner, repo, option, description } = params;
+    const { owner, repo, option, description, strict } = params;
     const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
     if (repository === '/') return false;
 
@@ -201,6 +206,7 @@ async function isRepositoryOptionEnabled(
     } catch (error) {
         const err = error as Error;
         logger.warn({ repository, error: err.message }, `Failed to load ${description} repository configuration; treating it as disabled`);
+        if (strict) throw error;
         return false;
     }
 }

@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resume generation. Repositories that lost installation access or left the
   configuration during the gap keep being tracked through their queued work,
   and that work is cancelled locally. Every family is strict: a failed read,
-  enqueue or marker write is retried rather than counted as done. Progress
+  enqueue or marker write is retried rather than counted as done. For PR heads
+  this reaches every nested check, configuration, Redis, hook and auto-merge
+  policy read; pending checks and real policy denials still count as current. Progress
   survives restarts; malformed stored state is rejected; partial or
   rate-limited reconciliations retry and are never acknowledged. `propr system status`,
   `propr check` and `/api/status` show the gap, progress and whether routed

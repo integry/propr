@@ -308,7 +308,7 @@ describe('Ultrafix recovery through the real intake entry points', () => {
 
         assert.equal(reviewJobs(203).length, 1);
         // The green-check gate uses the head the PR listing already carried.
-        assert.deepEqual(mockGetCheckRunsStatusForRepo.mock.calls[0].arguments, [OWNER, REPO, 'listed-sha']);
+        assert.deepEqual(mockGetCheckRunsStatusForRepo.mock.calls[0].arguments, [OWNER, REPO, 'listed-sha', undefined, { strict: undefined }]);
     });
 
     test('the polling reconciler makes no GitHub calls for a labelled PR without a loop', async () => {

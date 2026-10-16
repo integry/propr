@@ -63,18 +63,25 @@ export function setUltrafixCheckRunHook(hook: UltrafixCheckRunHook): void {
  * intake (check_run, check_suite, status) and the polling reconciler.
  * Returns whether a hook was registered and completed without throwing.
  * A failure is logged through `log`, so callers keep their correlation ID.
+ * Strict (the Routing resume resync): a missing hook or a failed one throws,
+ * since the deferred continuation it should have woken was never reconciled.
  */
 export async function triggerUltrafixCheckRunHook(
     target: { owner: string; repo: string; prNumber: number; headSha: string },
     log: Pick<typeof logger, 'warn'> = logger,
+    options: { strict?: boolean } = {},
 ): Promise<boolean> {
-    if (!_ultrafixCheckRunHook) return false;
     const { owner, repo, prNumber, headSha } = target;
+    if (!_ultrafixCheckRunHook) {
+        if (options.strict) throw new Error('Ultrafix check hook is not registered');
+        return false;
+    }
     try {
         await _ultrafixCheckRunHook(owner, repo, prNumber, headSha);
         return true;
     } catch (error) {
         log.warn({ owner, repo, prNumber, headSha, error: (error as Error).message }, 'Ultrafix check hook failed');
+        if (options.strict) throw error;
         return false;
     }
 }
@@ -84,6 +91,23 @@ interface PRContext {
     repoName: string;
     prNumber: number;
     log: ReturnType<typeof logger.withCorrelation>;
+    /** Strict catch-up: every read throws on failure, and an unsettled merge attempt throws. */
+    strict?: boolean;
+}
+
+/**
+ * What one auto-merge evaluation observed. Every value is a settled current
+ * state; in strict mode an uncertain read, a head that moved meanwhile, or a
+ * failed merge throws instead of producing one.
+ */
+export type PRAutoMergeOutcome =
+    | 'head_unavailable' | 'draft' | 'not_eligible' | 'head_moved' | 'checks_not_green'
+    | 'not_mergeable' | 'active_work' | 'policy_denied' | 'merge_failed' | 'merged';
+
+/** Strict: a head that moved during the evaluation leaves this pass stale, so the caller re-reads it. */
+function headMoved(ctx: PRContext, detail: string): PRAutoMergeOutcome {
+    if (ctx.strict) throw new Error(`Head of ${ctx.owner}/${ctx.repoName}#${ctx.prNumber} moved ${detail}`);
+    return 'head_moved';
 }
 
 interface PRMergeContext extends PRContext {
@@ -131,7 +155,7 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
         return true;
     }
 
-    const issueHasLabel = await linkedIssueHasAutoMergeLabel(owner, repoName, prNumber);
+    const issueHasLabel = await linkedIssueHasAutoMergeLabel(owner, repoName, prNumber, { strict: ctx.strict });
     if (!prInfo.hasLabel && !issueHasLabel) {
         log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
         return false;
@@ -143,7 +167,7 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
 /**
  * Performs the actual merge of a PR and post-merge actions.
  */
-async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string): Promise<void> {
+async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string): Promise<PRAutoMergeOutcome> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
     let commitTitle: string | undefined;
     let commitMessage: string | undefined;
@@ -169,38 +193,41 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
             await updatePlanIssueByPR(repository, prNumber, { status: PlanIssueStatus.MERGED });
             log.info({ repository, prNumber }, 'Updated plan issue status to merged');
         }
-    } else {
-        log.warn({ owner, repoName, prNumber, error: mergeResult.error }, 'Failed to auto-merge PR');
+        return 'merged';
     }
+    log.warn({ owner, repoName, prNumber, error: mergeResult.error }, 'Failed to auto-merge PR');
+    if (ctx.strict) throw new Error(`Auto-merge of ${owner}/${repoName}#${prNumber} failed: ${mergeResult.error ?? 'not merged'}`);
+    return 'merge_failed';
 }
 
 /**
  * Processes a single PR for potential auto-merge.
  */
-async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void> {
+async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<PRAutoMergeOutcome> {
     const { owner, repoName, prNumber, log } = ctx;
-    const prInfo = await getPRAutoMergeInfo(owner, repoName, prNumber);
+    const strict = { strict: ctx.strict };
+    const prInfo = await getPRAutoMergeInfo(owner, repoName, prNumber, strict);
 
     if (prInfo.isDraft) {
         log.debug({ owner, repoName, prNumber }, 'PR is a draft, skipping auto-merge');
-        return;
+        return 'draft';
     }
 
     const mergeCtx: PRMergeContext = { ...ctx, headSha, prInfo };
 
     const shouldMerge = await shouldAutoMergePR(mergeCtx);
-    if (!shouldMerge) return;
+    if (!shouldMerge) return 'not_eligible';
 
-    const currentPrHead = await getCurrentPRHead(owner, repoName, prNumber);
+    const currentPrHead = await getCurrentPRHead(owner, repoName, prNumber, strict);
     if (currentPrHead !== headSha) {
         log.debug({ owner, repoName, prNumber, checkRunSha: headSha, currentPrHead }, 'Check run SHA does not match current PR head, skipping');
-        return;
+        return headMoved(ctx, 'before its checks were read');
     }
 
-    const allChecksPassing = await areAllChecksPassing(owner, repoName, headSha);
+    const allChecksPassing = await areAllChecksPassing(owner, repoName, headSha, undefined, strict);
     if (!allChecksPassing) {
         log.debug({ owner, repoName, prNumber }, 'Not all checks are passing yet, skipping merge');
-        return;
+        return 'checks_not_green';
     }
 
     // GitHub's PR mergeability result accounts for required checks that may not
@@ -215,12 +242,12 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
             mergeable: prInfo.mergeable,
             mergeableState: prInfo.mergeableState,
         }, 'GitHub does not report the PR as cleanly mergeable yet, skipping merge');
-        return;
+        return 'not_mergeable';
     }
 
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
-    const { hasActive, activeTasks, queuedJobs } = await hasActiveTasksForPR(repository, prNumber);
+    const { hasActive, activeTasks, queuedJobs } = await hasActiveTasksForPR(repository, prNumber, strict);
     if (hasActive) {
         log.info({
             owner,
@@ -229,44 +256,52 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
             activeTasks,
             queuedJobs,
         }, 'Skipping auto-merge - active or queued work in progress for this PR');
-        return;
+        return 'active_work';
     }
 
     // The repository's auto-merge policy (read from the base branch) gates this
     // merge exactly like arming GitHub auto-merge; any uncertainty keeps a human in the loop.
-    const { decision, pullRequest } = await evaluatePullRequestAutoMerge({ owner, repo: repoName, prNumber, opportunity: 'check_merge' });
+    const { decision, pullRequest } = await evaluatePullRequestAutoMerge({ owner, repo: repoName, prNumber, opportunity: 'check_merge', strict: ctx.strict });
+    // The decision covers only the head it evaluated, which must be the head whose checks passed.
+    if (ctx.strict && pullRequest && pullRequest.headSha !== headSha) return headMoved(ctx, 'while evaluating the auto-merge policy');
     if (!decision.arm) {
         log.info({ owner, repoName, prNumber, reason: decision.reason, matchedPaths: decision.matchedPaths },
             'Auto-merge policy does not allow merging this PR; leaving it for a human');
-        return;
+        return 'policy_denied';
     }
-    // The decision covers only the head it evaluated, which must be the head whose checks passed.
     if (pullRequest?.headSha !== headSha) {
         log.info({ owner, repoName, prNumber, checkedHeadSha: headSha, evaluatedHeadSha: pullRequest?.headSha },
             'PR head changed while evaluating the auto-merge policy, skipping merge');
-        return;
+        return 'head_moved';
     }
 
     log.info({ owner, repoName, prNumber, headSha }, 'All checks passing for auto-merge PR, attempting to merge');
     // GitHub refuses the merge if the head moved after the evaluation.
-    await performMergeAndPostActions(mergeCtx, decision.method, pullRequest.headSha);
+    return performMergeAndPostActions(mergeCtx, decision.method, pullRequest.headSha);
 }
 
+/**
+ * Re-run the auto-merge decision for a PR's current head. Strict (the Routing
+ * resume resync): the returned outcome is a proved current state (checks still
+ * pending, a policy denial, a merge); any uncertain read throws instead.
+ */
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
 export async function reevaluatePRAutoMerge(
     owner: string,
     repoName: string,
     prNumber: number,
     correlationId: string,
-): Promise<void> {
+    options: { strict?: boolean } = {},
+): Promise<PRAutoMergeOutcome> {
     const log = logger.withCorrelation(correlationId);
-    const headSha = await getCurrentPRHead(owner, repoName, prNumber);
+    const headSha = await getCurrentPRHead(owner, repoName, prNumber, options);
     if (!headSha) {
         log.debug({ owner, repoName, prNumber }, 'Auto-merge re-evaluation skipped: PR head SHA unavailable');
-        return;
+        return 'head_unavailable';
     }
 
-    const ctx: PRContext = { owner, repoName, prNumber, log };
-    await processPRAutoMerge(ctx, headSha);
+    const ctx: PRContext = { owner, repoName, prNumber, log, strict: options.strict };
+    return processPRAutoMerge(ctx, headSha);
 }
 
 /**

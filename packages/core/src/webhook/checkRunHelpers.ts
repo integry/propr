@@ -177,9 +177,18 @@ export async function getFirstCommitMessage(
 }
 
 /**
+ * Strict catch-up (the Routing resume resync): a failed read throws instead of
+ * reading as "unavailable", "not green" or "no work", so an uncertain answer
+ * can never be mistaken for an observed current state.
+ */
+export interface StrictReadOptions {
+    strict?: boolean;
+}
+
+/**
  * Gets the current HEAD SHA of a PR to verify checks are for the latest commit.
  */
-export async function getCurrentPRHead(owner: string, repoName: string, prNumber: number): Promise<string | null> {
+export async function getCurrentPRHead(owner: string, repoName: string, prNumber: number, options: StrictReadOptions = {}): Promise<string | null> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -197,6 +206,7 @@ export async function getCurrentPRHead(owner: string, repoName: string, prNumber
             prNumber,
             error: (error as Error).message
         }, 'Failed to get current PR head');
+        if (options.strict) throw error;
         return null;
     }
 }
@@ -243,14 +253,22 @@ async function getCommitStatusInfo(octokit: any, owner: string, repoName: string
     };
 }
 
+/** The App lacks the permission for a signal type: a standing configuration, not a transient failure. */
+function isMissingPermissionError(error: unknown): boolean {
+    return String((error as GitHubApiError)?.message ?? '').includes('Resource not accessible by integration');
+}
+
 /**
  * Fetch both CI signal types for a commit: check runs and legacy commit
  * statuses. Either may be unavailable; only when both fail is this an error.
+ * Strict: a signal type may only be missing because the App lacks its
+ * permission; any other failure (a rate limit, a 5xx) throws.
  */
 async function fetchCheckSignals(
     owner: string,
     repoName: string,
     ref: string,
+    options: StrictReadOptions = {},
 ): Promise<{ checkRuns: CheckRunRecord[]; commitStatus: CommitStatusInfo }> {
     const octokit = await getAuthenticatedOctokit();
     const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
@@ -264,6 +282,11 @@ async function fetchCheckSignals(
 
     if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
         throw checkRunsResult.reason;
+    }
+    if (options.strict) {
+        for (const result of [checkRunsResult, commitStatusResult]) {
+            if (result.status === 'rejected' && !isMissingPermissionError(result.reason)) throw result.reason;
+        }
     }
 
     const checkRuns: CheckRunRecord[] = checkRunsResult.status === 'fulfilled'
@@ -371,14 +394,16 @@ export function summarizeCheckSignals(
  * Pass the repository's nonBlockingChecks patterns to exclude matching check
  * runs and status contexts from the result; see getCheckRunsStatusForRepo.
  */
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
 export async function getCheckRunsStatus(
     owner: string,
     repoName: string,
     ref: string,
     nonBlockingPatterns: readonly string[] = [],
+    options: StrictReadOptions = {},
 ): Promise<CheckRunsStatus> {
     try {
-        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref);
+        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref, options);
         const summary = summarizeCheckSignals(checkRuns, commitStatus, nonBlockingPatterns);
         logger.debug({
             owner, repoName, ref, ...summary, commitStatus: commitStatus.state, statusContexts: commitStatus.totalCount,
@@ -386,6 +411,7 @@ export async function getCheckRunsStatus(
         return summary;
     } catch (error) {
         logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to get check runs status');
+        if (options.strict) throw error;
         return { count: 0, allPassing: false, anyPending: false, anyFailed: false };
     }
 }
@@ -394,19 +420,30 @@ export async function getCheckRunsStatus(
  * "Is this PR ready" view of getCheckRunsStatus: resolves the repository's
  * nonBlockingChecks patterns so those checks never gate readiness.
  */
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
 export async function getCheckRunsStatusForRepo(
     owner: string,
     repoName: string,
     ref: string,
-    loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
+    loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>,
+    options: StrictReadOptions = {},
 ): Promise<CheckRunsStatus> {
     let patterns: string[] = [];
     try {
-        patterns = await loadNonBlockingChecks(owner, repoName);
+        patterns = await nonBlockingChecksLoader(loadNonBlockingChecks, options)(owner, repoName);
     } catch (error) {
         logger.warn({ owner, repoName, error: (error as Error).message }, 'Failed to load nonBlockingChecks; treating every check as blocking');
+        if (options.strict) throw error;
     }
-    return getCheckRunsStatus(owner, repoName, ref, patterns);
+    return getCheckRunsStatus(owner, repoName, ref, patterns, options);
+}
+
+/** The caller's loader, or the repository configuration (which, when strict, throws instead of yielding none). */
+function nonBlockingChecksLoader(
+    loadNonBlockingChecks: ((owner: string, repo: string) => Promise<string[]>) | undefined,
+    options: StrictReadOptions,
+): (owner: string, repo: string) => Promise<string[]> {
+    return loadNonBlockingChecks ?? ((owner, repo) => getNonBlockingChecksForRepository(owner, repo, undefined, options));
 }
 
 /**
@@ -414,18 +451,20 @@ export async function getCheckRunsStatusForRepo(
  * Always queries both the check-runs API and the legacy commit status API
  * so repos that publish both signal types are handled correctly.
  */
+// eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
 export async function areAllChecksPassing(
     owner: string,
     repoName: string,
     ref: string,
-    loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
+    loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>,
+    options: StrictReadOptions = {},
 ): Promise<boolean> {
     try {
-        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref);
+        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref, options);
 
         // Checks the repository marked non-blocking never hold automation back,
         // but they still count as CI signal below.
-        const nonBlockingChecks = await loadNonBlockingChecks(owner, repoName);
+        const nonBlockingChecks = await nonBlockingChecksLoader(loadNonBlockingChecks, options)(owner, repoName);
         const summary = summarizeCheckSignals(checkRuns, commitStatus, nonBlockingChecks);
         // Do not treat a commit with no CI signal at all as safe to merge.
         const hasCheckSignal = checkRuns.length > 0 || commitStatus.totalCount > 0;
@@ -453,6 +492,7 @@ export async function areAllChecksPassing(
             ref,
             error: (error as Error).message
         }, 'Failed to check PR status');
+        if (options.strict) throw error;
         return false;
     }
 }
@@ -591,7 +631,8 @@ export async function clearUltrafixLoopState(owner: string, repoName: string, pr
 export async function getUltrafixLoopState(
     owner: string,
     repoName: string,
-    prNumber: number
+    prNumber: number,
+    options: StrictReadOptions = {},
 ): Promise<{ active: boolean; completionStatus: 'succeeded' | 'failed' | null; unavailable?: boolean } | null> {
     try {
         const [rawState, rawCurrentWorkEpoch] = await getUltrafixStateRedis().mget(
@@ -617,6 +658,7 @@ export async function getUltrafixLoopState(
             prNumber,
             error: (error as Error).message
         }, 'Failed to load ultrafix loop state');
+        if (options.strict) throw error;
         return {
             active: false,
             completionStatus: null,
@@ -628,7 +670,7 @@ export async function getUltrafixLoopState(
 /**
  * Checks if a PR has the auto-merge label, if it's a draft, and gets the base/head branches.
  */
-export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumber: number): Promise<PRAutoMergeInfo> {
+export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumber: number, options: StrictReadOptions = {}): Promise<PRAutoMergeInfo> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -641,7 +683,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
-        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
+        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber, options);
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
@@ -669,6 +711,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             prNumber,
             error: (error as Error).message
         }, 'Failed to check PR info');
+        if (options.strict) throw error;
         return {
             hasLabel: false,
             hasUltrafixLabel: false,
@@ -687,7 +730,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
 /**
  * Checks if the linked issue (if any) has the auto-merge label.
  */
-export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: string, prNumber: number): Promise<boolean> {
+export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: string, prNumber: number, options: StrictReadOptions = {}): Promise<boolean> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -738,6 +781,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
             prNumber,
             error: (error as Error).message
         }, 'Failed to check linked issue labels');
+        if (options.strict) throw error;
         return false;
     }
 }
@@ -769,7 +813,8 @@ export interface ActivePRWork {
  */
 export async function getActiveTasksForPR(
     repository: string,
-    prNumber: number
+    prNumber: number,
+    options: StrictReadOptions = {},
 ): Promise<ActivePRWork> {
     try {
         const queue = await getIssueQueue();
@@ -831,6 +876,7 @@ export async function getActiveTasksForPR(
             prNumber,
             error: (error as Error).message
         }, 'Failed to check for active tasks');
+        if (options.strict) throw error;
         // On error, assume no active tasks to avoid blocking legitimate merges
         return { activeTasks: [], queuedJobs: [] };
     }
@@ -843,13 +889,14 @@ export async function getActiveTasksForPR(
  */
 export async function hasActiveTasksForPR(
     repository: string,
-    prNumber: number
+    prNumber: number,
+    options: StrictReadOptions = {},
 ): Promise<{
     hasActive: boolean;
     activeTasks: Array<{ taskId: string; state: string }>;
     queuedJobs: Array<{ jobId: string; state: string }>;
 }> {
-    const { activeTasks, queuedJobs } = await getActiveTasksForPR(repository, prNumber);
+    const { activeTasks, queuedJobs } = await getActiveTasksForPR(repository, prNumber, options);
     return {
         hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
         activeTasks,

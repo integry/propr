@@ -84,6 +84,13 @@ async function reconcileRepositoryIntents(redisClient: Redis, ctx: ResyncReposit
     }
 }
 
+/**
+ * Strict end to end: a PR whose head, checks, configuration, Ultrafix state,
+ * hook or auto-merge policy could not be read (or whose head moved meanwhile,
+ * or whose merge attempt failed) throws, leaving the family unfinished.
+ * Checks still pending or failing, an ineligible PR and a real policy denial
+ * are observed current state and complete it.
+ */
 async function reconcilePullRequestHeads(octokit: Octokit, ctx: ResyncRepositoryStepContext, redisClient: Redis): Promise<void> {
     const prs = await octokit.paginate('GET /repos/{owner}/{repo}/pulls', {
         owner: ctx.owner, repo: ctx.repo, state: 'open', per_page: 100,
@@ -91,9 +98,10 @@ async function reconcilePullRequestHeads(octokit: Octokit, ctx: ResyncRepository
     const repoContext = { owner: ctx.owner, repo: ctx.repo, repoFullName: ctx.repository, correlationId: ctx.correlationId };
     for (const pr of prs) {
         if (ctx.signal.aborted) throw new Error('aborted');
+        if (!pr.head.sha) throw new Error(`Open PR ${ctx.repository}#${pr.number} was listed without a head SHA`);
         await reconcileUltrafixForPR(pr, repoContext, redisClient, { throwOnError: true });
-        if (pr.head.sha) await recoverCiFailureFollowups(ctx.owner, ctx.repo, pr.number, pr.head.sha);
-        await reevaluatePRAutoMerge(ctx.owner, ctx.repo, pr.number, ctx.correlationId);
+        await recoverCiFailureFollowups(ctx.owner, ctx.repo, pr.number, pr.head.sha, { strict: true });
+        await reevaluatePRAutoMerge(ctx.owner, ctx.repo, pr.number, ctx.correlationId, { strict: true });
     }
 }
 

@@ -122,46 +122,58 @@ export async function pollForPullRequestComments(
     }
 }
 
+/** What one Ultrafix CI reconciliation observed; `failed` only outside strict mode. */
+export type UltrafixReconcileOutcome =
+    | 'not_ultrafix' | 'no_loop_waiting' | 'head_unavailable' | 'checks_not_green' | 'triggered' | 'hook_failed' | 'failed';
+
 /**
  * Polling counterpart of the check_run/check_suite webhooks: when an Ultrafix
  * PR's head is green, fire the Ultrafix hook so a deferred loop resumes (or a
  * stranded one is re-armed) even if no webhook delivery ever arrives.
+ *
+ * `throwOnError` is the strict catch-up mode (the Routing resume resync): an
+ * unreadable head, check signal, configuration or Redis state, and a missing
+ * or failed hook, all throw. Checks that are still pending or failing are a
+ * successful observation (`checks_not_green`): the next check event resumes it.
  */
 export async function reconcileUltrafixForPR(
     pr: PullRequest,
     repoContext: RepoContext,
     redisClient: Redis,
     options: { throwOnError?: boolean } = {},
-): Promise<void> {
-    if (!pr.labels?.some(label => label.name === 'ultrafix')) return;
+): Promise<UltrafixReconcileOutcome> {
+    if (!pr.labels?.some(label => label.name === 'ultrafix')) return 'not_ultrafix';
 
     const { owner, repo, repoFullName, correlationId } = repoContext;
     const correlatedLogger = logger.withCorrelation(correlationId);
+    const strict = { strict: options.throwOnError };
 
     try {
         // Redis first: a labelled PR with no deferred record or active loop needs
         // no GitHub calls, nor does one whose retry is backing off (as in the sweep).
         if (!await hasUltrafixResumeCandidate(redisClient, { owner, repo, pr: pr.number }, { honourRetryBackoff: true })) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: no loop waiting');
-            return;
+            return 'no_loop_waiting';
         }
         // The listed PR already carries its head; only fall back to a lookup when it does not.
-        const headSha = pr.head.sha || await getCurrentPRHead(owner, repo, pr.number);
+        const headSha = pr.head.sha || await getCurrentPRHead(owner, repo, pr.number, strict);
         if (!headSha) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: PR head SHA unavailable');
-            return;
+            return 'head_unavailable';
         }
         // The loop's own readiness gate: non-blocking checks never hold it, and a
         // head with no checks at all is ready (no check event will ever come for it).
-        if (!(await getCheckRunsStatusForRepo(owner, repo, headSha)).allPassing) {
+        if (!(await getCheckRunsStatusForRepo(owner, repo, headSha, undefined, strict)).allPassing) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks not green yet');
-            return;
+            return 'checks_not_green';
         }
         correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks green, triggering check hook');
-        await triggerUltrafixCheckRunHook({ owner, repo, prNumber: pr.number, headSha }, correlatedLogger);
+        return await triggerUltrafixCheckRunHook({ owner, repo, prNumber: pr.number, headSha }, correlatedLogger, strict)
+            ? 'triggered' : 'hook_failed';
     } catch (error) {
         correlatedLogger.warn({ repository: repoFullName, pullRequestNumber: pr.number, error: (error as Error).message }, 'Ultrafix CI reconciliation failed');
         if (options.throwOnError) throw error;
+        return 'failed';
     }
 }
 
