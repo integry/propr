@@ -39,14 +39,14 @@ test('server mounts extension gateway before auth, management after auth, and ar
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   t.after(async () => { await new Promise<void>(r => server.close(() => r())); await core.closeConnection(); mock.restoreAll(); await fs.rm(root, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  // The same public application handles tunnel ingress. Neither forwarded-host
-  // metadata nor an authenticated session may expose the private proof path.
+  // The retired Connect-managed extension transport has no public, tunnel or
+  // session-authenticated route. Its former paths are ordinary unknown routes.
   for (const extra of [{}, { 'x-test-actor': '1', 'x-forwarded-host': 'synthetic.tunnel.invalid' }]) {
-    const proof = await fetch(base + '/extensions/authority/v1/prove', { method: 'POST',
-      headers: { 'content-type': 'application/json', ...extra }, body: '{invalid-json' });
-    assert.equal(proof.status, 404);
-    assert.equal(proof.headers.get('cache-control'), 'no-store');
-    assert.deepEqual(await proof.json(), { error: 'extension_authority_unavailable' });
+    for (const retired of ['/extensions/v1/invoke', '/extensions/authority/v1/prove', '/extensions/authority/v2/invoke', '/extensions/authority/v2/prove']) {
+      const response = await fetch(base + retired, { method: 'POST', headers: { 'content-type': 'application/json', ...extra }, body: '{}' });
+      assert.equal(response.status, 404);
+      assert.doesNotMatch(await response.text(), /extension_authority_unavailable|fleet_extensions_unavailable/);
+    }
   }
   const preflight = await fetch(base + '/api/task-submissions', { method: 'OPTIONS', headers: { Origin: 'http://localhost:3000', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type,x-propr-extensions,idempotency-key' } });
   assert.equal(preflight.status, 204);

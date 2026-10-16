@@ -2,7 +2,6 @@ import path from 'node:path';
 import { configuredNativeReset } from '../core/src/fleet/configuredReset.js';
 import { storageControlRoot } from '../core/src/storage/lifecycle.js';
 import { assertConfiguredResetGeneration } from '../core/src/fleet/resetFence.js';
-import { ExtensionProfileStore } from '../core/src/extensions/extensionProfileStore.js';
 import { createExtensionProfileRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
@@ -457,7 +456,7 @@ export function setupRoutes(): void {
         await db.destroy();
       },
     });
-    return startConfiguredFleetData(storageService, (actorId, database) => resolveDurableInstanceAuthorization(String(actorId), database), new ExtensionProfileStore(db), nativeReset);
+    return startConfiguredFleetData(storageService, actorId => resolveDurableInstanceAuthorization(String(actorId)), nativeReset);
   })();
   // Background work is bounded/coalesced; no startup deletion or live-data scan.
   const storageSweep = setInterval(() => {

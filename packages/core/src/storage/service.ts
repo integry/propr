@@ -3,7 +3,6 @@ import { removeRegisteredCache } from './cacheRemoval.js';
 import { GeneratedPayloadStorage } from './generatedPayloads.js';
 import { StorageContractError, confirmationInvalid, instanceSelectionChanged, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
 import fs from 'node:fs/promises';
-import { proofIdentitySync } from './proofIdentity.js';
 import { DatabaseExports, type StorageAuthority } from './databaseExport.js';
 import { constants } from 'node:fs';
 import path from 'node:path';
@@ -44,11 +43,6 @@ export class InstanceStorageService {
     await this.initialize();
     const root = await fs.lstat(this.root);
     if (!root.isDirectory() || root.isSymbolicLink() || root.dev !== this.identityRoot?.dev || root.ino !== this.identityRoot?.ino || await this.read<string>('instance.json') !== expected) throw instanceSelectionChanged();
-  }
-  /** Fresh native identity for the authority proof's final synchronous section. */
-  proofIdentitySync() {
-    return { storageInstanceId: proofIdentitySync(this.root, this.identityRoot),
-      runtimeGeneration: this.exports?.generation ?? this.generation, storageGeneration: this.generation };
   }
   async inventory(): Promise<RepositoryStorageInventory> {
     if (!this.inventoryScan || Date.now() - this.inventoryAt > 60_000) {

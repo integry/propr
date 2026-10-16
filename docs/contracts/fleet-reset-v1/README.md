@@ -46,7 +46,7 @@ existing storage control parent. Its `authority.json` has exactly:
 
 The directory must be owned by the process UID, mode 0700; files are mode 0600,
 regular single-link files. Symlinks and substituted ancestry are refused. Supply
-`PROPR_FLEET_RESET_SECRET` independently of the Fleet export/extension, customer,
+`PROPR_FLEET_RESET_SECRET` independently of the Fleet export, customer,
 session and bootstrap keys. It must contain 32–4096 UTF-8 bytes without leading or
 trailing whitespace. Neither root nor credential is auto-created. Absent reset
 authority leaves the endpoint disabled. Configured invalid authority, missing

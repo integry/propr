@@ -47,14 +47,12 @@ Use **Node 24.21.0** with root/workspace locked dependencies and prepared shared
 and Core packages. These commands must exit zero naturally:
 
 ```sh
-NODE_ENV=test npx tsx --experimental-test-module-mocks --test packages/core/test/extensionProfiles.test.ts packages/core/test/fleetExtensions.test.ts
 NODE_ENV=test npx tsx --experimental-test-module-mocks --test packages/core/test/extensionProfiles.test.ts
-NODE_ENV=test npx tsx --experimental-test-module-mocks --test packages/core/test/fleetExtensions.test.ts
 NODE_ENV=test npx tsx --experimental-test-module-mocks --test packages/core/test/extensionNativeCleanup.test.ts
 npm run typecheck -w @propr/core
 ```
 
-The exit regression starts a fresh combined-suite process and rejects signals,
+The exit regression starts a fresh native-suite process and rejects signals,
 nonzero status and timeouts. It also runs I/O-driven statement allocation/GC on
 real file-backed SQLite databases in a process and worker, with explicit closure
 on successful and throwing setup paths, then waits for natural worker/process
@@ -96,25 +94,15 @@ backup/export, retry, Fleet authority/transport, storage and task-submission
 paths. Fleet's reciprocal qualification remains downstream work after review
 and merge.
 
-## Exact qualified bytes
+## Retired Connect-managed transport
 
-The existing Fleet fixture test checks canonical schema bytes, all 14 request
-fixtures, recipient and skill-result bytes, digests/MACs, capability pins and every
-file listed in all three existing checksum bundles. No bundle was regenerated.
-The qualified extension schema pin remains:
-
-`d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0`
-
-The SHA256SUMS files themselves remain:
-
-| Bundle | SHA-256 of SHA256SUMS |
-| --- | --- |
-| fleet-extensions-v1-qualified | `060c506793c27c5ca37365e9041eea3cefc087fadbf09e680bb5f1c91b525e4c` |
-| fleet-extensions-v1 | `8491d7451246d018fd1bcbfa9d7575dd71fa6b57d72745f612efa0c282614cb6` |
-| fleet-data-v2 | `7d212b1b2d454406ae684575c9a3b536f71bc18bb4b65bb034493ab96d6a684a` |
-
-The strict remote skill projection, local durable admin and
-`instance.manage_settings` checks, encrypted custody, identity/replay/generation
-fences and private Unix transport remain covered by the unchanged assertions.
-No deployment, release, public endpoint or live credential work is part of this
-change.
+The Fleet extension suite, its `fleet-extensions-v1` and
+`fleet-extensions-v1-qualified` fixture bundles and the later extension
+authority/result-delivery contracts were removed when the Connect-managed
+extension transport was retired (#3152). MCP servers, skills, profiles and
+secrets are configured only inside each ProPR instance through the native
+same-origin administration API. The native durable admin checks, encrypted
+custody, revision fencing and private Unix data/reset transport remain covered
+by the unchanged `extensionProfiles.test.ts` and `fleetDataPlane.test.ts`
+assertions. No deployment, release, public endpoint or live credential work is
+part of this change.

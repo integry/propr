@@ -9,21 +9,20 @@ import { resolveExtensionEndpoint } from '../src/extensions/endpointPolicy.js';
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const profiles = 'packages/core/test/extensionProfiles.test.ts';
-const fleet = 'packages/core/test/fleetExtensions.test.ts';
 // This is a new test runner, not an IPC child of the enclosing node:test runner.
 const childEnv: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'test' };
 delete childEnv.NODE_TEST_CONTEXT;
 
 // Natural child exit is the assertion: no process.exit(), force-exit flag,
 // skipped native tests or accepted signals. Timeout and abort reject run().
-test('both native extension suites exit normally in a fresh process', async () => {
+test('the native extension suite exits normally in a fresh process', async () => {
   const { stdout, stderr } = await run(process.execPath, [
-    '--import', 'tsx', '--experimental-test-module-mocks', '--test-reporter=tap', '--test', profiles, fleet,
+    '--import', 'tsx', '--experimental-test-module-mocks', '--test-reporter=tap', '--test', profiles,
   ], { cwd: root, env: childEnv, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
   assert.match(stdout, /# fail 0\b/);
   assert.match(stdout, /# skipped 0\b/);
   assert.match(stdout, /native durable instance-admin CRUD/);
-  assert.match(stdout, /private channel: browser encrypted create\/rotation/);
+  assert.match(stdout, /synthetic HTTPS MCP enforces TLS/);
   assert.doesNotMatch(stderr, /Assertion failed|RemoveEnvironmentCleanupHook/);
 });
 

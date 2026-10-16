@@ -148,7 +148,7 @@ test('real Unix HTTP listener enforces exact path/media/auth and never exposes s
   // Only export-service dependencies are replaced; the reset plane, private
   // descriptor binder, HTTP parser, authentication and disk journals are real.
   const data = { files: f.plane.files, runtime: async () => ({ runtimeGeneration: randomUUID() }) } as unknown as FleetDataPlane;
-  const listener = await listenFleetData(data, undefined, f.plane); f.defer(() => listener.shutdown());
+  const listener = await listenFleetData(data, f.plane); f.defer(() => listener.shutdown());
   const socket = listener.address()!;
   const raw = f.make(); const ok = await http(socket, raw);
   assert.equal(ok.status, 200); assert.equal(ok.cache, 'no-store');

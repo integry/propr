@@ -76,7 +76,7 @@ async function fixture(t: any, checkpoint?: (phase: string) => Promise<void>, lo
     return canonicalFleetJson({ assertion, mac: resetRequestMac(assertion, secret) });
   };
   const data = { files: plane.files, runtime: async () => ({ runtimeGeneration: binding.predecessor.runtimeId }) } as unknown as FleetDataPlane;
-  const listener = await listenFleetData(data, undefined, plane);
+  const listener = await listenFleetData(data, plane);
   const invoke = async (body: string) => new Promise<any>((resolve, reject) => {
     const req = request({ socketPath: listener.address()!, path: '/reset/v1/invoke', method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
       let bytes = ''; res.on('data', chunk => { bytes += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(bytes) }));

@@ -292,13 +292,11 @@ test('signed requests are refused on customer TCP listener and forwarded tunnel 
   t.after(async () => { await Promise.all([customer, tunnel].map(server => new Promise<void>(resolve => server.close(() => resolve())))); });
   const raw = f.sign({ action: 'repositories.list' });
   for (const server of [customer, tunnel]) {
-    for (const route of ['/v1/invoke', '/extensions/v1/invoke']) {
-      const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}${route}`;
-      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Role': 'admin', 'X-Forwarded-For': '127.0.0.1', Authorization: `Bearer ${f.secret}` }, body: raw });
-      assert.equal(response.status, 404);
-      assert.equal(response.headers.get('cache-control'), 'no-store');
-      assert.deepEqual(await response.json(), { error: route === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
-    }
+    const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/v1/invoke`;
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Role': 'admin', 'X-Forwarded-For': '127.0.0.1', Authorization: `Bearer ${f.secret}` }, body: raw });
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { error: 'fleet_data_unavailable' });
   }
   // Refusal on TCP never consumed this grant. Only the private listener can.
   assert.equal((await f.http(raw)).status, 200);
@@ -693,8 +691,8 @@ test('configured startup rejects a live overlapping listener and succeeds after 
   const nextRuntime = await next.runtime();
   assert.notEqual(nextRuntime.runtimeGeneration, f.runtime.runtimeGeneration);
   let nativeCloses = 0;
-  const ownedNative = { close: () => { nativeCloses++; } } as unknown as Parameters<typeof startConfiguredFleetData>[3];
-  await assert.rejects(startConfiguredFleetData(next.storage, f.authorizeActor, undefined, ownedNative), /Fleet listener already active/);
+  const ownedNative = { close: () => { nativeCloses++; } } as unknown as Parameters<typeof startConfiguredFleetData>[2];
+  await assert.rejects(startConfiguredFleetData(next.storage, f.authorizeActor, ownedNative), /Fleet listener already active/);
   assert.equal(nativeCloses, 1, 'failed configured startup releases the native runtime');
   const preserved = await fs.lstat(oldSocket);
   assert.equal(preserved.dev, oldIdentity.dev);
@@ -703,7 +701,7 @@ test('configured startup rejects a live overlapping listener and succeeds after 
   // The old listener still accepts connections, but its generation is fenced.
   assert.equal((await f.http(f.sign({ action: 'repositories.list' }))).status, 403);
   await f.server.shutdown();
-  const listener = await startConfiguredFleetData(next.storage, f.authorizeActor, undefined, ownedNative);
+  const listener = await startConfiguredFleetData(next.storage, f.authorizeActor, ownedNative);
   assert.ok(listener);
   t.after(() => listener.shutdown());
   assert.notEqual(listener.address(), oldSocket);
@@ -734,12 +732,12 @@ test('configured startup rejects a live overlapping listener and succeeds after 
   assert.ok(startup);
   const code = ts.transpile(`return ${startup!.right.getText(tree)};`);
   const native = Object.freeze({ capability: 'private-reset' });
-  const storage = {}; const database = {}; const profiles = {};
+  const storage = {};
   const run = (demoMode: boolean, configured: unknown, failure?: Error) => {
     const calls: string[] = [];
     const execute = new Function('demoMode', 'configuredNativeReset', 'path', 'storageControlRoot',
       'taskQueue', 'runtimeBuildQueue', 'redisClient', 'startConfiguredFleetData', 'storageService',
-      'resolveDurableInstanceAuthorization', 'ExtensionProfileStore', 'db', code);
+      'resolveDurableInstanceAuthorization', code);
     const result = execute(demoMode, async (root: string, resources: any) => {
       calls.push('native');
       assert.equal(root, '/private/fleet-reset-control');
@@ -748,14 +746,14 @@ test('configured startup rejects a live overlapping listener and succeeds after 
       if (failure) throw failure;
       return configured;
     }, path, () => '/private/storage-control', {}, {}, {},
-    (actualStorage: unknown, authorize: Function, store: unknown, reset: unknown) => {
+    (actualStorage: unknown, authorize: Function, reset: unknown) => {
       calls.push('listener'); assert.equal(actualStorage, storage);
-      assert.equal(authorize(123, database), 'authorized');
-      assert.equal(store, profiles); assert.equal(reset, configured);
+      assert.equal(authorize(123), 'authorized');
+      assert.equal(reset, configured);
       return 'listener';
-    }, storage, (actor: string, db: unknown) => {
-      assert.equal(actor, '123'); assert.equal(db, database); return 'authorized';
-    }, function (db: unknown) { assert.equal(db, database); return profiles; }, database);
+    }, storage, (actor: string) => {
+      assert.equal(actor, '123'); return 'authorized';
+    });
     return { result, calls };
   };
   for (const configured of [native, undefined]) {
@@ -916,5 +914,45 @@ test('migration retains actorless v1 journals as recovery evidence without autho
     const request = f.sign({ action, targetOperationId: legacy.operationId }, runtime);
     if (action === 'artifact.stream') await assert.rejects(next.stream(request, async () => { assert.fail('legacy stream must never dispatch'); }));
     else await assert.rejects(next.invoke(request));
+  }
+});
+
+test('retired Connect-managed extension transport is unreachable on the private listener and absent from the codebase', async t => {
+  const f = await fixture(t);
+  const retired = ['/extensions/v1/invoke', '/extensions/authority/v1/prove', '/extensions/authority/v2/invoke', '/extensions/authority/v2/prove'];
+  const envelope = f.sign({ action: 'repositories.list' });
+  for (const route of retired) {
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request({ socketPath: f.server.address()!, path: route, method: 'POST', headers: { 'Content-Type': 'application/json' } }, res => {
+        const parts: Buffer[] = []; res.on('data', chunk => parts.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode!, body: Buffer.concat(parts).toString('utf8') })); res.on('error', reject);
+      }); req.on('error', reject); req.end(envelope);
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(JSON.parse(response.body), { error: 'fleet_data_unavailable' });
+  }
+  // The data grant was not consumed by any refused extension route.
+  assert.equal((await f.http(envelope)).status, 200);
+  assert.deepEqual((await fs.readdir(f.control)).filter(name => name.startsWith('extension-')), []);
+  // No private Fleet extension module, shared contract or fixture bundle remains.
+  for (const file of ['packages/core/src/fleet/extensions.ts', 'packages/core/src/fleet/extensionAuthorityProof.ts', 'packages/core/src/fleet/extensionAuthorityV2.ts',
+    'packages/core/src/extensions/remoteGitSkill.ts', 'packages/shared/src/fleetExtensions.ts', 'packages/shared/src/extensionAuthorityProof.ts',
+    'packages/shared/src/extensionAuthorityV2.ts', 'packages/shared/src/extensionResultDelivery.ts', 'docs/contracts/fleet-extensions-v1', 'docs/contracts/extension-authority-v1',
+    'docs/contracts/extension-authority-v2', 'docs/contracts/extension-result-delivery-v1']) {
+    await assert.rejects(fs.lstat(path.resolve(file)), { code: 'ENOENT' }, file);
+  }
+  const shared = await import('@propr/shared') as Record<string, unknown>;
+  for (const name of ['FLEET_EXTENSION_CONTRACT', 'fleetExtensionEnvelopeSchema', 'EXTENSION_AUTHORITY_PATH', 'EXTENSION_AUTHORITY_V2_PATH', 'EXTENSION_RESULT_DELIVERY']) assert.equal(name in shared, false, name);
+  const listener = await fs.readFile(path.resolve('packages/api/fleetDataListener.ts'), 'utf8');
+  assert.doesNotMatch(listener, /extension/i);
+  const store = await fs.readFile(path.resolve('packages/core/src/extensions/extensionProfileStore.ts'), 'utf8');
+  assert.doesNotMatch(store, /saveWithOptions|guard|preflight/);
+  // Already-published migration names stay as inert tombstones; only the
+  // append-only cleanup migration may still touch the retired schema.
+  const migrations = await fs.readdir(path.resolve('packages/core/src/db/migrations'));
+  assert.deepEqual(migrations.filter(name => /extension_authority/.test(name)),
+    ['20261015070000_extension_authority_epoch.js', '20261015130000_extension_authority_v2.js', '20261015220000_remove_extension_authority_schema.js']);
+  for (const tombstone of migrations.filter(name => /^2026101[05].*extension_authority_(epoch|v2)\.js$/.test(name))) {
+    assert.doesNotMatch(await fs.readFile(path.resolve('packages/core/src/db/migrations', tombstone), 'utf8'), /createTable|CREATE/);
   }
 });

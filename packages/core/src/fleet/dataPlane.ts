@@ -1,4 +1,3 @@
-import type { Knex } from 'knex';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -26,7 +25,7 @@ const terminal = new Set<FleetDataState>(['completed', 'failed', 'fenced', 'canc
 const publicResult = (op: Operation): FleetDataResult => ({ contract: FLEET_DATA_ACTOR_CONTRACT, operationId: op.operationId, actor: 'fleet', state: op.state, expiresAt: op.expiresAt, ...(op.result === undefined ? {} : { result: op.result }) });
 
 /** Private exact-ID durable authorization; never accepts sessions, usernames or tokens. */
-export type FleetActorAuthorization = (githubActorId: number, database?: Knex) => Promise<{ role: string; permissions: readonly string[]; source: string }>;
+export type FleetActorAuthorization = (githubActorId: number) => Promise<{ role: string; permissions: readonly string[]; source: string }>;
 const nativeActor = (op: Operation) => String(op.githubActorId);
 
 /** Fixed signed grants supplement, never replace, durable instance authorization. */
@@ -72,50 +71,15 @@ export class FleetDataPlane {
     return { contract: FLEET_DATA_ACTOR_CONTRACT, contractPin, hostedInstanceId: authority.hostedInstanceId, placementGeneration: authority.placementGeneration,
       scope: authority.scope, storageInstanceId: capabilities.instanceId, runtimeGeneration: capabilities.generation, storageGeneration: this.storage.generation };
   }
-  private async validate(op: Pick<Operation, 'binding' | 'secretHash' | 'expiresAt' | 'githubActorId'>, database?: Knex, localOnly = false) {
+  private async validate(op: Pick<Operation, 'binding' | 'secretHash' | 'expiresAt' | 'githubActorId'>) {
     if (!Number.isSafeInteger(op.githubActorId) || op.githubActorId <= 0 || !this.authorizeActor) throw new FleetRefusal();
     const current = await this.runtime();
     const published = JSON.parse(await this.files.read('runtime.json'));
     if (digest(published) !== digest(current)) throw new FleetRefusal();
     const { secret } = await this.authority();
     if (digest(binding(current)) !== digest(op.binding) || secretHash(secret) !== op.secretHash || Date.now() >= op.expiresAt) throw new FleetRefusal();
-    const authorization = await this.authorizeActor(op.githubActorId, database);
-    if (authorization.role !== 'admin' || !(localOnly ? ['local'] : ['local', 'managed']).includes(authorization.source) || !authorization.permissions.includes('instance.manage_settings')) throw new FleetRefusal();
-  }
-  /** Share the existing bounded private namespace with separately pinned contracts. */
-  reserveExtensionEntries(count: number) {
-    if (this.count + count > 16384) throw new FleetRefusal();
-    this.count += count;
-    let reserved = count;
-    return (unused: number) => {
-      if (!Number.isInteger(unused) || unused < 0 || unused > reserved) throw new FleetRefusal();
-      reserved -= unused;
-      this.count -= unused;
-    };
-  }
-  /** Reuse the provisioned private boundary without extending the pinned data contract. */
-  async extensionAuthority(assertion: { githubActorId: number; hostedInstanceId: string; storageInstanceId: string; runtimeGeneration: string; storageGeneration: string; placementGeneration: string; expiresAt: number }, database?: Knex) {
-    const { secret } = await this.authority();
-    await this.validate({ githubActorId: assertion.githubActorId, binding: binding({ ...assertion, scope: FLEET_DATA_SCOPE }), secretHash: secretHash(secret), expiresAt: assertion.expiresAt * 1000 }, database, true);
-    // Check filesystem generations/authority again after the uncached database lookup.
-    const current = await this.runtime();
-    const published = JSON.parse(await this.files.read('runtime.json'));
-    const latest = await this.authority();
-    if (digest(published) !== digest(current) || digest(binding(current)) !== digest(binding({ ...assertion, scope: FLEET_DATA_SCOPE }))
-      || secret !== latest.secret || Date.now() >= assertion.expiresAt * 1000) throw new FleetRefusal();
-    return secret;
-  }
-  /** Additive proof observation; no awaits between native observation and signing. */
-  extensionProofObservationSync() {
-    const authority = JSON.parse(this.files.readSync('authority.json'));
-    exact(authority, ['hostedInstanceId', 'placementGeneration', 'scope', 'secretSha256']);
-    const secret = this.secret();
-    if (!secret || secret.length < 32 || secret.trim() !== secret || authority.secretSha256 !== secretHash(secret)
-      || authority.scope !== FLEET_DATA_SCOPE || !identifier(authority.hostedInstanceId) || !identifier(authority.placementGeneration)) throw new FleetRefusal();
-    const current = { contract: FLEET_DATA_ACTOR_CONTRACT, contractPin, hostedInstanceId: authority.hostedInstanceId,
-      placementGeneration: authority.placementGeneration, scope: authority.scope, ...this.storage.proofIdentitySync() };
-    if (digest(current) !== digest(JSON.parse(this.files.readSync('runtime.json')))) throw new FleetRefusal();
-    return { binding: binding(current), secret };
+    const authorization = await this.authorizeActor(op.githubActorId);
+    if (authorization.role !== 'admin' || !['local', 'managed'].includes(authorization.source) || !authorization.permissions.includes('instance.manage_settings')) throw new FleetRefusal();
   }
   private name(id: string) { return `operation-${id}.jsonl`; }
   private async save(op: Operation, state: FleetDataState, result?: FleetDataResult['result']) {
