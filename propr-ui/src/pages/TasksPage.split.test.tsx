@@ -278,13 +278,64 @@ describe('TasksPage split workspace', () => {
 
   it('navigates to the task page below the split breakpoint', async () => {
     mockViewport(false);
-    renderAt('/tasks?task=a');
+    renderAt('/tasks');
     await screen.findByRole('table', { name: 'Tasks' });
     expect(screen.queryByTestId('task-split-details')).not.toBeInTheDocument();
-    fireEvent.keyDown(window, { key: 'j' });
-    expect(location().searchParams.get('task')).toBe('a');
     fireEvent.click(titleLink('Change b'), { detail: 1 });
     expect(location().pathname).toBe('/tasks/b');
     expect(await screen.findByTestId('task-details')).toHaveTextContent('details for route');
+  });
+
+  it('shows a task linked below the split breakpoint as a single pane over the list', async () => {
+    mockViewport(false);
+    renderAt('/tasks?task=a&repository=integry%2Fpropr');
+    await screen.findByRole('table', { name: 'Tasks' });
+    const pane = screen.getByTestId('task-split-details');
+    expect(within(pane).getByTestId('task-details')).toHaveTextContent('details for a');
+    expect(screen.getByTestId('task-split-workspace')).toHaveAttribute('data-layout', 'single');
+    expect(screen.getByTestId('task-split-list')).toHaveAttribute('inert');
+    // The list cannot be stepped through while it is covered.
+    fireEvent.keyDown(window, { key: 'j' });
+    expect(location().searchParams.get('task')).toBe('a');
+
+    fireEvent.click(within(pane).getAllByRole('button', { name: 'Back to tasks' })[0]);
+    expect(location().searchParams.has('task')).toBe(false);
+    expect(location().searchParams.get('repository')).toBe('integry/propr');
+    await waitFor(() => expect(screen.queryByTestId('task-split-details')).not.toBeInTheDocument());
+    expect(screen.getByTestId('task-split-list')).not.toHaveAttribute('inert');
+  });
+
+  it('keeps the open task and its unsent follow-up across the split breakpoint, both ways', async () => {
+    let wide = true;
+    const listeners = new Set<() => void>();
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      get matches() { return wide; }, media: query, onchange: null,
+      addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+      removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    }));
+    const resize = (next: boolean) => act(() => { wide = next; listeners.forEach(listener => listener()); });
+
+    renderAt('/tasks?repository=integry%2Fpropr');
+    await screen.findByRole('table', { name: 'Tasks' });
+    fireEvent.click(titleLink('Change b'), { detail: 1 });
+    const details = await screen.findByTestId('task-details');
+    fireEvent.click(within(details).getByRole('button', { name: 'Follow up' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Follow-up request' }), { target: { value: 'Unsent draft' } });
+    const before = location().toString();
+
+    resize(false);
+    expect(screen.getByTestId('task-split-workspace')).toHaveAttribute('data-layout', 'single');
+    // The same element: the task was not remounted, so nothing in it was lost.
+    expect(screen.getByTestId('task-details')).toBe(details);
+    expect(screen.getByRole('textbox', { name: 'Follow-up request' })).toHaveValue('Unsent draft');
+    expect(location().toString()).toBe(before);
+
+    resize(true);
+    expect(screen.getByTestId('task-split-workspace')).toHaveAttribute('data-layout', 'split');
+    expect(screen.getByTestId('task-details')).toBe(details);
+    expect(screen.getByRole('textbox', { name: 'Follow-up request' })).toHaveValue('Unsent draft');
+    expect(location().toString()).toBe(before);
+    expect(titleLink('Change b').closest('[role="row"]')).toHaveAttribute('aria-selected', 'true');
   });
 });

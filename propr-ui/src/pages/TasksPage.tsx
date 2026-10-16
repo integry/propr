@@ -65,8 +65,10 @@ const TasksPage: React.FC = () => {
     setListRefreshKey(key => key + 1);
   }, [select]);
 
-  // Wide screens open a task beside the list; narrower ones navigate to it.
-  const openTaskId = !taskId && isSplitViewport ? selectedTaskId : null;
+  // Wide screens open a clicked task beside the list; narrower ones navigate to
+  // it. A task already open in the URL stays open at any width: narrow, it
+  // covers the list instead, so a resize never closes it or loses its state.
+  const openTaskId = !taskId ? selectedTaskId : null;
   // The task the open run belongs to: its runs are what the pane's timeline
   // lists. It stays with the pane when paging or a filter takes it off the list.
   const openGroup = useOpenTaskGroup(openTaskId, pageGroups);
@@ -90,6 +92,7 @@ const TasksPage: React.FC = () => {
         selectedTaskId={openTaskId}
         selectedGroup={openGroup}
         onSelectRun={select}
+        split={isSplitViewport}
         onClose={closeTask}
         onDeleted={handleDeleted}
         list={(
