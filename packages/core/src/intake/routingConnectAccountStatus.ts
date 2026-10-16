@@ -138,12 +138,13 @@ export class ConnectAccountStatusTracker {
         socket: MinimalWebSocket,
         protocolVersion: number,
         send: (frame: Record<string, unknown>) => boolean,
+        capabilities: readonly string[] = [ACCOUNT_STATUS_CAPABILITY],
     ): void {
         this.clear();
         if (send({
             type: 'hello',
             protocolVersion,
-            capabilities: [ACCOUNT_STATUS_CAPABILITY],
+            capabilities: [...capabilities],
         })) this.negotiatedSocket = socket;
     }
 

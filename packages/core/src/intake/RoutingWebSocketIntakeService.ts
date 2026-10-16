@@ -25,6 +25,12 @@
  *     installation tokens live ~1 hour.
  *   - `error`: a relay-side error notification. Logged; never fatal.
  *   - `ping`: an application-level keepalive. Answered with a `pong` frame.
+ *   - `resume_pending` / `resync_required` / `resync_accepted`: versioned
+ *     installation resume-resync control frames, handled only when a
+ *     {@link RoutingResumeResyncCoordinator} is configured and its
+ *     `installation_resume_resync_v1` capability was advertised in `hello`
+ *     (see routingResumeResyncProtocol.ts). Otherwise they are ignored as
+ *     unknown frame types, exactly as before.
  *
  * Backend -> relay frames:
  *   - `ack`: `{ type: 'ack', sequence, deliveryId, status, reason?, billing? }` —
@@ -41,6 +47,8 @@
  *     failure). ProPR remains the only source of truth for repo/user policy;
  *     the relay forwards every eligible-looking trigger and records the result.
  *   - `pong`: `{ type: 'pong' }` — keepalive response.
+ *   - `resync_complete`: exact-generation resume-resync completion (only with
+ *     the capability above).
  *
  * The service is resilient by design: it reconnects with capped exponential
  * backoff, verifies end-to-end relay liveness with periodic application and
@@ -73,7 +81,6 @@ import {
     isSupportedEventType,
     loadWebSocketCtor,
     normalizeDisposition,
-    parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
     validateRoutingUrl,
@@ -87,7 +94,10 @@ import {
     type RoutingWebSocketStatus,
     type WebSocketCtor,
 } from './routingWebSocketProtocol.js';
-import { ConnectAccountStatusTracker, parseRoutingFrame } from './routingConnectAccountStatus.js';
+import { ACCOUNT_STATUS_CAPABILITY, ConnectAccountStatusTracker, parseRoutingFrame } from './routingConnectAccountStatus.js';
+import type { RoutingResumeResyncCoordinator } from './routingResumeResyncCoordinator.js';
+import { isResumeResyncFrameType } from './routingResumeResyncProtocol.js';
+import { cacheInstallationTokenFrame } from './routingTokenFrame.js';
 
 export type {
     DeliveryAckBilling,
@@ -103,6 +113,7 @@ export type {
     WebSocketCtor,
 } from './routingWebSocketProtocol.js';
 export type { ConnectAccountStatus } from './routingConnectAccountStatus.js';
+export type { RoutingResumeResyncStatus } from './routingResumeResyncCoordinator.js';
 
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
@@ -117,6 +128,9 @@ export class RoutingWebSocketIntakeService {
     private readonly fetchImpl?: FetchLike;
     private readonly now: () => number;
     private readonly keepalive: RoutingWebSocketKeepalive;
+    /** Optional resume-resync coordinator; its capability is advertised only when set. */
+    private readonly resumeResync: RoutingResumeResyncCoordinator | null;
+    private readonly capabilities: readonly string[];
 
     private socket: MinimalWebSocket | null = null;
     private reconnectTimer: NodeJS.Timeout | null = null;
@@ -175,7 +189,13 @@ export class RoutingWebSocketIntakeService {
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
         this.deliveries = new DeliveryTracker(options.maxDedupeEntries ?? DEFAULT_MAX_DEDUPE_ENTRIES);
         this.installationTokens = new BoundedTokenCache(options.maxTokenEntries ?? DEFAULT_MAX_TOKEN_ENTRIES);
+        this.resumeResync = options.resumeResync ?? null;
+        this.resumeResync?.onChange(() => this.notifyStatusChange());
+        // Routing must never enforce suspension on a client that did not
+        // advertise resume-resync, so the capability rides on the coordinator.
+        this.capabilities = [ACCOUNT_STATUS_CAPABILITY, ...(this.resumeResync ? [this.resumeResync.capability] : [])];
         this.keepalive = new RoutingWebSocketKeepalive({
+            capabilities: this.capabilities,
             pingIntervalMs: resolveRoutingPingIntervalMs(options.pingIntervalMs),
             pongTimeoutMs: resolveRoutingPongTimeoutMs(options.pongTimeoutMs),
             isCurrentSocket: socket => socket === this.socket,
@@ -221,6 +241,10 @@ export class RoutingWebSocketIntakeService {
 
             const WebSocketImpl = await loadWebSocketCtor(this.webSocketFactory);
 
+            // Resume interrupted reconciliation from persisted state before any
+            // frame can arrive, so a duplicate frame resumes the same work.
+            await this.resumeResync?.start();
+
             this.stopped = false;
             this.connect(WebSocketImpl);
         } catch (error) {
@@ -261,7 +285,10 @@ export class RoutingWebSocketIntakeService {
             this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.keepalive.start(socket);
-            this.accountStatus.open(socket, ROUTING_HUB_PROTOCOL_VERSION, frame => this.send(frame, socket));
+            this.accountStatus.open(socket, ROUTING_HUB_PROTOCOL_VERSION, frame => this.send(frame, socket), this.capabilities);
+            // Reconnecting never completes a resync; it only lets an
+            // unaccepted, already-persisted completion be resent.
+            this.resumeResync?.attach(frame => this.send(frame, socket));
             this.notifyStatusChange();
         });
 
@@ -287,6 +314,7 @@ export class RoutingWebSocketIntakeService {
             this.socket = null;
             this.connected = false;
             this.accountStatus.clear();
+            this.resumeResync?.detach();
             this.notifyStatusChange();
             if (this.stopped) {
                 logger.info('Routing WebSocket closed during shutdown');
@@ -301,6 +329,12 @@ export class RoutingWebSocketIntakeService {
         const rawFrame = rawDataToString(data);
         const frame = parseRoutingFrame(rawFrame);
         if (!frame) return;
+
+        if (this.resumeResync && isResumeResyncFrameType(frame.type)) {
+            // Control frames from a superseded connection are not trusted.
+            if (socket === this.socket) await this.resumeResync.handleFrame(frame as Record<string, unknown>, Buffer.byteLength(rawFrame, 'utf8'));
+            return;
+        }
 
         switch (frame.type) {
             case 'account_status':
@@ -318,7 +352,7 @@ export class RoutingWebSocketIntakeService {
                 await this.trackWork(this.handleEventFrame(frame, socket));
                 return;
             case 'token':
-                this.handleTokenFrame(frame);
+                cacheInstallationTokenFrame(frame, this.installationTokens);
                 return;
             case 'error':
                 logger.error(
@@ -351,32 +385,6 @@ export class RoutingWebSocketIntakeService {
         } finally {
             this.inFlightWork.delete(work);
         }
-    }
-
-    /** Cache an installation access token pushed by the relay. */
-    private handleTokenFrame(frame: RoutingFrame): void {
-        const installationId = frame.installationId;
-        // The relay names this field `installationToken`; `token` is accepted as a
-        // legacy alias so either shape populates the cache.
-        const token = frame.installationToken ?? frame.token;
-        if (installationId === undefined || !token) {
-            logger.warn('Discarding token frame missing installationId or token');
-            return;
-        }
-        // A token frame that carries an expiry we cannot parse is treated as
-        // corrupt and dropped: caching it as non-expiring would let a stale
-        // credential live forever and cause repeated pull failures, so we wait for
-        // a well-formed refresh instead of trusting an unbounded token.
-        const expiresAt = parseTokenExpiry(frame.expiresAt);
-        if (frame.expiresAt !== undefined && expiresAt === undefined) {
-            logger.warn(
-                { installationId, expiresAt: frame.expiresAt },
-                'Discarding token frame with unparseable expiry',
-            );
-            return;
-        }
-        this.installationTokens.set(String(installationId), token, expiresAt);
-        logger.debug({ installationId, expiresAt }, 'Cached installation token from routing relay');
     }
 
     private async handleEventFrame(frame: RoutingFrame, socket: MinimalWebSocket): Promise<void> {
@@ -571,6 +579,7 @@ export class RoutingWebSocketIntakeService {
             lastDeliveryId: this.lastDeliveryId,
             lastAckAt: this.lastAckAt === null ? null : new Date(this.lastAckAt).toISOString(),
             ...(this.accountStatus.current ? { connectAccount: this.accountStatus.current } : {}),
+            ...(this.resumeResync ? { resync: this.resumeResync.getStatus() } : {}),
         };
     }
 
@@ -636,6 +645,8 @@ export class RoutingWebSocketIntakeService {
             }
             this.socket = null;
         }
+
+        await this.resumeResync?.stop();
 
         logger.info('Routing WebSocket intake service stopped');
     }

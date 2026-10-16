@@ -83,6 +83,36 @@ export interface RoutingState {
   lastDeliveryId: string | null;
   /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null. */
   lastAckAt: string | null;
+  /** Installation resume-resync (Routing suspension gap) state, when supported. */
+  resync?: RoutingResyncState;
+}
+
+/**
+ * Reconciliation of a Routing-managed installation suspension gap. Carries no
+ * tokens or webhook payloads.
+ */
+export interface RoutingResyncState {
+  state: "idle" | "pending" | "reconciling" | "partial" | "failed" | "completed" | "acknowledged";
+  installationId: number;
+  routingGeneration: number | null;
+  resumeGeneration: number | null;
+  gapStartedAt: string | null;
+  gapEndedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  acknowledgedAt: string | null;
+  attempts: number;
+  lastAttemptAt: string | null;
+  nextRetryAt: string | null;
+  lastError: string | null;
+  running: boolean;
+  repositories: { total: number; reconciled: number; inaccessible: number; failed: number; pending: number };
+  failedRepositories: Array<{ repository: string; error: string | null }>;
+  /** True while Routing is holding normal routed intake for this installation. */
+  intakeWaiting: boolean;
+  completionId: string | null;
+  lastCompletionSentAt: string | null;
+  lastRejection: { reason: string; frameType: string; at: string } | null;
 }
 
 /**

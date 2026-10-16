@@ -249,6 +249,7 @@ export {
 export type {
   SystemStatus,
   RoutingState,
+  RoutingResyncState,
   QueueStats,
 } from "./system.js";
 

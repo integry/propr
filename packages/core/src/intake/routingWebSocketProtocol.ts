@@ -13,6 +13,8 @@ import {
 
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
 import type { ConnectAccountStatus } from './routingConnectAccountStatus.js';
+import type { RoutingResumeResyncCoordinator } from './routingResumeResyncCoordinator.js';
+import type { RoutingResumeResyncStatus } from './routingResumeResyncStatus.js';
 import { parseWebhookPayload } from './webhookPayload.js';
 
 export { parseWebhookPayload } from './webhookPayload.js';
@@ -508,52 +510,7 @@ export function validateRoutingUrl(routingUrl: string): void {
     }
 }
 
-/**
- * Resolve the `ws` WebSocket constructor, preferring an injected factory (the
- * test seam) and otherwise lazy-importing the `ws` package so the dependency is
- * only loaded when routing mode runs. The specifier is referenced indirectly so
- * the bundler/type-checker does not require `@types/ws` for this otherwise-
- * untyped package.
- */
-export async function loadWebSocketCtor(factory?: WebSocketCtor): Promise<WebSocketCtor> {
-    if (factory) return factory;
-    const wsSpecifier = 'ws';
-    const wsModule = (await import(wsSpecifier)) as { default?: WebSocketCtor } & Record<string, unknown>;
-    const ctor = (wsModule.default ?? (wsModule as unknown)) as WebSocketCtor;
-    // The `ws` module is imported untyped (no @types/ws), so a changed export shape
-    // would otherwise surface as a cryptic "not a constructor" at the first connect.
-    // Verify the resolved value is callable as a constructor here and fail with an
-    // actionable message instead.
-    if (typeof ctor !== 'function') {
-        throw new Error(
-            'The "ws" package did not export a WebSocket constructor. Ensure a compatible version of "ws" is installed.',
-        );
-    }
-    return ctor;
-}
-
-/**
- * Await all in-flight promises, but no longer than `timeoutMs`. Used at shutdown
- * so a wedged handler (which, unlike a payload pull, has no timeout of its own)
- * cannot block the daemon's signal handler forever. `onTimeout` runs (for
- * logging) when the deadline wins the race; the timer is always cleared.
- */
-export async function drainWithTimeout(
-    work: Iterable<Promise<unknown>>,
-    timeoutMs: number,
-    onTimeout: () => void,
-): Promise<void> {
-    let drainTimer: NodeJS.Timeout | undefined;
-    const drained = Promise.allSettled([...work]);
-    const timeout = new Promise<void>((resolve) => {
-        drainTimer = setTimeout(() => {
-            onTimeout();
-            resolve();
-        }, timeoutMs);
-    });
-    await Promise.race([drained, timeout]);
-    if (drainTimer) clearTimeout(drainTimer);
-}
+export { drainWithTimeout, loadWebSocketCtor } from './routingWebSocketRuntime.js';
 
 /** Minimal logger slice the payload-pull helper needs (debug-level only). */
 export interface PullLogger {
@@ -755,6 +712,13 @@ export interface RoutingWebSocketIntakeServiceOptions {
     /** `fetch` implementation for payload pulls; defaults to the global `fetch`. */
     fetchImpl?: FetchLike;
     /**
+     * Installation resume-resync coordinator. When set, the
+     * `installation_resume_resync_v1` capability is advertised and Routing's
+     * resume control frames are handled; when absent the client keeps the legacy
+     * protocol and Routing must not enforce suspension on it.
+     */
+    resumeResync?: RoutingResumeResyncCoordinator;
+    /**
      * Clock used to stamp the last-ACK time exposed via `getStatus`.
      * Defaults to `Date.now`; primarily a seam for deterministic tests.
      */
@@ -777,4 +741,6 @@ export interface RoutingWebSocketStatus {
     lastAckAt: string | null;
     /** Connect entitlement/capacity for the current authenticated installation. */
     connectAccount?: ConnectAccountStatus;
+    /** Installation resume-resync state, present when the capability is configured. */
+    resync?: RoutingResumeResyncStatus;
 }

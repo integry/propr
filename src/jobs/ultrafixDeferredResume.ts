@@ -239,13 +239,14 @@ async function listSweepCandidates(redisClient: Redis, fullScan?: boolean): Prom
 export async function sweepUltrafixResumeCandidates(
     redisClient: Redis,
     createLogger: () => Logger,
-    options: { fullScan?: boolean; leaseMs?: number } = {},
+    options: { fullScan?: boolean; leaseMs?: number; strict?: boolean } = {},
 ): Promise<Array<{ prId: PrRef; result: ContinuationResult }>> {
     if (options.leaseMs !== undefined && !await acquireUltrafixResumeSweepLease(redisClient, sweepLeaseTtlMs(options.leaseMs))) {
         return [];
     }
     const { refs, indexed } = await listSweepCandidates(redisClient, options.fullScan);
     const outcomes: Array<{ prId: PrRef; result: ContinuationResult }> = [];
+    const failures: unknown[] = [];
     for (const prId of refs) {
         const { owner, repo, pr } = prId;
         const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
@@ -260,9 +261,12 @@ export async function sweepUltrafixResumeCandidates(
         try {
             outcomes.push({ prId, result: await resumeDeferredContinuation(prId, redisClient, log) });
         } catch (err) {
+            failures.push(err);
             log.warn({ ...prId, error: (err as Error).message }, '[ultrafix] resume sweep failed for PR');
         }
     }
+    // A strict sweep (the Routing resume resync) must not read a failure as convergence.
+    if (options.strict && failures.length > 0) throw failures[0];
     return outcomes;
 }
 

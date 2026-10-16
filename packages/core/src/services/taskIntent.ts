@@ -442,7 +442,9 @@ export async function checkCurrentTaskIntent(target: IntentTarget): Promise<Inte
 }
 
 /** Poll active and queued resources directly: closed/unlabeled issues disappear from discovery queries. */
-export async function reconcileTaskIntents(redis: Redis, repositories: string[]): Promise<void> {
+/** `strict` rethrows the first per-target failure after the pass, so a caller cannot mistake it for convergence. */
+export async function reconcileTaskIntents(redis: Redis, repositories: string[], options: { strict?: boolean } = {}): Promise<void> {
+    const failures: unknown[] = [];
     const targets = new Map<string, IntentTarget>();
     const add = (target: IntentTarget | null) => {
         if (target && repositories.some(repo => repo.toLowerCase() === `${target.repoOwner}/${target.repoName}`.toLowerCase())) {
@@ -458,12 +460,14 @@ export async function reconcileTaskIntents(redis: Redis, repositories: string[])
             const reason = await checkCurrentTaskIntent(target);
             if (reason) await cancelWithdrawnIntent(target, reason, redis);
         } catch (error) {
+            failures.push(error);
             logger.warn({ target, error }, 'Failed to reconcile task intent; will retry next poll');
         }
     }
     // Cancelled requests leave the scans above, so failed exclusions are retried here.
     await settleWithdrawalCleanups(redis, target => repositories.some(repo => repo.toLowerCase() === `${target.repoOwner}/${target.repoName}`.toLowerCase()),
-        (target, error) => logger.warn({ target, error }, 'Failed to publish retained cancellation exclusion; will retry next poll'));
+        (target, error) => { failures.push(error); logger.warn({ target, error }, 'Failed to publish retained cancellation exclusion; will retry next poll'); });
+    if (options.strict && failures.length > 0) throw failures[0];
 }
 
 /** Runs before any dispatcher, review, worktree or agent side effects. API errors fail closed. */

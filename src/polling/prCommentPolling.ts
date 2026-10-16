@@ -41,6 +41,12 @@ interface PollingConfig {
     GITHUB_BOT_USERNAME?: string;
     PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
     MODEL_LABEL_PATTERN: string;
+    /** Rethrow failures instead of logging them (the Routing resume resync must see them). */
+    throwOnError?: boolean;
+    /** Skip the Ultrafix CI pass, for a caller that reconciles PR heads separately. */
+    skipUltrafixReconcile?: boolean;
+    /** Only consider comments created at or after this ISO instant (a catch-up window). */
+    createdSince?: string;
 }
 
 interface RepoContext {
@@ -115,12 +121,14 @@ export async function pollForPullRequestComments(
         for (const pr of prs) {
             await processPullRequestComments(octokit, pr, repoContext, config);
         }
+        if (config.skipUltrafixReconcile) return;
         // After the comment pass: a resume can wait on queue scans, GitHub and
         // the label-transition lease, which must not delay comment pickup.
         for (const pr of prs) {
             await reconcileUltrafixForPR(pr, repoContext, config.redisClient);
         }
     } catch (error) {
+        if (config.throwOnError) throw error;
         handleError(error, `Error polling PR comments for repository ${repoFullName}`, { correlationId });
     }
 }
@@ -130,7 +138,12 @@ export async function pollForPullRequestComments(
  * PR's head is green, fire the Ultrafix hook so a deferred loop resumes (or a
  * stranded one is re-armed) even if no webhook delivery ever arrives.
  */
-export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoContext, redisClient: Redis): Promise<void> {
+export async function reconcileUltrafixForPR(
+    pr: PullRequest,
+    repoContext: RepoContext,
+    redisClient: Redis,
+    options: { throwOnError?: boolean } = {},
+): Promise<void> {
     if (!pr.labels?.some(label => label.name === 'ultrafix')) return;
 
     const { owner, repo, repoFullName, correlationId } = repoContext;
@@ -159,6 +172,7 @@ export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoC
         await triggerUltrafixCheckRunHook({ owner, repo, prNumber: pr.number, headSha }, correlatedLogger);
     } catch (error) {
         correlatedLogger.warn({ repository: repoFullName, pullRequestNumber: pr.number, error: (error as Error).message }, 'Ultrafix CI reconciliation failed');
+        if (options.throwOnError) throw error;
     }
 }
 
@@ -194,7 +208,9 @@ async function processPullRequestComments(
         })
     ]);
 
-    const allComments = [...issueComments, ...reviewComments];
+    const createdSince = config.createdSince ? Date.parse(config.createdSince) : Number.NaN;
+    const allComments = [...issueComments, ...reviewComments]
+        .filter(comment => Number.isNaN(createdSince) || Date.parse(comment.created_at) >= createdSince);
     const botUsername = GITHUB_BOT_USERNAME || 'propr-dev[bot]';
     const commentsByTime = allComments.sort((a, b) =>
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()

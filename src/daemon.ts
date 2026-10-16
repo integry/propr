@@ -66,6 +66,7 @@ import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoop
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
+import { createRoutingResumeResync } from './daemon/routingResumeResync.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -442,7 +443,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         safePoll,
         pollingIntervalMs: POLLING_INTERVAL_MS,
         initWebhookHandler: initSharedWebhookHandler,
-        createRoutingService: () => new RoutingWebSocketIntakeService(),
+        createRoutingService: () => {
+            // Reconciles GitHub state after a Routing-managed suspension gap;
+            // advertised to Routing only when it can actually complete one.
+            const resumeResync = createRoutingResumeResync({ redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN });
+            return new RoutingWebSocketIntakeService(resumeResync ? { resumeResync } : {});
+        },
         startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
         logger,
         startupLogContext: baseStartupLog,

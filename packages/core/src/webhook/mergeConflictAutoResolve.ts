@@ -450,6 +450,8 @@ export async function sweepConflictedPullRequests(options: {
     redisClient: MergeConflictRedis;
     correlationId?: string;
     deps?: MergeConflictDetectionDeps;
+    /** Rethrow a repository failure instead of logging and continuing. */
+    strict?: boolean;
 }): Promise<ConflictDetectionResult[]> {
     const correlationId = options.correlationId ?? generateCorrelationId();
     const log = logger.withCorrelation(correlationId);
@@ -472,6 +474,7 @@ export async function sweepConflictedPullRequests(options: {
             }));
         } catch (error) {
             log.error({ repository, trigger: 'sweep', error: (error as Error).message }, 'Merge conflict sweep failed for repository');
+            if (options.strict) throw error;
         }
     }
     return results;

@@ -346,7 +346,16 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     }
 }
 
-export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repoFullName: string, correlationId: string): Promise<DetectedIssue[]> {
+/**
+ * `throwOnError` rethrows instead of returning `[]`, for callers (such as the
+ * Routing resume resync) that must not mistake a failed fetch for no issues.
+ */
+export async function fetchIssuesForRepo(
+    octokit: PaginatedOctokitInstance,
+    repoFullName: string,
+    correlationId: string,
+    options: { throwOnError?: boolean } = {},
+): Promise<DetectedIssue[]> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
 
@@ -493,6 +502,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             correlatedLogger.warn('GitHub API rate limit likely exceeded. Consider increasing polling interval.');
         }
 
+        if (options.throwOnError) throw error;
         return [];
     }
 }

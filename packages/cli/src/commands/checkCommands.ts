@@ -24,7 +24,8 @@ import {
   validateSessionSecret,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
-import { createApiClient, getSystemStatus } from "../api/index.js";
+import { createApiClient, getSystemStatus, type RoutingResyncState } from "../api/index.js";
+import { summarizeRoutingResync } from "./routingResyncFormat.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
@@ -909,6 +910,7 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
         detail: formatRoutingTimestamp(routing.lastAckAt),
         group: "GitHub",
       });
+      if (routing.resync) out.push(routingResyncCheck(routing.resync));
     } else {
       // The backend answered but published no routing state. In routing_websocket
       // mode that is the *default intake path*, so its absence is not benign: the
@@ -938,6 +940,21 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
   }
 
   return out;
+}
+
+function routingResyncCheck(resync: RoutingResyncState): CheckResult {
+  const summary = summarizeRoutingResync(resync);
+  const repos = resync.repositories;
+  const detail = resync.state === "idle"
+    ? "idle — no Routing suspension gap recorded"
+    : `${resync.state}, generation ${resync.routingGeneration ?? "-"}/${resync.resumeGeneration ?? "-"}, ${repos.reconciled}/${repos.total} repositories reconciled${resync.intakeWaiting ? ", routed intake waiting" : ""}`;
+  return {
+    name: "Routing resume resync",
+    status: summary.healthy ? "ok" : "warn",
+    detail,
+    group: "GitHub",
+    ...(summary.healthy || !summary.attention ? {} : { fix: summary.attention }),
+  };
 }
 
 // `lastAckAt` comes from a live Redis value the daemon publishes; a stale or

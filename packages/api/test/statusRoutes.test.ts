@@ -1038,6 +1038,43 @@ test('/api/status includes routing state published by the daemon', async () => {
   assert.deepEqual(body.routing, routingState);
 });
 
+test('/api/status exposes validated routing resume-resync state and drops a malformed one', async () => {
+  const resync = {
+    state: 'partial', installationId: 42, routingGeneration: 3, resumeGeneration: 7,
+    gapStartedAt: '2026-10-10T00:00:00.000Z', gapEndedAt: '2026-10-12T00:00:00.000Z',
+    startedAt: '2026-10-12T00:01:00.000Z', completedAt: null, acknowledgedAt: null, attempts: 2,
+    lastAttemptAt: '2026-10-12T00:05:00.000Z', nextRetryAt: '2026-10-12T00:06:00.000Z',
+    lastError: 'acme/api labelled_issues: GitHub 502', running: false,
+    repositories: { total: 2, reconciled: 1, inaccessible: 0, failed: 1, pending: 0 },
+    failedRepositories: [{ repository: 'acme/api', error: 'GitHub 502' }],
+    intakeWaiting: true, completionId: null, lastCompletionSentAt: null,
+    lastRejection: { reason: 'stale_generation', frameType: 'resync_required', at: '2026-10-12T00:02:00.000Z' },
+  };
+  const routingState = {
+    connected: true, routingUrl: 'wss://routing.example', lastDeliveryId: null, lastAckAt: null,
+  };
+  const read = (published: unknown) => readStatus({
+    redisClient: {
+      ping: async () => 'PONG',
+      get: async (key: string) => key === 'system:status:routing' ? JSON.stringify(published) : Date.now().toString(),
+      sCard: async () => 1,
+    } as never,
+  });
+
+  const body = await read({ ...routingState, resync: { ...resync, installationToken: 'ghs_secret' } });
+  assert.deepEqual((body.routing as { resync: unknown }).resync, resync, 'unknown fields never reach the API');
+
+  for (const corrupt of [
+    { ...resync, state: 'done' },
+    { ...resync, gapStartedAt: '2026' },
+    { ...resync, repositories: { total: -1 } },
+    { ...resync, failedRepositories: 'acme/api' },
+  ]) {
+    const degraded = await read({ ...routingState, resync: corrupt });
+    assert.deepEqual(degraded.routing, routingState, 'legacy routing diagnostics survive a malformed resync object');
+  }
+});
+
 test('/api/status exposes only validated UI-safe Connect account fields', async () => {
   const connectAccount = {
     installationId: 42,

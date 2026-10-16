@@ -101,6 +101,33 @@ This contract keeps policy local, adds no preflight latency or new request path,
 
 A seat is a distinct developer whose GitHub activity starts ProPR work through the installation in a billing cycle — dashboard browsing costs nothing. Automation bots never consume a seat: `github-actions[bot]`, `github-advanced-security[bot]`, `copilot-pull-request-reviewer[bot]`, `dependabot[bot]`, `renovate[bot]`, and the ProPR bot. Other bot accounts consume a seat like any developer if you whitelist them to trigger work. The free Community tier includes 3 seats. When the limit is reached, developers already seated this cycle keep working; a *new* developer's triggers are acknowledged as `blocked` with `limit_reached`, a soft-block comment is posted on the originating issue or PR, and the delivery appears in the history — add Plus seats from the Connect dashboard to unblock them.
 
+## Installation Suspension And Resync
+
+ProPR Connect may suspend the GitHub App installation after a long, high-confidence streak of GitHub activity that no ProPR stack consumed. While an installation is suspended GitHub blocks both API access and webhook delivery, so the stack cannot simply reconnect and continue. Connect only does this for stacks that advertise the `installation_resume_resync_v1` capability in their routing `hello`; a stack that does not advertise it keeps the previous behavior.
+
+When Connect unsuspends the installation it sends a `resync_required` frame naming the installation, its routing generation, the resume generation and the gap interval. ProPR then reconciles current GitHub state for every configured repository:
+
+| Family | Recovers |
+| --- | --- |
+| `repository_access` | Repositories the installation can no longer read are reported as inaccessible. |
+| `task_intents` | Queued or running work whose issue was closed, whose trigger label was removed, or whose PR was closed is withdrawn. |
+| `labelled_issues` | Open issues carrying a processing label are picked up with the same trigger-evidence checks polling uses. |
+| `pull_request_comments` | Issue and review comments created on open PRs since the gap started, even when PR comment polling is off. |
+| `pull_request_heads` | Current check runs and statuses on each open PR head: CI-failure follow-ups, auto-merge and Ultrafix readiness. |
+| `merge_conflicts` | The merge-conflict safety sweep for repositories with auto-resolve enabled. |
+| `ultrafix_continuations` | Deferred Ultrafix/CI continuations and retry obligations; a loop whose label was removed stops. |
+
+This converges on current state. It does not replay the webhook stream, so some transitions inside the gap cannot be reconstructed: comment edits and deletions, merge-time side effects of a PR merged during the gap (epic follow-up PRs, plan PR tracking, closed-PR CI cancellation), and plan issue status updates. The next event for that issue or PR, or the existing retry sweeps, pick those up.
+
+Only when every repository and family has converged does ProPR send `resync_complete` for exactly that generation, with bounded evidence (counts, family list, attempts and a digest; no repository names, tokens or payloads). Connect keeps the installation in `resync_required` and keeps caching new events until it accepts the completion, then replays them; already-processed delivery ids are re-acknowledged without being processed again.
+
+- Progress is stored in the database, so a restarted daemon resumes the same generation without rerunning finished families.
+- A lost completion response is answered by resending the same completion identity, not by reconciling again.
+- Stale, foreign, malformed or conflicting generations are rejected and change nothing.
+- A failed or rate-limited repository leaves the resync `partial` with a scheduled retry, honoring GitHub's rate-limit reset. After repeated failures it turns `failed`; a new `resync_required`, a reconnect that resends it, or a daemon restart resumes it.
+
+`propr system status`, `propr check` and the `routing.resync` field of `/api/status` show the state, resume generation, gap interval, repository progress, last error and retry, timestamps, and whether routed intake is waiting. Set `PROPR_ROUTING_RESUME_RESYNC=false` to stop advertising the capability. The capability also requires `GH_INSTALLATION_ID`.
+
 ## Hosted UI Tunnel Flow
 
 When the hosted UI tunnel is enabled, the browser can use the hosted ProPR UI while the API still runs locally:

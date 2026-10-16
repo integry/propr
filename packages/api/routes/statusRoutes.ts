@@ -22,6 +22,7 @@ import {
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import type { SyntheticAgentConfig } from '@propr/shared';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
+import { parseRoutingResyncStatus } from './routingResyncStatus.js';
 import { getOrCreatePublicInstanceIdentity } from '../publicInstanceIdentity.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 
@@ -499,14 +500,16 @@ function parseRoutingState(value: unknown): RoutingState | undefined {
   const connectAccount = state.connectAccount === undefined
     ? undefined
     : parseConnectAccountStatus(state.connectAccount);
-  // A malformed optional account object invalidates only that additive object;
-  // legacy routing diagnostics remain available and no entitlement is guessed.
+  const resync = state.resync === undefined ? undefined : parseRoutingResyncStatus(state.resync);
+  // A malformed optional account or resync object invalidates only that additive
+  // object; legacy routing diagnostics remain available and nothing is guessed.
   return {
     connected: state.connected,
     routingUrl: state.routingUrl,
     lastDeliveryId: state.lastDeliveryId,
     lastAckAt: state.lastAckAt as string | null,
-    ...(connectAccount ? { connectAccount } : {})
+    ...(connectAccount ? { connectAccount } : {}),
+    ...(resync ? { resync } : {})
   };
 }
 

@@ -13,6 +13,7 @@ import {
   QueueStats,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
+import { ROUTING_RESYNC_LABELS, summarizeRoutingResync } from "./routingResyncFormat.js";
 import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
@@ -68,6 +69,7 @@ function displaySystemStatus(status: SystemStatus): void {
     "Routing WebSocket",
     "Last Delivery ID",
     "Last ACK",
+    ...ROUTING_RESYNC_LABELS,
     "Timestamp",
   ];
   const maxLabelWidth = Math.max(...labels.map((l) => l.length));
@@ -125,6 +127,11 @@ function displaySystemStatus(status: SystemStatus): void {
     console.log(
       `${"Last ACK".padEnd(maxLabelWidth)}  ${routing.lastAckAt ? new Date(routing.lastAckAt).toLocaleString() : "(none yet)"}`
     );
+    if (routing.resync) {
+      for (const [label, value] of summarizeRoutingResync(routing.resync).rows) {
+        console.log(`${label.padEnd(maxLabelWidth)}  ${value}`);
+      }
+    }
   } else if (routingIntakeActive) {
     // routing_websocket is the active intake mode but the daemon published no
     // routing state — the default event path is not diagnosable (publisher down
@@ -150,6 +157,7 @@ function displaySystemStatus(status: SystemStatus): void {
   const routingHealthy = status.routing
     ? status.routing.connected === true
     : !routingIntakeActive;
+  const resyncSummary = status.routing?.resync ? summarizeRoutingResync(status.routing.resync) : null;
   const claudeHealthy = status.claudeAuth === "connected" ||
     status.claudeAuth === "not_applicable";
 
@@ -160,7 +168,8 @@ function displaySystemStatus(status: SystemStatus): void {
     status.worker === "running" &&
     status.githubAuth === "connected" &&
     claudeHealthy &&
-    routingHealthy;
+    routingHealthy &&
+    (resyncSummary?.healthy ?? true);
 
   console.log("");
   if (allHealthy) {
@@ -191,6 +200,9 @@ function displaySystemStatus(status: SystemStatus): void {
       console.log("  - Routing WebSocket state unavailable. routing_websocket is the active intake mode but the daemon published no routing state; ensure the daemon is running and check its logs.");
     } else if (!routingHealthy) {
       console.log("  - Routing WebSocket disconnected. The daemon is not connected to the routing relay; check PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN and the daemon logs.");
+    }
+    if (resyncSummary && !resyncSummary.healthy && resyncSummary.attention) {
+      console.log(`  - ${resyncSummary.attention}`);
     }
   }
 }

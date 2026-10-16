@@ -167,6 +167,12 @@ export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
 export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, ConnectAccountStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
+export { RoutingResumeResyncCoordinator, type RoutingResumeResyncCoordinatorOptions, type ResyncFrameSender } from './intake/routingResumeResyncCoordinator.js';
+export type { RoutingResumeResyncStatus } from './intake/routingResumeResyncStatus.js';
+export { INSTALLATION_RESUME_RESYNC_CAPABILITY, RESUME_RESYNC_FRAME_VERSION } from './intake/routingResumeResyncProtocol.js';
+export { createKnexResumeResyncStore, InMemoryResumeResyncStore, type ResumeResyncStore, type ResumeResyncRecord, type ResumeResyncState } from './intake/routingResumeResyncStore.js';
+export { RESUME_RESYNC_RECONCILIATION_MATRIX, RESYNC_REPOSITORY_FAMILIES, RESYNC_INSTALLATION_FAMILIES, ResyncRepositoryInaccessibleError, type ResyncFamily } from './intake/routingResumeResyncMatrix.js';
+export type { ResumeResyncReconciler, ResyncRepositoryStep, ResyncInstallationStep, ResyncRepositoryStepContext, ResyncInstallationStepContext } from './intake/routingResumeResyncRun.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
 // DeliveryTracker, URL/payload/token helpers) are internal to the intake service
 // and are intentionally NOT part of the package's public API. Tests import them

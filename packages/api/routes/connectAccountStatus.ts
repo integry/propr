@@ -1,4 +1,5 @@
 import { isAccountStatusTimestamp, type GithubEventIntakeMode } from '@propr/shared';
+import type { RoutingResyncStatus } from './routingResyncStatus.js';
 
 const MAX_ACCOUNT_LOGIN_LENGTH = 128;
 
@@ -22,6 +23,8 @@ export interface RoutingState {
   lastDeliveryId: string | null;
   lastAckAt: string | null;
   connectAccount?: ConnectAccountStatus;
+  /** Installation resume-resync (suspension gap) state, when the daemon supports it. */
+  resync?: RoutingResyncStatus;
 }
 
 export function applyRoutingStatus(

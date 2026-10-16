@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Routing suspension-gap resync**: in `routing_websocket` mode ProPR
+  advertises `installation_resume_resync_v1`. When ProPR Connect resumes an
+  installation it suspended, ProPR reconciles current GitHub state for every
+  configured repository (labelled issues, task intents, PR comments, PR heads
+  and CI, merge conflicts, Ultrafix continuations) and acknowledges the exact
+  resume generation. Progress survives restarts; partial or rate-limited
+  reconciliations retry and are never acknowledged. `propr system status`,
+  `propr check` and `/api/status` show the gap, progress and whether routed
+  intake is waiting.
 - **Epic merge progress**: when a child PR merges into an epic branch, ProPR
   updates a single "x of y PRs merged" tracking comment on the epic PR in
   place, and posts a one-time *Epic fully merged* confirmation comment once

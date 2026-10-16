@@ -29,6 +29,8 @@ export function resolveRoutingPongTimeoutMs(optionValue: number | undefined): nu
 }
 
 interface RoutingWebSocketKeepaliveOptions {
+    /** Capabilities advertised by every hello probe; defaults to account status only. */
+    capabilities?: readonly string[];
     pingIntervalMs: number;
     pongTimeoutMs: number;
     isCurrentSocket: (socket: MinimalWebSocket) => boolean;
@@ -37,6 +39,7 @@ interface RoutingWebSocketKeepaliveOptions {
 
 export class RoutingWebSocketKeepalive {
     private readonly pingIntervalMs: number;
+    private readonly capabilities: readonly string[];
     private readonly pongTimeoutMs: number;
     private readonly isCurrentSocket: (socket: MinimalWebSocket) => boolean;
     private readonly onStaleConnection: () => void;
@@ -48,6 +51,7 @@ export class RoutingWebSocketKeepalive {
 
     constructor(options: RoutingWebSocketKeepaliveOptions) {
         this.pingIntervalMs = options.pingIntervalMs;
+        this.capabilities = options.capabilities ?? [ACCOUNT_STATUS_CAPABILITY];
         this.pongTimeoutMs = options.pongTimeoutMs;
         this.isCurrentSocket = options.isCurrentSocket;
         this.onStaleConnection = options.onStaleConnection;
@@ -93,7 +97,7 @@ export class RoutingWebSocketKeepalive {
                 socket.send(JSON.stringify({
                     type: 'hello',
                     protocolVersion: ROUTING_HUB_PROTOCOL_VERSION,
-                    capabilities: [ACCOUNT_STATUS_CAPABILITY],
+                    capabilities: [...this.capabilities],
                 }));
                 this.helloProbeOutstanding = true;
                 socket.ping();
