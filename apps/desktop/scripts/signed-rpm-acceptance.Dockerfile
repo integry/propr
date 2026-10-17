@@ -14,6 +14,8 @@ RUN zypper --non-interactive install --no-recommends \
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 WORKDIR /acceptance
 COPY package.json package-lock.json tsconfig.json ./
+# npm ci installs braces from this reviewed lockfile-pinned tarball.
+COPY vendor/braces-3.0.4-depthguard.1.tgz vendor/braces-3.0.4-depthguard.1.tgz
 COPY apps/desktop/package.json apps/desktop/package.json
 COPY packages/api/package.json packages/api/package.json
 COPY packages/cli/package.json packages/cli/package.json

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertInstalledLinuxAcceptanceArtifact, cleanupOwnedContainer } from './run-installed-linux-package-acceptance.mjs';
+import { prepareSignedRpmAcceptanceContext } from './signed-rpm-acceptance-context.mjs';
 import { requireRpmIdentity, verifyRpm } from './rpm-signing.mjs';
 import { SIGNED_RPM_ACCEPTANCE_CHECKS, validateSignedRpmAcceptanceEvidence } from './signed-rpm-acceptance-evidence.mjs';
 
@@ -58,16 +59,9 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
   try {
     await writeFile(join(directory, 'public.asc'), identity.publicKey, { mode: 0o600 });
     await mkdir(join(directory, 'evidence'), { mode: 0o700 });
-    // Send only test code and dependency manifests to Docker, never a host
-    // checkout's profiles, signing bundle, environment files, or credentials.
+    // Send only the allowlisted context; see signed-rpm-acceptance-context.mjs.
     const context = join(directory, 'context');
-    for (const relative of ['package.json', 'package-lock.json', 'tsconfig.json', 'apps/desktop/package.json',
-      'propr-ui/package.json', ...['api', 'cli', 'client', 'core', 'local-setup', 'shared'].map(name => `packages/${name}/package.json`),
-      'packages/shared/tsconfig.json', 'packages/shared/src', 'apps/desktop/scripts']) {
-      const target = join(context, relative);
-      await mkdir(resolve(target, '..'), { recursive: true });
-      await cp(join(root, relative), target, { recursive: true });
-    }
+    await prepareSignedRpmAcceptanceContext({ root, context });
     await run('docker', ['build', '--platform=linux/amd64', '--tag', image, '--file', join(context, 'apps/desktop/scripts/signed-rpm-acceptance.Dockerfile'), context]);
     // Chromium needs an active interface for navigator.onLine, even though all
     // fixtures use loopback. An internal bridge provides it without external egress.
