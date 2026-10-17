@@ -92,14 +92,14 @@ export const REVIEW_OUTPUT_TOKEN_RESERVE = 32000;
 /** Conservative window for a model the routed runtime does not know. */
 export const REVIEW_FALLBACK_CONTEXT_WINDOW = 200000;
 
-// Claude Code 2.1.284 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
+// Claude Code 2.1.293 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
 // catalog: models flagged `native_1m` run with a 1,000,000-token window; the
 // other models run with the runtime's 200,000-token default unless the model
 // name carries the `[1m]` suffix. ProPR does not add that suffix, and
 // CLAUDE_CODE_DISABLE_1M_CONTEXT forces the 200,000-token window.
 const CLAUDE_CODE_NATIVE_1M_MODELS = new Set([
   'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5',
-  'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5', 'claude-mythos-5-1',
+  'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5', 'claude-mythos-5-1',
 ]);
 const CLAUDE_CODE_200K_MODELS = new Set([
   'claude-3-5-haiku', 'claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-haiku-4-5',

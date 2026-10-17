@@ -51,13 +51,13 @@ test('N=0 with patience=4 never touches the reasoning dial', async () => {
     assert.equal(s.climbs, 0);
 });
 
-test('two-tier provider switches its encoded model effort then retains its final effort', async () => {
-    const model = 'antigravity:antigravity-gemini-3.1-pro-low';
+test('encoded-effort provider switches its model effort then retains its final effort', async () => {
+    const model = 'antigravity:antigravity-gemini-4-argon-medium';
     const s = state({ models: [model], patience: 1, bestScore: 6, maxReasoningLevels: 10,
-        current: { model, levels: getReasoningLevelsForAgentType('antigravity', model), effort: 'low', effortInModel: true } });
+        current: { model, levels: getReasoningLevelsForAgentType('antigravity', model), effort: 'medium', effortInModel: true } });
     await advanceEscalation(s, 6, available);
     assert.equal(s.current.effort, 'high');
-    assert.equal(s.current.model, 'antigravity:antigravity-gemini-3.1-pro-high');
+    assert.equal(s.current.model, 'antigravity:antigravity-gemini-4-argon-high');
     await advanceEscalation(s, 6, available);
     assert.equal(s.exhausted, false);
     assert.equal(s.climbs, 1);

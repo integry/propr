@@ -21,8 +21,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns a durable receipt that `get_operation` follows to the merge task.
   `update_pull_request_branch` is unchanged and still covers the clean case
   GitHub can update itself.
+- **Claude Haiku 5.5**: added to the Claude model catalog
+  (`llm-claude-haiku55`, 1M context) and made the target of the plain `haiku`
+  alias. The bundled Claude Code CLI moves to 2.1.293, the first release that
+  serves Haiku 5.5. Agent health checks and the summarization and context
+  analysis recommendations now prefer it. Existing agents gain the model on
+  startup.
+- **Gemini 4 Argon**: added to the Antigravity model catalog
+  (`llm-antigravity-argon`, 1M context, low/medium/high reasoning) and
+  recommended for plan generation and PR review. Gemini 3.8 Flash remains the
+  Antigravity default. The bundled Antigravity CLI moves to 1.4.0, the first
+  release that serves Argon. Existing agents gain the model on startup.
+- **Antigravity CLI model IDs**: ProPR now launches Gemini 4 Argon, Claude
+  Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B with the IDs `agy models` lists
+  (for example `gemini-4-argon-high` and `claude-opus-5-5-high`) instead of
+  display names such as `Gemini 4 Argon (High)`. Runs that report either form
+  are still matched to the requested model.
 
 ### Changed
+
+- **Gemini 3.1 Pro retired from Antigravity**: Antigravity CLI 1.4.0 no longer
+  offers Gemini 3.1 Pro and substitutes Gemini 4 Argon, so ProPR does the same.
+  Agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, keeping
+  any saved Pro reasoning override, and `llm-antigravity-pro` and the `pro`
+  alias now select Gemini 4 Argon. Saved low/high Pro routes run on Argon at
+  the same effort.
+- **Canonical Fable and Haiku labels**: `llm-claude-fable` and
+  `llm-claude-haiku` (and the `claude-fable` / `claude-haiku` model names) now
+  select Claude Fable 5.1 and Claude Haiku 5.5, matching the plain `fable` and
+  `haiku` aliases. Previously the labels selected Fable 5 and Haiku 4.5, which
+  are now labelled `llm-claude-fable5` and `llm-claude-haiku45`.
 
 - **Instance access**: role assignments are now described as assigned
   instance roles instead of "explicit" assignments across the **Access** page,

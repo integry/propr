@@ -21,6 +21,18 @@ export function antigravitySupportedModel(config: { type: string; supportedModel
     return config.supportedModels.some(model => model.toLowerCase() === base.toLowerCase());
 }
 
+// `agy models` IDs: Gemini keeps its version dot, Claude uses dashes (claude-opus-5-5-high).
+// Gemini 3.6 Flash predates these IDs and keeps the display-name form.
+function antigravityCliModelBase(model: { id: string; shortAlias: string }): string | undefined {
+    if (model.shortAlias === 'flash36') return undefined;
+    const base = model.id.slice('antigravity-'.length);
+    return base.startsWith('claude-') ? base.replace(/\./g, '-') : base;
+}
+
+function antigravityDisplayModelId(model: { shortName: string }, level: ModelReasoningLevel): string {
+    return `${model.shortName} (${level[0].toUpperCase()}${level.slice(1)})`;
+}
+
 export function toAntigravityCliModelId(modelName: string, reasoningLevel?: ModelReasoningLevel): string {
     const route = getAntigravityCompatibilityRoute(modelName);
     const modelId = route?.model ?? modelName.replace(/^antigravity:/, '');
@@ -38,10 +50,8 @@ export function toAntigravityCliModelId(modelName: string, reasoningLevel?: Mode
         REASONING_LEVELS.indexOf(candidate) <= preferredIndex
     ) ?? levels[0];
     // The CLI encodes effort; selectable model IDs remain independent of effort.
-    if (model.shortAlias === 'flash38' || model.shortAlias === 'flash37') {
-        return `${model.id.slice('antigravity-'.length)}-${level}`;
-    }
-    return `${model.shortName} (${level[0].toUpperCase()}${level.slice(1)})`;
+    const base = antigravityCliModelBase(model);
+    return base ? `${base}-${level}` : antigravityDisplayModelId(model, level);
 }
 
 /** Preserve the effort reported by the provider independently of catalog identity. */
@@ -50,9 +60,12 @@ export function antigravityReportedIdentity(reported: string): { model: string; 
     if (route) return { model: route.model, effort: route.effort };
     for (const model of ANTIGRAVITY_RUNTIME_MODELS) {
         if (reported === model.id) return { model: model.id };
+        const base = antigravityCliModelBase(model);
         for (const effort of getReasoningLevelsForAgentType('antigravity', model.id)) {
-            if (reported === `${model.id.slice('antigravity-'.length)}-${effort}`
-                || reported === `${model.shortName} (${effort[0].toUpperCase()}${effort.slice(1)})`) {
+            // Streams may report either the CLI ID or the display name.
+            if ((base && reported === `${base}-${effort}`)
+                || reported === `${model.id.slice('antigravity-'.length)}-${effort}`
+                || reported === antigravityDisplayModelId(model, effort)) {
                 return { model: model.id, effort };
             }
         }

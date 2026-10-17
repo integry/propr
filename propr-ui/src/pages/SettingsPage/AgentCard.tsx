@@ -67,9 +67,6 @@ const LEGACY_MODEL_IDS: Partial<Record<AgentType, ReadonlySet<string>>> = {
     'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano',
     'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano',
   ]),
-  antigravity: new Set([
-    'antigravity-gemini-3.1-pro',
-  ]),
 };
 
 const isLegacyModel = (agentType: AgentType, modelId: string) =>

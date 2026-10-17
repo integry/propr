@@ -247,8 +247,9 @@ describe('AgentConfigModal', () => {
     const flash = screen.getByLabelText('Reasoning level for Antigravity Gemini 3.8 Flash');
     expect(flash).toHaveValue('');
     expect(Array.from(flash.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
-    const pro = screen.getByLabelText('Reasoning level for Antigravity Gemini 3.1 Pro');
-    expect(Array.from(pro.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'high']);
+    const argon = screen.getByLabelText('Reasoning level for Antigravity Gemini 4 Argon');
+    expect(Array.from(argon.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    expect(screen.queryByLabelText('Reasoning level for Antigravity Gemini 3.1 Pro')).not.toBeInTheDocument();
     const oss = screen.getByLabelText('Reasoning level for Antigravity GPT-OSS 120B');
     expect(Array.from(oss.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'medium']);
     expect(screen.queryByText('Antigravity Claude Opus 5.5 High')).not.toBeInTheDocument();

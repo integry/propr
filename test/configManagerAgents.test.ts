@@ -310,7 +310,7 @@ describe('agent config migration', () => {
     });
 
     test('adds current Antigravity base models and preserves the selected default', () => {
-        const existingDefault = 'antigravity-gemini-3.1-pro';
+        const existingDefault = 'antigravity-claude-opus-5.5';
         const agent = createAgent({
             type: 'antigravity',
             supportedModels: [existingDefault],
@@ -389,7 +389,7 @@ test('Antigravity migration preserves colliding custom labels and default effort
     const saved = buildAgentConfig({ ...agent, alias: 'edited-agent' });
     assert.deepEqual(saved.modelCustomLabels, { [low]: 'quick-work', [high]: 'deep-review' });
     assert.equal(migrateAgentConfig(saved), false);
-    const removed = buildAgentConfig({ ...saved, supportedModels: ['antigravity-gemini-3.1-pro'] });
+    const removed = buildAgentConfig({ ...saved, supportedModels: ['antigravity-gemini-4-argon'] });
     assert.equal(removed.modelCustomLabels, undefined);
 });
 
@@ -405,6 +405,25 @@ test('Antigravity migration retains retired Claude custom routes and existing ba
         assert.equal(agent.modelReasoningLevels?.[base], 'low');
         assert.equal(migrateAgentConfig(agent), false);
     }
+});
+
+test('Antigravity migration moves retired Gemini 3.1 Pro selections to Gemini 4 Argon', () => {
+    const pro = 'antigravity-gemini-3.1-pro';
+    const argon = 'antigravity-gemini-4-argon';
+    const withOverride = createAgent({ type: 'antigravity', supportedModels: [pro], defaultModel: pro,
+        modelReasoningLevels: { [pro]: 'high' } });
+    assert.equal(migrateAgentConfig(withOverride), true);
+    assert.equal(withOverride.defaultModel, argon);
+    assert.ok(!withOverride.supportedModels.includes(pro));
+    assert.equal(withOverride.supportedModels.filter(model => model === argon).length, 1);
+    assert.deepEqual(withOverride.modelReasoningLevels, { [argon]: 'high' });
+    assert.equal(migrateAgentConfig(withOverride), false);
+
+    // Without a saved Pro override, Argon follows the system reasoning preference.
+    const plain = createAgent({ type: 'antigravity', supportedModels: [pro], defaultModel: pro });
+    migrateAgentConfig(plain);
+    assert.equal(plain.defaultModel, argon);
+    assert.equal(plain.modelReasoningLevels?.[argon], undefined);
 });
 
 test('Antigravity migration rewrites legacy credential paths only', () => {

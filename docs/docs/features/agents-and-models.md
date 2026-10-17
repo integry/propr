@@ -70,7 +70,7 @@ For an interactive login, choose direct login while adding the agent or choose *
 
 The system setting `model_reasoning_level` applies to Claude, Codex, and Antigravity agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use the default effort (Antigravity starts from medium and resolves it against the selected model's supported levels). Each supported model can also set one of its native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An explicit run selection or issue or PR `level-*` label has the highest precedence and overrides both.
 
-Valid system preference and `level-*` label values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR resolves the requested effort against the selected agent and model's vocabulary. Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode. Antigravity chooses the closest supported level at or below the request, falling back to the model's lowest level when necessary; `auto` starts from medium. For example, `xhigh` or `max` becomes high for Claude 5.5 and Gemini Flash, medium becomes low for Gemini 3.1 Pro, and GPT-OSS always uses medium. Model configuration offers only the selected model's supported levels; reasoning effort is separate from its base model label.
+Valid system preference and `level-*` label values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR resolves the requested effort against the selected agent and model's vocabulary. Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode. Antigravity chooses the closest supported level at or below the request, falling back to the model's lowest level when necessary; `auto` starts from medium. For example, `xhigh` or `max` becomes high for Claude 5.5 and Gemini Flash, and GPT-OSS always uses medium. Model configuration offers only the selected model's supported levels; reasoning effort is separate from its base model label.
 
 Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. Saving a global or model-specific reasoning level surfaces a non-blocking warning for enabled agents pinned below those versions. If the mismatch remains, ProPR also fails an affected run before starting the CLI with a version-specific error.
 
@@ -100,14 +100,15 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 
 ## Claude Code Models
 
-Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias. Claude Sonnet 5.5 is the target of the plain `sonnet` alias.
+Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias. Claude Fable 5.1, Claude Sonnet 5.5, and Claude Haiku 5.5 are the targets of the plain `fable`, `sonnet`, and `haiku` aliases, so labels such as `llm-claude-fable` and `llm-claude-haiku` also select them.
 
 | Model | Label | Context |
 |-------|-------|---------|
 | Claude Opus 5.5 | `llm-claude-opus55` | 1M |
 | Claude Fable 5.1 | `llm-claude-fable51` | 1M |
 | Claude Sonnet 5.5 | `llm-claude-sonnet55` | 1M |
-| Claude Fable 5 | `llm-claude-fable` | 1M |
+| Claude Haiku 5.5 | `llm-claude-haiku55` | 1M |
+| Claude Fable 5 | `llm-claude-fable5` | 1M |
 | Claude Opus 5 | `llm-claude-opus5` | 1M |
 | Claude Sonnet 5 | `llm-claude-sonnet5` | 1M |
 | Claude Opus 4.8 | `llm-claude-opus48` | 1M |
@@ -116,9 +117,9 @@ Claude Opus 5.5 is the default Claude model and the target of the plain `opus` a
 | Claude Sonnet 4.6 | `llm-claude-sonnet46` | 1M |
 | Claude Opus 4.5 | `llm-claude-opus45` | 200K |
 | Claude Sonnet 4.5 | `llm-claude-sonnet45` | 200K |
-| Claude Haiku 4.5 | `llm-claude-haiku` | 200K |
+| Claude Haiku 4.5 | `llm-claude-haiku45` | 200K |
 
-Some models require a minimum agent CLI version (for example, Sonnet 5.5 requires Claude Code ≥ 2.1.284); ProPR records this in the catalog and the agent image is kept current.
+Some models require a minimum agent CLI version (for example, Haiku 5.5 requires Claude Code ≥ 2.1.293); ProPR records this in the catalog and the agent image is kept current.
 
 ## Codex Models
 
@@ -153,12 +154,14 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 | Model | Label |
 |-------|-------|
 | Gemini 3.8 Flash | `llm-antigravity-flash38` |
-| Gemini 3.1 Pro | `llm-antigravity-pro` |
+| Gemini 4 Argon | `llm-antigravity-argon` |
 | Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
 | Claude Opus 5.5 | `llm-antigravity-opus55` |
 | GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
 
-Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5 and Gemini Flash support low, medium, and high; Gemini 3.1 Pro supports low and high (medium maps to low); GPT-OSS always uses medium.
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5, Gemini 4 Argon, and Gemini Flash support low, medium, and high; GPT-OSS always uses medium.
+
+Antigravity CLI 1.4.0 no longer offers Gemini 3.1 Pro and runs Gemini 4 Argon in its place. ProPR does the same: agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, and the old Pro label and `pro` alias select Gemini 4 Argon.
 
 ## OpenCode Models
 

@@ -48,12 +48,12 @@ test('Antigravity reasoning validation respects each model effort range', async 
   for (const [model, level] of [
     ['antigravity-claude-opus-5.5', 'low'],
     ['antigravity-gemini-3.8-flash', 'medium'],
-    ['antigravity-gemini-3.1-pro', 'high'],
+    ['antigravity-gemini-4-argon', 'high'],
     ['antigravity-gpt-oss-120b', 'medium'],
   ] as const) {
     assert.equal(validateAgentsConfig([createAgentConfig({ modelReasoningLevels: { [model]: level } })]), null);
   }
   assert.match(validateAgentsConfig([createAgentConfig({
-    modelReasoningLevels: { 'antigravity-gemini-3.1-pro': 'medium' }
-  })]) ?? '', /Supported levels: low, high/);
+    modelReasoningLevels: { 'antigravity-gpt-oss-120b': 'high' }
+  })]) ?? '', /Supported levels: medium\b/);
 });

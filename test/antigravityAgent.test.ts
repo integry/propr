@@ -163,37 +163,37 @@ describe('toAntigravityCliModelId', () => {
         for (const effort of ['low', 'medium', 'high'] as const) {
             assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash', effort), `gemini-3.8-flash-${effort}`);
         }
-        for (const [id, name] of [
-            ['antigravity-claude-opus-5.5', 'Claude Opus 5.5'],
-            ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5'],
+        // IDs as listed by `agy models` in CLI 1.4.0.
+        for (const [id, base] of [
+            ['antigravity-gemini-4-argon', 'gemini-4-argon'],
+            ['antigravity-claude-opus-5.5', 'claude-opus-5-5'],
+            ['antigravity-claude-sonnet-5.5', 'claude-sonnet-5-5'],
         ]) {
             for (const effort of ['low', 'medium', 'high'] as const) {
-                const expected = `${name} (${effort[0].toUpperCase()}${effort.slice(1)})`;
+                const expected = `${base}-${effort}`;
                 assert.equal(toAntigravityCliModelId(id, effort), expected);
                 assert.equal(toAntigravityCliModelId(`antigravity:${id}`, effort), expected);
             }
         }
     });
 
-    test('selects the closest supported effort going down for Pro and GPT-OSS', () => {
-        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'low'), 'Gemini 3.1 Pro (Low)');
-        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (Low)');
-        assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'high'), 'GPT-OSS 120B (Medium)');
+    test('selects the closest supported effort going down for GPT-OSS', () => {
+        assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'high'), 'gpt-oss-120b-medium');
         assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash'), 'gemini-3.8-flash-medium');
         for (const effort of [undefined, '', 'auto'] as const) {
-            assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', effort), 'Gemini 3.1 Pro (Low)');
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-4-argon', effort), 'gemini-4-argon-medium');
         }
         for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode', 'auto', '', undefined] as const) {
-            assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', effort), 'GPT-OSS 120B (Medium)');
+            assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', effort), 'gpt-oss-120b-medium');
         }
     });
 
     test('lowers unsupported higher efforts to high across Antigravity model families', () => {
         for (const [id, expected] of [
-            ['antigravity-claude-opus-5.5', 'Claude Opus 5.5 (High)'],
-            ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5 (High)'],
+            ['antigravity-claude-opus-5.5', 'claude-opus-5-5-high'],
+            ['antigravity-claude-sonnet-5.5', 'claude-sonnet-5-5-high'],
             ['antigravity-gemini-3.8-flash', 'gemini-3.8-flash-high'],
-            ['antigravity-gemini-3.1-pro', 'Gemini 3.1 Pro (High)'],
+            ['antigravity-gemini-4-argon', 'gemini-4-argon-high'],
         ]) {
             for (const effort of ['high', 'xhigh', 'max', 'ultra', 'ultracode'] as const) {
                 assert.equal(toAntigravityCliModelId(id, effort), expected);
@@ -252,9 +252,10 @@ test('Antigravity maps model reasoning choices to supported CLI efforts', () => 
         assert.equal(toAntigravityCliModelId(flash, level), 'gemini-3.8-flash-high');
     }
     assert.equal(toAntigravityCliModelId(flash, ''), 'gemini-3.8-flash-medium');
-    assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (Low)');
-    assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'low'), 'GPT-OSS 120B (Medium)');
-    assert.equal(toAntigravityCliModelId('antigravity:antigravity-claude-opus-5.5', 'high'), 'Claude Opus 5.5 (High)');
+    // CLI 1.4.0 retired Gemini 3.1 Pro; saved selections launch Gemini 4 Argon.
+    assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'gemini-4-argon-medium');
+    assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'low'), 'gpt-oss-120b-medium');
+    assert.equal(toAntigravityCliModelId('antigravity:antigravity-claude-opus-5.5', 'high'), 'claude-opus-5-5-high');
 });
 
 test('Antigravity reasoning resolves task choices before model overrides', async () => {

@@ -10,7 +10,7 @@ const smokeScript = readFileSync('scripts/smoke-test-images.sh', 'utf8');
 const integrationScript = readFileSync('scripts/integration-test-images.sh', 'utf8');
 const antigravityVerificationScript = readFileSync('scripts/verify-antigravity-image.sh', 'utf8');
 const releaseImageWorkflow = readFileSync('.github/workflows/docker-images.yml', 'utf8');
-const antigravity124VerifierFixturePath = new URL('./fixtures/antigravity-verifier-pinned-1.2.4.json', import.meta.url);
+const antigravity140VerifierFixturePath = new URL('./fixtures/antigravity-verifier-pinned-1.4.0.json', import.meta.url);
 const sqliteStartupScript = readFileSync('scripts/smoke-test-sqlite-startup.sh', 'utf8');
 
 function literalAssignment(source: string, name: string): string {
@@ -20,7 +20,7 @@ function literalAssignment(source: string, name: string): string {
 }
 
 function runAntigravityVerification(
-  initModelEvidence = 'pinned-1.2.4-canonical',
+  initModelEvidence = 'pinned-1.4.0-canonical',
   modelsEvidence = 'mapped',
   conversationEvidence = 'consistent',
   streamEvidence = 'canonical',
@@ -131,7 +131,7 @@ process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
         ...process.env,
         AGENT_TAG: 'fake-antigravity-agent',
         ANTIGRAVITY_CONFIG_PATH: configDirectory,
-        ANTIGRAVITY_VERIFIER_FIXTURE: antigravity124VerifierFixturePath.pathname,
+        ANTIGRAVITY_VERIFIER_FIXTURE: antigravity140VerifierFixturePath.pathname,
         FAKE_INIT_MODEL_EVIDENCE: initModelEvidence,
         FAKE_MODELS_EVIDENCE: modelsEvidence,
         FAKE_CONVERSATION_EVIDENCE: conversationEvidence,
@@ -218,11 +218,11 @@ test('release publication requires authenticated Antigravity verification of the
   );
 });
 
-test('authenticated image verifier accepts pinned 1.2.4 canonical init.model envelopes', () => {
+test('authenticated image verifier accepts pinned 1.4.0 canonical init.model envelopes', () => {
   const result = runAntigravityVerification();
 
   assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /Antigravity CLI version 1\.2\.4/);
+  assert.match(result.stdout, /Antigravity CLI version 1\.4\.0/);
   for (const id of ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low']) {
     assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported ${id}`));
   }
@@ -237,7 +237,7 @@ test('authenticated image verifier rejects missing, alias, display-name, and oth
 });
 
 test('authenticated image verifier rejects mixed-conversation stream evidence', () => {
-  const result = runAntigravityVerification('pinned-1.2.4-canonical', 'mapped', 'mixed');
+  const result = runAntigravityVerification('pinned-1.4.0-canonical', 'mapped', 'mixed');
 
   assert.notEqual(result.status, 0);
   assert.match(
@@ -266,7 +266,7 @@ test('authenticated image verifier rejects malformed or mixed stream protocol ev
   for (const [name, evidence, expectedError] of cases) {
     await t.test(name, () => {
       const result = runAntigravityVerification(
-        'pinned-1.2.4-canonical',
+        'pinned-1.4.0-canonical',
         'mapped',
         'consistent',
         evidence,
@@ -287,7 +287,7 @@ test('authenticated image verifier retains exact sentinel and SUCCESS validation
   for (const [name, evidence, expectedError] of cases) {
     await t.test(name, () => {
       const result = runAntigravityVerification(
-        'pinned-1.2.4-canonical',
+        'pinned-1.4.0-canonical',
         'mapped',
         'consistent',
         evidence,
@@ -300,7 +300,7 @@ test('authenticated image verifier retains exact sentinel and SUCCESS validation
 });
 
 test('authenticated image verifier requires each discovered ID and display name on the same mapping', () => {
-  const result = runAntigravityVerification('pinned-1.2.4-canonical', 'unmapped');
+  const result = runAntigravityVerification('pinned-1.4.0-canonical', 'unmapped');
 
   assert.notEqual(result.status, 0);
   assert.match(

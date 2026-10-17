@@ -62,7 +62,8 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.284');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.293');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, AGENT_DEFAULT_VERSIONS.claude);
 });
 
 test('Claude Sonnet 5.5 is the current canonical Sonnet model', () => {
@@ -73,6 +74,29 @@ test('Claude Sonnet 5.5 is the current canonical Sonnet model', () => {
     assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.contextWindow, '1M');
     assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.maxTokens, 1000000);
     assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.minAgentVersion, '2.1.284');
+});
+
+test('Claude Haiku 5.5 is the current canonical Haiku model', () => {
+    assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-haiku-5-5'));
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-5-5']?.githubLabel, 'llm-claude-haiku55');
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-5-5']?.shortAlias, 'haiku55');
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-5-5']?.openRouterId, 'anthropic/claude-haiku-5.5');
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-5-5']?.contextWindow, '1M');
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-5-5']?.maxTokens, 1000000);
+    // Haiku 5.5 shipped in Claude Code 2.1.293, so the pinned CLI must support it
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-5-5']?.minAgentVersion, '2.1.293');
+    // Haiku 4.5 keeps an explicit, versioned alias and label
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-4-5-20251001']?.shortAlias, 'haiku45');
+    assert.strictEqual(MODEL_INFO_MAP['claude-haiku-4-5-20251001']?.githubLabel, 'llm-claude-haiku45');
+});
+
+test('only the canonical Claude models own the bare tier aliases', () => {
+    for (const tier of ['fable', 'opus', 'sonnet', 'haiku']) {
+        assert.ok(!CLAUDE_MODELS.some(model => model.shortAlias === tier), `${tier} short alias`);
+        assert.ok(!CLAUDE_MODELS.some(model => model.githubLabel === `llm-claude-${tier}`), `llm-claude-${tier} label`);
+    }
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5']?.shortAlias, 'fable5');
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5']?.githubLabel, 'llm-claude-fable5');
 });
 
 test('Claude Fable 5.1, Opus 5, and Sonnet 5 remain supported Claude Code models', () => {
@@ -129,6 +153,23 @@ test('Gemini 3.8 Flash is one namespaced Antigravity model with 1M limits', () =
     assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, AGENT_DEFAULT_VERSIONS.antigravity);
 });
 
+test('Gemini 4 Argon is one namespaced Antigravity model with 1M limits', () => {
+    const modelId = 'antigravity-gemini-4-argon';
+    const model = MODEL_INFO_MAP[modelId];
+    assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
+    assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(modelId));
+    assert.strictEqual(model?.name, 'Antigravity Gemini 4 Argon');
+    assert.strictEqual(model?.shortName, 'Gemini 4 Argon');
+    assert.strictEqual(model?.githubLabel, 'llm-antigravity-argon');
+    assert.strictEqual(model?.shortAlias, 'argon');
+    assert.strictEqual(model?.openRouterId, 'google/gemini-4-argon');
+    assert.strictEqual(model?.minAgentVersion, '1.4.0');
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.4.0');
+    assert.strictEqual(model?.contextWindow, '1M');
+    assert.strictEqual(model?.maxTokens, 1_000_000);
+    assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);
+});
+
 test('long model labels use the configured agent alias', () => {
     const codexModel = MODEL_INFO_MAP['gpt-5.6-sol'];
     assert.ok(codexModel);
@@ -181,7 +222,7 @@ test('Antigravity offers one model entry with separate supported reasoning choic
     }
     const expected = [
         ['antigravity-gemini-3.8-flash', 'flash38'],
-        ['antigravity-gemini-3.1-pro', 'pro'],
+        ['antigravity-gemini-4-argon', 'argon'],
         ['antigravity-claude-sonnet-5.5', 'sonnet55'],
         ['antigravity-claude-opus-5.5', 'opus55'],
         ['antigravity-gpt-oss-120b', 'gpt-oss-120b'],
@@ -199,12 +240,13 @@ test('Antigravity offers one model entry with separate supported reasoning choic
         assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);
     }
     for (const [modelId, levels] of [
-        ['antigravity-gemini-3.1-pro', ['low', 'high']],
         ['antigravity-gpt-oss-120b', ['medium']],
     ] as const) {
         assert.ok(ANTIGRAVITY_MODELS.some(model => model.id === modelId));
         assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), levels);
     }
+    // Antigravity CLI 1.4.0 retired Gemini 3.1 Pro.
+    assert.ok(!ANTIGRAVITY_MODELS.some(model => model.id === 'antigravity-gemini-3.1-pro'));
 });
 
 

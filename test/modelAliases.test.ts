@@ -31,13 +31,15 @@ test('Model Aliases Configuration', async (t) => {
         // Explicit 4.5 aliases
         assert.strictEqual(resolveModelAlias('opus45'), 'claude-opus-4-5-20251101');
         assert.strictEqual(resolveModelAlias('sonnet45'), 'claude-sonnet-4-5-20250929');
-        assert.strictEqual(resolveModelAlias('haiku'), 'claude-haiku-4-5-20251001');
+        assert.strictEqual(resolveModelAlias('haiku'), 'claude-haiku-5-5');
+        assert.strictEqual(resolveModelAlias('claude-haiku'), 'claude-haiku-5-5');
+        assert.strictEqual(resolveModelAlias('claude-fable'), 'claude-fable-5-1');
     });
 
     await t.test('should handle case-insensitive aliases', () => {
         assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-5-5');
         assert.strictEqual(resolveModelAlias('Sonnet'), 'claude-sonnet-5-5');
-        assert.strictEqual(resolveModelAlias('HAIKU'), 'claude-haiku-4-5-20251001');
+        assert.strictEqual(resolveModelAlias('HAIKU'), 'claude-haiku-5-5');
     });
 
     await t.test('should return full model IDs as-is', () => {
@@ -84,6 +86,12 @@ test('Model Aliases Configuration', async (t) => {
         assert.strictEqual(resolveModelAlias('opus-4-5'), 'claude-opus-4-5-20251101');
         assert.strictEqual(resolveModelAlias('sonnet-4-5'), 'claude-sonnet-4-5-20250929');
         assert.strictEqual(resolveModelAlias('haiku45'), 'claude-haiku-4-5-20251001');
+        assert.strictEqual(resolveModelAlias('haiku-4-5'), 'claude-haiku-4-5-20251001');
+        assert.strictEqual(resolveModelAlias('claude-haiku-4-5'), 'claude-haiku-4-5-20251001');
+        // 5.5 Haiku aliases
+        assert.strictEqual(resolveModelAlias('haiku55'), 'claude-haiku-5-5');
+        assert.strictEqual(resolveModelAlias('haiku-5-5'), 'claude-haiku-5-5');
+        assert.strictEqual(resolveModelAlias('claude-haiku-5-5'), 'claude-haiku-5-5');
     });
 
 });
@@ -97,7 +105,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -350,7 +358,28 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     await t.test('Step 6: resolves static MODEL_ALIASES for haiku', async () => {
         const result = await resolveLlmLabel('haiku');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default agent');
-        assert.strictEqual(result.model, 'claude-haiku-4-5-20251001', 'Should resolve to claude-haiku-4-5-20251001');
+        assert.strictEqual(result.model, 'claude-haiku-5-5', 'Should resolve to claude-haiku-5-5');
+    });
+
+    await t.test('bare Claude tier labels resolve to the canonical Fable and Haiku models', async () => {
+        for (const [label, model] of [
+            ['claude-fable', 'claude-fable-5-1'],
+            ['claude-haiku', 'claude-haiku-5-5'],
+            ['claude-fable51', 'claude-fable-5-1'],
+            ['claude-haiku55', 'claude-haiku-5-5'],
+            ['claude-fable5', 'claude-fable-5'],
+            ['claude-haiku45', 'claude-haiku-4-5-20251001'],
+        ] as const) {
+            const result = await resolveLlmLabel(label);
+            assert.strictEqual(result.agentAlias, 'claude', label);
+            assert.strictEqual(result.model, model, label);
+        }
+    });
+
+    await t.test('Gemini 4 Argon label resolves to the Antigravity agent', async () => {
+        const result = await resolveLlmLabel('antigravity-argon');
+        assert.strictEqual(result.agentAlias, 'antigravity');
+        assert.strictEqual(result.model, 'antigravity-gemini-4-argon');
     });
 
     await t.test('Step 7: falls back to label as model name for unknown labels', async () => {
@@ -432,12 +461,22 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
         assert.strictEqual(findMatchingModel('Claude-Sonnet-4-6', config), 'claude-sonnet-4-6');
     });
 
+    await t.test('prefers the canonical model for bare tier names regardless of list order', () => {
+        const config = createMockConfig(['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1', 'claude-haiku-5-5']);
+        assert.strictEqual(findMatchingModel('fable', config), 'claude-fable-5-1');
+        assert.strictEqual(findMatchingModel('haiku', config), 'claude-haiku-5-5');
+        assert.strictEqual(findMatchingModel('fable5', config), 'claude-fable-5');
+        assert.strictEqual(findMatchingModel('haiku45', config), 'claude-haiku-4-5-20251001');
+    });
+
     await t.test('matches exact shortAlias from modelDefinitions', () => {
         const config = createMockConfig(['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
 
-        // shortAlias for claude models: opus46, sonnet46, haiku
+        // shortAlias for claude models: opus46, sonnet46, haiku45
         assert.strictEqual(findMatchingModel('opus46', config), 'claude-opus-4-6');
         assert.strictEqual(findMatchingModel('sonnet46', config), 'claude-sonnet-4-6');
+        assert.strictEqual(findMatchingModel('haiku45', config), 'claude-haiku-4-5-20251001');
+        // Without the canonical Haiku, the bare tier name falls back to the configured Haiku
         assert.strictEqual(findMatchingModel('haiku', config), 'claude-haiku-4-5-20251001');
 
         // Case-insensitive shortAlias
@@ -579,7 +618,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         // Claude 4.5 models
         assert.strictEqual(getModelShortName('claude-opus-4-5-20251101'), 'Claude Opus 4.5');
         assert.strictEqual(getModelShortName('claude-sonnet-4-5-20250929'), 'Claude Sonnet 4.5');
-        assert.strictEqual(getModelShortName('claude-haiku-4-5-20251001'), 'Claude Haiku');
+        assert.strictEqual(getModelShortName('claude-haiku-4-5-20251001'), 'Claude Haiku 4.5');
+        assert.strictEqual(getModelShortName('claude-haiku-5-5'), 'Claude Haiku 5.5');
     });
 
     await t.test('returns correct short name for Codex (OpenAI) models', () => {

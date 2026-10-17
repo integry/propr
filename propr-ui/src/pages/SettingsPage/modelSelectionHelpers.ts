@@ -24,19 +24,19 @@ export interface AgentOption {
 }
 
 // Models recommended for summarization (cost-effective options)
-const RECOMMENDED_SUMMARIZATION_ALIASES = ['haiku', 'gpt56-luna', 'flash38', 'big-pickle'];
+const RECOMMENDED_SUMMARIZATION_ALIASES = ['haiku55', 'gpt56-luna', 'flash38', 'big-pickle'];
 
 // Models recommended for context analysis (fast, cost-effective options)
-const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku', 'gpt56-luna', 'flash38', 'big-pickle'];
+const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku55', 'gpt56-luna', 'flash38', 'big-pickle'];
 
 // Models recommended for plan generation (high capability options)
-const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra', 'flash38', 'mistral'];
+const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra', 'argon', 'mistral'];
 
 // Models recommended for implementation (high capability options)
 const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
 
 // Models recommended for PR review (high capability options)
-const RECOMMENDED_PR_REVIEW_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra', 'flash38', 'mistral'];
+const RECOMMENDED_PR_REVIEW_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra', 'argon', 'mistral'];
 
 function formatFallbackModelName(modelId: string): string {
   const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);

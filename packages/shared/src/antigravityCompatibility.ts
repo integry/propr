@@ -2,7 +2,7 @@ import { ANTIGRAVITY_MODELS, ANTIGRAVITY_RETAINED_MODELS, MODEL_INFO_MAP, type M
 import { getReasoningLevelsForAgentType, type ModelReasoningLevel } from './reasoningLevels.js';
 
 // Compatibility routes are deliberately absent from the selectable catalog.
-export const ANTIGRAVITY_COMPATIBILITY_ROUTES: Record<string, { model: string; effort: ModelReasoningLevel }> = Object.create(null);
+export const ANTIGRAVITY_COMPATIBILITY_ROUTES: Record<string, { model: string; effort?: ModelReasoningLevel }> = Object.create(null);
 export const ANTIGRAVITY_COMPATIBILITY_ALIASES: Record<string, string> = Object.create(null);
 for (const model of ANTIGRAVITY_MODELS) {
     for (const effort of getReasoningLevelsForAgentType('antigravity', model.id)) {
@@ -18,6 +18,15 @@ for (const model of ANTIGRAVITY_RETAINED_MODELS) {
         ANTIGRAVITY_COMPATIBILITY_ROUTES[id] = { model: model.id, effort };
         ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-${model.shortAlias}-${effort}`] = id;
     }
+}
+// Antigravity CLI 1.4.0 dropped Gemini 3.1 Pro and serves Gemini 4 Argon in its
+// place, so saved Pro selections and labels run on Argon.
+const ARGON = 'antigravity-gemini-4-argon';
+ANTIGRAVITY_COMPATIBILITY_ROUTES['antigravity-gemini-3.1-pro'] = { model: ARGON };
+ANTIGRAVITY_COMPATIBILITY_ALIASES['antigravity-pro'] = ARGON;
+for (const effort of ['low', 'high'] as const) {
+    ANTIGRAVITY_COMPATIBILITY_ROUTES[`antigravity-gemini-3.1-pro-${effort}`] = { model: ARGON, effort };
+    ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-pro-${effort}`] = `antigravity-gemini-3.1-pro-${effort}`;
 }
 for (const family of ['opus', 'sonnet']) {
     const id = `antigravity-claude-${family}-4.6-thinking`;

@@ -445,7 +445,8 @@ export class AntigravityAgent implements Agent {
     }
 
     private async resolveReasoningLevel(level: ModelReasoningLevel | undefined, model: string | undefined): Promise<ModelReasoningLevel> {
-        return level ?? (model ? getAntigravityCompatibilityRoute(model)?.effort : undefined) ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model) ?? await loadModelReasoningLevel();
+        const route = model ? getAntigravityCompatibilityRoute(model) : undefined;
+        return level ?? route?.effort ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, route?.model ?? model) ?? await loadModelReasoningLevel();
     }
 
     private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {

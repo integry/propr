@@ -103,6 +103,11 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
         prompt: perMillion(3), completion: perMillion(15),
         cacheCreation: perMillion(3.75), cacheRead: perMillion(0.3)
     },
+    // Standard rates for prompts up to 100K tokens; longer prompts cost 5x.
+    'anthropic/claude-haiku-5.5': {
+        prompt: perMillion(0.1), completion: perMillion(0.5),
+        cacheCreation: perMillion(0.125), cacheRead: perMillion(0.01)
+    },
     'anthropic/claude-haiku-4.5': {
         prompt: perMillion(1), completion: perMillion(5),
         cacheCreation: perMillion(1.25), cacheRead: perMillion(0.1)

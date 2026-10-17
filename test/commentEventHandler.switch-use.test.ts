@@ -235,6 +235,7 @@ after(async () => {
 // here rather than repeating the ids.
 const CANONICAL_OPUS_MODEL = 'claude-opus-5-5';
 const CANONICAL_SONNET_MODEL = 'claude-sonnet-5-5';
+const CANONICAL_HAIKU_MODEL = 'claude-haiku-5-5';
 
 function createMockRedis() {
     const store = new Map<string, string>();
@@ -505,8 +506,8 @@ describe('commentEventHandler — /switch command', () => {
 
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        // "llm-haiku" → normalizeModelLabel strips "llm-" → "haiku" → resolveModelAlias → "claude-haiku-4-5-20251001"
-        assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
+        // "llm-haiku" → normalizeModelLabel strips "llm-" → "haiku" → resolveModelAlias → canonical Haiku
+        assert.deepStrictEqual(newLabels, [`llm-${CANONICAL_HAIKU_MODEL}`]);
     });
 
     test('/switch removes multiple existing LLM labels', async () => {
@@ -529,7 +530,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6', 'llm-claude-sonnet-4-6']);
-        assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
+        assert.deepStrictEqual(newLabels, [`llm-${CANONICAL_HAIKU_MODEL}`]);
     });
 
     test('/switch works with escaped metacharacters in MODEL_LABEL_PATTERN like ^model\\-(.+)$', async () => {
@@ -856,7 +857,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.deepStrictEqual(meta.models, ['haiku']);
         assert.strictEqual(jobData.commandInstructions, 'Summarize changes');
         // LLM should be resolved from /use command
-        assert.strictEqual(jobData.llm, 'claude-haiku-4-5-20251001');
+        assert.strictEqual(jobData.llm, CANONICAL_HAIKU_MODEL);
     });
 
     test('/switch follow-up job does not include requestedModels (only /review uses that)', async () => {

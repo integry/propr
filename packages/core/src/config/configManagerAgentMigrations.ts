@@ -168,9 +168,12 @@ function migrateAntigravityModels(agent: AgentConfig): boolean {
     for (const oldModel of ordered) {
         const route = getAntigravityCompatibilityRoute(oldModel);
         if (!route) continue;
-        agent.modelReasoningLevels ??= {};
-        agent.modelReasoningLevels[route.model] ??= agent.modelReasoningLevels[oldModel] ?? route.effort;
-        delete agent.modelReasoningLevels[oldModel];
+        const effort = agent.modelReasoningLevels?.[oldModel] ?? route.effort;
+        if (effort) {
+            agent.modelReasoningLevels ??= {};
+            agent.modelReasoningLevels[route.model] ??= effort;
+        }
+        if (agent.modelReasoningLevels) delete agent.modelReasoningLevels[oldModel];
         migrated = true;
     }
     // Keep custom-label keys: each old ID carries its own effort and is a durable route.

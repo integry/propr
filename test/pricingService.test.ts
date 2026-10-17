@@ -112,6 +112,22 @@ describe('provider API pricing', () => {
     );
   });
 
+  test('uses the published Claude Haiku 5.5 short-prompt rates, including prompt cache prices', async () => {
+    const pricing = getOfficialModelPricing('anthropic/claude-haiku-5.5');
+
+    assert.deepStrictEqual(pricing, {
+      prompt: 0.1 / 1_000_000,
+      completion: 0.5 / 1_000_000,
+      cacheCreation: 0.125 / 1_000_000,
+      cacheRead: 0.01 / 1_000_000,
+    });
+    assert.strictEqual(
+      await getModelPricing('anthropic/claude-haiku-5.5'),
+      pricing,
+      'official pricing should resolve without relying on the OpenRouter cache',
+    );
+  });
+
   test('uses model-specific OpenAI cached-input pricing', () => {
     const pricing = getOfficialModelPricing('openai/gpt-5.6-sol');
     assert.ok(pricing);

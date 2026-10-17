@@ -1,5 +1,5 @@
 {
-  "cliVersion": "1.2.4",
+  "cliVersion": "1.4.0",
   "models": [
     {
       "id": "gemini-3.8-flash-high",

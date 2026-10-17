@@ -9,7 +9,7 @@ export interface ModelInfo {
   id: string;
   name: string;           // Human-readable name
   shortName: string;      // Human readable short name for PR titles
-  shortAlias: string;     // Short alias like "opus", "sonnet", "haiku"
+  shortAlias: string;     // Short alias like "opus55", "sonnet55", "haiku55"
   githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
   contextWindow: string;  // Display badge value (e.g., "200K", "1M")
   maxTokens: number;      // Numeric limit for calculations
@@ -28,11 +28,13 @@ export interface AgentDisplayInfo {
 export const CLAUDE_MODELS: ModelInfo[] = [
   // Claude Opus 5.5 - the default Claude model and the canonical "opus" alias target
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', shortName: 'Claude Opus 5.5', shortAlias: 'opus55', githubLabel: 'llm-claude-opus55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5.5', minAgentVersion: '2.1.280' },
-  // Claude Fable series (top tier, above Opus)
+  // Claude Fable 5.1 - the canonical "fable" alias target (top tier, above Opus)
   { id: 'claude-fable-5-1', name: 'Claude Fable 5.1', shortName: 'Claude Fable 5.1', shortAlias: 'fable51', githubLabel: 'llm-claude-fable51', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-fable-5.1', minAgentVersion: '2.1.257' },
   // Claude Sonnet 5.5 - the canonical "sonnet" alias target
   { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-claude-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5', minAgentVersion: '2.1.284' },
-  { id: 'claude-fable-5', name: 'Claude Fable 5', shortName: 'Claude Fable 5', shortAlias: 'fable', githubLabel: 'llm-claude-fable', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-fable-5', minAgentVersion: '2.1.170' },
+  // Claude Haiku 5.5 - the canonical "haiku" alias target
+  { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', shortName: 'Claude Haiku 5.5', shortAlias: 'haiku55', githubLabel: 'llm-claude-haiku55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-haiku-5.5', minAgentVersion: '2.1.293' },
+  { id: 'claude-fable-5', name: 'Claude Fable 5', shortName: 'Claude Fable 5', shortAlias: 'fable5', githubLabel: 'llm-claude-fable5', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-fable-5', minAgentVersion: '2.1.170' },
   // Claude 5 series
   { id: 'claude-opus-5', name: 'Claude Opus 5', shortName: 'Claude Opus 5', shortAlias: 'opus5', githubLabel: 'llm-claude-opus5', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5', minAgentVersion: '2.1.219' },
   { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', shortName: 'Claude Sonnet 5', shortAlias: 'sonnet5', githubLabel: 'llm-claude-sonnet5', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5', minAgentVersion: '2.1.201' },
@@ -46,7 +48,7 @@ export const CLAUDE_MODELS: ModelInfo[] = [
   // Claude 4.5 series (200K context, works with all Claude Code versions)
   { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortName: 'Claude Opus 4.5', shortAlias: 'opus45', githubLabel: 'llm-claude-opus45', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-opus-4.5' },
   { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortName: 'Claude Sonnet 4.5', shortAlias: 'sonnet45', githubLabel: 'llm-claude-sonnet45', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-sonnet-4.5' },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortName: 'Claude Haiku', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-haiku-4.5' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortName: 'Claude Haiku 4.5', shortAlias: 'haiku45', githubLabel: 'llm-claude-haiku45', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-haiku-4.5' },
 ];
 
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
@@ -77,7 +79,7 @@ export const CODEX_MODELS: ModelInfo[] = [
 // Google/Gemini model.
 export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-gemini-3.8-flash', name: 'Antigravity Gemini 3.8 Flash', shortName: 'Gemini 3.8 Flash', shortAlias: 'flash38', githubLabel: 'llm-antigravity-flash38', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.8-flash', minAgentVersion: '1.1.25' },
-  { id: 'antigravity-gemini-3.1-pro', name: 'Antigravity Gemini 3.1 Pro', shortName: 'Gemini 3.1 Pro', shortAlias: 'pro', githubLabel: 'llm-antigravity-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
+  { id: 'antigravity-gemini-4-argon', name: 'Antigravity Gemini 4 Argon', shortName: 'Gemini 4 Argon', shortAlias: 'argon', githubLabel: 'llm-antigravity-argon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-argon', minAgentVersion: '1.4.0' },
   { id: 'antigravity-claude-sonnet-5.5', name: 'Antigravity Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-antigravity-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5' },
   { id: 'antigravity-claude-opus-5.5', name: 'Antigravity Claude Opus 5.5', shortName: 'Claude Opus 5.5', shortAlias: 'opus55', githubLabel: 'llm-antigravity-opus55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5.5' },
   { id: 'antigravity-gpt-oss-120b', name: 'Antigravity GPT-OSS 120B', shortName: 'GPT-OSS 120B', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
@@ -162,7 +164,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.284'
+    defaultCliVersion: '2.1.293'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -178,7 +180,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.2.4'
+    defaultCliVersion: '1.4.0'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

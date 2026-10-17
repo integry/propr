@@ -148,13 +148,15 @@ for (const viewport of [
     const antigravityCard = configuration.locator('.coding-agent-card').filter({
       has: page.getByRole('button', { name: 'Collapse antigravity models' }),
     });
-    await antigravityCard.getByRole('button', { name: /^Show \d+ legacy models?$/ }).click();
+    // Antigravity CLI 1.4.0 dropped Gemini 3.1 Pro, the last legacy Antigravity model.
+    await expect(antigravityCard.getByRole('button', { name: /^Show \d+ legacy models?$/ })).toHaveCount(0);
     for (const model of AGENT_MODELS.antigravity) {
       await expect(antigravityCard.getByRole('button', { name: `Copy ${model.shortAlias}`, exact: true })).toHaveCount(1);
     }
     await expect(antigravityCard.getByRole('button', { name: /^Copy / })).toHaveCount(AGENT_MODELS.antigravity.length);
     await expect(antigravityCard.getByRole('button', { name: 'Copy flash36', exact: true })).toHaveCount(0);
     await expect(antigravityCard.getByRole('button', { name: 'Copy flash37', exact: true })).toHaveCount(0);
+    await expect(antigravityCard.getByRole('button', { name: 'Copy pro', exact: true })).toHaveCount(0);
     if (process.env.PROPR_CAPTURE_PREVIEWS) {
       await antigravityCard.screenshot({ animations: 'disabled', path: `../.propr/previews/antigravity-models-${viewport.name}.png` });
     }
