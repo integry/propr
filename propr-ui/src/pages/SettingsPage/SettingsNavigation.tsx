@@ -7,6 +7,7 @@ import {
   GitPullRequest,
   type LucideIcon,
   Plug,
+  Puzzle,
   RefreshCcw,
   Search,
   ShieldCheck,
@@ -23,6 +24,7 @@ export type SettingsCategoryId =
   | 'workflow'
   | 'ultrafix'
   | 'sandbox'
+  | 'agent-extensions'
   | 'integrations'
   | 'notifications';
 
@@ -66,9 +68,15 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: ShieldCheck
   },
   {
+    id: 'agent-extensions',
+    label: 'Agent Extensions & Packages',
+    description: 'MCP tools, skills and system packages available to agents in their containers.',
+    icon: Puzzle
+  },
+  {
     id: 'integrations',
     label: 'Integrations & MCP',
-    description: 'Connect supporting services and customize agent runtimes.',
+    description: 'Connect supporting services around the agents.',
     icon: Plug
   },
   {

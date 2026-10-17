@@ -10,7 +10,6 @@ import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 import KnowledgeBaseSection from './KnowledgeBaseSection';
 import AgentTankSection from './AgentTankSection';
-import AgentRuntimePackagesSection from './AgentRuntimePackagesSection';
 import { useSettingsState } from './useSettingsState';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
@@ -21,7 +20,7 @@ import { useDesktop } from '../../desktop/DesktopContext';
 import SettingsNavigation, { type SettingsNavigationSection } from './SettingsNavigation';
 import McpServerSection from './McpServerSection';
 import { useSettingsCategoryRoute } from './useSettingsCategoryRoute';
-import { settingsDataSections } from './settingsDataSections';
+import { agentExtensionSections, settingsDataSections } from './settingsDataSections';
 import SettingsSaveStatusBar from './SettingsSaveStatusBar';
 
 const AdminSettingsPage: React.FC = () => {
@@ -306,6 +305,7 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
+    ...agentExtensionSections(),
     {
       id: 'agent-tank',
       category: 'integrations',
@@ -319,12 +319,6 @@ const AdminSettingsPage: React.FC = () => {
           isCheckingStatus={agentTankCheckingStatus}
         />
       )
-    },
-    {
-      id: 'agent-runtime-packages',
-      category: 'integrations',
-      searchText: 'agent runtime packages dependencies install catalog container image environment build',
-      content: <AgentRuntimePackagesSection />
     },
     ...settingsDataSections(),
     {

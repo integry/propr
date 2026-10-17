@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { installSettingsFixture } from './settings-layout.fixture';
 
-test('instance extension editor shows capability boundaries, immutable provenance and write-only authentication', async ({ page }) => {
+test('instance extension editor describes skills and MCP servers, shows immutable provenance and write-only authentication', async ({ page }) => {
   await installSettingsFixture(page);
   const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289'; const profileId = '5b14d6d6-9357-4b56-9eb3-31e5f921d125';
   const profile = {
@@ -26,14 +26,11 @@ test('instance extension editor shows capability boundaries, immutable provenanc
     return route.fulfill({ json: { instanceId, profiles: [profile], catalog: [{ id: 'operator-documentation', digest: 'a'.repeat(64), tools: ['lookup', 'update_document'], capability: 'write', secrets: { count: 1, configured: true } }] } });
   });
   await page.setViewportSize({ width: 1280, height: 1000 });
-  await page.goto('/settings?tab=integrations');
-  const section = page.getByRole('region', { name: 'Agent extensions', exact: true });
+  await page.goto('/settings?tab=agent-extensions');
+  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
   await expect(section).toBeVisible();
+  await expect(section.getByText(/Give agents extra tools for a task/)).toContainText('Only Claude and Codex task runs can use profiles.');
   await section.getByRole('button', { name: 'Edit profile' }).click();
-  await expect(section.getByText('Capability and security boundary')).toBeVisible();
-  await expect(section.getByText(/Codex profile runs use/)).toContainText('--ignore-user-config');
-  await expect(section.getByText(/Codex profile runs use/)).toContainText('CODEX_HOME/config.toml');
-  await expect(section.getByText(/Codex profile runs use/)).toContainText('.codex/config.toml');
   const password = section.getByLabel(/Replace bearer token/);
   await expect(password).toHaveValue('');
   await expect(section.getByText('(configured; write-only)', { exact: true })).toBeVisible();
@@ -121,8 +118,8 @@ test('extension profile configuration uses selections and keeps unlisted values 
     return route.fulfill({ json: { profiles: [profile], catalog: [] } });
   });
   await page.setViewportSize({ width: 1280, height: 1000 });
-  await page.goto('/settings?tab=integrations');
-  const section = page.getByRole('region', { name: 'Agent extensions', exact: true });
+  await page.goto('/settings?tab=agent-extensions');
+  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
   await section.getByRole('button', { name: 'Edit profile' }).click();
   await expect(section.getByLabel('retired-agent', { exact: true })).toBeChecked();
   await section.getByLabel('retired-agent', { exact: true }).uncheck();
@@ -197,8 +194,8 @@ test('extension editor keeps server names and pending tokens attached to rows an
     }
     return route.fulfill({ json: { profiles: [], bundles: [bundle], catalog: [{ id: 'docs', digest: 'a'.repeat(64), tools: ['lookup'], capability: 'read', secrets: { count: 0, configured: true } }] } });
   });
-  await page.goto('/settings?tab=integrations');
-  const section = page.getByRole('region', { name: 'Agent extensions', exact: true });
+  await page.goto('/settings?tab=agent-extensions');
+  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
   await section.getByRole('button', { name: 'New profile' }).click();
   const agents = section.getByRole('group', { name: 'Agents', exact: true });
   await expect(agents.getByRole('checkbox')).toHaveCount(2);
@@ -287,8 +284,8 @@ test('new HTTPS tools and GitHub branch imports can be selected with immutable c
     return route.fulfill({ json: { profiles: [], bundles: [], catalog: [] } });
   });
   await page.setViewportSize({ width: 1280, height: 1500 });
-  await page.goto('/settings?tab=integrations');
-  const section = page.getByRole('region', { name: 'Agent extensions', exact: true });
+  await page.goto('/settings?tab=agent-extensions');
+  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
   await section.getByRole('button', { name: 'New profile' }).click();
   await section.getByLabel('Profile name', { exact: true }).fill('Documentation assistant');
   await section.getByRole('button', { name: 'Add HTTPS server' }).click();

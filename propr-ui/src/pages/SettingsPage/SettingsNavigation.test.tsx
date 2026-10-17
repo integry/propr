@@ -72,6 +72,7 @@ describe('SettingsNavigation', () => {
       'Workflow & PR Rules',
       'Ultrafix & Escalation',
       'Sandbox & Network',
+      'Agent Extensions & Packages',
       'Integrations & MCP',
       'Notifications',
     ]);

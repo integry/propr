@@ -19,7 +19,7 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   const rail = page.getByRole('tablist', { name: 'Settings categories' });
   await expect(rail.getByRole('tab')).toHaveText([
     'General', 'AI Models & Reasoning', 'Workflow & PR Rules', 'Ultrafix & Escalation',
-    'Sandbox & Network', 'Integrations & MCP', 'Notifications',
+    'Sandbox & Network', 'Agent Extensions & Packages', 'Integrations & MCP', 'Notifications',
   ]);
   const tabBoxes = await Promise.all((await rail.getByRole('tab').all()).map(tab => tab.boundingBox()));
   for (const box of tabBoxes.slice(1)) {
@@ -195,7 +195,7 @@ test('drills into settings on a phone instead of scrolling a tab strip', async (
 
   // Screen 1: every category is listed vertically and fully readable.
   const tabs = page.getByRole('tablist', { name: 'Settings categories' }).getByRole('tab');
-  await expect(tabs).toHaveCount(7);
+  await expect(tabs).toHaveCount(8);
   for (const tab of await tabs.all()) {
     await expect(tab).toBeInViewport({ ratio: 1 });
     expect(await tab.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);

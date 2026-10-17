@@ -1,6 +1,6 @@
 # Instance agent extensions
 
-Instance Settings → Integrations & MCP → Agent extensions manages native Core
+Instance Settings → Agent Extensions & Packages → Skills & MCP servers manages native Core
 extension profiles. No Connect account or Hosted control is required. The API
 requires a current **durable** `instance_members` administrator with
 `instance.manage_settings` for every management operation. A bootstrap username

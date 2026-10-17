@@ -76,6 +76,18 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
       { label: 'Agent watchdog', href: `${DOCS}/architecture/worker#stall-and-degenerate-output-watchdog` },
     ],
   },
+  'agent-extensions': {
+    summary: 'What agents can use inside their containers beyond the repository: MCP tools, skills and extra system packages.',
+    notes: [
+      'An extension profile authorizes specific MCP tools and attaches read-only skill bundles. Claude and Codex task runs select at most one profile.',
+      'Agents run without sudo, so system tools such as chromium or ffmpeg must be added as runtime packages. ProPR rebuilds every agent image and keeps the previous images until the build succeeds.',
+      'Runtime packages use Debian apt names. Repository-specific npm or pip dependencies belong in .propr/setup.sh.',
+    ],
+    links: [
+      { label: 'Skills & MCP servers', href: `${DOCS}/features/agent-extensions` },
+      { label: 'Runtime packages', href: `${DOCS}/features/propr-cli#agent-runtime-packages` },
+    ],
+  },
   integrations: {
     summary: 'Optional services around the agents. ProPR works the same without them.',
     notes: [

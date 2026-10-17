@@ -75,6 +75,15 @@ describe('AgentRuntimePackagesSection', () => {
     expect(await screen.findByText('pending')).toBeInTheDocument();
   });
 
+  it('explains why packages are needed and how to find their names', async () => {
+    render(<AgentRuntimePackagesSection />);
+    await screen.findByText('jq');
+
+    expect(screen.getByText(/without sudo/)).toBeInTheDocument();
+    expect(screen.getByText('Finding package names')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'packages.debian.org' })).toHaveAttribute('href', 'https://packages.debian.org/');
+  });
+
   it('offers catalog suggestions and validates a selected package', async () => {
     render(<AgentRuntimePackagesSection />);
     await screen.findByText('jq');

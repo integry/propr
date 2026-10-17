@@ -108,7 +108,8 @@ for the operator walkthrough and the log's filters.
 
 - **AI & Models** configures implementation, planning, review and summarization roles.
 - **Automation** configures trigger users/labels, follow-up keywords, concurrency and review/merge rules.
-- **Integrations** contains Agent Tank, runtime packages, [MCP server and connected apps](./mcp.md), visual preview uploads, managed storage and experimental voice controls.
+- **Agent Extensions & Packages** contains [agent extension profiles](./agent-extensions.md) for MCP tools and skills, and the Debian system packages built into every agent image.
+- **Integrations** contains Agent Tank, [MCP server and connected apps](./mcp.md), visual preview uploads, managed storage and experimental voice controls.
 - **Notifications** configures personal Inbox/push categories, quiet hours and browser subscription. See [Inbox and push](./inbox.md).
 
 ![Settings AI and Models tab showing implementation and planning model controls in a single column](/img/screenshots/0.9.0/settings.png)

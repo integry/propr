@@ -24,6 +24,7 @@ import {
 } from '../../api/extensionProfilesApi';
 import { getInstanceCatalog } from '../../api/proprApi';
 import { SettingsSection } from './SettingsLayout';
+import { AgentExtensionsDescription } from './AgentExtensionsGuide';
 const nextServerName = (servers: ExtensionMcpDescriptor[]) => {
   let number = 1;
   while (servers.some((server) => server.name === `server-${number}`)) number++;
@@ -519,30 +520,10 @@ export default function AgentExtensionsSection() {
   };
   return (
     <SettingsSection
-      title="Agent extensions"
-      description="Reusable MCP servers and immutable skill bundles managed by this instance’s administrators."
+      title="Skills & MCP servers"
+      description={<AgentExtensionsDescription />}
     >
       <div className="max-w-4xl space-y-5">
-        <div className="rounded-lg border border-teal-200 bg-teal-50 p-4 text-sm text-teal-900">
-          <p className="font-semibold">Capability and security boundary</p>
-          <p className="mt-1 leading-6">
-            Codex profile runs use <code>--ignore-user-config</code>: custom{' '}
-            <code>model_provider</code> settings in <code>CODEX_HOME/config.toml</code> are
-            unavailable. Repositories containing <code>.codex/config.toml</code> are refused for
-            these runs.
-          </p>
-          <p className="mt-1 leading-6">
-            Claude and Codex task runs can select one profile. MCP tools are explicitly allowed
-            through Core’s bounded HTTPS gateway or the isolated local catalog adapter. Skills mount
-            read-only per run and grant no credentials or capabilities.
-          </p>
-          <p className="mt-2 text-xs">
-            Public HTTPS, stateless JSON MCP only · 8 servers · 64 tools per server · 4 MiB per
-            skill bundle. Local stdio and internal HTTPS require an immutable operator catalog
-            entry. Commands, arguments, environment values and host paths cannot be entered here.
-            Stateful/SSE transports are unavailable.
-          </p>
-        </div>
         {error && (
           <p role="alert" className="rounded-md bg-red-50 p-3 text-sm text-red-800">
             {error}

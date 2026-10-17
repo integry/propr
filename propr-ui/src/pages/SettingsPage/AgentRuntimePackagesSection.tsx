@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
 import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
 import { SETTINGS_LABEL } from './settingsStyles';
+import { AgentRuntimePackageNameHelp, AgentRuntimePackagesDescription } from './AgentRuntimePackagesGuide';
 import {
   getAgentRuntimePackageState,
   searchAgentRuntimePackageCatalog,
@@ -306,7 +307,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
   return (
     <SettingsSection
       title="Agent Runtime Packages"
-      description="Extra system packages installed into every agent image built for this installation."
+      description={<AgentRuntimePackagesDescription />}
       status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
     >
       <div className="mb-6 max-w-2xl">
@@ -327,6 +328,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
         onActiveSuggestionChange={setActiveSuggestion}
         onAdd={candidate => void addPackage(candidate)}
       />
+      <AgentRuntimePackageNameHelp />
 
       <div className="mt-3 divide-y divide-slate-100 border-y border-slate-200">
         {packages.length === 0 ? (
