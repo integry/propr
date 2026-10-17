@@ -15,6 +15,7 @@ export function buildSlashCommandsBlock(): string {
         '| `/switch` | Change the AI model for this PR | `/switch claude-opus` |',
         '| `/use` | Override the model for a single follow-up run | `/use claude-sonnet` |',
         '| `/ultrafix` | Loop review→fix cycles until score goal is met | `/ultrafix` or `/ultrafix goal=8 max=10` |',
+        '| `/recover` | Adopt and publish retained work from an interrupted follow-up | `/recover` |',
         '',
         '</details>',
         '',

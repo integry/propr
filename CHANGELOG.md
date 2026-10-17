@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Interrupted follow-up recovery**: a durable execution/publication handoff is
+  persisted before each PR follow-up agent starts and advanced through commit,
+  push and result-comment publication. After a worker restart, a later delivery
+  distinguishes a still-live agent container from vanished work, adopts the
+  retained worktree and finishes publication serially instead of failing with
+  "Existing worktree retained; branch is in use". User cancellations stay
+  authoritative: retained work is preserved and the new `/recover` command is
+  the explicit, non-destructive operator action that adopts and publishes it.
+  Recovery phase, predecessor/successor task IDs, retained worktree path and
+  next action are exposed on the task timeline.
+
 - **Epic merge progress**: when a child PR merges into an epic branch, ProPR
   updates a single "x of y PRs merged" tracking comment on the epic PR in
   place, and posts a one-time *Epic fully merged* confirmation comment once

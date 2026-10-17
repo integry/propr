@@ -40,6 +40,7 @@ import {
 import type { PullRequestPublication, PublicationSalvage } from './prPublication.js';
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
+import { advanceFollowupHandoffPhase } from './followupHandoffStore.js';
 import { buildWorkNotificationRecap, fullNotificationSummary } from './notificationRecap.js';
 import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
@@ -125,11 +126,13 @@ async function commitAndPush(
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: context.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
     if (commitResult) {
+        await advanceFollowupHandoffPhase(completionInputs.taskId, 'committed', { commitHash: commitResult.commitHash });
         const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage }, { salvage: context.salvage });
         if (pushResult.commitHash) {
             commitResult.commitHash = pushResult.commitHash;
         }
     }
+    await advanceFollowupHandoffPhase(completionInputs.taskId, 'pushed', { commitHash: commitResult?.commitHash });
 
     return { commitResult, changesSummary, commitMessage };
 }
@@ -331,6 +334,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
     try {
         preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId, params.visualPreviewSettings);
+        await advanceFollowupHandoffPhase(taskId, 'changes-inspected');
         const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, {
             ...context, salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
         }, llm, {
@@ -353,6 +357,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             unprocessedReviewComments,
             visualPreviewEvidence: preparedVisualPreview?.evidence
         });
+        await advanceFollowupHandoffPhase(taskId, 'comment-published');
         correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
         if (unprocessedReviewComments.length > 0) {

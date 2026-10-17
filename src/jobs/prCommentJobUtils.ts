@@ -22,6 +22,7 @@ import { releaseFollowupCiSuspensionsForTask } from './followupCiSuspension.js';
 import type { CiSuspensionOctokit } from './followupCiSuspensionRuns.js';
 import { schedulePRCommentUsageLimitRetry } from './prCommentUsageLimitRecovery.js';
 import { automaticRetryFailureMetadata } from './prCommentAutomaticRetry.js';
+import { closeFollowupHandoffForAttempt } from './followupHandoffStore.js';
 
 export async function fetchOriginalContributionDiscussion(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
@@ -387,6 +388,10 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }
     }
+
+    // A published attempt retires its handoff; a failed one closes it because the
+    // failure was already published. Only a process death leaves the record open.
+    await closeFollowupHandoffForAttempt(options.taskId, options.success ?? true);
 
     if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');

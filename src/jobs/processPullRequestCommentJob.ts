@@ -40,7 +40,7 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
 import {
-    acquirePRProcessingLock, ensurePRProcessingLockToken, releasePRProcessingLock, startPRProcessingLockHeartbeat,
+    ensurePRProcessingLockToken, releasePRProcessingLock, startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
 import { createPRCommentTaskStateIfMissing, evaluatePRCommentPreExecutionRecovery, handlePRCommentLockContention } from './prCommentCollisionRecovery.js';
 import { stopOriginalPRReviewCycle } from './prContinuationReview.js';
@@ -49,6 +49,8 @@ import { PullRequestPublication } from './prPublication.js';
 import { recoverPendingPublication, type ProcessingState, type ExecuteProcessingParams } from './prPublicationRecovery.js';
 import { findPRContinuation, type Contribution } from './prContinuation.js';
 import { suspendObsoleteValidationForImplementation } from './followupCiSuspension.js';
+import { acquireCurrentPRLock, recoverFollowupHandoffIfPresent } from './prCommentLease.js';
+import { advanceFollowupHandoffPhase, recordFollowupHandoffBeforeAgent } from './followupHandoffStore.js';
 import { stoppedReviewRecap } from './notificationRecap.js';
 import { resumeAutomaticPRCommentRetry } from './prCommentAutomaticRetry.js';
 
@@ -69,12 +71,6 @@ interface ValidationResult {
     unprocessedComments?: UnprocessedComment[];
     llm?: string | null;
     prCommentsForValidation?: PRComment[];
-}
-
-interface LockParams {
-    lockKey: string;
-    lockToken: string;
-    correlatedLogger: Logger;
 }
 
 async function getPrimaryLabels(): Promise<string[]> {
@@ -256,6 +252,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const githubToken = await octokit.auth({ type: 'installation' }) as GitHubToken;
         correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, gitTarget: publication.target, destination: publication.status }, 'Prepared PR publication destination');
 
+        // Durable execution/publication handoff: written before the agent starts so a
+        // worker restart at any later boundary leaves an adoptable record behind.
+        await recordFollowupHandoffBeforeAgent(params, prData!.data.head.sha);
+
         // Implementation is authorized and the publication destination is resolved, so
         // the validation of the head this task is about to replace is now obsolete.
         // Opt-in per repository; a failure there never stops the implementation.
@@ -303,12 +303,14 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const visualPreviewSettings = refineWorkflowPreviews(await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`), repositoryWorkflow);
         const prompt = [publication.status, buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection, visualPreviewSettings }), repositoryWorkflowPrompt(repositoryWorkflow)].filter(Boolean).join('\n\n');
 
+        await advanceFollowupHandoffPhase(taskId, 'agent-running');
         const { claudeResult, agentType } = await resolveAndExecuteAgent({
             llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
             pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
             reasoningLevel: job.data.reasoningLevel, repositoryWorkflow, applyRepositoryWorkflow: true,
         });
         state.claudeResult = claudeResult;
+        await advanceFollowupHandoffPhase(taskId, 'agent-exited');
 
         checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
 
@@ -345,31 +347,6 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 export const processPullRequestCommentJob = (job: Job<CommentJobData>): Promise<JobResult> =>
     deferRepositoryWorkflowJob(job, () => withRunCostCap(pullRequestRunCostCapTarget(job), () => processAdmittedPRCommentJob(job)));
 
-async function acquireCurrentPRLock(
-    { lockKey, lockToken, correlatedLogger }: LockParams,
-    resolveLockKey: () => Promise<string>,
-): Promise<string | null> {
-    for (;;) {
-        if (!await acquirePRProcessingLock(redisClient, lockKey, lockToken)) {
-            correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
-            return null;
-        }
-        correlatedLogger.debug({ lockKey }, 'PR lock acquired');
-        let resolvedLockKey: string;
-        try {
-            resolvedLockKey = await resolveLockKey();
-        } catch (error) {
-            await releasePRProcessingLock(redisClient, lockKey, lockToken);
-            throw error;
-        }
-        if (resolvedLockKey === lockKey) return lockKey;
-        // Adoption may have become visible while acquiring the lease. Do no work
-        // under the continuation's own lease; acquire and revalidate the source.
-        await releasePRProcessingLock(redisClient, lockKey, lockToken);
-        lockKey = resolvedLockKey;
-    }
-}
-
 async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
@@ -390,7 +367,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     const initialLockKey = await resolveLockKey();
     const lockToken = await ensurePRProcessingLockToken(job.data, correlationId, () => job.updateData(job.data));
 
-    const lockKey = await acquireCurrentPRLock({ lockKey: initialLockKey, lockToken, correlatedLogger }, resolveLockKey);
+    const lockKey = await acquireCurrentPRLock({ redisClient, lockKey: initialLockKey, lockToken, correlatedLogger }, resolveLockKey);
     if (!lockKey) return handlePRCommentLockContention({ job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments, correlatedLogger });
 
     const recovery = await evaluatePRCommentPreExecutionRecovery({
@@ -421,8 +398,13 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         await resumeAutomaticPRCommentRetry({ job, taskId, stateManager, correlatedLogger });
         // Re-read under the shared lease: implementation may have adopted while queued.
         state.octokit = octokit;
-        const recovered = await runWithExecutionAbortSignal(executionController.signal,
-            () => recoverPendingPublication({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, redisClient), hashTaskAttemptToken(lockToken));
+        // A checkpointed publication is completed first; a predecessor interrupted
+        // before any checkpoint existed left only a durable handoff record and a
+        // retained worktree, which is adopted and finished before a new agent runs.
+        const recovered = await runWithExecutionAbortSignal(executionController.signal, async () =>
+            await recoverPendingPublication({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, redisClient)
+            ?? recoverFollowupHandoffIfPresent({ job, context, llm, taskId, stateManager, state, lockKey, lockToken },
+                { redisClient, pickedUpComments: context.pickedUpComments }), hashTaskAttemptToken(lockToken));
         if (recovered) return recovered;
         const stopped = await stopOriginalPRReviewCycle({
             ref: context, continuation: await findPRContinuation(context), commandMode: job.data.commandMode,

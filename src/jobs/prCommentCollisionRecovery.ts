@@ -13,6 +13,7 @@ import {
     type WorkerStateManager,
 } from '@propr/core';
 import { restorePendingComments } from './prPendingComments.js';
+import { findOpenFollowupHandoff } from './followupHandoffStore.js';
 
 export interface PRCommentContainerCollision {
     taskId: string;
@@ -254,7 +255,13 @@ export async function evaluatePRCommentPreExecutionRecovery(
         ...(job.data.containerCollisionTaskIds ?? []),
         ...(job.data.containerCollisionTaskId ? [job.data.containerCollisionTaskId] : []),
     ])];
-    const collision = await inspectPRCommentContainerCollision([taskId, ...collisionAncestorTaskIds]);
+    // A predecessor recorded in the durable follow-up handoff may still be executing
+    // in its exact labelled container; it must never be raced by a new agent.
+    const openHandoff = await findOpenFollowupHandoff({
+        repoOwner: job.data.repoOwner, repoName: job.data.repoName, pullRequestNumber: job.data.pullRequestNumber,
+    });
+    const handoffTaskIds = openHandoff ? [openHandoff.task_id] : [];
+    const collision = await inspectPRCommentContainerCollision([taskId, ...collisionAncestorTaskIds, ...handoffTaskIds]);
     if (collision) {
         correlatedLogger.warn({
             taskId,
