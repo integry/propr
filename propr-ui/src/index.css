@@ -84,8 +84,24 @@ body {
     --floating-launcher-inline-clearance: calc(var(--voice-briefing-launcher-width, 7.5rem) + 1.25rem + 0.5rem);
   }
 
-  /* The desktop composer is taller, so it moves beside the launcher sooner. */
-  @container (max-height: 24rem) {
+  /* A short but narrow pane (the Playground at its minimum split) has no room
+     for the composer beside the launcher, so the composer stays above it and
+     the panel's parts tighten to keep the whole stack within the pane. */
+  @container (max-height: 24rem) and (max-width: 24rem) {
+    html[data-voice-briefing-launcher] .launcher-docked-composer {
+      --launcher-docked-composer-block-start: 0.5rem;
+      --launcher-docked-composer-box-padding: 0.5rem;
+    }
+
+    html[data-voice-briefing-launcher] .launcher-docked-transcript {
+      --launcher-docked-transcript-min-height: 4rem;
+    }
+  }
+
+  /* The desktop composer is taller, so it moves beside the launcher sooner,
+     once the pane is wide enough for both (the composer's ~12.5rem and the
+     launcher's reserve). */
+  @container (max-height: 24rem) and (min-width: 24rem) {
     .launcher-docked-composer {
       --floating-launcher-clearance: 0px;
       --floating-launcher-inline-reserve: var(--floating-launcher-inline-clearance);

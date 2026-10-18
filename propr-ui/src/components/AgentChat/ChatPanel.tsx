@@ -150,7 +150,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Messages Area - Studio Assistant styling */}
       <div
-        className="min-h-24 flex-1 space-y-4 overflow-y-auto overscroll-contain px-3 pb-3 sm:px-4 sm:pb-4"
+        className="launcher-docked-transcript min-h-[var(--launcher-docked-transcript-min-height,6rem)] flex-1 space-y-4 overflow-y-auto overscroll-contain px-3 pb-3 sm:px-4 sm:pb-4"
         ref={scrollRef}
         data-testid="ai-agents-playground-transcript"
         style={{
@@ -242,9 +242,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       {/* Floating Input Bar - visually detached from bottom. The page already
           reserves the mobile navigation's height; only a shown Voice briefing
           launcher (above the mobile navigation, or at the desktop window's
-          corner) needs extra room, above it or, in a short panel, beside it. */}
-      <div className="launcher-docked-composer sticky bottom-0 z-10 flex-shrink-0 bg-[#F8FAFC] pb-[max(0.75rem,var(--floating-launcher-clearance))] pl-3 pr-[max(0.75rem,var(--floating-launcher-inline-reserve,0px))] pt-3 md:pb-[max(1rem,var(--floating-launcher-clearance))] md:pl-4 md:pr-[max(1rem,var(--floating-launcher-inline-reserve,0px))] md:pt-4 [@container(max-height:14rem)]:pb-[max(0.5rem,var(--floating-launcher-clearance))] [@container(max-height:14rem)]:pt-2">
-        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-2 shadow-md sm:items-end sm:gap-2 sm:p-4">
+          corner) needs extra room: above it or, in a short panel wide enough
+          for the composer and the launcher side by side, beside it. */}
+      <div className="launcher-docked-composer sticky bottom-0 z-10 flex-shrink-0 bg-[#F8FAFC] pb-[max(0.75rem,var(--floating-launcher-clearance))] pl-3 pr-[max(0.75rem,var(--floating-launcher-inline-reserve,0px))] pt-3 md:pb-[max(1rem,var(--floating-launcher-clearance))] md:pl-4 md:pr-[max(1rem,var(--floating-launcher-inline-reserve,0px))] md:pt-[var(--launcher-docked-composer-block-start,1rem)] [@container(max-height:14rem)]:pb-[max(0.5rem,var(--floating-launcher-clearance))] [@container(max-height:14rem)]:pt-2">
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-2 shadow-md sm:items-end sm:gap-2 sm:p-[var(--launcher-docked-composer-box-padding,1rem)]">
           <input
             type="text"
             className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm focus:outline-none sm:px-3"

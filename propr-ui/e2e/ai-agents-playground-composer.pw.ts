@@ -311,3 +311,104 @@ for (const { name, shell, voice } of resizeCases) {
     await expectUnobscured(page, send);
   });
 }
+
+/** Waits until the Playground pane's box is unchanged across consecutive samples and no finite animation runs. */
+async function settlePane(page: Page) {
+  const pane = page.getByTestId('ai-agents-playground-pane');
+  let previous = '';
+  let quietSamples = 0;
+  await expect.poll(async () => {
+    const state = await pane.evaluate(element => {
+      const moving = document.getAnimations().some(animation => animation.playState === 'running'
+        && animation.effect?.getComputedTiming().iterations !== Infinity);
+      return moving ? null : JSON.stringify(element.getBoundingClientRect());
+    });
+    quietSamples = state && state === previous ? quietSamples + 1 : 0;
+    previous = state ?? '';
+    return quietSamples;
+  }, { intervals: [50] }).toBeGreaterThanOrEqual(3);
+  return (await pane.boundingBox())!;
+}
+
+const minimumSplitCases: Array<{ name: string; size: { width: number; height: number }; shell?: Shell; voice?: boolean }> = [
+  // The narrowest supported Playground pane is also short here, too short to stack the composer above the launcher.
+  { name: 'web 768x420 with Voice briefing', size: { width: 768, height: 420 }, voice: true },
+  { name: 'native Linux 768x420 with Voice briefing', size: { width: 768, height: 420 }, shell: { platform: 'linux' }, voice: true },
+  { name: 'web 768x420', size: { width: 768, height: 420 } },
+  { name: 'web 880x620 with Voice briefing', size: { width: 880, height: 620 }, voice: true },
+  { name: 'web 1024x600 with Voice briefing', size: { width: 1024, height: 600 }, voice: true },
+  { name: 'web 1280x800 with Voice briefing', size: { width: 1280, height: 800 }, voice: true },
+];
+
+for (const { name, size, shell, voice } of minimumSplitCases) {
+  test(`${name}: at the minimum Playground split the full composer and model controls stay usable and send`, async ({ page, baseURL }) => {
+    const prompts = await openPlayground(page, baseURL!, size, shell, voice);
+    const input = visible(page.getByPlaceholder('Type a message to test...'));
+    const send = visible(page.getByRole('button', { name: 'Send message' }));
+    const model = visible(page.getByRole('button', { name: 'Claude Code: Claude Opus 5.5', exact: true }));
+    await expect(model).toHaveAttribute('aria-pressed', 'true');
+    await input.fill('Narrow draft');
+    const before = await settlePane(page);
+
+    // The normal keyboard resize to the Playground's supported minimum size.
+    const handle = page.getByTestId('ai-agents-resize-handle');
+    await handle.focus();
+    await page.keyboard.press('End');
+    const pane = await settlePane(page);
+    const capture = process.env.PROPR_CAPTURE_PREVIEWS && name === 'web 768x420 with Voice briefing';
+    if (capture) await page.screenshot({ path: '../.propr/previews/playground-minimum-split-768x420-voice.png' });
+    expect(pane.width).toBeLessThan(before.width);
+    const group = (await page.getByTestId('ai-agents-panel-group').boundingBox())!;
+    expect(pane.width / group.width).toBeGreaterThan(0.28);
+    expect(pane.width / group.width).toBeLessThan(0.32);
+    await expect(input).toHaveValue('Narrow draft');
+
+    // The whole input and Send, not a sliver of each, and the model controls above them.
+    expect((await input.boundingBox())!.width).toBeGreaterThanOrEqual(80);
+    await expectUnobscured(page, input);
+    await expectUnobscured(page, send);
+    // The selected-model chip strip scrolls sideways in a narrow pane; its shown part stays hittable.
+    expect(await model.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const strip = element.parentElement!.getBoundingClientRect();
+      const left = Math.max(rect.left, strip.left);
+      const right = Math.min(rect.right, strip.right);
+      return [0.25, 0.5, 0.75].flatMap(fx => [0.5, 0.9].map(fy => {
+        const hit = document.elementFromPoint(left + (right - left) * fx, rect.top + rect.height * fy);
+        return Boolean(hit && element.contains(hit));
+      }));
+    })).not.toContain(false);
+    const clear = visible(page.getByTitle('Clear History'));
+    await expectUnobscured(page, clear);
+    const search = visible(page.getByRole('combobox', { name: 'Search and add models to compare' }));
+    await expectUnobscured(page, search);
+    if (voice) {
+      const launcherBox = (await (await expectLauncherOperable(page)).boundingBox())!;
+      const sendBox = (await send.boundingBox())!;
+      expect(sendBox.y + sendBox.height <= launcherBox.y || sendBox.x + sendBox.width <= launcherBox.x).toBe(true);
+    } else {
+      // Without the launcher no room is held back for it.
+      const composer = page.locator('.launcher-docked-composer').filter({ visible: true });
+      expect(await composer.evaluate(element => getComputedStyle(element).paddingRight)).toBe('16px');
+      expect(await composer.evaluate(element => getComputedStyle(element).paddingBottom)).toBe('16px');
+    }
+    await search.click();
+    await expectUnobscured(page, page.getByRole('listbox', { name: 'Available models' }));
+    await page.keyboard.press('Escape');
+    await search.blur();
+    await expect(page.getByRole('listbox', { name: 'Available models' })).toHaveCount(0);
+
+    // A normal pointer click on the lower part of Send.
+    const box = (await send.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.9);
+    const transcript = visible(page.getByTestId('ai-agents-playground-transcript'));
+    await expect(transcript.getByText('Controlled reply')).toBeVisible();
+    await expect(transcript.getByText('Controlled reply')).toBeInViewport();
+    expect(prompts).toEqual(['Narrow draft']);
+    await expect(input).toHaveValue('');
+    await expectUnobscured(page, input);
+    await expectUnobscured(page, send);
+    await expect(model).toHaveAttribute('aria-pressed', 'true');
+    if (voice) await expectLauncherOperable(page);
+  });
+}
