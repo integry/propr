@@ -12,6 +12,7 @@ import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
 import { parseLinkedIssueNumbers } from '../github/linkedIssueReferences.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 import { acceptedRequestDigest } from '../shared/workEvidenceMarker.js';
+import { receiptConsumesRequest } from './requestReceipts.js';
 
 interface ValidationComment {
     id: number;
@@ -120,11 +121,11 @@ export function filterUnprocessedComments(
                 return true;
             }
 
-            const alreadyProcessed = prCommentsForValidation.some(prComment => {
-                const isBotComment = prComment.user.login === botUsername;
-                if (!isBotComment) return false;
-                return prComment.body?.includes(`${String(comment.id)}✓`);
-            });
+            // A starting receipt alone does not end the request: a usage-limit
+            // retry of it must still run. This check runs under the PR lease, so
+            // no other writer of that receipt is live.
+            const alreadyProcessed = prCommentsForValidation.some(prComment =>
+                prComment.user.login === botUsername && receiptConsumesRequest(prComment.body, comment.id));
 
             if (alreadyProcessed) {
                 correlatedLogger.debug({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment already processed, filtering out');
