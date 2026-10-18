@@ -117,21 +117,40 @@ async function expectUnobscured(page: Page, control: Locator) {
   })).not.toContain(false);
 }
 
+/** The floating Voice briefing launcher is shown and operable across its straight middle band (it is a pill). */
+async function expectLauncherOperable(page: Page) {
+  const launcher = page.getByRole('button', { name: 'Voice briefing' });
+  await expect(launcher).toBeVisible();
+  expect(await launcher.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return [0.25, 0.5, 0.75].flatMap(fx => [0.2, 0.5, 0.8].map(fy => {
+      const hit = document.elementFromPoint(rect.left + rect.width * fx, rect.top + rect.height * fy);
+      return Boolean(hit && element.contains(hit));
+    }));
+  })).not.toContain(false);
+  return launcher;
+}
+
+async function openPlayground(page: Page, baseURL: string, size: { width: number; height: number }, shell?: Shell, voice?: boolean) {
+  if (shell?.platform) {
+    await installDesktopBridge(page, shell.platform);
+    await installWindowActions(page, shell);
+  }
+  if (voice) {
+    await page.addInitScript(
+      key => localStorage.setItem(key, 'true'),
+      browserVoicePreferenceKey(new URL(baseURL).origin, user.id),
+    );
+  }
+  const prompts = await stubApis(page);
+  await page.setViewportSize(size);
+  await page.goto('/ai-agents');
+  return prompts;
+}
+
 for (const { name, size, shell, voice } of cases) {
   test(`${name}: the Playground composer stays above the mobile navigation and sends`, async ({ page, baseURL }) => {
-    if (shell?.platform) {
-      await installDesktopBridge(page, shell.platform);
-      await installWindowActions(page, shell);
-    }
-    if (voice) {
-      await page.addInitScript(
-        key => localStorage.setItem(key, 'true'),
-        browserVoicePreferenceKey(new URL(baseURL!).origin, user.id),
-      );
-    }
-    const prompts = await stubApis(page);
-    await page.setViewportSize(size);
-    await page.goto('/ai-agents');
+    const prompts = await openPlayground(page, baseURL!, size, shell, voice);
 
     const mobile = size.width < 768;
     const input = visible(page.getByPlaceholder('Type a message to test...'));
@@ -153,20 +172,13 @@ for (const { name, size, shell, voice } of cases) {
     await expectUnobscured(page, send);
     const clear = visible(page.getByTitle('Clear History'));
     if (voice) {
-      // The floating launcher sits in its own band, wholly below the composer.
-      const launcher = page.getByRole('button', { name: 'Voice briefing' });
-      await expect(launcher).toBeVisible();
+      // The floating launcher stays operable, wholly below or (in a short panel) beside the composer.
+      const launcherBox = (await (await expectLauncherOperable(page)).boundingBox())!;
       const sendBox = (await send.boundingBox())!;
-      expect(sendBox.y + sendBox.height).toBeLessThanOrEqual((await launcher.boundingBox())!.y);
-      // Its band leaves too little height for every point of the selector row at 345px, but Clear stays operable.
-      expect(await clear.evaluate(element => {
-        const rect = element.getBoundingClientRect();
-        return element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
-      })).toBe(true);
-    } else {
-      // Model selection stays usable beside the composer, and its list opens over it.
-      await expectUnobscured(page, clear);
+      expect(sendBox.y + sendBox.height <= launcherBox.y || sendBox.x + sendBox.width <= launcherBox.x).toBe(true);
     }
+    // Model selection stays usable beside the composer, and its list opens over it.
+    await expectUnobscured(page, clear);
     const search = visible(page.getByRole('combobox', { name: 'Search and add models to compare' }));
     await expectUnobscured(page, search);
     await search.click();
@@ -194,5 +206,95 @@ for (const { name, size, shell, voice } of cases) {
     }));
     expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
     if (capture) await page.screenshot({ path: '../.propr/previews/playground-composer-reply-native-370x345.png' });
+  });
+}
+
+/**
+ * Waits for the responsive layout to finish switching: the mobile Playground panel is the shown one, and across
+ * consecutive samples its box is unchanged and no finite animation or transition (the sidebar sliding away) runs.
+ */
+async function settleMobileLayout(page: Page) {
+  await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
+  await expect(visible(page.getByRole('button', { name: 'Playground', exact: true }))).toBeVisible();
+  await expect(visible(page.getByTestId('ai-agents-playground-panel'))).toHaveCount(1);
+  let previous = '';
+  let quietSamples = 0;
+  await expect.poll(async () => {
+    const state = await page.evaluate(() => {
+      const panel = [...document.querySelectorAll('[data-testid="ai-agents-playground-panel"]')]
+        .find(element => element.getBoundingClientRect().height > 0);
+      const moving = document.getAnimations().some(animation => animation.playState === 'running'
+        && animation.effect?.getComputedTiming().iterations !== Infinity);
+      return moving ? null : JSON.stringify(panel?.getBoundingClientRect());
+    });
+    quietSamples = state && state === previous ? quietSamples + 1 : 0;
+    previous = state ?? '';
+    return quietSamples;
+  }, { intervals: [50] }).toBeGreaterThanOrEqual(3);
+}
+
+const resizeCases: Array<{ name: string; shell?: Shell; voice?: boolean }> = [
+  { name: 'native Linux', shell: { platform: 'linux' } },
+  { name: 'web with Voice briefing', voice: true },
+];
+
+for (const { name, shell, voice } of resizeCases) {
+  test(`${name}: a desktop conversation survives a resize to 370x345 and keeps sending`, async ({ page, baseURL }) => {
+    const prompts = await openPlayground(page, baseURL!, { width: 1280, height: 800 }, shell, voice);
+    const input = visible(page.getByPlaceholder('Type a message to test...'));
+    const send = visible(page.getByRole('button', { name: 'Send message' }));
+    const search = visible(page.getByRole('combobox', { name: 'Search and add models to compare' }));
+    const transcript = visible(page.getByTestId('ai-agents-playground-transcript'));
+    const models = ['Claude Code: Claude Opus 5.5', 'Claude Code: Claude Sonnet 5.5'];
+    const expectModels = async () => {
+      for (const model of models) {
+        await expect(visible(page.getByRole('button', { name: model, exact: true }))).toHaveAttribute('aria-pressed', 'true');
+      }
+    };
+
+    // A desktop conversation: two selected models, one exchange and an unsent draft.
+    await expect(visible(page.getByRole('button', { name: models[0], exact: true }))).toHaveAttribute('aria-pressed', 'true');
+    await search.click();
+    await search.fill('Sonnet');
+    await visible(page.getByRole('option', { name: /Claude Sonnet 5\.5/ })).click();
+    await page.keyboard.press('Escape');
+    await search.blur();
+    await expectModels();
+    await input.fill('Desktop question');
+    await input.press('Enter');
+    await expect(transcript.getByText('Controlled reply')).toHaveCount(2);
+    await input.fill('Desktop draft');
+
+    // Resize to the short native viewport, and judge hit targets only once the mobile layout has settled.
+    await page.setViewportSize({ width: 370, height: 345 });
+    await settleMobileLayout(page);
+    await expect(input).toHaveValue('Desktop draft');
+    await expect(transcript.getByText('Desktop question')).toHaveCount(1);
+    await expect(transcript.getByText('Controlled reply')).toHaveCount(2);
+    await expectModels();
+    await expectUnobscured(page, input);
+    await expectUnobscured(page, send);
+    await expectUnobscured(page, visible(page.getByTitle('Clear History')));
+    if (voice) await expectLauncherOperable(page);
+
+    await expectUnobscured(page, search);
+    await search.click();
+    const listbox = page.getByRole('listbox', { name: 'Available models' });
+    await expectUnobscured(page, listbox);
+    await expect(listbox.getByRole('option')).toHaveCount(2);
+    await page.keyboard.press('Escape');
+    await search.blur();
+    await expect(listbox).toHaveCount(0);
+
+    const box = (await send.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.9);
+    await expect(transcript.getByText('Controlled reply')).toHaveCount(4);
+    // The new exchange's first reply (model replies sit side by side and scroll sideways).
+    await expect(transcript.getByText('Controlled reply').nth(2)).toBeInViewport();
+    expect(prompts).toEqual(['Desktop question', 'Desktop draft']);
+    await expect(input).toHaveValue('');
+    await expectModels();
+    await expectUnobscured(page, input);
+    await expectUnobscured(page, send);
   });
 }

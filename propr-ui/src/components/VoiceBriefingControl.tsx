@@ -102,10 +102,23 @@ function EnabledVoiceBriefingControl() {
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Mobile composers docked above the bottom navigation keep clear of this
-  // floating launcher only while it is shown (see index.css).
+  // floating launcher only while it is shown (see index.css). One too short to
+  // sit above it sits beside it instead, so the launcher publishes its width.
   useEffect(() => {
-    document.documentElement.dataset.voiceBriefingLauncher = 'true';
-    return () => { delete document.documentElement.dataset.voiceBriefingLauncher; };
+    const root = document.documentElement;
+    const launcher = launcherRef.current;
+    root.dataset.voiceBriefingLauncher = 'true';
+    const publishWidth = () => {
+      if (launcher) root.style.setProperty('--voice-briefing-launcher-width', `${launcher.offsetWidth}px`);
+    };
+    publishWidth();
+    const observer = launcher && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(publishWidth) : null;
+    if (launcher) observer?.observe(launcher);
+    return () => {
+      observer?.disconnect();
+      delete root.dataset.voiceBriefingLauncher;
+      root.style.removeProperty('--voice-briefing-launcher-width');
+    };
   }, []);
 
   const handleVoiceNavigation = useCallback((item: VoiceBriefingItem) => {
