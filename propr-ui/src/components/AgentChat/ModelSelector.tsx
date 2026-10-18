@@ -114,8 +114,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   };
 
   return (
+    // No z-index here: a stacking context would trap the listbox (z-20) below
+    // the Playground's pinned composer (z-10).
     <div
-      className="relative z-10 min-w-0 flex-shrink-0 border-b border-slate-200 bg-white"
+      className="relative min-w-0 flex-shrink-0 border-b border-slate-200 bg-white"
       ref={selectorRef}
       onBlur={event => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsOpen(false);
@@ -145,11 +147,11 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
           }}
           onKeyDown={handleKeyDown}
           placeholder="Search models to compare…"
-          className="w-full border-b border-slate-200 bg-white py-3 pl-10 pr-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-teal-500 sm:pl-11 sm:pr-4"
+          className="w-full border-b border-slate-200 bg-white py-3 pl-10 [@container(max-height:14rem)]:py-2 pr-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-teal-500 sm:pl-11 sm:pr-4"
         />
       </div>
 
-      <div className="flex min-h-12 min-w-0 items-center gap-1 px-3 py-1.5 sm:min-h-10 sm:gap-2 sm:px-4 sm:py-2">
+      <div className="flex min-h-12 min-w-0 items-center gap-1 px-3 py-1.5 sm:min-h-10 sm:gap-2 sm:px-4 sm:py-2 [@container(max-height:14rem)]:min-h-10 [@container(max-height:14rem)]:py-1">
         <div className="scrollbar-stealth flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
           {selectedOptions.length > 0 ? selectedOptions.map(option => (
             <button
@@ -183,13 +185,16 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         </button>
       </div>
 
+      {/* Sized by the Playground panel (a size container), the height left
+          after native chrome and the mobile navigation, not by the window, and
+          kept clear of a floating Voice briefing launcher. */}
       {isOpen && (
         <div
           id={optionsId}
           role="listbox"
           aria-label="Available models"
           aria-multiselectable="true"
-          className="scrollbar-stealth absolute left-2 right-2 top-[45px] z-20 max-h-[min(18rem,calc(100dvh-12rem))] overflow-y-auto overscroll-contain rounded-md border border-slate-200 bg-white py-1 shadow-xl sm:left-3 sm:right-3 sm:top-[46px] sm:max-h-72"
+          className="scrollbar-stealth absolute left-2 right-2 top-[45px] z-20 max-h-[min(18rem,calc(100cqh-3.5rem-var(--mobile-floating-launcher-clearance)))] overflow-y-auto overscroll-contain rounded-md border border-slate-200 bg-white py-1 shadow-xl sm:left-3 sm:right-3 sm:top-[46px]"
         >
           {filteredOptions.length > 0 ? filteredOptions.map((option, index) => {
             const isSelected = selectedModels.some(selected => isSameAgentModel(selected, option));

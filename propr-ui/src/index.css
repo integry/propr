@@ -9,6 +9,9 @@ body {
 
 :root {
   --mobile-bottom-navigation-height: calc(4rem + env(safe-area-inset-bottom));
+  /* Room a bottom-docked mobile composer leaves above the navigation for the
+     floating Voice briefing launcher (2.75rem tall, 0.75rem above the nav). */
+  --mobile-floating-launcher-clearance: 0px;
 }
 
 /* Sidebar glyphs share one literal stroke weight. Without this, SVG stroke
@@ -48,6 +51,10 @@ body {
 
   .mobile-plan-intent-overlay {
     padding-bottom: calc(var(--mobile-bottom-navigation-height) + 0.75rem);
+  }
+
+  html[data-voice-briefing-launcher] {
+    --mobile-floating-launcher-clearance: 4rem;
   }
 }
 

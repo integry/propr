@@ -46,6 +46,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 }) => {
   const { messages, input, setInput, isLoading } = session;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Build list of all enabled agent+model combinations
   const agentModelOptions = useMemo(() => {
@@ -99,6 +100,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+    // When the panel is too short for everything and scrolls as a whole, also
+    // bring the latest exchange into view above the pinned composer.
+    if (panelRef.current && messages.length > 0) {
+      panelRef.current.scrollTop = panelRef.current.scrollHeight;
+    }
   }, [messages]);
 
   const handleSend = () => {
@@ -124,7 +130,17 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-[#F8FAFC]">
+    // Normally only the transcript scrolls. When the available height (after
+    // native chrome and the fixed mobile navigation) cannot hold the model
+    // selector, a minimal transcript and the composer, the panel itself
+    // scrolls and the composer stays pinned to its bottom edge, so it is never
+    // clipped or left under the navigation. The panel is a size container so
+    // its parts can tighten their padding when the panel itself is short.
+    <div
+      ref={panelRef}
+      className="flex h-full min-w-0 flex-col overflow-y-auto overflow-x-hidden overscroll-contain bg-[#F8FAFC] [container-type:size]"
+      data-testid="ai-agents-playground-panel"
+    >
       <ModelSelector
         options={agentModelOptions}
         selectedModels={selectedModels}
@@ -134,7 +150,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Messages Area - Studio Assistant styling */}
       <div
-        className="flex-1 space-y-4 overflow-y-auto overscroll-contain px-3 pb-3 sm:px-4 sm:pb-4"
+        className="min-h-24 flex-1 space-y-4 overflow-y-auto overscroll-contain px-3 pb-3 sm:px-4 sm:pb-4"
         ref={scrollRef}
         data-testid="ai-agents-playground-transcript"
         style={{
@@ -223,8 +239,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         )}
       </div>
 
-      {/* Floating Input Bar - visually detached from bottom */}
-      <div className="flex-shrink-0 px-3 pb-16 pt-3 md:p-4">
+      {/* Floating Input Bar - visually detached from bottom. The page already
+          reserves the mobile navigation's height; only a shown Voice briefing
+          launcher needs extra room. */}
+      <div className="sticky bottom-0 z-10 flex-shrink-0 bg-[#F8FAFC] px-3 pb-[max(0.75rem,var(--mobile-floating-launcher-clearance))] pt-3 md:p-4 [@container(max-height:14rem)]:pb-[max(0.5rem,var(--mobile-floating-launcher-clearance))] [@container(max-height:14rem)]:pt-2">
         <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-2 shadow-md sm:items-end sm:gap-2 sm:p-4">
           <input
             type="text"

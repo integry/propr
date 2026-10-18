@@ -101,6 +101,13 @@ function EnabledVoiceBriefingControl() {
   const launcherRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  // Mobile composers docked above the bottom navigation keep clear of this
+  // floating launcher only while it is shown (see index.css).
+  useEffect(() => {
+    document.documentElement.dataset.voiceBriefingLauncher = 'true';
+    return () => { delete document.documentElement.dataset.voiceBriefingLauncher; };
+  }, []);
+
   const handleVoiceNavigation = useCallback((item: VoiceBriefingItem) => {
     setIsOpen(false);
     navigate(item.href);
