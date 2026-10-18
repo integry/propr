@@ -80,7 +80,7 @@ describe('AgentEditor Run now', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/automations/agent-1/runs/run-9'));
     expect(getAutomationCapacity).toHaveBeenCalledWith('agent-1');
-    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1');
+    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByText('run run-9')).toBeInTheDocument();
   });
@@ -129,6 +129,9 @@ describe('AgentEditor Run now', () => {
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/automations/agent-1/runs/run-9'));
     expect(triggerAutomationRun).toHaveBeenCalledTimes(1);
+    // An attended run: the server lets manual runs past its near-limit gate, but would
+    // classify a token/native-bridge request without an explicit trigger as `api`.
+    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' });
   });
 
   it('runs without asking when the usage cannot be read', async () => {
@@ -136,7 +139,7 @@ describe('AgentEditor Run now', () => {
     renderEditor();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
-    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1'));
+    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' }));
   });
 
   it('does not start the saved configuration when the form was edited while capacity was being checked', async () => {

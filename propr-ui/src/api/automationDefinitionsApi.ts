@@ -183,9 +183,17 @@ export const deleteAutomationAttachment = async (id: string, attachmentId: strin
     { method: 'DELETE' },
   )).definition;
 
-export const triggerAutomationRun = (id: string, options: { idempotencyKey?: string } = {}) =>
+/** Triggers the REST run endpoint accepts in its body. */
+export type AutomationRunRequestTrigger = Extract<AutomationRunTrigger, 'manual' | 'api' | 'cli'>;
+
+/**
+ * Without `trigger` the server classifies the run by how the request was
+ * authenticated, so a token or native-bridge caller counts as `api` and stays
+ * cost-gated. An attended Run now passes `trigger: 'manual'` explicitly.
+ */
+export const triggerAutomationRun = (id: string, options: { idempotencyKey?: string; trigger?: AutomationRunRequestTrigger } = {}) =>
   request<{ run: AutomationRunRecord; created: boolean }>(`${definitionPath(id)}/runs`, {
-    ...json('POST', {}),
+    ...json('POST', options.trigger ? { trigger: options.trigger } : {}),
     headers: { 'Idempotency-Key': options.idempotencyKey ?? crypto.randomUUID() },
   });
 

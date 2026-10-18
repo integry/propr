@@ -334,6 +334,16 @@ describe('automation definition routes', () => {
     const manual = await call(gated.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger: 'manual' } }));
     assert.equal(manual.body.run.state, 'queued');
     assert.deepEqual(enqueued, [manual.body.run.id]);
+
+    // The native app authenticates with a token: undeclared it stays a gated api run; its attended Run now declares manual.
+    const unattended = await call(gated.triggerRun, request('alice', { params: { id: definition.id }, authenticationMethod: 'instance_token', body: {} }));
+    assert.equal(unattended.body.run.trigger, 'api');
+    assert.equal(unattended.body.run.state, 'skipped');
+    const attended = await call(gated.triggerRun, request('alice', { params: { id: definition.id }, authenticationMethod: 'instance_token', body: { trigger: 'manual' } }));
+    assert.equal(attended.body.run.trigger, 'manual');
+    assert.equal(attended.body.run.triggerSource, 'user:alice');
+    assert.equal(attended.body.run.state, 'queued');
+    assert.deepEqual(enqueued, [manual.body.run.id, attended.body.run.id]);
   });
 
   test('capacity reports the definition agent usage and the pause threshold', async () => {

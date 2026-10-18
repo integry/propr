@@ -276,7 +276,9 @@ export function useAgentEditor(
     setRunning(true);
     setError(null);
     try {
-      const result = await triggerAutomationRun(current.id);
+      // The user clicked Run now (and confirmed any capacity warning), so it is an
+      // attended manual run whatever credential the request is authenticated with.
+      const result = await triggerAutomationRun(current.id, { trigger: 'manual' });
       if (result.created) notify?.('Run started', 'success');
       else notify?.('A run is already in progress', 'info');
       onRunStarted?.(result.run);

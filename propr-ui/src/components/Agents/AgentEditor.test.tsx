@@ -184,7 +184,7 @@ describe('AgentEditor', () => {
     finish({ ...definition, name: 'Renamed', revision: 4 });
     await waitFor(() => expect(runButton).toBeEnabled());
     fireEvent.click(runButton);
-    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1'));
+    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' }));
   });
 
   it('disables Run now while the form differs from the saved agent and runs once it is saved', async () => {
@@ -209,7 +209,7 @@ describe('AgentEditor', () => {
     await waitFor(() => expect(runButton).toBeEnabled());
     expect(screen.queryByText('Save your changes to run them')).not.toBeInTheDocument();
     fireEvent.click(runButton);
-    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1'));
+    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' }));
   });
 
   it('re-enables Run now when an edit is undone', async () => {
@@ -296,7 +296,7 @@ describe('AgentEditor', () => {
       await pendingSave;
     });
     await act(async () => { await result.current.run(); });
-    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1');
+    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' });
   });
   it('blocks Run now after a conflict until the replacement definition has loaded', async () => {
     vi.mocked(getAutomationDefinition).mockResolvedValue(definition);
@@ -324,7 +324,7 @@ describe('AgentEditor', () => {
     await act(async () => { finishReload({ ...definition, autonomyMode: 'auto', revision: 4 }); });
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
-    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1'));
+    await waitFor(() => expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' }));
   });
 
   it('keeps Run now blocked when reloading after a conflict fails', async () => {
@@ -382,7 +382,7 @@ describe('AgentEditor', () => {
     await act(async () => { finish(); await pending; });
     expect(result.current.attachmentsPending).toBe(false);
     await act(async () => { await result.current.run(); });
-    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1');
+    expect(triggerAutomationRun).toHaveBeenCalledWith('agent-1', { trigger: 'manual' });
   });
 
   it.each([
