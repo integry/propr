@@ -9,12 +9,12 @@ body {
 
 :root {
   --mobile-bottom-navigation-height: calc(4rem + env(safe-area-inset-bottom));
-  /* Room a bottom-docked mobile composer leaves above the navigation for the
-     floating Voice briefing launcher (2.75rem tall, 0.75rem above the nav). */
-  --mobile-floating-launcher-clearance: 0px;
+  /* Room a bottom-docked composer leaves below itself for the floating Voice
+     briefing launcher (2.75rem tall, above the mobile nav or the window edge). */
+  --floating-launcher-clearance: 0px;
   /* Room such a composer leaves beside the launcher instead, when the panel is
      too short to stack it above (the launcher's width, offset and a gap). */
-  --mobile-floating-launcher-inline-clearance: 0px;
+  --floating-launcher-inline-clearance: 0px;
 }
 
 /* Sidebar glyphs share one literal stroke weight. Without this, SVG stroke
@@ -57,17 +57,17 @@ body {
   }
 
   html[data-voice-briefing-launcher] {
-    --mobile-floating-launcher-clearance: 4rem;
-    --mobile-floating-launcher-inline-clearance: calc(var(--voice-briefing-launcher-width, 7.5rem) + max(0.75rem, env(safe-area-inset-right)) + 0.5rem);
+    --floating-launcher-clearance: 4rem;
+    --floating-launcher-inline-clearance: calc(var(--voice-briefing-launcher-width, 7.5rem) + max(0.75rem, env(safe-area-inset-right)) + 0.5rem);
   }
 
   /* A docked composer whose panel (a size container) cannot hold it above the
      launcher plus the controls above it sits level with the launcher, beside
      it, so it never covers those controls. */
   @container (max-height: 20rem) {
-    .mobile-launcher-docked-composer {
-      --mobile-floating-launcher-clearance: 0px;
-      padding-right: max(0.75rem, var(--mobile-floating-launcher-inline-clearance));
+    .launcher-docked-composer {
+      --floating-launcher-clearance: 0px;
+      --floating-launcher-inline-reserve: var(--floating-launcher-inline-clearance);
     }
   }
 }
@@ -75,6 +75,21 @@ body {
 @media (min-width: 768px) {
   .mobile-content-clearance {
     padding-bottom: 0;
+  }
+
+  /* On desktop the launcher floats 1.25rem in from the window's lower-right
+     corner, where a docked composer in the rightmost pane ends. */
+  html[data-voice-briefing-launcher] {
+    --floating-launcher-clearance: 4.5rem;
+    --floating-launcher-inline-clearance: calc(var(--voice-briefing-launcher-width, 7.5rem) + 1.25rem + 0.5rem);
+  }
+
+  /* The desktop composer is taller, so it moves beside the launcher sooner. */
+  @container (max-height: 24rem) {
+    .launcher-docked-composer {
+      --floating-launcher-clearance: 0px;
+      --floating-launcher-inline-reserve: var(--floating-launcher-inline-clearance);
+    }
   }
 
 }

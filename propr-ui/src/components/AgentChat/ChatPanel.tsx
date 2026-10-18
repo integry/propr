@@ -241,8 +241,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Floating Input Bar - visually detached from bottom. The page already
           reserves the mobile navigation's height; only a shown Voice briefing
-          launcher needs extra room, above it or, in a short panel, beside it. */}
-      <div className="mobile-launcher-docked-composer sticky bottom-0 z-10 flex-shrink-0 bg-[#F8FAFC] px-3 pb-[max(0.75rem,var(--mobile-floating-launcher-clearance))] pt-3 md:p-4 [@container(max-height:14rem)]:pb-[max(0.5rem,var(--mobile-floating-launcher-clearance))] [@container(max-height:14rem)]:pt-2">
+          launcher (above the mobile navigation, or at the desktop window's
+          corner) needs extra room, above it or, in a short panel, beside it. */}
+      <div className="launcher-docked-composer sticky bottom-0 z-10 flex-shrink-0 bg-[#F8FAFC] pb-[max(0.75rem,var(--floating-launcher-clearance))] pl-3 pr-[max(0.75rem,var(--floating-launcher-inline-reserve,0px))] pt-3 md:pb-[max(1rem,var(--floating-launcher-clearance))] md:pl-4 md:pr-[max(1rem,var(--floating-launcher-inline-reserve,0px))] md:pt-4 [@container(max-height:14rem)]:pb-[max(0.5rem,var(--floating-launcher-clearance))] [@container(max-height:14rem)]:pt-2">
         <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-2 shadow-md sm:items-end sm:gap-2 sm:p-4">
           <input
             type="text"

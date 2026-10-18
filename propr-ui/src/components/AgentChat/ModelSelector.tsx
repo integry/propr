@@ -194,7 +194,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
           role="listbox"
           aria-label="Available models"
           aria-multiselectable="true"
-          className="scrollbar-stealth absolute left-2 right-2 top-[45px] z-20 max-h-[min(18rem,calc(100cqh-3.5rem-var(--mobile-floating-launcher-clearance)))] overflow-y-auto overscroll-contain rounded-md border border-slate-200 bg-white py-1 shadow-xl sm:left-3 sm:right-3 sm:top-[46px]"
+          className="scrollbar-stealth absolute left-2 right-2 top-[45px] z-20 max-h-[min(18rem,calc(100cqh-3.5rem-var(--floating-launcher-clearance)))] overflow-y-auto overscroll-contain rounded-md border border-slate-200 bg-white py-1 shadow-xl sm:left-3 sm:right-3 sm:top-[46px]"
         >
           {filteredOptions.length > 0 ? filteredOptions.map((option, index) => {
             const isSelected = selectedModels.some(selected => isSameAgentModel(selected, option));

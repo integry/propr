@@ -41,12 +41,18 @@ const cases: Array<{ name: string; size: { width: number; height: number }; shel
   { name: 'web 320x720', size: { width: 320, height: 720 } },
   { name: 'web 390x844', size: { width: 390, height: 844 } },
   { name: 'web desktop 1280x800', size: { width: 1280, height: 800 } },
+  // On desktop the launcher floats at the window's lower-right corner, where the Playground composer ends.
+  { name: 'web desktop 1280x800 with Voice briefing', size: { width: 1280, height: 800 }, voice: true },
+  { name: 'native Linux desktop 1280x800 with Voice briefing', size: { width: 1280, height: 800 }, shell: { platform: 'linux' }, voice: true },
+  { name: 'native Linux maximized desktop 1024x600 with Voice briefing', size: { width: 1024, height: 600 }, shell: { platform: 'linux', expanded: true }, voice: true },
+  { name: 'web desktop 768x420 with Voice briefing', size: { width: 768, height: 420 }, voice: true },
 ];
+
+const desktopProfile = { id: 'composer-fixture', name: 'Preview workspace', kind: 'remote' as const, baseUrl: 'https://fixture.example.test' };
 
 /** A controlled desktop bridge with a synthetic workspace; it never reaches a real instance. */
 async function installDesktopBridge(page: Page, platform: 'linux' | 'macos') {
-  await page.addInitScript(platform => {
-    const profile = { id: 'composer-fixture', name: 'Preview workspace', kind: 'remote' as const, baseUrl: 'https://fixture.example.test' };
+  await page.addInitScript(({ platform, profile }) => {
     window.__PROPR_DESKTOP__ = {
       isDesktop: true, platform,
       app: { onDeepLink: () => () => undefined },
@@ -57,7 +63,7 @@ async function installDesktopBridge(page: Page, platform: 'linux' | 'macos') {
       localSetup: { supported: false, setup: async () => profile },
       externalBrowser: { open: async () => undefined },
     };
-  }, platform);
+  }, { platform, profile: desktopProfile });
 }
 
 async function stubApis(page: Page) {
@@ -137,9 +143,10 @@ async function openPlayground(page: Page, baseURL: string, size: { width: number
     await installWindowActions(page, shell);
   }
   if (voice) {
+    // The opt-in belongs to the instance the app is signed in to: in the shell, the workspace's own URL.
     await page.addInitScript(
       key => localStorage.setItem(key, 'true'),
-      browserVoicePreferenceKey(new URL(baseURL).origin, user.id),
+      browserVoicePreferenceKey(shell?.platform ? desktopProfile.baseUrl : new URL(baseURL).origin, user.id),
     );
   }
   const prompts = await stubApis(page);
@@ -235,6 +242,7 @@ async function settleMobileLayout(page: Page) {
 
 const resizeCases: Array<{ name: string; shell?: Shell; voice?: boolean }> = [
   { name: 'native Linux', shell: { platform: 'linux' } },
+  { name: 'native Linux with Voice briefing', shell: { platform: 'linux' }, voice: true },
   { name: 'web with Voice briefing', voice: true },
 ];
 
@@ -261,7 +269,12 @@ for (const { name, shell, voice } of resizeCases) {
     await search.blur();
     await expectModels();
     await input.fill('Desktop question');
-    await input.press('Enter');
+    // Sent at desktop size with a normal pointer click on the lower part of Send, clear of any launcher.
+    await expectUnobscured(page, input);
+    await expectUnobscured(page, send);
+    if (voice) await expectLauncherOperable(page);
+    const desktopBox = (await send.boundingBox())!;
+    await page.mouse.click(desktopBox.x + desktopBox.width / 2, desktopBox.y + desktopBox.height * 0.9);
     await expect(transcript.getByText('Controlled reply')).toHaveCount(2);
     await input.fill('Desktop draft');
 

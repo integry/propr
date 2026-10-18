@@ -101,9 +101,10 @@ function EnabledVoiceBriefingControl() {
   const launcherRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Mobile composers docked above the bottom navigation keep clear of this
-  // floating launcher only while it is shown (see index.css). One too short to
-  // sit above it sits beside it instead, so the launcher publishes its width.
+  // Bottom-docked composers, above the mobile navigation or at the desktop
+  // window's lower edge, keep clear of this floating launcher only while it is
+  // shown (see index.css). One too short to sit above it sits beside it
+  // instead, so the launcher publishes its width.
   useEffect(() => {
     const root = document.documentElement;
     const launcher = launcherRef.current;
