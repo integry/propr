@@ -36,6 +36,8 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
 
   const triggerLabel = TRIGGER_LABELS[layout];
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const categoryToggleRef = useRef<HTMLButtonElement>(null);
   const categoryDropdownRef = useRef<HTMLDivElement>(null);
 
   // Infer active repo from URL path
@@ -91,6 +93,32 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [isOpen, layout]);
+
+  // Escape dismisses the toolbar popover like a press outside it (the unsent
+  // form is discarded) and hands focus back to its trigger. Escape handled by a
+  // nested control, such as the repository filter, is left alone, and an open
+  // category list closes first. The inline form leaves Escape to its sheet.
+  useEffect(() => {
+    if (!isOpen || layout === 'inline') return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      // Only Escape from within the popover, or with nothing focused (after a
+      // press on its non-focusable surface), belongs to it.
+      const target = e.target as Node;
+      if (target !== document.body && !containerRef.current?.contains(target)) return;
+      e.preventDefault();
+      if (categoryDropdownOpen) {
+        setCategoryDropdownOpen(false);
+        categoryToggleRef.current?.focus();
+        return;
+      }
+      setIsOpen(false);
+      resetForm();
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [isOpen, layout, categoryDropdownOpen]);
 
   // Load categories when selected repo changes
   useEffect(() => {
@@ -175,6 +203,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     <div className="relative" ref={containerRef}>
       {/* Ghost Button Trigger */}
       <button
+        ref={triggerRef}
         onClick={() => {
           if (disabled) return;
           setIsOpen(!isOpen);
@@ -263,6 +292,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
               {categories.length > 0 && (
                 <div className="relative" ref={categoryDropdownRef}>
                   <button
+                    ref={categoryToggleRef}
                     onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
                     className="flex items-center gap-1.5 px-2 py-1 bg-slate-50 border border-slate-200 hover:border-slate-300 transition-colors w-full text-left"
                   >

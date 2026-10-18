@@ -1,9 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTodo, getCategories, type RepoTodoCategory } from '../api/repoTodosApi';
 import { fetchEnabledRepos } from '../utils/repoHelpers';
 import { savePlannerSettings } from '../hooks/usePlannerSettings';
+import BottomSheet from './MobileBottomSheet';
 import QuickAddTodo from './QuickAddTodo';
 
 vi.mock('../api/repoTodosApi', () => ({ createTodo: vi.fn(), getCategories: vi.fn() }));
@@ -122,4 +124,110 @@ it('ignores a category response from the previous to-do after Add another', asyn
   await act(async () => resolveCategories(categories));
   expect(screen.getByRole('button', { name: 'Uncategorized' })).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Bugs' })).not.toBeInTheDocument();
+});
+
+describe('Escape in the toolbar popover', () => {
+  const trigger = () => screen.getByRole('button', { name: 'Quick add to-do' });
+
+  it('dismisses the popover opened from its trigger, discards the draft and refocuses the trigger', async () => {
+    await openForm();
+    const textarea = screen.getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: 'Unsent idea' } });
+    textarea.focus();
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(trigger()).toHaveFocus();
+    expect(createTodo).not.toHaveBeenCalled();
+    fireEvent.click(trigger());
+    expect(await screen.findByRole('textbox')).toHaveValue('');
+  });
+
+  it('dismisses the popover opened by the native New To-do shortcut', async () => {
+    // Like GlobalHeader, the parent clears its request once it is handled.
+    const Header = () => {
+      const [requested, setRequested] = useState(true);
+      return <QuickAddTodo externalOpen={requested} onExternalOpenHandled={() => setRequested(false)} />;
+    };
+    render(<MemoryRouter><Header /></MemoryRouter>);
+    const textarea = await screen.findByRole('textbox');
+    expect(textarea).toHaveFocus();
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(trigger()).toHaveFocus();
+    expect(createTodo).not.toHaveBeenCalled();
+  });
+
+  it('dismisses with nothing focused, but ignores Escape from controls outside it', async () => {
+    render(<MemoryRouter><button type="button">Elsewhere</button><QuickAddTodo /></MemoryRouter>);
+    fireEvent.click(trigger());
+    await screen.findByRole('textbox');
+    const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+    elsewhere.focus();
+    fireEvent.keyDown(elsewhere, { key: 'Escape' });
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('closes the success confirmation too', async () => {
+    await openForm();
+    await submitTodo();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Add another' }), { key: 'Escape' });
+    expect(screen.queryByText('To-Do added')).not.toBeInTheDocument();
+    expect(trigger()).toHaveFocus();
+    expect(createTodo).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the popover open when the repository filter handles Escape', async () => {
+    await openForm();
+    fireEvent.click(screen.getByRole('button', { name: 'acme/beta' }));
+    const filter = screen.getByPlaceholderText('Filter repositories...');
+    fireEvent.keyDown(filter, { key: 'Escape' });
+    expect(screen.queryByPlaceholderText('Filter repositories...')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+  });
+
+  it('closes an open category list before the popover', async () => {
+    await openForm();
+    const categoryToggle = screen.getByRole('button', { name: 'Uncategorized' });
+    fireEvent.click(categoryToggle);
+    const bugs = screen.getByRole('button', { name: 'Bugs' });
+    bugs.focus();
+    fireEvent.keyDown(bugs, { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: 'Bugs' })).not.toBeInTheDocument();
+    expect(categoryToggle).toHaveFocus();
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    fireEvent.keyDown(categoryToggle, { key: 'Escape' });
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(trigger()).toHaveFocus();
+  });
+
+  it('ignores Escape that ends an IME composition', async () => {
+    await openForm();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape', isComposing: true });
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+  });
+});
+
+it('leaves Escape in the inline form to its containing Create sheet', async () => {
+  const onClose = vi.fn();
+  render(
+    <MemoryRouter>
+      <BottomSheet id="create" title="Create" closeLabel="Close Create menu" onClose={onClose}>
+        <QuickAddTodo layout="inline" />
+      </BottomSheet>
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'New To-do' }));
+  const textarea = await screen.findByRole('textbox');
+  // A nested control's handled Escape reaches neither the form nor the sheet.
+  fireEvent.click(await screen.findByRole('button', { name: 'acme/alpha' }));
+  fireEvent.keyDown(screen.getByPlaceholderText('Filter repositories...'), { key: 'Escape' });
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.keyDown(textarea, { key: 'Escape' });
+  expect(onClose).toHaveBeenCalledTimes(1);
+  // The sheet decides what Escape closes; the form itself stays expanded.
+  expect(screen.getByRole('textbox')).toBeInTheDocument();
+  expect(createTodo).not.toHaveBeenCalled();
 });
