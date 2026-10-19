@@ -203,9 +203,11 @@ for (const shell of windows) {
         const actions = form.actions.map(name => dialog.getByRole('button', { name, exact: true }));
         const run = actions.at(-1)!;
         await expect(run).toBeEnabled();
-        // However the header and the actions wrap, the header sticks exactly where every whole action fits below it.
+        // However the header and the actions wrap, it sticks only where its tallest whole action fits below it. A
+        // taller pane, past the 20rem short band, keeps a static header even where an action would fit, so a fit
+        // does not require a sticky header; the explicit `header` windows pin which side of the band each is on.
         const fit = await headerFit(dialog, form.actions);
-        expect(fit.sticky, 'the header sticks only where its tallest action fits whole beneath it').toBe(fit.fits);
+        if (fit.sticky) expect(fit.fits, 'the header sticks only where its tallest action fits whole beneath it').toBe(true);
 
         // A wheel over the pane reaches each whole action, then scrolls back up to the start of the field.
         for (const action of actions) {
@@ -298,6 +300,79 @@ test.describe('web 370x345 resized to 370x130', () => {
       const close = dialog.getByRole('button', { name: form.close });
       await wheelToShow(page, dialog, close);
       await expectClearOfChrome(page, dialog, close, {}, 40);
+      expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
+    });
+  }
+});
+
+// Real sequential keyboard navigation at the issue's geometry: Tab and Shift+Tab go through the browser's focus
+// order and the dialog's wrap-around handler rather than focusing a control directly, and each step brings the
+// focused action wholly into view below the header and, going back, the field's caret.
+const issueWindow = windows[0];
+test.describe(`${issueWindow.name} Tab traversal`, () => {
+  test.use({ viewport: issueWindow.size, deviceScaleFactor: issueWindow.scale, hasTouch: true });
+
+  for (const form of forms) {
+    test(`${issueWindow.name}: ${form.name} Tab and Shift+Tab bring each whole action and the caret into view`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await desktopFixture(page, issueWindow.platform!);
+      await installWindowActions(page, issueWindow);
+      const requests = await newTaskFixture(page);
+      await stubGoals(page);
+      await page.goto(form.path);
+      const dialog = page.getByRole('dialog', { name: form.name });
+      const close = dialog.getByRole('button', { name: form.close });
+      const field = dialog.getByLabel(form.field, { exact: true });
+      await expect(field).toBeFocused();
+      // Focus has to land below a header that stays put, not one that scrolls away with the form.
+      expect(await dialog.locator('header').evaluate(header => getComputedStyle(header).position), 'the header sticks here').toBe('sticky');
+      const repository = dialog.getByText('Select a repository', { exact: true });
+      if (await repository.isVisible()) {
+        await repository.click();
+        await page.getByRole('button', { name: /acme.*billing/ }).click();
+      }
+      await field.fill(draft);
+      await field.press('End');
+      await field.pressSequentially('.');
+      const typed = `${draft}.`;
+      const actions = form.actions.map(name => dialog.getByRole('button', { name, exact: true }));
+      const run = actions.at(-1)!;
+      await expect(run).toBeEnabled();
+      const focused = (target: Locator) => target.evaluate(element => element === document.activeElement);
+      const tabTo = async (target: Locator, key: 'Tab' | 'Shift+Tab') => {
+        for (let step = 0; step < 40 && !(await focused(target)); step++) await page.keyboard.press(key);
+        await expect(target).toBeFocused();
+        await settle(page);
+      };
+
+      // Forward from the field, each action in turn takes focus and is scrolled wholly into view.
+      for (const action of actions) {
+        await tabTo(action, 'Tab');
+        await expectWhole(action);
+      }
+      // Past the last control, focus wraps to the close button, shown clear of the window's chrome; Shift+Tab from it
+      // wraps back to the submit action, whole again.
+      await tabTo(close, 'Tab');
+      await expectShown(close);
+      await expectClearOfChrome(page, dialog, close, issueWindow, 40);
+      await page.keyboard.press('Shift+Tab');
+      await expect(run).toBeFocused();
+      await settle(page);
+      await expectWhole(run);
+      // Back through the actions to the field, whose caret comes back into view.
+      for (const action of actions.slice(0, -1).reverse()) {
+        await tabTo(action, 'Shift+Tab');
+        await expectWhole(action);
+      }
+      await tabTo(field, 'Shift+Tab');
+      await field.press('Control+End');
+      const caret = await caretShown(field);
+      expect(caret.top, 'the caret line starts in view').toBeGreaterThanOrEqual(-0.5);
+      expect(caret.bottom, 'the caret line ends in view').toBeGreaterThanOrEqual(-0.5);
+
+      await expect(field).toHaveValue(typed);
+      await expect(dialog.getByRole('button', { name: /acme.*billing/ }).first()).toBeVisible();
+      expect(await inert(page.getByRole('group', { name: 'Window controls' }))).toBe(false);
       expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
     });
   }
