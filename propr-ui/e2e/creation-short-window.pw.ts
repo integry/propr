@@ -18,13 +18,17 @@ const forms = [
   { name: 'Start a goal', path: '/goals?new=1', close: 'Close goal creation', field: 'Prompt', actions: ['Cancel', 'Start goal'] },
 ];
 
-const windows: Array<{ name: string; size: { width: number; height: number }; scale: number; text?: string } & Shell> = [
+const windows: Array<{ name: string; size: { width: number; height: number }; scale: number; text?: string; header?: 'sticky' | 'scrolls' } & Shell> = [
   { name: 'linux-restored zoomed 370x345', platform: 'linux', size: zoomed, scale: zoomedScale },
   { name: 'linux-maximized zoomed 370x345', platform: 'linux', expanded: true, size: zoomed, scale: zoomedScale },
   // Taller than the shell's 20rem short band, but too short for the wrapped header and actions around a usable form.
   { name: 'web 370x345', size: zoomed, scale: 1 },
   { name: 'web 260x420', size: { width: 260, height: 420 }, scale: 1 },
   { name: 'linux-restored 420x480 enlarged text', platform: 'linux', size: { width: 420, height: 480 }, scale: 1, text: '150%' },
+  // Either side of the 7.5rem band (inside the layer's padding) where the 73px header plus a 44px action fit under
+  // it: below, the header scrolls away with the form; from it up, it stays put above at least a whole action.
+  { name: 'web 370x130', size: { width: 370, height: 130 }, scale: 1, header: 'scrolls' },
+  { name: 'web 370x144', size: { width: 370, height: 144 }, scale: 1, header: 'sticky' },
 ];
 
 /**
@@ -46,12 +50,16 @@ const uncovered = (element: Locator) => element.evaluate(target => {
   return { top: box.top - low, bottom: high - box.bottom };
 });
 
-/** A point in the pane's side gutter below its header, where no drag or wheel starts on a control. */
+/**
+ * A point in the pane's side gutter below its header, where no drag or wheel starts on a control, and the height of
+ * the strip it centres, which a drag must stay within to start and end on the pane.
+ */
 async function gutter(dialog: Locator) {
   const pane = (await dialog.boundingBox())!;
   const header = (await dialog.locator('header').boundingBox())!;
   const top = Math.max(header.y + header.height, pane.y);
-  return { x: Math.round(pane.x + 8), y: Math.round((top + Math.min(pane.y + pane.height, header.y + header.height + 200)) / 2) };
+  const bottom = Math.min(pane.y + pane.height, top + 200);
+  return { x: Math.round(pane.x + 8), y: Math.round((top + bottom) / 2), span: Math.floor(bottom - top) - 4 };
 }
 
 const settle = (page: Page) => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -63,7 +71,8 @@ async function wheelToShow(page: Page, dialog: Locator, target: Locator) {
   for (let step = 0; step < 40; step++) {
     const { top, bottom } = await uncovered(target);
     if (top >= -0.5 && bottom >= -0.5) return;
-    await page.mouse.wheel(0, top < 0 ? -40 : 40);
+    // Notches up to 40px, finer as the target nears, as a precision wheel or touchpad lands it in a tight gap.
+    await page.mouse.wheel(0, top < 0 ? -Math.min(40, Math.ceil(-top)) : Math.min(40, Math.ceil(-bottom)));
     await settle(page);
   }
 }
@@ -73,8 +82,8 @@ async function dragToShow(page: Page, touch: CDPSession, dialog: Locator, target
   for (let step = 0; step < 40; step++) {
     const { top, bottom } = await uncovered(target);
     if (top >= -0.5 && bottom >= -0.5) return;
-    const { x, y } = await gutter(dialog);
-    const distance = (top < 0 ? 1 : -1) * (15 + Math.min(Math.ceil(top < 0 ? -top : -bottom) + 1, 30));
+    const { x, y, span } = await gutter(dialog);
+    const distance = (top < 0 ? 1 : -1) * Math.min(15 + Math.min(Math.ceil(top < 0 ? -top : -bottom) + 1, 30), span);
     await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: y - distance / 2 }] });
     for (let move = 1; move <= 8; move++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: Math.round(y - distance / 2 + distance * move / 8) }] });
     await page.waitForTimeout(50);
@@ -90,6 +99,17 @@ async function expectWhole(action: Locator) {
   expect(bottom, `${action} ends inside the pane`).toBeGreaterThanOrEqual(-0.5);
   expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
   expect(await strayPoints(action)).toEqual([]);
+}
+
+/** A return trip's destination is wholly in view below any sticky header and takes a press at its centre. */
+async function expectShown(target: Locator) {
+  const { top, bottom } = await uncovered(target);
+  expect(top, `${target} starts in view`).toBeGreaterThanOrEqual(-0.5);
+  expect(bottom, `${target} ends in view`).toBeGreaterThanOrEqual(-0.5);
+  expect(await target.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+  }), `${target} is not covered`).toBe(true);
 }
 
 /** Where the caret's line of glyphs sits in what the reader sees; the draft's lines are too short to wrap. */
@@ -131,8 +151,14 @@ for (const shell of windows) {
         const close = dialog.getByRole('button', { name: form.close });
         const field = dialog.getByLabel(form.field, { exact: true });
         await expect(field).toBeFocused();
+        // Below the sticky band the focused field has scrolled the header away; the reader scrolls back up to it.
+        if (shell.header === 'scrolls') await wheelToShow(page, dialog, close);
         // The native titlebar stays the window's, and the shell keeps its 40px close control.
         await expectClearOfChrome(page, dialog, close, shell, 40);
+        if (shell.header) {
+          const position = await dialog.locator('header').evaluate(header => getComputedStyle(header).position);
+          expect(position, 'the header sticks only where a whole action fits beneath it').toBe(shell.header === 'sticky' ? 'sticky' : 'static');
+        }
 
         // An unsent draft with the acceptance repository selected.
         const repository = dialog.getByText('Select a repository', { exact: true });
@@ -158,14 +184,18 @@ for (const shell of windows) {
           await expectWhole(action);
         }
         await capture(page, `creation-short-window-${form.path.split('/')[1].replace(/\?.*/, '')}-${shell.name.replace(/[ .]/g, '-')}`);
-        await wheelToShow(page, dialog, dialog.getByText(form.field, { exact: true }));
+        const label = dialog.getByText(form.field, { exact: true });
+        await wheelToShow(page, dialog, label);
+        await expectShown(label);
 
         // Touch drags travel the same way, back down to the submit action and up to the repository.
         if (browserName === 'chromium') {
           const touch = await page.context().newCDPSession(page);
           await dragToShow(page, touch, dialog, run);
           await expectWhole(run);
-          await dragToShow(page, touch, dialog, dialog.getByRole('button', { name: /acme.*billing/ }).first());
+          const repositoryButton = dialog.getByRole('button', { name: /acme.*billing/ }).first();
+          await dragToShow(page, touch, dialog, repositoryButton);
+          await expectShown(repositoryButton);
         }
 
         // Keyboard focus scrolls the submit action wholly into view, and focusing the field brings its caret back.
