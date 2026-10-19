@@ -2,12 +2,13 @@ import { SIGNED_RPM_ACCEPTANCE_CHECKS } from './signed-rpm-acceptance-evidence.m
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { inspectSignedPreviewPayload } from './rpm-preview-payload.mjs';
-import { OWNER_FINGERPRINT, rpmIdentityFromEnvironment, withKey, assertRpmSignatures, requireRpmIdentity, rpmContentDigest, signRpm, verifyRpm } from './rpm-signing.mjs';
+import { OWNER_FINGERPRINT, rpmIdentityFromEnvironment, withKey, assertRpmSignatures, requireRpmIdentity, rpmContentDigest, rpmPublicKeyFileContents, signRpm, verifyRpm, writeRpmPublicKeyFile } from './rpm-signing.mjs';
 import { linuxPreviewTag, prepareLinuxPreview, readLinuxPreviewBundle, signLinuxPreviewBundle, stageLinuxPreviewDraft, publishLinuxPreviewDraft } from './linux-preview-release.mjs';
 import { aptAcceptance } from './apt-auth-acceptance.mjs';
 import { authAssets, aptAssets, signMetadata, verifyMetadata, verifyApt } from './linux-package-auth.mjs';
@@ -208,6 +209,59 @@ test('production environment pin accepts only the replacement owner fingerprint 
     process.env.PROPR_DESKTOP_RPM_PUBLIC_KEY = publicKey;
     await assert.rejects(withKey(rpmIdentityFromEnvironment(), async () => {}), /pinned, usable RSA/);
   }
+});
+
+test('RPM public-key tool files are LF-terminated without rewriting key material', async t => {
+  const armor = '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBGdisposable\n=AbCd\n-----END PGP PUBLIC KEY BLOCK-----';
+  const root = await mkdtemp(join(tmpdir(), 'propr-rpm-public-file-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [publicKey, expected] of [[armor, `${armor}\n`], [`${armor}\n`, `${armor}\n`], [`${armor}\r\n`, `${armor}\r\n`]]) {
+    const identity = Object.freeze({ fingerprint: 'A'.repeat(40), publicKey });
+    assert.equal(rpmPublicKeyFileContents(identity), expected);
+    const path = join(root, `public-${publicKey.length}.asc`);
+    await writeRpmPublicKeyFile(path, identity);
+    assert.equal(await readFile(path, 'utf8'), expected);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal(identity.publicKey, publicKey);
+  }
+  // Serialization never bypasses identity validation.
+  for (const identity of [{ fingerprint: 'a'.repeat(40), publicKey: armor }, { fingerprint: 'A'.repeat(40), publicKey: armor.replace('PUBLIC', 'PRIVATE') }]) {
+    assert.throws(() => rpmPublicKeyFileContents(identity), /exact uppercase OpenPGP fingerprint/);
+    await assert.rejects(writeRpmPublicKeyFile(join(root, 'rejected.asc'), identity), /exact uppercase OpenPGP fingerprint/);
+  }
+  assert.equal(existsSync(join(root, 'rejected.asc')), false);
+});
+
+test('unterminated disposable public armor imports into a fresh RPM database through withKey', {
+  skip: missing.length ? `Missing tools: ${missing}` : false,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-rpm-unterminated-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const disposable = await key(root, 'unterminated');
+  const other = await key(root, 'other');
+  const exported = disposable.identity.publicKey;
+  assert.match(exported, /-----END PGP PUBLIC KEY BLOCK-----\n$/);
+  const unterminated = exported.replace(/\n+$/, '');
+  for (const publicKey of [unterminated, exported]) {
+    const identity = Object.freeze({ fingerprint: disposable.identity.fingerprint, publicKey });
+    const home = await withKey(identity, async (keyHome, publicPath) => {
+      assert.equal(await readFile(publicPath, 'utf8'), `${unterminated}\n`);
+      assert.equal((await stat(publicPath)).mode & 0o777, 0o600);
+      const database = join(keyHome, 'rpmdb');
+      await mkdir(database);
+      run('rpmdb', ['--dbpath', database, '--initdb']);
+      run('rpmkeys', ['--dbpath', database, '--import', publicPath]);
+      const keys = run('rpm', ['--dbpath', database, '-qa', 'gpg-pubkey*']).trim().split('\n');
+      assert.deepEqual(keys.map(name => name.split('-')[2]), [identity.fingerprint.slice(-8).toLowerCase()]);
+      return keyHome;
+    });
+    assert.equal(existsSync(home), false, 'temporary key home is removed');
+    assert.equal(identity.publicKey, publicKey);
+  }
+  // Fingerprint equality and exactly-one-key checks still reject unterminated input.
+  await assert.rejects(withKey({ fingerprint: other.identity.fingerprint, publicKey: unterminated }, async () => {}), /pinned, usable RSA/);
+  await assert.rejects(withKey({ fingerprint: disposable.identity.fingerprint, publicKey: `${unterminated}\n${other.identity.publicKey.trimEnd()}` },
+    async () => {}), /pinned, usable RSA/);
 });
 
 test('signature status parsing ignores filename tokens but requires both pinned signatures', () => {

@@ -80,7 +80,7 @@ test('diagnostics are rebuilt from allowlisted fields and keep the primary failu
 
 // A fake Docker CLI that echoes secret-bearing arguments/environment on every stream and fails on request.
 const fakeDocker = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const scenario = JSON.parse(readFileSync(join(__dirname, 'scenario.json'), 'utf8'));
 const state = join(__dirname, 'state.json');
@@ -103,6 +103,9 @@ if (key === 'network inspect') process.stdout.write((spec.owner ?? saved.network
 if (key === 'run') {
   saved.container = label.split('=')[1];
   saved.workspace = args.find(arg => arg.endsWith(',dst=/evidence')).split(',')[1].slice(4).replace(/\\/evidence$/, '');
+  const publicKey = args.find(arg => arg.endsWith(',dst=/input/public.asc,readonly')).split(',')[1].slice(4);
+  saved.publicKey = readFileSync(publicKey, 'utf8');
+  saved.publicKeyMode = statSync(publicKey).mode & 0o777;
   save();
   if (spec.mutate) appendFileSync(args.find(arg => arg.endsWith(',dst=/input/preview.rpm,readonly')).split(',')[1].slice(4), 'x');
   if (spec.exit === undefined) {
@@ -123,7 +126,7 @@ if (spec.signal) process.kill(process.pid, spec.signal);
 process.exitCode = spec.exit ?? 0;
 `;
 
-const harness = async (t, scenario) => {
+const harness = async (t, scenario, publicKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----\n${SECRET}\n`) => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'signed-rpm-diagnostics-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = join(directory, 'bin');
@@ -138,7 +141,7 @@ const harness = async (t, scenario) => {
   const output = join(directory, 'output');
   const options = {
     rpm, outputDirectory: output, sourceRevision: 'a'.repeat(40), signingRunId: '42',
-    identity: { fingerprint: 'B'.repeat(40), publicKey: `-----BEGIN PGP PUBLIC KEY BLOCK-----\n${SECRET}\n` },
+    identity: { fingerprint: 'B'.repeat(40), publicKey },
   };
   const verified = [];
   const execute = (dependencies = {}) => runSignedInstalledRpmAcceptance(options, {
@@ -147,7 +150,7 @@ const harness = async (t, scenario) => {
   });
   const calls = async () => (await readFile(join(bin, 'calls.log'), 'utf8')).trim().split('\n');
   const state = async () => existsSync(join(bin, 'state.json')) ? JSON.parse(await readFile(join(bin, 'state.json'), 'utf8')) : {};
-  return { execute, calls, state, output, verified };
+  return { execute, calls, state, output, verified, identity: options.identity };
 };
 
 const fullFlow = { skip: linuxX64 ? false : 'Signed RPM acceptance runs only on native Linux x64' };
@@ -173,6 +176,20 @@ test('a complete fake run still emits strict evidence after owned cleanup', full
   assert.deepEqual(JSON.parse(await readFile(join(run.output, 'signed-rpm-acceptance.json'), 'utf8')), evidence);
   assert.deepEqual(await run.calls(), ['info', 'build', 'network create', 'run', ...cleanupCalls]);
   assert.equal(existsSync((await run.state()).workspace), false, 'private workspace is removed');
+}));
+
+test('container key input ends with LF even when the configured public armor does not', fullFlow, t => withOptIn(async () => {
+  const armor = `-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n${SECRET}\n=AbCd\n-----END PGP PUBLIC KEY BLOCK-----`;
+  for (const publicKey of [armor, `${armor}\n`]) {
+    const run = await harness(t, {}, publicKey);
+    assert.equal((await run.execute()).status, 'passed');
+    const { publicKey: mounted, publicKeyMode, workspace } = await run.state();
+    // Only the tool input file is terminated; the configured identity string is not mutated.
+    assert.equal(mounted, `${armor}\n`);
+    assert.equal(publicKeyMode, 0o600);
+    assert.equal(run.identity.publicKey, publicKey);
+    assert.equal(existsSync(workspace), false, 'private workspace is removed');
+  }
 }));
 
 for (const [label, scenario, expected, calls] of [

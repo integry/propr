@@ -22,6 +22,17 @@ export function requireRpmIdentity(identity) {
   return identity;
 }
 
+// Tool input files only: some RPM releases reject armor without a final LF
+// ("not an armored public key"). The identity's raw publicKey stays unchanged.
+export function rpmPublicKeyFileContents(identity) {
+  const { publicKey } = requireRpmIdentity(identity);
+  return publicKey.endsWith('\n') ? publicKey : `${publicKey}\n`;
+}
+
+export async function writeRpmPublicKeyFile(path, identity) {
+  await writeFile(path, rpmPublicKeyFileContents(identity), { mode: 0o600 });
+}
+
 export function rpmIdentityFromEnvironment() {
   if (process.env.PROPR_DESKTOP_RPM_FINGERPRINT !== OWNER_FINGERPRINT) throw new Error('Release identity differs from owner pin');
   return requireRpmIdentity({
@@ -48,7 +59,7 @@ export async function withKey(identity, callback) {
   const home = await mkdtemp(join(tmpdir(), 'propr-rpm-key-'));
   try {
     const publicPath = join(home, 'release.asc');
-    await writeFile(publicPath, identity.publicKey, { mode: 0o600 });
+    await writeRpmPublicKeyFile(publicPath, identity);
     await run('gpg', ['--batch', '--no-autostart', '--import', publicPath], home);
     const { stdout } = await run('gpg', ['--batch', '--with-colons', '--list-keys'], home);
     const lines = stdout.trim().split('\n').map(line => line.split(':'));

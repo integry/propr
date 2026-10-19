@@ -6,7 +6,7 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertInstalledLinuxAcceptanceArtifact, cleanupOwnedContainer } from './run-installed-linux-package-acceptance.mjs';
 import { prepareSignedRpmAcceptanceContext } from './signed-rpm-acceptance-context.mjs';
-import { requireRpmIdentity, verifyRpm } from './rpm-signing.mjs';
+import { requireRpmIdentity, verifyRpm, writeRpmPublicKeyFile } from './rpm-signing.mjs';
 import { SIGNED_RPM_ACCEPTANCE_CHECKS, validateSignedRpmAcceptanceEvidence } from './signed-rpm-acceptance-evidence.mjs';
 import {
   SignedRpmAcceptanceFailure, classifyFailure, inPhase, runAcceptancePhase, withCleanupFailures,
@@ -46,7 +46,7 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
   let evidence, primary;
   try {
     await inPhase('workspace-setup', async () => {
-      await writeFile(join(directory, 'public.asc'), identity.publicKey, { mode: 0o600 });
+      await writeRpmPublicKeyFile(join(directory, 'public.asc'), identity);
       await mkdir(join(directory, 'evidence'), { mode: 0o700 });
     });
     // Send only the allowlisted context; see signed-rpm-acceptance-context.mjs.
