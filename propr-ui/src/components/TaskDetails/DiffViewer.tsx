@@ -22,6 +22,11 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ file, onClose }) => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    // A swipe carried on past the diff's edge reaches the root, where touch Chromium would take it as a history
+    // swipe (or a pull to refresh) and leave the page under the popup. Only the root's overscroll-behavior stops that.
+    const root = document.documentElement;
+    const previousOverscroll = root.style.overscrollBehavior;
+    root.style.overscrollBehavior = 'none';
     // Desktop window controls stay usable; the rest of the app is inert.
     const restoreBackground = dialogRef.current ? inertOutside(dialogRef.current) : undefined;
     closeRef.current?.focus();
@@ -44,6 +49,7 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ file, onClose }) => {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = previousOverflow;
+      root.style.overscrollBehavior = previousOverscroll;
       restoreBackground?.();
       if (previousFocus?.isConnected) previousFocus.focus();
     };

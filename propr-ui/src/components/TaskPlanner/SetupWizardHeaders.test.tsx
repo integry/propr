@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { EditModeHeader, NewModeHeader } from './SetupWizardHeaders';
+import { EditModeHeader, NewModeHeader, ScopeError } from './SetupWizardHeaders';
 
 const duplicateRepos = [
   { name: 'integry/propr', enabled: true, baseBranch: 'main' },
@@ -86,7 +86,7 @@ describe('SetupWizardHeaders', () => {
     expect(screen.queryByRole('button', { name: /propr \(main\)/i })).not.toBeInTheDocument();
   });
 
-  it('shows branch lookup failures in new mode', () => {
+  it('marks the branch unverified in new mode when its lookup failed', () => {
     render(
       <NewModeHeader
         reposLoading={false}
@@ -100,8 +100,18 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    expect(screen.getByText('GitHub unavailable')).toBeInTheDocument();
     expect(screen.getByText('branch (unverified)')).toBeInTheDocument();
+  });
+
+  it('renders the lookup error as its own wrapping line, and nothing without one', () => {
+    const message = 'GitHub authorization is required. Sign in with the same GitHub account in your instance’s browser login, then retry your original action in Desktop.';
+    const { rerender } = render(<ScopeError message={message} />);
+    const error = screen.getByTestId('scope-error');
+    expect(error).toHaveTextContent(message);
+    expect(error).toHaveClass('[overflow-wrap:anywhere]');
+    expect(error).not.toHaveClass('flex-shrink-0', 'truncate');
+    rerender(<ScopeError message={null} />);
+    expect(screen.queryByTestId('scope-error')).not.toBeInTheDocument();
   });
 
   it('shows a neutral verifying chip, not a warning, before the branch lookup resolves', () => {

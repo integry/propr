@@ -217,8 +217,17 @@ test('390px completed PR: inspect the review, then open and close an added file\
   expect(start.right).toBeGreaterThan(0);
   const diffBox = (await diff.boundingBox())!;
   const centre = { x: diffBox.x + diffBox.width / 2, y: diffBox.y + diffBox.height / 2 };
-  // Neither the task's own scroller nor the window behind the popup has moved.
+  // Neither the task's own scroller nor the window behind the popup has moved, and nothing has navigated: full Chromium
+  // takes a touch swipe chained past a scroller's edge to the root as a history swipe, which drops the popup.
+  const url = page.url();
+  await page.evaluate(() => {
+    const marked = window as typeof window & { diffPopstates?: number };
+    marked.diffPopstates = 0;
+    window.addEventListener('popstate', () => { marked.diffPopstates! += 1; });
+  });
   const pageStill = async () => {
+    expect(page.url()).toBe(url);
+    expect(await page.evaluate(() => (window as typeof window & { diffPopstates?: number }).diffPopstates)).toBe(0);
     expect(await scroller.evaluate(element => element.scrollTop)).toBe(pageScroll);
     expect(await page.evaluate(() => [window.scrollX, window.scrollY])).toEqual([0, 0]);
   };
@@ -236,13 +245,71 @@ test('390px completed PR: inspect the review, then open and close an added file\
     // A finger swiping right brings the start of the lines back, and swiping on past it moves nothing behind.
     // Trusted touch input comes from the Chromium DevTools protocol, so only Chromium covers touch scrolling.
     const touch = await page.context().newCDPSession(page);
-    const swipe = async (distance: number) => {
-      const point = (dx: number) => ({ touchPoints: [{ x: Math.round(diffBox.x + 20 + dx), y: Math.round(centre.y) }] });
+    await diff.evaluate(element => element.addEventListener('touchstart', event => {
+      if (event.isTrusted) element.dataset.touchStarts = String(Number(element.dataset.touchStarts ?? 0) + 1);
+    }, { passive: true }));
+    // A swipe's scroll lands after the input events (and a fling carries on after the finger lifts), so it is read only once
+    // the diff has stopped moving for ten frames in a row.
+    const settled = () => diff.evaluate(element => new Promise<{ top: number; left: number }>(resolve => {
+      let last = { top: element.scrollTop, left: element.scrollLeft };
+      let still = 0;
+      const frame = () => {
+        const now = { top: element.scrollTop, left: element.scrollLeft };
+        still = now.top === last.top && now.left === last.left ? still + 1 : 0;
+        last = now;
+        if (still >= 10) resolve(now); else requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    }));
+    const dialogBox = (await dialog.boundingBox())!;
+    const closeBox = (await close.boundingBox())!;
+    let starts = 0;
+    /** One trusted finger swipe from a point on the diff: it lands on the scroll surface, and the popup and page stay put. */
+    const swipe = async (from: { x: number; y: number }, dx: number, dy: number) => {
+      // The touch starts on the diff itself, not the header or backdrop.
+      expect(await diff.evaluate((element, { x, y }) => element.contains(document.elementFromPoint(x, y)), from)).toBe(true);
+      const point = (step: number) => ({ touchPoints: [{ x: Math.round(from.x + dx * step / 10), y: Math.round(from.y + dy * step / 10) }] });
       await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', ...point(0) });
-      for (let step = 1; step <= 10; step++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', ...point(distance * step / 10) });
+      for (let step = 1; step <= 10; step++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', ...point(step) });
       await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect(diff).toHaveAttribute('data-touch-starts', String(++starts));
+      const landed = await settled();
+      await expect(dialog).toBeVisible();
+      expect(await dialog.boundingBox()).toEqual(dialogBox);
+      expect(await close.boundingBox()).toEqual(closeBox);
+      await pageStill();
+      return landed;
     };
-    for (let swipes = 0; swipes < 8; swipes++) await swipe(300);
+    const near = { x: Math.round(diffBox.x + 20), y: Math.round(centre.y) };
+    // Swiping right brings the lines back step by step until they reach the start; the rest start there and carry on past
+    // it, the edge full Chromium would otherwise take as a history swipe. The diff stays at its end throughout.
+    const lefts = [start.right];
+    for (let swipes = 0; swipes < 8; swipes++) {
+      const landed = await swipe(near, 300, 0);
+      expect(landed.top).toBe(start.bottom);
+      lefts.push(landed.left);
+    }
+    await expect(diff).toHaveAttribute('data-touch-starts', '8');
+    for (const [index, left] of lefts.slice(1).entries()) expect(left).toBeLessThanOrEqual(lefts[index]);
+    expect(lefts[1]).toBeLessThan(start.right);
+    expect(lefts.indexOf(0)).toBeGreaterThan(0);
+    expect(lefts.indexOf(0)).toBeLessThan(lefts.length - 1);
+    // Touch scrolls the other way too: left across the lines again and back, then up from the end and down to it again.
+    const far = { x: near.x + 300, y: near.y };
+    const across = await swipe(far, -300, 0);
+    expect(across.top).toBe(start.bottom);
+    expect(across.left).toBeGreaterThan(0);
+    const back = await swipe(near, 300, 0);
+    expect(back.top).toBe(start.bottom);
+    expect(back.left).toBeLessThan(across.left);
+    expect(await swipe(near, 300, 0)).toEqual({ top: start.bottom, left: 0 });
+    const high = { x: Math.round(centre.x), y: Math.round(diffBox.y + diffBox.height / 4) };
+    const up = await swipe(high, 0, 200);
+    expect(up.left).toBe(0);
+    expect(up.top).toBeLessThan(start.bottom);
+    const low = { x: high.x, y: Math.round(diffBox.y + diffBox.height * 3 / 4) };
+    for (let swipes = 0; swipes < 2; swipes++) expect((await swipe(low, 0, -200)).left).toBe(0);
+    expect((await position()).top).toBe(start.bottom);
   } else {
     // Other engines bring the start of the lines back with the same real wheel input, carried on past it.
     for (let step = 0; step < 12; step++) await page.mouse.wheel(-400, 0);
@@ -254,16 +321,24 @@ test('390px completed PR: inspect the review, then open and close an added file\
   await pageStill();
   await capture(page, 'mobile-added-file-diff-scrolled-390');
 
+  expect(await page.evaluate(() => document.documentElement.style.overscrollBehavior)).toBe('none');
   await close.click();
   await expect(dialog).toHaveCount(0);
   await expect(file).toBeFocused();
+  // Closed, the page's own overscroll (and the browser's history swipe) is back.
+  expect(await page.evaluate(() => document.documentElement.style.overscrollBehavior)).toBe('');
   expect(await scroller.evaluate(element => element.scrollTop)).toBe(pageScroll);
   await expectPhoneLayout(page, [file]);
+  // A page that sets its own root overscroll gets that value back too, however the popup goes.
+  const rootOverscroll = () => page.evaluate(() => document.documentElement.style.overscrollBehavior);
+  await page.evaluate(() => { document.documentElement.style.overscrollBehavior = 'auto contain'; });
   // A tap outside the popup closes it too.
   await file.click();
   await expect(dialog).toBeVisible();
+  expect(await rootOverscroll()).toBe('none');
   await page.mouse.click(2, 2);
   await expect(dialog).toHaveCount(0);
+  expect(await rootOverscroll()).toBe('auto contain');
 
   // 3. The follow-up run's change to the same file opens and closes the same way.
   await runRows.nth(1).click();
@@ -276,8 +351,20 @@ test('390px completed PR: inspect the review, then open and close an added file\
   await expect(dialog).toContainText('space-y-2 break-words');
   await expect(close).toBeInViewport({ ratio: 1 });
   expect(await isHitTarget(close)).toBe(true);
+  expect(await rootOverscroll()).toBe('none');
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
+  expect(await rootOverscroll()).toBe('auto contain');
+  // Unmounted without closing, by going back to the previous run, it restores the value as well.
+  await changed.click();
+  await expect(dialog).toBeVisible();
+  expect(await rootOverscroll()).toBe('none');
+  const followupUrl = page.url();
+  await page.goBack();
+  await expect.poll(() => page.url()).not.toBe(followupUrl);
+  await expect(dialog).toHaveCount(0);
+  expect(await rootOverscroll()).toBe('auto contain');
+  await expect(runRows.nth(0)).toHaveAttribute('aria-expanded', 'true');
 
   // 4. And back to the review, whose score and findings are as they were.
   await runRows.nth(2).click();
