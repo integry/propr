@@ -100,6 +100,18 @@ const phoneWrapping = (header: Locator) => header.evaluate(element => {
   return result;
 });
 
+/** At phone width the name and path each span the header's usable width and break into exactly the reference's lines. */
+async function expectPhoneWrapping(header: Locator, usable: number, file: Case, name: string) {
+  const wrapping = await phoneWrapping(header);
+  expect(wrapping.usable, 'usable width').toBeCloseTo(usable, 0);
+  expect(wrapping.nameWidth, 'name width').toBeGreaterThanOrEqual(usable - 0.5);
+  expect(wrapping.pathWidth, 'path width').toBeGreaterThanOrEqual(usable - 0.5);
+  expect(wrapping.name, 'name lines').toEqual(wrapping.expectedName);
+  expect(wrapping.path, 'path lines').toEqual(wrapping.expectedPath);
+  expect(wrapping.name.join('')).toBe(name);
+  expect(wrapping.path.join('')).toBe(file.path);
+}
+
 async function expectReadableHeader(page: Page, dialog: Locator, file: Case, name: string, options: { enlarged?: boolean; diffShare?: number } = {}) {
   const viewport = page.viewportSize()!;
   const header = dialog.getByTestId('diff-header');
@@ -160,14 +172,7 @@ async function expectReadableHeader(page: Page, dialog: Locator, file: Case, nam
   } else {
     // On a phone the name and path get the header's whole width (the defect left the name one glyph and the path a narrow column) and
     // wrap only where that width runs out, beside and then beneath the close control, and the status and counts follow below them.
-    const wrapping = await phoneWrapping(header);
-    expect(wrapping.usable).toBeCloseTo(usable, 0);
-    expect(wrapping.nameWidth).toBeGreaterThanOrEqual(usable - 0.5);
-    expect(wrapping.pathWidth).toBeGreaterThanOrEqual(usable - 0.5);
-    expect(wrapping.name, 'name lines').toEqual(wrapping.expectedName);
-    expect(wrapping.path, 'path lines').toEqual(wrapping.expectedPath);
-    expect(wrapping.name.join('')).toBe(name);
-    expect(wrapping.path.join('')).toBe(file.path);
+    await expectPhoneWrapping(header, usable, file, name);
     expect(statusBox.y).toBeGreaterThanOrEqual(pathBottom - 0.5);
     expect(countsBox.y).toBeGreaterThanOrEqual(pathBottom - 0.5);
     if (!options.enlarged) expect(Math.abs((statusBox.y + statusBox.height / 2) - (countsBox.y + countsBox.height / 2))).toBeLessThan(statusBox.height);
@@ -208,6 +213,44 @@ for (const [scale, diffShare] of [[1.25, 0.4], [1.5, 0.25]]) {
     test.info().annotations.push({ type: 'metrics', description: JSON.stringify(metrics) });
     if (scale === 1.5) await capture(page, 'diff-header-web-320-text-150');
   });
+}
+
+// The phone check must tell the readable header from the defect's squeezed columns whatever the font: a name or path held to
+// part of the header's width, by its box or by an inner gutter, breaks differently from the full-width reference, while other
+// fonts and spacing only change where the reference itself breaks.
+const squeezes = [
+  ['a one-glyph name column', '[data-testid="diff-file-name"] { width: 1.5ch }', /name width/],
+  ['a squeezed name column', '[data-testid="diff-file-name"] { max-width: 60% }', /name width/],
+  ['a name squeezed inside its full-width box', '[data-testid="diff-file-name"] { padding-right: 50% }', /name lines/],
+  ['a narrow path column', '[data-testid="diff-file-path"] { max-width: 50% }', /path width/],
+  ['a path squeezed inside its full-width box', '[data-testid="diff-file-path"] { padding-right: 50% }', /path lines/],
+] as const;
+const fonts = [
+  ['a serif font', 'font-family: serif'],
+  ['a monospace font', 'font-family: monospace'],
+  ['wider letter spacing', 'letter-spacing: 0.05em'],
+  ['a bolder, condensed weight', 'font-weight: 700; font-stretch: condensed'],
+] as const;
+for (const viewport of viewports.filter(viewport => viewport.width < 640)) {
+  for (const file of [cases[0], cases[2]]) {
+    test(`${viewport.label}: the phone header check rejects squeezed columns and accepts other fonts (${file.status})`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      const { dialog, name } = await open(page, file);
+      const header = dialog.getByTestId('diff-header');
+      const usable = (await expectReadableHeader(page, dialog, file, name)).usable;
+      for (const [label, css, failure] of squeezes) {
+        const style = await page.addStyleTag({ content: css });
+        await expect(expectPhoneWrapping(header, usable, file, name), label).rejects.toThrow(failure);
+        await style.evaluate(element => (element as Element).remove());
+      }
+      for (const [label, css] of fonts) {
+        const style = await page.addStyleTag({ content: `[data-testid="diff-file-name"], [data-testid="diff-file-path"] { ${css} }` });
+        await expectPhoneWrapping(header, usable, file, name).catch(error => { throw new Error(`${label}: ${error}`); });
+        await style.evaluate(element => (element as Element).remove());
+      }
+      await expectReadableHeader(page, dialog, file, name);
+    });
+  }
 }
 
 test('320px: the diff scrolls both ways under touch while the header and close stay readable', async ({ page }) => {
