@@ -58,26 +58,64 @@ const uncovered = (element: Locator) => element.evaluate(target => {
 });
 
 /**
- * A point in the pane's side gutter below its header, where no drag or wheel starts on a control, and the height of
- * the strip it centres, which a drag must stay within to start and end on the pane.
+ * Where a reader's wheel or finger scrolls `target` up (or down) now: in the side gutter of the innermost frame around
+ * it that can still scroll that way (the form's body, else the whole pane), within the band of that frame the reader
+ * sees below any sticky header, at a point whose hit test lands in that frame (so not on an action footer outside it)
+ * and not on a control or a nested scroller. `span` is the height of the band about the point, which a drag must stay within. A late web font
+ * or wrap moves these edges, so callers ask again before every notch or drag rather than keep a point that the footer
+ * may since have grown over. Null when nothing around `target` can scroll that way, or no point of the band is clear.
  */
-async function gutter(dialog: Locator) {
-  const pane = (await dialog.boundingBox())!;
-  const header = (await dialog.locator('header').boundingBox())!;
-  const top = Math.max(header.y + header.height, pane.y);
-  const bottom = Math.min(pane.y + pane.height, top + 200);
-  return { x: Math.round(pane.x + 8), y: Math.round((top + bottom) / 2), span: Math.floor(bottom - top) - 4 };
-}
+const scrollPoint = (target: Locator, up: boolean) => target.evaluate((element, up) => {
+  const scrolls = (frame: Element) => /auto|scroll/.test(getComputedStyle(frame).overflowY)
+    && (up ? frame.scrollTop > 0.5 : frame.scrollTop < frame.scrollHeight - frame.clientHeight - 0.5);
+  const dialog = element.closest('[role="dialog"]');
+  let frame: Element | null = element.parentElement;
+  while (frame && !scrolls(frame)) frame = frame === dialog ? null : frame.parentElement;
+  if (!frame) return null;
+  const scroller = frame;
+  const box = frame.getBoundingClientRect();
+  let low = Math.max(0, box.top + frame.clientTop);
+  let high = Math.min(window.innerHeight, box.top + frame.clientTop + frame.clientHeight);
+  for (let parent = frame.parentElement; parent; parent = parent.parentElement) {
+    if (getComputedStyle(parent).overflowY === 'visible') continue;
+    const clip = parent.getBoundingClientRect();
+    low = Math.max(low, clip.top + parent.clientTop);
+    high = Math.min(high, clip.top + parent.clientTop + parent.clientHeight);
+  }
+  const header = dialog?.querySelector('header');
+  if (header && getComputedStyle(header).position === 'sticky') low = Math.max(low, header.getBoundingClientRect().bottom);
+  const x = Math.round(box.left + frame.clientLeft + 8);
+  const clear = (y: number) => {
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !scroller.contains(hit) || hit.closest('button, a, input, textarea, select, summary, [tabindex]:not([tabindex="-1"])')) return false;
+    for (let between: Element | null = hit; between && between !== scroller; between = between.parentElement) if (scrolls(between)) return false;
+    return true;
+  };
+  // From the middle of the band outwards, keeping two pixels clear of its edges.
+  const middle = Math.round((low + high) / 2);
+  for (let offset = 0; middle - offset > low + 2 || middle + offset < high - 2; offset += 2) {
+    for (const y of [middle - offset, middle + offset]) {
+      if (y > low + 2 && y < high - 2 && clear(y)) return { x, y, span: Math.floor(2 * Math.min(y - low, high - y, 100)) - 4 };
+    }
+  }
+  return null;
+}, up);
 
 const settle = (page: Page) => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
-/** Scrolls with trusted wheel notches over the pane's gutter until `target` is wholly shown, as a reader would. */
-async function wheelToShow(page: Page, dialog: Locator, target: Locator) {
-  const { x, y } = await gutter(dialog);
-  await page.mouse.move(x, y);
+/**
+ * Scrolls with trusted wheel notches over the target's scroll frame until `target` is wholly shown, as a reader would.
+ * `moved` runs once the pointer is in place and before its notch, where a late font can re-lay out the pane under it.
+ */
+async function wheelToShow(page: Page, target: Locator, moved?: (point: { x: number; y: number }) => Promise<void>) {
   for (let step = 0; step < 40; step++) {
     const { top, bottom } = await uncovered(target);
     if (top >= -0.5 && bottom >= -0.5) return;
+    // The pointer follows the frame as fonts and wrapping re-lay it out, so a notch never lands on the footer.
+    const point = await scrollPoint(target, top < 0);
+    if (!point) return;
+    await page.mouse.move(point.x, point.y);
+    await moved?.(point);
     // Notches up to 40px, finer as the target nears, as a precision wheel or touchpad lands it in a tight gap.
     await page.mouse.wheel(0, top < 0 ? -Math.min(40, Math.ceil(-top)) : Math.min(40, Math.ceil(-bottom)));
     await settle(page);
@@ -85,12 +123,14 @@ async function wheelToShow(page: Page, dialog: Locator, target: Locator) {
 }
 
 /** The same with trusted touch drags past Chromium's 15px touch slop, slow enough not to fling. */
-async function dragToShow(page: Page, touch: CDPSession, dialog: Locator, target: Locator) {
+async function dragToShow(page: Page, touch: CDPSession, target: Locator) {
   // Enough short drags to cross a form that enlarged text has made over 1,500px tall.
   for (let step = 0; step < 100; step++) {
     const { top, bottom } = await uncovered(target);
     if (top >= -0.5 && bottom >= -0.5) return;
-    const { x, y, span } = await gutter(dialog);
+    const point = await scrollPoint(target, top < 0);
+    if (!point) return;
+    const { x, y, span } = point;
     const distance = (top < 0 ? 1 : -1) * Math.min(15 + Math.min(Math.ceil(top < 0 ? -top : -bottom) + 1, 30), span);
     await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: y - distance / 2 }] });
     for (let move = 1; move <= 8; move++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: Math.round(y - distance / 2 + distance * move / 8) }] });
@@ -98,6 +138,19 @@ async function dragToShow(page: Page, touch: CDPSession, dialog: Locator, target
     await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await settle(page);
   }
+}
+
+/** An unsent draft with the acceptance repository selected, typed to its end; returns the field's value. */
+async function writeDraft(page: Page, dialog: Locator, field: Locator) {
+  const repository = dialog.getByText('Select a repository', { exact: true });
+  if (await repository.isVisible()) {
+    await repository.click();
+    await page.getByRole('button', { name: /acme.*billing/ }).click();
+  }
+  await field.fill(draft);
+  await field.press('End');
+  await field.pressSequentially('.');
+  return `${draft}.`;
 }
 
 /** Whether the header sticks, and whether the tallest of `actions` fits whole in the pane below it. */
@@ -178,7 +231,7 @@ for (const shell of windows) {
         const field = dialog.getByLabel(form.field, { exact: true });
         await expect(field).toBeFocused();
         // Where the header scrolls away, the focused field may have taken it out of view; the reader scrolls back up.
-        await wheelToShow(page, dialog, close);
+        await wheelToShow(page, close);
         // The native titlebar stays the window's, and the shell keeps its 40px close control.
         await expectClearOfChrome(page, dialog, close, shell, 40);
         if (shell.header) {
@@ -186,16 +239,7 @@ for (const shell of windows) {
           expect(position, 'the header sticks only where a whole action fits beneath it').toBe(shell.header === 'sticky' ? 'sticky' : 'static');
         }
 
-        // An unsent draft with the acceptance repository selected.
-        const repository = dialog.getByText('Select a repository', { exact: true });
-        if (await repository.isVisible()) {
-          await repository.click();
-          await page.getByRole('button', { name: /acme.*billing/ }).click();
-        }
-        await field.fill(draft);
-        await field.press('End');
-        await field.pressSequentially('.');
-        const typed = `${draft}.`;
+        const typed = await writeDraft(page, dialog, field);
         await expect(field).toHaveValue(typed);
         const caret = await caretShown(field);
         expect(caret.top, 'the caret line starts in view').toBeGreaterThanOrEqual(-0.5);
@@ -211,21 +255,21 @@ for (const shell of windows) {
 
         // A wheel over the pane reaches each whole action, then scrolls back up to the start of the field.
         for (const action of actions) {
-          await wheelToShow(page, dialog, action);
+          await wheelToShow(page, action);
           await expectWhole(action);
         }
         await capture(page, `creation-short-window-${form.path.split('/')[1].replace(/\?.*/, '')}-${shell.name.replace(/[ .]/g, '-')}`);
         const label = dialog.getByText(form.field, { exact: true });
-        await wheelToShow(page, dialog, label);
+        await wheelToShow(page, label);
         await expectShown(label);
 
         // Touch drags travel the same way, back down to the submit action and up to the repository.
         if (browserName === 'chromium') {
           const touch = await page.context().newCDPSession(page);
-          await dragToShow(page, touch, dialog, run);
+          await dragToShow(page, touch, run);
           await expectWhole(run);
           const repositoryButton = dialog.getByRole('button', { name: /acme.*billing/ }).first();
-          await dragToShow(page, touch, dialog, repositoryButton);
+          await dragToShow(page, touch, repositoryButton);
           await expectShown(repositoryButton);
         }
 
@@ -242,7 +286,7 @@ for (const shell of windows) {
         // Nothing was lost or sent, and the window controls still belong to the window.
         await expect(field).toHaveValue(typed);
         await expect(dialog.getByRole('button', { name: /acme.*billing/ }).first()).toBeVisible();
-        await wheelToShow(page, dialog, close);
+        await wheelToShow(page, close);
         await expectClearOfChrome(page, dialog, close, shell, 40);
         if (shell.platform === 'linux') expect(await inert(page.getByRole('group', { name: 'Window controls' }))).toBe(false);
         expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
@@ -282,10 +326,11 @@ test.describe('web 370x345 resized to 370x130', () => {
       expect((await dialog.boundingBox())!.height, 'the pane fills the layer inside its padding').toBeCloseTo(106, 0);
       expect((await header.boundingBox())!.height, 'the bordered pane keeps its 73px header').toBeCloseTo(73, 0);
 
-      // Eighteen real wheel notches in the pane's gutter, past the end of the form.
-      const { x, y } = await gutter(dialog);
-      await page.mouse.move(x, y);
+      // Up to eighteen real wheel notches in the pane's gutter, until nothing around the action scrolls further down.
       for (let notch = 0; notch < 18; notch++) {
+        const point = await scrollPoint(run, false);
+        if (!point) break;
+        await page.mouse.move(point.x, point.y);
         await page.mouse.wheel(0, 100);
         await settle(page);
       }
@@ -298,8 +343,86 @@ test.describe('web 370x345 resized to 370x130', () => {
 
       // Wheeling back up returns the close control clear of the window's chrome, and nothing was sent.
       const close = dialog.getByRole('button', { name: form.close });
-      await wheelToShow(page, dialog, close);
+      await wheelToShow(page, close);
       await expectClearOfChrome(page, dialog, close, {}, 40);
+      expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
+    });
+  }
+});
+
+// The operator's run on e8940dc: the fallback font laid out the pane, the helper put its wheel pointer in the form's
+// body, and only then did Inter arrive and wrap the actions, so that point fell outside the body's band and every
+// notch at it left the field's label 304px out of view. Which fonts load and how they set is host-dependent, so here
+// one stylesheet keeps the actions on one row and, once the pointer is in place, a late one sets the header 7.5rem
+// taller and spaces the action labels until they wrap: on every host the body moves out from under the pointer.
+const lateFont = {
+  fallback: '[data-creation-actions] > * { font-size: 9px !important; letter-spacing: 0 !important; }',
+  loaded: '[role="dialog"] header { padding-bottom: 7.5rem !important; } [data-creation-actions] > * { letter-spacing: 1em !important; }',
+};
+test.describe('web 370x345 late font', () => {
+  test.use({ viewport: zoomed, deviceScaleFactor: 1, hasTouch: true });
+
+  for (const form of forms) {
+    test(`web 370x345 late font: ${form.name} keeps every whole action and the caret in reach when the pane re-lays out mid-scroll`, async ({ page, browserName }) => {
+      test.setTimeout(60_000);
+      const requests = await newTaskFixture(page);
+      await stubGoals(page);
+      await page.goto(form.path);
+      const fallback = await page.addStyleTag({ content: lateFont.fallback });
+      const dialog = page.getByRole('dialog', { name: form.name });
+      const field = dialog.getByLabel(form.field, { exact: true });
+      await expect(field).toBeFocused();
+      const typed = await writeDraft(page, dialog, field);
+      const actions = form.actions.map(name => dialog.getByRole('button', { name, exact: true }));
+      const run = actions.at(-1)!;
+      await expect(run).toBeEnabled();
+      for (const action of actions) {
+        await wheelToShow(page, action);
+        await expectWhole(action);
+      }
+
+      // The font arrives after the helper has placed its pointer for the first notch up to the label.
+      const body = dialog.locator('form > div').first();
+      const label = dialog.getByText(form.field, { exact: true });
+      const footer = dialog.locator('[data-creation-actions]');
+      const oneRow = (await footer.boundingBox())!.height;
+      let stale: { x: number; y: number } | undefined;
+      await wheelToShow(page, label, async point => {
+        if (stale) return;
+        stale = point;
+        expect(await body.evaluate((element, [x, y]) => element.contains(document.elementFromPoint(x, y)), [point.x, point.y]), 'the pointer starts over the body').toBe(true);
+        await fallback.evaluate(element => (element as HTMLStyleElement).remove());
+        await page.addStyleTag({ content: lateFont.loaded });
+        await settle(page);
+        expect((await footer.boundingBox())!.height, 'the late font wraps the actions').toBeGreaterThan(oneRow + 40);
+        expect(await body.evaluate((element, [x, y]) => element.contains(document.elementFromPoint(x, y)), [point.x, point.y]), 'the body moved out from under the pointer').toBe(false);
+        expect(await dialog.evaluate(pane => pane.scrollTop), 'and the pane has nothing above to scroll to').toBe(0);
+      });
+      expect(stale, 'the transition happened mid-scroll').toBeDefined();
+      await expectShown(label);
+
+      // Wheel, touch and keyboard still reach every whole action, the repository and the caret in the new layout.
+      for (const action of actions) {
+        await wheelToShow(page, action);
+        await expectWhole(action);
+      }
+      if (browserName === 'chromium') {
+        const touch = await page.context().newCDPSession(page);
+        const repositoryButton = dialog.getByRole('button', { name: /acme.*billing/ }).first();
+        await dragToShow(page, touch, repositoryButton);
+        await expectShown(repositoryButton);
+        await dragToShow(page, touch, run);
+        await expectWhole(run);
+      }
+      await run.focus();
+      await expectWhole(run);
+      await field.focus();
+      await field.press('Control+End');
+      const caret = await caretShown(field);
+      expect(caret.top, 'the caret line starts in view').toBeGreaterThanOrEqual(-0.5);
+      expect(caret.bottom, 'the caret line ends in view').toBeGreaterThanOrEqual(-0.5);
+      await expect(field).toHaveValue(typed);
+      await expect(dialog.getByRole('button', { name: /acme.*billing/ }).first()).toBeVisible();
       expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
     });
   }
@@ -326,15 +449,7 @@ test.describe(`${issueWindow.name} Tab traversal`, () => {
       await expect(field).toBeFocused();
       // Focus has to land below a header that stays put, not one that scrolls away with the form.
       expect(await dialog.locator('header').evaluate(header => getComputedStyle(header).position), 'the header sticks here').toBe('sticky');
-      const repository = dialog.getByText('Select a repository', { exact: true });
-      if (await repository.isVisible()) {
-        await repository.click();
-        await page.getByRole('button', { name: /acme.*billing/ }).click();
-      }
-      await field.fill(draft);
-      await field.press('End');
-      await field.pressSequentially('.');
-      const typed = `${draft}.`;
+      const typed = await writeDraft(page, dialog, field);
       const actions = form.actions.map(name => dialog.getByRole('button', { name, exact: true }));
       const run = actions.at(-1)!;
       await expect(run).toBeEnabled();
