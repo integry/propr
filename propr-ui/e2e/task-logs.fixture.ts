@@ -4,8 +4,11 @@ import { ago, fixture as taskFixture } from './task-list-desktop.fixture';
 
 export const taskId = 'issue-3243-run-0';
 const sessionId = 'session-issue-3243-run-0';
-// The files a run writes, named as production names them: the selected output file's
-// name wraps to two lines on the phone.
+// The files a run writes, named as production names them. The conversation file's name is
+// wider than the phone's 360px file header in Inter (436px at 600 16px) and in the fallback
+// sans-serif fonts (404px in Arial-metric fonts such as Liberation Sans, up to 494px in
+// DejaVu Sans), so it wraps whether or not the web font has loaded. The output file's name
+// only wraps in Inter (375px); in Arial-metric fallbacks it fits on one line (346px).
 export const outputName = 'issue-28-2026-10-17T21-15-00-788Z-output.txt';
 export const conversationName = 'issue-28-2026-10-17T21-15-00-788Z-conversation.json';
 // A long output with six matches, the last a few lines from its end.
@@ -35,6 +38,17 @@ export async function stubTask(page: Page, posts: string[]) {
     return route.fulfill({ status: 202, json: { success: false, state: 'failed', posted: true, commentId: 4243001, sourceTaskId: taskId, message: 'Comment posted, but the command failed before submission.' } });
   });
 }
+
+/** Fails the app's Google Fonts requests, so the page renders in the fallback font as when offline. */
+export async function blockWebFonts(page: Page) {
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort('internetdisconnected'));
+}
+
+/** Whether the page renders its 600-weight text in the Inter web font rather than a fallback. */
+export const interLoaded = (page: Page) => page.evaluate(async () => {
+  await document.fonts.ready;
+  return [...document.fonts].some(font => font.family.replace(/["']/g, '') === 'Inter' && font.status === 'loaded');
+});
 
 /** Opens a task header action, directly or from the phone's action sheet; returns the control focus returns to. */
 export async function openTaskAction(page: Page, title: string, label: string): Promise<Locator> {

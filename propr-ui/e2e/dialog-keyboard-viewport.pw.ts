@@ -4,7 +4,7 @@
  * shrinks and pans the visual viewport, and restore their layout once it closes.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { conversationName, layerOf, openTaskAction, outputLines, outputName, stubTask, taskId } from './task-logs.fixture';
+import { blockWebFonts, conversationName, interLoaded, layerOf, openTaskAction, outputLines, outputName, stubTask, taskId } from './task-logs.fixture';
 import { fixture as todoFixture } from './quick-add-todo.fixture';
 import { captureVisible, expectFieldVisible, expectReadableLines, expectShown, expectUnframed, installKeyboardViewport, listenerCount, setKeyboard, type Band } from './keyboard-viewport.fixture';
 
@@ -81,8 +81,11 @@ test('Follow Up on Task keeps its heading and close above the keyboard, keeps th
   await expectShown([heading, close], followupBand);
 });
 
-test('Logs keeps its close, search and match controls above the keyboard and restores after it closes', async ({ page }) => {
+// Once with the Inter web font as the page requests it, and once with it blocked, as when
+// offline, so the page renders in the fallback sans-serif font.
+for (const webFonts of ['loaded', 'blocked'] as const) test(`Logs keeps its close, search and match controls above the keyboard and restores after it closes (web fonts ${webFonts})`, async ({ page }) => {
   await installKeyboardViewport(page, layout);
+  if (webFonts === 'blocked') await blockWebFonts(page);
   await stubTask(page, []);
   await page.goto(`/tasks/${taskId}`);
   const idle = await listenerCount(page);
@@ -96,11 +99,25 @@ test('Logs keeps its close, search and match controls above the keyboard and res
   const layer = layerOf(dialog);
   await expect(close).toBeFocused();
   const before = (await close.boundingBox())!;
-  await dialog.getByRole('button', { name: new RegExp(outputName) }).click();
-  await expect(content).toContainText('step 399');
-  // Without the keyboard the open file's name wraps onto a second line.
+  const other = dialog.getByRole('button', { name: new RegExp(conversationName) });
+  const output = dialog.getByRole('button', { name: new RegExp(outputName) });
   const fileHeading = dialog.getByRole('heading', { name: outputName, exact: true });
-  expect((await fileHeading.boundingBox())!.height).toBeGreaterThan(40);
+  const otherHeading = dialog.getByRole('heading', { name: conversationName, exact: true });
+  const inter = await interLoaded(page);
+  if (webFonts === 'blocked') expect(inter).toBe(false);
+  // Without the keyboard the open conversation file's name wraps onto a second line, in Inter
+  // and in the fallback font alike.
+  await other.click();
+  await expect(otherHeading).toBeVisible();
+  const line = await otherHeading.evaluate(element => parseFloat(getComputedStyle(element).lineHeight));
+  const wrapped = (await otherHeading.boundingBox())!.height;
+  expect(wrapped).toBeGreaterThan(40);
+  // Whether the output file's shorter name wraps depends on the font (see task-logs.fixture),
+  // so it is recorded rather than asserted.
+  await output.click();
+  await expect(content).toContainText('step 399');
+  test.info().annotations.push({ type: 'file name heights', description:
+    `Inter ${inter ? 'loaded' : 'not loaded'}; conversation ${wrapped}px, output ${(await fileHeading.boundingBox())!.height}px` });
 
   await search.focus();
   await setKeyboard(page, logsBand);
@@ -118,6 +135,7 @@ test('Logs keeps its close, search and match controls above the keyboard and res
   await expectReadableLines(content, logsBand, 3);
   await currentShown(logsBand);
   // The open file's whole name stays its accessible name while it takes one line.
+  expect((await fileHeading.boundingBox())!.height).toBeCloseTo(line, 0);
   await expect(fileHeading).toHaveText(outputName);
   await expect(content).toHaveAccessibleName(`Contents of ${outputName}`);
   await expect(search).toBeFocused();
@@ -168,7 +186,6 @@ test('Logs keeps its close, search and match controls above the keyboard and res
   // Every file stays reachable from the shortened list, and switching files works above the keyboard.
   await clear.click();
   await expect(search).toHaveValue('');
-  const other = dialog.getByRole('button', { name: new RegExp(conversationName) });
   await other.scrollIntoViewIfNeeded();
   await expectShown([other], logsBand);
   await other.click();
@@ -176,7 +193,11 @@ test('Logs keeps its close, search and match controls above the keyboard and res
   await search.fill('acceptance');
   await expect(status).toHaveText('1 / 1');
   await expectReadableLines(content, logsBand, 3);
-  const output = dialog.getByRole('button', { name: new RegExp(outputName) });
+  // The name that wrapped without the keyboard takes one line, and stays whole as the accessible names.
+  expect((await otherHeading.boundingBox())!.height).toBeCloseTo(line, 0);
+  await expect(otherHeading).toHaveText(conversationName);
+  await expect(content).toHaveAccessibleName(`Contents of ${conversationName}`);
+  await expect(other).toHaveAccessibleName(new RegExp(`^${conversationName}`));
   await output.scrollIntoViewIfNeeded();
   await expectShown([output], logsBand);
 
@@ -189,6 +210,8 @@ test('Logs keeps its close, search and match controls above the keyboard and res
   await expectUnframed(layer);
   expect((await close.boundingBox())!.y).toBeCloseTo(before.y, 0);
   await expect(search).toHaveValue('acceptance');
+  // The conversation file's name wraps again as it did before the keyboard opened.
+  expect((await otherHeading.boundingBox())!.height).toBeCloseTo(wrapped, 0);
 
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
