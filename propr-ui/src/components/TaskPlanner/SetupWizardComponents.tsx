@@ -17,7 +17,7 @@ export const GenerateButtonContent: React.FC<{
   if (isNewMode && isCreating) {
     return (
       <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <div className="w-4 h-4 flex-shrink-0 border-2 border-white border-t-transparent rounded-full animate-spin" />
         <span>Creating...</span>
       </>
     );
@@ -25,14 +25,14 @@ export const GenerateButtonContent: React.FC<{
   if (!isNewMode && isGenerating) {
     return (
       <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <div className="w-4 h-4 flex-shrink-0 border-2 border-white border-t-transparent rounded-full animate-spin" />
         <span>Generating...</span>
       </>
     );
   }
   return (
     <>
-      <Sparkles className="w-4 h-4" />
+      <Sparkles className="w-4 h-4 flex-shrink-0" />
       {/* The selected Break-plan pill already shows the estimate, so narrow docks drop it to keep the model name readable. */}
       <span>Generate Plan<span className="hidden 2xl:inline"> ({issueCountText})</span></span>
     </>
@@ -156,7 +156,9 @@ export const ModelSelector: React.FC<{
   fullWidth?: boolean;
   /** Drops the "Model:" label when the surrounding settings row already labels it. */
   hideLabel?: boolean;
-}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false, fullWidth, hideLabel }) => {
+  /** Wraps a model name that does not fit (enlarged text in a narrow pane) instead of truncating it. */
+  wrapLabel?: boolean;
+}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false, fullWidth, hideLabel, wrapLabel }) => {
   // A plan-level default wins over the instance default, so the catalog is only needed without one.
   const instanceDefaultModel = useInstanceDefaultModel(!defaultModel);
   const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
@@ -229,7 +231,7 @@ export const ModelSelector: React.FC<{
           {buttonAgent && (
             <ProviderLogo provider={buttonAgent} className={`w-4 h-4 flex-shrink-0 ${disabled ? 'opacity-40 grayscale' : ''}`} />
           )}
-          <span className="truncate">{buttonLabel}</span>
+          <span className={wrapLabel ? 'min-w-0 text-left [overflow-wrap:anywhere]' : 'truncate'}>{buttonLabel}</span>
           <ChevronDown className={`ml-auto w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0 ${disabled ? 'text-gray-300' : 'text-gray-400'}`} />
         </button>
         {position && createPortal(

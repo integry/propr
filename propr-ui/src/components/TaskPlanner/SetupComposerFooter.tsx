@@ -26,7 +26,7 @@ interface SetupComposerFooterProps extends GenerateActionProps {
 /** A labelled row puts its control on the right; an unlabelled row lays out its own label and control. */
 const SettingsRow: React.FC<{ label?: string; children: React.ReactNode }> = ({ label, children }) => (
   label ? (
-    <div className="flex min-w-0 items-center justify-between gap-3 px-4 py-3">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3">
       <span className="flex-shrink-0 text-xs text-slate-500">{label}</span>
       <div className="flex min-w-0 justify-end">{children}</div>
     </div>
@@ -40,7 +40,7 @@ const GenerateAction: React.FC<GenerateActionProps & { fullWidth?: boolean }> = 
     onClick={onGenerate}
     disabled={generateDisabled}
     title={generateTitle}
-    className={`flex max-w-full items-center justify-center gap-1.5 whitespace-nowrap text-white font-medium bg-[rgb(29,138,138)] hover:bg-[rgb(24,118,118)] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0 ${fullWidth ? 'w-full h-11 px-4 text-sm rounded-lg' : 'px-3 py-1.5 text-xs rounded-md'}`}
+    className={`flex max-w-full items-center justify-center gap-1.5 text-center text-white font-medium bg-[rgb(29,138,138)] hover:bg-[rgb(24,118,118)] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors ${fullWidth ? 'w-full min-h-11 px-4 py-2 text-sm rounded-lg' : 'min-w-0 px-3 py-1.5 text-xs rounded-md'}`}
   >
     {generateLabel}
   </button>
@@ -80,14 +80,16 @@ export const SetupComposerFooter: React.FC<SetupComposerFooterProps> = ({
     );
   }
 
+  // The prompt box is the narrow 65% column at md widths, and enlarged text widens every control, so the three groups
+  // wrap onto further lines rather than squeezing the model name to nothing or running Generate past the pane.
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:flex-nowrap">
-      <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto md:flex-shrink-0">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
         <span className="text-xs text-gray-500 whitespace-nowrap">Break plan:</span>
         <GranularityPills value={granularity} onChange={onGranularityChange} hideEstimate compact />
       </div>
       {modelSelector}
-      <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">
+      <div className="ml-auto flex min-w-0 max-w-full items-center gap-1 sm:gap-2">
         <button
           onClick={onExport}
           disabled={exportDisabled}

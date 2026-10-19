@@ -214,7 +214,7 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
         <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
       </button>
       {/* Tooltip explaining the refresh logic */}
-      <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover/refresh:opacity-100 transition-opacity pointer-events-none w-64 z-50">
+      <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover/refresh:opacity-100 transition-opacity pointer-events-none w-64 max-w-[calc(100vw-2rem)] z-50">
         <div className="font-medium mb-1">Context Refresh</div>
         <div className="text-gray-300 leading-relaxed">
           {getTooltipText()}

@@ -60,12 +60,13 @@ export const BranchBadge: React.FC<{ baseBranch: string; fallbackBranch?: string
 // Phones have no room for a separate branch chip, so the repo pill reads `propr/main` instead.
 const MobileBranchSuffix: React.FC<{ branch: string; failed: boolean }> = ({ branch, failed }) => (
   branch ? (
-    <span data-testid="scope-pill-branch" className={`md:hidden ${failed ? 'text-amber-700' : 'text-slate-500'}`}>/{branch}</span>
+    // The break opportunity lets a wrapping pill put `/branch` on its own line before splitting either name.
+    <><wbr /><span data-testid="scope-pill-branch" className={`md:hidden ${failed ? 'text-amber-700' : 'text-slate-500'}`}>/{branch}</span></>
   ) : null
 );
 
 // On a phone the repo trigger is the one scope pill; from md up it is a breadcrumb beside the branch chip.
-const SCOPE_PILL_CLASS = 'relative inline-flex min-w-0 items-center whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 py-0.5 pl-2 pr-1.5 md:shrink-0 md:max-w-[50%] md:border-0 md:bg-transparent md:p-0';
+const SCOPE_PILL_CLASS = 'relative inline-flex min-w-0 items-center md:whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 py-0.5 pl-2 pr-1.5 md:shrink-0 md:max-w-[50%] md:border-0 md:bg-transparent md:p-0';
 
 // A failed repository/branch lookup gets its own full-width line under the scope row: inline, a long
 // recovery instruction ran across the phase switcher and off the canvas. It wraps, even inside an

@@ -171,12 +171,14 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   attachButtonPressed,
   composerFooter,
 }) => (
-  <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
+  <div data-testid="setup-wizard-left-pane" className="w-full md:w-[65%] md:min-w-0 h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
     <div className="px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">
-      <div className="flex items-center gap-2 text-sm">
-        {/* Repo and branch share the row with the phase pill, so their percentage widths are of this box. */}
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
+      {/* With enlarged text the phase pill wraps under repo and branch instead of running beneath the context pane. */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {/* Repo and branch share the row with the phase pill, so their percentage widths are of this box. Sized by
+            their content, they push the pill to its own line before either has to be cut short. */}
+        <div className="flex min-w-0 flex-auto items-center gap-1.5 sm:gap-2">
           {isNewMode ? (
             <NewModeHeader
               reposLoading={reposLoading}
@@ -203,7 +205,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             />
           )}
         </div>
-        <StudioPhaseSwitcher />
+        <StudioPhaseSwitcher wrap />
       </div>
       <ScopeError message={scopeErrorFor(isNewMode, branchError, repoError)} />
     </div>

@@ -172,7 +172,8 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
     const triggerLabel = isLoading ? 'Loading…' : availableRepos.length === 0 ? 'None indexed' : `${selectedCount} selected`;
     return (
       <div className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
+        {/* Enlarged text on a phone can make label and picker wider than the row; the picker then drops under the label. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <span className="text-xs text-slate-500" title={CONTEXT_REPOS_HELP}>Context repos</span>
           <div className="relative min-w-0" ref={dropdownRef}>
             <button
@@ -197,22 +198,24 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
   return (
     <div className="space-y-2 sm:space-y-4">
       {/* Collapsible header */}
+      {/* The title and its "(optional)" note share one wrapping run of text, so in the narrow 35% pane or with
+          enlarged text the note moves to the next line instead of past the pane's edge. */}
       <button
         type="button"
         onClick={() => setIsSectionExpanded(!isSectionExpanded)}
         className="flex items-center gap-2 w-full text-left hover:bg-gray-50 rounded-md py-1 -ml-1 pl-1 transition-colors"
       >
         {isSectionExpanded ? (
-          <ChevronDown className="w-4 h-4 text-gray-400" />
+          <ChevronDown className="w-4 h-4 flex-shrink-0 text-gray-400" />
         ) : (
-          <ChevronRight className="w-4 h-4 text-gray-400" />
+          <ChevronRight className="w-4 h-4 flex-shrink-0 text-gray-400" />
         )}
-        <BookOpen className="w-4 h-4 text-gray-500" />
-        <span className="text-sm font-medium text-gray-700">
+        <BookOpen className="w-4 h-4 flex-shrink-0 text-gray-500" />
+        <span className="min-w-0 break-words text-sm font-medium text-gray-700">
           <span className="hidden sm:inline">Additional Context Repositories</span>
           <span className="sm:hidden">Context Repos</span>
+          {' '}<span className="text-xs font-normal text-gray-400">(optional)</span>
         </span>
-        <span className="text-xs text-gray-400">(optional)</span>
         {/* Info tooltip on mobile */}
         <span
           className="sm:hidden relative group"

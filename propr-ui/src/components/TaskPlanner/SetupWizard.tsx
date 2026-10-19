@@ -145,7 +145,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
       extraSettingsRows={mobileSettingsRows}
       granularity={config.granularity}
       onGranularityChange={setGranularity}
-      modelSelector={<ModelSelector agents={agents} generationModel={config.generationModel} onModelChange={handleModelChange} disabled={isGenerating} fullWidth={isMobile} hideLabel={isMobile} />}
+      modelSelector={<ModelSelector agents={agents} generationModel={config.generationModel} onModelChange={handleModelChange} disabled={isGenerating} fullWidth={isMobile} hideLabel={isMobile} wrapLabel />}
       onExport={handleExportContext}
       isExporting={contextExport.isExporting}
       exportDisabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}

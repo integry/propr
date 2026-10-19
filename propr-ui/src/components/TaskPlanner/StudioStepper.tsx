@@ -32,6 +32,9 @@ interface StudioPhaseSwitcherProps {
   /** Shown next to a phase label, e.g. the number of tasks under review. */
   counts?: Partial<Record<StudioStage, number>>;
   className?: string;
+  /** Never wider than its row: in a narrow column or with enlarged text the phases wrap inside the pill instead of
+   *  running under whatever sits beside the row. */
+  wrap?: boolean;
 }
 
 /**
@@ -39,13 +42,13 @@ interface StudioPhaseSwitcherProps {
  * Below `md` the breadcrumb collapses to a `Step 2/3` badge so it fits next to the scope pill
  * on a phone. Renders nothing outside a studio page (no stage in context).
  */
-export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts, className = '' }) => {
+export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts, className = '', wrap = false }) => {
   const currentStage = useContext(StudioStageContext);
   if (!currentStage) return null;
   const current = STEPS.find((step) => step.id === currentStage)!;
 
   return (
-    <nav aria-label="Plan phase" className={`flex-shrink-0 ${className}`}>
+    <nav aria-label="Plan phase" className={`flex-shrink-0 ${wrap ? 'max-w-full' : ''} ${className}`}>
       <span
         data-testid="phase-step-badge"
         aria-label={`Step ${current.number} of ${STEPS.length}: ${current.shortLabel}`}
@@ -53,7 +56,7 @@ export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts
       >
         Step {current.number}/{STEPS.length}
       </span>
-      <ol className="hidden md:flex h-8 items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5 text-xs">
+      <ol className={`hidden md:flex ${wrap ? 'md:flex-wrap min-h-8' : 'h-8'} items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5 text-xs`}>
         {STEPS.map((step, index) => {
           const state = getStepState(step.id, currentStage);
           const count = counts?.[step.id];
