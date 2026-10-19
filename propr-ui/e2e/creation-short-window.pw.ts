@@ -219,3 +219,57 @@ for (const shell of windows) {
     }
   });
 }
+
+// The reviewer's executed probe on b23ee74: set up at 370×345, then the window shrinks to 370×130 with no keyboard.
+// That leaves a 106px pane (the layer's 12px padding either side) whose 73px header, if it stayed sticky, would
+// leave 31px for the 44px enabled action, so at maximum scroll only 15px of it showed beneath the header.
+test.describe('web 370x345 resized to 370x130', () => {
+  test.use({ viewport: zoomed, deviceScaleFactor: 1, hasTouch: true });
+
+  for (const form of forms) {
+    test(`web 370x345 resized to 370x130: ${form.name} shows its whole enabled action at maximum wheel scroll`, async ({ page }) => {
+      test.setTimeout(60_000);
+      const requests = await newTaskFixture(page);
+      await stubGoals(page);
+      await page.goto(form.path);
+      const dialog = page.getByRole('dialog', { name: form.name });
+      const field = dialog.getByLabel(form.field, { exact: true });
+      await expect(field).toBeFocused();
+      const repository = dialog.getByText('Select a repository', { exact: true });
+      if (await repository.isVisible()) {
+        await repository.click();
+        await page.getByRole('button', { name: /acme.*billing/ }).click();
+      }
+      await field.focus();
+      await field.pressSequentially('Unsent draft');
+      const run = dialog.getByRole('button', { name: form.actions.at(-1)!, exact: true });
+      await expect(run).toBeEnabled();
+
+      await page.setViewportSize({ width: 370, height: 130 });
+      await settle(page);
+      const header = dialog.locator('header');
+      expect((await dialog.boundingBox())!.height, 'the pane fills the layer inside its padding').toBeCloseTo(106, 0);
+      expect((await header.boundingBox())!.height, 'the bordered pane keeps its 73px header').toBeCloseTo(73, 0);
+
+      // Eighteen real wheel notches in the pane's gutter, past the end of the form.
+      const { x, y } = await gutter(dialog);
+      await page.mouse.move(x, y);
+      for (let notch = 0; notch < 18; notch++) {
+        await page.mouse.wheel(0, 100);
+        await settle(page);
+      }
+      const scroll = await dialog.evaluate(pane => ({ top: pane.scrollTop, max: pane.scrollHeight - pane.clientHeight }));
+      expect(scroll.top, 'the wheel reached the end of the pane').toBeGreaterThanOrEqual(scroll.max - 1);
+      await expectWhole(run);
+      const headerBox = (await header.boundingBox())!;
+      expect(headerBox.y + headerBox.height, 'the header is clear of the action').toBeLessThanOrEqual((await run.boundingBox())!.y + 0.5);
+      expect(await header.evaluate(element => getComputedStyle(element).position), 'below the band the header scrolls away').toBe('static');
+
+      // Wheeling back up returns the close control clear of the window's chrome, and nothing was sent.
+      const close = dialog.getByRole('button', { name: form.close });
+      await wheelToShow(page, dialog, close);
+      await expectClearOfChrome(page, dialog, close, {}, 40);
+      expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
+    });
+  }
+});
