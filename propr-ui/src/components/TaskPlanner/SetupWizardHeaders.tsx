@@ -67,6 +67,13 @@ const MobileBranchSuffix: React.FC<{ branch: string; failed: boolean }> = ({ bra
 // On a phone the repo trigger is the one scope pill; from md up it is a breadcrumb beside the branch chip.
 const SCOPE_PILL_CLASS = 'relative inline-flex min-w-0 items-center whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 py-0.5 pl-2 pr-1.5 md:shrink-0 md:max-w-[50%] md:border-0 md:bg-transparent md:p-0';
 
+// A failed repository/branch lookup gets its own full-width line under the scope row: inline, a long
+// recovery instruction ran across the phase switcher and off the canvas. It wraps, even inside an
+// unbroken token, so the whole instruction stays readable at any width.
+export const ScopeError: React.FC<{ message?: string | null }> = ({ message }) => (
+  message ? <p data-testid="scope-error" className="mt-1.5 text-xs text-red-600 [overflow-wrap:anywhere]">{message}</p> : null
+);
+
 // Header for new mode (repository selector) - IDE-style breadcrumb layout
 export const NewModeHeader: React.FC<{
   reposLoading: boolean;
@@ -107,9 +114,6 @@ export const NewModeHeader: React.FC<{
             )}
           </div>
         </>
-      )}
-      {branchError && (
-        <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError}</span>
       )}
     </>
   );
@@ -170,9 +174,6 @@ export const EditModeHeader: React.FC<{
           <BranchBadge baseBranch={baseBranch} fallbackBranch={fallbackBranch} failed={!!(branchError || repoError)} />
         )}
       </div>
-      {(branchError || repoError) && (
-        <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError || repoError}</span>
-      )}
     </>
   );
 };
