@@ -33,7 +33,7 @@ async function open(page: Page, file: Case, platform?: 'linux') {
 const box = async (locator: Locator) => (await locator.boundingBox())!;
 const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
   a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5;
-/** The rendered lines of a text block (one rect each), their widest and total widths, and whether any text is clipped. */
+/** The rendered lines of a text block (one rect each), the widest line's width, and whether any text is clipped. */
 const textLayout = (locator: Locator) => locator.evaluate(element => {
   const range = document.createRange();
   range.selectNodeContents(element);
@@ -47,8 +47,57 @@ const textLayout = (locator: Locator) => locator.evaluate(element => {
     const y = Math.min(...rects.map(rect => rect.top));
     return { x, y, width: Math.max(...rects.map(rect => rect.right)) - x, height: Math.max(...rects.map(rect => rect.bottom)) - y };
   });
-  return { lines, widest: Math.max(...lines.map(line => line.width)), total: lines.reduce((sum, line) => sum + line.width, 0),
-    clipped: element.scrollWidth > element.clientWidth + 0.5 };
+  return { lines, widest: Math.max(...lines.map(line => line.width)), clipped: element.scrollWidth > element.clientWidth + 0.5 };
+});
+
+/**
+ * Each rendered line's text for the name and path at phone width, beside what the browser itself renders for the same text in plain
+ * blocks of the header's full usable width: the name beside a spacer the size of the close control's margin box, then the path cleared
+ * below it. Only font and wrapping properties are copied to the reference, so the comparison holds whatever the font's metrics or
+ * hinting, and a narrowed column, a squeezed name or a covering control all break the text differently from the reference.
+ */
+const phoneWrapping = (header: Locator) => header.evaluate(element => {
+  const name = element.querySelector<HTMLElement>('[data-testid="diff-file-name"]')!;
+  const path = element.querySelector<HTMLElement>('[data-testid="diff-file-path"]')!;
+  const close = element.querySelector<HTMLElement>('button[aria-label="Close diff view"]')!;
+  const lines = (block: HTMLElement) => {
+    const text = block.firstChild as Text;
+    const result: string[] = [];
+    let top: number | undefined;
+    for (let index = 0; index < text.length; index++) {
+      const range = document.createRange();
+      range.setStart(text, index);
+      range.setEnd(text, index + 1);
+      const rect = range.getBoundingClientRect();
+      if (top === undefined || rect.top > top + rect.height / 2) { result.push(''); top = rect.top; }
+      result[result.length - 1] += text.data[index];
+    }
+    return result;
+  };
+  const headerStyle = getComputedStyle(element);
+  const usable = element.clientWidth - parseFloat(headerStyle.paddingLeft) - parseFloat(headerStyle.paddingRight);
+  const reference = document.createElement('div');
+  reference.style.cssText = `position: absolute; left: 0; top: 0; width: ${usable}px; visibility: hidden; display: flow-root`;
+  const closeBox = close.getBoundingClientRect();
+  const spacer = document.createElement('div');
+  spacer.style.cssText = `float: right; width: ${closeBox.width}px; height: ${closeBox.height}px; margin: ${getComputedStyle(close).margin}`;
+  const copy = (block: HTMLElement) => {
+    const style = getComputedStyle(block);
+    const plain = document.createElement('div');
+    for (const property of ['font-family', 'font-size', 'font-weight', 'font-style', 'font-stretch', 'font-feature-settings', 'font-variation-settings',
+      'font-kerning', 'font-optical-sizing', 'letter-spacing', 'word-spacing', 'line-height', 'text-rendering', 'text-transform', 'overflow-wrap',
+      'word-break', 'white-space', 'hyphens']) plain.style.setProperty(property, style.getPropertyValue(property));
+    plain.textContent = block.textContent;
+    return plain;
+  };
+  const [plainName, plainPath] = [copy(name), copy(path)];
+  plainPath.style.clear = 'right';
+  reference.append(spacer, plainName, plainPath);
+  element.parentElement!.append(reference);
+  const result = { usable, nameWidth: name.getBoundingClientRect().width, pathWidth: path.getBoundingClientRect().width,
+    name: lines(name), expectedName: lines(plainName), path: lines(path), expectedPath: lines(plainPath) };
+  reference.remove();
+  return result;
 });
 
 async function expectReadableHeader(page: Page, dialog: Locator, file: Case, name: string, options: { enlarged?: boolean; diffShare?: number } = {}) {
@@ -109,9 +158,16 @@ async function expectReadableHeader(page: Page, dialog: Locator, file: Case, nam
     // An ordinary desktop window fits the deep path and long name on a line each; only an unbroken name longer than that wraps.
     if (viewport.width >= 1280 && file.path === deep) expect([titleText.lines.length, pathText.lines.length]).toEqual([1, 1]);
   } else {
-    // On a phone the name and path each fill most of the header's width per line, short of word breaks (the defect left the name one glyph
-    // and the path a narrow column), and the status and counts follow below them.
-    for (const text of [titleText, pathText]) expect(text.widest).toBeGreaterThanOrEqual(Math.min(text.total, 0.6 * usable) - 0.5);
+    // On a phone the name and path get the header's whole width (the defect left the name one glyph and the path a narrow column) and
+    // wrap only where that width runs out, beside and then beneath the close control, and the status and counts follow below them.
+    const wrapping = await phoneWrapping(header);
+    expect(wrapping.usable).toBeCloseTo(usable, 0);
+    expect(wrapping.nameWidth).toBeGreaterThanOrEqual(usable - 0.5);
+    expect(wrapping.pathWidth).toBeGreaterThanOrEqual(usable - 0.5);
+    expect(wrapping.name, 'name lines').toEqual(wrapping.expectedName);
+    expect(wrapping.path, 'path lines').toEqual(wrapping.expectedPath);
+    expect(wrapping.name.join('')).toBe(name);
+    expect(wrapping.path.join('')).toBe(file.path);
     expect(statusBox.y).toBeGreaterThanOrEqual(pathBottom - 0.5);
     expect(countsBox.y).toBeGreaterThanOrEqual(pathBottom - 0.5);
     if (!options.enlarged) expect(Math.abs((statusBox.y + statusBox.height / 2) - (countsBox.y + countsBox.height / 2))).toBeLessThan(statusBox.height);
