@@ -33,6 +33,7 @@ import { useTaskPullRequestScores } from './pullRequestScores';
 import { followupTargetFor, hasFollowupTarget, taskLabelMode } from './taskKind';
 import { useTaskFollowup } from './useTaskFollowup';
 import FollowupHandoffBanner from './FollowupHandoffBanner';
+import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_STATIC, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -193,6 +194,8 @@ const observeTimeline = (node: HTMLDivElement | null) => {
   const scroller = node?.parentElement;
   if (!node || !scroller || typeof ResizeObserver === 'undefined') return;
   const update = () => {
+    // A short window scrolls the whole task, which has no room to pin a pane in.
+    if (node.closest('[data-short-workspace]')) { node.style.setProperty('--timeline-position', 'static'); return; }
     // Streaming steps must not relocate the timeline while the reader is mid-scroll.
     if (scroller.scrollTop !== 0) return;
     node.style.setProperty('--timeline-position', node.offsetHeight <= scroller.clientHeight ? 'sticky' : 'static');
@@ -262,6 +265,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const handleOpenFollowup = useCallback(() => setFollowupModalOpen(true), []);
 
   const mobileHeader = useMobileHeaderCollapsed();
+  const shortWorkspace = useShortWorkspace();
 
   const executionLogRef = useClickOutsideCollapse(thinkingLog.eventsCollapsed, thinkingLog.collapseEvents);
 
@@ -315,7 +319,12 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   };
 
   return (
-    <div data-scroll-lock-target data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white pb-24 sm:overflow-hidden sm:pb-0">
+    // Too short for the workspace under the header, the task scrolls as one page (as on a phone) above the pinned log bar.
+    <div
+      {...shortWorkspace.detailsProps}
+      data-scroll-lock-target data-testid="task-details" data-embedded={embedded || undefined}
+      className={`group/task h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white pb-24 sm:overflow-hidden sm:pb-0 ${SHORT_DETAILS}`}
+    >
       <MobileCompactBar
         contextStripProps={contextStripProps}
         actionBarProps={actionBarProps}
@@ -331,7 +340,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
       </header>
 
       {/* Desktop sticky header shell; keep below global navigation overlays. */}
-      <header className="hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white">
+      <header ref={shortWorkspace.headerRef} className={`hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white ${SHORT_STATIC}`}>
         <DesktopTaskHeader
           headerProps={headerProps}
           contextStripProps={assignedStripProps}
@@ -357,10 +366,10 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
       {/* Split only when the 576px timeline and at least 384px of output fit.
           A grid row grows to the taller pane so both columns share the full scrollable height. */}
-      <div className="flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden [container:task-workspace/inline-size]">
+      <div className={`flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden [container:task-workspace/inline-size] ${SHORT_UNBOUNDED}`}>
         <div
           data-testid="task-workspace-scroll"
-          className={`scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:grid [@container_task-workspace_(min-width:960px)]:grid-cols-[max(30%,576px)_minmax(0,1fr)]')}`}
+          className={`scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain ${SHORT_UNBOUNDED}${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:grid [@container_task-workspace_(min-width:960px)]:grid-cols-[max(30%,576px)_minmax(0,1fr)]')}`}
         >
           {/* Keep 528px for step columns after pane padding, scrollbar and border. */}
           <div
@@ -426,7 +435,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
       {/* Execution Event Log Footer */}
       <div
         ref={executionLogRef}
-        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex h-[clamp(12rem,42dvh,22rem)] max-h-[60dvh] min-h-0 flex-col' + wideOnly(embedded, 'lg:h-auto lg:max-h-[60%] lg:flex-1')}`}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${SHORT_LOG_BAR} ${thinkingLog.eventsCollapsed ? '' : `flex h-[clamp(12rem,42dvh,22rem)] max-h-[60dvh] min-h-0 flex-col ${SHORT_OPEN_LOG}` + wideOnly(embedded, 'lg:h-auto lg:max-h-[60%] lg:flex-1')}`}
       >
         <ExecutionEventLog
           events={taskData.liveDetails.events}

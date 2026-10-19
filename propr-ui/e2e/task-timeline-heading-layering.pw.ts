@@ -26,7 +26,7 @@ async function coveredHeadingPoints(page: Page, scope: string) {
     const root = document.querySelector(scope) ?? document;
     const heading = root.querySelector<HTMLElement>('[data-testid="task-timeline-heading"]')!;
     const timeline = heading.closest<HTMLElement>('[data-testid="task-timeline-scroll"]')!;
-    const scroller = heading.closest<HTMLElement>('[data-testid="task-workspace-scroll"]')!;
+    const scroller = heading.closest<HTMLElement>('[data-short-workspace]') ?? heading.closest<HTMLElement>('[data-testid="task-workspace-scroll"]')!;
     const box = heading.getBoundingClientRect();
     const port = scroller.getBoundingClientRect();
     const top = Math.max(box.top, port.top, 0) + 1;
@@ -100,7 +100,9 @@ test('an earlier run keeps its way back to Run 8 above the timeline with enlarge
   const pane = page.locator(scope);
   const back = pane.getByTestId('task-timeline-heading').getByRole('button', { name: /Run 8$/ });
   await expect(back).toBeVisible();
-  expect(await scrollUnderHeading(page, scope, 'task-workspace-scroll')).toEqual([]);
+  // The enlarged header leaves the pane too short for its own workspace, so the whole task scrolls under the heading.
+  await expect(pane.getByTestId('task-details')).toHaveAttribute('data-short-workspace', 'true');
+  expect(await scrollUnderHeading(page, scope, 'task-details')).toEqual([]);
   await back.click();
   await expect(page).toHaveURL(new RegExp(`task=${selectedRun}`));
 });
