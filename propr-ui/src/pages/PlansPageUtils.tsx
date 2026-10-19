@@ -15,10 +15,24 @@ export const getEffectiveStatus = (status: string, issueSummary: IssueSummary | 
   return status;
 };
 
-export const formatRelativeTime = (dateString: string): string => {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
+// SQLite CURRENT_TIMESTAMP ('YYYY-MM-DD HH:mm:ss') is UTC without a zone suffix;
+// `new Date` would read it as browser-local time.
+const ZONELESS_DATE_TIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+
+/** Parses an API timestamp, treating zone-less date-times as UTC. Returns null when unparseable. */
+export const parseApiTimestamp = (value: string | null | undefined): Date | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const zoneless = ZONELESS_DATE_TIME.exec(trimmed);
+  const date = new Date(zoneless ? `${zoneless[1]}T${zoneless[2]}Z` : trimmed);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+/** Missing or unparseable timestamps render as an empty label rather than "NaN days ago". */
+export const formatRelativeTime = (dateString: string | null | undefined, now: number = Date.now()): string => {
+  const date = parseApiTimestamp(dateString);
+  if (!date) return '';
+  const diffMs = now - date.getTime();
   const diffSeconds = Math.floor(diffMs / 1000);
   const diffMinutes = Math.floor(diffSeconds / 60);
   const diffHours = Math.floor(diffMinutes / 60);
