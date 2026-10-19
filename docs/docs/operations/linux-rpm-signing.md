@@ -46,6 +46,63 @@ uses temporary private files, scrubbed subprocess environments, exact-primary
 selection, bounded diagnostics, and cleanup. Stage/publication jobs have public
 inputs only. No keys, permissions, hosting, or access are provisioned by this work.
 
+## Verify the stored signing key without a release
+
+`verify-key` proves that the protected private key and passphrase form a working
+pair with the pinned owner identity. It does not download, build, sign, install
+or publish any package, release, container image or existing candidate, and it
+accepts no unsigned or signing run input. `source_revision` is still a required
+shared input: it must be a full SHA reachable from `main` and is recorded only as
+identity metadata. The frozen source is never checked out or executed.
+
+After the operator has reviewed the exact `main` head, dispatch it from `main`:
+
+```sh
+gh workflow run desktop-linux-signed-preview.yml --repo integry/propr --ref main \
+  -f operation=verify-key -f source_revision="$(git rev-parse origin/main)"
+```
+
+Approve only the existing `desktop-linux-rpm-signing` deployment for that run. The
+pre-credential `verify-helpers` gate first runs the disposable-key regressions with
+real tools. The protected job then requires `PROPR_DESKTOP_RPM_SIGNING_AUTHORIZED=1`,
+checks out only the reviewed control SHA with read-only `contents` permission, and
+runs `apps/desktop/scripts/signing-key-verification.mjs`. That entry point:
+
+1. removes both secrets from its environment before any subprocess starts and
+   requires `PROPR_DESKTOP_RPM_FINGERPRINT` to equal `OWNER_FINGERPRINT` exactly;
+2. imports the public variable into a fresh 0700 GnuPG home and requires exactly
+   one unexpired, unrevoked RSA signing primary key with that fingerprint;
+3. imports the stored private key there, requires exactly one secret primary key
+   with the full pinned fingerprint, and uses the passphrase (a 0600 file, never
+   an argument) to make a SHA256 detached signature of a fixed nonsecret challenge;
+4. verifies that signature in a second fresh public-only home with the public
+   variable, and again in a third with the reviewed export
+   `docs/static/keys/propr-desktop-release.asc`;
+5. confirms every temporary home is removed and every temporary GnuPG agent it
+   owns has stopped.
+
+A matching fingerprint alone is never success. A wrong passphrase, wrong private
+key, public-key mismatch, expired or revoked key, missing tools, a bad or missing
+signature, or incomplete cleanup fails the run with a short fixed message and no
+receipt; GnuPG output is never forwarded. Each GnuPG call is bounded to two minutes
+and the job to ten.
+
+On success the run summary and the
+`propr-desktop-linux-signing-key-verification-<run-id>` artifact contain a small
+public receipt: operation `verify-key`, repository, workflow run ID, reviewed
+control SHA, source SHA (metadata), full fingerprint, SHA256 digests of the
+challenge and signature, and the passed checks. Inspect it with:
+
+```sh
+gh run download "$RUN_ID" --repo integry/propr \
+  --name "propr-desktop-linux-signing-key-verification-$RUN_ID" --dir verify-key-receipt
+cat verify-key-receipt/signing-key-verification.json
+```
+
+The receipt must report `"workflowRunId": "<RUN_ID>"`, the reviewed `main` SHA as
+`controlRevision`, and `80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599`. It is not
+release evidence and cannot stand in for `sign-draft` or `publish-draft`.
+
 ## Authentication graph
 
 Schema 4 has trust `authenticated-linux-preview`, tag suffix `-all-signed`, and
@@ -155,7 +212,8 @@ apply; signing is not end-to-end runtime acceptance.
 ```sh
 PROPR_REQUIRE_RPM_TESTS=1 node --test apps/desktop/scripts/rpm-signing.test.mjs \
   apps/desktop/scripts/linux-preview-release.test.mjs \
-  apps/desktop/scripts/linux-preview-workflow.test.mjs
+  apps/desktop/scripts/linux-preview-workflow.test.mjs \
+  apps/desktop/scripts/signing-key-verification.test.mjs
 ```
 
 CI installs GnuPG, RPM tools, cpio, dpkg and APT and requires real disposable-key

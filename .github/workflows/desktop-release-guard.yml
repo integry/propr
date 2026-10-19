@@ -132,7 +132,8 @@ jobs:
         run: |
           node --test apps/desktop/scripts/rpm-signing.test.mjs \
             apps/desktop/scripts/linux-preview-release.test.mjs \
-            apps/desktop/scripts/linux-preview-workflow.test.mjs
+            apps/desktop/scripts/linux-preview-workflow.test.mjs \
+            apps/desktop/scripts/signing-key-verification.test.mjs
 
       - name: Resolve unsigned validation version
         id: version

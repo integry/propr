@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Sign an existing unsigned bundle into a distinct draft, or publish the signed draft
+        description: Sign an existing unsigned bundle into a distinct draft, publish the signed draft, or verify the stored signing key only
         required: true
         type: choice
         default: sign-draft
-        options: [sign-draft, publish-draft]
+        options: [sign-draft, publish-draft, verify-key]
       source_revision:
-        description: Frozen full source SHA of the unsigned preview (do not refresh implicitly)
+        description: Frozen full source SHA of the unsigned preview (do not refresh implicitly); verify-key - main-reachable SHA recorded as identity metadata only
         required: true
         type: string
       unsigned_run_id:
@@ -76,6 +76,10 @@ jobs:
             throw new Error('Expected a successful main-dispatched unsigned preview workflow in this repository');
           }
           NODE
+          elif [ "$OPERATION" = verify-key ]; then
+            # Credential check only: no unsigned bundle, signing run or candidate input.
+            test -z "$UNSIGNED_RUN_ID"
+            test -z "$SIGNING_RUN_ID"
           else
             test "$OPERATION" = publish-draft
             test -z "$UNSIGNED_RUN_ID"
@@ -109,7 +113,8 @@ jobs:
             apps/desktop/scripts/linux-preview-release.test.mjs \
             apps/desktop/scripts/linux-preview-workflow.test.mjs \
             apps/desktop/scripts/signed-rpm-acceptance-evidence.test.mjs \
-            apps/desktop/scripts/packaged-browser-approval.test.mjs
+            apps/desktop/scripts/packaged-browser-approval.test.mjs \
+            apps/desktop/scripts/signing-key-verification.test.mjs
 
   sign:
     if: inputs.operation == 'sign-draft'
@@ -320,3 +325,63 @@ jobs:
             --repository "${{ github.repository }}" --source-directory frozen-source \
             --signing-run-id "${{ inputs.signing_run_id }}" \
             --acceptance-evidence signed-rpm-acceptance/signed-rpm-acceptance.json
+
+  # Proves the stored key pair signs for the pinned identity. It never downloads,
+  # builds, signs, installs or publishes a package, release, image or candidate.
+  verify-key:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'verify-key'
+    needs: [identity, verify-helpers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: desktop-linux-rpm-signing
+    permissions:
+      contents: read
+    steps:
+      - name: Require owner-provisioned signing authority
+        env:
+          AUTHORIZED: ${{ vars.PROPR_DESKTOP_RPM_SIGNING_AUTHORIZED }}
+        run: test "$AUTHORIZED" = 1
+      - name: Checkout reviewed control code only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind checkout to the reviewed control revision
+        env:
+          CONTROL_REVISION: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$CONTROL_REVISION"
+      - name: Install GnuPG only
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gnupg
+      - name: Sign and independently verify a fixed nonsecret challenge with the stored key pair
+        env:
+          PROPR_DESKTOP_RPM_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}
+          PROPR_DESKTOP_RPM_PASSPHRASE: ${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          CONTROL_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          node apps/desktop/scripts/signing-key-verification.mjs verify-key \
+            --repository "$REPOSITORY" --workflow-run-id "$WORKFLOW_RUN_ID" \
+            --control-revision "$CONTROL_REVISION" --source-revision "$SOURCE_REVISION" \
+            --output signing-key-verification/signing-key-verification.json
+      - name: Publish the public receipt to the run summary
+        run: |
+          {
+            echo '### Linux signing-key verification receipt'
+            echo '```json'
+            cat signing-key-verification/signing-key-verification.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain only the public receipt
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-linux-signing-key-verification-${{ github.run_id }}
+          path: signing-key-verification/signing-key-verification.json
+          if-no-files-found: error
+          retention-days: 90
