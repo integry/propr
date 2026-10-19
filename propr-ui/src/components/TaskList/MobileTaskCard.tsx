@@ -22,6 +22,9 @@ interface MobileTaskCardProps {
 /** The repository name is never cut shorter than this. */
 const REPOSITORY_MIN_CHARS = 10;
 
+/** A chip stands 22px tall but takes a 20px line, so a first line that fits keeps the height it always had. */
+const CHIP_SLOT = 'flex h-5 flex-none items-center';
+
 const taskDuration = (task: Task) => formatDuration(task.processedAt || task.createdAt, task.completedAt);
 
 /**
@@ -39,6 +42,13 @@ const taskDuration = (task: Task) => formatDuration(task.processedAt || task.cre
  *
  * The repository name keeps its first ten characters however tight the line
  * gets, so a short name such as `propr` is never cut to `pr…`.
+ *
+ * Where the chips, ten characters of repository, status and age cannot share
+ * one line (a 320px phone with `PR #46 [🖼 12]` and `Cancelled`), the first
+ * line wraps rather than scrolling sideways: the age, then the status if need
+ * be, drops beneath, still holding the right edge, and the repository takes
+ * the room they leave. With room, the repository grows only to its own width,
+ * so the status sits right after it as always.
  *
  * The assignees follow the type: avatars alone on a phone, with their logins
  * anywhere wider. An unassigned task shows nothing there, since the card has
@@ -66,6 +76,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
   const { task } = row;
   const selected = rowContainsTask(row, selectedTaskId);
   const summary = row.detail ?? row.outcome;
+  const repositoryMin = `${Math.min(row.repositoryName.length, REPOSITORY_MIN_CHARS)}ch`;
   return (
     <div
       data-testid="task-card"
@@ -78,12 +89,12 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
     >
       <div data-testid="task-card-body" className="border-b border-slate-100 py-3">
         <div className="flex min-w-0 flex-col gap-1.5">
-          <div className="flex h-5 min-w-0 items-center gap-2 text-xs text-slate-500">
-            <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
-            <PreviewCountBadge count={row.previewCount} compact />
-            <span className="min-w-0 truncate font-mono text-[11px]" style={{ minWidth: `${Math.min(row.repositoryName.length, REPOSITORY_MIN_CHARS)}ch` }} title={row.repository}>{row.repositoryName}</span>
-            <span className="flex-none">{getStatusPill(getDisplayStatus(task), row.type)}</span>
-            <span className="ml-auto flex-none whitespace-nowrap pl-2 tabular-nums" title={`Started ${new Date(task.createdAt).toLocaleString()}`}>
+          <div data-testid="task-card-heading" className="flex min-h-5 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+            <span data-testid="task-card-entity" className={CHIP_SLOT}><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
+            {row.previewCount > 0 && <span className={CHIP_SLOT}><PreviewCountBadge count={row.previewCount} compact /></span>}
+            <span data-testid="task-card-repository" className="max-w-max grow truncate font-mono text-[11px]" style={{ minWidth: repositoryMin, flexBasis: repositoryMin }} title={row.repository}>{row.repositoryName}</span>
+            <span data-testid="task-card-status" className={CHIP_SLOT}>{getStatusPill(getDisplayStatus(task), row.type)}</span>
+            <span data-testid="task-card-age" className="ml-auto flex-none whitespace-nowrap pl-2 tabular-nums" title={`Started ${new Date(task.createdAt).toLocaleString()}`}>
               <time dateTime={task.createdAt}>{formatRelativeTime(task.createdAt)}</time>
               <span className="ml-1 font-mono text-[11px] text-slate-400 max-sm:hidden" title="Run time">({taskDuration(task)})</span>
             </span>
