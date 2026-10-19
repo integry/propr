@@ -295,7 +295,7 @@ function TaskLauncherActions({ onCancel, snapshot, result, startOver, ready, bus
   const launchDisabled = !ready || busy || processingFiles || isDemoMode || !repository || !instruction.trim();
   const partialFailure = isPartialFailure(result);
 
-  return <div className="flex flex-none flex-wrap justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
+  return <div data-creation-actions className="flex flex-none flex-wrap justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
     <button type="button" onClick={onCancel} disabled={busy || processingFiles} className={`${button} mr-auto border-transparent text-slate-700 hover:bg-slate-100`}>{partialFailure ? 'Close' : 'Cancel'}</button>
     {canStartOver(busy, result, snapshot) && <button type="button" onClick={() => void startOver()} disabled={busy || isDemoMode} className={`${button} border-slate-300 bg-white text-slate-700`}>{result?.state === 'prepared' ? 'Edit request' : 'Start over'}</button>}
     {!snapshot && <button type="button" onClick={() => void planFirst()} disabled={launchDisabled} className={`${button} border-slate-300 bg-white text-slate-700 hover:bg-slate-100`}><ScrollText aria-hidden="true" size={16} />Plan first</button>}

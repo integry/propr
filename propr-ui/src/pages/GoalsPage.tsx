@@ -471,7 +471,7 @@ function CreateGoalForm({ onCancel, onCreated, onDirtyChange, onSubmittingChange
         </details>
       </fieldset>
       </div>
-      <div className="flex flex-none justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
+      <div data-creation-actions className="flex flex-none flex-wrap justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
         <button type="button" onClick={onCancel} disabled={submitting} className={`${buttonClass} mr-auto min-h-11 px-4 text-slate-700 hover:bg-slate-100`}>Cancel</button>
         <button type="submit" disabled={isDemoMode || submitting || objectiveTooLong || !repository || !agentId || !model || !objective.trim() || !selectedAgent?.goalCapable} title={isDemoMode ? 'Demo mode is read-only' : undefined} className={`${buttonClass} min-h-11 px-4 bg-teal-600 text-white hover:bg-teal-700`}>{submitting ? 'Starting…' : 'Start goal'}</button>
       </div>

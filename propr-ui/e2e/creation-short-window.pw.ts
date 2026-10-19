@@ -29,6 +29,13 @@ const windows: Array<{ name: string; size: { width: number; height: number }; sc
   // it: below, the header scrolls away with the form; from it up, it stays put above at least a whole action.
   { name: 'web 370x130', size: { width: 370, height: 130 }, scale: 1, header: 'scrolls' },
   { name: 'web 370x144', size: { width: 370, height: 144 }, scale: 1, header: 'sticky' },
+  // The reviewer's enlarged-text probe on eb98095: 150% and 200% root text wrap the title and the action labels,
+  // so a header that stuck at the 7.5rem band covered the actions (at 370x288 and 200%, a 233px Start a goal header
+  // left 5px for its 112px action). Whether the header sticks follows what the wrapped contents measure.
+  { name: 'web 370x216 150% text', size: { width: 370, height: 216 }, scale: 1, text: '150%' },
+  { name: 'web 370x288 200% text', size: { width: 370, height: 288 }, scale: 1, text: '200%' },
+  { name: 'web 390x288 200% text', size: { width: 390, height: 288 }, scale: 1, text: '200%' },
+  { name: 'web 370x345 200% text', size: { width: 370, height: 345 }, scale: 1, text: '200%' },
 ];
 
 /**
@@ -79,7 +86,8 @@ async function wheelToShow(page: Page, dialog: Locator, target: Locator) {
 
 /** The same with trusted touch drags past Chromium's 15px touch slop, slow enough not to fling. */
 async function dragToShow(page: Page, touch: CDPSession, dialog: Locator, target: Locator) {
-  for (let step = 0; step < 40; step++) {
+  // Enough short drags to cross a form that enlarged text has made over 1,500px tall.
+  for (let step = 0; step < 100; step++) {
     const { top, bottom } = await uncovered(target);
     if (top >= -0.5 && bottom >= -0.5) return;
     const { x, y, span } = await gutter(dialog);
@@ -91,6 +99,13 @@ async function dragToShow(page: Page, touch: CDPSession, dialog: Locator, target
     await settle(page);
   }
 }
+
+/** Whether the header sticks, and whether the tallest of `actions` fits whole in the pane below it. */
+const headerFit = (dialog: Locator, actions: string[]) => dialog.evaluate((pane, names) => {
+  const header = pane.querySelector('header')!;
+  const heights = Array.from(pane.querySelectorAll('button')).filter(button => names.includes(button.textContent!.trim())).map(button => button.getBoundingClientRect().height);
+  return { sticky: getComputedStyle(header).position === 'sticky', fits: pane.clientHeight - header.getBoundingClientRect().height + 0.5 >= Math.max(...heights) };
+}, actions);
 
 /** The whole 44px action is drawn and takes a press at each sampled point, not just at its centre. */
 async function expectWhole(action: Locator) {
@@ -112,12 +127,23 @@ async function expectShown(target: Locator) {
   }), `${target} is not covered`).toBe(true);
 }
 
-/** Where the caret's line of glyphs sits in what the reader sees; the draft's lines are too short to wrap. */
+/** Where the caret's line of glyphs sits in what the reader sees, wrapped as the field wraps it (enlarged text wraps the draft's lines). */
 const caretShown = (field: Locator) => field.evaluate(element => {
   const area = element as HTMLTextAreaElement;
   const style = getComputedStyle(area);
   const lineHeight = parseFloat(style.lineHeight);
-  const line = area.value.slice(0, area.selectionStart).split('\n').length - 1;
+  // A mirror of the field's text box up to the caret, with the field's width, font and wrapping.
+  const mirror = document.createElement('div');
+  for (const property of ['boxSizing', 'width', 'paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth', 'fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'tabSize', 'overflowWrap', 'wordBreak'] as const) mirror.style[property] = style[property];
+  Object.assign(mirror.style, { position: 'absolute', visibility: 'hidden', top: '0', left: '0', whiteSpace: 'pre-wrap', borderStyle: 'solid', paddingTop: '0', paddingBottom: '0', borderTopWidth: '0', borderBottomWidth: '0' });
+  // The field's scrollbar narrows its text box.
+  mirror.style.width = `${area.getBoundingClientRect().width - (area.offsetWidth - area.clientWidth - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth))}px`;
+  mirror.textContent = area.value.slice(0, area.selectionStart);
+  const marker = mirror.appendChild(document.createElement('span'));
+  marker.textContent = '\u200b';
+  document.body.appendChild(mirror);
+  const line = Math.round(marker.offsetTop / lineHeight);
+  mirror.remove();
   const lineTop = area.getBoundingClientRect().top + area.clientTop + parseFloat(style.paddingTop) + line * lineHeight - area.scrollTop;
   let low = 0;
   let high = window.innerHeight;
@@ -151,8 +177,8 @@ for (const shell of windows) {
         const close = dialog.getByRole('button', { name: form.close });
         const field = dialog.getByLabel(form.field, { exact: true });
         await expect(field).toBeFocused();
-        // Below the sticky band the focused field has scrolled the header away; the reader scrolls back up to it.
-        if (shell.header === 'scrolls') await wheelToShow(page, dialog, close);
+        // Where the header scrolls away, the focused field may have taken it out of view; the reader scrolls back up.
+        await wheelToShow(page, dialog, close);
         // The native titlebar stays the window's, and the shell keeps its 40px close control.
         await expectClearOfChrome(page, dialog, close, shell, 40);
         if (shell.header) {
@@ -177,6 +203,9 @@ for (const shell of windows) {
         const actions = form.actions.map(name => dialog.getByRole('button', { name, exact: true }));
         const run = actions.at(-1)!;
         await expect(run).toBeEnabled();
+        // However the header and the actions wrap, the header sticks exactly where every whole action fits below it.
+        const fit = await headerFit(dialog, form.actions);
+        expect(fit.sticky, 'the header sticks only where its tallest action fits whole beneath it').toBe(fit.fits);
 
         // A wheel over the pane reaches each whole action, then scrolls back up to the start of the field.
         for (const action of actions) {
