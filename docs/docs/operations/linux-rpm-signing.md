@@ -288,6 +288,19 @@ interruption emit no passed evidence. The owned container and image are cleaned
 up along with its owned internal network. Image construction needs
 registry/package/dependency access; installed acceptance has no external egress.
 
+A failed run prints one bounded diagnostic line, for example
+`{"signedRpmAcceptanceFailure":{"phase":"installed-acceptance","outcome":"exit","exitCode":1,"stage":"package-install"}}`.
+It names only a fixed host phase (`docker-info`, `workspace-setup`,
+`context-preparation`, `image-build`, `network-create`, `installed-acceptance`,
+`evidence-collection`, `evidence-export`, `evidence-write` or a cleanup phase),
+an outcome (`exit` with its numeric status, `signal`, `timeout`, `spawn` with its
+error code, `interrupted`, `error`, `ownership-refused`, `artifact-changed` or
+`evidence-invalid`) and, for the installed container, the last fixed step it
+entered. Child output, arguments, environment values, paths and key material are
+never reported; reproduce locally to see them. Every owned cleanup still runs
+after a failure, and cleanup failures are listed under `cleanup` after the
+original failure rather than replacing it.
+
 CI retains the bounded `signed-rpm-acceptance.json` as
 `propr-desktop-installed-signed-rpm-<signing-run-id>`, and visual/accessibility
 artifacts separately with a `-visual-` name. The strict report binds all required
@@ -307,6 +320,7 @@ Run the focused regressions with:
 ```sh
 node --test apps/desktop/scripts/packaged-browser-approval.test.mjs \
   apps/desktop/scripts/signed-rpm-acceptance-evidence.test.mjs \
+  apps/desktop/scripts/signed-rpm-acceptance-diagnostics.test.mjs \
   apps/desktop/scripts/linux-preview-workflow.test.mjs
 npx tsx --test apps/desktop/scripts/packaged-acceptance-account.test.mjs
 # With Playwright Chromium installed (also run by the acceptance image build):
