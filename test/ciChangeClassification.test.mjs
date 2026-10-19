@@ -609,9 +609,10 @@ describe('change resolution', () => {
 // --- command line -----------------------------------------------------------
 
 describe('classifier command line', () => {
-    // The runner's own event (a nightly run is `schedule`) and any classifier
-    // inputs must not leak into the child, or it validates every surface.
-    const AMBIENT = /^(GITHUB_EVENT_NAME|PROPR_CLASSIFY_.*)$/;
+    // The runner's own event (a nightly run is `schedule`), its event payload
+    // (a `desktop-ci` label on the PR running these tests) and any classifier
+    // inputs must not leak into the child, or it selects extra surfaces.
+    const AMBIENT = /^(GITHUB_EVENT_NAME|GITHUB_EVENT_PATH|PROPR_CLASSIFY_.*)$/;
     const hermeticEnvironment = () => Object.fromEntries(
         Object.entries(process.env).filter(([name]) => !AMBIENT.test(name)));
 
