@@ -229,11 +229,15 @@ function commitAll(directory, files, message) {
 function classifyWithCli(directory, base, head) {
     const output = join(freshDirectory('output'), 'github-output.txt');
     writeFileSync(output, '');
+    // The classifier reads pull request labels from GITHUB_EVENT_PATH; drop
+    // the host job's event so a label on the PR running these tests (such as
+    // `desktop-ci`) cannot change the fixture's decision.
+    const { GITHUB_EVENT_PATH: _hostEvent, ...hostEnvironment } = process.env;
     const result = spawnSync(process.execPath, [CLASSIFIER, '--github-output', '--no-fetch'], {
         cwd: directory,
         encoding: 'utf8',
         env: {
-            ...process.env,
+            ...hostEnvironment,
             GITHUB_OUTPUT: output,
             PROPR_CLASSIFY_BASE_SHA: base,
             PROPR_CLASSIFY_HEAD_SHA: head,
