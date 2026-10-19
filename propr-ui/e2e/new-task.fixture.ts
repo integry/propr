@@ -51,6 +51,16 @@ export async function fixture(page: Page, failDispatch = false) {
   });
   return requests;
 }
+/** One goal-capable agent and no goals yet, for the Start a goal shell. */
+export async function stubGoals(page: Page) {
+  await page.route('**/api/goals', route => route.request().method() === 'GET' ? route.fulfill({ json: { goals: [] } }) : route.fallback());
+  await page.route('**/api/goals/capabilities', route => route.fulfill({ json: { agents: [{
+    agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
+    lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' },
+    controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
+    models: ['gpt-6-astra'], defaultModel: 'gpt-6-astra',
+  }] } }));
+}
 // Records the attachments the page hands to the network, including their bytes,
 // so decoded recovery output can be compared in every engine.
 type SentAttachment = { name: string; type: string; lastModified: number; size: number; bytes: string };

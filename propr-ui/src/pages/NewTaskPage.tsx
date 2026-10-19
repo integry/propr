@@ -321,7 +321,8 @@ function NewTaskLauncher({ scope }: { scope: string }) {
   return <CreationDialog title="New task" icon={Zap} description="Describe the change you want. Run task creates an issue and starts implementation."
     closeLabel="Close task creation" onClose={() => void requestClose()} busy={launcher.busy || processingFiles}>
     <form className="flex min-h-0 min-w-0 flex-col" onChange={() => setDirty(true)} onSubmit={event => { event.preventDefault(); void run(); }}>
-      <div className="min-h-0 min-w-0 [overflow-wrap:anywhere] overflow-y-auto px-5 py-5 sm:px-7 space-y-5">
+      {/* The body keeps a few lines of the prompt in view; a pane too short for that and the wrapped actions scrolls as a whole. */}
+      <div className="min-h-24 min-w-0 [overflow-wrap:anywhere] overflow-y-auto px-5 py-5 sm:px-7 space-y-5">
     {!snapshot && !launcher.planDraft && launcher.recoverable.length > 0 && <section aria-label="Unresolved submissions" className="mt-6 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-slate-700">
       <h2 className="font-semibold">Unresolved submissions</h2>
       <p className="mt-1">Reopen a previous request to check its status and finish starting the task.</p>

@@ -1,6 +1,6 @@
 /** The shared creation shell (New Task, New Goal) stays inside the visible area while an on-screen keyboard shrinks and pans the visual viewport. */
 import { expect, test, type CDPSession, type Locator, type Page } from '@playwright/test';
-import { fixture } from './new-task.fixture';
+import { fixture, stubGoals } from './new-task.fixture';
 import { captureVisible, expectFieldVisible, expectShown, expectUnframed, expectVisible, installKeyboardViewport, listenerCount, setKeyboard, type Band, type Clipping } from './keyboard-viewport.fixture';
 
 // Measured on a Samsung phone in Chrome: the layout viewport stays 384×692 while the
@@ -27,16 +27,6 @@ const shells = [
 ];
 
 test.use({ viewport: layout, isMobile: true, hasTouch: true });
-
-async function stubGoals(page: Page) {
-  await page.route('**/api/goals', route => route.request().method() === 'GET' ? route.fulfill({ json: { goals: [] } }) : route.fallback());
-  await page.route('**/api/goals/capabilities', route => route.fulfill({ json: { agents: [{
-    agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
-    lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' },
-    controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
-    models: ['gpt-6-astra'], defaultModel: 'gpt-6-astra',
-  }] } }));
-}
 
 for (const shell of shells) {
   test(`${shell.name} keeps its header, prompt and actions above a panned keyboard and restores after it closes`, async ({ page }) => {
@@ -246,7 +236,8 @@ for (const shell of shells) {
     await expect(model).toHaveValue('gpt-6-astra');
     await expect(dialog.getByRole('button', { name: /billing/ }).first()).toBeVisible();
     for (const name of shell.actions) await expectShown([dialog.getByRole('button', { name, exact: true })], portrait);
-    expect(await dialog.evaluate(element => getComputedStyle(element).overflowY)).toBe('hidden');
+    // With room for the whole form, the pane itself does not scroll; only its form body does.
+    expect(await dialog.evaluate(element => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
     expect(requests.filter(request => !request.startsWith('GET '))).toEqual([]);
   });
 }
