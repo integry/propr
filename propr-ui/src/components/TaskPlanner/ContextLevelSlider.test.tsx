@@ -24,3 +24,17 @@ describe('ContextLevelSlider token estimate', () => {
     expect(screen.getByTestId('context-scope-estimate')).not.toHaveTextContent('tokens');
   });
 });
+
+describe('ContextLevelSlider full header layout', () => {
+  it('lets the estimate wrap after the token budget instead of holding one line', () => {
+    render(<ContextLevelSlider value={50} onChange={vi.fn()} modelMaxTokens={1_000_000} />);
+    const estimate = screen.getByTestId('context-scope-estimate');
+    expect(estimate).toHaveTextContent('≤490k tokens · ~1-2m scan');
+    expect(estimate).not.toHaveClass('whitespace-nowrap');
+    expect(estimate.parentElement).toHaveClass('flex-wrap');
+    expect(Array.from(estimate.children, part => [part.textContent, part.className])).toEqual([
+      ['≤490k tokens\u00a0·', 'inline-block'],
+      ['~1-2m scan', 'inline-block'],
+    ]);
+  });
+});

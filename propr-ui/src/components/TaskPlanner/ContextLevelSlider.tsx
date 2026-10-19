@@ -73,6 +73,9 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
   const analysisDetail = hideCostLabels ? config.analysis : `${config.analysis} · ${config.costLabel}`;
   const tokenEstimate = `≤${formatTokenAmount(getContextTokenBudget(value, modelMaxTokens || DEFAULT_MODEL_MAX_TOKENS))} tokens`;
   const estimate = hideCostLabels ? config.latencyEstimate : `${tokenEstimate} · ${config.latencyEstimate}`;
+  // The full header breaks between the token budget and the scan time first; each part wraps inside only when it
+  // cannot fit the pane on its own (very large text in the narrow md column).
+  const estimateParts = hideCostLabels ? [config.latencyEstimate] : [tokenEstimate, config.latencyEstimate];
 
   // Handle slider change - no snapping, moves at 10% increments
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -114,10 +117,11 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
 
   return (
     <div className="space-y-2 sm:space-y-3">
-      {/* Header Row: Title on left, token / latency estimate on right */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 sm:gap-2">
-          <Layers className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-500" />
+      {/* Header Row: Title on left, token / latency estimate on right. In a narrow pane (the 35% column
+          at md widths) or with enlarged text the estimate wraps under the title instead of widening the canvas. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
+          <Layers className="w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0 text-gray-500" />
           <label className="text-xs sm:text-sm font-medium text-gray-700">
             Context Scope
           </label>
@@ -125,8 +129,13 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             {value}%
           </span>
         </div>
-        <span className="text-xs font-mono text-slate-500 whitespace-nowrap" data-testid="context-scope-estimate" title={LATENCY_ESTIMATE_NOTE}>
-          {estimate}
+        <span className="min-w-0 text-xs font-mono text-slate-500" data-testid="context-scope-estimate" title={LATENCY_ESTIMATE_NOTE}>
+          {estimateParts.map((part, index) => (
+            <React.Fragment key={part}>
+              {index > 0 && ' '}
+              <span className="inline-block">{index < estimateParts.length - 1 ? `${part}\u00a0·` : part}</span>
+            </React.Fragment>
+          ))}
         </span>
       </div>
 
@@ -141,7 +150,8 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           onChange={handleSliderChange}
           className="context-slider w-full h-2 rounded-lg cursor-pointer"
         />
-        <div className="flex justify-between text-xs">
+        {/* Enlarged text can make the three shortcuts wider than the pane; they wrap rather than run off its edge. */}
+        <div className="flex flex-wrap justify-between gap-x-3 text-xs">
           <button
             type="button"
             onClick={() => handleLabelClick(20)}
