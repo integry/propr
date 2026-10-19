@@ -435,7 +435,7 @@ process.exit(42);
     encoding: 'utf8', env: { ...process.env, PATH: bin,
       PROPR_DESKTOP_RPM_PRIVATE_KEY: 'private-test-sentinel', PROPR_DESKTOP_RPM_PASSPHRASE: 'password-test-sentinel',
       PROPR_DESKTOP_RPM_PUBLIC_KEY: '-----BEGIN PGP PUBLIC KEY BLOCK-----',
-      PROPR_DESKTOP_RPM_FINGERPRINT: 'DD4E7F65CE2345A1F4597D643CF856B53093D3A3' },
+      PROPR_DESKTOP_RPM_FINGERPRINT: '80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599' },
   });
   assert.equal(result.status, 1);
   assert.deepEqual(JSON.parse(await readFile(evidence, 'utf8')), { key: false, passphrase: false });

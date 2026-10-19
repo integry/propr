@@ -8,7 +8,8 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const execFile = promisify(execFileCallback);
-export const OWNER_FINGERPRINT = 'DD4E7F65CE2345A1F4597D643CF856B53093D3A3';
+// Owner replacement key effective 2026-10-19; the previous key is historical, not cross-signed.
+export const OWNER_FINGERPRINT = '80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599';
 const fingerprintPattern = /^[A-F0-9]{40}$/;
 
 export function requireRpmIdentity(identity) {

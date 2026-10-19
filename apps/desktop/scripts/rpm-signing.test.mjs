@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { inspectSignedPreviewPayload } from './rpm-preview-payload.mjs';
-import { OWNER_FINGERPRINT, withKey, assertRpmSignatures, requireRpmIdentity, rpmContentDigest, signRpm, verifyRpm } from './rpm-signing.mjs';
+import { OWNER_FINGERPRINT, rpmIdentityFromEnvironment, withKey, assertRpmSignatures, requireRpmIdentity, rpmContentDigest, signRpm, verifyRpm } from './rpm-signing.mjs';
 import { linuxPreviewTag, prepareLinuxPreview, readLinuxPreviewBundle, signLinuxPreviewBundle, stageLinuxPreviewDraft, publishLinuxPreviewDraft } from './linux-preview-release.mjs';
 import { aptAcceptance } from './apt-auth-acceptance.mjs';
 import { authAssets, aptAssets, signMetadata, verifyMetadata, verifyApt } from './linux-package-auth.mjs';
@@ -138,17 +138,76 @@ test('signed mode requires exact public identity inputs', async () => {
   }
 });
 
+const PREVIOUS_FINGERPRINT = 'DD4E7F65CE2345A1F4597D643CF856B53093D3A3';
+const ownerExport = 'docs/static/keys/propr-desktop-release.asc';
+const historicalExport = `docs/static/keys/propr-desktop-release-historical-${PREVIOUS_FINGERPRINT}.asc`;
+
+async function inspectExport(path, fingerprint) {
+  const publicKey = await readFile(join(repositoryRoot, path), 'utf8');
+  assert.doesNotMatch(publicKey, /PRIVATE KEY/);
+  return withKey({ fingerprint, publicKey }, async home => {
+    const records = run('gpg', ['--homedir', home, '--with-colons', '--list-keys']).split('\n').map(l => l.split(':'));
+    assert.equal(records.filter(r => r[0] === 'pub').length, 1);
+    assert.equal(records.filter(r => r[0] === 'sub').length, 0);
+    assert.equal(run('gpg', ['--homedir', home, '--with-colons', '--list-secret-keys']).trim(), '');
+    const primary = records.find(r => r[0] === 'pub');
+    assert.equal(primary[2], '4096');
+    assert.equal(primary[3], '1');
+    return { publicKey, created: new Date(Number(primary[5]) * 1000).toISOString(),
+      expires: new Date(Number(primary[6]) * 1000).toISOString(), uids: records.filter(r => r[0] === 'uid').map(r => r[9]) };
+  });
+}
+
 test('documented owner public export has the exact complete RSA4096 identity and expiry', {
   skip: missing.length ? `Missing tools: ${missing}` : false,
 }, async () => {
-  const publicKey = await readFile(join(repositoryRoot, 'docs/static/keys/propr-desktop-release.asc'), 'utf8');
-  await withKey({ fingerprint: OWNER_FINGERPRINT, publicKey }, async home => {
-    const records = run('gpg', ['--homedir', home, '--with-colons', '--list-keys']).split('\n').map(l => l.split(':'));
-    const primary = records.find(r => r[0] === 'pub');
-    assert.equal(primary[2], '4096');
-    assert.equal(new Date(Number(primary[5]) * 1000).toISOString(), '2026-10-12T13:07:27.000Z');
-    assert.equal(new Date(Number(primary[6]) * 1000).toISOString(), '2028-10-11T13:11:25.000Z');
+  assert.equal(OWNER_FINGERPRINT, '80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599');
+  const owner = await inspectExport(ownerExport, OWNER_FINGERPRINT);
+  assert.deepEqual(owner.uids, ['ProPR Desktop Release Signing']);
+  assert.equal(owner.created, '2026-10-19T14:09:59.000Z');
+  assert.equal(owner.expires, '2028-10-18T14:09:59.000Z');
+  // The previous export stays published unchanged as historical public material only.
+  const previous = await inspectExport(historicalExport, PREVIOUS_FINGERPRINT);
+  assert.deepEqual(previous.uids, ['ProPR Desktop RPM Signing']);
+  assert.equal(previous.created, '2026-10-12T13:07:27.000Z');
+  assert.equal(previous.expires, '2028-10-11T13:11:25.000Z');
+  // Neither export can stand in for the other under either fingerprint.
+  await assert.rejects(withKey({ fingerprint: OWNER_FINGERPRINT, publicKey: previous.publicKey }, async () => {}), /pinned, usable RSA/);
+  await assert.rejects(withKey({ fingerprint: PREVIOUS_FINGERPRINT, publicKey: owner.publicKey }, async () => {}), /pinned, usable RSA/);
+});
+
+test('production environment pin accepts only the replacement owner fingerprint with its public export', {
+  skip: missing.length ? `Missing tools: ${missing}` : false,
+}, async t => {
+  const saved = { fingerprint: process.env.PROPR_DESKTOP_RPM_FINGERPRINT, publicKey: process.env.PROPR_DESKTOP_RPM_PUBLIC_KEY };
+  t.after(() => {
+    for (const [name, value] of [['PROPR_DESKTOP_RPM_FINGERPRINT', saved.fingerprint], ['PROPR_DESKTOP_RPM_PUBLIC_KEY', saved.publicKey]]) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
   });
+  const ownerKey = await readFile(join(repositoryRoot, ownerExport), 'utf8');
+  const previousKey = await readFile(join(repositoryRoot, historicalExport), 'utf8');
+  const root = await mkdtemp(join(tmpdir(), 'propr-rpm-pin-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const disposable = await key(root, 'wrong-signer');
+  for (const [fingerprint, publicKey] of [[PREVIOUS_FINGERPRINT, previousKey], [PREVIOUS_FINGERPRINT, ownerKey],
+    [disposable.identity.fingerprint, disposable.identity.publicKey], [OWNER_FINGERPRINT.toLowerCase(), ownerKey],
+    [OWNER_FINGERPRINT.slice(-16), ownerKey], [undefined, ownerKey]]) {
+    if (fingerprint === undefined) delete process.env.PROPR_DESKTOP_RPM_FINGERPRINT;
+    else process.env.PROPR_DESKTOP_RPM_FINGERPRINT = fingerprint;
+    process.env.PROPR_DESKTOP_RPM_PUBLIC_KEY = publicKey;
+    assert.throws(() => rpmIdentityFromEnvironment(), /differs from owner pin/);
+  }
+  process.env.PROPR_DESKTOP_RPM_FINGERPRINT = OWNER_FINGERPRINT;
+  process.env.PROPR_DESKTOP_RPM_PUBLIC_KEY = ownerKey;
+  const identity = rpmIdentityFromEnvironment();
+  assert.deepEqual(identity, { fingerprint: OWNER_FINGERPRINT, publicKey: ownerKey });
+  assert.equal(await withKey(identity, async () => 'accepted'), 'accepted');
+  // A matching pin with mismatched public settings (old export or another signer) fails before signing.
+  for (const publicKey of [previousKey, disposable.identity.publicKey]) {
+    process.env.PROPR_DESKTOP_RPM_PUBLIC_KEY = publicKey;
+    await assert.rejects(withKey(rpmIdentityFromEnvironment(), async () => {}), /pinned, usable RSA/);
+  }
 });
 
 test('signature status parsing ignores filename tokens but requires both pinned signatures', () => {

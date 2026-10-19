@@ -1,8 +1,13 @@
 # Linux package authentication
 
 New public Linux previews authenticate **both DEB and RPM packages, on x64 and
-arm64**. The owner identity is **DD4E7F65CE2345A1F4597D643CF856B53093D3A3**.
-See the independent [release-key notice and public download](linux-release-key.md).
+arm64**. The owner identity for previews signed on or after 2026-10-19 is
+**80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599** (`ProPR Desktop Release Signing`,
+RSA4096, expires 2028-10-18). It replaces
+DD4E7F65CE2345A1F4597D643CF856B53093D3A3, whose passphrase is no longer available;
+no compromise has been reported, the old key is not revoked, and it has not
+cross-signed the new one. See the independent [release-key notice, rotation details and public
+downloads](linux-release-key.md).
 
 The main-only `desktop-linux-signed-preview.yml` consumes the exact finalized
 four-package artifact from a successful main-dispatched unsigned preview run.
@@ -24,6 +29,16 @@ Its compatibility names remain unchanged:
 | `PROPR_DESKTOP_RPM_PASSPHRASE` | Existing protected passphrase secret |
 | `PROPR_DESKTOP_RPM_PUBLIC_KEY` | Repository variable containing the public export |
 | `PROPR_DESKTOP_RPM_FINGERPRINT` | Repository variable with the complete owner fingerprint |
+
+The code pin `OWNER_FINGERPRINT` in `apps/desktop/scripts/rpm-signing.mjs` is the
+reviewed source of truth. Signing refuses to start unless
+`PROPR_DESKTOP_RPM_FINGERPRINT` equals it exactly, the public export imports as
+exactly that one unexpired, unrevoked RSA signing primary key, and the private key
+matches it. For the 2026-10-19 rotation a human administrator separately replaces
+the protected private-key and passphrase secrets and sets both public settings to
+`80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599` and the export in
+`docs/static/keys/propr-desktop-release.asc`. Until then signing fails closed;
+there is no fallback to the previous identity.
 
 Private credentials are confined to the protected read-only signing job. The
 entry point removes them from the environment before package parsers run. GnuPG
@@ -78,7 +93,10 @@ explicitly authenticates direct DEB downloads; `apt install ./package.deb` alone
 does not establish that provenance. RPM users additionally require both native
 signatures with `rpmkeys --checksig --verbose`. Use
 `dnf --setopt=localpkg_gpgcheck=1` or ordinary `zypper install` after bootstrapping
-the confirmed RPM key. Never override a missing key or failed signature.
+the confirmed RPM key. After the 2026-10-19 rotation, import the new public key
+(both signature lines must report key ID `cc4e1599`); a database holding only the
+previous key reports `NOKEY` for new RPMs. Never override a missing key or failed
+signature.
 
 ## Exported APT repository
 
@@ -93,6 +111,8 @@ recovered from InRelease. Use a source-scoped binary or armored public keyring:
 deb [signed-by=/absolute/path/propr-desktop-release.gpg] file:/absolute/path/apt-repository preview main
 ```
 
+After the 2026-10-19 rotation, point `signed-by=` at a keyring containing the new
+key only; a keyring holding just the previous key correctly rejects new metadata.
 The keyring and repository must be readable by APT. A locally served copy can use
 a local HTTP URL with the same scoped keyring. There is no production URL to
 configure. Run `apt update` before downloading, and stop on authentication/hash
@@ -114,6 +134,13 @@ or stable, and Linux self-update remains disabled.
 Resume failed staging with the same `propr-desktop-linux-signed-<run-id>` artifact.
 Do not re-sign or overwrite an existing candidate: signatures can change bytes.
 Unavailable inputs require a new explicitly selected source/run, not a fallback.
+
+Rotation does not change history. Any preview already signed by
+DD4E7F65CE2345A1F4597D643CF856B53093D3A3 keeps its immutable assets, signatures and
+original classification; verify it with the [historical public
+export](/keys/propr-desktop-release-historical-DD4E7F65CE2345A1F4597D643CF856B53093D3A3.asc).
+The new code pin and key verify only previews signed on or after 2026-10-19 and do
+not authenticate older releases.
 
 Unsigned schema 2 remains private validation evidence and cannot be newly
 published. Historical schema 3 (`rpm-signed-preview`, `-rpm-signed`) authenticated
@@ -187,7 +214,7 @@ key notice. Run from the repository root, with a new output directory:
 gh run download "$SIGNING_RUN_ID" \
   --name "propr-desktop-linux-signed-$SIGNING_RUN_ID" --dir signed-preview
 export PROPR_DESKTOP_RPM_PUBLIC_KEY="$(cat propr-desktop-release.asc)"
-export PROPR_DESKTOP_RPM_FINGERPRINT=DD4E7F65CE2345A1F4597D643CF856B53093D3A3
+export PROPR_DESKTOP_RPM_FINGERPRINT=80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599
 PROPR_DESKTOP_REAL_LINUX_PACKAGE_ACCEPTANCE=1 \
   node apps/desktop/scripts/run-signed-installed-rpm-acceptance.mjs \
   --rpm "signed-preview/ProPR-Desktop-$VERSION-linux-x64.rpm" \
