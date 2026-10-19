@@ -3,12 +3,15 @@ import { PlannerAttachment, GenerationTrace, getAttachmentUrl } from '../../api/
 import { Paperclip, Loader2 } from 'lucide-react';
 import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
-import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
+import { NewModeHeader, EditModeHeader, ScopeError } from './SetupWizardHeaders';
 import { ManualFileSelector } from './ManualFileSelector';
 import { RepoSelection } from '../RepositorySelector';
 import { StudioPhaseSwitcher } from './StudioStepper';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
+
+// New plans only resolve the repository's branch; an existing draft can also report a branch it could not use.
+const scopeErrorFor = (isNewMode: boolean, branchError: string | null, repoError: string | null) => (isNewMode ? repoError : branchError || repoError);
 
 // Extracted: Attachments section
 const AttachmentsSection: React.FC<{
@@ -202,6 +205,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
         </div>
         <StudioPhaseSwitcher />
       </div>
+      <ScopeError message={scopeErrorFor(isNewMode, branchError, repoError)} />
     </div>
 
     {/* One composer: prompt, attachments and generation settings. Desktop draws it as one bordered box;
