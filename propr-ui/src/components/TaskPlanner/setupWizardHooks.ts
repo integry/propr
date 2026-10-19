@@ -6,9 +6,8 @@ import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
 import { IndexedRepository } from './ContextRepositoriesSection';
 import { getDraftConfigSnapshot, getHydratedDraftConfigSnapshot, getPersistedDraftSettings, matchesDraftConfig, type PersistedDraftSettings, serializePersistedDraftSettings } from './setupWizardDraftConfig';
-import { buildGenerationPayload, getDraftSetupSnapshot } from './setupWizardPayloads';
+import { buildGenerationPayload } from './setupWizardPayloads';
 import { PROMPT_SAVE_DEBOUNCE, truncateToSentences } from './setupWizardPrompt';
-import { constructDraftWithPlan, getDraftSetupPersistenceWarning, persistDraftSetupSnapshot } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
 import type { InstanceCatalogAgent } from '@propr/shared';
 
@@ -21,6 +20,7 @@ export {
   persistResolvedBaseBranch
 } from './useAutoDraftCreation';
 export { usePreviewTrace } from './usePreviewTrace';
+export { useDraftCreation } from './useDraftCreation';
 export { getDraftSetupSnapshot } from './setupWizardPayloads';
 
 export interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
@@ -29,7 +29,6 @@ export interface PlannerConfig { prompt: string; baseBranch: string; granularity
 export interface PromptPersistedUpdate { draftId: string; initial_prompt: string; name: string; }
 interface RepoInfoState { isLoading: boolean; error: string | null; }
 interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; flushPrompt?: (draftId: string, prompt: string) => Promise<void>; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: (runId?: string) => void; stopPolling: () => void; onGenerationStarted?: (runId: string) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
-interface DraftCreationParams { selectedRepo: string; config: PlannerConfig; localFiles: File[]; onDraftCreated?: (draftId: string) => void; navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; todoIds?: string[]; }
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
 
 type PlannerConfigSetter = React.Dispatch<React.SetStateAction<PlannerConfig>>;
@@ -258,39 +257,6 @@ export function useGenerationHandlers({ draft, config, branchError, flushPrompt 
   }, [draft, stopPolling, setError]);
   return { isStartingGeneration, handleGenerateForExistingDraft, handleAbortGeneration };
 }
-export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds }: DraftCreationParams) {
-  return useCallback(async () => {
-    if (!selectedRepo || !config.prompt.trim()) return void setError('Please select a repository and enter a prompt');
-    if (!config.baseBranch) return void setError('Please wait for the repository branch to finish loading');
-    setIsCreating(true);
-    setError(null);
-    try {
-      const { createDraft } = await import('../../api/proprApi');
-      const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
-      let baseBranchPersistenceWarning: string | null = null;
-      const draftSetupSnapshot = getDraftSetupSnapshot(config);
-      try {
-        await persistDraftSetupSnapshot(newDraft.draft_id, draftSetupSnapshot);
-      } catch (err) {
-        console.error('Failed to persist draft setup snapshot:', err);
-        baseBranchPersistenceWarning = getDraftSetupPersistenceWarning(config.baseBranch);
-      }
-      for (const file of localFiles) {
-        try { await uploadAttachment(newDraft.draft_id, file); } catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
-      }
-      if (onDraftCreated) onDraftCreated(newDraft.draft_id);
-      const generation = await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
-      const draftWithPlan = constructDraftWithPlan(newDraft, draftSetupSnapshot);
-      draftWithPlan.status = 'generating';
-      draftWithPlan.generation_trace = { steps: [], runId: generation.runId };
-      navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan, initialBaseBranch: config.baseBranch, baseBranchPersistenceWarning } });
-    } catch (err) {
-      setError((err as Error).message || 'Failed to create draft');
-      setIsCreating(false);
-    }
-  }, [selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds]);
-}
-
 export function computeIsGenerateDisabled(params: GenerateDisabledParams): boolean {
   if (params.isNewMode) return params.isCreating || !params.selectedRepo || !params.promptTrimmed || params.reposLoading || params.repoInfoLoading || !!params.repoError || !params.baseBranch;
   return params.isCreating || params.isGenerating || !!params.branchError || params.repoInfoLoading || !!params.repoError || !params.promptTrimmed || !params.baseBranch;

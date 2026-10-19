@@ -385,11 +385,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const generationHandlers = useGenerationHandlers({ draft, config, branchError, flushPrompt, contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
     startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, onGenerationStarted, setError, setGenerationError: generationPolling.setGenerationError });
   const todoIds = locationState?.todoIds;
+  const { isAutoCreating, autoCreateError, autoCreateWarning, ensureDraftCreated, uploadPendingLocalFiles } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, resolvedBaseBranch: config.baseBranch, setupSnapshot, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
+  // Generate shares autosave's single-flight creation so one click cannot persist a second draft
   const handleCreateDraftAndGenerate = useDraftCreation({
     selectedRepo: repoLoader.selectedRepo, config, localFiles: fileHandling.localFiles,
-    onDraftCreated, navigate, setError, setIsCreating, todoIds
+    ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, navigate, setError, setIsCreating
   });
-  const { isAutoCreating, autoCreateError, autoCreateWarning, ensureDraftCreated } = useAutoDraftCreation({ isNewMode, selectedRepo: repoLoader.selectedRepo, resolvedBaseBranch: config.baseBranch, setupSnapshot, prompt: config.prompt, localFiles: fileHandling.localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds });
   const autoResize = useAutoResize(textareaRef);
   const handleRepoChangeInEditMode = useRepoChangeInEditMode({ draft, config, locationTodoIds: locationState?.todoIds, navigate, onDraftCreated, setError, setIsCreating });
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
