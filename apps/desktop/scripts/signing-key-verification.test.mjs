@@ -12,7 +12,10 @@ import { PINNED_PUBLIC_EXPORT, VERIFY_KEY_CHALLENGE, confirmCleanup, signChallen
 const tools = ['gpg', 'gpgconf'];
 const missing = tools.filter(tool => spawnSync('which', [tool], { stdio: 'ignore' }).status !== 0);
 if (process.env.PROPR_REQUIRE_RPM_TESTS === '1' && missing.length) throw new Error(`Missing required signing test tools: ${missing}`);
-const skip = missing.length ? `Missing tools: ${missing}` : false;
+// verify-key runs only on the Linux protected runner; cleanup proof reads /proc, and
+// macOS temporary paths are too long for GnuPG agent sockets.
+const linuxOnly = process.platform === 'linux' ? false : 'Requires the Linux verify-key runner (/proc cleanup proof)';
+const skip = linuxOnly || (missing.length ? `Missing tools: ${missing}` : false);
 const run = (command, args, options = {}) => execFileSync(command, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...options });
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
@@ -219,7 +222,7 @@ test('CLI enforces the strict production pin, scrubs secrets and writes no recei
   assert.deepEqual(await survivors('propr-verify-key-'), []);
 });
 
-test('cleanup must remove owned homes and stop owned agents before success', async t => {
+test('cleanup must remove owned homes and stop owned agents before success', { skip: linuxOnly }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'propr-verify-key-cleanup-'));
   const homes = join(root, 'homes');
   await mkdir(homes);
