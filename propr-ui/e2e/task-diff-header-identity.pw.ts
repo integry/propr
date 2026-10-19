@@ -253,7 +253,11 @@ for (const viewport of viewports.filter(viewport => viewport.width < 640)) {
   }
 }
 
-test('320px: the diff scrolls both ways under touch while the header and close stay readable', async ({ page }) => {
+// Trusted touch input comes from the Chromium DevTools protocol, which other engines lack, so they scroll the same diff with real
+// wheel input instead; the case records which input it drove and claims touch only where it sent touch.
+test('320px: the diff scrolls both ways under real input (trusted touch in Chromium, wheel elsewhere) while the header and close stay readable', async ({ page, browserName }) => {
+  const input = browserName === 'chromium' ? 'touch' : 'wheel';
+  test.info().annotations.push({ type: 'input', description: input === 'touch' ? 'trusted touch (Chromium DevTools protocol)' : `mouse wheel (${browserName})` });
   await page.setViewportSize({ width: 320, height: 640 });
   const { dialog, name } = await open(page, cases[0]);
   const diff = dialog.locator('[tabindex="0"]');
@@ -262,22 +266,78 @@ test('320px: the diff scrolls both ways under touch while the header and close s
   const position = () => diff.evaluate(element => ({ top: element.scrollTop, left: element.scrollLeft,
     bottom: element.scrollHeight - element.clientHeight, right: element.scrollWidth - element.clientWidth }));
   const start = await position();
+  expect(start).toMatchObject({ top: 0, left: 0 });
   expect(start.bottom).toBeGreaterThan(0);
   expect(start.right).toBeGreaterThan(0);
-  const diffBox = (await diff.boundingBox())!;
-  const touch = await page.context().newCDPSession(page);
-  const swipe = async (dx: number, dy: number) => {
-    const from = { x: diffBox.x + diffBox.width / 2, y: diffBox.y + diffBox.height / 2 };
-    const point = (step: number) => ({ touchPoints: [{ x: Math.round(from.x + dx * step / 10), y: Math.round(from.y + dy * step / 10) }] });
-    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', ...point(0) });
-    for (let step = 1; step <= 10; step++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', ...point(step) });
-    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const [diffBox, dialogBox, closeBox] = [await box(diff), await box(dialog), await box(close)];
+  const centre = { x: diffBox.x + diffBox.width / 2, y: diffBox.y + diffBox.height / 2 };
+  // Nothing behind the popup moves or navigates while the diff scrolls.
+  const url = page.url();
+  const pageScroll = await page.getByTestId('task-details').evaluate(element => element.scrollTop);
+  await page.evaluate(() => {
+    const marked = window as typeof window & { diffPopstates?: number };
+    marked.diffPopstates = 0;
+    window.addEventListener('popstate', () => { marked.diffPopstates! += 1; });
+  });
+  // A scroll lands after its input events (and a fling carries on after the finger lifts), so it is read only once the diff has
+  // stopped moving for ten frames in a row.
+  const settled = () => diff.evaluate(element => new Promise<{ top: number; left: number }>(resolve => {
+    let last = { top: element.scrollTop, left: element.scrollLeft };
+    let still = 0;
+    const frame = () => {
+      const now = { top: element.scrollTop, left: element.scrollLeft };
+      still = now.top === last.top && now.left === last.left ? still + 1 : 0;
+      last = now;
+      if (still >= 10) resolve(now); else requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }));
+  const touch = input === 'touch' ? await page.context().newCDPSession(page) : undefined;
+  let starts = 0;
+  if (touch) await diff.evaluate(element => element.addEventListener('touchstart', event => {
+    if (event.isTrusted) element.dataset.touchStarts = String(Number(element.dataset.touchStarts ?? 0) + 1);
+  }, { passive: true }));
+  /** Scrolls the diff's content by about (dx, dy) with this engine's real input from inside the diff, and checks nothing else moved. */
+  const scroll = async (dx: number, dy: number) => {
+    if (touch) {
+      // The finger moves against the content, through the diff's centre, starting on the diff itself rather than the header or backdrop.
+      const from = { x: centre.x + dx / 2, y: centre.y + dy / 2 };
+      expect(await diff.evaluate((element, { x, y }) => element.contains(document.elementFromPoint(x, y)), from)).toBe(true);
+      const point = (step: number) => ({ touchPoints: [{ x: Math.round(from.x - dx * step / 10), y: Math.round(from.y - dy * step / 10) }] });
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', ...point(0) });
+      for (let step = 1; step <= 10; step++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', ...point(step) });
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect(diff).toHaveAttribute('data-touch-starts', String(++starts));
+    } else {
+      await page.mouse.move(centre.x, centre.y);
+      expect(await diff.evaluate((element, { x, y }) => element.contains(document.elementFromPoint(x, y)), centre)).toBe(true);
+      await page.mouse.wheel(dx, dy);
+    }
+    const landed = await settled();
+    await expect(dialog).toBeVisible();
+    expect(await dialog.boundingBox()).toEqual(dialogBox);
+    expect(await close.boundingBox()).toEqual(closeBox);
+    expect(page.url()).toBe(url);
+    expect(await page.evaluate(() => (window as typeof window & { diffPopstates?: number }).diffPopstates)).toBe(0);
+    expect(await page.getByTestId('task-details').evaluate(element => element.scrollTop)).toBe(pageScroll);
+    expect(await page.evaluate(() => [window.scrollX, window.scrollY])).toEqual([0, 0]);
+    return landed;
   };
-  await swipe(0, -160);
-  await expect.poll(async () => (await position()).top).toBeGreaterThan(100);
-  await swipe(-100, 0);
-  await expect.poll(async () => (await position()).left).toBeGreaterThan(50);
-  expect(await page.evaluate(() => [window.scrollX, window.scrollY])).toEqual([0, 0]);
+  // Down and across the long lines, then back up and back across: each axis scrolls both ways and leaves the other where it was.
+  const down = await scroll(0, 160);
+  expect(down.top).toBeGreaterThan(100);
+  expect(down.left).toBe(0);
+  const right = await scroll(100, 0);
+  expect(right.left).toBeGreaterThan(50);
+  expect(right.top).toBe(down.top);
+  await expectReadableHeader(page, dialog, cases[0], name);
+  const up = await scroll(0, -80);
+  expect(up.top).toBeLessThan(down.top);
+  expect(up.left).toBe(right.left);
+  const left = await scroll(-50, 0);
+  expect(left.left).toBeLessThan(right.left);
+  expect(left.top).toBe(up.top);
+  if (touch) await expect(diff).toHaveAttribute('data-touch-starts', '4');
   await expectReadableHeader(page, dialog, cases[0], name);
   await capture(page, 'diff-header-web-320-scrolled');
   // Tab stays inside the popup; Escape, the close control and the backdrop each close it and restore the page.
