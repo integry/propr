@@ -199,9 +199,11 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
   // The dialog fills the viewport's height at most; the comment field gives up
   // space first, so the result and the actions below it stay on screen. On a
   // very short viewport (a zoomed window or a landscape phone) the whole
-  // dialog scrolls instead, keeping each part reachable.
+  // dialog scrolls instead, keeping each part reachable. Framed to a keyboard
+  // band, the layer's padding shrinks so a band too short for the usual inset
+  // (65px on a landscape phone) still holds a whole 44px control.
   return (
-    <div ref={layerRef} className="app-modal-layer fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+    <div ref={layerRef} className="app-modal-layer fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 data-[visual-viewport=clipped]:p-1">
       <div
         ref={dialogRef}
         role="dialog"

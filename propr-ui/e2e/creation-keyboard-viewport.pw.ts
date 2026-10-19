@@ -1,7 +1,7 @@
 /** The shared creation shell (New Task, New Goal) stays inside the visible area while an on-screen keyboard shrinks and pans the visual viewport. */
 import { expect, test, type CDPSession, type Locator, type Page } from '@playwright/test';
 import { fixture } from './new-task.fixture';
-import { captureVisible, expectFieldVisible, expectShown, expectUnframed, expectVisible, installKeyboardViewport, listenerCount, setKeyboard, type Band } from './keyboard-viewport.fixture';
+import { captureVisible, expectFieldVisible, expectShown, expectUnframed, expectVisible, installKeyboardViewport, listenerCount, setKeyboard, type Band, type Clipping } from './keyboard-viewport.fixture';
 
 // Measured on a Samsung phone in Chrome: the layout viewport stays 384×692 while the
 // keyboard leaves a 382px visual viewport panned 186px down to the focused prompt.
@@ -127,9 +127,7 @@ test('New task opened with the keyboard up is placed from the current viewport, 
 const uncovered = async (target: Locator, header: Locator, band: Band) => header.evaluate((head, [element, { offsetTop, height }]) => {
   let low = head.contains(element) ? offsetTop : Math.max(offsetTop, head.getBoundingClientRect().bottom);
   let high = offsetTop + height;
-  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-    if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue;
-    const clip = parent.getBoundingClientRect();
+  for (const clip of (window as unknown as Clipping).__clips(element)) {
     low = Math.max(low, clip.top); high = Math.min(high, clip.bottom);
   }
   const box = element.getBoundingClientRect();

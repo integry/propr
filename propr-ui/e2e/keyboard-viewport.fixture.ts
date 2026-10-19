@@ -25,9 +25,31 @@ export async function installKeyboardViewport(page: Page, layout: { width: numbe
         for (const type of events) target.dispatchEvent(new Event(type));
       },
       __viewportListeners: () => listeners,
+      // The ancestors whose overflow clips `element`, as top/bottom spans. A fixed box escapes
+      // the clipping of every ancestor up to the one that is its containing block (one with a
+      // transform, filter or paint containment), so a fixed modal layer is not cut by the page
+      // it was rendered inside.
+      __clips(element: Element) {
+        const clips: Array<{ top: number; bottom: number }> = [];
+        let escaping = getComputedStyle(element).position === 'fixed';
+        for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent);
+          if (escaping && (style.transform !== 'none' || style.perspective !== 'none' || style.filter !== 'none'
+            || /paint|layout|strict|content/.test(style.contain) || /transform|perspective|filter/.test(style.willChange))) escaping = false;
+          if (!escaping && /(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+            const { top, bottom } = parent.getBoundingClientRect();
+            clips.push({ top, bottom });
+          }
+          if (style.position === 'fixed') escaping = true;
+        }
+        return clips;
+      },
     });
   }, layout);
 }
+
+/** The page's `window` with `__clips`, for use inside `evaluate` callbacks (which cannot reach this module). */
+export type Clipping = { __clips(element: Element): Array<{ top: number; bottom: number }> };
 
 /** Which `visualViewport` events a change delivers: a pan following the caret only scrolls, a keyboard opening or closing does both. */
 export type ViewportEvent = 'resize' | 'scroll';
@@ -46,7 +68,7 @@ export async function expectVisible(targets: Locator[], band: Band) {
 }
 
 /**
- * Every target is drawn inside the visible band, not clipped by a scrolling ancestor,
+ * Every target is drawn inside the visible band, not clipped by an ancestor's overflow,
  * and is the element hit at its centre. The hit test alone is not enough: it also
  * reports controls the keyboard's pan has moved above the visible area.
  */
@@ -55,9 +77,7 @@ export async function expectShown(targets: Locator[], band: Band) {
   for (const target of targets) {
     const shown = await target.evaluate(element => {
       const box = element.getBoundingClientRect();
-      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-        if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue;
-        const clip = parent.getBoundingClientRect();
+      for (const clip of (window as unknown as Clipping).__clips(element)) {
         if (box.top < clip.top - 0.5 || box.bottom > clip.bottom + 0.5) return false;
       }
       return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
@@ -69,12 +89,10 @@ export async function expectShown(targets: Locator[], band: Band) {
 /** The focused field shows at least `min` px inside both its scroll areas and the visible band. */
 export async function expectFieldVisible(field: Locator, band: Band, min = 72) {
   const shown = await field.evaluate((element, { top, bottom }) => {
-    let rect = element.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
     let low = Math.max(rect.top, top); let high = Math.min(rect.bottom, bottom);
-    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-      if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue;
-      rect = parent.getBoundingClientRect();
-      low = Math.max(low, rect.top); high = Math.min(high, rect.bottom);
+    for (const clip of (window as unknown as Clipping).__clips(element)) {
+      low = Math.max(low, clip.top); high = Math.min(high, clip.bottom);
     }
     return high - low;
   }, { top: band.offsetTop, bottom: band.offsetTop + band.height });
@@ -91,9 +109,7 @@ export async function expectReadableLines(area: Locator, band: Band, lines = 3) 
     const box = element.getBoundingClientRect();
     let low = Math.max(top, box.top + element.clientTop + parseFloat(style.paddingTop));
     let high = Math.min(bottom, box.top + element.clientTop + element.clientHeight - parseFloat(style.paddingBottom));
-    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-      if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue;
-      const clip = parent.getBoundingClientRect();
+    for (const clip of (window as unknown as Clipping).__clips(element)) {
       low = Math.max(low, clip.top); high = Math.min(high, clip.bottom);
     }
     return { shown: high - low, lineHeight: parseFloat(style.lineHeight) };
@@ -124,22 +140,24 @@ export async function swipeToShow(page: Page, touch: CDPSession | null, target: 
   const uncovered = () => target.evaluate((element, [head, { offsetTop, height }]) => {
     let low = head && !head.contains(element) ? Math.max(offsetTop, head.getBoundingClientRect().bottom) : offsetTop;
     let high = offsetTop + height;
-    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-      if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue;
-      const clip = parent.getBoundingClientRect();
+    const clips = (window as unknown as Clipping).__clips(element);
+    for (const clip of clips) {
       low = Math.max(low, clip.top); high = Math.min(high, clip.bottom);
     }
     const box = element.getBoundingClientRect();
-    return { top: box.top - low, bottom: high - box.bottom };
+    // Where a finger can drag: the outermost scroll area's part of the band (not an inset around it).
+    const outer = clips[clips.length - 1];
+    const area = { low: Math.max(offsetTop, outer?.top ?? offsetTop), high: Math.min(offsetTop + height, outer?.bottom ?? offsetTop + height) };
+    return { top: box.top - low, bottom: high - box.bottom, area };
   }, [head, band] as const);
   if (touch) {
     for (let step = 0; step < 60; step++) {
-      const { top, bottom } = await uncovered();
+      const { top, bottom, area } = await uncovered();
       if (top >= -0.5 && bottom >= -0.5) break;
       // A finger moving up reveals what is below. Chromium starts scrolling past its 15px touch
-      // slop (a shorter drag is a tap), and a slow drag does not fling; it stays inside the band.
-      const distance = (top < 0 ? 1 : -1) * Math.min(15 + Math.ceil(top < 0 ? -top : -bottom) + 1, band.height - 6);
-      const y = band.offsetTop + band.height / 2;
+      // slop (a shorter drag is a tap), and a slow drag does not fling; it stays inside the scroll area.
+      const distance = (top < 0 ? 1 : -1) * Math.min(15 + Math.ceil(top < 0 ? -top : -bottom) + 1, area.high - area.low - 6);
+      const y = (area.low + area.high) / 2;
       await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: Math.round(y - distance / 2) }] });
       for (let move = 1; move <= 8; move++) await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: Math.round(y - distance / 2 + distance * move / 8) }] });
       await page.waitForTimeout(50);

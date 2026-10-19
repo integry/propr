@@ -113,7 +113,9 @@ function revealWithin(element: HTMLElement, layer: HTMLElement, top: number, bot
   // may be whole pixels).
   if (editing) hidden = Math.min(hidden, Math.floor(high - caretLine(editing, editing.getBoundingClientRect()).bottom));
   else if (!(element instanceof HTMLTextAreaElement)) hidden = Math.min(hidden, Math.floor(high - element.getBoundingClientRect().bottom));
-  if (hidden > 0) container.scrollTop = Math.max(before, container.scrollTop - hidden);
+  // After scrolling down to the field, the heading never pulls it back past where it started;
+  // after scrolling up to it (the reader had scrolled on past the field), that start lies below.
+  if (hidden > 0) container.scrollTop = shift > 0 ? Math.max(before, container.scrollTop - hidden) : container.scrollTop - hidden;
 }
 
 /** The top of what shows in `container` from `edge` down: a header sticking to its top covers what scrolls under it. */
