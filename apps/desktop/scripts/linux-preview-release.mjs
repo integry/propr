@@ -165,7 +165,7 @@ then explicitly choose to trust it system-wide. These commands are user actions;
 the application and release helpers never import keys into your system database.
 
 \`\`\`sh
-python3 -c 'import json; print(json.load(open("linux-preview.json"))["rpmSigning"]["publicKey"], end="")' > propr-desktop-rpm.asc
+python3 -c 'import json; k = json.load(open("linux-preview.json"))["rpmSigning"]["publicKey"]; print(k, end="" if k.endswith("\\n") else "\\n")' > propr-desktop-rpm.asc
 gpg --show-keys --with-fingerprint propr-desktop-rpm.asc
 # Compare the FULL fingerprint with the independent owner notice before continuing:
 sudo rpm --import propr-desktop-rpm.asc

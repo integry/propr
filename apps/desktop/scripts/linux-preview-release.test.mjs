@@ -454,6 +454,29 @@ test('signed install notes make rpmkeys primary and offer a standalone pinned-so
   assert.doesNotMatch(notes, /node apps\/desktop\/scripts/);
 });
 
+test('generated RPM key extraction command LF-terminates the tool-input file without changing the manifest', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-linux-preview-extract-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const armor = '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGdisposable\n=AbCd\n-----END PGP PUBLIC KEY BLOCK-----';
+  const cases = [[armor, `${armor}\n`], [`${armor}\n`, `${armor}\n`], [`${armor}\r\n`, `${armor}\r\n`]];
+  for (const [index, [publicKey, expected]] of cases.entries()) {
+    const rpmIdentity = Object.freeze({ fingerprint: 'A'.repeat(40), publicKey });
+    const notes = linuxPreviewInstallNotes({ version, sourceRevision, tag: linuxPreviewTag(version, sourceRevision, rpmIdentity), rpmIdentity });
+    const commands = notes.split('\n').filter(line => line.startsWith('python3 '));
+    assert.equal(commands.length, 1);
+    assert.match(commands[0], / > propr-desktop-rpm\.asc$/);
+    const directory = join(root, String(index));
+    await mkdir(directory);
+    const manifest = Buffer.from(JSON.stringify({ rpmSigning: { fingerprint: rpmIdentity.fingerprint, publicKey } }));
+    await writeFile(join(directory, 'linux-preview.json'), manifest);
+    const result = spawnSync('sh', ['-c', commands[0]], { cwd: directory, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readFile(join(directory, 'propr-desktop-rpm.asc')), Buffer.from(expected));
+    assert.deepEqual(await readFile(join(directory, 'linux-preview.json')), manifest);
+    assert.equal(rpmIdentity.publicKey, publicKey);
+  }
+});
+
 
 test('historical metadata remains explicitly unauthenticated and cannot enter all-signed publication', async () => {
   const { directory } = await createBundle();

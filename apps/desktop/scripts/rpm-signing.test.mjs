@@ -9,7 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { inspectSignedPreviewPayload } from './rpm-preview-payload.mjs';
 import { OWNER_FINGERPRINT, rpmIdentityFromEnvironment, withKey, assertRpmSignatures, requireRpmIdentity, rpmContentDigest, rpmPublicKeyFileContents, signRpm, verifyRpm, writeRpmPublicKeyFile } from './rpm-signing.mjs';
-import { linuxPreviewTag, prepareLinuxPreview, readLinuxPreviewBundle, signLinuxPreviewBundle, stageLinuxPreviewDraft, publishLinuxPreviewDraft } from './linux-preview-release.mjs';
+import { linuxPreviewInstallNotes, linuxPreviewTag, prepareLinuxPreview, readLinuxPreviewBundle, signLinuxPreviewBundle, stageLinuxPreviewDraft, publishLinuxPreviewDraft } from './linux-preview-release.mjs';
 import { aptAcceptance } from './apt-auth-acceptance.mjs';
 import { authAssets, aptAssets, signMetadata, verifyMetadata, verifyApt } from './linux-package-auth.mjs';
 import { createDesktopRuntimeManifest } from './desktop-runtime-manifest.mjs';
@@ -262,6 +262,40 @@ test('unterminated disposable public armor imports into a fresh RPM database thr
   await assert.rejects(withKey({ fingerprint: other.identity.fingerprint, publicKey: unterminated }, async () => {}), /pinned, usable RSA/);
   await assert.rejects(withKey({ fingerprint: disposable.identity.fingerprint, publicKey: `${unterminated}\n${other.identity.publicKey.trimEnd()}` },
     async () => {}), /pinned, usable RSA/);
+});
+
+test('generated install-note key extraction yields RPM-importable disposable armor with or without a final LF', {
+  skip: missing.length ? `Missing tools: ${missing}` : false,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-rpm-install-notes-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const disposable = await key(root, 'notes');
+  const exported = disposable.identity.publicKey;
+  const unterminated = exported.replace(/\n+$/, '');
+  for (const [index, publicKey] of [unterminated, exported].entries()) {
+    const rpmIdentity = Object.freeze({ fingerprint: disposable.identity.fingerprint, publicKey });
+    const notes = linuxPreviewInstallNotes({ version: '1.2.3', sourceRevision: '1'.repeat(40),
+      tag: linuxPreviewTag('1.2.3', '1'.repeat(40), rpmIdentity), rpmIdentity });
+    const [command] = notes.split('\n').filter(line => line.startsWith('python3 '));
+    const directory = join(root, `consumer-${index}`);
+    await mkdir(directory);
+    const manifest = Buffer.from(JSON.stringify({ rpmSigning: { fingerprint: rpmIdentity.fingerprint, publicKey } }));
+    await writeFile(join(directory, 'linux-preview.json'), manifest);
+    run('sh', ['-c', command], { cwd: directory });
+    const asc = join(directory, 'propr-desktop-rpm.asc');
+    assert.equal(await readFile(asc, 'utf8'), `${unterminated}\n`);
+    assert.deepEqual(await readFile(join(directory, 'linux-preview.json')), manifest);
+    const shown = run('gpg', ['--homedir', join(root, 'notes'), '--with-colons', '--show-keys', asc]);
+    assert.equal(shown.split('\n').find(line => line.startsWith('fpr:'))?.split(':')[9], rpmIdentity.fingerprint);
+    // A disposable database stands in for the administrator's manual system import.
+    const database = join(directory, 'rpmdb');
+    await mkdir(database);
+    run('rpmdb', ['--dbpath', database, '--initdb']);
+    run('rpmkeys', ['--dbpath', database, '--import', asc]);
+    const keys = run('rpm', ['--dbpath', database, '-qa', 'gpg-pubkey*']).trim().split('\n');
+    assert.deepEqual(keys.map(name => name.split('-')[2]), [rpmIdentity.fingerprint.slice(-8).toLowerCase()]);
+    assert.equal(rpmIdentity.publicKey, publicKey);
+  }
 });
 
 test('signature status parsing ignores filename tokens but requires both pinned signatures', () => {
