@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -102,26 +102,71 @@ const inside = (inner: Box, outer: Box) =>
   inner.x >= outer.x - 0.5 && inner.y >= outer.y - 0.5
   && inner.x + inner.width <= outer.x + outer.width + 0.5 && inner.y + inner.height <= outer.y + outer.height + 0.5;
 
+/** The row, its note and each control as laid out in one frame, with what a tap at each control's centre hits. */
+interface RowLayout { row: Box; text: Box; textOverflow: number; controls: { box: Box; hit: boolean }[] }
+
+/**
+ * Reads the whole row in a single task after an animation frame, so every box comes
+ * from the same layout. Separate boundingBox() calls can straddle a relayout: when
+ * the Inter web font arrives mid-check the page above the list reflows, and a row
+ * box from before it is no longer comparable with control boxes from after it.
+ */
+async function rowLayout(row: Locator, text: Locator, controls: Locator[]): Promise<RowLayout> {
+  const handles = await Promise.all([row, text, ...controls].map(target => target.elementHandle()));
+  try {
+    return await row.page().evaluate(async ([rowElement, textElement, ...controlElements]) => {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const box = (element: Element) => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return { x, y, width, height };
+      };
+      return {
+        row: box(rowElement!),
+        text: box(textElement!),
+        textOverflow: textElement!.scrollWidth - textElement!.clientWidth,
+        controls: controlElements.map(element => {
+          const target = box(element!);
+          const hit = element!.contains(document.elementFromPoint(target.x + target.width / 2, target.y + target.height / 2));
+          return { box: target, hit };
+        }),
+      };
+    }, handles);
+  } finally {
+    await Promise.all(handles.map(handle => handle?.dispose()));
+  }
+}
+
+/** The row's layout once two samples a frame apart agree, so no reflow or transition is under way. */
+async function settledRowLayout(row: Locator, text: Locator, controls: Locator[]): Promise<RowLayout> {
+  let layout = await rowLayout(row, text, controls);
+  await expect.poll(async () => {
+    const previous = JSON.stringify(layout);
+    layout = await rowLayout(row, text, controls);
+    return JSON.stringify(layout) === previous;
+  }, { message: 'row layout settles' }).toBe(true);
+  return layout;
+}
+
 /** Touch rows: every control is visible, at least 44px square, hit at its centre, and clear of the note and each other. */
 async function expectTouchRow(row: Locator, content: string, controls: Locator[]) {
   await row.scrollIntoViewIfNeeded();
-  const rowBox = (await row.boundingBox())!;
   const text = row.getByText(content, { exact: true });
-  const textBox = (await text.boundingBox())!;
-  // The note gets the row's width instead of sharing it with a desktop action strip.
-  expect(textBox.width).toBeGreaterThanOrEqual(rowBox.width * 0.8);
-  expect(await text.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(0);
-  const boxes: Box[] = [textBox];
   for (const target of controls) {
     await expect(target).toBeVisible();
     await expect.poll(() => paintedOpacity(target)).toBeGreaterThanOrEqual(0.99);
-    const box = (await target.boundingBox())!;
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    expect(inside(box, rowBox)).toBe(true);
-    expect(await target.evaluate((element, { x, y }) => element.contains(document.elementFromPoint(x, y)),
-      { x: box.x + box.width / 2, y: box.y + box.height / 2 })).toBe(true);
-    for (const other of boxes) expect(overlaps(box, other)).toBe(false);
+  }
+  const layout = await settledRowLayout(row, text, controls);
+  // The note gets the row's width instead of sharing it with a desktop action strip.
+  expect(layout.text.width).toBeGreaterThanOrEqual(layout.row.width * 0.8);
+  expect(layout.textOverflow).toBeLessThanOrEqual(0);
+  const boxes: Box[] = [layout.text];
+  for (const [index, { box, hit }] of layout.controls.entries()) {
+    const at = `${content} control ${index}: ${JSON.stringify(box)} in row ${JSON.stringify(layout.row)}`;
+    expect(box.width, at).toBeGreaterThanOrEqual(44);
+    expect(box.height, at).toBeGreaterThanOrEqual(44);
+    expect(inside(box, layout.row), at).toBe(true);
+    expect(hit, at).toBe(true);
+    for (const other of boxes) expect(overlaps(box, other), at).toBe(false);
     boxes.push(box);
   }
 }
@@ -173,6 +218,41 @@ for (const width of [320, 390]) {
         await note.evaluate(node => node.closest('.overflow-y-auto')?.scrollTo(0, 0));
         await capture(page, `todo-rows-touch-${width}`);
       }
+    });
+
+    test('rows keep their tap targets in the fallback font and after Inter arrives', async ({ page }) => {
+      await todoStore(page);
+      // Hold the real Inter files the page asks for, so the rows first render in the
+      // fallback font and the swap happens on cue rather than whenever the network
+      // delivers it.
+      const held: Route[] = [];
+      let holding = true;
+      await page.route('https://fonts.gstatic.com/**', route => (holding ? held.push(route) : route.continue()));
+      await openTodos(page, target => target.tap());
+      const note = rowOf(page, NOTE);
+      const long = rowOf(page, LONG);
+      const interStatus = () => page.evaluate(() =>
+        [...document.fonts].filter(font => font.family.replace(/["']/g, '') === 'Inter').map(font => font.status));
+
+      expect(await interStatus()).not.toContain('loaded');
+      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
+        await expectTouchRow(row, content, actions(row, content));
+      }
+      const fallback = await rowLayout(note, note.getByText(NOTE, { exact: true }), actions(note, NOTE));
+
+      holding = false;
+      await Promise.all(held.map(route => route.continue()));
+      await page.evaluate(() => document.fonts.ready);
+      // Without network access the page never requests Inter; the fallback check above still holds.
+      if (held.length) expect(await interStatus()).toContain('loaded');
+      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
+        await expectTouchRow(row, content, actions(row, content));
+      }
+      const inter = await rowLayout(note, note.getByText(NOTE, { exact: true }), actions(note, NOTE));
+      // How far the swap moves the row depends on the host's fallback font, so it is recorded, not asserted.
+      test.info().annotations.push({ type: 'font swap', description:
+        `${held.length} Inter file(s) held; note row ${JSON.stringify(fallback.row)} in the fallback font, ${JSON.stringify(inter.row)} in Inter` });
+      expect(await noPageOverflow(page)).toBeLessThanOrEqual(0);
     });
 
     test('select, edit, complete, restore and delete by touch', async ({ page }) => {
