@@ -213,6 +213,13 @@ html:has(.desktop-app) .app-modal-layer {
   top: max(var(--desktop-titlebar-height), env(titlebar-area-height, 0px));
 }
 
+/* The narrow Search sheet would otherwise share the Linux window-control row:
+   its field and Close search sat under Close window. Like app dialogs, it opens
+   beneath that row. macOS and web layouts keep the sheet at the top edge. */
+.desktop-app.desktop-platform-linux .mobile-search-overlay {
+  top: max(var(--desktop-titlebar-height), env(titlebar-area-height, 0px));
+}
+
 /* A dialog portaled to <body> sits outside the transformed #root, so it also
    keeps inside the restored Linux frame's left and bottom allowance. */
 html[data-desktop-window="linux"] body > .app-modal-layer {

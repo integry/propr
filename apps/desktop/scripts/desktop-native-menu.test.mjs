@@ -98,6 +98,138 @@ const expectAlignedChrome = async (page, capture) => {
   await page.evaluate(() => Object.assign(document.documentElement.dataset, { windowExpanded: 'false', windowFocused: 'true' }));
 };
 
+/** Narrow Search targets, each hit-tested at its centre; the window controls must keep their own points. */
+const measureSearchSheet = page => page.evaluate(() => {
+  const box = element => {
+    if (!element || !element.getClientRects().length) return null;
+    const { left, right, top, bottom } = element.getBoundingClientRect();
+    return { left, right, top, bottom };
+  };
+  const hit = element => {
+    const rect = element?.getBoundingClientRect();
+    if (!rect?.width) return null;
+    const found = document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+    return element.contains(found) ? true : `${found?.tagName}[aria-label="${found?.closest('[aria-label]')?.getAttribute('aria-label')}"]`;
+  };
+  const sheet = document.querySelector('[role="dialog"][aria-label="Search"]');
+  const input = sheet?.querySelector('input[aria-label="Search"]');
+  const clear = sheet?.querySelector('[aria-label="Clear search"]');
+  const close = sheet?.querySelector('[aria-label="Close search"]');
+  const palette = document.querySelector('[data-testid="global-search-palette"]');
+  const controls = [...document.querySelectorAll('.desktop-window-controls button')];
+  return {
+    sheet: box(sheet), row: box(close?.parentElement), root: box(document.getElementById('root')),
+    palette: box(palette),
+    // However many results: force more height than any window has and let max-height clamp it.
+    tallestPalette: palette && (() => {
+      palette.style.height = '10000px';
+      const tallest = box(palette);
+      palette.style.height = '';
+      return tallest;
+    })(), input: box(input), clear: box(clear), close: box(close),
+    hits: { input: hit(input), clear: clear ? hit(clear) : 'absent', close: hit(close) },
+    controls: box(document.querySelector('.desktop-window-controls')),
+    controlHits: controls.map(control => [control.getAttribute('aria-label'), hit(control)]),
+    inputRegion: input && (getComputedStyle(input).getPropertyValue('-webkit-app-region') || 'none'),
+    controlsId: input?.getAttribute('aria-controls'),
+    otherIds: [...document.querySelectorAll('input[aria-label="Search"]')].filter(other => other !== input).map(other => other.getAttribute('aria-controls')),
+    width: innerWidth, height: innerHeight,
+  };
+});
+
+/**
+ * Search / Go To… and Ctrl/Cmd+K below `md` (the reported 207% zoom of an
+ * 880x620 window, and a narrow 320px one) open the Search sheet. On Linux the
+ * whole sheet row sits below the native window-control row: every target takes
+ * its own pointer events and the native controls keep theirs. macOS (no
+ * renderer window controls) keeps the sheet flush with the top edge.
+ */
+const expectNarrowSearch = async (page, click, capture, platform) => {
+  const cdp = await page.context().newCDPSession(page);
+  const shortcut = platform === 'darwin' ? 'Meta+k' : 'Control+k';
+  const sheet = page.getByRole('dialog', { name: 'Search' });
+  const input = sheet.getByRole('combobox', { name: 'Search', exact: true });
+  const opener = () => page.evaluate(() => { window.__searchOpener = document.activeElement; });
+  const openerFocused = () => page.evaluate(() => document.activeElement === window.__searchOpener && document.activeElement !== document.body);
+  const centre = async locator => { const { x, y, width, height } = await locator.boundingBox(); return [x + width / 2, y + height / 2]; };
+  for (const [width, height, scale] of [[406, 286, 2.1708], [320, 568, 2]]) {
+    const label = `${platform} ${width}x${height} @${scale}`;
+    await page.setViewportSize({ width, height });
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+    await expect(page.locator('header[aria-label="Application toolbar"]')).toBeHidden();
+    // A focusable, visible opener in the collapsed layout, to return focus to.
+    await page.locator('main').evaluate(main => { main.tabIndex = -1; main.focus(); });
+    await opener();
+    await click('Search / Go To…');
+    await expect(sheet).toHaveCount(1);
+    await expect(input).toBeFocused();
+    // A repeated request keeps one sheet and the field focused.
+    await click('Search / Go To…');
+    await expect(sheet).toHaveCount(1);
+    await expect(input).toBeFocused();
+    await page.keyboard.type('Stop work');
+    await expect(sheet.getByRole('button', { name: 'Clear search' })).toBeVisible();
+    await page.waitForFunction(() => document.getAnimations().length === 0);
+    const layout = await measureSearchSheet(page);
+    expect(layout.hits, label).toEqual({ input: true, clear: true, close: true });
+    expect(layout.inputRegion, label).not.toBe('drag');
+    for (const target of ['row', 'input', 'clear', 'close']) {
+      expect(layout[target], `${label}: ${target}`).not.toBeNull();
+      expect(layout[target].left, `${label}: ${target} left`).toBeGreaterThanOrEqual(0);
+      expect(layout[target].right, `${label}: ${target} right`).toBeLessThanOrEqual(layout.width);
+      if (platform === 'linux') expect(layout[target].top, `${label}: ${target} below window controls`).toBeGreaterThanOrEqual(layout.controls.bottom);
+    }
+    if (platform === 'linux') {
+      expect(layout.sheet.top, label).toBe(TITLEBAR);
+      expect(layout.controls, label).toMatchObject({ top: 0, bottom: TITLEBAR, right: layout.width });
+      expect(layout.controlHits, label).toEqual([
+        ['Application menu', true], ['Minimize window', true], ['Maximize or restore window', true], ['Close window', true],
+      ]);
+    } else {
+      expect(layout.controls, label).toBeNull();
+      expect(layout.sheet.top, `${label}: no Linux frame gap`).toBe(0);
+    }
+    // The results palette hangs below the field and, however many results, stays inside the window.
+    expect(layout.palette, label).not.toBeNull();
+    expect(layout.palette.top, label).toBeGreaterThanOrEqual(layout.input.bottom);
+    expect(layout.tallestPalette.bottom, `${label}: palette max height`).toBeLessThanOrEqual(layout.root.bottom);
+    expect(layout.otherIds.length, label).toBeGreaterThan(0);
+    expect(layout.otherIds, `${label}: per-instance listbox ids`).not.toContain(layout.controlsId);
+    if (width === 406) {
+      const window = async () => Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+      await capture(`search-narrow-${width}`, window, `${platform === 'linux' ? 'Linux' : 'macOS'} ${width}×${height} at ${Math.round(scale * 100)}%: Search sheet ${platform === 'linux' ? 'below the window controls' : 'at the top edge'}`);
+    }
+    // Real pointer presses at each target's centre.
+    await page.mouse.click(...await centre(sheet.getByRole('button', { name: 'Clear search' })));
+    await expect(input).toHaveValue('');
+    await expect(sheet).toHaveCount(1);
+    await page.mouse.click(...await centre(input));
+    await expect(input).toBeFocused();
+    await page.keyboard.type('Stop');
+    await page.mouse.click(...await centre(sheet.getByRole('button', { name: 'Close search' })));
+    await expect(sheet).toHaveCount(0);
+    expect(await openerFocused(), `${label}: focus restored after Close search`).toBe(true);
+    // Ctrl/Cmd+K, then Escape.
+    await page.keyboard.press(shortcut);
+    await expect(input).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+    expect(await openerFocused(), `${label}: focus restored after Escape`).toBe(true);
+    // One backdrop press, with a query typed, closes the sheet.
+    await click('Search / Go To…');
+    await expect(input).toBeFocused();
+    await page.keyboard.type('Stop work');
+    await expect(page.getByTestId('global-search-backdrop')).toBeVisible();
+    await page.mouse.click(width - 4, height - 8);
+    await expect(sheet).toHaveCount(0);
+    expect(await openerFocused(), `${label}: focus restored after backdrop press`).toBe(true);
+    await page.locator('main').evaluate(main => main.removeAttribute('tabindex'));
+  }
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await cdp.detach();
+};
+
 /** Every File creation entry opens its existing form and never submits, creates or enables anything. */
 const expectCreationForms = async (page, click, capture, mutations) => {
   await click('New Goal');
@@ -334,6 +466,12 @@ it('Linux/macOS menu dispatch reaches actual search, sidebar, every creation for
       await click('Search / Go To…');
       await expect(page.getByRole('dialog', { name: 'Manage instances' })).toHaveCount(0);
       await expect(page.getByRole('combobox', { name: 'Search', exact: true })).toBeFocused();
+      await expectNarrowSearch(page, click, capture, platform);
+      // Normal width again: the toolbar field takes the request, no sheet.
+      await click('Search / Go To…');
+      await expect(page.getByRole('combobox', { name: 'Search', exact: true })).toBeFocused();
+      await expect(page.getByRole('dialog', { name: 'Search' })).toHaveCount(0);
+      await page.keyboard.press('Escape');
       await click('Connect Instance…');
       await expect(page.getByRole('heading', { name: 'Connect to an instance' })).toBeVisible();
       await capture('connect', page.getByRole('dialog', { name: 'Manage instances' }), 'File → Connect Instance opens the connection editor');

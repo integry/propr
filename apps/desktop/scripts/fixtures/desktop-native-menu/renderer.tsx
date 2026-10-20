@@ -22,6 +22,7 @@ import { createInertSocketContextValue } from '../../../../../propr-ui/src/test/
 import type { DesktopAdapters } from '../../../../../propr-ui/src/desktop/types';
 import { createElectronDesktopAdapters } from '../../../../../propr-ui/src/desktop/electronAdapters';
 import { DesktopDeepLinkInbox } from '../../../../../propr-ui/src/desktop-deep-link';
+import { setDesktopConnectionScope } from '../../../../../propr-ui/src/api/apiClient';
 
 const profile = { id: 'local', name: 'This computer', kind: 'local' as const, baseUrl: 'http://127.0.0.1:3000' };
 const scope = { profileId: 'local', transportScope: 'abcdefghijklmnopqrstuv' };
@@ -100,7 +101,11 @@ const adapters: DesktopAdapters = {
       else sessionStorage.setItem('frame-active-profile', id);
     },
   },
-  connection: { probe: async () => { dispatcher.connectionAvailable(); return { status: 'ready', version: '0.8.15', ...scope }; } },
+  connection: {
+    probe: async () => { dispatcher.connectionAvailable(); return { status: 'ready', version: '0.8.15', ...scope }; },
+    // As the production adapter: renderer requests (and so Search) are bound to the active instance.
+    publishActivation: (active, result) => setDesktopConnectionScope({ bridge, profileId: active.id, transportScope: result.transportScope! }, active.baseUrl),
+  },
   discovery: { supported: false, discover: async () => [] },
   localSetup: { supported: true },
   authentication: { authenticate: async () => undefined },

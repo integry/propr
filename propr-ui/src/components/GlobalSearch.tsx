@@ -260,6 +260,8 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
 
       {/* Results palette: the Studio mega-dropdown (640px wide, up to 70vh tall),
           left-aligned with the search input just below it, over a dimmed backdrop.
+          It never runs past the window's lower edge, even when the input sits
+          lower (the narrow Search sheet below the Linux window controls).
           Clicking the backdrop closes it. */}
       {showDropdown && (
         <div
@@ -277,7 +279,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
         <div
           data-testid="global-search-palette"
           className="desktop-toolbar-popover fixed z-50 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
-          style={{ top: anchor.top, left: anchor.left }}
+          style={{ top: anchor.top, left: anchor.left, maxHeight: `min(70vh, calc(100% - ${anchor.top + VIEWPORT_GUTTER}px))` }}
         >
           {resultState === 'loading' && (
             <div className="px-4 py-8 text-center">

@@ -17,6 +17,9 @@ const FOCUSABLE = 'input, button:not([disabled]), [href], [tabindex]:not([tabind
  * so it cannot take focus; this sheet carries the same GlobalSearch across the
  * top of the viewport instead, rather than forcing the toolbar back on.
  *
+ * In the Linux desktop frame the sheet starts below the window-control row
+ * (desktop.css), so the native controls never cover Close search or the field.
+ *
  * It closes on Escape, the close button, a backdrop press, or a route change
  * (choosing a result), and the header restores focus to where it was.
  */
@@ -73,7 +76,7 @@ const MobileSearchOverlay: React.FC<MobileSearchOverlayProps> = ({ request, onCl
       aria-label="Search"
       data-testid="mobile-search-overlay"
       onKeyDown={handleKeyDown}
-      className="fixed inset-0 z-50 md:hidden"
+      className="mobile-search-overlay fixed inset-0 z-50 md:hidden"
     >
       <div aria-hidden="true" onMouseDown={dismissFromBackdrop} className="absolute inset-0 bg-black/40" />
       <div className="relative flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2">
