@@ -163,11 +163,30 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
 
   // Keep the highlighted row visible as the keyboard walks the list. When the list is
   // shorter than the row (a short window), its title still comes fully into view.
+  // Resizing or zooming with Search open changes the list's room (its height, and how
+  // titles wrap) but not the selection, so a window resize or a change in the list's
+  // height (the palette re-anchoring, going compact) reveals the row again too.
   useEffect(() => {
-    if (!activeItem) return;
-    const option = listRef.current?.querySelector(`#${searchOptionId(idPrefix, activeItem.key)}`);
-    option?.scrollIntoView?.({ block: 'nearest' });
-    option?.querySelector('[data-search-option-title]')?.scrollIntoView?.({ block: 'nearest' });
+    const list = listRef.current;
+    if (!activeItem || !list) return;
+    const reveal = () => {
+      const option = list.querySelector(`#${searchOptionId(idPrefix, activeItem.key)}`);
+      option?.scrollIntoView?.({ block: 'nearest' });
+      option?.querySelector('[data-search-option-title]')?.scrollIntoView?.({ block: 'nearest' });
+    };
+    reveal();
+    window.addEventListener('resize', reveal);
+    let height = list.clientHeight;
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
+      if (list.clientHeight === height) return;
+      height = list.clientHeight;
+      reveal();
+    });
+    observer?.observe(list);
+    return () => {
+      window.removeEventListener('resize', reveal);
+      observer?.disconnect();
+    };
   }, [activeItem, idPrefix]);
 
   // Handle click outside to close dropdown

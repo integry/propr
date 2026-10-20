@@ -352,6 +352,7 @@ const expectShortSearchResults = async (page, cdp, click, capture, platform) => 
     await stopServing();
   }
   await expectShortWrappedTitle(page, cdp, click, capture, platform);
+  await expectSearchResize(page, cdp, click, capture, platform);
   await expectShortNoResults(page, cdp, click, capture, platform);
 };
 
@@ -415,6 +416,78 @@ const expectShortWrappedTitle = async (page, cdp, click, capture, platform) => {
       ]);
     }
     expect(up.palette.bottom, `${label}: palette inside window`).toBeLessThanOrEqual(up.root.bottom);
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+  } finally {
+    await stopServing();
+  }
+};
+
+/**
+ * Resizing (or zooming) the window with Search open and the last result selected:
+ * the selection does not change, yet its title comes back into the resized list.
+ * Shrinking the reported 880x620 window at about 207% to 880x480 (CSS 406x286 to
+ * 406x221) once left the list scrolled for the taller window, the title wholly below it.
+ */
+const expectSearchResize = async (page, cdp, click, capture, platform) => {
+  const sheet = page.getByRole('dialog', { name: 'Search' });
+  const input = sheet.getByRole('combobox', { name: 'Search', exact: true });
+  const palette = page.getByTestId('global-search-palette');
+  const scale = 2.1708;
+  const resize = async (width, height) => {
+    await page.setViewportSize({ width, height });
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+    // The palette's anchor has followed the new size (only the short Linux frame drops the key hints) ...
+    if (height === 221 && platform === 'linux') await expect(palette).not.toContainText('navigate');
+    else await expect(palette).toContainText('navigate');
+    // ... then two frames for the list to settle; no polling until the title turns up.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  };
+  const expectSelectedTitle = async (text, index, label) => {
+    await expect(sheet.getByRole('option', { selected: true })).toContainText(text);
+    const result = await measureSelectedResult(page);
+    const selectedId = await sheet.getByRole('option', { selected: true }).getAttribute('id');
+    expect(await input.getAttribute('aria-activedescendant'), `${label}: active option`).toBe(selectedId);
+    expect(result.selectedIndex, label).toBe(index);
+    const visibleTitle = Math.min(result.title.bottom, result.list.bottom) - Math.max(result.title.top, result.list.top);
+    expect(result.title.top, `${label}: title top inside list ${JSON.stringify(result)}`).toBeGreaterThanOrEqual(result.list.top);
+    expect(visibleTitle, `${label}: visible title line ${JSON.stringify(result)}`).toBeGreaterThanOrEqual(result.lineHeight);
+    expect(result.palette.bottom, `${label}: palette inside window`).toBeLessThanOrEqual(result.root.bottom);
+    expect(result.hits, label).toEqual({ input: true, clear: true, close: true, action: true });
+    if (platform === 'linux') {
+      expect(result.controlHits, label).toEqual([
+        ['Application menu', true], ['Minimize window', true], ['Maximize or restore window', true], ['Close window', true],
+      ]);
+    }
+    return result;
+  };
+  const stopServing = await serveSearchResults(page);
+  try {
+    await page.setViewportSize({ width: 406, height: 286 });
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 406, height: 286, deviceScaleFactor: scale, mobile: false });
+    await click('Search / Go To…');
+    await expect(input).toBeFocused();
+    await page.keyboard.type('short task');
+    await expect(sheet.getByRole('option')).toHaveCount(SEARCH_TASKS.length);
+    for (let step = 1; step < SEARCH_TASKS.length; step += 1) await page.keyboard.press('ArrowDown');
+    const last = SEARCH_TASKS.length - 1;
+    await resize(406, 286);
+    const tall = await expectSelectedTitle('Bump deps', last, `${platform} 406x286 before resize`);
+    expect(tall.scrolled, `${platform}: the taller list was scrolled to the last result`).toBeGreaterThan(0);
+    // Shrink with Search open and the selection unchanged.
+    await resize(406, 221);
+    await expectSelectedTitle('Bump deps', last, `${platform} 406x286 -> 406x221`);
+    if (platform === 'linux') {
+      const window = async () => Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+      await capture('search-resized-short-results-406x221', window, 'Linux 406×286 resized to 406×221 at 217% with Search open: the selected last result keeps its title in view');
+    }
+    // Grow back, then the keyboard still walks the list from the kept selection.
+    await resize(406, 286);
+    await expectSelectedTitle('Bump deps', last, `${platform} 406x221 -> 406x286`);
+    await page.keyboard.press('ArrowUp');
+    await expectSelectedTitle('Tidy logs', last - 1, `${platform} 406x286 ArrowUp after resize`);
+    await resize(406, 221);
+    await expectSelectedTitle('Tidy logs', last - 1, `${platform} 406x286 -> 406x221 again`);
     await page.keyboard.press('Escape');
     await expect(sheet).toHaveCount(0);
   } finally {
