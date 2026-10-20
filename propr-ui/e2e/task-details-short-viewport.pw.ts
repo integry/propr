@@ -51,18 +51,38 @@ const hitPoint = (target: Locator) => target.evaluate(element => {
   return hit && element.contains(hit) ? point : null;
 });
 
-/** Waits until every scroll offset, and `target`'s box, hold still: momentum and the log's open transition run on. */
+/**
+ * Waits until every scroll offset, and `target`'s box, hold still: momentum and the log's open transition run on.
+ * A busy compositor can hold a fling or wheel animation for several frames between steps, so stillness is
+ * measured in time, and a scroll that has started counts as running until its `scrollend`.
+ */
 const settle = (page: Page, target?: Locator) => (target ?? page.locator('body')).evaluate(async element => {
+  const QUIET_MS = 300;
+  const LIMIT_MS = 5000;
   const geometry = () => {
     const box = element.getBoundingClientRect();
     return `${box.top} ${box.bottom} ${Array.from(document.querySelectorAll('*'), node => node.scrollTop).join()}`;
   };
-  let last = '';
-  for (let still = 0; still < 3;) {
-    await new Promise(requestAnimationFrame);
-    const now = geometry();
-    still = now === last ? still + 1 : 0;
-    last = now;
+  let scrolling = false;
+  const onScroll = () => { scrolling = true; };
+  const onScrollEnd = () => { scrolling = false; };
+  document.addEventListener('scroll', onScroll, true);
+  document.addEventListener('scrollend', onScrollEnd, true);
+  try {
+    const start = performance.now();
+    let last = geometry();
+    let since = start;
+    for (;;) {
+      await new Promise(requestAnimationFrame);
+      const now = geometry();
+      const time = performance.now();
+      // A scroll whose `scrollend` never comes is done once nothing has moved for the quiet time.
+      if (now !== last || (scrolling && time - start < LIMIT_MS)) { last = now; since = time; }
+      else if (time - since >= QUIET_MS) return;
+    }
+  } finally {
+    document.removeEventListener('scroll', onScroll, true);
+    document.removeEventListener('scrollend', onScrollEnd, true);
   }
 });
 
@@ -84,8 +104,9 @@ async function scrollBy(page: Page, cdp: CDPSession | null, frame: { top: number
 
 /** Scrolls until `target` shows whole between the pinned bands and a tap at its centre reaches it. */
 async function reveal(page: Page, cdp: CDPSession | null, target: Locator) {
+  // Each swipe settles the page before the next look.
+  await settle(page, target);
   for (let attempt = 0; attempt < 30; attempt++) {
-    await settle(page, target);
     const [frame, box, point] = await Promise.all([frameOf(target), target.boundingBox(), hitPoint(target)]);
     if (point && box!.y >= frame.top - 1 && box!.y + box!.height <= frame.bottom + 1) return point;
     const middle = (frame.top + frame.bottom) / 2;
@@ -99,6 +120,43 @@ async function press(page: Page, cdp: CDPSession | null, point: { x: number; y: 
   else await page.mouse.click(point.x, point.y);
 }
 
+/** Turns the wheel until `target` rests whole within a few px above the bottom of the visible band. */
+async function restOnBottomEdge(page: Page, target: Locator) {
+  await settle(page, target);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const [frame, box] = await Promise.all([frameOf(target), target.boundingBox()]);
+    const gap = frame.bottom - (box!.y + box!.height);
+    if (gap >= 1 && gap <= 6) return;
+    await scrollBy(page, null, frame, -Math.round(gap - 3));
+  }
+  throw new Error(`could not rest ${target} on the bottom edge`);
+}
+
+/**
+ * Taps or clicks `target` where it rests to open its diff, then closes it: focus returns to the row without moving
+ * the reader. The resting position is measured once the swipe's momentum and any capture are done.
+ */
+async function openAndCloseDiff(page: Page, cdp: CDPSession | null, target: Locator, whileOpen?: () => Promise<void>) {
+  await settle(page, target);
+  const [frame, at] = await Promise.all([frameOf(target), hitPoint(target)]);
+  expect(at).not.toBeNull();
+  await press(page, cdp, at!);
+  const dialog = page.getByRole('dialog', { name: 'withdrawal-labels.md' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Release note line 1:');
+  await whileOpen?.();
+  const close = page.getByRole('button', { name: 'Close diff view' });
+  const closeAt = await hitPoint(close);
+  expect(closeAt).not.toBeNull();
+  await press(page, cdp, closeAt!);
+  await expect(dialog).toHaveCount(0);
+  await expect(target).toBeFocused();
+  await settle(page);
+  expect(Math.abs((await frameOf(target)).scrollTop - frame.scrollTop)).toBeLessThanOrEqual(1);
+  expect(await hitPoint(target)).not.toBeNull();
+  return frame;
+}
+
 const cases = [
   { name: 'touch landscape 844x390', width: 844, height: 390, touch: true, short: true },
   { name: 'short desktop 880x480', width: 880, height: 480, touch: false, short: true },
@@ -109,6 +167,8 @@ const cases = [
 
 for (const { name, width, height, touch, short } of cases) {
   test(`${name}: changed file, its diff and every task control are reached by scrolling`, async ({ browser }) => {
+    // Every swipe waits out its momentum, and a phone-sized flow takes dozens of them.
+    test.setTimeout(60_000);
     const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, baseURL: 'http://127.0.0.1:4173', serviceWorkers: 'block' });
     const page = await context.newPage();
     const cdp = touch ? await context.newCDPSession(page) : null;
@@ -131,28 +191,19 @@ for (const { name, width, height, touch, short } of cases) {
       await expect(page.getByTestId('task-workspace-scroll')).toHaveCSS('overflow-y', 'auto');
     }
 
-    const at = await reveal(page, cdp, file);
-    const frame = await frameOf(file);
+    await reveal(page, cdp, file);
+    if (short) await capture(page, `task-short-viewport-files-${width}x${height}`);
+    const frame = await openAndCloseDiff(page, cdp, file, async () => {
+      if (short) await capture(page, `task-short-viewport-diff-${width}x${height}`);
+    });
     // A working band, not a sliver between the pinned header, headings and log bar.
     expect(frame.bottom - frame.top).toBeGreaterThanOrEqual(short ? 120 : 200);
     expect(frame.owner).toBe(short || phone ? 'task-details' : 'task-workspace-scroll');
-    if (short) await capture(page, `task-short-viewport-files-${width}x${height}`);
-
-    await press(page, cdp, at);
-    const dialog = page.getByRole('dialog', { name: 'withdrawal-labels.md' });
-    await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText('Release note line 1:');
-    if (short) await capture(page, `task-short-viewport-diff-${width}x${height}`);
-    const close = page.getByRole('button', { name: 'Close diff view' });
-    const closeAt = await hitPoint(close);
-    expect(closeAt).not.toBeNull();
-    await press(page, cdp, closeAt!);
-    await expect(dialog).toHaveCount(0);
-    // Closing returns focus to the row without moving the reader.
-    await expect(file).toBeFocused();
-    await settle(page);
-    expect(Math.abs((await frameOf(file)).scrollTop - frame.scrollTop)).toBeLessThanOrEqual(1);
-    expect(await hitPoint(file)).not.toBeNull();
+    // Resting whole just above the log bar, the row is not taken for covered when focus returns to it.
+    if (short && !touch) {
+      await restOnBottomEdge(page, file);
+      await openAndCloseDiff(page, cdp, file);
+    }
 
     // The execution log opens and closes from its bar.
     const log = page.locator('button[aria-controls="execution-event-log-content"]');

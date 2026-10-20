@@ -9,8 +9,9 @@ const LOG_BAR_REM = 2.25;
 
 // A short task (see `useShortWorkspace`) scrolls as one page: the header scrolls away, the workspace takes
 // its content's height and the log bar stays pinned below. Scroll padding keeps a revealed or focused row
-// clear of the pane heading pinned above it and the log bar below.
-export const SHORT_DETAILS = 'data-[short-workspace]:overflow-y-auto data-[short-workspace]:scroll-pt-[4.5rem] data-[short-workspace]:scroll-pb-12';
+// clear of the pane heading pinned above it and the log bar (and its border) below. It matches the bar
+// exactly: any more and focus returning to a row resting whole just above the bar would scroll the page.
+export const SHORT_DETAILS = 'data-[short-workspace]:overflow-y-auto data-[short-workspace]:scroll-pt-[4.5rem] data-[short-workspace]:scroll-pb-[calc(2.25rem+1px)]';
 export const SHORT_STATIC = 'group-data-[short-workspace]/task:static';
 export const SHORT_UNBOUNDED = 'group-data-[short-workspace]/task:flex-none group-data-[short-workspace]/task:overflow-visible';
 export const SHORT_LOG_BAR = 'group-data-[short-workspace]/task:sticky group-data-[short-workspace]/task:bottom-0 group-data-[short-workspace]/task:z-10 group-data-[short-workspace]/task:flex-none';
