@@ -202,9 +202,7 @@ for (const width of [320, 390]) {
 
       const note = rowOf(page, NOTE);
       const long = rowOf(page, LONG);
-      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
-        await expectTouchRow(row, content, actions(row, content));
-      }
+      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) await expectTouchRow(row, content, actions(row, content));
       // A 65-character note reads in a couple of lines, not a narrow column.
       const lineHeight = await note.getByText(NOTE).evaluate(node => parseFloat(getComputedStyle(node).lineHeight));
       expect((await note.getByText(NOTE).boundingBox())!.height).toBeLessThanOrEqual(lineHeight * 3 + 1);
@@ -230,7 +228,7 @@ for (const width of [320, 390]) {
       }
     });
 
-    test('rows keep their tap targets in the fallback font and after Inter arrives', async ({ page }) => {
+    test('rows keep their tap targets in the fallback font and after Inter arrives', async ({ page, browserName }) => {
       await todoStore(page);
       // Serve the stylesheet and a local copy of Inter instead of Google Fonts, and hold
       // the font file so the rows first render in the fallback font and the swap happens
@@ -246,25 +244,33 @@ for (const width of [320, 390]) {
       await openTodos(page, target => target.tap(), 'domcontentloaded');
       const note = rowOf(page, NOTE);
       const long = rowOf(page, LONG);
-      const interStatus = () => page.evaluate(() =>
-        [...document.fonts].filter(font => font.family.replace(/["']/g, '') === 'Inter').map(font => font.status));
+      // Inter's FontFace status, whether its `loaded` promise has settled yet, and the document's FontFaceSet status.
+      const interState = () => page.evaluate(async () => {
+        const inter = [...document.fonts].filter(font => font.family.replace(/["']/g, '') === 'Inter');
+        const unsettled = new Promise<string>(resolve => setTimeout(resolve, 0, 'pending'));
+        const loaded = await Promise.all(inter.map(font => Promise.race([font.loaded.then(() => 'resolved', () => 'rejected'), unsettled])));
+        return { status: inter.map(font => font.status), loaded, set: document.fonts.status };
+      });
+      // While the file is in flight Chromium reports the face as 'loading'. WebKit reports
+      // 'error' as soon as the font-display block period ends (at once for swap, 3s for
+      // block/auto): its timed-out state, in which the fallback is drawn, still swaps to
+      // 'loaded' when the file arrives. A real failure rejects `loaded` and returns the
+      // set to 'loaded', so an unsettled promise in a loading set is the in-flight font.
+      const withheld = { status: [browserName === 'webkit' ? 'error' : 'loading'], loaded: ['pending'], set: 'loading' };
 
       // The page asked for Inter, and the file is withheld while the fallback is checked.
       await expect.poll(() => held.map(route => route.request().url()), { message: 'Inter requested and held' }).toEqual([INTER_URL]);
-      expect(await interStatus()).toEqual(['loading']);
+      await expect.poll(interState, { message: 'Inter in flight' }).toEqual(withheld);
       const readyState = await page.evaluate(() => document.readyState);
-      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
-        await expectTouchRow(row, content, actions(row, content));
-      }
+      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) await expectTouchRow(row, content, actions(row, content));
       const fallback = await rowLayout(note, note.getByText(NOTE, { exact: true }), actions(note, NOTE));
-      expect(await interStatus()).toEqual(['loading']);
+      expect(await noPageOverflow(page)).toBeLessThanOrEqual(0);
+      expect(await interState()).toEqual(withheld);
 
       holding = false;
       await Promise.all(held.map(serveInter));
-      await expect.poll(interStatus, { message: 'Inter loaded after release' }).toEqual(['loaded']);
-      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
-        await expectTouchRow(row, content, actions(row, content));
-      }
+      await expect.poll(interState, { message: 'Inter loaded after release' }).toEqual({ status: ['loaded'], loaded: ['resolved'], set: 'loaded' });
+      for (const [row, content] of [[note, NOTE], [long, LONG]] as const) await expectTouchRow(row, content, actions(row, content));
       const inter = await rowLayout(note, note.getByText(NOTE, { exact: true }), actions(note, NOTE));
       // How far the swap moves the row depends on the host's fallback font, so it is recorded, not asserted.
       test.info().annotations.push({ type: 'font swap', description:
