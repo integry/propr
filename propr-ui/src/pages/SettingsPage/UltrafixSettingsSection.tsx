@@ -41,7 +41,7 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
         <>
           Repeated fix-and-review cycles until a pull request reaches the target review score.{' '}
           <a
-            href="https://docs.propr.dev/docs/features/pr-ultrafix-commands"
+            href="https://docs.propr.dev/docs/features/pr-commands#ultrafix"
             target="_blank"
             rel="noopener noreferrer"
             className="font-medium text-primary-600 underline hover:text-primary-700"

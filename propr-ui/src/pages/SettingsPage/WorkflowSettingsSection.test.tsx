@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import WorkflowSettingsSection from './WorkflowSettingsSection';
 import UltrafixSettingsSection from './UltrafixSettingsSection';
 import { parseLoadedData } from './parseLoadedData';
+import { expectExistingDocsRoute } from './docsRoutes.testUtils';
 
 const SETTINGS = {
   worker_concurrency: '2',
@@ -58,6 +59,11 @@ it('names the ultrafix goal a target review score out of 10', () => {
   expect(screen.getByRole('option', { name: '7/10 (Default)' })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: '10/10' })).toBeInTheDocument();
   expect(screen.queryByText('Rating Goal')).toBeNull();
+});
+
+it('links the ultrafix docs to an existing docs page and heading', () => {
+  render(<UltrafixSettingsSection settings={ULTRAFIX_SETTINGS} onSettingChange={vi.fn()} modelAgents={[]} onEscalationModelsChange={vi.fn()} />);
+  expectExistingDocsRoute(screen.getByRole('link', { name: 'Ultrafix docs' }).getAttribute('href'));
 });
 
 it.each([
