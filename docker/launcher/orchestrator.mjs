@@ -21,9 +21,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createECDH, timingSafeEqual } from 'node:crypto';
 import {
     readFileSync, writeFileSync, renameSync, unlinkSync, lstatSync, chmodSync,
-    existsSync, statSync, accessSync, constants as fsConstants,
+    existsSync, statSync, accessSync, constants as fsConstants, mkdtempSync, rmSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -221,24 +221,21 @@ function envFileValueFrom(envFileLocal, name) {
     return undefined;
 }
 
-// Values Docker itself binds for `name` from an --env-file, read the way the
-// docker CLI does (left-trimmed line, split at the first '=', value verbatim —
-// no quote, comment, or `export` handling). Returns undefined when the file is
-// unreadable or a bare `NAME` line defers to the launcher's own environment, so
-// callers can tell "proven bindings" apart from "unknown".
-function dockerEnvFileBindings(envFileLocal, name) {
+// Split an --env-file the way the docker CLI reads it (left-trimmed line, split
+// at the first '=', value verbatim — no quote, comment, or `export` handling).
+// Each source line is kept verbatim with the variable it binds (null for blank
+// and comment lines); `value` is undefined for a bare `NAME` line, which Docker
+// resolves from the docker CLI's own environment. Returns undefined when the
+// file cannot be read.
+function dockerEnvFileLines(envFileLocal) {
     if (!envFileLocal || !isReadableFile(envFileLocal)) return undefined;
-    const values = [];
-    for (const rawLine of readFileSync(envFileLocal, 'utf8').replace(/^\uFEFF/, '').split('\n')) {
-        const line = rawLine.replace(/\r$/, '').trimStart();
-        if (!line || line.startsWith('#')) continue;
+    return readFileSync(envFileLocal, 'utf8').replace(/^\uFEFF/, '').split('\n').map((raw) => {
+        const line = raw.replace(/\r$/, '').trimStart();
+        if (!line || line.startsWith('#')) return { raw, variable: null };
         const equalsIndex = line.indexOf('=');
-        const variable = (equalsIndex === -1 ? line : line.slice(0, equalsIndex)).trimStart();
-        if (variable !== name) continue;
-        if (equalsIndex === -1) return undefined;
-        values.push(line.slice(equalsIndex + 1));
-    }
-    return values;
+        if (equalsIndex === -1) return { raw, variable: line, value: undefined };
+        return { raw, variable: line.slice(0, equalsIndex).trimStart(), value: line.slice(equalsIndex + 1) };
+    });
 }
 
 /**
@@ -377,13 +374,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
         ?? get('PROPR_TRUSTED_PROXY_PEERS')
         ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
-    // Exactly what the shared --env-file binds for PROPR_INSTANCE_ID, so the API
-    // container does not receive a second, identical binding on the command line
-    // (Fleet admission rejects duplicate identity bindings). Authorized
-    // pre-parsed values are not Docker-literal, so they stay "unknown".
-    const envFileProprInstanceIdBindings = authorizedEnvFileValues
-        ? undefined
-        : dockerEnvFileBindings(envFileLocal, 'PROPR_INSTANCE_ID');
+    // Whether the API spec may read envFileLocal as Docker will, to give the API
+    // exactly one PROPR_INSTANCE_ID binding (Fleet admission rejects duplicate
+    // identity bindings). Authorized pre-parsed values are not Docker-literal.
+    const envFileDockerLiteral = !authorizedEnvFileValues;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
     // final fallback for manifests without a cloudflared entry.
@@ -412,7 +406,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         hostGhPrivateKey,
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
-        uiTunnelEnabled, uiTunnelToken, proprInstanceId, envFileProprInstanceIdBindings, uiPublicApiUrl, cloudflaredImage,
+        uiTunnelEnabled, uiTunnelToken, proprInstanceId, envFileDockerLiteral, uiPublicApiUrl, cloudflaredImage,
         trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
@@ -567,22 +561,45 @@ function vibePromptCacheArgs(cfg) {
 // — only the cloudflared sidecar receives the token. The instance id and public
 // API URL are injected only when set, so local-development containers (no tunnel)
 // stay free of empty PROPR_* vars while still always reporting the enabled flag.
-function tunnelApiEnvArgs(cfg) {
+function tunnelApiEnvArgs(cfg, identity) {
     const args = ['-e', `PROPR_UI_TUNNEL_ENABLED=${cfg.uiTunnelEnabled ? 'true' : 'false'}`];
-    // Inject the instance id lowercased so it matches the derived public URL
-    // (proprInstanceProxyUrl lowercases the host), keeping the id and the
-    // PROPR_UI_PUBLIC_API_URL host consistent for any consumer that compares them.
-    // The shared --env-file already supplies the id to every app container; only
-    // override it when that binding is absent or differs from the canonical value,
-    // so the API never ends up with two identical PROPR_INSTANCE_ID entries.
-    if (isValidProprInstanceId(cfg.proprInstanceId)) {
-        const instanceId = cfg.proprInstanceId.trim().toLowerCase();
-        const fromEnvFile = cfg.envFileProprInstanceIdBindings;
-        const suppliedByEnvFile = fromEnvFile?.length > 0 && fromEnvFile.every((value) => value === instanceId);
-        if (!suppliedByEnvFile) args.push('-e', `PROPR_INSTANCE_ID=${instanceId}`);
-    }
+    args.push(...identity.args);
     if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
     return args;
+}
+
+// The API's env-file input and PROPR_INSTANCE_ID override. The id is injected
+// lowercased so it matches the derived public URL (proprInstanceProxyUrl
+// lowercases the host), keeping the id and the PROPR_UI_PUBLIC_API_URL host
+// consistent for any consumer that compares them. Docker records every env-file
+// and -e entry without merging, and Fleet admission rejects duplicate identity
+// bindings, so the API must end up with exactly one:
+// - the shared env file already binds exactly the canonical id → use it as is;
+// - it binds nothing → the shared file plus the -e override;
+// - otherwise (mixed case, quoted, bare, repeated, or a differing process-env
+//   override) → a private copy of the shared file without its PROPR_INSTANCE_ID
+//   lines, plus the -e override. The shared file stays untouched for the other
+//   services. The caller removes `scratchDir` once `docker run` has read it.
+function apiIdentityEnv(cfg) {
+    if (!isValidProprInstanceId(cfg.proprInstanceId)) return { envFile: cfg.envFileLocal, args: [] };
+    const instanceId = cfg.proprInstanceId.trim().toLowerCase();
+    const override = ['-e', `PROPR_INSTANCE_ID=${instanceId}`];
+    // One read decides and supplies the copy, so the two cannot disagree.
+    const lines = cfg.envFileDockerLiteral ? dockerEnvFileLines(cfg.envFileLocal) : undefined;
+    if (!lines) return { envFile: cfg.envFileLocal, args: override };
+    const bindings = lines.filter((line) => line.variable === 'PROPR_INSTANCE_ID');
+    if (bindings.length === 1 && bindings[0].value === instanceId) return { envFile: cfg.envFileLocal, args: [] };
+    if (bindings.length === 0) return { envFile: cfg.envFileLocal, args: override };
+    // The copy holds the stack's secrets: mkdtemp creates a 0700 directory.
+    const scratchDir = mkdtempSync(join(tmpdir(), 'propr-api-env-'));
+    const envFile = join(scratchDir, '.env');
+    const kept = lines.filter((line) => line.variable !== 'PROPR_INSTANCE_ID').map((line) => line.raw);
+    writeFileSync(envFile, kept.join('\n'), { mode: 0o600 });
+    return { envFile, args: override, scratchDir };
+}
+
+function removeScratchDir(spec) {
+    if (spec.scratchDir) rmSync(spec.scratchDir, { recursive: true, force: true });
 }
 
 function proxyTrustApiEnvArgs(cfg) {
@@ -1053,12 +1070,12 @@ function packagedRuntimeModeError(cfg) {
         + 'Source-development commands continue to support NODE_ENV=development outside the packaged launcher.';
 }
 
-function appBaseArgs(cfg) {
+function appBaseArgs(cfg, envFile = cfg.envFileLocal) {
     const runtimeModeError = packagedRuntimeModeError(cfg);
     if (runtimeModeError) throw new Error(runtimeModeError);
     return [
         // --env-file is resolved by the docker CLI (inside the launcher / on host).
-        '--env-file', cfg.envFileLocal,
+        '--env-file', envFile,
         // Published images default to production, but make the launcher contract
         // explicit after --env-file so a missing value cannot regress it. A
         // conflicting existing value is rejected above rather than overwritten.
@@ -1079,8 +1096,8 @@ function appBaseArgs(cfg) {
     ];
 }
 
-function appSpec(cfg, command, extraArgs = []) {
-    return { image: cfg.images.app, args: [...appBaseArgs(cfg), ...extraArgs], command: ['node', ...command] };
+function appSpec(cfg, command, extraArgs = [], envFile = cfg.envFileLocal) {
+    return { image: cfg.images.app, args: [...appBaseArgs(cfg, envFile), ...extraArgs], command: ['node', ...command] };
 }
 
 function migrationSpec(cfg) {
@@ -1166,8 +1183,12 @@ export function buildServiceSpec(cfg, service) {
                 ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg),
             ]);
-        case 'api':
-            return appSpec(cfg, ['dist/packages/api/server.js'], [
+        case 'api': {
+            // Fails before apiIdentityEnv can create a scratch copy.
+            const runtimeModeError = packagedRuntimeModeError(cfg);
+            if (runtimeModeError) throw new Error(runtimeModeError);
+            const identity = apiIdentityEnv(cfg);
+            const spec = appSpec(cfg, ['dist/packages/api/server.js'], [
                 // Stable in-network DNS alias so the cloudflared sidecar (and the
                 // Cloudflare Tunnel ingress config) can target a fixed
                 // `http://api:4000` regardless of the stack prefix. Without it the
@@ -1197,9 +1218,11 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
                 '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
                 '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
-                ...tunnelApiEnvArgs(cfg),
+                ...tunnelApiEnvArgs(cfg, identity),
                 ...proxyTrustApiEnvArgs(cfg),
-            ]);
+            ], identity.envFile);
+            return identity.scratchDir ? { ...spec, scratchDir: identity.scratchDir } : spec;
+        }
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from
             // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
@@ -1269,9 +1292,13 @@ export function startService(cfg, service, { onLog, pull = true, freshnessCache,
     assertDatabaseServiceCanStart(cfg, service, migrationHandoff);
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
-    removeIfExists(cfg, name, onLog);
-    const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
+    try {
+        removeIfExists(cfg, name, onLog);
+        const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
+        dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
+    } finally {
+        removeScratchDir(spec);
+    }
     onLog?.(`  [ok] started ${name}`);
     return getServiceState(cfg, service);
 }
@@ -1585,9 +1612,13 @@ export async function startServiceAsync(cfg, service, { onLog, pull = true, fres
     await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
-    await removeIfExistsAsync(cfg, name, onLog, signal);
-    const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal);
+    try {
+        await removeIfExistsAsync(cfg, name, onLog, signal);
+        const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
+        await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal);
+    } finally {
+        removeScratchDir(spec);
+    }
     onLog?.(`  [ok] started ${name}`);
     return getServiceStateAsync(cfg, service, signal);
 }
