@@ -355,10 +355,16 @@ const expectShortSearchResults = async (page, cdp, click, capture, platform) => 
   await expectShortNoResults(page, cdp, click, capture, platform);
 };
 
-/** A task whose title wraps to more lines than the short window's list can show. */
+/**
+ * A task whose title wraps to more lines than the short window's list can show on
+ * every frame: the macOS sheet has no window-control row above it, so its list is
+ * taller (about 69px, 3 lines) than Linux's. The title stays within GitHub's
+ * 256-character issue title limit, so a real task can carry it.
+ */
+const WRAPPED_TITLE = 'Investigate why the nightly desktop acceptance run reports stale profile journals after a restore drill, the cache warm-up step retries three times, and the follow-up Search index rebuild leaves archived tasks visible until the next manual refresh';
 const WRAPPED_TASKS = [
   SEARCH_TASKS[0],
-  { ...SEARCH_TASKS[1], id: 'wrapped-2', title: 'Investigate why the nightly desktop acceptance run reports stale profile journals after a restore drill and the cache warm-up step retries' },
+  { ...SEARCH_TASKS[1], id: 'wrapped-2', title: WRAPPED_TITLE },
   SEARCH_TASKS[4],
 ];
 
