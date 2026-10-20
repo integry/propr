@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -12,6 +13,11 @@ const hubot = { id: '480938', login: 'hubot', displayName: null, avatarUrl: null
 const NOTE = 'Teach the indexer to resume an interrupted crawl without rescanning';
 const LONG = 'Check invoice dates\nsee https://billing.example.test/invoices/2026/october/reconciliation-report-final';
 const DONE = 'Archive the old release notes';
+// Real Inter (OFL-1.1, provenance in e2e/fonts/README.md), served in place of Google Fonts.
+const INTER = readFileSync(new URL('./fonts/inter-var-latin.woff2', import.meta.url));
+const INTER_URL = 'https://fonts.gstatic.com/s/inter/e2e-fixture/inter-var-latin.woff2';
+const INTER_CSS = `@font-face { font-family: 'Inter'; font-weight: 400 700; font-display: swap; src: url(${INTER_URL}) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }`;
 const repos = [{ id: 'propr', name: 'integry/propr', enabled: true, visualPreview: { enabled: false, types: ['image'] } }];
 
 const todo = (todoId: string, content: string, extra: Record<string, unknown> = {}) => ({
@@ -70,8 +76,8 @@ async function todoStore(page: Page) {
   return { todos, writes };
 }
 
-async function openTodos(page: Page, press: (target: Locator) => Promise<void>) {
-  await page.goto('/repositories');
+async function openTodos(page: Page, press: (target: Locator) => Promise<void>, waitUntil: 'load' | 'domcontentloaded' = 'load') {
+  await page.goto('/repositories', { waitUntil });
   await press(page.getByRole('button', { name: 'Select integry/propr', exact: true }).first());
   await press(page.getByRole('button', { name: 'To-Dos', exact: true }));
   await expect(page.getByText(NOTE)).toBeVisible();
@@ -136,7 +142,11 @@ async function rowLayout(row: Locator, text: Locator, controls: Locator[]): Prom
   }
 }
 
-/** The row's layout once two samples a frame apart agree, so no reflow or transition is under way. */
+/**
+ * The row's layout once two samples a frame apart agree. That only shows the layout
+ * was stable for that frame, not that fonts are ready: a font still loading can
+ * arrive later and reflow the row. Each sample is one coherent frame either way.
+ */
 async function settledRowLayout(row: Locator, text: Locator, controls: Locator[]): Promise<RowLayout> {
   let layout = await rowLayout(row, text, controls);
   await expect.poll(async () => {
@@ -222,36 +232,43 @@ for (const width of [320, 390]) {
 
     test('rows keep their tap targets in the fallback font and after Inter arrives', async ({ page }) => {
       await todoStore(page);
-      // Hold the real Inter files the page asks for, so the rows first render in the
-      // fallback font and the swap happens on cue rather than whenever the network
-      // delivers it.
+      // Serve the stylesheet and a local copy of Inter instead of Google Fonts, and hold
+      // the font file so the rows first render in the fallback font and the swap happens
+      // on cue, with or without network access.
+      await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: INTER_CSS }));
+      const serveInter = (route: Route) => route.fulfill({ contentType: 'font/woff2', headers: { 'access-control-allow-origin': '*' }, body: INTER });
       const held: Route[] = [];
       let holding = true;
-      await page.route('https://fonts.gstatic.com/**', route => (holding ? held.push(route) : route.continue()));
-      await openTodos(page, target => target.tap());
+      await page.route('https://fonts.gstatic.com/**', route => (holding ? held.push(route) : serveInter(route)));
+      // WebKit holds the load event for a font that is still downloading, so waiting
+      // for load here would wait for the very file being withheld. The rows are
+      // ready once openTodos sees the note.
+      await openTodos(page, target => target.tap(), 'domcontentloaded');
       const note = rowOf(page, NOTE);
       const long = rowOf(page, LONG);
       const interStatus = () => page.evaluate(() =>
         [...document.fonts].filter(font => font.family.replace(/["']/g, '') === 'Inter').map(font => font.status));
 
-      expect(await interStatus()).not.toContain('loaded');
+      // The page asked for Inter, and the file is withheld while the fallback is checked.
+      await expect.poll(() => held.map(route => route.request().url()), { message: 'Inter requested and held' }).toEqual([INTER_URL]);
+      expect(await interStatus()).toEqual(['loading']);
+      const readyState = await page.evaluate(() => document.readyState);
       for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
         await expectTouchRow(row, content, actions(row, content));
       }
       const fallback = await rowLayout(note, note.getByText(NOTE, { exact: true }), actions(note, NOTE));
+      expect(await interStatus()).toEqual(['loading']);
 
       holding = false;
-      await Promise.all(held.map(route => route.continue()));
-      await page.evaluate(() => document.fonts.ready);
-      // Without network access the page never requests Inter; the fallback check above still holds.
-      if (held.length) expect(await interStatus()).toContain('loaded');
+      await Promise.all(held.map(serveInter));
+      await expect.poll(interStatus, { message: 'Inter loaded after release' }).toEqual(['loaded']);
       for (const [row, content] of [[note, NOTE], [long, LONG]] as const) {
         await expectTouchRow(row, content, actions(row, content));
       }
       const inter = await rowLayout(note, note.getByText(NOTE, { exact: true }), actions(note, NOTE));
       // How far the swap moves the row depends on the host's fallback font, so it is recorded, not asserted.
       test.info().annotations.push({ type: 'font swap', description:
-        `${held.length} Inter file(s) held; note row ${JSON.stringify(fallback.row)} in the fallback font, ${JSON.stringify(inter.row)} in Inter` });
+        `${held.length} Inter file(s) held (document ${readyState}); note row ${JSON.stringify(fallback.row)} in the fallback font, ${JSON.stringify(inter.row)} in Inter` });
       expect(await noPageOverflow(page)).toBeLessThanOrEqual(0);
     });
 
