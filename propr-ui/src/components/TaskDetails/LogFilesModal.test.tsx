@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { fetchLogFile, fetchLogFiles } from '../../api/proprApi';
 import LogFilesModal from './LogFilesModal';
 import { useLogFilesData } from './useLogFilesData';
 
@@ -115,5 +116,39 @@ describe('LogFilesModal', () => {
     expect(close).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
     expect(content).toHaveFocus();
+  });
+});
+
+describe('LogFilesModal file sizes', () => {
+  afterEach(() => { vi.clearAllMocks(); });
+
+  const listedSizes = async () => {
+    render(<Harness />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Logs' })); });
+    const list = within(await screen.findByRole('dialog', { name: 'Log Files' })).getByTestId('log-file-list');
+    return within(list).getAllByRole('button').map(button => button.textContent);
+  };
+
+  test('lists execution-backed logs without asserting a size the API did not report, and without fetching their bodies', async () => {
+    vi.mocked(fetchLogFiles).mockResolvedValueOnce({
+      sessionId: 'session-28',
+      files: { conversation: `/logs/${fileName}`, output: '/logs/issue-28-output.log' },
+    });
+    expect(await listedSizes()).toEqual([fileName, 'issue-28-output.log']);
+    expect(screen.queryByText(/\d\s*(B|KB|MB)$/)).toBeNull();
+    expect(fetchLogFile).not.toHaveBeenCalled();
+  });
+
+  test('shows reported legacy sizes exactly, keeping a real empty file at zero and small nonempty files above it', async () => {
+    vi.mocked(fetchLogFiles).mockResolvedValueOnce({
+      sessionId: 'session-28',
+      logFiles: [
+        { name: 'empty.log', path: '/logs/empty.log', size: 0, type: 'log' },
+        { name: 'small.log', path: '/logs/small.log', size: 512, type: 'log' },
+        { name: 'output.log', path: '/logs/output.log', size: 61070, type: 'log' },
+        { name: 'large.log', path: '/logs/large.log', size: 3 * 1024 * 1024, type: 'log' },
+      ],
+    });
+    expect(await listedSizes()).toEqual(['empty.log0 B', 'small.log512 B', 'output.log59.6 KB', 'large.log3.0 MB']);
   });
 });

@@ -17,8 +17,10 @@ const retriedHistory = [
 ];
 const taskInfo = { title: 'Review the desktop acceptance task', type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra' };
 
+const legacyLogs = (session: string) => ({ sessionId: session, logFiles: [{ name: `${session}.log`, path: `/api/execution/${session}/logs/${session}.log`, size: 512, type: 'log' }] });
+
 /** Opens a run's task page and records which executions the header reads. */
-const openRun = async (page: Page, run: string) => {
+const openRun = async (page: Page, run: string, logsJson: (session: string) => object = legacyLogs) => {
   await fixture(page, 'linux');
   await page.route(`**/api/task/${selectedRun}/history`, route => route.fulfill({ json: { history: retriedHistory, taskInfo } }));
   await page.route(`**/api/task/${historicalRun}/history`, route => route.fulfill({ json: {
@@ -30,7 +32,7 @@ const openRun = async (page: Page, run: string) => {
     const [, , , session, kind] = new URL(route.request().url()).pathname.split('/');
     sessions.push(`${session}/${kind}`);
     return kind === 'logs'
-      ? route.fulfill({ json: { sessionId: session, logFiles: [{ name: `${session}.log`, path: `/api/execution/${session}/logs/${session}.log`, size: 512, type: 'log' }] } })
+      ? route.fulfill({ json: logsJson(session) })
       : route.fulfill({ json: { prompt: `Prompt of ${session}` } });
   });
   await page.goto(`/tasks/${run}`);
@@ -54,6 +56,7 @@ for (const width of [1280, 390, 320]) {
     await openLogs(page);
     await expect(page.getByRole('heading', { name: 'Log Files' })).toBeVisible();
     await expect(page.getByText('successful-retry.log')).toBeVisible();
+    await expect(page.getByTestId('log-file-list').getByText('512 B')).toBeVisible();
     expect(sessions).toEqual(['successful-retry/logs']);
     await capture(page, `task-header-retry-logs-${width}`);
   });
@@ -66,3 +69,20 @@ test('an earlier run keeps its own execution in the header', async ({ page }) =>
   await expect(page.getByText('earlier-run.log')).toBeVisible();
   expect(sessions).toEqual(['earlier-run/logs']);
 });
+
+for (const width of [390, 320]) {
+  test(`at ${width}px execution-backed log files list no size the API did not report`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 820 });
+    const sessions = await openRun(page, selectedRun, session => ({
+      sessionId: session,
+      files: { conversation: `/logs/issue-2664-${session}-conversation.json`, output: `/logs/issue-2664-${session}-output.log` },
+    }));
+    await openLogs(page);
+    const list = page.getByTestId('log-file-list');
+    await expect(list.getByRole('button')).toHaveText([/conversation\.json$/, /output\.log$/]);
+    await expect(list).not.toContainText(/\d\s*(B|KB|MB)\b/);
+    expect(await list.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+    expect(sessions).toEqual(['successful-retry/logs']);
+    await capture(page, `log-files-unknown-size-${width}`);
+  });
+}

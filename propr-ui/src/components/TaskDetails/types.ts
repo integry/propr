@@ -192,7 +192,8 @@ export interface PromptData {
 export interface LogFileInfo {
   name: string;
   path: string;
-  size: number;
+  /** Byte size when the API reports it; execution-backed lists do not, so it is absent rather than zero. */
+  size?: number;
   type: string;
 }
 

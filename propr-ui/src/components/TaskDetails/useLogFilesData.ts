@@ -50,7 +50,6 @@ export const useLogFilesData = () => {
           logFiles: Object.entries(logsData.files).map(([type, path]) => ({
             name: path.split('/').pop() || '',
             path: `/api/execution/${logsData.sessionId}/logs/${type}`,
-            size: 0,
             type: type
           }))
         };

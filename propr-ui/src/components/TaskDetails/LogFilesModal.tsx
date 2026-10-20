@@ -77,8 +77,15 @@ const LogFilesModal: React.FC<LogFilesModalProps> = ({
   );
 };
 
+/** A reported byte size; small files stay in bytes so a nonempty file never reads as 0 KB. */
+function formatLogFileSize(bytes: number): string {
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 interface FileListProps {
-  logFiles: { name: string; size: number }[];
+  logFiles: { name: string; size?: number }[];
   selectedFileName?: string;
   onSelectFile: (fileName: string) => void;
 }
@@ -106,9 +113,11 @@ const FileList: React.FC<FileListProps> = ({ logFiles, selectedFileName, onSelec
             }`}
           >
             <div className="font-medium text-sm [overflow-wrap:anywhere]">{file.name}</div>
-            <div className={`text-xs ${selectedFileName === file.name ? 'text-blue-100' : 'text-gray-500'}`}>
-              {Math.round(file.size / 1024)} KB
-            </div>
+            {typeof file.size === 'number' && Number.isFinite(file.size) && (
+              <div className={`text-xs ${selectedFileName === file.name ? 'text-blue-100' : 'text-gray-500'}`}>
+                {formatLogFileSize(file.size)}
+              </div>
+            )}
           </button>
         ))}
       </div>
