@@ -159,6 +159,11 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     await expect(open).toHaveAttribute('aria-expanded', 'false');
     await expect(steps).toHaveCount(0);
     await assertRunControlHeights();
+    // Chromium holds a short tap's press open for 150ms after the click, and its delayed release also
+    // cancels a Space press in progress on the button. A test hands over to the keyboard sooner than a
+    // person, and on a loaded host that release can land between Space's keydown and keyup; the pointer
+    // moving on ends the tap's press now, so Space reaches the button as it would for anyone.
+    if (hasTouch) await open.hover();
     await open.focus();
     await page.keyboard.press('Enter');
     await expect(open).toHaveAttribute('aria-expanded', 'true');
