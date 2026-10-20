@@ -133,7 +133,7 @@ export const SearchResultList: React.FC<ResultListProps> = ({ idPrefix, items, a
           >
             <Icon className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${active ? 'text-primary-600' : 'text-slate-400'}`} aria-hidden="true" />
             <span className="min-w-0 flex-1">
-              <span className="block break-words text-sm font-medium leading-5 text-slate-900">{getItemTitle(item)}</span>
+              <span data-search-option-title className="block break-words text-sm font-medium leading-5 text-slate-900">{getItemTitle(item)}</span>
               <ResultMeta item={item} />
             </span>
           </li>

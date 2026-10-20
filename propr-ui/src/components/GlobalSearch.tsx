@@ -42,32 +42,41 @@ function getSearchResultState(
 
 const PALETTE_WIDTH = 640;
 const VIEWPORT_GUTTER = 16;
+/**
+ * Below this much room under the input (a short or zoomed window), the tabs and a wrapped
+ * hint row would leave the list less than one result row, so the palette goes compact.
+ */
+const COMPACT_PALETTE_HEIGHT = 128;
 
 /**
  * Where the palette hangs: its left edge flush with the search input, 8px below it. It only
  * shifts left when the viewport is too narrow to fit it. The backdrop starts under the toolbar.
+ * `compact` marks too little room below the input for the full layout.
  */
 interface PaletteAnchor {
   top: number;
   left: number;
   backdropTop: number;
+  compact: boolean;
 }
 
 function measureAnchor(container: HTMLElement | null): PaletteAnchor {
   const input = container?.getBoundingClientRect();
-  if (!input) return { top: 0, left: VIEWPORT_GUTTER, backdropTop: 0 };
+  if (!input) return { top: 0, left: VIEWPORT_GUTTER, backdropTop: 0, compact: false };
   const bar = container?.closest('header')?.getBoundingClientRect();
   const maxLeft = window.innerWidth - Math.min(PALETTE_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER) - VIEWPORT_GUTTER;
+  const top = input.bottom + 8;
   return {
-    top: input.bottom + 8,
+    top,
     left: Math.max(VIEWPORT_GUTTER, Math.min(input.left, maxLeft)),
     backdropTop: bar ? bar.bottom : input.bottom,
+    compact: window.innerHeight - top - VIEWPORT_GUTTER < COMPACT_PALETTE_HEIGHT,
   };
 }
 
 /** Track the input's position while the palette is open (the toolbar differs between web and desktop). */
 function usePaletteAnchor(containerRef: React.RefObject<HTMLElement | null>, open: boolean): PaletteAnchor {
-  const [anchor, setAnchor] = useState<PaletteAnchor>({ top: 0, left: 0, backdropTop: 0 });
+  const [anchor, setAnchor] = useState<PaletteAnchor>({ top: 0, left: 0, backdropTop: 0, compact: false });
   useLayoutEffect(() => {
     if (!open) return;
     const update = () => setAnchor(measureAnchor(containerRef.current));
@@ -80,6 +89,17 @@ function usePaletteAnchor(containerRef: React.RefObject<HTMLElement | null>, ope
 
 const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <kbd className="rounded-sm border border-slate-200 bg-white px-1 py-px font-sans text-[10px] text-slate-500">{children}</kbd>
+);
+
+/** Footer keyboard hints. A compact palette gives their row to the results; the keys still work. */
+const KeyHints: React.FC<{ modifierKey: string; compact: boolean }> = ({ modifierKey, compact }) => compact ? null : (
+  <>
+    <span><Kbd>↑</Kbd> <Kbd>↓</Kbd> navigate</span>
+    <span><Kbd>Tab</Kbd> filter</span>
+    <span><Kbd>↵</Kbd> open</span>
+    <span><Kbd>{modifierKey}↵</Kbd> GitHub</span>
+    <span><Kbd>Esc</Kbd> close</span>
+  </>
 );
 
 /**
@@ -124,11 +144,13 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
     setActiveIndex(0);
   }
 
-  // Keep the highlighted row visible as the keyboard walks the list.
+  // Keep the highlighted row visible as the keyboard walks the list. When the list is
+  // shorter than the row (a short window), its title still comes fully into view.
   useEffect(() => {
     if (!activeItem) return;
     const option = listRef.current?.querySelector(`#${searchOptionId(idPrefix, activeItem.key)}`);
     option?.scrollIntoView?.({ block: 'nearest' });
+    option?.querySelector('[data-search-option-title]')?.scrollIntoView?.({ block: 'nearest' });
   }, [activeItem, idPrefix]);
 
   // Handle click outside to close dropdown
@@ -349,11 +371,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
               </div>
 
               <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] text-slate-500">
-                <span><Kbd>↑</Kbd> <Kbd>↓</Kbd> navigate</span>
-                <span><Kbd>Tab</Kbd> filter</span>
-                <span><Kbd>↵</Kbd> open</span>
-                <span><Kbd>{modifierKey}↵</Kbd> GitHub</span>
-                <span><Kbd>Esc</Kbd> close</span>
+                <KeyHints modifierKey={modifierKey} compact={anchor.compact} />
                 <span className="ml-auto flex min-w-0 items-center gap-3">
                   {plansAction && (
                     <button

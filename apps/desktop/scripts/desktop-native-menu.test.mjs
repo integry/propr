@@ -225,9 +225,125 @@ const expectNarrowSearch = async (page, click, capture, platform) => {
     expect(await openerFocused(), `${label}: focus restored after backdrop press`).toBe(true);
     await page.locator('main').evaluate(main => main.removeAttribute('tabindex'));
   }
+  await expectShortSearchResults(page, cdp, click, capture, platform);
   await cdp.send('Emulation.clearDeviceMetricsOverride');
   await page.setViewportSize({ width: 1280, height: 820 });
   await cdp.detach();
+};
+
+/** Five ordinary short task results, served only to the search reads. */
+const SEARCH_TASKS = ['Fix login redirect', 'Update docs', 'Stop work on cache', 'Tidy logs', 'Bump deps']
+  .map((title, index) => ({ id: `short-${index + 1}`, title, repository: 'integry/propr', status: 'completed', createdAt: '2026-10-19T12:00:00.000Z' }));
+const serveSearchResults = async page => {
+  const search = url => ['/api/tasks', '/api/planner/drafts', '/api/instance/catalog'].includes(url.pathname);
+  const handler = route => {
+    const { pathname } = new URL(route.request().url());
+    route.fulfill({ json: pathname === '/api/tasks' ? { tasks: SEARCH_TASKS, total: SEARCH_TASKS.length } : pathname === '/api/planner/drafts' ? { drafts: [] } : { repositories: [] } });
+  };
+  await page.route(search, handler);
+  return () => page.unroute(search, handler);
+};
+
+/** The selected result's title line, the list around it, the footer action and every Search/window target. */
+const measureSelectedResult = page => page.evaluate(() => {
+  const box = element => {
+    if (!element || !element.getClientRects().length) return null;
+    const { left, right, top, bottom } = element.getBoundingClientRect();
+    return { left, right, top, bottom };
+  };
+  const hit = element => {
+    const rect = element?.getBoundingClientRect();
+    if (!rect?.width) return null;
+    const found = document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+    return element.contains(found) ? true : `${found?.tagName}[aria-label="${found?.closest('[aria-label]')?.getAttribute('aria-label')}"]`;
+  };
+  const sheet = document.querySelector('[role="dialog"][aria-label="Search"]');
+  const palette = document.querySelector('[data-testid="global-search-palette"]');
+  const list = palette?.querySelector('[role="listbox"]')?.parentElement;
+  const options = [...(palette?.querySelectorAll('li[role="option"]') ?? [])];
+  const selected = options.find(option => option.getAttribute('aria-selected') === 'true');
+  const title = selected?.querySelector('span.block.break-words');
+  const lineHeight = title && parseFloat(getComputedStyle(title).lineHeight);
+  const action = [...(palette?.querySelectorAll('button') ?? [])].find(button => button.textContent.startsWith('Search all tasks'));
+  return {
+    options: options.length, selectedIndex: options.indexOf(selected),
+    title: box(title), lineHeight, list: box(list), scrolled: list?.scrollTop, palette: box(palette), root: box(document.getElementById('root')),
+    hints: palette?.textContent.includes('navigate'),
+    hits: {
+      input: hit(sheet?.querySelector('input[aria-label="Search"]')), clear: hit(sheet?.querySelector('[aria-label="Clear search"]')),
+      close: hit(sheet?.querySelector('[aria-label="Close search"]')), action: hit(action),
+    },
+    controlHits: [...document.querySelectorAll('.desktop-window-controls button')].map(control => [control.getAttribute('aria-label'), hit(control)]),
+  };
+});
+
+/**
+ * A short supported window (880x480 at about 207% zoom, and the reported 880x620)
+ * with real results: arrowing to the last one keeps at least one complete line of
+ * its title inside the list, and the footer action, Search targets and native
+ * controls keep their pointer targets. Enter opens the selected task.
+ */
+const expectShortSearchResults = async (page, cdp, click, capture, platform) => {
+  const sheet = page.getByRole('dialog', { name: 'Search' });
+  const stopServing = await serveSearchResults(page);
+  try {
+    for (const [width, height, scale] of [[406, 221, 2.1708], [406, 286, 2.1708]]) {
+      const label = `${platform} ${width}x${height} @${scale} results`;
+      await page.setViewportSize({ width, height });
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+      await click('Search / Go To…');
+      await expect(sheet.getByRole('combobox', { name: 'Search', exact: true })).toBeFocused();
+      await page.keyboard.type('short task');
+      await expect(sheet.getByRole('option')).toHaveCount(SEARCH_TASKS.length);
+      for (let step = 1; step < SEARCH_TASKS.length; step += 1) await page.keyboard.press('ArrowDown');
+      await expect(sheet.getByRole('option', { selected: true })).toContainText('Bump deps');
+      // Settled keyboard scrolling: the list's scroll offset stops changing.
+      await expect.poll(async () => {
+        const first = await page.evaluate(() => document.querySelector('[data-testid="global-search-palette"] [role="listbox"]').parentElement.scrollTop);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        return first === await page.evaluate(() => document.querySelector('[data-testid="global-search-palette"] [role="listbox"]').parentElement.scrollTop);
+      }).toBe(true);
+      const result = await measureSelectedResult(page);
+      expect(result.selectedIndex, label).toBe(SEARCH_TASKS.length - 1);
+      expect(result.lineHeight, label).toBeGreaterThan(0);
+      // At least one complete title line inside the list scrollport.
+      const visibleTitle = Math.min(result.title.bottom, result.list.bottom) - Math.max(result.title.top, result.list.top);
+      expect(result.title.top, `${label}: title top inside list`).toBeGreaterThanOrEqual(result.list.top);
+      expect(visibleTitle, `${label}: visible title line ${JSON.stringify(result)}`).toBeGreaterThanOrEqual(result.lineHeight);
+      expect(result.palette.bottom, `${label}: palette inside window`).toBeLessThanOrEqual(result.root.bottom);
+      expect(result.hits, label).toEqual({ input: true, clear: true, close: true, action: true });
+      if (platform === 'linux') {
+        expect(result.controlHits, label).toEqual([
+          ['Application menu', true], ['Minimize window', true], ['Maximize or restore window', true], ['Close window', true],
+        ]);
+      }
+      // Only the short Linux frame (sheet below the window controls) gives up the keyboard hints.
+      expect(result.hints, label).toBe(height !== 221 || platform !== 'linux');
+      if (height === 221 && platform === 'linux') {
+        const window = async () => Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+        await capture(`search-short-results-${width}x${height}`, window, `Linux ${width}×${height} at ${Math.round(scale * 100)}%: last search result selected with its title fully visible`);
+      }
+      // ArrowUp back to the first result keeps its title in the list too.
+      for (let step = 1; step < SEARCH_TASKS.length; step += 1) await page.keyboard.press('ArrowUp');
+      await expect(sheet.getByRole('option', { selected: true })).toContainText('Fix login redirect');
+      const first = await measureSelectedResult(page);
+      expect(Math.min(first.title.bottom, first.list.bottom) - Math.max(first.title.top, first.list.top), `${label}: first title`).toBeGreaterThanOrEqual(first.lineHeight);
+      if (height === 221) {
+        await page.keyboard.press('ArrowUp');
+        await expect(sheet.getByRole('option', { selected: true })).toContainText('Bump deps');
+        await page.keyboard.press('Enter');
+        await expect(sheet).toHaveCount(0);
+        await expect(page).toHaveURL(/#\/tasks\/short-5$/);
+        await page.goBack();
+        await expect(page).not.toHaveURL(/#\/tasks\/short-5$/);
+      } else {
+        await page.keyboard.press('Escape');
+        await expect(sheet).toHaveCount(0);
+      }
+    }
+  } finally {
+    await stopServing();
+  }
 };
 
 /** Every File creation entry opens its existing form and never submits, creates or enables anything. */
