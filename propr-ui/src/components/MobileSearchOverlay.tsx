@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { X } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
+import { useVisualViewportFrame } from '../hooks/useVisualViewportFrame';
 
 interface MobileSearchOverlayProps {
   /** Increments on every Search request, so a repeat request refocuses the field. */
@@ -20,6 +21,10 @@ const FOCUSABLE = 'input, button:not([disabled]), [href], [tabindex]:not([tabind
  * In the Linux desktop frame the sheet starts below the window-control row
  * (desktop.css), so the native controls never cover Close search or the field.
  *
+ * An on-screen keyboard shrinks and pans the visual viewport while the layout
+ * viewport keeps its size. The sheet follows the visible area, so the field and
+ * Close search stay on screen and the results palette fits above the keyboard.
+ *
  * It closes on Escape, the close button, a backdrop press, or a route change
  * (choosing a result), and the header restores focus to where it was.
  */
@@ -28,6 +33,7 @@ const MobileSearchOverlay: React.FC<MobileSearchOverlayProps> = ({ request, onCl
   const dialogRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const openedAt = useRef(location);
+  useVisualViewportFrame(dialogRef);
 
   useEffect(() => {
     inputRef.current?.focus();

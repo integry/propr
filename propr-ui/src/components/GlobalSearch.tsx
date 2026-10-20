@@ -58,31 +58,55 @@ interface PaletteAnchor {
   left: number;
   backdropTop: number;
   compact: boolean;
+  /** The visible area's lower edge (above an on-screen keyboard). */
+  bottom: number;
+}
+
+/**
+ * The lower edge of what the user can see, in layout-viewport coordinates. An on-screen keyboard
+ * shrinks and pans the visual viewport while the layout viewport keeps its size, so the window's
+ * lower edge may lie behind the keyboard. Pinch zoom is left alone: it pans rather than resizes.
+ */
+function visibleBottom() {
+  const viewport = window.visualViewport;
+  if (!viewport || Math.abs(viewport.scale - 1) > 0.01) return window.innerHeight;
+  return Math.min(window.innerHeight, viewport.offsetTop + viewport.height);
 }
 
 function measureAnchor(container: HTMLElement | null): PaletteAnchor {
   const input = container?.getBoundingClientRect();
-  if (!input) return { top: 0, left: VIEWPORT_GUTTER, backdropTop: 0, compact: false };
+  if (!input) return { top: 0, left: VIEWPORT_GUTTER, backdropTop: 0, compact: false, bottom: window.innerHeight };
   const bar = container?.closest('header')?.getBoundingClientRect();
   const maxLeft = window.innerWidth - Math.min(PALETTE_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER) - VIEWPORT_GUTTER;
   const top = input.bottom + 8;
+  const bottom = visibleBottom();
   return {
     top,
     left: Math.max(VIEWPORT_GUTTER, Math.min(input.left, maxLeft)),
     backdropTop: bar ? bar.bottom : input.bottom,
-    compact: window.innerHeight - top - VIEWPORT_GUTTER < COMPACT_PALETTE_HEIGHT,
+    compact: bottom - top - VIEWPORT_GUTTER < COMPACT_PALETTE_HEIGHT,
+    bottom,
   };
 }
 
 /** Track the input's position while the palette is open (the toolbar differs between web and desktop). */
 function usePaletteAnchor(containerRef: React.RefObject<HTMLElement | null>, open: boolean): PaletteAnchor {
-  const [anchor, setAnchor] = useState<PaletteAnchor>({ top: 0, left: 0, backdropTop: 0, compact: false });
+  const [anchor, setAnchor] = useState<PaletteAnchor>(() => ({ top: 0, left: 0, backdropTop: 0, compact: false, bottom: window.innerHeight }));
   useLayoutEffect(() => {
     if (!open) return;
     const update = () => setAnchor(measureAnchor(containerRef.current));
     update();
+    // An on-screen keyboard resizes and pans the visual viewport without a window resize. The
+    // narrow Search sheet, which registered first, follows it before the input is measured here.
+    const viewport = window.visualViewport;
     window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
+    viewport?.addEventListener('resize', update);
+    viewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      viewport?.removeEventListener('resize', update);
+      viewport?.removeEventListener('scroll', update);
+    };
   }, [containerRef, open]);
   return anchor;
 }
@@ -319,7 +343,8 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
       {/* Results palette: the Studio mega-dropdown (640px wide, up to 70vh tall),
           left-aligned with the search input just below it, over a dimmed backdrop.
           It never runs past the window's lower edge, even when the input sits
-          lower (the narrow Search sheet below the Linux window controls).
+          lower (the narrow Search sheet below the Linux window controls), nor
+          behind an on-screen keyboard; its list then scrolls on its own.
           Clicking the backdrop closes it. */}
       {showDropdown && (
         <div
@@ -337,7 +362,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
         <div
           data-testid="global-search-palette"
           className="desktop-toolbar-popover fixed z-50 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
-          style={{ top: anchor.top, left: anchor.left, maxHeight: `min(70vh, calc(100% - ${anchor.top + VIEWPORT_GUTTER}px))` }}
+          style={{ top: anchor.top, left: anchor.left, maxHeight: `min(70vh, calc(100% - ${anchor.top + VIEWPORT_GUTTER}px), ${Math.max(0, anchor.bottom - anchor.top - VIEWPORT_GUTTER)}px)` }}
         >
           {resultState === 'loading' && (
             <div className="px-4 py-8 text-center">
@@ -385,7 +410,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
               </div>
 
               <div className="flex min-h-0 flex-1">
-                <div ref={listRef} className="min-w-0 flex-1 overflow-y-auto scrollbar-subtle md:basis-3/5">
+                <div ref={listRef} className="min-w-0 flex-1 overflow-y-auto overscroll-contain scrollbar-subtle md:basis-3/5">
                   <SearchResultList idPrefix={idPrefix} items={items} activeIndex={activeIndex} onHover={setActiveIndex} onSelect={openItem} />
                 </div>
                 {activeItem && (
