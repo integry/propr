@@ -72,11 +72,11 @@ function useHeaderKeyboardShortcuts(
 }
 
 /**
- * Routes a Search request (Ctrl/Cmd+K, or the native menu's Search command) to
- * a field the operator can actually use. From `md` that is the toolbar's own
- * input; below it (a narrow window, or enlarged text) the toolbar is
- * `display: none`, so focusing its input would silently do nothing, and the
- * request opens the search sheet instead. `mobileSearch` is 0 while the sheet
+ * Routes a Search request (Ctrl/Cmd+K, the native menu's Search command, or the
+ * ProPR mobile menu's Search row) to a field the operator can actually use.
+ * From `md` that is the toolbar's own input; below it (a narrow window, or
+ * enlarged text) the toolbar is `display: none`, so focusing its input would
+ * silently do nothing, and the request opens the search sheet instead. `mobileSearch` is 0 while the sheet
  * is closed and increments per request, so a repeat refocuses the field.
  */
 function useSearchRequests(searchInputRef: React.RefObject<HTMLInputElement | null>) {
@@ -349,6 +349,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       unreadCount={inboxUnreadCount}
       systemHealth={systemHealth}
       quickAddRequest={mobileQuickAddRequest}
+      onSearch={requestSearch}
     />
     {mobileSearch > 0 && <MobileSearchOverlay request={mobileSearch} onClose={closeMobileSearch} />}
     </>

@@ -11,7 +11,14 @@ vi.mock('../hooks/useHeaderStats', () => ({
   useHeaderStats: () => ({ systemHealth: { isHealthy: true, agents: [] } }),
 }));
 vi.mock('./GlobalHeaderComponents', () => ({ SystemHealth: () => null }));
-vi.mock('./MobileBottomNavigation', () => ({ default: () => <button type="button">Tasks tab</button> }));
+vi.mock('./MobileBottomNavigation', () => ({
+  default: ({ onSearch }: { onSearch?: () => void }) => (
+    <>
+      <button type="button">Tasks tab</button>
+      <button type="button" onClick={onSearch}>Menu Search</button>
+    </>
+  ),
+}));
 vi.mock('./QuickAddTodo', () => ({ default: () => null }));
 // A local stand-in for the search hook: real typing state, one task result, no network.
 vi.mock('../hooks/useGlobalSearch', () => ({
@@ -113,6 +120,19 @@ describe('GlobalHeader native Search command', () => {
     expect(screen.queryByRole('dialog', { name: 'Search' })).not.toBeInTheDocument();
     expect(opener).toHaveFocus();
     expect(screen.getByLabelText('Location')).toHaveTextContent('/tasks');
+  });
+
+  it('opens the same sheet from the mobile menu\'s Search row, without a desktop adapter', () => {
+    setWide(false);
+    renderHeader(false);
+    const menuSearch = screen.getByRole('button', { name: 'Menu Search' });
+    menuSearch.focus();
+    fireEvent.click(menuSearch);
+    const sheet = screen.getByRole('dialog', { name: 'Search' });
+    expect(within(sheet).getByRole('combobox', { name: 'Search' })).toHaveFocus();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close search' }));
+    expect(screen.queryByRole('dialog', { name: 'Search' })).not.toBeInTheDocument();
+    expect(menuSearch).toHaveFocus();
   });
 
   it('routes Ctrl/Cmd+K the same way as the native command at narrow widths', () => {

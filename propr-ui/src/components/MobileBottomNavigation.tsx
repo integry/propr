@@ -11,7 +11,6 @@ import {
   Inbox,
   LayoutDashboard,
   ListTodo,
-  LogOut,
   MoreHorizontal,
   Plug,
   Plus,
@@ -27,10 +26,11 @@ import type { CurrentUser } from '../api/proprTypes';
 import { userHasPermission } from '../contexts/AuthContext';
 import { publicAssetUrl } from '../config/runtimeMode';
 import AgentTankSidebar from './AgentTankSidebar';
-import UserAvatar from './UserAvatar';
 import QuickAddTodo from './QuickAddTodo';
 import { creationActions } from './creationActions';
 import BottomSheet from './MobileBottomSheet';
+import MobileMenuSearchButton from './MobileMenuSearchButton';
+import MobileProfileRow from './MobileProfileRow';
 
 interface MobileBottomNavigationProps {
   user: CurrentUser | null;
@@ -40,6 +40,8 @@ interface MobileBottomNavigationProps {
   systemHealth: HeaderStats['systemHealth'];
   /** Increments to open the Create sheet with quick add expanded (Desktop New To-do). */
   quickAddRequest?: number;
+  /** Opens global search through the header's shared request path (Ctrl/Cmd+K, native Search). */
+  onSearch: () => void;
 }
 
 type SheetId = 'create' | 'more' | 'usage';
@@ -194,34 +196,6 @@ const MoreLink: React.FC<{ item: MoreItem; onNavigate: () => void }> = ({ item, 
   </li>
 );
 
-// Identity and Sign out share a line while the name has room to be read;
-// with narrow screens or enlarged text Sign out wraps beneath it instead of
-// squeezing the name down to a couple of letters.
-const ProfileRow: React.FC<{ user: CurrentUser; onLogout: () => void }> = ({ user, onLogout }) => (
-  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
-    <div className="flex min-w-0 flex-[1_1_10rem] items-center gap-3">
-      <UserAvatar
-        user={user}
-        className="flex h-9 w-9 flex-none items-center justify-center rounded-full border border-slate-200 object-cover text-xs font-bold"
-        fallbackClassName="bg-primary-100 text-primary-700"
-        decorative
-      />
-      <div className="min-w-0 flex-1">
-        <p className="break-words text-sm font-semibold text-slate-800">{user.displayName || user.username}</p>
-        <p className="break-all text-xs text-slate-500">@{user.username}</p>
-      </div>
-    </div>
-    <button
-      type="button"
-      onClick={onLogout}
-      className="ml-auto inline-flex min-h-10 flex-none items-center gap-2 rounded-md px-3 text-sm font-medium text-slate-600 hover:bg-red-50 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-    >
-      <LogOut className="h-4 w-4" aria-hidden="true" />
-      Sign out
-    </button>
-  </div>
-);
-
 const HealthDetails: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = ({ systemHealth }) => {
   const rows = [
     ['Daemon', systemHealth.daemon],
@@ -264,6 +238,7 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
   unreadCount,
   systemHealth,
   quickAddRequest,
+  onSearch,
 }) => {
   const location = useLocation();
   const [openSheet, setOpenSheet] = useState<SheetId | null>(null);
@@ -282,6 +257,14 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
   const backToMore = useCallback(() => setOpenSheet('more'), []);
   // Following a link closes the sheet without pulling focus back to the bar.
   const closeForNavigation = () => setOpenSheet(null);
+  // The sheet closes before search opens, so the two modals never compete for
+  // focus. Focus parks on More first: the search request remembers it as the
+  // place to return to, since the button pressed here is about to unmount.
+  const openSearch = () => {
+    setOpenSheet(null);
+    moreButtonRef.current?.focus();
+    onSearch();
+  };
   const toggleSheet = (sheet: SheetId) => setOpenSheet(current => (current === sheet ? null : sheet));
 
   useEffect(() => {
@@ -344,9 +327,10 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
           title="ProPR"
           titleIcon={<img src={publicAssetUrl('/logo.png')} alt="" aria-hidden="true" className="h-6 w-auto flex-none" />}
           closeLabel="Close ProPR menu"
+          headerAction={<MobileMenuSearchButton onSearch={openSearch} />}
           onClose={closeMore}
         >
-          {user && <ProfileRow user={user} onLogout={onLogout} />}
+          {user && <MobileProfileRow user={user} onLogout={onLogout} />}
 
           <nav aria-label="More navigation">
             <WorkspaceSection items={groups.workspace} onNavigate={closeForNavigation} />

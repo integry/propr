@@ -60,7 +60,8 @@ function renderNavigation(
   initialEntry = '/tasks/task-1',
   onLogout = vi.fn(),
   currentUser: CurrentUser | null = user,
-  isDemoMode = false
+  isDemoMode = false,
+  onSearch = vi.fn(),
 ) {
   render(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -70,6 +71,7 @@ function renderNavigation(
         isDemoMode={isDemoMode}
         unreadCount={7}
         systemHealth={systemHealth}
+        onSearch={onSearch}
       />
       <Location />
     </MemoryRouter>
@@ -234,6 +236,29 @@ describe('MobileBottomNavigation', () => {
 
     expect(screen.queryByRole('dialog', { name: 'ProPR' })).not.toBeInTheDocument();
     expect(moreButton).toHaveFocus();
+  });
+
+  it('opens global search from the ProPR sheet, closing the sheet first and parking focus on More', () => {
+    let state: { sheetOpen: boolean; focused: Element | null } | null = null;
+    const onSearch = vi.fn(() => {
+      state = { sheetOpen: Boolean(screen.queryByRole('dialog', { name: 'ProPR' })), focused: document.activeElement };
+    });
+    renderNavigation('/', vi.fn(), user, false, onSearch);
+    const moreButton = screen.getByRole('button', { name: 'More' });
+    fireEvent.click(moreButton);
+    const sheet = screen.getByRole('dialog', { name: 'ProPR' });
+    // Search leads the sheet, ahead of identity and every destination.
+    const search = within(sheet).getByRole('button', { name: 'Search' });
+    expect(search).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(search.compareDocumentPosition(within(sheet).getByRole('button', { name: 'Sign out' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(search);
+
+    expect(onSearch).toHaveBeenCalledTimes(1);
+    // The search request records the focused element as its return target.
+    expect(state!.focused).toBe(moreButton);
+    expect(screen.queryByRole('dialog', { name: 'ProPR' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/$/);
   });
 
   it('closes on route navigation and marks More active for its destinations', () => {

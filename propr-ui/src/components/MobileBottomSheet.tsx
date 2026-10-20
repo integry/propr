@@ -17,6 +17,8 @@ interface BottomSheetProps {
   /** Decorative mark shown before the title; the title alone names the dialog. */
   titleIcon?: React.ReactNode;
   closeLabel: string;
+  /** A control placed in the header just before Close (e.g. the ProPR menu's Search). */
+  headerAction?: React.ReactNode;
   onClose: () => void;
   // A drill-down sheet (e.g. More › Usage) offers a way back to its parent.
   onBack?: () => void;
@@ -38,7 +40,7 @@ interface BottomSheetProps {
 // under 6.75rem) lets the header scroll away with the form instead, so every
 // field and action can be scrolled fully into view; Close is back at the top.
 // The keyboard covers the home-gesture bar there, so the form ends at its last row.
-const BottomSheet: React.FC<BottomSheetProps> = ({ id, title, titleIcon, closeLabel, onClose, onBack, backLabel = 'Back', children }) => {
+const BottomSheet: React.FC<BottomSheetProps> = ({ id, title, titleIcon, closeLabel, headerAction, onClose, onBack, backLabel = 'Back', children }) => {
   const layerRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   useVisualViewportFrame(layerRef);
@@ -113,10 +115,11 @@ const BottomSheet: React.FC<BottomSheetProps> = ({ id, title, titleIcon, closeLa
             {titleIcon}
             <span className="min-w-0 truncate">{title}</span>
           </h2>
+          {headerAction && <div className="-my-1 ml-auto flex flex-none items-center">{headerAction}</div>}
           <button
             type="button"
             onClick={onClose}
-            className="-my-1 -mr-1 ml-auto inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            className={`-my-1 -mr-1 ${headerAction ? '' : 'ml-auto'} inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500`}
             aria-label={closeLabel}
           >
             <X className="h-5 w-5" aria-hidden="true" />
