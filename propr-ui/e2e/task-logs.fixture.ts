@@ -44,6 +44,21 @@ export async function blockWebFonts(page: Page) {
   await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort('internetdisconnected'));
 }
 
+/**
+ * Holds back the app's web font files until the returned `release` is called, as a slow network
+ * delivers them after the page is already in use. A file that cannot be fetched fails as offline.
+ */
+export async function holdWebFonts(page: Page) {
+  let release = () => {};
+  const released = new Promise<void>(resolve => { release = resolve; });
+  await page.route(/^https:\/\/fonts\.gstatic\.com\//, async route => {
+    const response = await route.fetch().catch(() => null);
+    await released;
+    await (response ? route.fulfill({ response }) : route.abort('internetdisconnected')).catch(() => {});
+  });
+  return release;
+}
+
 /** Whether the page renders its 600-weight text in the Inter web font rather than a fallback. */
 export const interLoaded = (page: Page) => page.evaluate(async () => {
   await document.fonts.ready;

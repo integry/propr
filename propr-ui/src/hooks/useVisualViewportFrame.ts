@@ -27,11 +27,17 @@ export function useVisualViewportFrame(ref: RefObject<HTMLElement | null>, activ
       delete layer.dataset.visualViewport;
     };
     let frame = '';
+    let clipped: { top: number; bottom: number } | null = null;
+    const revealFocused = () => {
+      const focused = document.activeElement;
+      if (clipped && focused instanceof HTMLElement && focused !== layer && layer.contains(focused)) revealWithin(focused, layer, clipped.top, clipped.bottom);
+    };
     const update = () => {
       const next = Math.abs(viewport.scale - 1) > 0.01 ? null : clipToViewport(stylesheetRect(layer), viewport);
       const key = next ? `${next.top}:${next.bottom}` : '';
       if (key === frame) return;
       frame = key;
+      clipped = next;
       if (!next) { reset(); return; }
       layer.style.top = `${next.top}px`;
       layer.style.bottom = 'auto';
@@ -39,17 +45,29 @@ export function useVisualViewportFrame(ref: RefObject<HTMLElement | null>, activ
       layer.dataset.visualViewport = 'clipped';
       // The pane just moved or shrank; keep the field being edited inside its scroll area.
       // An unchanged frame leaves the reader's own scroll position alone.
-      const focused = document.activeElement;
-      if (focused instanceof HTMLElement && focused !== layer && layer.contains(focused)) revealWithin(focused, layer, next.top, next.bottom);
+      revealFocused();
     };
+    // A web font that arrives while the keyboard is up (the app's Inter swaps in when it loads)
+    // re-lays out the text, and the browser's scroll anchoring then nudges the pane to keep the
+    // glyphs still, which can leave the edited line partly under the keyboard. Check it again
+    // in the next frame, once that adjustment has been made.
+    let settle = 0;
+    const fontsLoaded = () => {
+      cancelAnimationFrame(settle);
+      settle = requestAnimationFrame(revealFocused);
+    };
+    const fonts = typeof document.fonts?.addEventListener === 'function' ? document.fonts : null;
     update();
     viewport.addEventListener('resize', update);
     viewport.addEventListener('scroll', update);
     window.addEventListener('resize', update);
+    fonts?.addEventListener('loadingdone', fontsLoaded);
     return () => {
       viewport.removeEventListener('resize', update);
       viewport.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
+      fonts?.removeEventListener('loadingdone', fontsLoaded);
+      cancelAnimationFrame(settle);
       reset();
     };
   }, [ref, active]);
@@ -79,6 +97,9 @@ function clipToViewport(base: DOMRect, viewport: VisualViewport) {
   return top - base.top < 1 && base.bottom - bottom < 1 ? null : { top, bottom };
 }
 
+/** How far past an edge something may reach and still count as shown: under half a pixel is drawn in the edge's own pixel. */
+const SLACK = 0.5;
+
 /** A scroll area that currently has something to scroll; one laid out at its content height does not. */
 const scrolls = (element: HTMLElement) => /(auto|scroll)/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight + 1;
 
@@ -92,13 +113,17 @@ function revealWithin(element: HTMLElement, layer: HTMLElement, top: number, bot
   let container: HTMLElement | null = element.parentElement;
   while (container && container !== layer && !scrolls(container)) container = container.parentElement;
   if (!container || container === layer) return;
-  // What the container shows lies inside its borders.
-  const areaTop = container.getBoundingClientRect().top + container.clientTop;
+  // What the container shows lies inside its borders (and above a horizontal scrollbar). It is read
+  // from the container's own box: `clientHeight` is whole pixels, so at a fractional position
+  // (the keyboard's band rarely starts on a whole pixel) it can reach up to half a pixel past
+  // the container's edge.
+  const box = container.getBoundingClientRect();
+  const areaTop = box.top + container.clientTop;
   const edge = Math.max(top, areaTop);
   const low = belowStickyHeader(container, edge);
-  const high = Math.min(bottom, areaTop + container.clientHeight);
+  const high = Math.min(bottom, box.bottom - (container.offsetHeight - container.clientTop - container.clientHeight));
   const rect = element.getBoundingClientRect();
-  if (rect.top >= low - 1 && rect.bottom <= high + 1) return;
+  if (rect.top >= low - SLACK && rect.bottom <= high + SLACK) return;
   const before = container.scrollTop;
   const editing = element instanceof HTMLTextAreaElement && rect.height > high - low ? element : null;
   const shift = scrollToShow(rect, editing && caretLine(editing, rect), low, high);
@@ -135,8 +160,8 @@ function belowStickyHeader(container: HTMLElement, edge: number) {
  */
 function scrollToShow(rect: DOMRect, line: { top: number; bottom: number } | null, low: number, high: number) {
   if (!line) return rect.top < low || rect.height > high - low ? rect.top - low : rect.bottom - high;
-  if (line.top >= low - 1 && line.bottom <= high + 1) return 0;
-  if (line.bottom - (rect.top - low) <= high + 1) return rect.top - low;
+  if (line.top >= low - SLACK && line.bottom <= high + SLACK) return 0;
+  if (line.bottom - (rect.top - low) <= high + SLACK) return rect.top - low;
   // A scroll position may be rounded to whole pixels; round away from the line so none of it is cut.
   return line.top < low ? Math.floor(line.top - low) : Math.ceil(line.bottom - high);
 }
@@ -166,8 +191,13 @@ function caretLine(field: HTMLTextAreaElement, rect: DOMRect) {
   document.body.append(mirror);
   const at = marker.getClientRects()[0] ?? marker.getBoundingClientRect();
   const offset = at.top + at.height / 2 - mirror.getBoundingClientRect().top;
-  const lineHeight = parseFloat(style.lineHeight) || at.height;
   mirror.remove();
-  const middle = rect.top + offset - field.scrollTop;
-  return { top: middle - lineHeight / 2, bottom: middle + lineHeight / 2 };
+  const lineHeight = parseFloat(style.lineHeight);
+  if (!lineHeight) return { top: rect.top + offset - field.scrollTop - at.height / 2, bottom: rect.top + offset - field.scrollTop + at.height / 2 };
+  // The marker's glyph box is centred on its line only to within the rounding of the font's
+  // half-leading, so the line is found by its index: with a set line height they stack evenly
+  // from the content box's top.
+  const start = field.clientTop + parseFloat(style.paddingTop);
+  const lineTop = rect.top + start + Math.floor((offset - start) / lineHeight) * lineHeight - field.scrollTop;
+  return { top: lineTop, bottom: lineTop + lineHeight };
 }

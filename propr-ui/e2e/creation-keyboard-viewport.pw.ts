@@ -2,6 +2,7 @@
 import { expect, test, type CDPSession, type Locator, type Page } from '@playwright/test';
 import { fixture, stubGoals } from './new-task.fixture';
 import { captureVisible, expectFieldVisible, expectShown, expectUnframed, expectVisible, installKeyboardViewport, listenerCount, setKeyboard, type Band, type Clipping } from './keyboard-viewport.fixture';
+import { blockWebFonts, holdWebFonts, interLoaded } from './task-logs.fixture';
 
 // Measured on a Samsung phone in Chrome: the layout viewport stays 384×692 while the
 // keyboard leaves a 382px visual viewport panned 186px down to the focused prompt.
@@ -263,36 +264,47 @@ const caretShown = async (field: Locator, header: Locator, band: Band) => header
   return { top: lineTop - low, bottom: high - (lineTop + lineHeight), fieldTop: area.getBoundingClientRect().top - low };
 }, [await field.elementHandle(), band] as const);
 
-for (const shell of shells) {
-  test(`${shell.name} keeps the caret's line of a long draft in view as the 89px landscape band pans and resizes`, async ({ page }) => {
+/** Opens `shell` in the 748×298 landscape layout with a 12-line draft whose caret ends line 9, well below what fits under the header. */
+async function openLongDraft(page: Page, shell: typeof shells[number]) {
+  await fixture(page);
+  await stubGoals(page);
+  await page.setViewportSize(landscapeLayout);
+  await page.goto(shell.path);
+  const dialog = page.getByRole('dialog', { name: shell.name });
+  const header = dialog.locator('header');
+  const heading = dialog.getByRole('heading', { name: shell.name });
+  const close = dialog.getByRole('button', { name: shell.close });
+  const field = dialog.getByLabel('Prompt', { exact: true });
+  await expect(field).toBeFocused();
+  const lines = Array.from({ length: 12 }, (_, line) => `Draft line ${line + 1}`);
+  await field.fill(lines.join('\n'));
+  await field.evaluate((element, at) => (element as HTMLTextAreaElement).setSelectionRange(at, at), lines.slice(0, 9).join('\n').length);
+  const expectCaretShown = async (band: Band) => {
+    const { top, bottom, fieldTop } = await caretShown(field, header, band);
+    expect(top, 'the caret line starts below the sticky header').toBeGreaterThanOrEqual(-0.5);
+    expect(bottom, 'the caret line ends above the keyboard').toBeGreaterThanOrEqual(-0.5);
+    // Showing the editing line means the field's start has scrolled away.
+    expect(fieldTop).toBeLessThan(0);
+    await expectShown([heading, close], band);
+  };
+  return { field, lines, pane: header.locator('..'), expectCaretShown };
+}
+
+// Once with the Inter web font as the page requests it and once with it blocked, as when offline. Either
+// way the font has settled before the keyboard opens: one swapping in mid-test re-lays out the draft and
+// the browser's scroll anchoring moves the pane, which is covered on its own below.
+for (const shell of shells) for (const webFonts of ['loaded', 'blocked'] as const) {
+  test(`${shell.name} keeps the caret's line of a long draft in view as the 89px landscape band pans and resizes (web fonts ${webFonts})`, async ({ page }) => {
     await installKeyboardViewport(page, landscapeLayout);
-    await fixture(page);
-    await stubGoals(page);
-    await page.setViewportSize(landscapeLayout);
-    await page.goto(shell.path);
-    const dialog = page.getByRole('dialog', { name: shell.name });
-    const header = dialog.locator('header');
-    const heading = dialog.getByRole('heading', { name: shell.name });
-    const close = dialog.getByRole('button', { name: shell.close });
-    const field = dialog.getByLabel('Prompt', { exact: true });
-    await expect(field).toBeFocused();
-    const lines = Array.from({ length: 12 }, (_, line) => `Draft line ${line + 1}`);
-    await field.fill(lines.join('\n'));
-    // The caret goes to the end of line 9, well below what fits under the header.
-    await field.evaluate((element, at) => (element as HTMLTextAreaElement).setSelectionRange(at, at), lines.slice(0, 9).join('\n').length);
-    const expectCaretShown = async (band: Band) => {
-      const { top, bottom, fieldTop } = await caretShown(field, header, band);
-      expect(top, 'the caret line starts below the sticky header').toBeGreaterThanOrEqual(-0.5);
-      expect(bottom, 'the caret line ends above the keyboard').toBeGreaterThanOrEqual(-0.5);
-      // Showing the editing line means the field's start has scrolled away.
-      expect(fieldTop).toBeLessThan(0);
-      await expectShown([heading, close], band);
-    };
+    if (webFonts === 'blocked') await blockWebFonts(page);
+    const { field, lines, pane, expectCaretShown } = await openLongDraft(page, shell);
+    const inter = await interLoaded(page);
+    if (webFonts === 'blocked') expect(inter).toBe(false);
+    test.info().annotations.push({ type: 'web font', description: `Inter ${inter ? 'loaded' : 'not loaded'}` });
 
     await setKeyboard(page, landscapeKeyboard);
     await expectCaretShown(landscapeKeyboard);
     // The reader scrolls the pane a little further down; the editing line still shows and stays put.
-    const pane = header.locator('..');
     await pane.evaluate(element => { element.scrollTop += 2; });
     await expectCaretShown(landscapeKeyboard);
     const kept = await pane.evaluate(element => element.scrollTop);
@@ -310,7 +322,27 @@ for (const shell of shells) {
     await page.keyboard.type(' edited');
     await expect(field).toHaveValue([...lines.slice(0, 8), 'Draft line 9 edited', ...lines.slice(9)].join('\n'));
     await expectCaretShown(taller);
-    await captureVisible(page, `${shell.preview}-landscape-caret-line`, taller);
+    await captureVisible(page, `${shell.preview}-landscape-caret-line${webFonts === 'blocked' ? '-fallback-font' : ''}`, taller);
+  });
+}
+
+for (const shell of shells) {
+  test(`${shell.name} keeps the caret's line in view when the web font arrives with the 89px landscape band up`, async ({ page }) => {
+    await installKeyboardViewport(page, landscapeLayout);
+    const release = await holdWebFonts(page);
+    const { expectCaretShown } = await openLongDraft(page, shell);
+    // The keyboard opens while the page still draws in the fallback font, and the editing line is brought into view.
+    expect(await page.evaluate(() => document.fonts.status)).toBe('loading');
+    await setKeyboard(page, landscapeKeyboard);
+    await expectCaretShown(landscapeKeyboard);
+
+    // Inter then swaps in with no viewport change. Its glyphs sit differently in their 24px lines, so the
+    // browser's scroll anchoring shifts the pane to hold them still, which can take the editing line partly
+    // under the keyboard; it is checked again in the next frame.
+    release();
+    test.skip(!await interLoaded(page), 'The Inter web font could not be fetched, so no font swaps in.');
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expectCaretShown(landscapeKeyboard);
   });
 }
 
