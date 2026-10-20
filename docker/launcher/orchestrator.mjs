@@ -221,6 +221,26 @@ function envFileValueFrom(envFileLocal, name) {
     return undefined;
 }
 
+// Values Docker itself binds for `name` from an --env-file, read the way the
+// docker CLI does (left-trimmed line, split at the first '=', value verbatim —
+// no quote, comment, or `export` handling). Returns undefined when the file is
+// unreadable or a bare `NAME` line defers to the launcher's own environment, so
+// callers can tell "proven bindings" apart from "unknown".
+function dockerEnvFileBindings(envFileLocal, name) {
+    if (!envFileLocal || !isReadableFile(envFileLocal)) return undefined;
+    const values = [];
+    for (const rawLine of readFileSync(envFileLocal, 'utf8').replace(/^\uFEFF/, '').split('\n')) {
+        const line = rawLine.replace(/\r$/, '').trimStart();
+        if (!line || line.startsWith('#')) continue;
+        const equalsIndex = line.indexOf('=');
+        const variable = (equalsIndex === -1 ? line : line.slice(0, equalsIndex)).trimStart();
+        if (variable !== name) continue;
+        if (equalsIndex === -1) return undefined;
+        values.push(line.slice(equalsIndex + 1));
+    }
+    return values;
+}
+
 /**
  * Parse every assignment from an env file into a plain object. Used by the CLI
  * `check`/`init` commands to inspect HOST_*_DIR settings without re-reading.
@@ -357,6 +377,13 @@ export function resolveConfig(env = process.env, overrides = {}) {
         ?? get('PROPR_TRUSTED_PROXY_PEERS')
         ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
+    // Exactly what the shared --env-file binds for PROPR_INSTANCE_ID, so the API
+    // container does not receive a second, identical binding on the command line
+    // (Fleet admission rejects duplicate identity bindings). Authorized
+    // pre-parsed values are not Docker-literal, so they stay "unknown".
+    const envFileProprInstanceIdBindings = authorizedEnvFileValues
+        ? undefined
+        : dockerEnvFileBindings(envFileLocal, 'PROPR_INSTANCE_ID');
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
     // final fallback for manifests without a cloudflared entry.
@@ -385,7 +412,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         hostGhPrivateKey,
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
-        uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        uiTunnelEnabled, uiTunnelToken, proprInstanceId, envFileProprInstanceIdBindings, uiPublicApiUrl, cloudflaredImage,
         trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
@@ -545,7 +572,15 @@ function tunnelApiEnvArgs(cfg) {
     // Inject the instance id lowercased so it matches the derived public URL
     // (proprInstanceProxyUrl lowercases the host), keeping the id and the
     // PROPR_UI_PUBLIC_API_URL host consistent for any consumer that compares them.
-    if (isValidProprInstanceId(cfg.proprInstanceId)) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.trim().toLowerCase()}`);
+    // The shared --env-file already supplies the id to every app container; only
+    // override it when that binding is absent or differs from the canonical value,
+    // so the API never ends up with two identical PROPR_INSTANCE_ID entries.
+    if (isValidProprInstanceId(cfg.proprInstanceId)) {
+        const instanceId = cfg.proprInstanceId.trim().toLowerCase();
+        const fromEnvFile = cfg.envFileProprInstanceIdBindings;
+        const suppliedByEnvFile = fromEnvFile?.length > 0 && fromEnvFile.every((value) => value === instanceId);
+        if (!suppliedByEnvFile) args.push('-e', `PROPR_INSTANCE_ID=${instanceId}`);
+    }
     if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
     return args;
 }
