@@ -151,11 +151,21 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
 export const implementRequests: string[] = [];
 export const queueRequests: string[] = [];
 export const executionSettingsRequests: Array<Record<string, unknown>> = [];
+/** The plan_json order of each draft save, as `PUT /api/planner/drafts/:id` receives it. */
+export const draftSaves: Array<{ draftId: string; taskTitles: string[] }> = [];
 const executionQueues: Record<string, unknown> = {};
+
+// Reads a studio draft, or records the plan order a save sends.
+function fulfillDraft(route: Route, draftId: string) {
+  if (route.request().method() !== 'PUT') return route.fulfill({ json: studioDrafts[draftId] });
+  const { plan_json: plan } = route.request().postDataJSON() as { plan_json?: Array<{ title: string }> };
+  if (plan) draftSaves.push({ draftId, taskTitles: plan.map(task => task.title) });
+  return route.fulfill({ json: { success: true } });
+}
 
 // Answers a studio draft's own endpoints; undefined lets the request fall through to the shared responses.
 function fulfillDraftRoute(route: Route, draftId: string, suffix: string | undefined) {
-  if (!suffix) return route.fulfill({ json: studioDrafts[draftId] });
+  if (!suffix) return fulfillDraft(route, draftId);
   if (suffix === '/issues') return route.fulfill({ json: planIssues[draftId] ?? [] });
   if (suffix === '/execution-queue' && route.request().method() === 'POST') {
     // Mirrors the server: in-flight issues head the queue and every pending issue waits behind them.
@@ -186,6 +196,7 @@ export async function fixture(page: Page) {
   implementRequests.length = 0;
   queueRequests.length = 0;
   executionSettingsRequests.length = 0;
+  draftSaves.length = 0;
   for (const draftId of Object.keys(executionQueues)) delete executionQueues[draftId];
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {

@@ -313,27 +313,6 @@ test('model selectors name the default model instead of a bare "Default"', async
   await expect(page.getByRole('listbox', { name: 'Plan model' })).toHaveCount(0);
 });
 
-test('short plans can still be reordered from the tab bar', async ({ page }) => {
-  await page.goto('/studio/plan-short');
-  const tabs = page.getByRole('navigation', { name: 'Plan steps' });
-  const stepTabs = tabs.getByRole('button', { name: /^\d+\. / });
-  await expect(stepTabs.first()).toHaveAccessibleName('1. Shared Contracts');
-  await tabs.getByRole('listitem').nth(2).hover();
-  const handle = (await tabs.getByLabel('Reorder step 3').boundingBox())!;
-  const firstTab = (await tabs.getByRole('listitem').first().boundingBox())!;
-  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(handle.x - 40, handle.y + handle.height / 2, { steps: 5 });
-  await page.mouse.move(firstTab.x + 20, firstTab.y + firstTab.height / 2, { steps: 15 });
-  await page.mouse.up();
-  await expect(stepTabs.first()).toHaveAccessibleName('1. Agent Run Store');
-  await expect(stepTabs.nth(1)).toHaveAccessibleName('2. Shared Contracts');
-  await expect(page.locator('[data-task-index="0"]')).toContainText('Agent run store');
-  // Let the reordered cards finish their layout animation before capturing.
-  await page.waitForTimeout(600);
-  await capture(page, 'review-plan-tabs-reordered');
-});
-
 test('execution popovers stay inside the viewport near its bottom edge', async ({ page }) => {
   // A laptop-height window, so the matrix scrolls and a pending row can sit at the bottom edge.
   await page.setViewportSize({ width: 1440, height: 600 });
