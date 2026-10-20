@@ -167,6 +167,29 @@ describe('GlobalHeader native Search command', () => {
     expect(screen.getByLabelText('Location')).toHaveTextContent('/tasks');
   });
 
+  it('gives the sheet its own listbox and option ids when the toolbar palette stays open after narrowing', () => {
+    renderHeader(false);
+    fireEvent.change(toolbarInput(), { target: { value: 'zoom' } });
+    expect(screen.getByRole('listbox', { name: 'Search results' })).toBeInTheDocument();
+
+    // Narrowing hides the toolbar with CSS; its palette stays mounted and open.
+    wide = false;
+    act(() => mediaListeners.forEach(listener => listener()));
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+    const sheet = screen.getByRole('dialog', { name: 'Search' });
+    const sheetInput = within(sheet).getByRole('combobox', { name: 'Search' });
+    fireEvent.change(sheetInput, { target: { value: 'zoom' } });
+
+    const ids = Array.from(document.querySelectorAll('[id]'), element => element.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(document.querySelectorAll('[role="listbox"]')).toHaveLength(2);
+    const listbox = document.getElementById(sheetInput.getAttribute('aria-controls')!);
+    const option = document.getElementById(sheetInput.getAttribute('aria-activedescendant')!);
+    expect(listbox).toBe(within(sheet).getByRole('listbox', { name: 'Search results' }));
+    expect(option).toBe(within(sheet).getByRole('option', { name: /Result for zoom/ }));
+    expect(toolbarInput().getAttribute('aria-controls')).not.toBe(sheetInput.getAttribute('aria-controls'));
+  });
+
   it('keeps Tab inside the sheet', () => {
     setWide(false);
     renderHeader();

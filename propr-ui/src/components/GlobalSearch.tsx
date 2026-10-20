@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, X, Loader2 } from 'lucide-react';
 import { useGlobalSearch } from '../hooks/useGlobalSearch';
@@ -14,6 +14,8 @@ import {
   getPlansAction,
   getScopeAction,
   getShortcutModifierLabel,
+  searchIdPrefix,
+  searchListboxId,
   searchOptionId,
 } from './globalSearchModel';
 import { SearchPreview, SearchResultList } from './GlobalSearchResults';
@@ -91,6 +93,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
   const inputRef = externalInputRef || internalInputRef;
   const listRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const idPrefix = searchIdPrefix(useId());
   const [category, setCategory] = useState<SearchCategory>('all');
   const [activeIndex, setActiveIndex] = useState(0);
 
@@ -124,9 +127,9 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
   // Keep the highlighted row visible as the keyboard walks the list.
   useEffect(() => {
     if (!activeItem) return;
-    const option = listRef.current?.querySelector(`#${searchOptionId(activeItem.key)}`);
+    const option = listRef.current?.querySelector(`#${searchOptionId(idPrefix, activeItem.key)}`);
     option?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeItem]);
+  }, [activeItem, idPrefix]);
 
   // Handle click outside to close dropdown
   useEffect(() => {
@@ -228,9 +231,9 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
           aria-label="Search"
           role="combobox"
           aria-expanded={showDropdown}
-          aria-controls="global-search-listbox"
+          aria-controls={searchListboxId(idPrefix)}
           aria-autocomplete="list"
-          aria-activedescendant={navigable && activeItem ? searchOptionId(activeItem.key) : undefined}
+          aria-activedescendant={navigable && activeItem ? searchOptionId(idPrefix, activeItem.key) : undefined}
           placeholder="Search..."
           className="w-full rounded-lg border-0 bg-slate-100 py-1.5 pl-9 pr-14 text-sm text-gray-900 shadow-inner placeholder-gray-400 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 sm:py-2 sm:pl-12 sm:pr-16"
         />
@@ -334,7 +337,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
 
               <div className="flex min-h-0 flex-1">
                 <div ref={listRef} className="min-w-0 flex-1 overflow-y-auto scrollbar-subtle md:basis-3/5">
-                  <SearchResultList items={items} activeIndex={activeIndex} onHover={setActiveIndex} onSelect={openItem} />
+                  <SearchResultList idPrefix={idPrefix} items={items} activeIndex={activeIndex} onHover={setActiveIndex} onSelect={openItem} />
                 </div>
                 {activeItem && (
                   <div className="hidden min-w-0 basis-2/5 border-l border-slate-200 bg-slate-50 md:block">

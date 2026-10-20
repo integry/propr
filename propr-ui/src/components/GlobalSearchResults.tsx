@@ -20,6 +20,7 @@ import {
   getItemTitle,
   getRepoName,
   getSearchStatus,
+  searchListboxId,
   searchOptionId,
   splitFailureReason,
 } from './globalSearchModel';
@@ -98,14 +99,16 @@ const ResultMeta: React.FC<{ item: SearchItem }> = ({ item }) => {
 };
 
 interface ResultListProps {
+  /** Per-palette id prefix, from `searchIdPrefix`. */
+  idPrefix: string;
   items: SearchItem[];
   activeIndex: number;
   onHover: (index: number) => void;
   onSelect: (item: SearchItem) => void;
 }
 
-export const SearchResultList: React.FC<ResultListProps> = ({ items, activeIndex, onHover, onSelect }) => (
-  <ul id="global-search-listbox" role="listbox" aria-label="Search results" className="py-1">
+export const SearchResultList: React.FC<ResultListProps> = ({ idPrefix, items, activeIndex, onHover, onSelect }) => (
+  <ul id={searchListboxId(idPrefix)} role="listbox" aria-label="Search results" className="py-1">
     {items.map((item, index) => {
       const startsSection = index === 0 || items[index - 1].kind !== item.kind;
       const Icon = SECTION_ICONS[item.kind];
@@ -118,7 +121,7 @@ export const SearchResultList: React.FC<ResultListProps> = ({ items, activeIndex
             </li>
           )}
           <li
-            id={searchOptionId(item.key)}
+            id={searchOptionId(idPrefix, item.key)}
             role="option"
             aria-selected={active}
             onMouseMove={() => { if (!active) onHover(index); }}

@@ -71,7 +71,10 @@ describe('GlobalSearch palette', () => {
     expect(within(preview).getByText('PR #2480')).toBeInTheDocument();
     expect(within(preview).getByText('GPT-6 Astra')).toBeInTheDocument();
     expect(within(preview).queryByText('gpt-6-astra')).not.toBeInTheDocument();
-    expect(input).toHaveAttribute('aria-activedescendant', 'global-search-option-task_task-1');
+    const active = document.getElementById(input.getAttribute('aria-activedescendant')!);
+    expect(active).toHaveAttribute('role', 'option');
+    expect(active).toHaveAttribute('id', expect.stringMatching(/-option-task_task-1$/));
+    expect(active).toHaveAttribute('aria-selected', 'true');
 
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks/task-1');

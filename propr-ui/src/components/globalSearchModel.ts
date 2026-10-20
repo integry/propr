@@ -24,8 +24,19 @@ export const SECTION_LABELS: Record<SearchItem['kind'], string> = {
   task: 'Tasks',
 };
 
+const toIdPart = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+/**
+ * DOM id prefix for one palette instance. The toolbar and the narrow-layout sheet can both be
+ * mounted at once, so their listbox and option ids must not collide.
+ */
+export const searchIdPrefix = (instanceId: string) => `global-search-${toIdPart(instanceId)}`;
+
+/** DOM id of a palette's result list, for the input's `aria-controls`. */
+export const searchListboxId = (prefix: string) => `${prefix}-listbox`;
+
 /** DOM id of a result row, for `aria-activedescendant` and scroll-into-view. */
-export const searchOptionId = (key: string) => `global-search-option-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+export const searchOptionId = (prefix: string, key: string) => `${prefix}-option-${toIdPart(key)}`;
 
 export function getCategoryCounts(results: GlobalSearchResults): Record<SearchCategory, number> {
   const repositories = results.repositories.length;
