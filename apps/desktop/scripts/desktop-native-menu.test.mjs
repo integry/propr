@@ -234,11 +234,11 @@ const expectNarrowSearch = async (page, click, capture, platform) => {
 /** Five ordinary short task results, served only to the search reads. */
 const SEARCH_TASKS = ['Fix login redirect', 'Update docs', 'Stop work on cache', 'Tidy logs', 'Bump deps']
   .map((title, index) => ({ id: `short-${index + 1}`, title, repository: 'integry/propr', status: 'completed', createdAt: '2026-10-19T12:00:00.000Z' }));
-const serveSearchResults = async page => {
+const serveSearchResults = async (page, tasks = SEARCH_TASKS) => {
   const search = url => ['/api/tasks', '/api/planner/drafts', '/api/instance/catalog'].includes(url.pathname);
   const handler = route => {
     const { pathname } = new URL(route.request().url());
-    route.fulfill({ json: pathname === '/api/tasks' ? { tasks: SEARCH_TASKS, total: SEARCH_TASKS.length } : pathname === '/api/planner/drafts' ? { drafts: [] } : { repositories: [] } });
+    route.fulfill({ json: pathname === '/api/tasks' ? { tasks, total: tasks.length } : pathname === '/api/planner/drafts' ? { drafts: [] } : { repositories: [] } });
   };
   await page.route(search, handler);
   return () => page.unroute(search, handler);
@@ -265,9 +265,16 @@ const measureSelectedResult = page => page.evaluate(() => {
   const title = selected?.querySelector('span.block.break-words');
   const lineHeight = title && parseFloat(getComputedStyle(title).lineHeight);
   const action = [...(palette?.querySelectorAll('button') ?? [])].find(button => button.textContent.startsWith('Search all tasks'));
+  // The title's rendered line boxes, and how many of them sit wholly inside the list scrollport.
+  const range = title && document.createRange();
+  range?.selectNodeContents(title);
+  const lines = range ? [...range.getClientRects()].map(({ top, bottom }) => ({ top, bottom })) : [];
+  const listRect = list?.getBoundingClientRect();
+  const completeLines = listRect ? lines.filter(line => line.top >= listRect.top && line.bottom <= listRect.bottom).length : 0;
   return {
     options: options.length, selectedIndex: options.indexOf(selected),
-    title: box(title), lineHeight, list: box(list), scrolled: list?.scrollTop, palette: box(palette), root: box(document.getElementById('root')),
+    title: box(title), lineHeight, lines: lines.length, completeLines,
+    list: box(list), scrolled: list?.scrollTop, palette: box(palette), root: box(document.getElementById('root')),
     hints: palette?.textContent.includes('navigate'),
     hits: {
       input: hit(sheet?.querySelector('input[aria-label="Search"]')), clear: hit(sheet?.querySelector('[aria-label="Clear search"]')),
@@ -339,6 +346,167 @@ const expectShortSearchResults = async (page, cdp, click, capture, platform) => 
       } else {
         await page.keyboard.press('Escape');
         await expect(sheet).toHaveCount(0);
+      }
+    }
+  } finally {
+    await stopServing();
+  }
+  await expectShortWrappedTitle(page, cdp, click, capture, platform);
+  await expectShortNoResults(page, cdp, click, capture, platform);
+};
+
+/** A task whose title wraps to more lines than the short window's list can show. */
+const WRAPPED_TASKS = [
+  SEARCH_TASKS[0],
+  { ...SEARCH_TASKS[1], id: 'wrapped-2', title: 'Investigate why the nightly desktop acceptance run reports stale profile journals after a restore drill and the cache warm-up step retries' },
+  SEARCH_TASKS[4],
+];
+
+/**
+ * The short 406x221 window with a wrapped selected title taller than the list:
+ * arrowing onto it from either side leaves at least one of its rendered lines
+ * wholly inside the list scrollport.
+ */
+const expectShortWrappedTitle = async (page, cdp, click, capture, platform) => {
+  const sheet = page.getByRole('dialog', { name: 'Search' });
+  const [width, height, scale] = [406, 221, 2.1708];
+  const label = `${platform} ${width}x${height} @${scale} wrapped title`;
+  const stopServing = await serveSearchResults(page, WRAPPED_TASKS);
+  try {
+    await page.setViewportSize({ width, height });
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+    await click('Search / Go To…');
+    await expect(sheet.getByRole('combobox', { name: 'Search', exact: true })).toBeFocused();
+    await page.keyboard.type('wrapped task');
+    await expect(sheet.getByRole('option')).toHaveCount(WRAPPED_TASKS.length);
+    const settledSelection = async (text, from) => {
+      await expect(sheet.getByRole('option', { selected: true })).toContainText(text);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const result = await measureSelectedResult(page);
+      expect(result.hits, `${label} ${from}`).toEqual({ input: true, clear: true, close: true, action: true });
+      return result;
+    };
+    // Down onto the wrapped title, then down past it and back up onto it.
+    await page.keyboard.press('ArrowDown');
+    const down = await settledSelection('Investigate why', 'from above');
+    // The title really is taller than the list: several lines, more than the scrollport holds.
+    expect(down.lines, `${label}: wrapped ${JSON.stringify(down)}`).toBeGreaterThanOrEqual(2);
+    expect(down.title.bottom - down.title.top, `${label}: taller than list ${JSON.stringify(down)}`).toBeGreaterThan(down.list.bottom - down.list.top);
+    expect(down.completeLines, `${label} from above: complete line ${JSON.stringify(down)}`).toBeGreaterThanOrEqual(1);
+    expect(down.title.top, `${label} from above: first line shown`).toBeGreaterThanOrEqual(down.list.top);
+    if (platform === 'linux') {
+      const window = async () => Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+      await capture(`search-short-wrapped-title-${width}x${height}`, window, `Linux ${width}×${height} at ${Math.round(scale * 100)}%: a wrapped selected title shows complete lines inside the list`);
+    }
+    await page.keyboard.press('ArrowDown');
+    await settledSelection('Bump deps', 'next');
+    await page.keyboard.press('ArrowUp');
+    const up = await settledSelection('Investigate why', 'from below');
+    expect(up.completeLines, `${label} from below: complete line ${JSON.stringify(up)}`).toBeGreaterThanOrEqual(1);
+    if (platform === 'linux') {
+      expect(up.controlHits, label).toEqual([
+        ['Application menu', true], ['Minimize window', true], ['Maximize or restore window', true], ['Close window', true],
+      ]);
+    }
+    expect(up.palette.bottom, `${label}: palette inside window`).toBeLessThanOrEqual(up.root.bottom);
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+  } finally {
+    await stopServing();
+  }
+};
+
+/** The empty state's message, its Search all tasks action and every Search/window target. */
+const measureNoResults = page => page.evaluate(() => {
+  const box = element => {
+    if (!element || !element.getClientRects().length) return null;
+    const { left, right, top, bottom } = element.getBoundingClientRect();
+    return { left, right, top, bottom };
+  };
+  const hit = (element, x, y) => {
+    const found = document.elementFromPoint(x, y);
+    return element.contains(found) ? true : `${found?.tagName}[aria-label="${found?.closest('[aria-label]')?.getAttribute('aria-label')}"]:${found?.textContent?.slice(0, 40)}`;
+  };
+  const centreHit = element => {
+    const rect = element?.getBoundingClientRect();
+    if (!rect?.width) return null;
+    return hit(element, (rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+  };
+  const sheet = document.querySelector('[role="dialog"][aria-label="Search"]');
+  const palette = document.querySelector('[data-testid="global-search-palette"]');
+  const message = [...(palette?.querySelectorAll('p') ?? [])].find(p => p.textContent.startsWith('No results found'));
+  const action = [...(palette?.querySelectorAll('button') ?? [])].find(button => button.textContent === 'Search all tasks');
+  const rect = action?.getBoundingClientRect();
+  // Points just inside each corner of the action: the whole label takes the pointer, not only its centre.
+  const corners = rect && [[rect.left + 1, rect.top + 1], [rect.right - 1, rect.top + 1], [rect.left + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1]]
+    .map(([x, y]) => hit(action, x, y));
+  return {
+    palette: box(palette), message: box(message), action: box(action), root: box(document.getElementById('root')),
+    paletteClips: palette && getComputedStyle(palette).overflow,
+    hits: {
+      input: centreHit(sheet?.querySelector('input[aria-label="Search"]')), clear: centreHit(sheet?.querySelector('[aria-label="Clear search"]')),
+      close: centreHit(sheet?.querySelector('[aria-label="Close search"]')), action: centreHit(action),
+    },
+    corners,
+    controlHits: [...document.querySelectorAll('.desktop-window-controls button')].map(control => [control.getAttribute('aria-label'), centreHit(control)]),
+  };
+});
+
+/**
+ * A query with no results in the short supported window (880x480 at about 207%
+ * zoom) and the reported 880x620 one: the whole Search all tasks action stays
+ * inside the clipped palette and takes real pointer presses, with a short and a
+ * wrapped query message. The Search targets and native controls keep theirs.
+ */
+const expectShortNoResults = async (page, cdp, click, capture, platform) => {
+  const sheet = page.getByRole('dialog', { name: 'Search' });
+  const input = sheet.getByRole('combobox', { name: 'Search', exact: true });
+  const stopServing = await serveSearchResults(page, []);
+  const queries = ['zzq', 'no task anywhere matches this deliberately long query about stale journals and restores'];
+  try {
+    for (const [width, height, scale] of [[406, 221, 2.1708], [406, 286, 2.1708]]) {
+      for (const query of queries) {
+        const label = `${platform} ${width}x${height} @${scale} no results "${query.slice(0, 12)}"`;
+        await page.setViewportSize({ width, height });
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+        await click('Search / Go To…');
+        await expect(input).toBeFocused();
+        await page.keyboard.type(query);
+        const action = sheet.getByRole('button', { name: 'Search all tasks', exact: true });
+        await expect(sheet.getByText(`No results found for "${query}"`)).toBeAttached();
+        await expect(action).toBeVisible();
+        await page.waitForFunction(() => document.getAnimations().length === 0);
+        const result = await measureNoResults(page);
+        const detail = `${label} ${JSON.stringify(result)}`;
+        expect(result.paletteClips, label).toBe('hidden');
+        // Fully inside the palette that clips it, and inside the window.
+        expect(result.action.top, `${detail}: action top`).toBeGreaterThanOrEqual(result.palette.top);
+        expect(result.action.bottom, `${detail}: action bottom`).toBeLessThanOrEqual(result.palette.bottom);
+        expect(result.action.left, `${detail}: action left`).toBeGreaterThanOrEqual(result.palette.left);
+        expect(result.action.right, `${detail}: action right`).toBeLessThanOrEqual(result.palette.right);
+        expect(result.action.bottom - result.action.top, `${detail}: action height`).toBeGreaterThan(0);
+        expect(result.palette.bottom, `${detail}: palette inside window`).toBeLessThanOrEqual(result.root.bottom);
+        // The message sits above the action rather than under it.
+        expect(result.message.top, `${detail}: message`).toBeGreaterThanOrEqual(result.palette.top);
+        expect(Math.min(result.message.bottom, result.palette.bottom), `${detail}: message above action`).toBeLessThanOrEqual(result.action.top);
+        expect(result.hits, detail).toEqual({ input: true, clear: true, close: true, action: true });
+        expect(result.corners, detail).toEqual([true, true, true, true]);
+        if (platform === 'linux') {
+          expect(result.controlHits, label).toEqual([
+            ['Application menu', true], ['Minimize window', true], ['Maximize or restore window', true], ['Close window', true],
+          ]);
+        }
+        if (height === 221 && platform === 'linux' && query === queries[1]) {
+          const window = async () => Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
+          await capture(`search-short-no-results-${width}x${height}`, window, `Linux ${width}×${height} at ${Math.round(scale * 100)}%: no results for a long query, with Search all tasks fully visible`);
+        }
+        // A real pointer press on the action opens the full task search for the query.
+        const { x, y, width: actionWidth, height: actionHeight } = await action.boundingBox();
+        await page.mouse.click(x + actionWidth / 2, y + actionHeight / 2);
+        await expect(sheet).toHaveCount(0);
+        await expect.poll(() => new URL(page.url()).hash, label).toBe(`#/tasks?search=${encodeURIComponent(query)}`);
+        await page.goBack();
+        await expect(page).not.toHaveURL(/#\/tasks\?search=/);
       }
     }
   } finally {

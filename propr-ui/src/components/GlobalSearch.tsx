@@ -103,6 +103,23 @@ const KeyHints: React.FC<{ modifierKey: string; compact: boolean }> = ({ modifie
 );
 
 /**
+ * No results. A compact palette drops the icon and padding, and a long query's message
+ * scrolls on its own, so "Search all tasks" always keeps its full row.
+ */
+const EmptyResults: React.FC<{ query: string; compact: boolean; onSearchAllTasks: () => void }> = ({ query, compact, onSearchAllTasks }) => (
+  <div className={`flex min-h-0 flex-col items-center px-4 text-center ${compact ? 'py-2' : 'py-8'}`}>
+    {!compact && <Search className="w-6 h-6 flex-none text-slate-300 mx-auto mb-2" />}
+    <p className="min-h-0 max-w-full overflow-y-auto break-words text-sm text-slate-500 scrollbar-subtle">No results found for "{query}"</p>
+    <button
+      onClick={onSearchAllTasks}
+      className={`${compact ? 'mt-1' : 'mt-3'} flex-none text-xs text-primary-600 hover:text-primary-700 transition-colors`}
+    >
+      Search all tasks
+    </button>
+  </div>
+);
+
+/**
  * Global search as a master–preview command palette: a single linear result
  * list on the left (↑/↓ walk it, Tab cycles category scopes) and a live
  * preview of the highlighted result on the right.
@@ -317,18 +334,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
             </div>
           )}
 
-          {resultState === 'empty' && (
-            <div className="px-4 py-8 text-center">
-              <Search className="w-6 h-6 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm text-slate-500">No results found for "{query}"</p>
-              <button
-                onClick={handleViewAllTasks}
-                className="mt-3 text-xs text-primary-600 hover:text-primary-700 transition-colors"
-              >
-                Search all tasks
-              </button>
-            </div>
-          )}
+          {resultState === 'empty' && <EmptyResults query={query} compact={anchor.compact} onSearchAllTasks={handleViewAllTasks} />}
 
           {hasResults && (
             <>
