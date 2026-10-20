@@ -81,12 +81,15 @@ function useHeaderKeyboardShortcuts(
  */
 function useSearchRequests(searchInputRef: React.RefObject<HTMLInputElement | null>) {
   const [mobileSearch, setMobileSearch] = useState(0);
+  const [toolbarSearch, setToolbarSearch] = useState(0);
   const sheetOpenRef = useRef(false);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
   const requestSearch = useCallback(() => {
     if (isToolbarShown()) {
-      searchInputRef.current?.focus();
+      // Focus after the next commit: a command can also close a modal (the
+      // instance manager) whose focus restore would otherwise win.
+      setToolbarSearch(value => value + 1);
       return;
     }
     // Remember where the operator was only on the request that opens the sheet.
@@ -95,7 +98,11 @@ function useSearchRequests(searchInputRef: React.RefObject<HTMLInputElement | nu
       returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
     setMobileSearch(value => value + 1);
-  }, [searchInputRef]);
+  }, []);
+
+  useEffect(() => {
+    if (toolbarSearch) searchInputRef.current?.focus();
+  }, [toolbarSearch, searchInputRef]);
 
   const closeMobileSearch = useCallback(() => {
     sheetOpenRef.current = false;
