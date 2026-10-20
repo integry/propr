@@ -1,6 +1,7 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { HOSTED, proxyHosted, routeWorkOf, test } from './pairing-routes.fixture';
 import { blockWebFonts, drawsInter, INTER_URL, serveInter } from './task-logs.fixture';
 
 const pairingId = `dpr_${'A'.repeat(22)}`;
@@ -8,28 +9,23 @@ const username = 'u'.repeat(39);
 const clientName = 'c'.repeat(80);
 const tunnel = 'https://t-pairing123.propr.dev';
 
+const hostedPairingUrl = `${HOSTED}/desktop/pairing?pairing_id=${pairingId}&tunnel=t-pairing123.propr.dev`;
+
 async function fixture(page: Page, options: { hosted?: boolean; expiresIn?: number; rejectApproval?: 404 | 410 | 409; delayLogout?: boolean; username?: string; clientName?: string; waitUntil?: 'load' | 'domcontentloaded' } = {}) {
   const fixtureUsername = options.username ?? username;
   const fixtureClientName = options.clientName ?? clientName;
+  const work = routeWorkOf(page);
   let loggedOut = false;
   let approvalCount = 0;
   let logoutUrl = '';
-  let releaseLogout: (() => void) | undefined;
-  const logoutGate = new Promise<void>(resolve => { releaseLogout = resolve; });
+  const logout = work.hold();
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
-  if (options.hosted) {
-    // Serve the real built UI at its hosted origin; API calls remain on the tunnel.
-    await page.route('https://app.propr.dev/**', async route => {
-      const url = new URL(route.request().url());
-      const response = await route.fetch({ url: `http://127.0.0.1:4173${url.pathname}${url.search}` });
-      await route.fulfill({ response });
-    });
-  }
-  await page.route('**/api/**', async route => {
+  if (options.hosted) await proxyHosted(page, work);
+  await page.route('**/api/**', route => work.run(route, async () => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/auth/logout') {
       logoutUrl = url.href;
-      if (options.delayLogout) await logoutGate;
+      if (options.delayLogout) await logout.held;
       loggedOut = true;
       return route.fulfill({ status: 200, json: {} });
     }
@@ -52,12 +48,10 @@ async function fixture(page: Page, options: { hosted?: boolean; expiresIn?: numb
     if (url.pathname === '/api/auth/demo-mode') return route.fulfill({ json: { demoMode: false } });
     // A transient compatibility failure is supported by the real App boundary.
     return route.fulfill({ status: 503, json: { error: 'Unavailable in isolated pairing fixture' } });
-  });
-  await page.goto(options.hosted
-    ? `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&tunnel=t-pairing123.propr.dev`
-    : `/desktop/pairing?pairing_id=${pairingId}`, { waitUntil: options.waitUntil });
+  }));
+  await page.goto(options.hosted ? hostedPairingUrl : `/desktop/pairing?pairing_id=${pairingId}`, { waitUntil: options.waitUntil });
   await expect(page.getByRole('button', { name: 'Approve desktop' })).toBeVisible();
-  return { approvalCount: () => approvalCount, logoutUrl: () => logoutUrl, releaseLogout: () => releaseLogout!() };
+  return { approvalCount: () => approvalCount, logoutUrl: () => logoutUrl, releaseLogout: logout.release };
 }
 
 /** Each named button's box and the page's horizontal overflow, read in one layout pass. */
@@ -220,7 +214,7 @@ test('hosted logout uses the active API and preserves flow and exact pairing ret
   expect(flow).toBeTruthy();
   await page.getByRole('button', { name: 'Change GitHub account', exact: true }).click();
   await page.getByRole('button', { name: 'Sign out of ProPR and sign in again' }).click();
-  await page.waitForURL('https://app.propr.dev/login?**');
+  await page.waitForURL(`${HOSTED}/login?**`);
   expect(state.logoutUrl()).toBe(`${tunnel}/api/auth/logout`);
   const login = new URL(page.url());
   expect(login.searchParams.get('flow')).toBe(flow);
