@@ -46,17 +46,29 @@ export function useVisualViewportFrame(ref: RefObject<HTMLElement | null>, activ
       // The pane just moved or shrank; keep the field being edited inside its scroll area.
       // An unchanged frame leaves the reader's own scroll position alone.
       revealFocused();
+      awaitFonts();
     };
     // A web font that arrives while the keyboard is up (the app's Inter swaps in when it loads)
     // re-lays out the text, and the browser's scroll anchoring then nudges the pane to keep the
     // glyphs still, which can leave the edited line partly under the keyboard. Check it again
     // in the next frame, once that adjustment has been made.
     let settle = 0;
+    let disposed = false;
     const fontsLoaded = () => {
+      if (disposed) return;
       cancelAnimationFrame(settle);
       settle = requestAnimationFrame(revealFocused);
     };
     const fonts = typeof document.fonts?.addEventListener === 'function' ? document.fonts : null;
+    // WebKit fires no `loadingdone` for a font that arrives after its block period (it reports the
+    // face as `error` meanwhile), but `document.fonts.ready` still settles once it has swapped in,
+    // so a frame set while fonts are loading also waits for that.
+    let pending: Promise<FontFaceSet> | null = null;
+    const awaitFonts = () => {
+      if (!fonts || fonts.status !== 'loading' || fonts.ready === pending) return;
+      pending = fonts.ready;
+      void pending.then(fontsLoaded);
+    };
     update();
     viewport.addEventListener('resize', update);
     viewport.addEventListener('scroll', update);
@@ -67,6 +79,7 @@ export function useVisualViewportFrame(ref: RefObject<HTMLElement | null>, activ
       viewport.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
       fonts?.removeEventListener('loadingdone', fontsLoaded);
+      disposed = true;
       cancelAnimationFrame(settle);
       reset();
     };

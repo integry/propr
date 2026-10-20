@@ -1,5 +1,6 @@
 /** A completed task with a long output log and a follow-up destination, as the Logs and Follow Up dialogs read it. */
 import { expect, type Locator, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import { ago, fixture as taskFixture } from './task-list-desktop.fixture';
 
 export const taskId = 'issue-3243-run-0';
@@ -44,20 +45,52 @@ export async function blockWebFonts(page: Page) {
   await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort('internetdisconnected'));
 }
 
+// Real Inter (OFL-1.1, provenance in e2e/fonts/README.md), served in place of Google Fonts.
+export const INTER_URL = 'https://fonts.gstatic.com/s/inter/e2e-fixture/inter-var-latin.woff2';
+const INTER_CSS = `@font-face { font-family: 'Inter'; font-weight: 400 700; font-display: swap; src: url(${INTER_URL}) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }`;
+
 /**
- * Holds back the app's web font files until the returned `release` is called, as a slow network
- * delivers them after the page is already in use. A file that cannot be fetched fails as offline.
+ * Serves the app's Google Fonts stylesheet and a local copy of Inter instead, so the font
+ * arrives with or without network access. With `held`, the font file waits until `release`
+ * is called, as a slow network delivers it after the page is already in use. `requested`
+ * lists the font files the page asked for.
  */
-export async function holdWebFonts(page: Page) {
+export async function serveInter(page: Page, { held = false } = {}) {
+  const body = readFileSync(new URL('./fonts/inter-var-latin.woff2', import.meta.url));
   let release = () => {};
-  const released = new Promise<void>(resolve => { release = resolve; });
+  const released = held ? new Promise<void>(resolve => { release = resolve; }) : null;
+  const requested: string[] = [];
+  await page.route(/^https:\/\/fonts\.googleapis\.com\//, route => route.fulfill({ contentType: 'text/css', body: INTER_CSS }));
   await page.route(/^https:\/\/fonts\.gstatic\.com\//, async route => {
-    const response = await route.fetch().catch(() => null);
+    requested.push(route.request().url());
     await released;
-    await (response ? route.fulfill({ response }) : route.abort('internetdisconnected')).catch(() => {});
+    await route.fulfill({ contentType: 'font/woff2', headers: { 'access-control-allow-origin': '*' }, body }).catch(() => {});
   });
-  return release;
+  return { requested, release: () => release() };
 }
+
+/** The load status of each Inter face the page knows, without waiting for any of them. */
+export const interStatus = (page: Page) => page.evaluate(() =>
+  [...document.fonts].filter(font => font.family.replace(/["']/g, '') === 'Inter').map(font => font.status));
+
+/**
+ * Whether text set in the app's font stack is drawn in Inter now, judged by its width against the
+ * fallback alone. While a swap-period font is still downloading WebKit reports its face as `error`
+ * and Chromium as `loading`; either way the fallback is what is drawn.
+ */
+export const drawsInter = (page: Page) => page.evaluate(() => {
+  const width = (family: string) => {
+    const sample = document.createElement('span');
+    sample.style.cssText = `position: fixed; visibility: hidden; white-space: pre; font: 600 16px ${family}`;
+    sample.textContent = 'Keep the caret line in view';
+    document.body.append(sample);
+    const { width: drawn } = sample.getBoundingClientRect();
+    sample.remove();
+    return drawn;
+  };
+  return Math.abs(width("'Inter', sans-serif") - width('sans-serif')) > 1;
+});
 
 /** Whether the page renders its 600-weight text in the Inter web font rather than a fallback. */
 export const interLoaded = (page: Page) => page.evaluate(async () => {
