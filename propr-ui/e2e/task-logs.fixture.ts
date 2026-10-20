@@ -51,9 +51,14 @@ export const interLoaded = (page: Page) => page.evaluate(async () => {
 });
 
 /** Opens a task header action, directly or from the phone's action sheet; returns the control focus returns to. */
+const moreActions = (page: Page) => page.getByRole('button', { name: /more (task )?actions/i }).filter({ visible: true });
+
+/** Waits for the loaded task page, whose own viewport listeners are then in place. */
+export const taskShown = (page: Page) => expect(moreActions(page).first()).toBeVisible();
+
 export async function openTaskAction(page: Page, title: string, label: string): Promise<Locator> {
   const direct = page.locator(`button[title^="${title}"]`).filter({ visible: true });
-  const more = page.getByRole('button', { name: /more (task )?actions/i }).filter({ visible: true });
+  const more = moreActions(page);
   await expect(direct.or(more).first()).toBeVisible();
   if (await direct.count()) { await direct.first().click(); return direct.first(); }
   await more.first().click();

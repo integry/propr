@@ -4,7 +4,7 @@
  * shrinks and pans the visual viewport, and restore their layout once it closes.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { blockWebFonts, conversationName, interLoaded, layerOf, openTaskAction, outputLines, outputName, stubTask, taskId } from './task-logs.fixture';
+import { blockWebFonts, conversationName, interLoaded, layerOf, openTaskAction, outputLines, outputName, stubTask, taskId, taskShown } from './task-logs.fixture';
 import { fixture as todoFixture } from './quick-add-todo.fixture';
 import { captureVisible, expectFieldVisible, expectReadableLines, expectShown, expectUnframed, installKeyboardViewport, listenerCount, setKeyboard, type Band } from './keyboard-viewport.fixture';
 
@@ -25,6 +25,8 @@ test('Follow Up on Task keeps its heading and close above the keyboard, keeps th
   await installKeyboardViewport(page, layout);
   await stubTask(page, posts);
   await page.goto(`/tasks/${taskId}`);
+  // The baseline includes the task page's own listeners, which it adds once the task loads.
+  await taskShown(page);
   const idle = await listenerCount(page);
   await openTaskAction(page, 'Follow Up', 'Follow Up');
   const dialog = page.getByRole('dialog', { name: 'Follow Up on Task' });
@@ -88,6 +90,8 @@ for (const webFonts of ['loaded', 'blocked'] as const) test(`Logs keeps its clos
   if (webFonts === 'blocked') await blockWebFonts(page);
   await stubTask(page, []);
   await page.goto(`/tasks/${taskId}`);
+  // The baseline includes the task page's own listeners, which it adds once the task loads.
+  await taskShown(page);
   const idle = await listenerCount(page);
   const opener = await openTaskAction(page, 'View Logs', 'Logs');
   const dialog = page.getByRole('dialog', { name: 'Log Files' });
