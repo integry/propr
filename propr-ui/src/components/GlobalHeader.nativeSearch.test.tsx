@@ -141,7 +141,8 @@ describe('GlobalHeader native Search command', () => {
     setWide(false);
     renderHeader();
     sendSearch();
-    fireEvent.mouseDown(screen.getByRole('dialog', { name: 'Search' }).firstElementChild!);
+    // false: the press is cancelled, so it can't move the restored focus.
+    expect(fireEvent.mouseDown(screen.getByRole('dialog', { name: 'Search' }).firstElementChild!)).toBe(false);
     expect(screen.queryByRole('dialog', { name: 'Search' })).not.toBeInTheDocument();
 
     sendSearch();
@@ -149,6 +150,21 @@ describe('GlobalHeader native Search command', () => {
     wide = true;
     act(() => mediaListeners.forEach(listener => listener()));
     expect(screen.queryByRole('dialog', { name: 'Search' })).not.toBeInTheDocument();
+  });
+
+  it('dismisses the whole sheet on one backdrop press while results are shown', () => {
+    setWide(false);
+    renderHeader();
+    const opener = screen.getByRole('button', { name: 'Tasks tab' });
+    opener.focus();
+    sendSearch();
+    const sheet = screen.getByRole('dialog', { name: 'Search' });
+    fireEvent.change(within(sheet).getByRole('combobox', { name: 'Search' }), { target: { value: 'zoom' } });
+    // The palette's backdrop sits above the sheet's own backdrop and takes the press.
+    expect(fireEvent.mouseDown(within(sheet).getByTestId('global-search-backdrop'))).toBe(false);
+    expect(screen.queryByRole('dialog', { name: 'Search' })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/tasks');
   });
 
   it('keeps Tab inside the sheet', () => {

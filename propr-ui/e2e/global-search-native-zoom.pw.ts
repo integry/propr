@@ -22,7 +22,7 @@ const openPage = async (page: Page) => {
   await fixture(page, 'linux');
   await page.route('**/api/planner/drafts?**', route => route.fulfill({ json: { drafts: [], total: 0, page: 1, limit: 5, hasMore: false } }));
   await page.goto('/tasks');
-  await expect(page.getByTestId('task-row').first().or(page.getByRole('main'))).toBeVisible();
+  await expect(page.getByRole('main')).toBeVisible();
 };
 
 for (const layout of layouts) {
@@ -58,7 +58,22 @@ for (const layout of layouts) {
     await page.keyboard.press('Escape');
     await expect(palette).toHaveCount(0);
     await expect(sheet).toHaveCount(0);
-    if (narrow) await expect(opener).toBeFocused();
+    if (narrow) {
+      await expect(opener).toBeFocused();
+      // One press on the dimmed area below the results closes the whole sheet,
+      // even though the palette's own backdrop is the element under the pointer.
+      await sendSearch(page);
+      await page.keyboard.type('Stop work');
+      await expect(palette.getByRole('option').first()).toBeVisible();
+      await page.mouse.click(viewport.width - 4, viewport.height - 4);
+      await expect(sheet).toHaveCount(0);
+      await expect(opener).toBeFocused();
+      // Without a query the sheet's own backdrop takes the press, with the same result.
+      await sendSearch(page);
+      await page.mouse.click(viewport.width - 4, viewport.height - 4);
+      await expect(sheet).toHaveCount(0);
+      await expect(opener).toBeFocused();
+    }
 
     // Ctrl+K takes the same route, and choosing a result navigates.
     await page.keyboard.press('Control+k');

@@ -20,6 +20,8 @@ import { SearchPreview, SearchResultList } from './GlobalSearchResults';
 
 interface GlobalSearchProps {
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  /** Called after a backdrop press closes the palette, so a host modal can close too. */
+  onBackdropDismiss?: (event: React.MouseEvent) => void;
 }
 
 type SearchResultState = 'loading' | 'error' | 'empty' | 'results' | 'idle';
@@ -83,7 +85,7 @@ const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => (
  * list on the left (↑/↓ walk it, Tab cycles category scopes) and a live
  * preview of the highlighted result on the right.
  */
-const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef }) => {
+const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef, onBackdropDismiss }) => {
   const navigate = useNavigate();
   const internalInputRef = useRef<HTMLInputElement>(null);
   const inputRef = externalInputRef || internalInputRef;
@@ -260,7 +262,10 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
         <div
           data-testid="global-search-backdrop"
           aria-hidden="true"
-          onMouseDown={() => setIsOpen(false)}
+          onMouseDown={event => {
+            setIsOpen(false);
+            onBackdropDismiss?.(event);
+          }}
           className="fixed inset-x-0 bottom-0 z-40 bg-black/40 backdrop-blur-sm"
           style={{ top: anchor.backdropTop }}
         />

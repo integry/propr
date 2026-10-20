@@ -35,6 +35,13 @@ const MobileSearchOverlay: React.FC<MobileSearchOverlayProps> = ({ request, onCl
     if (location !== openedAt.current) onClose();
   }, [location, onClose]);
 
+  // A backdrop press restores focus on close; stop the press itself from then
+  // moving focus to whatever lies under the pointer.
+  const dismissFromBackdrop = (event: React.MouseEvent) => {
+    event.preventDefault();
+    onClose();
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // GlobalSearch closes its palette on Escape and lets the key bubble here.
     if (event.key === 'Escape') {
@@ -68,10 +75,12 @@ const MobileSearchOverlay: React.FC<MobileSearchOverlayProps> = ({ request, onCl
       onKeyDown={handleKeyDown}
       className="fixed inset-0 z-50 md:hidden"
     >
-      <div aria-hidden="true" onMouseDown={onClose} className="absolute inset-0 bg-black/40" />
+      <div aria-hidden="true" onMouseDown={dismissFromBackdrop} className="absolute inset-0 bg-black/40" />
       <div className="relative flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2">
         <div className="min-w-0 flex-1">
-          <GlobalSearch inputRef={inputRef} />
+          {/* With results shown, the palette's own backdrop covers ours; a press
+              there must close the whole sheet, not just the palette. */}
+          <GlobalSearch inputRef={inputRef} onBackdropDismiss={dismissFromBackdrop} />
         </div>
         <button
           type="button"
