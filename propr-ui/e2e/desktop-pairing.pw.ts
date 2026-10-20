@@ -1,13 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { blockWebFonts, drawsInter, INTER_URL, serveInter } from './task-logs.fixture';
 
 const pairingId = `dpr_${'A'.repeat(22)}`;
 const username = 'u'.repeat(39);
 const clientName = 'c'.repeat(80);
 const tunnel = 'https://t-pairing123.propr.dev';
 
-async function fixture(page: Page, options: { hosted?: boolean; expiresIn?: number; rejectApproval?: 404 | 410 | 409; delayLogout?: boolean; username?: string; clientName?: string } = {}) {
+async function fixture(page: Page, options: { hosted?: boolean; expiresIn?: number; rejectApproval?: 404 | 410 | 409; delayLogout?: boolean; username?: string; clientName?: string; waitUntil?: 'load' | 'domcontentloaded' } = {}) {
   const fixtureUsername = options.username ?? username;
   const fixtureClientName = options.clientName ?? clientName;
   let loggedOut = false;
@@ -54,49 +55,163 @@ async function fixture(page: Page, options: { hosted?: boolean; expiresIn?: numb
   });
   await page.goto(options.hosted
     ? `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&tunnel=t-pairing123.propr.dev`
-    : `/desktop/pairing?pairing_id=${pairingId}`);
+    : `/desktop/pairing?pairing_id=${pairingId}`, { waitUntil: options.waitUntil });
   await expect(page.getByRole('button', { name: 'Approve desktop' })).toBeVisible();
   return { approvalCount: () => approvalCount, logoutUrl: () => logoutUrl, releaseLogout: () => releaseLogout!() };
 }
 
-async function checkLayout(page: Page, names: string[]) {
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  for (const name of names) {
-    const button = page.getByRole('button', { name, exact: true });
-    await expect(button).toBeVisible();
-    const box = await button.boundingBox();
-    expect(box!.width, name).toBeGreaterThanOrEqual(44);
-    expect(box!.height, name).toBeGreaterThanOrEqual(44);
-  }
+/** Each named button's box and the page's horizontal overflow, read in one layout pass. */
+async function layoutSnapshot(page: Page, names: string[]) {
+  return page.evaluate(names => ({
+    overflow: document.documentElement.scrollWidth > innerWidth,
+    boxes: Object.fromEntries(names.map(name => {
+      const matches = [...document.querySelectorAll('button')].filter(button => button.textContent?.trim() === name);
+      if (matches.length !== 1) throw new Error(`${matches.length} buttons named ${name}`);
+      const { x, y, width, height } = matches[0].getBoundingClientRect();
+      return [name, { x, y, width, height }];
+    })),
+  }), names);
 }
 
-for (const width of [320, 375]) {
-  test(`long names and all pairing targets fit at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 844 });
+async function checkLayout(page: Page, names: string[]) {
+  for (const name of names) await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+  // Read every box from the same frame: a web font arriving between separate reads
+  // moves the controls, and comparing positions from two frames proves nothing.
+  const layout = await layoutSnapshot(page, names);
+  expect(layout.overflow).toBe(false);
+  for (const name of names) {
+    expect(layout.boxes[name].width, name).toBeGreaterThanOrEqual(44);
+    expect(layout.boxes[name].height, name).toBeGreaterThanOrEqual(44);
+  }
+  return layout.boxes;
+}
+
+const pairingActions = ['Approve desktop', 'Cancel', 'Change GitHub account'];
+
+/** Checks identity and targets, and the exact breakpoint: stacked at 320px, one row from 375px. */
+async function checkPairing(page: Page, width: number, client = clientName) {
+  await expect(page.getByText(`@${username}`, { exact: true })).toBeVisible();
+  await expect(page.getByText(client, { exact: true })).toBeVisible();
+  const { 'Approve desktop': approve, Cancel: cancel } = await checkLayout(page, pairingActions);
+  if (width === 375) expect(cancel.y).toBe(approve.y);
+  else expect(cancel.y).toBeGreaterThanOrEqual(approve.y + approve.height);
+  return { approve, cancel };
+}
+
+// Inter's FontFace status, whether its `loaded` promise has settled yet, and the document's FontFaceSet status.
+const interState = (page: Page) => page.evaluate(async () => {
+  const inter = [...document.fonts].filter(font => font.family.replace(/["']/g, '') === 'Inter');
+  const unsettled = new Promise<string>(resolve => setTimeout(resolve, 0, 'pending'));
+  const loaded = await Promise.all(inter.map(font => Promise.race([font.loaded.then(() => 'resolved', () => 'rejected'), unsettled])));
+  return { status: inter.map(font => font.status), loaded, set: document.fonts.status };
+});
+const interReady = { status: ['loaded'], loaded: ['resolved'], set: 'loaded' };
+
+/** Requires the fallback font to be drawn while the held Inter file is still in flight. */
+async function expectInterHeld(page: Page, requested: string[], browserName: string) {
+  await expect.poll(() => [...requested], { message: 'Inter requested and held' }).toEqual([INTER_URL]);
+  // Chromium reports the in-flight face as 'loading'; WebKit reports 'error' once the swap
+  // block period ends, but its `loaded` promise stays pending and the set stays 'loading'.
+  await expect.poll(() => interState(page), { message: 'Inter in flight' })
+    .toEqual({ status: [browserName === 'webkit' ? 'error' : 'loading'], loaded: ['pending'], set: 'loading' });
+  expect(await drawsInter(page), 'fallback drawn while Inter is held').toBe(false);
+}
+
+/** Requires Inter to have loaded and to be what the page draws, not a fallback. */
+async function expectInterDrawn(page: Page) {
+  await expect.poll(() => interState(page), { message: 'Inter loaded' }).toEqual(interReady);
+  expect(await drawsInter(page), 'Inter drawn').toBe(true);
+}
+
+const fontPhases = {
+  // Google Fonts unreachable: no Inter face exists and the fallback is drawn.
+  'fallback font': async (page: Page) => {
+    await blockWebFonts(page);
     const state = await fixture(page);
-    await expect(page.getByText(`@${username}`, { exact: true })).toBeVisible();
-    await expect(page.getByText(clientName, { exact: true })).toBeVisible();
-    await checkLayout(page, ['Approve desktop', 'Cancel', 'Change GitHub account']);
-    // Verify the exact breakpoint rather than assuming the responsive class works.
-    const approve = await page.getByRole('button', { name: 'Approve desktop' }).boundingBox();
-    const cancel = await page.getByRole('button', { name: 'Cancel', exact: true }).boundingBox();
-    if (width === 375) expect(approve!.y).toBe(cancel!.y);
-    else expect(cancel!.y).toBeGreaterThan(approve!.y);
-    const directory = path.resolve('../.propr/previews');
-    if (process.env.PROPR_CAPTURE_PREVIEWS) {
-      await mkdir(directory, { recursive: true });
-      await page.screenshot({ path: path.join(directory, `pairing-${width}.png`), fullPage: true });
+    await page.evaluate(() => document.fonts.ready);
+    expect(await interState(page)).toEqual({ status: [], loaded: [], set: 'loaded' });
+    expect(await drawsInter(page), 'fallback drawn').toBe(false);
+    return state;
+  },
+  'loaded Inter': async (page: Page) => {
+    await serveInter(page);
+    const state = await fixture(page);
+    await expectInterDrawn(page);
+    return state;
+  },
+} as const;
+
+for (const [phase, load] of Object.entries(fontPhases)) {
+  test.describe(phase, () => {
+    for (const width of [320, 375]) {
+      test(`long names and all pairing targets fit at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 844 });
+        const state = await load(page);
+        await checkPairing(page, width);
+        await checkAccountChangeAndCancel(page, width, phase === 'loaded Inter');
+        expect(state.approvalCount()).toBe(0);
+      });
     }
-    await page.getByRole('button', { name: 'Change GitHub account', exact: true }).click();
-    await checkLayout(page, ['Sign out of ProPR and sign in again', 'Keep current account']);
-    if (process.env.PROPR_CAPTURE_PREVIEWS) {
-      await page.screenshot({ path: path.join(directory, `pairing-change-${width}.png`), fullPage: true });
-    }
-    await page.getByRole('button', { name: 'Keep current account' }).click();
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect(page.getByText('Pairing cancelled', { exact: true })).toBeVisible();
-    expect(state.approvalCount()).toBe(0);
   });
+}
+
+test.describe('Inter held then released', () => {
+  for (const width of [320, 375]) {
+    test(`long names and all pairing targets fit at ${width}px in both font phases`, async ({ page, browserName }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const inter = await serveInter(page, { held: true });
+      // WebKit holds the load event for a font still downloading.
+      const state = await fixture(page, { waitUntil: 'domcontentloaded' });
+      await expectInterHeld(page, inter.requested, browserName);
+      await checkPairing(page, width);
+      inter.release();
+      await expectInterDrawn(page);
+      await checkPairing(page, width);
+      await checkAccountChangeAndCancel(page, width, false);
+      expect(state.approvalCount()).toBe(0);
+    });
+  }
+
+  test('separate reads across the swap disagree at 375px while each frame is aligned', async ({ page, browserName }) => {
+    await page.setViewportSize({ width: 375, height: 844 });
+    const inter = await serveInter(page, { held: true });
+    // Inter's proportional 1 is about a fifth narrower than the tabular digits of sans-serif
+    // fallbacks (DejaVu and Arial-metric alike), so this name wraps onto more lines until
+    // Inter arrives and the swap moves the buttons on any host.
+    const digits = '1'.repeat(240);
+    await fixture(page, { waitUntil: 'domcontentloaded', clientName: digits });
+    await expectInterHeld(page, inter.requested, browserName);
+    const fallback = await checkPairing(page, 375, digits);
+    // The original measurement: one boundingBox() per button, with the font landing in between.
+    const approveRead = await page.getByRole('button', { name: 'Approve desktop' }).boundingBox();
+    inter.release();
+    await expectInterDrawn(page);
+    const cancelRead = await page.getByRole('button', { name: 'Cancel', exact: true }).boundingBox();
+    const loaded = await checkPairing(page, 375, digits);
+    test.info().annotations.push({ type: 'font swap', description:
+      `Approve/Cancel y ${fallback.approve.y}/${fallback.cancel.y} in the fallback font, ${loaded.approve.y}/${loaded.cancel.y} in Inter; separate reads ${approveRead!.y}/${cancelRead!.y}` });
+    expect(approveRead!.y).toBe(fallback.approve.y);
+    expect(cancelRead!.y).toBe(loaded.cancel.y);
+    // The swap moves the row, so comparing reads from the two frames fails although both frames align.
+    expect(loaded.approve.y).not.toBe(fallback.approve.y);
+    expect(cancelRead!.y).not.toBe(approveRead!.y);
+  });
+});
+
+async function checkAccountChangeAndCancel(page: Page, width: number, capture: boolean) {
+  const directory = path.resolve('../.propr/previews');
+  if (capture && process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir(directory, { recursive: true });
+    await page.screenshot({ path: path.join(directory, `pairing-${width}.png`), fullPage: true });
+  }
+  await page.getByRole('button', { name: 'Change GitHub account', exact: true }).click();
+  await checkLayout(page, ['Sign out of ProPR and sign in again', 'Keep current account']);
+  if (capture && process.env.PROPR_CAPTURE_PREVIEWS) {
+    await page.screenshot({ path: path.join(directory, `pairing-change-${width}.png`), fullPage: true });
+  }
+  await page.getByRole('button', { name: 'Keep current account' }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByText('Pairing cancelled', { exact: true })).toBeVisible();
 }
 
 test('hosted logout uses the active API and preserves flow and exact pairing return URL', async ({ page }) => {

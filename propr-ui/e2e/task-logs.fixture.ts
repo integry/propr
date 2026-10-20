@@ -76,20 +76,24 @@ export const interStatus = (page: Page) => page.evaluate(() =>
 
 /**
  * Whether text set in the app's font stack is drawn in Inter now, judged by its width against the
- * fallback alone. While a swap-period font is still downloading WebKit reports its face as `error`
- * and Chromium as `loading`; either way the fallback is what is drawn.
+ * fallback alone. A drawn fallback measures the same with or without Inter first, so any sample that
+ * differs means Inter. Several samples are needed: Arial-metric fallbacks such as Liberation Sans are
+ * within a pixel of Inter for running text, but not for Inter's narrow proportional digits. While a
+ * swap-period font is still downloading WebKit reports its face as `error` and Chromium as
+ * `loading`; either way the fallback is what is drawn.
  */
 export const drawsInter = (page: Page) => page.evaluate(() => {
-  const width = (family: string) => {
+  const width = (family: string, text: string) => {
     const sample = document.createElement('span');
     sample.style.cssText = `position: fixed; visibility: hidden; white-space: pre; font: 600 16px ${family}`;
-    sample.textContent = 'Keep the caret line in view';
+    sample.textContent = text;
     document.body.append(sample);
     const { width: drawn } = sample.getBoundingClientRect();
     sample.remove();
     return drawn;
   };
-  return Math.abs(width("'Inter', sans-serif") - width('sans-serif')) > 1;
+  return ['Keep the caret line in view', '1111111111', 'WWWWWWWWWW']
+    .some(text => Math.abs(width("'Inter', sans-serif", text) - width('sans-serif', text)) > 1);
 });
 
 /** Whether the page renders its 600-weight text in the Inter web font rather than a fallback. */
