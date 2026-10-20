@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
 import { DESKTOP_UI_COMMAND_EVENT } from '../desktop/useDesktopNativeCommands';
@@ -13,9 +13,14 @@ import { useHeaderStats, type HeaderStats } from '../hooks/useHeaderStats';
 import { SystemHealth } from './GlobalHeaderComponents';
 import type { CurrentUser } from '../api/proprTypes';
 import MobileBottomNavigation from './MobileBottomNavigation';
+import MobileSearchOverlay from './MobileSearchOverlay';
 import { getCreationActions } from './creationActions';
 
 const DESKTOP_CREATION_COMMANDS = new Set(['new-task', 'new-plan', 'new-goal', 'new-automation', 'new-todo']);
+/** The toolbar (and its search field) is shown from Tailwind's `md` breakpoint. */
+const TOOLBAR_MEDIA = '(min-width: 768px)';
+// Without matchMedia (a bare test DOM) assume the wide layout, as before.
+const isToolbarShown = () => window.matchMedia?.(TOOLBAR_MEDIA).matches ?? true;
 
 interface GlobalHeaderProps {
   user: CurrentUser | null;
@@ -47,14 +52,14 @@ function resolveHeaderStats(
 }
 
 function useHeaderKeyboardShortcuts(
-  searchInputRef: React.RefObject<HTMLInputElement | null>,
+  requestSearch: () => void,
   setQuickAddOpen: React.Dispatch<React.SetStateAction<boolean>>
 ) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        searchInputRef.current?.focus();
+        requestSearch();
       }
       if (e.altKey && e.key === 't') {
         e.preventDefault();
@@ -63,7 +68,54 @@ function useHeaderKeyboardShortcuts(
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [searchInputRef, setQuickAddOpen]);
+  }, [requestSearch, setQuickAddOpen]);
+}
+
+/**
+ * Routes a Search request (Ctrl/Cmd+K, or the native menu's Search command) to
+ * a field the operator can actually use. From `md` that is the toolbar's own
+ * input; below it (a narrow window, or enlarged text) the toolbar is
+ * `display: none`, so focusing its input would silently do nothing, and the
+ * request opens the search sheet instead. `mobileSearch` is 0 while the sheet
+ * is closed and increments per request, so a repeat refocuses the field.
+ */
+function useSearchRequests(searchInputRef: React.RefObject<HTMLInputElement | null>) {
+  const [mobileSearch, setMobileSearch] = useState(0);
+  const sheetOpenRef = useRef(false);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  const requestSearch = useCallback(() => {
+    if (isToolbarShown()) {
+      searchInputRef.current?.focus();
+      return;
+    }
+    // Remember where the operator was only on the request that opens the sheet.
+    if (!sheetOpenRef.current) {
+      sheetOpenRef.current = true;
+      returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    setMobileSearch(value => value + 1);
+  }, [searchInputRef]);
+
+  const closeMobileSearch = useCallback(() => {
+    sheetOpenRef.current = false;
+    setMobileSearch(0);
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    // After a route change the previous element may be gone; leave focus to the new page then.
+    if (target?.isConnected) target.focus();
+  }, []);
+
+  // Widening past `md` reveals the toolbar field, so the sheet steps aside.
+  useEffect(() => {
+    if (!mobileSearch) return;
+    const media = window.matchMedia(TOOLBAR_MEDIA);
+    const handleChange = () => { if (media.matches) closeMobileSearch(); };
+    media.addEventListener?.('change', handleChange);
+    return () => media.removeEventListener?.('change', handleChange);
+  }, [mobileSearch, closeMobileSearch]);
+
+  return { requestSearch, mobileSearch, closeMobileSearch };
 }
 
 /**
@@ -204,18 +256,18 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   const desktop = useDesktop();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [searchRequest, setSearchRequest] = useState(0);
   const [mobileQuickAddRequest, setMobileQuickAddRequest] = useState(0);
 
   const headerStats = useHeaderStats();
   const { systemHealth } = resolveHeaderStats(headerStatsOverride, headerStats);
 
-  useHeaderKeyboardShortcuts(searchInputRef, setQuickAddOpen);
+  const { requestSearch, mobileSearch, closeMobileSearch } = useSearchRequests(searchInputRef);
+  useHeaderKeyboardShortcuts(requestSearch, setQuickAddOpen);
   useEffect(() => {
     if (!desktop) return;
     const handleCommand = (event: Event) => {
       const command = (event as CustomEvent).detail;
-      if (command === 'search') setSearchRequest(value => value + 1);
+      if (command === 'search') requestSearch();
       else if (!DESKTOP_CREATION_COMMANDS.has(command)) return;
       // Cancelling tells the native dispatcher creation is unavailable here,
       // so demo mode never opens a form the toolbar itself keeps inert.
@@ -223,17 +275,13 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       // Quick add lives in the toolbar from `md`; below that (a narrow or
       // zoomed window) the same form sits in the bottom bar's Create sheet.
       else if (command === 'new-todo') {
-        if (window.matchMedia('(min-width: 768px)').matches) setQuickAddOpen(true);
+        if (isToolbarShown()) setQuickAddOpen(true);
         else setMobileQuickAddRequest(value => value + 1);
       }
     };
     window.addEventListener(DESKTOP_UI_COMMAND_EVENT, handleCommand);
     return () => window.removeEventListener(DESKTOP_UI_COMMAND_EVENT, handleCommand);
-  }, [desktop, isDemoMode]);
-
-  useEffect(() => {
-    if (searchRequest) searchInputRef.current?.focus();
-  }, [searchRequest]);
+  }, [desktop, isDemoMode, requestSearch]);
 
   return (
     <>
@@ -295,6 +343,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       systemHealth={systemHealth}
       quickAddRequest={mobileQuickAddRequest}
     />
+    {mobileSearch > 0 && <MobileSearchOverlay request={mobileSearch} onClose={closeMobileSearch} />}
     </>
   );
 };
