@@ -15,7 +15,7 @@ import { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 /* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
-import { mountMcp, mcpResponseHeaders } from './mcp/server.js';
+import { mountMcp, mcpResponseHeaders, isMcpEndpointPath } from './mcp/server.js';
 import { getMcpOriginSync, isMcpEnabledSync, invalidateMcpConfigCache, resolveMcpConfig } from './mcp/configResolver.js';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
@@ -266,6 +266,8 @@ const defaultJsonParser = express.json({ limit: '1mb' });
 app.use((req, res, next) => {
   // The archive parser is installed at its route, after the member guard.
   if (req.method === 'POST' && /^\/api\/instance\/extensions\/v1\/skills\/archive\/?$/i.test(req.path)) return next();
+  // MCP parses at its endpoint with its own documented bound (mcpJsonParser).
+  if (isMcpEndpointPath(req.path)) return next();
   return defaultJsonParser(req, res, next);
 });
 

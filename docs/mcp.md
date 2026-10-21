@@ -36,6 +36,10 @@ and key across restarts. Missing/invalid required configuration fails startup
 with an explicit diagnostic. MCP is disabled by default and cannot be enabled
 in demo mode. Normal API rate limits remain in effect; OAuth endpoints also
 use the SDK's rate limits. No default key or administrator session is created.
+An `/api/mcp` request body is limited to 1 MiB; a larger one is answered
+`413` before authentication. One tool call's arguments may contain at most
+10,000 array elements and object keys combined; a larger call returns a tool
+error without running the tool.
 
 The reverse proxy must route `/api/mcp`, `/.well-known/*`, `/authorize`,
 `/token`, `/register`, `/revoke`, `/mcp/*` and the existing `/api/auth/*` routes

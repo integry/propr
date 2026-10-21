@@ -81,4 +81,14 @@ test('server mounts extension gateway before auth, management after auth, and ar
   assert.equal(normal.status, 413);
   const oversized = await fetch(base + '/api/instance/extensions/v1/skills/archive', { method: 'POST', headers, body: JSON.stringify({ padding: 'x'.repeat(7 * 1024 * 1024) }) });
   assert.equal(oversized.status, 413);
+  // /api/mcp bypasses the default parser and parses with its own documented
+  // bound. MCP is disabled here, so a body that parses reaches the endpoint's 404.
+  const { MCP_MAX_REQUEST_BODY_BYTES } = await import('../mcp/config.js');
+  const mcpBody = (bytes: number) => JSON.stringify({ padding: 'x'.repeat(bytes - JSON.stringify({ padding: '' }).length) });
+  for (const mcpPath of ['/api/mcp', '/API/MCP/']) {
+    const atLimit = await fetch(base + mcpPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body: mcpBody(MCP_MAX_REQUEST_BODY_BYTES) });
+    assert.equal(atLimit.status, 404);
+    const overLimit = await fetch(base + mcpPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body: mcpBody(MCP_MAX_REQUEST_BODY_BYTES + 1) });
+    assert.equal(overLimit.status, 413);
+  }
 });

@@ -39,6 +39,24 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfig |
 /** Largest serialized tool result (`data`) the executor returns; larger results are RESULT_TOO_LARGE. */
 export const MAX_TOOL_RESULT_BYTES = 256 * 1024;
 
+/**
+ * Largest JSON body accepted at /api/mcp, enforced by the endpoint's own parser
+ * before authentication, and by the SDK on a body it reads itself. It matches
+ * the limit every MCP request already had under the API's default parser, so no
+ * existing workflow changes. A 192 KiB upload is about 256 KiB as base64, and
+ * long plans fit with room to spare. The SDK default is 4 MiB.
+ */
+export const MCP_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Largest number of array elements plus object keys in one tool call's
+ * arguments, checked by the SDK before schema validation and the tool itself.
+ * Every bounded tool schema needs at most a few hundred (mcpToolInputBudget.test.ts
+ * computes them); synthetic agent compositions are the only unbounded inputs,
+ * and this leaves them room for dozens of models with many members each.
+ */
+export const MCP_MAX_TOOL_INPUT_ELEMENTS = 10_000;
+
 export class McpError extends Error {
   readonly stage: McpErrorStage | null;
   readonly retryable: boolean;

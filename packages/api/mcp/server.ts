@@ -7,7 +7,7 @@ import { rateLimit } from 'express-rate-limit';
 import packageInfo from '../package.json' with { type: 'json' };
 import { isDemoMode } from '../demoMode.js';
 import { requestRateLimitOptions, resolveRequestRateLimitPolicies } from '../requestRateLimits.js';
-import { MCP_SCOPES, McpError } from './config.js';
+import { MCP_MAX_REQUEST_BODY_BYTES, MCP_MAX_TOOL_INPUT_ELEMENTS, MCP_SCOPES, McpError } from './config.js';
 import { MCP_CONNECT_CONTRACT } from './connect.js';
 import { McpStore } from './store.js';
 import { McpOAuthProvider, validatePublicTokenRequest } from './oauth.js';
@@ -47,7 +47,7 @@ const requestSignal = (ctx: ServerContext): AbortSignal => ctx.mcpReq.signal;
  * stateful transport's in-request cancellation would release it too.
  */
 export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog: McpTool[], connection?: AbortSignal): McpServer {
-  const server = new McpServer({ name: 'propr', version: packageInfo.version });
+  const server = new McpServer({ name: 'propr', version: packageInfo.version }, { maxToolInputElements: MCP_MAX_TOOL_INPUT_ELEMENTS });
   const call = async (name: string, args: unknown, signal?: AbortSignal) => {
     const tool = catalog.find(tool => tool.name === name);
     if (!tool) throw new McpError('NOT_FOUND', 'Tool not found.', 404);
@@ -161,6 +161,11 @@ async function recordRejectedDispatch(
  * Serve one MCP message and leave exactly one access row behind it. A call that
  * reached a tool, resource or prompt wrapper has already claimed the dispatch;
  * one the SDK rejected on its way there is recorded here instead.
+ *
+ * Every request gets its own handler, transport and McpServer, bound to its own
+ * principal. The SDK matches responses to requests by JSON-RPC id alone, and
+ * clients number their ids from 0, so sharing any of these across requests
+ * would deliver one client's results to another (GHSA-jm63-cq47-j5jp).
  */
 export async function serveMcpRequest(dispatch: McpDispatch, req: express.Request, res: express.Response): Promise<void> {
   const startedAt = Date.now();
@@ -168,7 +173,8 @@ export async function serveMcpRequest(dispatch: McpDispatch, req: express.Reques
     const connection = new AbortController();
     const disconnected = () => { if (!res.writableEnded) connection.abort(); };
     res.once('close', disconnected);
-    const handler = createMcpHandler(() => buildMcpServer(dispatch.principal, dispatch.deps, dispatch.catalog, connection.signal), { legacy: 'stateless' });
+    const handler = createMcpHandler(() => buildMcpServer(dispatch.principal, dispatch.deps, dispatch.catalog, connection.signal),
+      { legacy: 'stateless', maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES });
     try { await toNodeHandler(handler)(req, res, req.body); }
     finally {
       res.off('close', disconnected);
@@ -179,6 +185,18 @@ export async function serveMcpRequest(dispatch: McpDispatch, req: express.Reques
   if (req.body?.method === 'resources/read') await recordRejectedResourceRead(dispatch, req.body.params?.uri, startedAt);
   else await recordRejectedDispatch(dispatch, req.body, startedAt);
 }
+
+/** Whether Express routes this path to the MCP endpoint (case-insensitive, optional trailing slash). */
+export function isMcpEndpointPath(path: string): boolean {
+  return /^\/api\/mcp\/?$/i.test(path);
+}
+
+/**
+ * The MCP endpoint's own JSON parser. The API's default parser skips this
+ * endpoint, so this bound applies before authentication and before the SDK
+ * sees the body; an oversized body is answered 413 without further work.
+ */
+export const mcpJsonParser: RequestHandler = express.json({ limit: MCP_MAX_REQUEST_BODY_BYTES });
 
 export const mcpResponseHeaders: RequestHandler = (_req, res, next) => {
   res.set({ 'X-ProPR-MCP-Contract': MCP_CONNECT_CONTRACT, 'Cache-Control': 'no-store' });
@@ -353,7 +371,7 @@ export function mountMcp(app: Express, services: Omit<ToolDeps, 'policy'>): void
       await serveMcpRequest({ principal, deps, catalog }, req, res);
     },
   );
-  app.all('/api/mcp', endpoint);
+  app.all('/api/mcp', mcpJsonParser, endpoint);
   app.use('/api/mcp', (error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) { next(error); return; }
     const status = error && typeof error === 'object' && 'status' in error && [400, 413, 415].includes(Number(error.status)) ? Number(error.status) : 500;
