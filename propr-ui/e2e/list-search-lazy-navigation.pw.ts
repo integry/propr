@@ -82,8 +82,32 @@ async function holdSettingsChunk(page: Page) {
   return { wasRequested, release };
 }
 
-/** Stops the page's timers (the installed clock) from here until the test advances them. */
-const pauseTimers = async (page: Page) => page.clock.pauseAt(await page.evaluate(() => Date.now()) + 50);
+const pageTime = (page: Page) => page.evaluate(() => Date.now());
+
+/**
+ * Stops the page's timers (the installed clock) from here until the test advances them, and
+ * returns the page time it stopped at.
+ *
+ * `pauseAt` jumps the clock forward to its target, so a target taken from a sampled page time
+ * plus a margin lands in the past once command latency exceeds the margin. Instead the page's
+ * Date is pinned to the sampled time first. While pinned, the clock's time no longer follows
+ * real time (its timers still do), so `pauseAt` at that same time jumps by exactly 0 ms however
+ * late it arrives, fires nothing early, and cannot be in the past. Unpinning while paused then
+ * leaves Date stopped at that time. `stall` only exists to prove this with added latency.
+ */
+async function pauseTimers(page: Page, stall: () => Promise<void> = async () => {}) {
+  const time = await pageTime(page);
+  await stall();
+  await page.clock.setFixedTime(time);
+  await stall();
+  await page.clock.pauseAt(time);
+  await stall();
+  await page.clock.setSystemTime(time);
+  return time;
+}
+// Command latency forced between every pause step in the latency control: well over the
+// 50 ms margin the old sampled-time pause used, and over the ~106 ms that broke it.
+const COMMAND_LATENCY_MS = 250;
 
 const routePath = (page: Page) => page.evaluate(() => window.location.pathname);
 const routeSearch = (page: Page) => page.evaluate(() => window.location.search);
@@ -197,6 +221,25 @@ for (const viewport of viewports) {
       await expect(page.getByRole('textbox', { name: 'Search goals' })).toBeVisible();
       await pauseTimers(page);
       await leaveForDelayedSettings(page, lists[2], chunk);
+    });
+
+    test('control: pausing the clock survives command latency and keeps the typed search pending', async ({ page }) => {
+      const chunk = await holdSettingsChunk(page);
+      const list = lists[0];
+      await visit(page, list.path);
+      const search = page.getByRole('textbox', { name: list.label });
+      await expect(search).toBeVisible();
+
+      await press(search);
+      // Real time keeps running between every pause step, so the sampled time is long stale
+      // before the pause lands; a sampled-time-plus-50-ms target would be in the past here.
+      const pausedAt = await pauseTimers(page, () => page.waitForTimeout(COMMAND_LATENCY_MS));
+      expect(await pageTime(page)).toBe(pausedAt);
+      await page.keyboard.type(QUERY);
+      await expect(search).toHaveValue(QUERY);
+      expect(await pageTime(page)).toBe(pausedAt);
+      expect(await routeSearch(page)).not.toContain('search=');
+      await leaveForDelayedSettings(page, list, chunk);
     });
   });
 }
