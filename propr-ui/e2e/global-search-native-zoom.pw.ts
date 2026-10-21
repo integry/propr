@@ -70,6 +70,8 @@ for (const layout of layouts) {
       await expect(opener).toBeFocused();
       // Without a query the sheet's own backdrop takes the press, with the same result.
       await sendSearch(page);
+      await expect(input).toBeVisible();
+      await expect(input).toBeFocused();
       await page.mouse.click(viewport.width - 4, viewport.height - 4);
       await expect(sheet).toHaveCount(0);
       await expect(opener).toBeFocused();
@@ -87,3 +89,37 @@ for (const layout of layouts) {
     await context.close();
   });
 }
+
+// A press can reach the sheet after it appears but before its field takes focus (the field is
+// focused in an effect after the sheet commits). Closing then must still return focus to where
+// the operator was, not to the field that is being removed. The press is dispatched from a
+// MutationObserver so it lands in exactly that interval on every run.
+test('a backdrop press as the narrow Search sheet appears still returns focus', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 568 }, deviceScaleFactor: 2 });
+  const page = await context.newPage();
+  await openPage(page);
+  const opener = page.locator('main').getByRole('button').first();
+  await opener.focus();
+  const pressedBeforeFieldFocus = await page.evaluate(event => new Promise<boolean>(resolve => {
+    const observer = new MutationObserver(() => {
+      const sheet = document.querySelector('[data-testid="mobile-search-overlay"]');
+      if (!sheet) return;
+      observer.disconnect();
+      const unfocused = !sheet.contains(document.activeElement);
+      sheet.firstElementChild!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      resolve(unfocused);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    window.dispatchEvent(new CustomEvent(event, { detail: 'search', cancelable: true }));
+  }), DESKTOP_UI_COMMAND_EVENT);
+  expect(pressedBeforeFieldFocus).toBe(true);
+  await expect(page.getByRole('dialog', { name: 'Search' })).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  // The next request opens a usable sheet as usual.
+  await sendSearch(page);
+  await expect(page.getByRole('dialog', { name: 'Search' }).getByRole('combobox', { name: 'Search' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(opener).toBeFocused();
+  await context.close();
+});
