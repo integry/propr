@@ -8,6 +8,7 @@ import { dragToShow, notch, scrollPoint, settle, settled, uncovered, wheelToShow
 import { expectClearOfChrome, inert, installWindowActions, strayPoints, type Shell } from './native-chrome.fixture';
 import { fixture as newTaskFixture, stubGoals } from './new-task.fixture';
 import { capture, fixture as desktopFixture } from './task-list-desktop.fixture';
+import { serveInter } from './task-logs.fixture';
 
 // Measured in the signed Linux build: an 880×820 window zoomed in to 370×345 CSS px at this device pixel ratio.
 const zoomed = { width: 370, height: 345 };
@@ -38,6 +39,12 @@ const windows: Array<{ name: string; size: { width: number; height: number }; sc
   { name: 'web 390x288 200% text', size: { width: 390, height: 288 }, scale: 1, text: '200%' },
   { name: 'web 370x345 200% text', size: { width: 370, height: 345 }, scale: 1, text: '200%' },
 ];
+
+// Inter comes from a local copy rather than Google Fonts, so how long the font takes to arrive (6.5s on one slow
+// network) is not a prerequisite of any case here. The late-font cases below control their own reflow.
+test.beforeEach(async ({ page }) => {
+  await serveInter(page);
+});
 
 /** An unsent draft with the acceptance repository selected, typed to its end; returns the field's value. */
 async function writeDraft(page: Page, dialog: Locator, field: Locator) {

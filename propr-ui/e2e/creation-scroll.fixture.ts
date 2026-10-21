@@ -69,14 +69,22 @@ export const scrollPoint = (target: Locator, up: boolean) => target.evaluate((el
 
 export const settle = (page: Page) => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
+/** How long `settled` lets the layout move, outside any wait for a web font, before it fails. */
+export const SETTLE_BUDGET_MS = 5000;
+
 /**
  * Waits until the page has applied what the last input set in motion, so a measurement sees what the reader sees: any
  * web font still loading has arrived, and `target`'s box and every scroll offset from it up to the document hold still
  * for two animation frames. Input resolves before its effect: Chromium scrolls a wheel notch on its compositor and the
  * page sees it a frame or more later, WebKit reveals a newly focused field's caret at its next rendering update, and a
- * late font face re-wraps a line. Fails, naming what kept moving, if that takes over five seconds.
+ * late font face re-wraps a line. Fails, naming what kept moving, if the layout moves for over five seconds.
+ *
+ * Font readiness and settling are separate phases. However long a font takes to arrive (a slow network has taken six
+ * seconds), that wait is readiness, bounded by the test's own timeout, and not motion: it does not count against the
+ * five seconds. Its arrival does change the sample (the font status is part of it), so the layout after it is measured
+ * afresh and must again hold still for two frames.
  */
-export const settled = (target: Locator) => target.evaluate(async element => {
+export const settled = (target: Locator) => target.evaluate(async (element, budget) => {
   const geometry = () => {
     const parts: string[] = [document.fonts.status];
     for (let node: Element | null = element; node; node = node.parentElement) {
@@ -85,16 +93,23 @@ export const settled = (target: Locator) => target.evaluate(async element => {
     }
     return parts.join(' | ');
   };
+  // Milliseconds of settling so far, and when the current stretch of it began.
+  let spent = 0;
+  let since = performance.now();
   let last = geometry();
-  for (let still = 0, deadline = performance.now() + 5000; still < 2;) {
-    if (document.fonts.status === 'loading') await document.fonts.ready;
+  for (let still = 0; still < 2;) {
+    if (document.fonts.status === 'loading') {
+      spent += performance.now() - since;
+      await document.fonts.ready;
+      since = performance.now();
+    }
     await new Promise(requestAnimationFrame);
     const now = geometry();
     still = now === last ? still + 1 : 0;
-    if (still < 2 && performance.now() > deadline) throw new Error(`the page kept moving around ${element.tagName}: ${last} -> ${now}`);
+    if (still < 2 && spent + performance.now() - since > budget) throw new Error(`the page kept moving around ${element.tagName}: ${last} -> ${now}`);
     last = now;
   }
-});
+}, SETTLE_BUDGET_MS);
 
 /**
  * One trusted wheel notch with the pointer already in place, returning once the scroll it caused has reached the page
