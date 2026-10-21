@@ -225,7 +225,8 @@ const CompactActions: React.FC<{
   if (logsPath) items.push({ label: 'Logs', title: 'View Logs', icon: <Terminal size={18} />, onSelect: () => onViewLogs(logsPath) });
   // Stop is a safety control, so it never folds into the sheet.
   return (
-    <div className="flex flex-none items-center gap-1.5">
+    // In the expanded summary the actions keep to the right, wrapping rather than overflowing a narrow line.
+    <div className={summary ? 'ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5' : 'flex flex-none items-center gap-1.5'}>
       {summary && followupCommands}
       {summary && onFollowUp && (
         <button onClick={onFollowUp} className="inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded py-1 text-[11px] leading-4 font-medium text-slate-600" title="Follow Up - Post a follow-up comment">

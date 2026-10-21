@@ -53,7 +53,8 @@ const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ con
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
       {/* The title block above already names the task; repeating it here stacked the title twice. */}
       <div data-testid="task-mobile-metadata" className="flex flex-col gap-1">
-        <div className="flex min-w-0 items-center justify-between gap-1">
+        {/* The actions wrap below the Git links rather than squeezing the PR badge under them. */}
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-1 gap-y-1">
           <MobileGitContext {...contextStripProps} />
           <ActionBar {...actionBarProps} mobileSummary />
         </div>

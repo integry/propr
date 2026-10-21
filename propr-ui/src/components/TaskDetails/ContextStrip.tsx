@@ -382,10 +382,11 @@ export const MobileGitContext: React.FC<Pick<ContextStripProps, 'taskInfo' | 'pr
   const pr = prInfo?.url ? prInfo : taskInfo.type === 'pr-comment' && taskInfo.number
     ? { url: `${repoUrl}/pull/${taskInfo.number}`, number: taskInfo.number } : null;
   return (
-    <div role="group" aria-label="Git context" className="flex min-w-0 flex-wrap items-center gap-1 text-xs [&>a]:shrink-0 [&>span]:max-w-full [&>span]:flex-wrap">
+    // At least 9rem, or the line to itself: the repository may truncate, the PR number never does.
+    <div role="group" aria-label="Git context" className="flex min-w-0 flex-[1_1_9rem] flex-wrap items-center gap-1 text-xs [&>a]:shrink-0 [&>span]:max-w-full [&>span]:flex-wrap">
       <a href={pr?.url || repoUrl} target="_blank" rel="noopener noreferrer"
         title={`${taskInfo.repoOwner}/${taskInfo.repoName}${pr ? ` PR #${pr.number}` : ''}`}
-        className="!shrink inline-flex min-w-0 items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 text-green-700">
+        className="!shrink inline-flex min-w-0 max-w-full items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 text-green-700">
         {pr ? <GitPullRequest size={12} className="shrink-0" /> : <GitHubIcon size={12} className="shrink-0" />}
         <span className="truncate font-medium">{taskInfo.repoName}</span>
         {pr && <span className="shrink-0 font-mono">#{pr.number}</span>}
