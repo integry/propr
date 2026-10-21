@@ -6,7 +6,7 @@ import { useInboxSelection } from './useInboxSelection';
 
 // The write boundary refuses every write, as it does once history has moved on before the URL write.
 vi.mock('../components/TaskList/hooks', () => ({
-  useTaskSearchParams: () => [useSearchParams()[0], () => undefined],
+  useListSearchParams: () => [useSearchParams()[0], () => undefined],
 }));
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (

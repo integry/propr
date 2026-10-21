@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { useTaskSearchParams } from '../components/TaskList/hooks';
+import { useListSearchParams } from '../components/TaskList/hooks';
 
 /** Tailwind `xl`: wide enough to show the queue and a triage verdict side by side. */
 export const INBOX_SPLIT_QUERY = '(min-width: 1280px)';
@@ -23,7 +23,7 @@ export interface InboxSelection {
  * through the queue with j/k does not fill the back button.
  */
 export function useInboxSelection(): InboxSelection {
-  const [searchParams, setSearchParams] = useTaskSearchParams();
+  const [searchParams, setSearchParams] = useListSearchParams();
   const urlId = searchParams.get('notification') || null;
   // The router applies a URL change inside a transition, so for a moment the
   // URL is ahead of what renders. The latest choice is held here until the

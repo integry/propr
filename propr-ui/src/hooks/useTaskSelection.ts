@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useTaskSearchParams } from '../components/TaskList/hooks';
+import { useListSearchParams } from '../components/TaskList/hooks';
 
 /** Tailwind `xl`: wide enough to show the task list and a task side by side. */
 export const TASK_SPLIT_QUERY = '(min-width: 1280px)';
@@ -22,7 +22,7 @@ export interface TaskSelection {
  * stepping through tasks with j/k does not fill the back button.
  */
 export function useTaskSelection(): TaskSelection {
-  const [searchParams, setSearchParams] = useTaskSearchParams();
+  const [searchParams, setSearchParams] = useListSearchParams();
   const urlTaskId = searchParams.get('task') || null;
   // The router applies a URL change inside a transition, so for a moment the
   // URL is ahead of what renders. The latest choice is held here until the

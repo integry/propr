@@ -2,11 +2,13 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useRef } from 'rea
 import { UNSAFE_NavigationContext, createSearchParams, useLocation, useNavigate, useSearchParams, type Location, type Navigator, type SetURLSearchParams } from 'react-router-dom';
 
 /**
- * Task filters and selection share this write boundary. React Router's normal
- * functional setter reads render-time params, not the current history entry.
- * History can already have advanced while a transition is still rendering.
+ * Task, Plan and Goal filters and selection share this write boundary. React
+ * Router's normal functional setter reads render-time params, not the current
+ * history entry. History can already have advanced while a transition is still
+ * rendering, e.g. while a lazy destination route loads and the departing list
+ * stays mounted with its debounced search still pending.
  */
-export function useTaskSearchParams(): ReturnType<typeof useSearchParams> {
+export function useListSearchParams(): ReturnType<typeof useSearchParams> {
   const [params] = useSearchParams();
   const origin = useLocation();
   const navigate = useNavigate();

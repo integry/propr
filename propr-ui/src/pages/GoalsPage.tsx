@@ -3,7 +3,7 @@ import { CreationDialog } from '../components/CreationDialog';
 import { PreviewThumbnails } from '../components/PreviewMedia';
 /* eslint-disable max-lines -- goal list and split-pane console intentionally share this route-level surface */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Check, CheckCircle2, CircleDot, CirclePause, CirclePlay, CircleSlash, CircleStop,
   Copy, ExternalLink, FileText, Filter, GitPullRequest, LoaderCircle, Send,
@@ -17,7 +17,7 @@ import {
   getGoalAttachmentUrl,
   type Goal, type GoalCapability, type GoalLaunchStrategy, type GoalVisualPreview,
 } from '../api/goals';
-import { useDebouncedCallback } from '../components/TaskList/hooks';
+import { useDebouncedCallback, useListSearchParams } from '../components/TaskList/hooks';
 import { useTaskLiveData } from '../components/TaskDetails/useTaskLiveData';
 import TodoList from '../components/TaskDetails/TodoList';
 import ExecutionEventLog from '../components/TaskDetails/ExecutionEventLog';
@@ -631,7 +631,7 @@ function GoalQueueRow({ goal, goalAgents }: { goal: Goal; goalAgents: Array<{ ty
 function GoalList() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useListSearchParams();
   const [isCreating, setIsCreating] = useState(false);
   const repositoryFilter = searchParams.get('repository') || 'all';
   const statusFilter = searchParams.get('status') || 'all';

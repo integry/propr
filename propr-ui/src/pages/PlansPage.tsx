@@ -1,6 +1,7 @@
 // CI trigger: 2026-02-01
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { useListSearchParams } from '../components/TaskList/hooks';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
 import { Filter } from 'lucide-react';
@@ -21,7 +22,7 @@ const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useListSearchParams();
   const { onDraftUpdate, onActivityUpdate, subscribeToActivity, unsubscribeFromActivity, isConnected } = useSocket();
 
   // Derive state from URL parameters

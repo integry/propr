@@ -21,7 +21,7 @@ import {
   groupTasksForDisplay,
   selectValue,
 } from './TaskList/utils';
-import { useDebouncedCallback, useTaskSearchParams } from './TaskList/hooks';
+import { useDebouncedCallback, useListSearchParams } from './TaskList/hooks';
 import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import type { TaskUpdatePayload } from '@propr/shared';
@@ -141,7 +141,7 @@ function useRowKeyboardNavigation(
 }
 
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, selectedTaskId = null, onSelectTask, refreshKey = 0, onGroupsChange }) => {
-  const [searchParams, setSearchParams] = useTaskSearchParams();
+  const [searchParams, setSearchParams] = useListSearchParams();
   const navigate = useNavigate();
   const { onTaskUpdate, isConnected } = useSocket();
   const currentUser = useCurrentUser();
