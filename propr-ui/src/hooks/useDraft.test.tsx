@@ -245,6 +245,59 @@ describe('useDraft', () => {
     ]);
   });
 
+  it('activates a fresh run from its acknowledged snapshot while the first fetch is in flight', async () => {
+    const staleFetch = createDeferred<Awaited<ReturnType<typeof getDraft>>>();
+    mockGetDraft.mockImplementationOnce(() => staleFetch.promise);
+    const snapshot = {
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Fresh prompt', status: 'draft', attachments: [], created_at: '2026-10-22T22:00:00Z',
+    };
+    const { result } = renderHook(() => useDraft('draft-1'));
+    expect(result.current.loading).toBe(true);
+
+    act(() => result.current.activateGenerationRun('generation-run-1', snapshot as never));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.draft?.status).toBe('generating');
+    expect(result.current.draft?.initial_prompt).toBe('Fresh prompt');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-1');
+
+    // The fetch requested before generation started returns the pre-generation draft.
+    await act(async () => staleFetch.resolve({ ...snapshot, status: 'draft' } as never));
+    expect(result.current.draft?.status).toBe('generating');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-1');
+
+    // A resync requested after the acknowledgement is authoritative.
+    mockGetDraft.mockResolvedValueOnce({ ...snapshot, status: 'review', generation_trace: { runId: 'generation-run-1', steps: [] } } as never);
+    await act(async () => result.current.refetch());
+    expect(result.current.draft?.status).toBe('review');
+  });
+
+  it('resyncs a generating router snapshot once when the entry is revisited', async () => {
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'review', attachments: [],
+      created_at: '2026-05-05T00:00:00Z', generation_trace: { runId: 'generation-run-1', steps: [] },
+    });
+    const initialDraft = {
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'generating', attachments: [],
+      created_at: '2026-05-05T00:00:00Z', generation_trace: { runId: 'generation-run-1', steps: [] },
+    };
+    const { result } = renderHook(() => useDraft('draft-1', { initialData: initialDraft as never }));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.draft?.status).toBe('generating');
+
+    await waitFor(() => expect(result.current.draft?.status).toBe('review'));
+    expect(result.current.loading).toBe(false);
+    expect(mockGetDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replace the current draft with a snapshot of another draft', async () => {
+    const { result } = renderHook(() => useDraft('draft-1'));
+    await waitFor(() => expect(result.current.draft?.draft_id).toBe('draft-1'));
+
+    act(() => result.current.activateGenerationRun('generation-run-9', { draft_id: 'draft-2', status: 'draft' } as never));
+    expect(result.current.draft?.draft_id).toBe('draft-1');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-9');
+  });
+
   it('applies terminal draft status from the socket before the follow-up fetch resolves', async () => {
     const deferredFetch = createDeferred<Awaited<ReturnType<typeof getDraft>>>();
 

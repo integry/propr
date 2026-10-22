@@ -176,7 +176,7 @@ describe('useGenerationHandlers', () => {
     });
     await act(async () => firstStart);
 
-    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2');
+    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2', expect.objectContaining({ draft_id: makeDraft().draft_id }));
     expect(startPolling).toHaveBeenCalledWith('generation-run-2');
     expect(result.current.isStartingGeneration).toBe(false);
   });

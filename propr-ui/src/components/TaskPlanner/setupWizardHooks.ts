@@ -28,7 +28,7 @@ export interface PlannerConfig { prompt: string; baseBranch: string; granularity
 
 export interface PromptPersistedUpdate { draftId: string; initial_prompt: string; name: string; }
 interface RepoInfoState { isLoading: boolean; error: string | null; }
-interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; flushPrompt?: (draftId: string, prompt: string) => Promise<void>; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: (runId?: string) => void; stopPolling: () => void; onGenerationStarted?: (runId: string) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
+interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; flushPrompt?: (draftId: string, prompt: string) => Promise<void>; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: (runId?: string) => void; stopPolling: () => void; onGenerationStarted?: (runId: string, snapshot?: PlannerDraft) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
 
 type PlannerConfigSetter = React.Dispatch<React.SetStateAction<PlannerConfig>>;
@@ -236,7 +236,7 @@ export function useGenerationHandlers({ draft, config, branchError, flushPrompt 
         }
       }
       const generation = await generatePlan(draft.draft_id, buildGenerationPayload(config));
-      onGenerationStarted?.(generation.runId);
+      onGenerationStarted?.(generation.runId, draft);
       startPolling(generation.runId);
     } catch (err) {
       stopPolling();

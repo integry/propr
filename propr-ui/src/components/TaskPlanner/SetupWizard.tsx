@@ -51,7 +51,7 @@ interface SetupWizardProps {
   onGenerateComplete: () => void;
   onDraftCreated?: (draftId: string) => void;
   onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
-  onGenerationStarted?: (runId: string) => void;
+  onGenerationStarted?: (runId: string, snapshot?: PlannerDraft) => void;
   onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void;
 }
 
@@ -389,7 +389,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Generate shares autosave's single-flight creation so one click cannot persist a second draft
   const handleCreateDraftAndGenerate = useDraftCreation({
     selectedRepo: repoLoader.selectedRepo, config, localFiles: fileHandling.localFiles,
-    ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, navigate, setError, setIsCreating
+    ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, setError, setIsCreating
   });
   const autoResize = useAutoResize(textareaRef);
   const handleRepoChangeInEditMode = useRepoChangeInEditMode({ draft, config, locationTodoIds: locationState?.todoIds, navigate, onDraftCreated, setError, setIsCreating });

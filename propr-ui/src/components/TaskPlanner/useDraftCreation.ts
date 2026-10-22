@@ -14,6 +14,9 @@ export interface DraftCreationParams {
   ensureDraftCreated: () => Promise<PlannerDraft | null>;
   uploadPendingLocalFiles: (draftId: string, files: File[]) => Promise<void>;
   flushPrompt: (draftId: string, prompt: string) => Promise<void>;
+  // Hands the acknowledged run to the page's draft before navigating; the studio instance survives
+  // /studio/new → /studio/:id, so router state alone cannot replace the draft it already holds.
+  onGenerationStarted?: (runId: string, snapshot?: PlannerDraft) => void;
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setIsCreating: React.Dispatch<React.SetStateAction<boolean>>;
@@ -35,7 +38,7 @@ async function syncDraftSetup(draft: PlannerDraft, config: PlannerConfig): Promi
 }
 
 // Generate in new mode: persist the draft through the same creation autosave uses, then start generation for it.
-export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, navigate, setError, setIsCreating }: DraftCreationParams) {
+export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, setError, setIsCreating }: DraftCreationParams) {
   const isStartingRef = useRef(false);
   return useCallback(async () => {
     if (!selectedRepo || !config.prompt.trim()) return void setError('Please select a repository and enter a prompt');
@@ -55,6 +58,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraft
       const draftWithPlan = constructDraftWithPlan({ ...draft, initial_prompt: prompt }, getDraftSetupSnapshot(config));
       draftWithPlan.status = 'generating';
       draftWithPlan.generation_trace = { steps: [], runId: generation.runId };
+      onGenerationStarted?.(generation.runId, draftWithPlan);
       navigate(`/studio/${draft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan, initialBaseBranch: config.baseBranch, baseBranchPersistenceWarning } });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');
@@ -62,5 +66,5 @@ export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraft
     } finally {
       isStartingRef.current = false;
     }
-  }, [selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, navigate, setError, setIsCreating]);
+  }, [selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, setError, setIsCreating]);
 }
