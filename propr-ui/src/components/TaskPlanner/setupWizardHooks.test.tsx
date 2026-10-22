@@ -176,8 +176,38 @@ describe('useGenerationHandlers', () => {
     });
     await act(async () => firstStart);
 
-    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2', expect.objectContaining({ draft_id: makeDraft().draft_id }));
+    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2', makeDraft().draft_id, expect.objectContaining({ draft_id: makeDraft().draft_id }));
     expect(startPolling).toHaveBeenCalledWith('generation-run-2');
+    expect(result.current.isStartingGeneration).toBe(false);
+  });
+
+  it('drops an acknowledgement that arrives after the wizard switched to another draft', async () => {
+    const generationResponse = createDeferred<Awaited<ReturnType<typeof generatePlan>>>();
+    mockGeneratePlan.mockImplementationOnce(() => generationResponse.promise);
+    const startPolling = vi.fn();
+    const onGenerationStarted = vi.fn();
+    const { result, rerender } = renderHook(({ draft }: { draft: PlannerDraft }) => useGenerationHandlers({
+      draft,
+      config: baseConfig,
+      branchError: null,
+      contextHelpers: { isContextStale: false, clearCountdown: vi.fn(), fetchPreview: vi.fn() },
+      startPolling,
+      stopPolling: vi.fn(),
+      onGenerationStarted,
+      setError: vi.fn(),
+      setGenerationError: vi.fn(),
+    }), { initialProps: { draft: makeDraft() as never } });
+
+    let start!: Promise<void>;
+    act(() => { start = result.current.handleGenerateForExistingDraft(); });
+    await waitFor(() => expect(mockGeneratePlan).toHaveBeenCalledWith('draft-1', expect.anything()));
+
+    rerender({ draft: { ...makeDraft(), draft_id: 'draft-2' } as never });
+    generationResponse.resolve({ success: true, status: 'generating', message: 'Plan generation started', runId: 'generation-run-a' });
+    await act(async () => start);
+
+    expect(onGenerationStarted).not.toHaveBeenCalled();
+    expect(startPolling).not.toHaveBeenCalled();
     expect(result.current.isStartingGeneration).toBe(false);
   });
 

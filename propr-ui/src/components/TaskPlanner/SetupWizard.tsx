@@ -51,7 +51,7 @@ interface SetupWizardProps {
   onGenerateComplete: () => void;
   onDraftCreated?: (draftId: string) => void;
   onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
-  onGenerationStarted?: (runId: string, snapshot?: PlannerDraft) => void;
+  onGenerationStarted?: (runId: string, draftId: string, snapshot?: PlannerDraft) => void;
   onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void;
 }
 

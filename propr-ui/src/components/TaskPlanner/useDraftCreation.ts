@@ -16,7 +16,7 @@ export interface DraftCreationParams {
   flushPrompt: (draftId: string, prompt: string) => Promise<void>;
   // Hands the acknowledged run to the page's draft before navigating; the studio instance survives
   // /studio/new → /studio/:id, so router state alone cannot replace the draft it already holds.
-  onGenerationStarted?: (runId: string, snapshot?: PlannerDraft) => void;
+  onGenerationStarted?: (runId: string, draftId: string, snapshot?: PlannerDraft) => void;
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setIsCreating: React.Dispatch<React.SetStateAction<boolean>>;
@@ -58,7 +58,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraft
       const draftWithPlan = constructDraftWithPlan({ ...draft, initial_prompt: prompt }, getDraftSetupSnapshot(config));
       draftWithPlan.status = 'generating';
       draftWithPlan.generation_trace = { steps: [], runId: generation.runId };
-      onGenerationStarted?.(generation.runId, draftWithPlan);
+      onGenerationStarted?.(generation.runId, draft.draft_id, draftWithPlan);
       navigate(`/studio/${draft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan, initialBaseBranch: config.baseBranch, baseBranchPersistenceWarning } });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');

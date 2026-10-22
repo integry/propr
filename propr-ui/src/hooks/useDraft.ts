@@ -12,7 +12,7 @@ interface UseDraftResult {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
-  activateGenerationRun: (runId: string, snapshot?: PlannerDraft) => void;
+  activateGenerationRun: (runId: string, draftId: string, snapshot?: PlannerDraft) => void;
 }
 
 function ensureArray(value: unknown): unknown[] {
@@ -167,17 +167,16 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     });
   }, []);
 
-  // The snapshot stands in for the draft while its first fetch is still in flight.
-  const activateGenerationRun = useCallback((runId: string, snapshot?: PlannerDraft) => {
+  // draftId names the draft the run was started for; a delayed acknowledgement for another draft
+  // is ignored. The snapshot stands in for the draft while its first fetch is still in flight.
+  const activateGenerationRun = useCallback((runId: string, runDraftId: string, snapshot?: PlannerDraft) => {
     const currentDraftId = draftIdRef.current;
-    if (!currentDraftId) return;
-    const hasSnapshot = snapshot?.draft_id === currentDraftId;
+    if (!currentDraftId || runDraftId !== currentDraftId) return;
+    if (snapshot && snapshot.draft_id !== currentDraftId) return;
     activeRunIdRef.current = runId;
-    if (hasSnapshot) activationSeqRef.current += 1;
+    if (snapshot) activationSeqRef.current += 1;
     setDraft(currentDraft => {
-      const base = currentDraft?.draft_id === currentDraftId
-        ? currentDraft
-        : (hasSnapshot ? snapshot : null);
+      const base = currentDraft?.draft_id === currentDraftId ? currentDraft : snapshot;
       if (!base) return currentDraft;
       return {
         ...base,
@@ -185,7 +184,7 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
         generation_trace: { steps: [], runId },
       };
     });
-    if (hasSnapshot) {
+    if (snapshot) {
       setError(null);
       setLoading(false);
     }

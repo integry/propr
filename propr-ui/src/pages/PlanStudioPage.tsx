@@ -197,7 +197,7 @@ const ReviewView: React.FC<{
   </StudioShell>
 );
 
-const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void; onGenerationStarted: (runId: string, snapshot?: PlannerDraft) => void; onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void }> = ({ currentStage, draft, onRefetch, onGenerationStarted, onDraftMetadataPersisted }) => (
+const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void; onGenerationStarted: (runId: string, draftId: string, snapshot?: PlannerDraft) => void; onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void }> = ({ currentStage, draft, onRefetch, onGenerationStarted, onDraftMetadataPersisted }) => (
   <StudioShell currentStage={currentStage}>
     <SetupWizard
       draft={draft}
@@ -240,7 +240,7 @@ const NewDraftView: React.FC<{
   draft?: PlannerDraft;
   onDraftCreated?: (draft: PlannerDraft) => void;
   onRefetch?: () => void;
-  onGenerationStarted?: (runId: string, snapshot?: PlannerDraft) => void;
+  onGenerationStarted?: (runId: string, draftId: string, snapshot?: PlannerDraft) => void;
   onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void;
 }> = ({ draft, onDraftCreated, onRefetch, onGenerationStarted, onDraftMetadataPersisted, singleTask }) => (
   <StudioShell
@@ -261,7 +261,7 @@ interface DraftViewOptions extends IntentAwareViewProps {
   draft: PlannerDraft;
   currentStage: StudioStage;
   refetch: () => void;
-  onGenerationStarted: (runId: string, snapshot?: PlannerDraft) => void;
+  onGenerationStarted: (runId: string, draftId: string, snapshot?: PlannerDraft) => void;
   onDraftMetadataPersisted: (update: PromptPersistedUpdate) => void;
 }
 

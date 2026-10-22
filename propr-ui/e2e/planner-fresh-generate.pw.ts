@@ -4,6 +4,7 @@ import { installWindowActions } from './native-chrome.fixture';
 
 const draftId = 'fresh-plan';
 const prompt = 'Add a health endpoint to the API';
+const serverName = 'Fresh draft named by the server';
 const task = { id: 'task-1', title: 'Add a GET /health endpoint with a readiness check', body: '## Context\nOne bounded task.', implementation: '' };
 
 const layouts = [
@@ -36,15 +37,16 @@ async function installNativeShell(page: Page) {
  * A server for one fresh draft. Like the real one, POST /generate claims the run only after preparing the repository,
  * which takes longer than the page's own read of the new draft: that read answers with the pre-generation draft
  * before the acknowledgement arrives. Completion is up to the test.
+ *
+ * Reads carry a server-assigned name the create response lacks, so the document title shows when the page has applied
+ * a read; the acknowledgement is held until then rather than for a fixed time.
  */
 async function routeFreshDraft(page: Page) {
-  const server = { creations: 0, generations: 0, reads: 0, complete: () => {} };
+  const server = { creations: 0, generations: 0, reads: 0, readAppliedBeforeAck: false, complete: () => {} };
   const draft: Record<string, unknown> = {
     draft_id: draftId, repository: 'integry/propr', initial_prompt: '', status: 'draft', attachments: [], chat_history: [], plan_json: [],
     created_at: '2026-10-22T22:00:00Z', context_config: { baseBranch: 'main' },
   };
-  let answerFirstRead!: () => void;
-  const firstReadAnswered = new Promise<void>(resolve => { answerFirstRead = resolve; });
   server.complete = () => Object.assign(draft, { status: 'review', plan_json: [task], name: 'Health endpoint', generation_trace: { runId: 'run-1', steps: [] } });
   await page.route('**/api/planner/drafts', route => {
     if (route.request().method() !== 'POST') return route.fallback();
@@ -57,8 +59,8 @@ async function routeFreshDraft(page: Page) {
       Object.assign(draft, route.request().postDataJSON());
       return route.fulfill({ json: draft });
     }
-    await route.fulfill({ json: draft });
-    if (++server.reads === 1) answerFirstRead();
+    server.reads++;
+    await route.fulfill({ json: { ...draft, name: draft.name ?? serverName } });
   });
   await page.route(`**/api/planner/drafts/${draftId}/repository-info`, route => route.fulfill({ json: { defaultBranch: 'main', branches: ['main'] } }));
   await page.route('**/api/github/repos/integry/propr/branches', route => route.fulfill({ json: { defaultBranch: 'main', branches: ['main'] } }));
@@ -68,7 +70,9 @@ async function routeFreshDraft(page: Page) {
   await page.route('**/api/planner/generate', async route => {
     server.generations++;
     expect(route.request().postDataJSON().draftId).toBe(draftId);
-    await Promise.race([firstReadAnswered, new Promise(resolve => setTimeout(resolve, 5_000))]);
+    // Barrier: the page has rendered the pre-generation read. On timeout the acknowledgement still goes out and the test's assertion fails.
+    server.readAppliedBeforeAck = await page.waitForFunction(name => document.title.includes(name), serverName, { timeout: 10_000 })
+      .then(() => true, () => false);
     Object.assign(draft, { status: 'generating', generation_trace: { runId: 'run-1', steps: [{ name: 'relevance', status: 'in_progress' }] } });
     await route.fulfill({ json: { success: true, runId: 'run-1', status: 'generating', message: 'started' } });
   });
@@ -93,7 +97,8 @@ for (const layout of layouts) {
     await generate.click();
 
     await expect(page.getByText('Generating', { exact: true })).toBeVisible();
-    expect(server.reads).toBeGreaterThan(0);
+    expect(server.generations).toBe(1);
+    expect(server.readAppliedBeforeAck).toBe(true);
     await expect(page).toHaveURL(new RegExp(`/studio/${draftId}$`));
     await expect(composer).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
