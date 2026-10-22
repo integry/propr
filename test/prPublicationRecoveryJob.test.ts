@@ -306,7 +306,7 @@ const modules: Record<string, Record<string, unknown>> = {
         ensurePRProcessingLockToken: async () => 'token', releasePRProcessingLock: async (_redis: unknown, key: string) => { heldLocks.delete(key); },
         startPRProcessingLockHeartbeat: () => noOp,
     },
-    prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: async ({ taskId }: { taskId: string }) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'processing'); }, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }), schedulePRCommentRecovery: async () => undefined },
+    prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: async ({ taskId }: { taskId: string }) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'processing'); }, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }), schedulePRCommentRecovery: async () => undefined, delayPRCommentJobInPlace: async () => false, predecessorWaitDelay: () => 60_000 },
     prCompletionComment: { buildCompletionComment: async (commit: unknown, comments: unknown, options: unknown, result: unknown) => JSON.stringify({ commit, comments, options, result }), noChangeAnalysisSummary: () => '' },
     reviewCommentGatherer: { markReviewFindingsProcessed: noOp },
     // Follow-up assignment is covered by test/prAutoAssignmentFollowup.test.ts.
