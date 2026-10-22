@@ -205,6 +205,16 @@ export const formatDesktopLogRecord = (
   ...sanitizeDesktopLogFields(event, fields),
 });
 
+// Diagnostic console output is best-effort: a synchronous stdout/stderr failure (for example
+// ENOSPC or EPIPE from a SyncWriteStream) must not escape into the caller or skip the file sink.
+const writeConsoleBestEffort = (consoleMethod: (line: string) => void, line: string): void => {
+  try {
+    consoleMethod.call(console, line);
+  } catch {
+    // The console sink is unavailable; the independent file sink still receives the record.
+  }
+};
+
 export const createDesktopLogger = (
   logPath: string,
   onWriteFailure?: () => void,
@@ -213,7 +223,7 @@ export const createDesktopLogger = (
   const log = (level: LogLevel, event: string, fields: Record<string, unknown> = {}) => {
     const record = formatDesktopLogRecord(level, event, fields);
     const consoleMethod = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    consoleMethod(record);
+    writeConsoleBestEffort(consoleMethod, record);
     pending = pending
       .then(async () => {
         await mkdir(dirname(logPath), { recursive: true, mode: 0o700 });
@@ -225,7 +235,10 @@ export const createDesktopLogger = (
         } catch {
           // Keep the fixed logger diagnostic available even if the smoke-only sink also fails.
         }
-        console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', code: 'LOG_WRITE_FAILED' }));
+        writeConsoleBestEffort(
+          console.error,
+          JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', code: 'LOG_WRITE_FAILED' }),
+        );
       });
   };
   return { log };
