@@ -32,4 +32,25 @@ describe('RepositoryChip', () => {
     expect(screen.getByTestId('repository-chip')).toHaveClass('items-baseline');
     expect(screen.getByTestId('repository-icon-image')).toHaveClass('self-center');
   });
+
+  it('opts a primary identity into an owner-above-name layout that wraps on phones', () => {
+    render(<RepositoryChip repository="integry/propr-desktop-acceptance" stackOnNarrow />);
+
+    const chip = screen.getByTestId('repository-chip');
+    // The whole slug stays the chip's text and tooltip; the slash is only hidden visually on phones.
+    expect(chip).toHaveTextContent('integry/propr-desktop-acceptance');
+    expect(chip).toHaveAttribute('title', 'integry/propr-desktop-acceptance');
+    expect(chip).toHaveClass('min-w-0', 'max-sm:text-xs');
+    expect(screen.getByTestId('repository-chip-owner')).toHaveClass('max-sm:block', 'max-sm:[overflow-wrap:anywhere]');
+    expect(screen.getByTestId('repository-chip-name')).toHaveClass('max-sm:block', 'max-sm:[overflow-wrap:anywhere]');
+    // From `sm` up it is the usual one-line truncated chip.
+    expect(screen.getByTestId('repository-chip-name').parentElement).toHaveClass('sm:truncate');
+  });
+
+  it('keeps compact chips on one truncated line unless they opt in', () => {
+    render(<RepositoryChip repository="integry/propr" />);
+
+    expect(screen.queryByTestId('repository-chip-owner')).not.toBeInTheDocument();
+    expect(screen.getByText('integry/propr')).toHaveClass('truncate');
+  });
 });

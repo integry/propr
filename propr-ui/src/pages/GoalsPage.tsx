@@ -945,7 +945,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
               baselines a pixel apart. Every item exports the baseline of its own text (the logo and the
               repository mark centre themselves instead), so the whole row reads along one straight line.
               Each raw value still carries the chip's 1.375rem line box, so the row's rhythm stays even. */}
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 text-sm leading-[1.375rem] text-slate-700">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-2 text-sm leading-[1.375rem] text-slate-700">
             <span className="font-medium" title={`${strategyLabel} launch strategy`}>{strategyLabel}</span>
             <span aria-hidden="true" className="text-slate-300">·</span>
             <span className="inline-flex items-baseline gap-1.5 font-medium" title={`Model: ${currentModel}`}>
@@ -955,7 +955,8 @@ function GoalDetails({ goalId }: { goalId: string }) {
             <span aria-hidden="true" className="text-slate-300">·</span>
             <span className="font-mono text-xs font-semibold leading-[1.375rem] text-slate-700" title="Elapsed time">{duration(goal.elapsedMs)}</span>
             <span aria-hidden="true" className="hidden text-slate-300 sm:inline">·</span>
-            <RepositoryChip repository={goal.repository} />
+            {/* The goal's primary identity: on a phone the owner stacks above the name and both wrap in full. */}
+            <RepositoryChip repository={goal.repository} stackOnNarrow />
             {goal.createdBy && <>
               <span aria-hidden="true" className="hidden text-slate-300 sm:inline">·</span>
               <CreatorMarker creator={goal.createdBy} variant="default" baseline />

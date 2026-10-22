@@ -295,7 +295,7 @@ test('the goal detail header aligns the creator on the repository chip baseline'
     return range.getBoundingClientRect().bottom;
   });
   const login = chip.getByText('@hubot');
-  const repository = page.getByTestId('repository-chip').locator('span.truncate').first();
+  const repository = page.getByTestId('repository-chip').getByTestId('repository-chip-name');
   expect(Math.abs(await baseline(login) - await baseline(repository))).toBeLessThan(1);
   await capture(page.locator('header').filter({ has: chip }), 'creator-goal-detail-header');
 });
