@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import { useHistoryEntryOwnership } from '../../hooks/useHistoryEntryOwnership';
 import { generatePlan, PlannerDraft } from '../../api/proprApi';
 import { getDraftConfigSnapshot, getPersistedDraftSettings, serializePersistedDraftSettings } from './setupWizardDraftConfig';
 import { buildGenerationPayload, getDraftSetupSnapshot } from './setupWizardPayloads';
@@ -40,6 +41,7 @@ async function syncDraftSetup(draft: PlannerDraft, config: PlannerConfig): Promi
 // Generate in new mode: persist the draft through the same creation autosave uses, then start generation for it.
 export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, setError, setIsCreating }: DraftCreationParams) {
   const isStartingRef = useRef(false);
+  const claimHistoryEntry = useHistoryEntryOwnership();
   return useCallback(async () => {
     if (!selectedRepo || !config.prompt.trim()) return void setError('Please select a repository and enter a prompt');
     if (!config.baseBranch) return void setError('Please wait for the repository branch to finish loading');
@@ -47,6 +49,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraft
     isStartingRef.current = true;
     setIsCreating(true);
     setError(null);
+    const isStillOnEntry = claimHistoryEntry();
     try {
       const draft = await ensureDraftCreated();
       if (!draft) throw new Error('Failed to create draft');
@@ -55,6 +58,9 @@ export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraft
       const baseBranchPersistenceWarning = await syncDraftSetup(draft, config);
       await uploadPendingLocalFiles(draft.draft_id, localFiles);
       const generation = await generatePlan(draft.draft_id, buildGenerationPayload(config));
+      // After the user left, the run stays on the server and the draft reopens normally; the
+      // acknowledgement must not pull them back or replace whatever entry they are on now.
+      if (!isStillOnEntry(`/studio/${draft.draft_id}`)) return void setIsCreating(false);
       const draftWithPlan = constructDraftWithPlan({ ...draft, initial_prompt: prompt }, getDraftSetupSnapshot(config));
       draftWithPlan.status = 'generating';
       draftWithPlan.generation_trace = { steps: [], runId: generation.runId };
@@ -66,5 +72,5 @@ export function useDraftCreation({ selectedRepo, config, localFiles, ensureDraft
     } finally {
       isStartingRef.current = false;
     }
-  }, [selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, setError, setIsCreating]);
+  }, [selectedRepo, config, localFiles, ensureDraftCreated, uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, claimHistoryEntry, setError, setIsCreating]);
 }

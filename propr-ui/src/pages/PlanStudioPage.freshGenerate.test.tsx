@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { BrowserRouter, HashRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Route, Routes, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DraftUpdatePayload } from '@propr/shared';
 import PlanStudioPage from './PlanStudioPage';
@@ -66,6 +66,13 @@ const emit = (payload: Partial<DraftUpdatePayload>) => act(() => {
   for (const listener of socket.listeners) listener({ draftId: 'draft-1', timestamp: new Date().toISOString(), ...payload } as DraftUpdatePayload);
 });
 
+// In-app navigation as a sidebar link would perform it.
+let appNavigate: NavigateFunction;
+function NavigationProbe() {
+  appNavigate = useNavigate();
+  return null;
+}
+
 // Mirrors App.tsx: both studio routes render the same element tree, so the page instance survives /studio/new → /studio/:id.
 function renderStudio(desktop: boolean) {
   vi.stubGlobal('__PROPR_DESKTOP__', desktop);
@@ -76,6 +83,7 @@ function renderStudio(desktop: boolean) {
   return render(
     <ToastContext.Provider value={toast}>
       <Router>
+        <NavigationProbe />
         <Routes>
           <Route path="/studio/new" element={<div><PlanStudioPage isNew /></div>} />
           <Route path="/studio/:draftId" element={<div><PlanStudioPage /></div>} />
@@ -93,7 +101,8 @@ const historyStep = (step: () => void) => act(async () => {
   step();
   await popped;
 });
-const studioUrl = (desktop: boolean) => (desktop ? `${renderer}#/studio/draft-1` : 'https://app.example/studio/draft-1');
+const appUrl = (desktop: boolean, path: string) => (desktop ? `${renderer}#${path}` : `https://app.example${path}`);
+const studioUrl = (desktop: boolean) => appUrl(desktop, '/studio/draft-1');
 
 async function enterPrompt() {
   const textarea = await screen.findByPlaceholderText(/Describe the feature/);
@@ -201,5 +210,91 @@ describe.each([false, true])('fresh plan generation becomes the displayed draft 
     expect(screen.getByPlaceholderText(/Describe the feature/)).toHaveValue(PROMPT);
     expect(screen.queryByText('Generating')).not.toBeInTheDocument();
     expect(createDraft).toHaveBeenCalledTimes(1);
+  });
+
+  describe('after the user leaves a pending fresh plan', () => {
+    const otherDraft = { ...serverDraft('draft'), draft_id: 'other-draft', initial_prompt: 'Rename the settings page' } as PlannerDraft;
+    let generation: ReturnType<typeof deferred<Awaited<ReturnType<typeof generatePlan>>>>;
+    let serverStatus: string;
+    beforeEach(() => {
+      serverStatus = 'generating';
+      vi.mocked(getDraft).mockImplementation(async id => (id === 'other-draft' ? otherDraft : serverDraft(serverStatus, 'run-1')));
+      generation = deferred();
+      vi.mocked(generatePlan).mockImplementationOnce(() => generation.promise);
+    });
+    const acknowledge = () => act(async () => generation.resolve({ success: true, status: 'generating', message: 'started', runId: 'run-1' }));
+    const expectSingleRun = async () => {
+      await waitPastAutosaveDebounce();
+      expect(createDraft).toHaveBeenCalledTimes(1);
+      expect(generatePlan).toHaveBeenCalledTimes(1);
+    };
+    const reopenGeneratedDraft = async () => {
+      await act(async () => appNavigate('/studio/draft-1'));
+      expect(await screen.findByText('Generating')).toBeInTheDocument();
+      serverStatus = 'review';
+      await emit({ runId: 'run-1', draftStatus: 'review' });
+      expect(await screen.findByTestId('review')).toHaveTextContent('draft-1:review');
+      expect(window.location.href).toBe(studioUrl(desktop));
+    };
+
+    it('keeps the plans list when the acknowledgement arrives after Back', async () => {
+      renderStudio(desktop);
+      const historyLength = window.history.length;
+      await enterPrompt();
+      fireEvent.click(generateButton());
+      await waitFor(() => expect(generatePlan).toHaveBeenCalledTimes(1));
+      expect(window.location.href).toBe(studioUrl(desktop));
+
+      await historyStep(() => window.history.back());
+      expect(await screen.findByRole('heading', { name: 'Plans' })).toBeInTheDocument();
+      await acknowledge();
+
+      expect(screen.getByRole('heading', { name: 'Plans' })).toBeInTheDocument();
+      expect(window.location.href).toBe(appUrl(desktop, '/plans'));
+      expect(window.history.length).toBe(historyLength);
+      await expectSingleRun();
+      expect(window.location.href).toBe(appUrl(desktop, '/plans'));
+      await reopenGeneratedDraft();
+      expect(generatePlan).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps another opened draft untouched when the acknowledgement arrives', async () => {
+      renderStudio(desktop);
+      await enterPrompt();
+      fireEvent.click(generateButton());
+      await waitFor(() => expect(generatePlan).toHaveBeenCalledTimes(1));
+
+      await act(async () => appNavigate('/studio/other-draft'));
+      expect(await screen.findByDisplayValue('Rename the settings page')).toBeInTheDocument();
+      await acknowledge();
+
+      expect(window.location.href).toBe(appUrl(desktop, '/studio/other-draft'));
+      expect(screen.getByDisplayValue('Rename the settings page')).toBeInTheDocument();
+      expect(screen.queryByText('Generating')).not.toBeInTheDocument();
+      await expectSingleRun();
+      expect(window.location.href).toBe(appUrl(desktop, '/studio/other-draft'));
+      await reopenGeneratedDraft();
+      expect(generatePlan).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not rewrite the plans entry when the draft is created after Back', async () => {
+      const creation = deferred<PlannerDraft>();
+      vi.mocked(createDraft).mockImplementationOnce(() => creation.promise);
+      renderStudio(desktop);
+      await enterPrompt();
+      fireEvent.click(generateButton());
+      await waitFor(() => expect(createDraft).toHaveBeenCalledTimes(1));
+
+      await historyStep(() => window.history.back());
+      expect(await screen.findByRole('heading', { name: 'Plans' })).toBeInTheDocument();
+      await act(async () => creation.resolve(serverDraft('draft')));
+      await waitFor(() => expect(generatePlan).toHaveBeenCalledTimes(1));
+      await acknowledge();
+
+      expect(window.location.href).toBe(appUrl(desktop, '/plans'));
+      expect(screen.getByRole('heading', { name: 'Plans' })).toBeInTheDocument();
+      await expectSingleRun();
+      await reopenGeneratedDraft();
+    });
   });
 });

@@ -41,7 +41,7 @@ async function installNativeShell(page: Page) {
  * Reads carry a server-assigned name the create response lacks, so the document title shows when the page has applied
  * a read; the acknowledgement is held until then rather than for a fixed time.
  */
-async function routeFreshDraft(page: Page) {
+async function routeFreshDraft(page: Page, options: { holdAcknowledgement?: Promise<void> } = {}) {
   const server = { creations: 0, generations: 0, reads: 0, readAppliedBeforeAck: false, complete: () => {} };
   const draft: Record<string, unknown> = {
     draft_id: draftId, repository: 'integry/propr', initial_prompt: '', status: 'draft', attachments: [], chat_history: [], plan_json: [],
@@ -70,8 +70,9 @@ async function routeFreshDraft(page: Page) {
   await page.route('**/api/planner/generate', async route => {
     server.generations++;
     expect(route.request().postDataJSON().draftId).toBe(draftId);
+    if (options.holdAcknowledgement) await options.holdAcknowledgement;
     // Barrier: the page has rendered the pre-generation read. On timeout the acknowledgement still goes out and the test's assertion fails.
-    server.readAppliedBeforeAck = await page.waitForFunction(name => document.title.includes(name), serverName, { timeout: 10_000 })
+    else server.readAppliedBeforeAck = await page.waitForFunction(name => document.title.includes(name), serverName, { timeout: 10_000 })
       .then(() => true, () => false);
     Object.assign(draft, { status: 'generating', generation_trace: { runId: 'run-1', steps: [{ name: 'relevance', status: 'in_progress' }] } });
     await route.fulfill({ json: { success: true, runId: 'run-1', status: 'generating', message: 'started' } });
@@ -119,6 +120,45 @@ for (const layout of layouts) {
     await page.goForward();
     await expect(page).toHaveURL(new RegExp(`/studio/${draftId}$`));
     await expect(page.getByText(task.title).first()).toBeVisible();
+    expect(server.generations).toBe(1);
+  });
+}
+
+for (const layout of layouts) {
+  test(`leaving a fresh plan before its generation is acknowledged keeps the user where they went (${layout.name})`, async ({ page }) => {
+    await page.setViewportSize(layout.viewport);
+    if (layout.native) await installNativeShell(page);
+    await fixture(page);
+    let acknowledge!: () => void;
+    const server = await routeFreshDraft(page, { holdAcknowledgement: new Promise<void>(resolve => { acknowledge = resolve; }) });
+    await page.goto('/plans');
+    await page.evaluate(() => { window.history.pushState(null, '', '/studio/new'); window.dispatchEvent(new PopStateEvent('popstate')); });
+
+    await expect(page.getByTestId('branch-chip')).toHaveAttribute('data-status', 'resolved');
+    await page.getByPlaceholder(/Describe the feature/).fill(prompt);
+    const generate = page.getByRole('button', { name: /Generate Plan/ });
+    await expect(generate).toBeEnabled();
+    await generate.click();
+    await expect.poll(() => server.generations).toBe(1);
+    await expect(page).toHaveURL(new RegExp(`/studio/${draftId}$`));
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/plans$/);
+    const acknowledged = page.waitForResponse('**/api/planner/generate');
+    acknowledge();
+    await acknowledged;
+    // Give a late navigation every chance to run before asserting it did not.
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 500)));
+    await expect(page).toHaveURL(/\/plans$/);
+    await expect(page.getByPlaceholder(/Describe the feature/)).toHaveCount(0);
+
+    // The run was not cancelled: reopening the draft shows its progress and then its Review, without generating again.
+    await page.goForward();
+    await expect(page).toHaveURL(new RegExp(`/studio/${draftId}$`));
+    await expect(page.getByText('Generating', { exact: true })).toBeVisible();
+    server.complete();
+    await expect(page.getByText(task.title).first()).toBeVisible({ timeout: 15_000 });
+    expect(server.creations).toBe(1);
     expect(server.generations).toBe(1);
   });
 }

@@ -21,8 +21,10 @@ function renderNewPlan(initialProps: HarnessProps) {
   const navigate = vi.fn();
   const setError = vi.fn();
   const setIsCreating = vi.fn();
-  const onDraftCreatedInPlace = vi.fn();
+  // As PlanStudioPage does: swap the visible path without a new history entry.
+  const onDraftCreatedInPlace = vi.fn((draft: PlannerDraft) => window.history.replaceState(window.history.state, '', `/studio/${draft.draft_id}`));
   const onDraftCreated = vi.fn();
+  const onGenerationStarted = vi.fn();
   const flushPrompt = vi.fn((draftId: string, prompt: string) => updateDraft(draftId, { initial_prompt: prompt, name: prompt }));
   const hook = renderHook(({ config, localFiles }: HarnessProps) => {
     const autosave = useAutoDraftCreation({
@@ -31,11 +33,11 @@ function renderNewPlan(initialProps: HarnessProps) {
     });
     const generate = useDraftCreation({
       selectedRepo: 'integry/propr', config, localFiles, ensureDraftCreated: autosave.ensureDraftCreated,
-      uploadPendingLocalFiles: autosave.uploadPendingLocalFiles, flushPrompt, navigate, setError, setIsCreating,
+      uploadPendingLocalFiles: autosave.uploadPendingLocalFiles, flushPrompt, onGenerationStarted, navigate, setError, setIsCreating,
     });
     return { autosave, generate };
   }, { initialProps });
-  return { ...hook, navigate, setError, setIsCreating, onDraftCreatedInPlace, onDraftCreated };
+  return { ...hook, navigate, setError, setIsCreating, onDraftCreatedInPlace, onDraftCreated, onGenerationStarted };
 }
 
 const config = (overrides: Partial<PlannerConfig> = {}): PlannerConfig => ({ ...baseConfig, prompt: 'Test prompt', baseBranch: 'develop', ...overrides });
@@ -44,6 +46,7 @@ describe('useDraftCreation', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.useFakeTimers();
+    window.history.replaceState({ key: 'studio', idx: 0 }, '', '/studio/new');
     mockUpdateDraft.mockResolvedValue(undefined as never);
     mockUploadAttachment.mockImplementation(async (_draftId, file) => ({ id: `attachment-${file.name}`, originalName: file.name, tokenEstimate: 1 }));
     mockGeneratePlan.mockResolvedValue({ success: true, status: 'generating', message: 'started', runId: 'run-1' });
@@ -168,6 +171,35 @@ describe('useDraftCreation', () => {
       await first;
     });
 
+    expect(mockCreateDraft).toHaveBeenCalledTimes(1);
+    expect(mockGeneratePlan).toHaveBeenCalledTimes(1);
+  });
+
+  // The run belongs to the server once acknowledged; leaving must neither cancel it nor let it pull the user back.
+  it.each([
+    ['unmounts (back to the plans list)', (view: ReturnType<typeof renderNewPlan>) => view.unmount()],
+    // Still mounted: the router can keep rendering the studio while the next route's chunk loads.
+    ['stays mounted while the browser moves to another entry', () => window.history.pushState({ key: 'plans', idx: 1 }, '', '/plans')],
+  ])('drops the acknowledgement when the wizard %s while generation is pending', async (_label, leave) => {
+    mockCreateDraft.mockResolvedValue(makeDraft());
+    const generation = createDeferred<Awaited<ReturnType<typeof generatePlan>>>();
+    mockGeneratePlan.mockReturnValueOnce(generation.promise);
+    const view = renderNewPlan({ config: config(), localFiles: [] });
+
+    let start!: Promise<void>;
+    act(() => { start = view.result.current.generate(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(mockGeneratePlan).toHaveBeenCalledTimes(1);
+    leave(view);
+    await act(async () => {
+      generation.resolve({ success: true, status: 'generating', message: 'started', runId: 'run-1' });
+      await start;
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(view.onGenerationStarted).not.toHaveBeenCalled();
+    expect(view.navigate).not.toHaveBeenCalled();
+    expect(view.setError).not.toHaveBeenCalledWith(expect.any(String));
     expect(mockCreateDraft).toHaveBeenCalledTimes(1);
     expect(mockGeneratePlan).toHaveBeenCalledTimes(1);
   });
