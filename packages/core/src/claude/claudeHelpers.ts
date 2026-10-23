@@ -320,7 +320,16 @@ export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
         }
     }
 
+    // A streamed success event cannot erase a known nonzero process exit: the
+    // process was interrupted or failed after the provider reported its result.
+    if (hasKnownNonzeroExit(result.exitCode)) claudeOutput.success = false;
+
     return claudeOutput;
+}
+
+/** True when the process exit is known and is not a clean exit. */
+export function hasKnownNonzeroExit(exitCode: number | null | undefined): exitCode is number {
+    return typeof exitCode === 'number' && exitCode !== 0;
 }
 
 function handleRateLimitError(jsonLine: JsonLineMessage): void {

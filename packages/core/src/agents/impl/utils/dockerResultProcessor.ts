@@ -5,9 +5,9 @@
  * into structured AgentExecutionResult objects.
  */
 
-import { AgentExecutionResult, TokenUsage } from '../../types.js';
+import { AgentExecutionResult, AgentTerminationReason, TokenUsage } from '../../types.js';
 import { ExecutionResult } from '../../../claude/docker/dockerExecutor.js';
-import { parseStreamJsonOutput } from '../../../claude/claudeHelpers.js';
+import { hasKnownNonzeroExit, parseStreamJsonOutput } from '../../../claude/claudeHelpers.js';
 import { getCorrectedTokenUsage, ensurePromptInConversationLog } from './tokenUtils.js';
 import { getClaudeAnalysisText } from './claudeOutputHelpers.js';
 import { describeAgentTermination, resolveAgentTerminationReason } from '../../termination.js';
@@ -54,6 +54,49 @@ function extractExecutionError(
     }
 
     return undefined;
+}
+
+/**
+ * Resolves why the run stopped early, if it did, and the error to report.
+ */
+function resolveExecutionOutcome(
+    claudeOutput: ReturnType<typeof parseStreamJsonOutput>,
+    result: ExecutionResult
+): { terminationReason: AgentTerminationReason | undefined; error: string | undefined } {
+    // A non-error terminal result followed by a nonzero exit (e.g. 137 after the
+    // container was killed) is a failed run; its result text is a summary, not the error.
+    const exitedAfterReportedSuccess = !!claudeOutput.finalResult && !claudeOutput.finalResult.is_error
+        && hasKnownNonzeroExit(result.exitCode);
+    const executionError = exitedAfterReportedSuccess
+        ? result.stderr?.trim() || undefined
+        : extractExecutionError(claudeOutput, result.stderr || '');
+    const terminationReason = resolveAgentTerminationReason({
+        timedOut: result.timedOut,
+        costCapExceeded: result.costCapExceeded,
+        watchdogTrip: result.watchdogTrip,
+        subtype: claudeOutput.finalResult?.subtype,
+        error: executionError
+    }) ?? (
+        // Only recover an actual runtime crash after the agent started. Setup
+        // failures and ordinary tool errors must not become partial successes.
+        !claudeOutput.finalResult && [132, 134, 139].includes(result.exitCode ?? 0)
+        && /(?:^|\n)oh no: Bun has crashed\./.test(result.stderr || '')
+        && claudeOutput.conversationLog.some(entry => entry.type === 'assistant')
+            ? 'runtime_crash' as const : undefined
+    );
+
+    if (!terminationReason) {
+        const error = exitedAfterReportedSuccess
+            ? [`Claude process exited with code ${result.exitCode} after reporting a successful result`, executionError]
+                .filter(Boolean).join('\n')
+            : executionError;
+        return { terminationReason, error };
+    }
+    const describedOnly = terminationReason === 'runtime_crash' || exitedAfterReportedSuccess;
+    return {
+        terminationReason,
+        error: (describedOnly ? undefined : executionError) || describeAgentTermination(terminationReason)
+    };
 }
 
 /**
@@ -108,24 +151,10 @@ export function processDockerResult(
         fullConversationLog
     );
 
-    // Extract commit message from Claude's summary
-    const executionError = extractExecutionError(claudeOutput, result.stderr || '');
-    const terminationReason = resolveAgentTerminationReason({
-        timedOut: result.timedOut,
-        costCapExceeded: result.costCapExceeded,
-        watchdogTrip: result.watchdogTrip,
-        subtype: claudeOutput.finalResult?.subtype,
-        error: executionError
-    }) ?? (
-        // Only recover an actual runtime crash after the agent started. Setup
-        // failures and ordinary tool errors must not become partial successes.
-        !claudeOutput.finalResult && [132, 134, 139].includes(result.exitCode ?? 0)
-        && /(?:^|\n)oh no: Bun has crashed\./.test(result.stderr || '')
-        && claudeOutput.conversationLog.some(entry => entry.type === 'assistant')
-            ? 'runtime_crash' as const : undefined
-    );
+    const { terminationReason, error } = resolveExecutionOutcome(claudeOutput, result);
     const summary = claudeOutput.finalResult?.result
         ?? (terminationReason ? getClaudeAnalysisText(claudeOutput) || undefined : undefined);
+    // Extract commit message from Claude's summary
     const commitMessage = extractCommitMessage(summary);
 
     // Build the agent execution response
@@ -143,8 +172,7 @@ export function processDockerResult(
         modifiedFiles: [],
         commitMessage,
         summary,
-        error: terminationReason === 'runtime_crash' ? describeAgentTermination(terminationReason)
-            : executionError || (terminationReason ? describeAgentTermination(terminationReason) : undefined),
+        error,
         terminationReason,
         prompt,
         conversationLog: fullConversationLog,
