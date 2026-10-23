@@ -101,30 +101,41 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
   // the pre-generation snapshot and must not replace the acknowledged run.
   const activationSeqRef = useRef(0);
 
+  // Each read is owned by the selection that requested it: changing draftId or unmounting
+  // invalidates every read in flight, and a newer read for the same draft supersedes an older one,
+  // so a late completion cannot alter a newer selection even when the draft ID matches again.
+  const fetchSeqRef = useRef(0);
+
   // Fetch function - only sets loading for explicit refetch, not background refresh
   const fetchDraft = useCallback(async (showLoading = true) => {
-    if (!draftId) return;
+    if (!draftId || draftId !== draftIdRef.current) return;
 
     const activationSeq = activationSeqRef.current;
     const isSuperseded = () => activationSeq !== activationSeqRef.current;
+    const fetchSeq = ++fetchSeqRef.current;
+    const isCurrent = () => fetchSeq === fetchSeqRef.current && draftIdRef.current === draftId;
     try {
       if (showLoading) {
         setLoading(true);
       }
       setError(null);
       const data = await getDraft(draftId);
-      if (isSuperseded()) return;
+      if (!isCurrent() || isSuperseded()) return;
       const parsedDraft = parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft;
       activeRunIdRef.current = parsedDraft.generation_trace?.runId;
       setDraft(parsedDraft);
     } catch (err) {
-      if (!isSuperseded()) setError((err as Error).message || 'Failed to fetch draft');
+      if (isCurrent() && !isSuperseded()) setError((err as Error).message || 'Failed to fetch draft');
     } finally {
-      if (showLoading) {
+      // The latest read ends loading for its selection, including a loading read it superseded;
+      // a read abandoned for /studio/new (no selection) still ends its own loading state.
+      if (isCurrent() || (showLoading && !draftIdRef.current)) {
         setLoading(false);
       }
     }
   }, [draftId]);
+
+  useEffect(() => () => { fetchSeqRef.current += 1; }, [draftId]);
 
   // Initial fetch effect - handles both initial load and draftId changes
   useEffect(() => {
