@@ -135,7 +135,7 @@ function ContextStrip({ preview, dimensions }: { preview: PublishedVisualPreview
 
 /**
  * Visual evidence published by this specific task run, stacked for inspection: a header with the
- * capture switcher and Fit/100% controls, a one-line context strip, and a full-width imaging stage
+ * capture switcher and Fit/100% controls, a one-line context strip, and an imaging stage
  * that shows the whole capture (Fit) or its pixels 1:1 in a scrollable pane (100%).
  * Renders nothing when the run published none.
  */
@@ -193,18 +193,19 @@ export default function TaskVisualPreviews({ previews, className = 'border-b bor
 
     <figure className="m-0 mt-2 min-w-0 border border-slate-200 bg-white">
       <ContextStrip preview={selected} dimensions={dimensions} />
-      {/* The imaging stage: full width, one fixed height so switching captures never moves the trace below. */}
+      {/* Fit follows the image's intrinsic ratio; only actual-size images and videos use a fixed stage. */}
       <div ref={stageRef} data-testid="visual-evidence-canvas" data-zoom={actual ? 'actual' : 'fit'} style={checkerboard}
-        className={`h-80 w-full sm:h-[440px] ${actual ? 'overflow-auto p-3' : 'flex items-center justify-center p-2'}`}>
+        className={isImage && !actual ? 'mx-auto flex w-fit max-w-full justify-center'
+          : `h-80 w-full sm:h-[440px] ${actual ? 'overflow-auto p-3' : 'flex items-center justify-center p-2'}`}>
         {!isImage
           ? <PreviewVideo key={selected.url} preview={selected} className="max-h-full max-w-full bg-slate-900" />
           // One tree for both modes, so toggling zoom restyles the loaded image instead of fetching it again.
           : <button type="button" aria-haspopup="dialog" aria-label={`Open full-size preview: ${selected.title}`}
             onClick={event => openLightbox(event.currentTarget)}
-            className={`cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 ${actual ? 'block w-max' : 'flex h-full w-full items-center justify-center'}`}>
+            className={`cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 ${actual ? 'block w-max' : 'flex min-w-0 max-w-full items-center justify-center'}`}>
             <PreviewImage key={selected.url} preview={selected} className={actual
               ? 'block h-auto w-auto max-w-none border border-slate-200/80 bg-white'
-              : 'min-h-16 min-w-32 max-h-full max-w-full border border-slate-200/80 bg-white object-contain shadow-sm'} />
+              : 'block h-auto w-auto max-h-80 max-w-full object-contain sm:max-h-[440px]'} />
           </button>}
       </div>
     </figure>

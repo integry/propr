@@ -11,7 +11,7 @@ const previewMedia = [
   { type: 'image', title: 'Goal workspace', description: 'The goal workspace with published evidence.', url: privateAsset('goals') },
 ];
 
-async function fixture(page: Page, title = 'Render visual previews full width') {
+async function fixture(page: Page, title = 'Render visual previews full width', captureSize = { width: 1440, height: 900 }) {
   let image: Buffer | undefined;
   let showMedia = false;
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
@@ -42,7 +42,7 @@ async function fixture(page: Page, title = 'Render visual previews full width') 
     return route.fulfill(path in responses ? { json: responses[path] } : { status: 503, json: { error: 'Unavailable in visual preview fixture' } });
   });
   // Publish a real rendered application screen as the image fixture rather than invented artwork.
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize(captureSize);
   await page.goto(`/tasks/${taskId}`);
   await expect(page.getByTestId('task-details')).toBeVisible();
   image = await page.screenshot();
@@ -58,7 +58,7 @@ async function capture(page: Page, name: string) {
 const noHorizontalOverflow = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
 for (const width of [320, 390, 1024, 1440, 2560]) {
-  test(`stacks the context strip over a full-width imaging stage at ${width}px`, async ({ page }) => {
+  test(`fits the imaging stage to the capture at ${width}px`, async ({ page }) => {
     await fixture(page);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/tasks/${taskId}`);
@@ -73,13 +73,16 @@ for (const width of [320, 390, 1024, 1440, 2560]) {
       const style = getComputedStyle(node);
       return node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     });
-    // The stage spans the section and sits below the context strip, not beside it.
-    expect(Math.abs(stageBox.width - sectionContentWidth)).toBeLessThanOrEqual(2);
+    // The image frame stays within the section and sits below the context strip.
+    expect(stageBox.width).toBeLessThanOrEqual(sectionContentWidth);
     const contextBox = (await section.getByTestId('visual-evidence-context').boundingBox())!;
     expect(contextBox.y + contextBox.height).toBeLessThanOrEqual(stageBox.y + 1);
-    expect(Math.abs(stageBox.height - (width >= 640 ? 440 : 320))).toBeLessThanOrEqual(2);
+    expect(stageBox.height).toBeLessThanOrEqual(width >= 640 ? 440 : 320);
     // Fit shows the whole capture: nothing is clipped by the stage.
     const imageBox = (await image.boundingBox())!;
+    expect(Math.abs(stageBox.width - imageBox.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(stageBox.height - imageBox.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs(imageBox.width / imageBox.height - 1440 / 900)).toBeLessThan(0.01);
     expect(imageBox.x).toBeGreaterThanOrEqual(stageBox.x);
     expect(imageBox.y).toBeGreaterThanOrEqual(stageBox.y);
     expect(imageBox.x + imageBox.width).toBeLessThanOrEqual(stageBox.x + stageBox.width + 0.5);
@@ -94,17 +97,40 @@ for (const width of [320, 390, 1024, 1440, 2560]) {
     await expect(stage).toHaveAttribute('data-zoom', 'actual');
     expect(Math.round((await image.boundingBox())!.width)).toBe(1440 + 2);
     expect(await stage.evaluate(node => node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight)).toBe(true);
-    expect(Math.abs((await stage.boundingBox())!.height - stageBox.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs((await stage.boundingBox())!.height - (width >= 640 ? 440 : 320))).toBeLessThanOrEqual(1);
     if (width === 1440) await capture(page, `task-visual-previews-actual-size-${width}`);
     await section.getByRole('button', { name: 'Fit' }).click();
 
     const switcher = section.getByRole('group', { name: 'Captures' });
     await switcher.getByRole('button', { name: 'Checkout walkthrough' }).click();
     await expect(section.locator('video[controls]')).toHaveCount(1);
-    expect(Math.abs((await stage.boundingBox())!.height - stageBox.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs((await stage.boundingBox())!.height - (width >= 640 ? 440 : 320))).toBeLessThanOrEqual(1);
     await switcher.getByRole('button', { name: 'Desktop' }).click();
     await expect(image).toBeVisible();
     expect(await noHorizontalOverflow(page)).toBe(true);
+  });
+}
+
+for (const captureSize of [{ width: 2560, height: 600 }, { width: 390, height: 1800 }]) {
+  test(`fits a ${captureSize.width}×${captureSize.height} capture in a narrow pane`, async ({ page }) => {
+    await fixture(page, 'Fit visual evidence to the capture', captureSize);
+    await page.setViewportSize({ width: 406, height: 900 });
+    await page.goto(`/tasks/${taskId}`);
+    const section = page.getByRole('region', { name: /Visual evidence/ });
+    const image = section.getByAltText('Task queue at desktop width');
+    await expect(section.getByTestId('visual-evidence-dimensions')).toHaveText(`${captureSize.width}×${captureSize.height}`);
+    const frame = (await section.getByTestId('visual-evidence-canvas').boundingBox())!;
+    const imageBox = (await image.boundingBox())!;
+    expect(Math.abs(frame.width - imageBox.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(frame.height - imageBox.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs(frame.width / frame.height - captureSize.width / captureSize.height)).toBeLessThan(0.01);
+    expect(frame.height).toBeLessThanOrEqual(320);
+    expect(frame.width).toBeLessThanOrEqual(372);
+    expect(await noHorizontalOverflow(page)).toBe(true);
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      await mkdir('../.propr/previews', { recursive: true });
+      await section.screenshot({ animations: 'disabled', path: `../.propr/previews/task-visual-previews-fit-${captureSize.width}x${captureSize.height}.png` });
+    }
   });
 }
 

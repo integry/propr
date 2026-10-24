@@ -5,7 +5,7 @@ import TaskVisualPreviews from './TaskVisualPreviews';
 const asset = (id: string) => `https://github.com/user-attachments/assets/${id}`;
 
 describe('TaskVisualPreviews', () => {
-  it('stacks the context strip over a full-width stage that fits the whole capture', () => {
+  it('stacks the context strip over an intrinsically sized frame that fits the whole capture', () => {
     const { container } = render(<TaskVisualPreviews previews={[
       { type: 'image', title: 'Task list at Desktop 1920px', description: 'Row keeps its full title', url: asset('image') },
       { type: 'video', title: 'Checkout flow', url: asset('video') },
@@ -13,12 +13,14 @@ describe('TaskVisualPreviews', () => {
     ]} />);
     expect(screen.getByRole('heading', { name: 'Visual evidence (2 captures)' })).toBeInTheDocument();
     const stage = screen.getByTestId('visual-evidence-canvas');
-    expect(stage).toHaveClass('w-full', 'sm:h-[440px]', 'items-center', 'justify-center');
+    expect(stage).toHaveClass('w-fit', 'max-w-full', 'justify-center');
+    expect(stage).not.toHaveClass('h-80', 'sm:h-[440px]', 'p-2');
     expect(stage).toHaveAttribute('data-zoom', 'fit');
     const image = screen.getByAltText('Task list at Desktop 1920px');
     expect(image).toHaveAttribute('src', asset('image'));
     // Fit never clips: the whole capture is scaled into the stage.
-    expect(image).toHaveClass('max-h-full', 'max-w-full', 'object-contain');
+    expect(image).toHaveClass('h-auto', 'w-auto', 'max-h-80', 'sm:max-h-[440px]', 'max-w-full', 'object-contain');
+    expect(image).not.toHaveClass('min-h-16', 'min-w-32', 'bg-white');
     expect(image).not.toHaveClass('object-cover');
     const context = screen.getByTestId('visual-evidence-context');
     expect(within(context).getByText('Row keeps its full title')).toBeInTheDocument();
@@ -42,7 +44,7 @@ describe('TaskVisualPreviews', () => {
     expect(within(zoom).getByRole('button', { name: '100%' })).toHaveAttribute('aria-pressed', 'true');
     const stage = screen.getByTestId('visual-evidence-canvas');
     expect(stage).toHaveAttribute('data-zoom', 'actual');
-    expect(stage).toHaveClass('overflow-auto');
+    expect(stage).toHaveClass('overflow-auto', 'h-80', 'sm:h-[440px]', 'w-full');
     expect(screen.getByAltText('Tall mobile page')).toHaveClass('max-w-none', 'h-auto', 'w-auto');
   });
 
