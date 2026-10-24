@@ -443,9 +443,7 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
 
   if (!history || history.length === 0) return null;
 
-  if (variant === 'branch') {
-    return <BranchSteps items={itemsWithDuration} history={timelineHistory} commandMode={commandMode} />;
-  }
+  if (variant === 'branch') return <BranchSteps items={itemsWithDuration} history={timelineHistory} commandMode={commandMode} />;
 
   return (
     <div className="pt-2">
