@@ -136,7 +136,8 @@ test('extension profile configuration uses selections and keeps unlisted values 
   await section.getByLabel('claude-main', { exact: true }).check();
   await section.getByLabel('example/docs', { exact: true }).check();
   await section.getByLabel('Add an existing validated skill').selectOption(bundle.id);
-  await expect(section.getByText('Documentation review · 3 files · 8120 bytes')).toBeVisible();
+  await expect(section.getByText('Documentation review · 3 files · 7.9 KiB')).toBeVisible();
+  await expect(section.getByText('7.9 KiB', { exact: true })).toHaveAttribute('title', '8120 bytes');
   await expect(section.getByLabel('Add an existing validated skill')).toBeDisabled();
   await section.getByRole('button', { name: 'Add HTTPS server' }).click();
   await section.getByLabel('Use a saved HTTPS endpoint').selectOption('https://tools.example.com/mcp');

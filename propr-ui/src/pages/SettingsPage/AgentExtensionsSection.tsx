@@ -258,6 +258,29 @@ function ServerEditor({
 
 type GithubSkillSource = { repository: string; commit: string; directory: string };
 
+function formatSkillSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  const exponent = Math.min(Math.floor(Math.log2(bytes) / 10), units.length);
+  return `${(bytes / 1024 ** exponent).toFixed(1)} ${units[exponent - 1]}`;
+}
+
+function SkillSource({ source }: { source: ExtensionSkillBundle['source'] }) {
+  const label = source.kind === 'github'
+    ? `${source.repository} @ ${source.commit} / ${source.directory}`
+    : `Uploaded archive: ${source.filename}`;
+  const segments = label.split('/');
+  return (
+    <p className="mt-1" title={label}>
+      {segments.map((segment, index) => (
+        <span key={index} className="inline-block max-w-full truncate align-bottom whitespace-pre">
+          {segment}{index < segments.length - 1 ? '/' : ''}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 function SkillsEditor({
   bundles,
   availableBundles,
@@ -317,14 +340,10 @@ function SkillsEditor({
       {bundles.map((b) => (
         <div key={b.id} className="rounded-md border border-slate-200 bg-white p-3 text-xs">
           <p className="font-semibold">
-            {b.name} · {b.files} files · {b.bytes} bytes
+            {b.name} · {b.files} files · <span title={`${b.bytes} bytes`}>{formatSkillSize(b.bytes)}</span>
           </p>
           <p className="mt-1 break-all font-mono">SHA-256 {b.digest}</p>
-          <p className="mt-1 break-all">
-            {b.source.kind === 'github'
-              ? `${b.source.repository} @ ${b.source.commit} / ${b.source.directory}`
-              : `Uploaded archive: ${b.source.filename}`}
-          </p>
+          <SkillSource source={b.source} />
           <p className="mt-1">
             Declared requirements: {b.requirements.join(', ') || 'none'}. Authorize capabilities
             separately.
