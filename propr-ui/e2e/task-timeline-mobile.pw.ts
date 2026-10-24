@@ -138,10 +138,9 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     expect(control!.x).toBeGreaterThanOrEqual(0);
     expect(control!.x + control!.width).toBeLessThanOrEqual(width);
     await assertRunControlHeights();
+    await expect(steps.getByRole('button')).toHaveCount(0);
     if (width <= 520) {
-      const disclosure = steps.getByRole('button', { name: label, exact: true });
-      await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-      const labelLayout = await disclosure.locator(':scope > span').first().evaluate(node => {
+      const labelLayout = await steps.getByText(label, { exact: true }).evaluate(node => {
         const style = getComputedStyle(node);
         return {
           height: node.getBoundingClientRect().height,

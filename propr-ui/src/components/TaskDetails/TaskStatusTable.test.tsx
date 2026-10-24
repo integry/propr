@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import TaskStatusTable from './TaskStatusTable';
 import type { HistoryItem, NetworkEgressSummary } from './types';
@@ -267,16 +267,61 @@ describe('pull request auto-assignment events', () => {
   });
 });
 
+it.each([
+  { state: 'PENDING' },
+  { state: 'CLAUDE_EXECUTION', metadata: { description: 'Resolve the conflict in src/checkout/CheckoutSummaryWithConfirmationKeyboardNavigation.tsx' } },
+  { state: 'CLAUDE_EXECUTION', metadata: {
+    description: 'Commits saved on a rescue branch',
+    pushSalvage: { rung: 'rescue_ref', classification: 'auth', summary: 'Commits saved on a rescue branch' },
+  } },
+] satisfies HistoryItem[])('renders a detail-less compact step as wrapping text: %j', (item) => {
+  render(<TaskStatusTable variant="branch" history={[{ ...item, timestamp: at(1) }]} />);
+  const steps = screen.getByRole('list', { name: 'Run steps' });
+  expect(within(steps).queryByRole('button')).not.toBeInTheDocument();
+  expect(steps.querySelector('[aria-controls], [aria-expanded], [id]')).toBeNull();
+  const label = within(steps).getByText(item.metadata?.description ?? 'Task Queued');
+  expect(label.tagName).toBe('SPAN');
+  expect(label).toHaveClass('[overflow-wrap:anywhere]');
+});
+
 it('marks compact steps that carry additional details, including terminal and egress records', () => {
   render(<TaskStatusTable variant="branch" history={[
     { state: 'PENDING', timestamp: '2026-09-30T23:50:00Z' },
     { state: 'CLAUDE_EXECUTION', timestamp: '2026-09-30T23:51:00Z', metadata: {
       event: 'network.egress', networkEgress: { mode: 'restricted', deniedConnections: 1, deniedHosts: [{ host: 'example.com', count: 1 }] },
     } },
+    { state: 'CLAUDE_EXECUTION', timestamp: '2026-09-30T23:51:15Z', metadata: {
+      description: 'Save commits',
+      pushSalvage: { rung: 'rescue_ref', classification: 'auth', summary: 'Commits saved on a rescue branch' },
+    } },
+    { state: 'FAILED', timestamp: '2026-09-30T23:51:30Z', metadata: {
+      pushFailure: {
+        diagnosis: { classification: 'auth', summary: 'Permission denied', unblockUrls: [] },
+        rung: 'rescue_ref', branchName: 'fix-checkout', repository: 'integry/propr',
+        recoveryInstruction: 'Restore push permissions and retry.',
+      },
+    } },
     { state: 'FAILED', timestamp: '2026-09-30T23:52:00Z', metadata: { terminalReason: 'timed_out' } },
   ]} />);
-  expect(screen.getAllByRole('img', { name: 'Additional step details' })).toHaveLength(2);
-  expect(within(screen.getAllByRole('button')[0]).queryByRole('img', { name: 'Additional step details' })).toBeNull();
+  expect(screen.getAllByRole('img', { name: 'Additional step details' })).toHaveLength(4);
+  const queued = screen.getByText('Task Queued');
+  expect(queued.tagName).toBe('SPAN');
+  expect(queued).toHaveClass('[overflow-wrap:anywhere]');
+  expect(queued.closest('li')!.querySelector('button, [aria-controls], [id]')).toBeNull();
+  const buttons = screen.getAllByRole('button');
+  expect(buttons).toHaveLength(4);
+  for (const button of buttons) {
+    expect(within(button).getByRole('img', { name: 'Additional step details' })).toBeInTheDocument();
+    const panel = document.getElementById(button.getAttribute('aria-controls')!)!;
+    expect(panel).not.toBeEmptyDOMElement();
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(panel).toHaveClass('[@container(max-width:527px)]:hidden');
+    fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    expect(panel).not.toHaveClass('[@container(max-width:527px)]:hidden');
+    fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+  }
 });
 
 describe.each(['rail', 'branch'] as const)('%s automation report labels', (variant) => {

@@ -342,6 +342,13 @@ const hasStepDetails = (metadata: HistoryItem['metadata']): boolean => !!(metada
 const StepDisclosure: React.FC<{ label: string; hasDetails: boolean; className: string; children: React.ReactNode }> = ({ label, hasDetails, className, children }) => {
   const [open, setOpen] = useState(false);
   const id = useId();
+  if (!hasDetails) {
+    return (
+      <div className="min-w-0 flex-1">
+        <span className={`block break-words [overflow-wrap:anywhere] ${className}`}>{label}</span>
+      </div>
+    );
+  }
   return (
     <div className="min-w-0 flex-1">
       <span className={`block break-words [@container(max-width:527px)]:hidden ${className}`}>{label}</span>
@@ -349,7 +356,7 @@ const StepDisclosure: React.FC<{ label: string; hasDetails: boolean; className: 
         onClick={() => setOpen(value => !value)}
         className={`hidden w-full items-center gap-1 text-left [@container(max-width:527px)]:flex ${className}`}>
         <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
-        {hasDetails && <span role="img" aria-label="Additional step details" className="font-semibold text-teal-700">•</span>}
+        <span role="img" aria-label="Additional step details" className="font-semibold text-teal-700">•</span>
         <span aria-hidden="true">{open ? '−' : '+'}</span>
       </button>
       <div id={id} className={open ? '' : '[@container(max-width:527px)]:hidden'}>
