@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "zod": "^4.4.3",
+    "zod": "^4.6.6",
     "react": "^19.1.0",
     "lucide-react": "^0.556.0"
   },
