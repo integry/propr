@@ -115,9 +115,9 @@ describe('RunTimeline', () => {
     // Only the open run carries its steps, each a branch off the rail.
     const stepList = within(rows[3]).getByRole('list', { name: 'Run steps' });
     expect(within(stepList).getAllByRole('listitem').map(step => step.textContent)).toEqual([
-      expect.stringMatching(/Task Queued12s$/),
-      expect.stringMatching(/Read withdrawal handlers12s$/),
-      expect.stringMatching(/Run the lint suiteRunning…$/),
+      expect.stringMatching(/Task Queued\+12s$/),
+      expect.stringMatching(/Read withdrawal handlers\+12s$/),
+      expect.stringMatching(/Run the lint suite\+Running…$/),
     ]);
     expect(screen.getAllByRole('list', { name: 'Run steps' })).toHaveLength(1);
   });

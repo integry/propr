@@ -44,7 +44,7 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     const context = await browser.newContext({ viewport: { width, height: hasTouch && [667, 915].includes(width) ? 390 : 1000 }, hasTouch });
     const page = await context.newPage();
     await fixture(page, hideSidebar ? 'linux' : undefined);
-    const label = 'Review CheckoutSummary.tsx and verify the checkout confirmation keyboard navigation';
+    const label = 'Resolve the conflict in src/checkout/CheckoutSummaryWithConfirmationKeyboardNavigation.tsx';
     await page.route(`**/api/task/${fixRun}/history`, async route => {
       // No live server is needed: use the same fixture history with a realistic long label.
       await route.fulfill({ json: {
@@ -107,7 +107,6 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
       expect(layout.overflow, JSON.stringify(layout)).toBe(false);
       if (width <= 520) {
         expect(layout.height).toBeGreaterThanOrEqual(24);
-        expect(layout.height).toBeLessThanOrEqual(32);
         expect(layout.time.width).toBeGreaterThanOrEqual(48);
         expect(layout.time.width).toBeLessThanOrEqual(64);
         expect(layout.label.width).toBeGreaterThan(70);
@@ -141,14 +140,21 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     await assertRunControlHeights();
     if (width <= 520) {
       const disclosure = steps.getByRole('button', { name: label, exact: true });
-      await disclosure[hasTouch ? 'tap' : 'click']();
-      await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-      const full = page.locator(`[id="${await disclosure.getAttribute('aria-controls')}"]`);
-      await expect(full).toBeVisible();
-      expect(await full.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
-      await disclosure.focus();
-      await page.keyboard.press('Enter');
-      await expect(full).not.toBeVisible();
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+      const labelLayout = await disclosure.locator(':scope > span').first().evaluate(node => {
+        const style = getComputedStyle(node);
+        return {
+          height: node.getBoundingClientRect().height,
+          lineHeight: parseFloat(style.lineHeight),
+          fits: node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight,
+          whiteSpace: style.whiteSpace,
+          textOverflow: style.textOverflow,
+        };
+      });
+      expect(labelLayout.fits).toBe(true);
+      expect(labelLayout.height).toBeGreaterThan(labelLayout.lineHeight);
+      expect(labelLayout.whiteSpace).toBe('normal');
+      expect(labelLayout.textOverflow).toBe('clip');
     }
     const previewName = `task-step-labels-${width}-${hasTouch ? 'touch' : 'mouse'}${hideSidebar ? '-sidebar-hidden' : ''}`;
     await capture(page, previewName);
@@ -204,7 +210,6 @@ for (const width of [320, 390, 1440]) {
       const detail = row.getByTestId(testId);
       if (width < 640) {
         await expect(detail).not.toBeVisible();
-        expect((await row.boundingBox())!.height).toBeLessThanOrEqual(32);
         await row.getByRole('button').click();
       }
       await expect(detail).toBeVisible();

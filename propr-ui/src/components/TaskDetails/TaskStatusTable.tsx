@@ -338,7 +338,7 @@ const hasStepDetails = (metadata: HistoryItem['metadata']): boolean => !!(metada
   (metadata?.event === 'network.egress' && metadata.networkEgress) || metadata?.pushFailure ||
   (metadata?.pushSalvage && metadata.description !== metadata.pushSalvage.summary));
 
-/** Touch and keyboard access to full labels and detail lines in compact timelines. */
+/** Wrapping labels with touch and keyboard access to detail lines in compact timelines. */
 const StepDisclosure: React.FC<{ label: string; hasDetails: boolean; className: string; children: React.ReactNode }> = ({ label, hasDetails, className, children }) => {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -348,12 +348,11 @@ const StepDisclosure: React.FC<{ label: string; hasDetails: boolean; className: 
       <button type="button" aria-expanded={open} aria-controls={id}
         onClick={() => setOpen(value => !value)}
         className={`hidden w-full items-center gap-1 text-left [@container(max-width:527px)]:flex ${className}`}>
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
         {hasDetails && <span role="img" aria-label="Additional step details" className="font-semibold text-teal-700">•</span>}
         <span aria-hidden="true">{open ? '−' : '+'}</span>
       </button>
       <div id={id} className={open ? '' : '[@container(max-width:527px)]:hidden'}>
-        <div className="hidden break-words [@container(max-width:527px)]:block">{label}</div>
         {children}
       </div>
     </div>
@@ -364,8 +363,8 @@ const StepDisclosure: React.FC<{ label: string; hasDetails: boolean; className: 
  * One run's steps hanging off the run rail (2px at 7px in): each step branches
  * off it with a tic under the run's caret, and keeps to the run row's columns:
  * its time in the tag column, its label under the run's summary, its duration
- * under the run's. Narrow timelines keep compact single-line summaries, with
- * fixed metadata columns and an ellipsis for labels that do not fit.
+ * under the run's. Narrow timelines wrap labels, including long file paths,
+ * between fixed metadata columns so key text remains visible.
  */
 const BranchSteps: React.FC<{
   items: Array<HistoryItem & { duration: number | null }>;

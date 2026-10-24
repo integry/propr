@@ -11,7 +11,7 @@
  * (64), two gaps (16) and right padding (4), leaving at least 260px for labels.
  * The desktop split reserves at least 576px for the timeline, including pane
  * padding and scrollbar space. Workspaces below 960px stack the panes instead
- * of squeezing the timeline; phone step rows use single-line truncated labels.
+ * of squeezing the timeline; phone step rows wrap labels between compact metadata columns.
  */
 
 /** Node box (16px + 4px margin), gap, caret (12px), gap: where the tag column starts. */
