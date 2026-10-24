@@ -156,11 +156,12 @@ const BreadcrumbTrigger: React.FC<{
   <>
     {/* From md the breadcrumb shares its row with the branch chip and truncates; a phone's pill has a row of its own
         (the phase badge wraps under it), so with enlarged text its repository/branch label wraps rather than being cut. */}
-    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-left text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors md:truncate max-w-full min-w-0 flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)}>
+    <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm py-0.5 font-mono text-left text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors max-w-full min-w-0 flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)}>
       {selectedRepoData ? <RepositoryIcon repository={selectedRepoData.name} iconPath={selectedRepoData.iconPath} revision={selectedRepoData.iconRevision || selectedRepoData.baseBranch} /> : <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />}
       <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere] md:truncate">{getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}{labelSuffix}</span>
+      {/* Keep the chevron in flow so intrinsic trigger sizing includes its width. Only the label shrinks. */}
+      <ChevronDown className={`w-3.5 h-3.5 text-gray-400 flex-shrink-0 pointer-events-none transition-transform ${isOpen ? 'rotate-180' : ''}`} />
     </button>
-    <ChevronDown className={`w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none transition-transform ${isOpen ? 'rotate-180' : ''}`} />
   </>
 );
 
@@ -195,7 +196,7 @@ const DefaultTrigger: React.FC<{
 }> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout, size, appearance, hideCountOnMobile }) => {
   const { iconClassName, padding, textSize, labelFlow, chrome } = defaultTriggerStyles(size, appearance, labelLayout);
   return (
-    <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className={`w-full min-w-0 ${padding} bg-white text-gray-900 ${chrome} rounded-md flex items-center disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500`}>
+    <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)} className={`w-full min-w-0 ${padding} bg-white text-gray-900 ${chrome} rounded-md flex items-center disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500`}>
       {selectedRepoData ? (
         <>
           <RepositoryIcon repository={selectedRepoData.name} iconPath={selectedRepoData.iconPath} revision={selectedRepoData.iconRevision || selectedRepoData.baseBranch} className={iconClassName} />
@@ -367,7 +368,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   if (variant === 'breadcrumb') {
     return (
-      <div ref={containerRef} className={`relative inline-flex min-w-0 items-center ${className}`}>
+      <div ref={containerRef} className={`relative inline-flex min-w-0 max-w-full items-center ${className}`}>
         <BreadcrumbTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isOpen={isOpen} onClick={handleToggle} labelSuffix={labelSuffix} />
         {dropdownContent}
       </div>
