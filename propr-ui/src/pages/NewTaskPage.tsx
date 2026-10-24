@@ -333,7 +333,7 @@ function NewTaskLauncher({ scope }: { scope: string }) {
     </section>}
       {/* Fieldsets default to min-inline-size: min-content, even inside a scrollable flex body. */}
       <fieldset disabled={locked || isDemoMode} className="min-w-0 space-y-5 disabled:opacity-60">
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Repository</label><RepositorySelector repos={repoOptions} selectedRepo={repository} onRepoChange={value => { setDirty(true); setRepository(value); }} disabled={locked || isDemoMode} placeholder="Select a repository" className="[&_button]:min-h-11" />{repository && <p className="mt-1 text-xs text-slate-500">{repository}</p>}</div>
+        <div><label className="mb-2 block text-sm font-medium text-slate-700">Repository</label><RepositorySelector repos={repoOptions} selectedRepo={repository} onRepoChange={value => { setDirty(true); setRepository(value); }} disabled={locked || isDemoMode} placeholder="Select a repository" className="[&_button]:min-h-11" /></div>
         <div><label htmlFor="task-instruction" className="mb-2 block text-sm font-medium text-slate-700">Prompt</label>
           <div className="rounded-md border border-slate-200 focus-within:border-teal-500 focus-within:ring-1 focus-within:ring-teal-500">
           <TextareaAutosize id="task-instruction" required maxLength={50000} value={instruction} onChange={event => setInstruction(event.target.value)} onPaste={event => {
