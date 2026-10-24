@@ -72,7 +72,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           />
         </AgentFormRow>
 
-        <div className="px-4 py-4"><ExtensionProfileSelector value={form.extensionProfile} onChange={extensionProfile => update({ extensionProfile })} disabled={readOnly} /></div>
+        <div className="px-4 py-4 empty:hidden"><ExtensionProfileSelector value={form.extensionProfile} onChange={extensionProfile => update({ extensionProfile })} disabled={readOnly} /></div>
         <AgentScopeSection repositories={form.repositories} onChange={repositories => update({ repositories })} disabled={readOnly} />
 
         <AgentPromptSection
