@@ -134,6 +134,51 @@ for (const captureSize of [{ width: 2560, height: 600 }, { width: 390, height: 1
   });
 }
 
+for (const width of [390, 1440]) {
+  for (const failure of ['403', '404', 'network', 'decode'] as const) {
+    test(`keeps pending and ${failure} image placeholders visible in Fit at ${width}px`, async ({ page }) => {
+      await fixture(page);
+      await page.setViewportSize({ width, height: 900 });
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      await page.route('**/api/preview-media/pulls/acme/web/42/queue', async route => {
+        await pending;
+        if (failure === 'network') return route.abort();
+        if (failure === 'decode') return route.fulfill({ contentType: 'image/png', body: 'Invalid image data' });
+        return route.fulfill({ status: Number(failure), body: 'Image unavailable' });
+      });
+      await page.goto(`/tasks/${taskId}`);
+      const section = page.getByRole('region', { name: /Visual evidence/ });
+      const stage = section.getByTestId('visual-evidence-canvas');
+      const loading = section.getByRole('status', { name: 'Task queue at desktop width — image loading' });
+      await expect(loading).toBeVisible();
+      await expect(stage).toHaveAttribute('data-zoom', 'fit');
+      for (const element of [stage, loading]) {
+        const box = (await element.boundingBox())!;
+        expect(box.height).toBeGreaterThanOrEqual(64);
+        expect(box.width).toBeGreaterThanOrEqual(128);
+      }
+      if (failure === '403' && process.env.PROPR_CAPTURE_PREVIEWS) {
+        await mkdir('../.propr/previews', { recursive: true });
+        await section.screenshot({ animations: 'disabled', path: `../.propr/previews/task-visual-previews-loading-${width}.png` });
+      }
+
+      release();
+      const unavailable = section.getByRole('img', { name: 'Task queue at desktop width — image unavailable' });
+      await expect(unavailable).toBeVisible();
+      for (const element of [stage, unavailable]) {
+        const box = (await element.boundingBox())!;
+        expect(box.height).toBeGreaterThanOrEqual(64);
+        expect(box.width).toBeGreaterThanOrEqual(128);
+      }
+      expect(await noHorizontalOverflow(page)).toBe(true);
+      if (failure === '403' && process.env.PROPR_CAPTURE_PREVIEWS) {
+        await section.screenshot({ animations: 'disabled', path: `../.propr/previews/task-visual-previews-unavailable-${width}.png` });
+      }
+    });
+  }
+}
+
 test('truncates a long title in the collapsed mobile header before the overflow button', async ({ page }) => {
   const longTitle = 'Render visual previews full width across every task details pane and the lightbox';
   expect(longTitle.length).toBeGreaterThanOrEqual(80);
