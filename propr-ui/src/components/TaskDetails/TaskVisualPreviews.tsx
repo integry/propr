@@ -202,7 +202,7 @@ export default function TaskVisualPreviews({ previews, className = 'border-b bor
           // One tree for both modes, so toggling zoom restyles the loaded image instead of fetching it again.
           : <button type="button" aria-haspopup="dialog" aria-label={`Open full-size preview: ${selected.title}`}
             onClick={event => openLightbox(event.currentTarget)}
-            className={`cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 ${actual ? 'block w-max' : 'flex min-w-0 max-w-full items-center justify-center [&>span]:min-h-16 [&>span]:min-w-32'}`}>
+            className={`cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${actual ? 'block w-max focus-visible:ring-inset' : 'flex min-w-0 max-w-full items-center justify-center [&>span]:min-h-16 [&>span]:min-w-32'}`}>
             {/* Placeholder spans need their own size before an image has intrinsic dimensions. */}
             <PreviewImage key={selected.url} preview={selected} className={actual
               ? 'block h-auto w-auto max-w-none border border-slate-200/80 bg-white'

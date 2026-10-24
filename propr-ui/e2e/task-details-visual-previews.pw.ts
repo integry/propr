@@ -127,9 +127,20 @@ for (const captureSize of [{ width: 2560, height: 600 }, { width: 390, height: 1
     expect(frame.height).toBeLessThanOrEqual(320);
     expect(frame.width).toBeLessThanOrEqual(372);
     expect(await noHorizontalOverflow(page)).toBe(true);
+
+    // An opaque image fills the Fit trigger, so an inset shadow would be hidden beneath it.
+    await section.getByRole('button', { name: 'Lightbox', exact: true }).focus();
+    await page.keyboard.press('Tab');
+    const trigger = section.getByRole('button', { name: 'Open full-size preview: Task queue at desktop width' });
+    await expect(trigger).toBeFocused();
+    expect(await trigger.evaluate(node => node.matches(':focus-visible'))).toBe(true);
+    const shadow = await trigger.evaluate(node => getComputedStyle(node).boxShadow);
+    expect(shadow).toContain('rgb(56, 189, 248) 0px 0px 0px 2px');
+    expect(shadow).not.toContain('inset');
+    await expect(section.getByTestId('visual-evidence-canvas')).toHaveCSS('overflow', 'visible');
     if (process.env.PROPR_CAPTURE_PREVIEWS) {
       await mkdir('../.propr/previews', { recursive: true });
-      await section.screenshot({ animations: 'disabled', path: `../.propr/previews/task-visual-previews-fit-${captureSize.width}x${captureSize.height}.png` });
+      await section.screenshot({ animations: 'disabled', path: `../.propr/previews/task-visual-previews-fit-focus-${captureSize.width}x${captureSize.height}.png` });
     }
   });
 }
