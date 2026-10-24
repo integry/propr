@@ -136,7 +136,7 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
 const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean; compact?: boolean }> = ({ modelName, duration, synthetic, compact }) => (
   <>
     <span
-      className="inline-flex min-w-0 items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800 [&>svg]:shrink-0"
+      className={`inline-flex min-w-0 items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800 [&>svg]:shrink-0${compact ? ' max-w-full shrink-0' : ''}`}
       title={getDisplayModelName(modelName)}
     >
       {synthetic
@@ -403,7 +403,7 @@ export const MobileGitContext: React.FC<Pick<ContextStripProps, 'taskInfo' | 'pr
 export const MobilePeopleRuntime: React.FC<Pick<ContextStripProps, 'assignment' | 'modelName' | 'duration' | 'synthetic'>> = ({ assignment, modelName, duration, synthetic }) => (
   <div data-testid="task-mobile-people-runtime" className="flex min-w-0 flex-wrap items-center justify-between gap-2">
     {assignment?.taskId && <AssignmentControl assignment={assignment} dense />}
-    <div role="group" aria-label="Execution runtime" className="ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-1 whitespace-nowrap [&>span]:text-[10px] [&>span]:leading-3">
+    <div role="group" aria-label="Execution runtime" className="ml-auto flex min-w-0 max-w-full shrink-0 flex-wrap items-center justify-end gap-1 whitespace-nowrap [&>span]:text-[10px] [&>span]:leading-3">
       <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} compact />
     </div>
   </div>
