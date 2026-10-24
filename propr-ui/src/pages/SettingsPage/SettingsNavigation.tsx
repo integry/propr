@@ -146,14 +146,14 @@ const SettingsRailTab: React.FC<SettingsRailTabProps> = ({ category, selected, f
       title={category.description}
       onClick={onSelect}
       onKeyDown={onKeyDown}
-      className={`flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-medium text-slate-800 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 md:gap-2 md:whitespace-nowrap md:rounded md:px-2.5 md:py-1.5 md:text-[13px] ${
+      className={`flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-medium text-slate-800 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 md:gap-2 md:rounded md:px-2.5 md:py-1.5 md:text-[13px] ${
         selected
           ? 'md:bg-teal-50 md:font-semibold md:text-teal-700'
           : 'md:text-slate-600 md:hover:bg-slate-50 md:hover:text-slate-900'
       }`}
     >
       <Icon aria-hidden="true" className={`h-4 w-4 flex-shrink-0 text-slate-500 ${selected ? 'md:text-teal-600' : 'md:text-slate-400'}`} />
-      {category.label}
+      <span className="min-w-0 flex-1">{category.label}</span>
       <ChevronRight aria-hidden="true" className="ml-auto h-4 w-4 flex-shrink-0 text-slate-300 md:hidden" />
     </button>
   );
