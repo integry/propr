@@ -5,7 +5,13 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
-import { prepareContinuedGoal, type GoalContinuationOperations, type GoalPullRequestState } from '../src/jobs/goalContinuation.ts';
+import {
+  GoalWorktreeLostError,
+  prepareContinuedGoal,
+  restoreMissingGoalWorktree,
+  type GoalContinuationOperations,
+  type GoalPullRequestState,
+} from '../src/jobs/goalContinuation.ts';
 import { executePreparedGoal } from '../src/jobs/processGoalJob.ts';
 import type { GoalRow } from '../src/jobs/goalAttemptState.ts';
 
@@ -261,4 +267,54 @@ test('a stale provider cannot acknowledge the replacement attempt re-arm', async
     } },
   } as never), /lost its attempt claim/);
   assert.equal(Boolean((await db('goals').where({ goal_id: goal.goal_id }).first()).continue_requested), true);
+});
+
+test('a live goal whose checkout was pruned is rebuilt in place without touching the PR', async () => {
+  const missing = path.join(os.tmpdir(), `goal-live-missing-${Date.now()}`);
+  const { job, goal } = await continuedGoal('goal-live-pruned', { worktree_path: missing, continue_requested: false });
+  const { ops, calls } = operations(openDraft, async () => missing);
+  const { goal: restored, restored: flag } = await restoreMissingGoalWorktree(job, goal, ops);
+  assert.equal(flag, true);
+  assert.equal(restored.worktree_path, missing);
+  assert.equal(restored.branch_name, 'goal/ship-it');
+  assert.deepEqual(calls, ['rebuild:goal/ship-it']);
+});
+
+test('a rebuilt checkout at a new path is saved under the attempt claim', async () => {
+  const missing = path.join(os.tmpdir(), `goal-live-moved-${Date.now()}`);
+  const rebuilt = existingWorktree();
+  const { job, goal } = await continuedGoal('goal-live-moved', { worktree_path: missing, continue_requested: false });
+  const { ops } = operations(openDraft, async () => rebuilt);
+  const { goal: restored } = await restoreMissingGoalWorktree(job, goal, ops);
+  assert.equal(restored.worktree_path, rebuilt);
+  assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, rebuilt);
+});
+
+test('an existing checkout is left alone', async () => {
+  const { job, goal } = await continuedGoal('goal-live-present', { continue_requested: false });
+  const { ops, calls } = operations(openDraft);
+  const result = await restoreMissingGoalWorktree(job, goal, ops);
+  assert.equal(result.restored, false);
+  assert.equal(result.goal, goal);
+  assert.deepEqual(calls, []);
+});
+
+test('a pruned checkout whose branch is gone is unrecoverable', async () => {
+  const missing = path.join(os.tmpdir(), `goal-live-gone-${Date.now()}`);
+  const { job, goal } = await continuedGoal('goal-live-gone', { worktree_path: missing, continue_requested: false });
+  const { ops } = operations(openDraft, async () => null);
+  await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), (error: Error) => error instanceof GoalWorktreeLostError && /goal\/ship-it/.test(error.message));
+  assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, missing);
+});
+
+test('a takeover during a transient rebuild error prevents the retry', async () => {
+  const { job, goal } = await continuedGoal('goal-live-takeover', { worktree_path: '/missing/live-takeover', continue_requested: false });
+  let calls = 0;
+  const { ops } = operations(openDraft, async () => {
+    calls++;
+    await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+    throw Object.assign(new Error('fetch reset'), { code: 'ECONNRESET' });
+  });
+  await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), /lost its attempt claim/);
+  assert.equal(calls, 1);
 });

@@ -43,6 +43,59 @@ const FRESH_BRANCH = {
     worktree_path: null, branch_name: null, final_pr_number: null, final_pr_url: null,
 } as const;
 
+/** The saved checkout is gone and its published branch no longer exists, so there is nothing to resume from. */
+export class GoalWorktreeLostError extends Error {
+    constructor(goal: SavedGoalWorktree) {
+        super(`Saved goal worktree ${goal.worktree_path} is missing and branch ${goal.branch_name} no longer exists on the remote`);
+        this.name = 'GoalWorktreeLostError';
+    }
+}
+
+function attemptClaimGuard(job: GoalJobData, what: string): () => Promise<void> {
+    return async () => {
+        if (!await fencedGoal(job)) throw new Error(`${what} lost its attempt claim`);
+    };
+}
+
+// Retry only transient transport/server failures, once, with authority
+// rechecked before retrying any external operation.
+async function retryTransient<T>(operation: () => Promise<T>, assertCurrent: () => Promise<void>): Promise<T> {
+    try { return await operation(); } catch (error) {
+        const detail = error as { status?: number; code?: string; message?: string };
+        if (!(Number(detail.status) >= 500 || ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes(detail.code ?? '')
+            || /connection reset|fetch failed|socket hang up|timed out/i.test(detail.message ?? ''))) throw error;
+        await assertCurrent();
+        return operation();
+    }
+}
+
+/**
+ * Rebuilds a saved checkout that disappeared while the goal was still live,
+ * such as after a host cleanup pruned the directory between attempts. The
+ * published branch carries every checkpoint, so the attempt resumes from the
+ * last one; only uncommitted work is gone. Throws {@link GoalWorktreeLostError}
+ * when the branch itself is gone, which no attempt can recover from.
+ */
+export async function restoreMissingGoalWorktree(
+    job: GoalJobData,
+    goal: GoalRow,
+    operations: GoalContinuationOperations = defaultContinuationOperations,
+): Promise<{ goal: GoalRow; restored: boolean }> {
+    if (!hasSavedWorktree(goal) || isDirectory(goal.worktree_path)) return { goal, restored: false };
+    const assertCurrent = attemptClaimGuard(job, 'Goal worktree restoration');
+    const rebuilt = await retryTransient(() => operations.rebuildWorktree(goal, assertCurrent), assertCurrent);
+    if (rebuilt === null) throw new GoalWorktreeLostError(goal);
+    logger.info({ goalId: goal.goal_id, worktreePath: rebuilt, branchName: goal.branch_name }, 'Rebuilt missing goal worktree from its published branch');
+    if (rebuilt === goal.worktree_path) return { goal, restored: true };
+    const changed = await db('goals').where({
+        goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
+    }).whereNull('result_state').update({ worktree_path: rebuilt, updated_at: db.fn.now() });
+    if (changed !== 1) throw new Error('Goal worktree restoration lost its attempt claim');
+    const updated = await fencedGoal(job);
+    if (!updated) throw new Error('Goal worktree restoration lost its attempt claim');
+    return { goal: updated, restored: true };
+}
+
 /**
  * Brings the branch, worktree and pull request of a continued terminal goal
  * back to a state an attempt can publish to. Between the goal stopping and
@@ -62,20 +115,8 @@ export async function prepareContinuedGoal(
     operations: GoalContinuationOperations = defaultContinuationOperations,
 ): Promise<GoalRow> {
     if (!goal.continue_requested) return goal;
-    const assertCurrent = async () => {
-        if (!await fencedGoal(job)) throw new Error('Continued goal preparation lost its attempt claim');
-    };
-    // Retry only transient transport/server failures, once, with authority
-    // rechecked before retrying any external operation.
-    const retry = async <T>(operation: () => Promise<T>): Promise<T> => {
-        try { return await operation(); } catch (error) {
-            const detail = error as { status?: number; code?: string; message?: string };
-            if (!(Number(detail.status) >= 500 || ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes(detail.code ?? '')
-                || /connection reset|fetch failed|socket hang up|timed out/i.test(detail.message ?? ''))) throw error;
-            await assertCurrent();
-            return operation();
-        }
-    };
+    const assertCurrent = attemptClaimGuard(job, 'Continued goal preparation');
+    const retry = <T>(operation: () => Promise<T>): Promise<T> => retryTransient(operation, assertCurrent);
     const updates: Record<string, unknown> = {};
     let preservedCheckout: string | undefined;
     if (goal.final_pr_number) {

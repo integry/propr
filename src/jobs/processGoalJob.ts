@@ -44,7 +44,12 @@ import {
     type GoalRow,
 } from './goalAttemptState.js';
 import { enqueueNextGoalAttempt } from './goalAttemptScheduling.js';
-import { continuedGoalBootstrapId, prepareContinuedGoal } from './goalContinuation.js';
+import {
+    GoalWorktreeLostError,
+    continuedGoalBootstrapId,
+    prepareContinuedGoal,
+    restoreMissingGoalWorktree,
+} from './goalContinuation.js';
 import {
     publishDirectGoalCheckpoint,
     rejectDirectGoalCheckpoint,
@@ -67,19 +72,37 @@ function goalNotificationSummary(result: AgentExecutionResult): string | undefin
     return result.summary;
 }
 
+/** Told to a resumed session whose checkout had to be rebuilt, so it does not trust files it never committed. */
+export const GOAL_WORKTREE_RESTORED_NOTICE = 'ProPR rebuilt your checkout from the published goal branch because the previous working directory was gone. '
+    + 'It contains the last published checkpoint; any uncommitted changes from before are lost. Review the working tree before continuing.';
+
+export interface GoalWorktree {
+    worktreePath: string;
+    branchName: string;
+    /** The saved checkout was missing and has been rebuilt from the published branch. */
+    restored?: boolean;
+}
+
 export async function ensureGoalWorktree(
     goal: GoalRow,
     job: GoalJobData,
     token: string,
-): Promise<{ worktreePath: string; branchName: string }> {
+    restoreMissing: typeof restoreMissingGoalWorktree = restoreMissingGoalWorktree,
+): Promise<GoalWorktree> {
     if (Boolean(goal.worktree_path) !== Boolean(goal.branch_name)) {
         throw new Error('Saved goal worktree identity is incomplete; exact-session recovery cannot continue');
     }
     if (goal.worktree_path && goal.branch_name) {
-        if (!fs.existsSync(goal.worktree_path) || !fs.statSync(goal.worktree_path).isDirectory()) {
-            throw new Error('Saved goal worktree is missing; exact-session recovery cannot continue');
+        if (fs.existsSync(goal.worktree_path) && fs.statSync(goal.worktree_path).isDirectory()) {
+            return { worktreePath: goal.worktree_path, branchName: goal.branch_name };
         }
-        return { worktreePath: goal.worktree_path, branchName: goal.branch_name };
+        // A pruned checkout is not a lost session: the branch holds every
+        // checkpoint, so rebuild it and resume instead of failing the attempt,
+        // which recovery would otherwise re-run forever.
+        logger.warn({ goalId: goal.goal_id, worktreePath: goal.worktree_path }, 'Saved goal worktree is missing; rebuilding it from the published branch');
+        const { goal: restored } = await restoreMissing(job, goal);
+        if (!restored.worktree_path || !restored.branch_name) throw new Error('Goal worktree restoration left no checkout to resume');
+        return { worktreePath: restored.worktree_path, branchName: restored.branch_name, restored: true };
     }
     const [repoOwner, repoName] = goal.repository.split('/');
     await ensureGitRepository(logger as never);
@@ -217,10 +240,13 @@ export async function finalizeGoal(
     return finalized;
 }
 
-/** A continued goal whose branch or PR cannot be prepared fails with the reason, so it can be continued again. */
-async function failContinuedGoal(data: GoalJobData, goal: GoalRow, error: Error): Promise<{ status: string; goalId?: string; reason?: string }> {
-    const reason = `Could not prepare the continued goal: ${error.message}`;
-    logger.warn({ goalId: goal.goal_id, error: error.message }, 'Continued goal preparation failed');
+/**
+ * A goal whose branch, checkout or PR cannot be prepared fails with the reason,
+ * so it can be continued again. Failing here is deliberate: an attempt that
+ * throws out of preparation stays claimed, and recovery would relaunch it.
+ */
+async function failGoalPreparation(data: GoalJobData, goal: GoalRow, reason: string): Promise<{ status: string; goalId?: string; reason?: string }> {
+    logger.warn({ goalId: goal.goal_id, reason }, 'Goal attempt preparation failed');
     await fencedGoalUpdate(data, { continue_requested: false });
     if (!await finalizeGoal(data, 'failed', reason)) return { status: 'skipped', reason: 'goal_finalize_fence' };
     const task = await getStateManager().markTaskFailed(goal.current_task_id, new Error(reason));
@@ -277,7 +303,7 @@ interface PreparedGoalAttempt {
     goal: GoalRow;
     agent: Agent;
     githubToken: string;
-    worktree: { worktreePath: string; branchName: string };
+    worktree: GoalWorktree;
     pendingInput: { input_id: string; message: string; kind: string } | null;
     checkpointFeedback?: string;
 }
@@ -310,6 +336,38 @@ async function previousCheckpointFeedback(
     return undefined;
 }
 
+type GoalCheckout = { ready: true; worktree: GoalWorktree }
+    | { ready: false; result: { status: string; reason?: string } };
+
+/** Brings a continued goal up to date and makes sure its checkout exists; unrecoverable checkouts fail the goal instead of the job. */
+async function prepareGoalCheckout(data: GoalJobData, claimed: GoalRow, token: string): Promise<GoalCheckout> {
+    let continued: GoalRow;
+    try {
+        continued = await prepareContinuedGoal(data, claimed);
+    } catch (error) {
+        return { ready: false, result: await failGoalPreparation(data, claimed, `Could not prepare the continued goal: ${(error as Error).message}`) };
+    }
+    try {
+        return { ready: true, worktree: await ensureGoalWorktree(continued, data, token) };
+    } catch (error) {
+        if (!(error instanceof GoalWorktreeLostError)) throw error;
+        return { ready: false, result: await failGoalPreparation(data, continued, `Could not restore the goal checkout: ${error.message}`) };
+    }
+}
+
+/** Feedback the resumed session reads first: a rebuilt checkout, then the outcome of its last checkpoint. */
+async function attemptFeedback(
+    goal: GoalRow,
+    pendingInput: PreparedGoalAttempt['pendingInput'],
+    worktree: GoalWorktree,
+): Promise<string | undefined> {
+    const notes = [
+        worktree.restored ? GOAL_WORKTREE_RESTORED_NOTICE : undefined,
+        await previousCheckpointFeedback(goal, pendingInput),
+    ].filter(Boolean);
+    return notes.length > 0 ? notes.join('\n\n') : undefined;
+}
+
 async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): Promise<GoalPreparation> {
     await initializeGoalTask(claimed);
 
@@ -322,13 +380,9 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
 
     const octokit = await getAuthenticatedOctokit();
     const githubToken = await octokit.auth({ type: 'installation' }) as { token: string };
-    let continued: GoalRow;
-    try {
-        continued = await prepareContinuedGoal(data, claimed);
-    } catch (error) {
-        return { ready: false, result: await failContinuedGoal(data, claimed, error as Error) };
-    }
-    const worktree = await ensureGoalWorktree(continued, data, githubToken.token);
+    const checkout = await prepareGoalCheckout(data, claimed, githubToken.token);
+    if (!checkout.ready) return checkout;
+    const { worktree } = checkout;
     let boundaryGoal = await fencedGoal(data);
     if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
     if (boundaryGoal.desired_state === 'paused') {
@@ -349,7 +403,7 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
         if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_bootstrap_fence' } };
     }
     const pendingInput = await firstPendingGoalInput(boundaryGoal);
-    const checkpointFeedback = await previousCheckpointFeedback(boundaryGoal, pendingInput);
+    const checkpointFeedback = await attemptFeedback(boundaryGoal, pendingInput, worktree);
     return {
         ready: true,
         value: { goal: boundaryGoal, agent, githubToken: githubToken.token, worktree, pendingInput, checkpointFeedback },

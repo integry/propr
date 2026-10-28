@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, before, mock, test } from 'node:test';
-import { executePreparedGoal, finalizeGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ensureGoalWorktree, executePreparedGoal, finalizeGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
+import { GoalWorktreeLostError } from '../src/jobs/goalContinuation.ts';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 import { assertProviderIdentityMatches } from '../src/jobs/goalAttemptState.ts';
@@ -485,4 +489,35 @@ test('a successful provider turn paused at its boundary keeps its checkout for r
     assert.ok((await fs.stat(path.join(checkout, '.git'))).isFile());
     assert.equal(execFileSync('git', ['-C', checkout, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8' }).trim(), 'goal/paused');
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('ensureGoalWorktree rebuilds a pruned checkout instead of failing the attempt', async () => {
+  const data: GoalJobData = { goalId: 'goal-pruned', taskId: 'goal-task-pruned', repoOwner: 'acme', repoName: 'repo', generation: 7, claimId: 'claim-7' };
+  const missing = path.join(os.tmpdir(), `goal-pruned-${Date.now()}`);
+  const goal = { goal_id: data.goalId, repository: 'acme/repo', worktree_path: missing, branch_name: 'goal/ship-it' } as never;
+  const restore = mock.fn(async () => ({ goal: { ...(goal as object), worktree_path: missing }, restored: true }));
+  const worktree = await ensureGoalWorktree(goal, data, 'token', restore as never);
+  assert.deepEqual(worktree, { worktreePath: missing, branchName: 'goal/ship-it', restored: true });
+  assert.equal(restore.mock.callCount(), 1);
+  assert.equal(restore.mock.calls[0].arguments[0], data);
+});
+
+test('ensureGoalWorktree keeps an existing checkout without restoring', async () => {
+  const data: GoalJobData = { goalId: 'goal-kept', taskId: 'goal-task-kept', repoOwner: 'acme', repoName: 'repo', generation: 7, claimId: 'claim-7' };
+  const existing = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-kept-'));
+  try {
+    const restore = mock.fn(async () => { throw new Error('unexpected restore'); });
+    const worktree = await ensureGoalWorktree({ goal_id: data.goalId, repository: 'acme/repo', worktree_path: existing, branch_name: 'goal/ship-it' } as never, data, 'token', restore as never);
+    assert.deepEqual(worktree, { worktreePath: existing, branchName: 'goal/ship-it' });
+    assert.equal(restore.mock.callCount(), 0);
+  } finally {
+    fs.rmSync(existing, { recursive: true, force: true });
+  }
+});
+
+test('ensureGoalWorktree surfaces a lost branch so preparation can fail the goal', async () => {
+  const data: GoalJobData = { goalId: 'goal-lost', taskId: 'goal-task-lost', repoOwner: 'acme', repoName: 'repo', generation: 7, claimId: 'claim-7' };
+  const goal = { goal_id: data.goalId, repository: 'acme/repo', worktree_path: '/missing/goal-lost', branch_name: 'goal/ship-it' } as never;
+  const restore = async () => { throw new GoalWorktreeLostError(goal); };
+  await assert.rejects(ensureGoalWorktree(goal, data, 'token', restore as never), GoalWorktreeLostError);
 });
