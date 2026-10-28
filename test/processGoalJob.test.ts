@@ -3,8 +3,8 @@ import { after, before, mock, test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureGoalWorktree, executePreparedGoal, finalizeGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
-import { GoalWorktreeLostError } from '../src/jobs/goalContinuation.ts';
+import { ensureGoalWorktree, executePreparedGoal, finalizeGoal, processGoalJob, prepareGoalCheckout } from '../src/jobs/processGoalJob.ts';
+import { GoalWorktreeLostError, restoreMissingGoalWorktree } from '../src/jobs/goalContinuation.ts';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 import { assertProviderIdentityMatches } from '../src/jobs/goalAttemptState.ts';
@@ -521,3 +521,49 @@ test('ensureGoalWorktree surfaces a lost branch so preparation can fail the goal
   const restore = async () => { throw new GoalWorktreeLostError(goal); };
   await assert.rejects(ensureGoalWorktree(goal, data, 'token', restore as never), GoalWorktreeLostError);
 });
+
+for (const failure of ['missing but already registered', 'fetch failed: connection reset', 'branch gone', 'takeover']) {
+  test(`checkout preparation settles restoration failure: ${failure}`, async () => {
+    const { db, getStateManager } = await import('@propr/core');
+    const data: GoalJobData = { goalId: `prepare-${failure}`, taskId: `task-${failure}`, repoOwner: 'acme', repoName: 'repo', generation: 3, claimId: 'claim' };
+    await db('goals').insert({ goal_id: data.goalId, owner_id: 'owner', owner_login: 'alice', repository: 'acme/repo',
+      objective: 'Ship it', launch_strategy: 'direct', initial_prompt: 'Ship it', agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'test',
+      current_task_id: data.taskId, desired_state: 'running', run_generation: data.generation, run_claim: data.claimId,
+      claimed_at: db.fn.now(), session_id: 'saved-session', worktree_path: '/missing/preparation', branch_name: 'goal/saved' });
+    const goal = await db('goals').where({ goal_id: data.goalId }).first();
+    const failed = mock.method(getStateManager(), 'markTaskFailed', async () => ({ state: 'failed' }) as never);
+    let rebuilds = 0;
+    try {
+      const result = await processGoalJob({ data } as never, {
+        claim: async () => goal,
+        withHeartbeat: async (_job: unknown, operation: () => Promise<unknown>) => operation(),
+        prepare: () => prepareGoalCheckout(data, goal, 'token', {
+          prepareContinuedGoal: async () => goal,
+          ensureGoalWorktree: (current, job, token) => ensureGoalWorktree(current, job, token, (job, current) => restoreMissingGoalWorktree(job, current, {
+            readPullRequest: async () => null, convertToDraft: async () => {}, cleanupWorktree: async () => {},
+            rebuildWorktree: async () => {
+              rebuilds++;
+              if (failure === 'takeover') await db('goals').where({ goal_id: data.goalId }).update({ run_generation: 4, run_claim: 'replacement' });
+              if (failure === 'branch gone') return null;
+              throw new Error(failure);
+            },
+          })),
+        }),
+        execute: async () => { assert.fail('failed preparation must never launch a provider'); },
+      } as never);
+      const saved = await db('goals').where({ goal_id: data.goalId }).first();
+      assert.equal(result.status, failure === 'takeover' ? 'skipped' : 'failed');
+      assert.equal(saved.result_state, failure === 'takeover' ? null : 'failed');
+      assert.equal(failed.mock.callCount(), failure === 'takeover' ? 0 : 1);
+      assert.equal(saved.worktree_path, goal.worktree_path);
+      assert.equal(saved.branch_name, goal.branch_name);
+      assert.equal(saved.session_id, goal.session_id);
+      if (failure !== 'takeover') assert.ok(saved.task_reconciled_at);
+      else assert.equal(saved.run_claim, 'replacement');
+      assert.equal(rebuilds, failure.startsWith('fetch failed') ? 2 : 1);
+    } finally {
+      failed.mock.restore();
+      await db('goals').where({ goal_id: data.goalId }).delete();
+    }
+  });
+}

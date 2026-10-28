@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
     db,
@@ -12,6 +13,19 @@ import {
     type GoalJobData,
 } from '@propr/core';
 import { fencedGoal, type GoalRow } from './goalAttemptState.js';
+
+/** Durable steering input: acknowledged by the same transport that delivers user input. */
+export const GOAL_WORKTREE_RESTORED_NOTICE = 'ProPR rebuilt your checkout from the published goal branch because the previous working directory was gone. '
+    + 'It contains the last published checkpoint; any uncommitted changes from before are lost. Review the working tree before continuing.';
+
+async function recordRestorationNotice(trx: typeof db, goal: GoalRow): Promise<void> {
+    const inputId = randomUUID();
+    await trx('goal_inputs').insert({
+        input_id: inputId, goal_id: goal.goal_id, owner_id: goal.owner_id,
+        idempotency_key: `goal-restoration:${inputId}`, operation: 'goal.restore',
+        payload_hash: 'goal-worktree-restored', kind: 'restoration', message: GOAL_WORKTREE_RESTORED_NOTICE,
+    });
+}
 
 export interface GoalPullRequestState {
     state: string;
@@ -86,11 +100,13 @@ export async function restoreMissingGoalWorktree(
     const rebuilt = await retryTransient(() => operations.rebuildWorktree(goal, assertCurrent), assertCurrent);
     if (rebuilt === null) throw new GoalWorktreeLostError(goal);
     logger.info({ goalId: goal.goal_id, worktreePath: rebuilt, branchName: goal.branch_name }, 'Rebuilt missing goal worktree from its published branch');
-    if (rebuilt === goal.worktree_path) return { goal, restored: true };
-    const changed = await db('goals').where({
-        goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
-    }).whereNull('result_state').update({ worktree_path: rebuilt, updated_at: db.fn.now() });
-    if (changed !== 1) throw new Error('Goal worktree restoration lost its attempt claim');
+    await db.transaction(async trx => {
+        const changed = await trx('goals').where({
+            goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
+        }).whereNull('result_state').update({ worktree_path: rebuilt, updated_at: trx.fn.now() });
+        if (changed !== 1) throw new Error('Goal worktree restoration lost its attempt claim');
+        await recordRestorationNotice(trx, goal);
+    });
     const updated = await fencedGoal(job);
     if (!updated) throw new Error('Goal worktree restoration lost its attempt claim');
     return { goal: updated, restored: true };
@@ -119,6 +135,7 @@ export async function prepareContinuedGoal(
     const retry = <T>(operation: () => Promise<T>): Promise<T> => retryTransient(operation, assertCurrent);
     const updates: Record<string, unknown> = {};
     let preservedCheckout: string | undefined;
+    let restored = false;
     if (goal.final_pr_number) {
         const pull = await retry(() => operations.readPullRequest(goal.repository, goal.final_pr_number!));
         if (pull?.merged) {
@@ -137,7 +154,10 @@ export async function prepareContinuedGoal(
             ...goal, worktree_path: goal.worktree_path, branch_name: goal.branch_name,
         }, assertCurrent));
         if (rebuilt === null) Object.assign(updates, FRESH_BRANCH);
-        else if (rebuilt !== goal.worktree_path) updates.worktree_path = rebuilt;
+        else {
+            restored = true;
+            updates.worktree_path = rebuilt;
+        }
     }
     if ('branch_name' in updates && hasSavedWorktree(goal) && isDirectory(goal.worktree_path)) {
         // Recheck authority after remote reads, before mutating the saved checkout.
@@ -151,6 +171,7 @@ export async function prepareContinuedGoal(
             goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
         }).whereNull('result_state').update(updates);
         if (changed !== 1) throw new Error('Continued goal preparation lost its attempt claim');
+        if (restored) await recordRestorationNotice(trx, goal);
         if (preservedCheckout) {
             const input = await trx('goal_inputs').where({ goal_id: job.goalId, operation: 'goal.continue', state: 'pending' })
                 .orderBy('sequence', 'desc').first('input_id', 'message');

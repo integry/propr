@@ -12,7 +12,7 @@ import {
   type GoalContinuationOperations,
   type GoalPullRequestState,
 } from '../src/jobs/goalContinuation.ts';
-import { executePreparedGoal } from '../src/jobs/processGoalJob.ts';
+import { executePreparedGoal, prepareGoalAttemptInputs, ensureGoalWorktree, GOAL_WORKTREE_RESTORED_NOTICE, acknowledgeWholeSessionInput } from '../src/jobs/processGoalJob.ts';
 import type { GoalRow } from '../src/jobs/goalAttemptState.ts';
 
 let db: typeof import('../packages/core/src/db/connection.ts')['db'];
@@ -318,3 +318,79 @@ test('a takeover during a transient rebuild error prevents the retry', async () 
   await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), /lost its attempt claim/);
   assert.equal(calls, 1);
 });
+
+for (const continued of [false, true]) {
+  test(`restoration notice survives a pause during ${continued ? 'continued' : 'live'} checkout rebuilding`, async () => {
+    const missing = path.join(existingWorktree(), 'checkout');
+    const { job, goal } = await continuedGoal(`notice-pause-${continued}`, { worktree_path: missing, continue_requested: continued, agent_type: 'opencode' });
+    const { ops } = operations(openDraft, async () => {
+      await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'paused' });
+      fs.mkdirSync(missing);
+      return missing;
+    });
+    if (continued) await prepareContinuedGoal(job, goal, ops);
+    else await restoreMissingGoalWorktree(job, goal, ops);
+    let latest = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+    assert.equal(latest.desired_state, 'paused');
+    const notice = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first();
+    assert.equal(notice.state, 'pending');
+    // Resume in a new attempt: the checkout now exists and reports no restoration.
+    await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'running', run_generation: job.generation + 1, run_claim: 'resume' });
+    latest = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+    const resumedJob = { ...job, generation: latest.run_generation, claimId: 'resume' };
+    const worktree = await ensureGoalWorktree(latest, resumedJob, 'token');
+    assert.equal(worktree.restored, undefined);
+    const inputs = await prepareGoalAttemptInputs(latest);
+    assert.equal(inputs.pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  });
+}
+
+for (const provider of ['opencode', 'codex', 'claude']) {
+  test(`${provider} delivers restoration notices with independent user-input acknowledgement`, async () => {
+    const { job, goal } = await continuedGoal(`notice-delivery-${provider}`, { worktree_path: '/missing/notice', continue_requested: false, agent_type: provider });
+    await db('goal_inputs').insert({ input_id: `user-${provider}`, goal_id: goal.goal_id, owner_id: goal.owner_id,
+      idempotency_key: `user-${provider}`, operation: 'goal.input', payload_hash: 'user', message: 'Preserve the API.' });
+    const { ops } = operations(openDraft, async () => goal.worktree_path);
+    await restoreMissingGoalWorktree(job, goal, ops);
+    const notice = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first();
+    const inputs = await prepareGoalAttemptInputs(goal);
+    const captured: AgentTaskOptions[] = [];
+    const prepared = { goal, ...inputs, githubToken: 'token', worktree: { worktreePath: '/tmp/checkout', branchName: goal.branch_name! },
+      agent: { executeTask: async (options: AgentTaskOptions) => {
+        captured.push(options);
+        return { success: false, modelUsed: 'test', executionTimeMs: 1, logs: '', modifiedFiles: [] };
+      } },
+    };
+    await executePreparedGoal(job, prepared as never);
+    assert.equal((await db('goal_inputs').where({ input_id: notice.input_id }).first()).state, 'pending');
+    const userState = async () => (await db('goal_inputs').where({ input_id: `user-${provider}` }).first()).state;
+    if (provider === 'opencode') {
+      assert.equal(captured[0].prompt, `${GOAL_WORKTREE_RESTORED_NOTICE}\n\nPreserve the API.`);
+      await acknowledgeWholeSessionInput(job, prepared as never, { success: false } as never);
+      assert.equal((await db('goal_inputs').where({ input_id: notice.input_id }).first()).state, 'pending', 'startup failure cannot discharge restoration');
+      await acknowledgeWholeSessionInput(job, prepared as never, { success: true } as never);
+      assert.equal((await db('goal_inputs').where({ input_id: notice.input_id }).first()).state, 'delivered');
+      assert.equal(await userState(), 'delivered');
+    } else {
+      assert.equal(captured[0].initialControlInputMessage, GOAL_WORKTREE_RESTORED_NOTICE);
+      assert.equal(captured[0].initialControlInputId, notice.input_id);
+      assert.equal(await userState(), 'pending');
+      await captured[0].goalControl!.markInputDelivered(notice.input_id, 'accepted-turn');
+      assert.equal(await userState(), 'pending', 'notice acknowledgement cannot acknowledge the queued user message');
+      assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.input_id, `user-${provider}`);
+    }
+  });
+}
+
+for (const samePath of [false, true]) {
+test(`takeover after a successful rebuild cannot persist state (same path: ${samePath})`, async () => {
+  const { job, goal } = await continuedGoal(`notice-takeover-success-${samePath}`, { worktree_path: '/missing/takeover', continue_requested: false });
+  const { ops } = operations(openDraft, async () => {
+    await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+    return samePath ? goal.worktree_path : '/rebuilt/takeover';
+  });
+  await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), /lost its attempt claim/);
+  assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, goal.worktree_path);
+  assert.equal(await db('goal_inputs').where({ goal_id: goal.goal_id }).first(), undefined);
+});
+}
