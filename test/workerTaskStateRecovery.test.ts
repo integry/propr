@@ -282,3 +282,23 @@ test('reconciles follow-up CI suspensions under the same lease', async () => {
     // The lease is released once per run, after the suspension pass.
     assert.equal(redis.eval.mock.calls.length > 0, true);
 });
+
+test('a recovery step whose previous run is still pending is skipped, not started again', async () => {
+    reconcileStaleTaskStates.mock.resetCalls();
+    logWarn.mock.resetCalls();
+    let finishGoals: (() => void) | undefined;
+    const recoverGoals = mock.fn(() => new Promise<{ recovered: number }>(resolve => { finishGoals = () => resolve({ recovered: 0 }); }));
+    const redis = { set: mock.fn(async () => 'OK'), eval: mock.fn(async () => 1) };
+    const runner = await startWorkerTaskStateRecovery({ ...dependencies(), redis, recoverGoals, intervalMs: 60_000, timeBudgetMs: 60 });
+    await new Promise(resolve => setTimeout(resolve, 100)); // the startup pass times out on the goal step
+
+    assert.equal(await runner.runOnce(), true, 'the next pass completes');
+    assert.equal(recoverGoals.mock.calls.length, 1, 'the stuck step is not started a second time');
+    assert.ok(logWarn.mock.calls.some(call => call.arguments[1] === 'Skipping a recovery step whose previous run has not finished'));
+
+    finishGoals?.();
+    await new Promise(resolve => setImmediate(resolve));
+    await runner.runOnce();
+    assert.equal(recoverGoals.mock.calls.length, 2, 'the step runs again once its previous run has finished');
+    await runner.close();
+});

@@ -144,6 +144,10 @@ The daemon needs access to the Docker socket, the clone/worktree roots at their 
 
 Job-end removal also retains any checkout named by an unreleased follow-up handoff, including committed work awaiting publication.
 
+### The storage lifecycle gate
+
+Every job, indexing scan and storage sweep runs under a host-wide lock shared by all service containers: the directory `<clone root>/../.clones-storage-lifecycle/gate` (by default `/tmp/git-processor/.clones-storage-lifecycle/gate`). The holder writes an `owner` record (container id, pid, process start time) inside it. A process waiting for the gate probes that holder every 5 seconds and removes the gate itself when the holder is gone (its container restarted, or its pid no longer exists), so a crashed process cannot freeze the others; a gate with no owner record is treated as abandoned after 10 minutes. Waits are logged every minute as `Still waiting for the storage lifecycle gate after Ns (held by <container> pid <pid>)`, and a reclaim as `Removed an abandoned storage lifecycle gate`. Jobs that sit in `active` without a log line and no such warnings point at an older ProPR version; removing the stale `gate` directory by hand unblocks it.
+
 ### Stuck follow-ups settle themselves
 
 A follow-up handoff held for an operator blocks new follow-ups on its pull request. Holds that can no longer publish anything are settled automatically. ProPR then posts a short note on the pull request, and the held attempt's worktree stays on disk.

@@ -239,6 +239,21 @@ export async function startWorkerTaskStateRecovery(
     let closed = false;
     let activeRun: Promise<boolean> | null = null;
     let activeAbortController: AbortController | null = null;
+    // A step that outlives its budget keeps running after the pass gives up on
+    // it. Starting it again every minute piled up dozens of copies and ran the
+    // worker out of memory, so a step is skipped while its last run is pending.
+    const stepsInFlight = new Map<string, Promise<unknown>>();
+    const runStep = async <T>(name: string, operation: () => Promise<T>, deadline: number, signal: AbortSignal): Promise<T | null> => {
+        if (stepsInFlight.has(name)) {
+            logger.warn({ operation: name }, 'Skipping a recovery step whose previous run has not finished');
+            return null;
+        }
+        const pending = operation();
+        stepsInFlight.set(name, pending);
+        const forget = (): void => { if (stepsInFlight.get(name) === pending) stepsInFlight.delete(name); };
+        pending.then(forget, forget);
+        return runWithinDeadline(name, () => pending, deadline, signal);
+    };
 
     const execute = async (): Promise<boolean> => {
         if (closed) return false;
@@ -291,40 +306,40 @@ export async function startWorkerTaskStateRecovery(
             logger.info(result.summary, 'Reconciled stale persisted task states');
             if (options.replacement) {
                 const replacement = options.replacement;
-                const replacementResult = await runWithinDeadline(
+                const replacementResult = await runStep(
                     'Task replacement recovery',
                     () => replacement.resumePending(),
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                logger.info(replacementResult, 'Resumed interrupted task replacement decisions');
+                if (replacementResult) logger.info(replacementResult, 'Resumed interrupted task replacement decisions');
             }
             if (options.recoverGoals) {
-                const goalResult = await runWithinDeadline(
+                const goalResult = await runStep(
                     'Native goal recovery',
                     options.recoverGoals,
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                logger.info(goalResult, 'Reconciled nonterminal native goals');
+                if (goalResult) logger.info(goalResult, 'Reconciled nonterminal native goals');
             }
             if (options.reconcileCiSuspensions) {
-                const suspensionResult = await runWithinDeadline(
+                const suspensionResult = await runStep(
                     'Follow-up CI suspension reconciliation',
                     options.reconcileCiSuspensions,
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                logger.info(suspensionResult as Record<string, unknown>, 'Reconciled follow-up CI suspensions');
+                if (suspensionResult) logger.info(suspensionResult as Record<string, unknown>, 'Reconciled follow-up CI suspensions');
             }
             if (options.recoverFollowupHandoffs) {
-                const handoffResult = await runWithinDeadline(
+                const handoffResult = await runStep(
                     'Follow-up publication handoff recovery',
                     options.recoverFollowupHandoffs,
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                logger.info(handoffResult as Record<string, unknown>, 'Recovered interrupted follow-up publication handoffs');
+                if (handoffResult) logger.info(handoffResult as Record<string, unknown>, 'Recovered interrupted follow-up publication handoffs');
             }
             return true;
         } catch (error) {

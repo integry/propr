@@ -4,7 +4,23 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
-import { claimOwnerGone, currentClaimOwner, isClaimOwner, type ClaimOwnerProbe } from './claimOwner.js';
+import { claimOwnerGone, currentClaimOwner, isClaimOwner, type ClaimOwner, type ClaimOwnerProbe } from './claimOwner.js';
+
+/** Written inside the gate directory by its holder, so a waiter can tell a live holder from a dead one. */
+const GATE_OWNER_FILE = 'owner';
+/** How often a waiter probes whether the gate holder is still alive. */
+const GATE_ORPHAN_CHECK_MS = 5_000;
+/** A gate with no owner record (holder died between mkdir and write, or an older release) is abandoned after this. */
+const GATE_UNOWNED_GRACE_MS = 10 * 60_000;
+/** Without a caller-supplied warning, a wait for the gate is reported this often. */
+const DEFAULT_WAIT_WARNING_MS = 60_000;
+
+interface GateRecord { owner: ClaimOwner; token: string; takenAt: number }
+
+export interface StorageLifecycleOptions {
+  /** Interval of the default "still waiting for the gate" warning. */
+  waitWarningMs?: number;
+}
 
 /** Durable instance policy, registry and audit records, outside repository working copies. */
 export function storageControlRoot(): string {
@@ -53,7 +69,11 @@ interface StorageUseScope {
  */
 export class StorageLifecycle {
   private context = new AsyncLocalStorage<StorageUseScope>();
-  constructor(readonly root: string = repositoryLifecycleRoot(), private readonly ownerProbe?: ClaimOwnerProbe) {}
+  constructor(
+    readonly root: string = repositoryLifecycleRoot(),
+    private readonly ownerProbe?: ClaimOwnerProbe,
+    private readonly options: StorageLifecycleOptions = {},
+  ) {}
 
   async initialize(): Promise<void> {
     await fs.mkdir(this.root, { recursive: true });
@@ -62,20 +82,84 @@ export class StorageLifecycle {
     await assertRealDirectory(path.join(this.root, 'readers'));
   }
 
+  /**
+   * The gate is a directory shared by every ProPR process on the host. Its
+   * holder records itself inside it; a waiter that finds the holder gone
+   * (crashed process, restarted container) removes the gate instead of waiting
+   * forever, which once froze every worker after an out-of-memory crash.
+   */
   async exclusive<T>(run: () => Promise<T>, waitMs = 10_000): Promise<T> {
     await this.initialize();
     const gate = path.join(this.root, 'gate');
+    const token = randomUUID();
     const until = Date.now() + waitMs;
+    let nextOrphanCheck = 0;
     for (;;) {
       try { await fs.mkdir(gate); break; }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         if (Date.now() >= until) throw new StorageBusyError();
+        if (Date.now() >= nextOrphanCheck) {
+          nextOrphanCheck = Date.now() + GATE_ORPHAN_CHECK_MS;
+          if (await this.reclaimAbandonedGate(gate)) continue;
+        }
         await new Promise(resolve => setTimeout(resolve, 25));
       }
     }
+    try {
+      const record: GateRecord = { owner: currentClaimOwner(), token, takenAt: Date.now() };
+      await fs.writeFile(path.join(gate, GATE_OWNER_FILE), JSON.stringify(record), { flag: 'wx' });
+    } catch (error) {
+      await fs.rmdir(gate).catch(() => undefined);
+      throw error;
+    }
     try { return await run(); }
-    finally { await fs.rmdir(gate); }
+    finally { await this.releaseGate(gate, token); }
+  }
+
+  /** Reads the holder's record; null when the gate has none (or is unreadable). */
+  private async gateRecord(gate: string): Promise<GateRecord | null> {
+    try {
+      const record = JSON.parse(await fs.readFile(path.join(gate, GATE_OWNER_FILE), 'utf8')) as Partial<GateRecord>;
+      return isClaimOwner(record?.owner) && typeof record.token === 'string' ? record as GateRecord : null;
+    } catch { return null; }
+  }
+
+  /** Removes the gate when its holder is gone, or when it has had no holder record for the grace period. */
+  private async reclaimAbandonedGate(gate: string): Promise<boolean> {
+    const record = await this.gateRecord(gate);
+    let why: string;
+    if (record) {
+      if (!await claimOwnerGone(record.owner, this.ownerProbe)) return false;
+      why = `its holder (${record.owner.host} pid ${record.owner.pid}) is gone`;
+    } else {
+      let age: number;
+      try { age = Date.now() - (await fs.stat(gate)).mtimeMs; }
+      catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+      if (age < GATE_UNOWNED_GRACE_MS) return false;
+      why = `it has had no holder record for ${Math.round(age / 60_000)} minutes`;
+    }
+    await fs.unlink(path.join(gate, GATE_OWNER_FILE)).catch(() => undefined);
+    try { await fs.rmdir(gate); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+    console.warn(`[storage] Removed an abandoned storage lifecycle gate: ${why}`);
+    return true;
+  }
+
+  /** Releases only the gate this call took; a gate reclaimed and retaken by another process is left alone. */
+  private async releaseGate(gate: string, token: string): Promise<void> {
+    const record = await this.gateRecord(gate);
+    if (record?.token !== token) {
+      console.warn('[storage] The storage lifecycle gate was reclaimed while held; the holder was probably judged dead');
+      return;
+    }
+    await fs.unlink(path.join(gate, GATE_OWNER_FILE)).catch(() => undefined);
+    await fs.rmdir(gate).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+  }
+
+  /** Who holds the gate right now, for wait warnings. */
+  async gateHolder(): Promise<ClaimOwner | null> {
+    return (await this.gateRecord(path.join(this.root, 'gate')))?.owner ?? null;
   }
 
   /** Optional cleanup yields its proof to published admissions, across processes.
@@ -158,11 +242,20 @@ export class StorageLifecycle {
     });
   }
 
+  /** A caller's warning fires once; without one, a wait is reported every interval so it can never be silent. */
   private async withWaitWarning<T>(run: () => Promise<T>, warning?: StorageUseOptions['waitWarning']): Promise<T> {
-    const timer = warning ? setTimeout(warning.warn, warning.afterMs) : undefined;
-    timer?.unref();
+    const started = Date.now();
+    const timer = warning
+      ? setTimeout(warning.warn, warning.afterMs)
+      : setInterval(() => {
+        void this.gateHolder().then(holder => console.warn(
+          `[storage] Still waiting for the storage lifecycle gate after ${Math.round((Date.now() - started) / 1000)}s`
+          + (holder ? ` (held by ${holder.host} pid ${holder.pid})` : ' (no holder record)'),
+        ));
+      }, this.options.waitWarningMs ?? DEFAULT_WAIT_WARNING_MS);
+    timer.unref();
     try { return await run(); }
-    finally { if (timer) clearTimeout(timer); }
+    finally { clearTimeout(timer); clearInterval(timer); }
   }
 
   private async admit(admission: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<void> {
