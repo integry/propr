@@ -248,11 +248,15 @@ export async function startWorkerTaskStateRecovery(
             logger.warn({ operation: name }, 'Skipping a recovery step whose previous run has not finished');
             return null;
         }
-        const pending = operation();
-        stepsInFlight.set(name, pending);
-        const forget = (): void => { if (stepsInFlight.get(name) === pending) stepsInFlight.delete(name); };
-        pending.then(forget, forget);
-        return runWithinDeadline(name, () => pending, deadline, signal);
+        // The step starts inside the guarded thunk, after the deadline and abort
+        // checks: a pass that is out of budget must not launch work it cannot cancel.
+        return runWithinDeadline(name, () => {
+            const pending = operation();
+            stepsInFlight.set(name, pending);
+            const forget = (): void => { if (stepsInFlight.get(name) === pending) stepsInFlight.delete(name); };
+            pending.then(forget, forget);
+            return pending;
+        }, deadline, signal);
     };
 
     const execute = async (): Promise<boolean> => {
@@ -312,7 +316,7 @@ export async function startWorkerTaskStateRecovery(
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                if (replacementResult) logger.info(replacementResult, 'Resumed interrupted task replacement decisions');
+                if (replacementResult !== null) logger.info(replacementResult, 'Resumed interrupted task replacement decisions');
             }
             if (options.recoverGoals) {
                 const goalResult = await runStep(
@@ -321,7 +325,7 @@ export async function startWorkerTaskStateRecovery(
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                if (goalResult) logger.info(goalResult, 'Reconciled nonterminal native goals');
+                if (goalResult !== null) logger.info(goalResult, 'Reconciled nonterminal native goals');
             }
             if (options.reconcileCiSuspensions) {
                 const suspensionResult = await runStep(
@@ -330,7 +334,7 @@ export async function startWorkerTaskStateRecovery(
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                if (suspensionResult) logger.info(suspensionResult as Record<string, unknown>, 'Reconciled follow-up CI suspensions');
+                if (suspensionResult !== null) logger.info(suspensionResult as Record<string, unknown>, 'Reconciled follow-up CI suspensions');
             }
             if (options.recoverFollowupHandoffs) {
                 const handoffResult = await runStep(
@@ -339,7 +343,7 @@ export async function startWorkerTaskStateRecovery(
                     deadline - leaseReleaseBudgetMs,
                     controller.signal,
                 );
-                if (handoffResult) logger.info(handoffResult as Record<string, unknown>, 'Recovered interrupted follow-up publication handoffs');
+                if (handoffResult !== null) logger.info(handoffResult as Record<string, unknown>, 'Recovered interrupted follow-up publication handoffs');
             }
             return true;
         } catch (error) {
