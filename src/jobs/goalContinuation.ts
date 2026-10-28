@@ -27,6 +27,20 @@ async function recordRestorationNotice(trx: typeof db, goal: GoalRow): Promise<v
     });
 }
 
+/** Commit the delivery obligation before any external operation can recreate the checkout. */
+async function persistRestorationObligation(job: GoalJobData, goal: GoalRow): Promise<void> {
+    await db.transaction(async trx => {
+        const owned = await trx('goals').where({
+            goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
+        }).whereNull('result_state').forUpdate().first('goal_id');
+        if (!owned) throw new Error('Goal worktree restoration lost its attempt claim');
+        const pending = await trx('goal_inputs').where({
+            goal_id: goal.goal_id, owner_id: goal.owner_id, state: 'pending', kind: 'restoration',
+        }).first('input_id');
+        if (!pending) await recordRestorationNotice(trx, goal);
+    });
+}
+
 export interface GoalPullRequestState {
     state: string;
     merged: boolean;
@@ -97,6 +111,8 @@ export async function restoreMissingGoalWorktree(
 ): Promise<{ goal: GoalRow; restored: boolean }> {
     if (!hasSavedWorktree(goal) || isDirectory(goal.worktree_path)) return { goal, restored: false };
     const assertCurrent = attemptClaimGuard(job, 'Goal worktree restoration');
+    await persistRestorationObligation(job, goal);
+    await assertCurrent();
     const rebuilt = await retryTransient(() => operations.rebuildWorktree(goal, assertCurrent), assertCurrent);
     if (rebuilt === null) throw new GoalWorktreeLostError(goal);
     logger.info({ goalId: goal.goal_id, worktreePath: rebuilt, branchName: goal.branch_name }, 'Rebuilt missing goal worktree from its published branch');
@@ -105,7 +121,6 @@ export async function restoreMissingGoalWorktree(
             goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
         }).whereNull('result_state').update({ worktree_path: rebuilt, updated_at: trx.fn.now() });
         if (changed !== 1) throw new Error('Goal worktree restoration lost its attempt claim');
-        await recordRestorationNotice(trx, goal);
     });
     const updated = await fencedGoal(job);
     if (!updated) throw new Error('Goal worktree restoration lost its attempt claim');
@@ -135,7 +150,6 @@ export async function prepareContinuedGoal(
     const retry = <T>(operation: () => Promise<T>): Promise<T> => retryTransient(operation, assertCurrent);
     const updates: Record<string, unknown> = {};
     let preservedCheckout: string | undefined;
-    let restored = false;
     if (goal.final_pr_number) {
         const pull = await retry(() => operations.readPullRequest(goal.repository, goal.final_pr_number!));
         if (pull?.merged) {
@@ -150,12 +164,13 @@ export async function prepareContinuedGoal(
     await assertCurrent();
     const keepsBranch = !('branch_name' in updates);
     if (keepsBranch && hasSavedWorktree(goal) && !isDirectory(goal.worktree_path)) {
+        await persistRestorationObligation(job, goal);
+        await assertCurrent();
         const rebuilt = await retry(() => operations.rebuildWorktree({
             ...goal, worktree_path: goal.worktree_path, branch_name: goal.branch_name,
         }, assertCurrent));
         if (rebuilt === null) Object.assign(updates, FRESH_BRANCH);
         else {
-            restored = true;
             updates.worktree_path = rebuilt;
         }
     }
@@ -171,7 +186,6 @@ export async function prepareContinuedGoal(
             goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
         }).whereNull('result_state').update(updates);
         if (changed !== 1) throw new Error('Continued goal preparation lost its attempt claim');
-        if (restored) await recordRestorationNotice(trx, goal);
         if (preservedCheckout) {
             const input = await trx('goal_inputs').where({ goal_id: job.goalId, operation: 'goal.continue', state: 'pending' })
                 .orderBy('sequence', 'desc').first('input_id', 'message');

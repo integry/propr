@@ -614,24 +614,32 @@ async function handleStoppedGoal(
     return { status: 'paused' };
 }
 
-async function scheduleFurtherWork(
+// eslint-disable-next-line max-params -- inject enqueue to verify retry decisions without queue side effects
+export async function scheduleFurtherWork(
     data: GoalJobData,
     latest: GoalRow,
     result: AgentExecutionResult,
     checkpointPublished = false,
+    enqueue: typeof enqueueNextGoalAttempt = enqueueNextGoalAttempt,
 ): Promise<{ status: string } | null> {
-    if (await firstPendingGoalInput(latest)) {
-        await enqueueNextGoalAttempt(latest, data);
+    const recoverable = !result.success && isRecoverableInterruption(result)
+        && Boolean(latest.session_id) && Boolean(latest.worktree_path);
+    // An undelivered restoration warning must survive failure, but cannot by
+    // itself turn a permanent execution error into another attempt forever.
+    const pending = result.success || recoverable
+        ? await firstPendingGoalInput(latest)
+        : await db('goal_inputs').where({ goal_id: latest.goal_id, owner_id: latest.owner_id, state: 'pending' })
+            .whereNot({ kind: 'restoration' }).first('input_id');
+    if (pending) {
+        await enqueue(latest, data);
         return { status: 'continuing' };
     }
     if (checkpointPublished) {
-        await enqueueNextGoalAttempt(latest, data);
+        await enqueue(latest, data);
         return { status: 'continuing' };
     }
-    const recoverable = !result.success && isRecoverableInterruption(result)
-        && Boolean(latest.session_id) && Boolean(latest.worktree_path);
     if (!recoverable) return null;
-    await enqueueNextGoalAttempt(latest, data, true);
+    await enqueue(latest, data, true);
     return { status: 'recovering' };
 }
 

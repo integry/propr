@@ -12,7 +12,7 @@ import {
   type GoalContinuationOperations,
   type GoalPullRequestState,
 } from '../src/jobs/goalContinuation.ts';
-import { executePreparedGoal, prepareGoalAttemptInputs, ensureGoalWorktree, GOAL_WORKTREE_RESTORED_NOTICE, acknowledgeWholeSessionInput } from '../src/jobs/processGoalJob.ts';
+import { executePreparedGoal, prepareGoalAttemptInputs, ensureGoalWorktree, GOAL_WORKTREE_RESTORED_NOTICE, acknowledgeWholeSessionInput, scheduleFurtherWork, processGoalJob } from '../src/jobs/processGoalJob.ts';
 import type { GoalRow } from '../src/jobs/goalAttemptState.ts';
 
 let db: typeof import('../packages/core/src/db/connection.ts')['db'];
@@ -382,15 +382,109 @@ for (const provider of ['opencode', 'codex', 'claude']) {
   });
 }
 
-for (const samePath of [false, true]) {
-test(`takeover after a successful rebuild cannot persist state (same path: ${samePath})`, async () => {
-  const { job, goal } = await continuedGoal(`notice-takeover-success-${samePath}`, { worktree_path: '/missing/takeover', continue_requested: false });
-  const { ops } = operations(openDraft, async () => {
-    await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
-    return samePath ? goal.worktree_path : '/rebuilt/takeover';
-  });
-  await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), /lost its attempt claim/);
-  assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, goal.worktree_path);
-  assert.equal(await db('goal_inputs').where({ goal_id: goal.goal_id }).first(), undefined);
-});
+for (const continued of [false, true]) {
+  for (const samePath of [false, true]) {
+    test(`takeover after ${continued ? 'continued' : 'live'} rebuild cannot persist checkout state (same path: ${samePath})`, async () => {
+      const { job, goal } = await continuedGoal(`notice-takeover-success-${continued}-${samePath}`, { worktree_path: '/missing/takeover', continue_requested: continued });
+      const { ops } = operations(openDraft, async () => {
+        await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+        return samePath ? goal.worktree_path : '/rebuilt/takeover';
+      });
+      await assert.rejects((continued ? prepareContinuedGoal : restoreMissingGoalWorktree)(job, goal, ops), /lost its attempt claim/);
+      assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, goal.worktree_path);
+      assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first()).state, 'pending',
+        'the obligation committed before rebuilding remains for the replacement attempt');
+    });
+  }
 }
+
+for (const continued of [false, true]) {
+  for (const completedRebuild of [false, true]) {
+    test(`worker interruption ${completedRebuild ? 'after' : 'before'} rebuild preserves ${continued ? 'continued' : 'live'} restoration obligation`, async () => {
+      const missing = path.join(existingWorktree(), 'checkout');
+      const { job, goal } = await continuedGoal(`interrupted-${continued}-${completedRebuild}`, {
+        worktree_path: missing, continue_requested: continued, agent_type: 'opencode',
+      });
+      const prepare = continued ? prepareContinuedGoal : restoreMissingGoalWorktree;
+      const { ops } = operations(openDraft, async () => {
+        assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first()).state, 'pending',
+          'the obligation must be durable before the external mutation');
+        if (completedRebuild) fs.mkdirSync(missing);
+        throw new Error('worker interrupted');
+      });
+      await assert.rejects(prepare(job, goal, ops), /worker interrupted/);
+      await db('goals').where({ goal_id: goal.goal_id }).update({ run_generation: job.generation + 1, run_claim: 'recovered' });
+      const recovered = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+      const recoveredJob = { ...job, generation: recovered.run_generation, claimId: 'recovered' };
+      const { ops: recoveredOps, calls } = operations(openDraft, async () => { fs.mkdirSync(missing); return missing; });
+      await prepare(recoveredJob, recovered, recoveredOps);
+      assert.equal(calls.filter(call => call.startsWith('rebuild:')).length, completedRebuild ? 0 : 1);
+      assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' })).length, 1);
+      const inputs = await prepareGoalAttemptInputs(recovered);
+      assert.equal(inputs.pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+      await acknowledgeWholeSessionInput(recoveredJob, { goal: recovered, ...inputs } as never, { success: false } as never);
+      assert.equal((await prepareGoalAttemptInputs(recovered)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+      await acknowledgeWholeSessionInput(recoveredJob, { goal: recovered, ...inputs } as never, { success: true } as never);
+      assert.equal((await prepareGoalAttemptInputs(recovered)).pendingInput, null);
+    });
+  }
+
+  test(`stale ${continued ? 'continued' : 'live'} restoration cannot create an obligation or rebuild`, async () => {
+    const { job, goal } = await continuedGoal(`stale-obligation-${continued}`, { worktree_path: '/missing/stale', continue_requested: continued });
+    await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+    const { ops, calls } = operations(openDraft);
+    await assert.rejects((continued ? prepareContinuedGoal : restoreMissingGoalWorktree)(job, goal, ops), /lost its attempt claim/);
+    assert.equal(calls.some(call => call.startsWith('rebuild:')), false);
+    assert.equal(await db('goal_inputs').where({ goal_id: goal.goal_id }).first(), undefined);
+  });
+}
+
+for (const provider of ['opencode', 'codex', 'claude']) {
+  test(`${provider} permanent failure with a pending restoration notice reaches failure without scheduling`, async () => {
+    const { job, goal } = await continuedGoal(`notice-terminal-${provider}`, {
+      worktree_path: '/missing/terminal', continue_requested: false, agent_type: provider, launch_strategy: 'orchestrate',
+    });
+    const { ops } = operations(openDraft, async () => goal.worktree_path);
+    await restoreMissingGoalWorktree(job, goal, ops);
+    const inputs = await prepareGoalAttemptInputs(goal);
+    const result = { success: false, error: 'Invalid credentials', modifiedFiles: [], logs: '' };
+    let enqueued = 0;
+    let failed = false;
+    const outcome = await processGoalJob({ data: job } as never, {
+      claim: async () => goal,
+      withHeartbeat: async (_data: unknown, operation: () => Promise<unknown>) => operation(),
+      prepare: async () => ({ ready: true, value: { goal, ...inputs, worktree: { worktreePath: goal.worktree_path, branchName: goal.branch_name } } }),
+      execute: async () => result,
+      result: {
+        loadGoal: async () => goal, fencedGoal: async () => goal,
+        acknowledgeInput: acknowledgeWholeSessionInput,
+        recordMetrics: async () => {}, handleStopped: async () => null,
+        saveProviderResult: async () => ({}),
+        scheduleFurtherWork: (data: GoalJobData, latest: GoalRow, execution: never) =>
+          scheduleFurtherWork(data, latest, execution, false, async () => { enqueued++; return true; }),
+        finalizeGoal: async (_data: unknown, state: string) => { assert.equal(state, 'failed'); return true; },
+        markTaskReconciled: async () => {},
+        stateManager: () => ({ markTaskFailed: async () => { failed = true; return { state: 'failed' }; } }),
+      },
+    } as never);
+    assert.deepEqual(outcome, { status: 'failed', goalId: goal.goal_id });
+    assert.equal(enqueued, 0);
+    assert.equal(failed, true);
+    assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  });
+}
+
+test('pending restoration scheduling preserves successful turns, recoverable interruptions, and queued user input', async () => {
+  const { job, goal } = await continuedGoal('notice-scheduling', { worktree_path: '/missing/scheduling', continue_requested: false });
+  const { ops } = operations(openDraft, async () => goal.worktree_path);
+  await restoreMissingGoalWorktree(job, goal, ops);
+  let enqueued = 0;
+  const enqueue = async () => { enqueued++; return true; };
+  for (const result of [{ success: true }, { success: false, error: 'socket hang up' }]) {
+    assert.deepEqual(await scheduleFurtherWork(job, goal, result as never, false, enqueue), { status: 'continuing' });
+  }
+  await db('goal_inputs').insert({ input_id: 'scheduling-user', goal_id: goal.goal_id, owner_id: goal.owner_id,
+    idempotency_key: 'scheduling-user', operation: 'goal.input', payload_hash: 'user', message: 'Use the new credentials.' });
+  assert.deepEqual(await scheduleFurtherWork(job, goal, { success: false, error: 'Invalid credentials' } as never, false, enqueue), { status: 'continuing' });
+  assert.equal(enqueued, 3);
+});
