@@ -19,7 +19,7 @@ import {
   withRetry,
   retryConfigs
 } from '@propr/core';
-import { agentSupportsSavedModel, currentAntigravityModel, currentOpenCodeModel } from '@propr/shared';
+import { agentSupportsSavedModel, currentAntigravityModel, currentOpenCodeModel, retiredOpenCodeModelLabel } from '@propr/shared';
 
 export interface ImplementIssueContext {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -170,6 +170,23 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
   }
 }
 
+/**
+ * Gets every LLM label an issue may already carry for a saved selection: the
+ * current label, plus the label a retired OpenCode model was published under
+ * before it was retired, which still dispatches to its successor.
+ */
+export async function getAttachedLlmLabels(modelName: string | null, agentAlias?: string | null): Promise<string[]> {
+  const labels = new Set<string>();
+  const label = await getLlmLabel(modelName, agentAlias);
+  if (label) labels.add(label);
+  const retired = modelName ? retiredOpenCodeModelLabel(modelName) : undefined;
+  if (retired) {
+    labels.add(retired.githubLabel);
+    if (agentAlias) labels.add(buildAgentModelLlmLabel('opencode', agentAlias, retired));
+  }
+  return Array.from(labels);
+}
+
 export async function handleMultiAgentImplementation(params: MultiAgentParams): Promise<{
   success: boolean;
   message: string;
@@ -178,7 +195,7 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
 }> {
   const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, labelLogger, draftId, planIssue, models } = params;
 
-  const oldLlmLabel = await getLlmLabel(planIssue.model_name, planIssue.agent_alias);
+  const oldLlmLabels = await getAttachedLlmLabels(planIssue.model_name, planIssue.agent_alias);
   const newLlmLabels = new Set<string>();
   for (const m of models) {
     const label = await getLlmLabel(m.model_name, m.agent_alias);
@@ -186,7 +203,7 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
   }
 
   const labelsToRemove = [`${implementLabel}-processing`, `${implementLabel}-done`];
-  if (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) labelsToRemove.push(oldLlmLabel);
+  labelsToRemove.push(...oldLlmLabels.filter(label => !newLlmLabels.has(label)));
   const labelsToAdd = Array.from(newLlmLabels);
 
   if (epicLabelName) {

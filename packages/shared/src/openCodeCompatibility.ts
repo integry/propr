@@ -21,13 +21,25 @@ const RETIRED_OPENCODE_FREE_MODELS: ReadonlyArray<readonly [id: string, shortAli
 export const OPENCODE_RETIRED_MODEL_ROUTES: Record<string, string> = Object.create(null);
 /** Retired `opencode-<shortAlias>` (its GitHub label without `llm-`) → the current free model. */
 export const OPENCODE_RETIRED_MODEL_ALIASES: Record<string, string> = Object.create(null);
+const OPENCODE_RETIRED_MODEL_LABELS: Record<string, string> = Object.create(null);
 for (const [id, shortAlias, successor] of RETIRED_OPENCODE_FREE_MODELS) {
     OPENCODE_RETIRED_MODEL_ROUTES[id] = successor;
     OPENCODE_RETIRED_MODEL_ALIASES[`opencode-${shortAlias}`] = successor;
+    OPENCODE_RETIRED_MODEL_LABELS[id] = `llm-opencode-${shortAlias}`;
+}
+
+function cleanOpenCodeModelId(id: string): string {
+    return id.toLowerCase().replace(/^opencode:/, '').replace(/^opencode\//, 'opencode-');
 }
 
 /** The current model a saved OpenCode ID runs on (`opencode:`, `opencode/` forms included); other IDs are returned unchanged. */
 export function currentOpenCodeModel(id: string): string {
-    const clean = id.toLowerCase().replace(/^opencode:/, '').replace(/^opencode\//, 'opencode-');
-    return OPENCODE_RETIRED_MODEL_ROUTES[clean] ?? id;
+    return OPENCODE_RETIRED_MODEL_ROUTES[cleanOpenCodeModelId(id)] ?? id;
+}
+
+/** The retired OpenCode model and the GitHub label it was published under before it was retired. */
+export function retiredOpenCodeModelLabel(id: string): { id: string; githubLabel: string } | undefined {
+    const clean = cleanOpenCodeModelId(id);
+    const githubLabel = OPENCODE_RETIRED_MODEL_LABELS[clean];
+    return githubLabel ? { id: clean, githubLabel } : undefined;
 }

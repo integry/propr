@@ -91,6 +91,7 @@ mock.method(registry, 'getAgentByAlias', (alias: string) => alias === 'test' ? {
 } : undefined);
 const issueHelpers = await import('../routes/planIssueHelpers.js');
 await mock.module('../routes/planIssueHelpers.js', { namedExports: { ...issueHelpers, getLlmLabel: async (model: string | null) => model ? `llm-${model}` : 'llm-old',
+  getAttachedLlmLabels: async (model: string | null) => [model ? `llm-${model}` : 'llm-old'],
 } });
 const { createUpdateIssueHandler, createImplementIssueHandler } = await import('../routes/planIssueHandlers.js');
 const { createQueueRemainingHandler } = await import('../routes/planExecutionQueueHandlers.js');
