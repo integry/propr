@@ -39,6 +39,10 @@ export interface OrchestratorConfig {
   /** Secret server-side half of the VAPID pair; never render this value. */
   readonly webPushVapidPrivateKey?: string;
   readonly hostClaudeDir?: string;
+  /** Host `.claude.json` mounted read-only to seed agent containers (HOST_CLAUDE_JSON or the file next to hostClaudeDir). */
+  readonly hostClaudeJson?: string;
+  /** True when hostClaudeJson came from an explicit HOST_CLAUDE_JSON. */
+  readonly hostClaudeJsonExplicit?: boolean;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
   readonly hostOpencodeXdgDir?: string;

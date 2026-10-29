@@ -165,7 +165,7 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
   environment('agents.context_analysis_timeout', 'Context analysis timeout', ['CONTEXT_ANALYSIS_TIMEOUT_MS'], ['planner analysis timeout']),
   environment('planning.generation', 'Plan generation mode and workspace', ['PROPR_PLAN_GENERATION_MODE', 'PROPR_PLAN_WORKSPACE_ROOT'], ['plan files', 'plan workspace']),
   environment('agents.vibe', 'Vibe configuration and turn limit', ['VIBE_MAX_TURNS', 'VIBE_CONFIG_PATH', 'MISTRAL_API_KEY'], ['Vibe config', 'Mistral credential']),
-  environment('agents.host_credentials', 'Host agent credential directories', ['HOST_CLAUDE_DIR', 'HOST_CODEX_DIR', 'HOST_ANTIGRAVITY_DIR', 'HOST_VIBE_DIR', 'HOST_OPENCODE_XDG_DIR', 'HOST_OPENCODE_DATA_DIR'], ['host credential paths']),
+  environment('agents.host_credentials', 'Host agent credential directories', ['HOST_CLAUDE_DIR', 'HOST_CLAUDE_JSON', 'HOST_CODEX_DIR', 'HOST_ANTIGRAVITY_DIR', 'HOST_VIBE_DIR', 'HOST_OPENCODE_XDG_DIR', 'HOST_OPENCODE_DATA_DIR'], ['host credential paths']),
   environment('agents.vibe_prompt_cache', 'Vibe prompt cache directories', ['VIBE_PROMPT_CACHE_DIR', 'HOST_VIBE_PROMPT_CACHE_DIR'], ['Vibe prompt files']),
   environment('queue.redis', 'Redis queue connection', ['REDIS_HOST', 'REDIS_PORT'], ['Redis host', 'Redis port']),
   environment('queue.redis_publish', 'Development Redis published port', ['REDIS_EXTERNAL_BIND_HOST', 'REDIS_EXTERNAL_PORT'], ['external Redis bind']),

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOwnership.js';
+import { claudeConfigSeedScript } from '../claude/docker/claudeConfigSeed.js';
 import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
 import { redactSecrets } from '../utils/secretRedaction.js';
@@ -228,6 +229,7 @@ export function buildWorkflowWrapper(workflow: ResolvedRepositoryWorkflow, marke
 fi`;
     const script = `
 entrypoint="$0"
+${claudeConfigSeedScript()}
 # Post-agent validation shares the execution time limit; stop starting commands before it.
 validation_deadline=
 case "\${PROPR_EXECUTION_TIMEOUT_MS:-}" in

@@ -84,6 +84,38 @@ function agentDescriptors(): AgentDescriptor[] {
   ];
 }
 
+/**
+ * Claude Code's `.claude.json` (next to HOST_CLAUDE_DIR, or HOST_CLAUDE_JSON).
+ * The launcher mounts it read-only and each agent run works on a private copy;
+ * without it, runs start from a minimal config instead of the host login's.
+ */
+export function claudeConfigCheck(
+  cfg: Pick<OrchestratorConfig, "hostClaudeDir" | "hostClaudeJson" | "hostClaudeJsonExplicit">
+): CheckResult | undefined {
+  const name = "Agent config: claude (.claude.json)";
+  if (cfg.hostClaudeJson && existsSync(cfg.hostClaudeJson)) {
+    return { name, status: "ok", detail: `${cfg.hostClaudeJson} mounted read-only; each Claude run gets a private copy`, group: "Agents" };
+  }
+  if (cfg.hostClaudeJson && cfg.hostClaudeJsonExplicit) {
+    return {
+      name,
+      status: "fail",
+      detail: `HOST_CLAUDE_JSON (${cfg.hostClaudeJson}) not found — the worker cannot start with this mount`,
+      group: "Agents",
+      fix: "Point HOST_CLAUDE_JSON at the .claude.json written by `claude` on this host, or remove it from .env.",
+    };
+  }
+  if (!cfg.hostClaudeDir) return undefined;
+  const expected = cfg.hostClaudeJson ?? `${cfg.hostClaudeDir.replace(/\/+$/, "")}.json`;
+  return {
+    name,
+    status: "warn",
+    detail: `${expected} not found — not mounted; Claude runs start from a minimal config`,
+    group: "Agents",
+    fix: `Run \`claude\` once on this host to create ${expected}, or set HOST_CLAUDE_JSON to its path in .env, then restart ProPR.`,
+  };
+}
+
 export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
@@ -478,6 +510,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       });
     }
   }
+
+  const claudeConfig = claudeConfigCheck(cfg);
+  if (claudeConfig) emit(claudeConfig);
 
   // 6b. Agent Tank (optional subscription-usage monitor). Presence only — the
   // actual usage refresh (slow PTY /usage calls) runs in `propr check agents`.

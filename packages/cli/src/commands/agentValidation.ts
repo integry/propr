@@ -249,7 +249,12 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostInvocation: ({ prompt }) => ({ args: ["-p", prompt, "--output-format", "text"] }),
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
-        ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir, { agentType: "claude" }),
+        // Claude prunes ~/.claude/backups to five files on each config save;
+        // keep this run's backups private so the host login's survive.
+        ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir, {
+          agentType: "claude",
+          extra: ["--tmpfs", "/home/node/.claude/backups:rw,nosuid,nodev,noexec,size=16m"],
+        }),
         "claude", "-p", "-", "--output-format", "text", "--dangerously-skip-permissions",
       ],
       stdin: VALIDATION_PROMPT,
