@@ -559,6 +559,7 @@ export * from './goalCheckpoints.js';
 export * from './goalCreation.js';
 
 export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility, antigravitySupportedModel, agentSupportsSavedModel, currentAntigravityModel } from './antigravityCompatibility.js';
+export { OPENCODE_RETIRED_MODEL_ROUTES, OPENCODE_RETIRED_MODEL_ALIASES, currentOpenCodeModel, retiredOpenCodeModelLabel } from './openCodeCompatibility.js';
 export * from './goalBlockers.js';
 export * from './goalWait.js';
 

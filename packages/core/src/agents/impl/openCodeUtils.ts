@@ -1,6 +1,6 @@
 import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
 import fs from 'fs';
-import { isManagedAgentConfigPath } from '@propr/shared';
+import { currentOpenCodeModel, isManagedAgentConfigPath } from '@propr/shared';
 import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
@@ -12,9 +12,9 @@ import {
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from './utils/repositoryScoutMcpServer.js';
 export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from './openCodeModelIds.js';
-export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
+export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, resolveOpenCodeFailureReason } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
-import type { ParsedOpenCodeOutput } from './openCodeParsing.js';
+import { resolveOpenCodeFailureReason, type ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
 import { openCodeEnvVarRejection } from './openCodeEnvForwarding.js';
 
@@ -52,7 +52,7 @@ export function evaluateOpenCodeAnalysis(options: {
         && processResult.exitCode === 0
         && !parsedOutput.error
         && analysisText.length > 0;
-    const errorMsg = parsedOutput.error || processResult.stderr || 'No assistant text returned';
+    const errorMsg = resolveOpenCodeFailureReason(parsedOutput, processResult.stderr) || processResult.stderr || 'No assistant text returned';
     const result: AnalysisResult = success
         ? {
             response: analysisText, modelUsed, executionTimeMs, success: true,
@@ -131,7 +131,8 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     appendOpenCodeDataMount(dockerArgs, dataMount);
 
     if (modelName) {
-        const cleanModelName = toOpenCodeExternalModelId(modelName);
+        // A saved selection of a retired free model runs on its current successor.
+        const cleanModelName = toOpenCodeExternalModelId(currentOpenCodeModel(modelName));
         dockerArgs.push('--model', cleanModelName);
         logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: config.alias }, 'Model specified for OpenCode agent');
     }

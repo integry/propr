@@ -173,12 +173,15 @@ Built-in free models:
 | Model | Label | Context |
 |-------|-------|---------|
 | Big Pickle | `llm-opencode-big-pickle` | 200K |
-| Ling 3.0 Flash Fin Free | `llm-opencode-ling30-flash-fin-free` | 262K |
-| MiMo V2.5 Free | `llm-opencode-mimo-v25-free` | 200K |
-| Muse Spark 1.2 Contributor Free | `llm-opencode-muse-spark12-free` | 1M |
-| Muse Spark 1.3 Contributor Free | `llm-opencode-muse-spark13-free` | 1M |
-| Nemotron 3 Ultra Free | `llm-opencode-nemotron-3-ultra-free` | 1M |
+| Beam Free | `llm-opencode-beam-free` | 1M |
+| DeepSeek V4.1 Flash Free | `llm-opencode-deepseek-v41-flash-free` | 200K |
+| Flint 40B Free | `llm-opencode-flint-40b-free` | 262K |
+| GLM 5.3 Flash Free | `llm-opencode-glm53-flash-free` | 200K |
+| MiMo V2.6 Flash Free | `llm-opencode-mimo-v26-flash-free` | 200K |
 | Nemotron 3.5 Lightning Free | `llm-opencode-nemotron35-lightning-free` | 262K |
+| Nemotron 3.5 Super VL Free | `llm-opencode-nemotron35-super-vl-free` | 1M |
+
+OpenCode rotates its free models on its servers, and a retired one fails with "Model not found". When ProPR starts, it removes retired free models from OpenCode agents and moves a retired default to the model that replaced it. Saved selections, aliases and labels for a retired model also run on its replacement: Ling 3.0 Flash Fin Free on DeepSeek V4.1 Flash Free, MiMo V2.5 Free on MiMo V2.6 Flash Free, Nemotron 3 Ultra Free on Nemotron 3.5 Super VL Free, and Muse Spark 1.2/1.3 Contributor Free on Big Pickle.
 
 OpenCode can also use any provider/model authenticated through its direct-login dialog or on the host. Run `opencode models` after a host `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 

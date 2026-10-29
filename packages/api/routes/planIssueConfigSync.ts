@@ -6,7 +6,7 @@ import {
   safeUpdateLabels,
   updatePlanIssue
 } from '@propr/core';
-import { getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
+import { getAttachedLlmLabels, getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
 import { buildEffectiveIssueUltrafixUpdate, resolveIssueForImplementation } from './planIssueRouteUtils.js';
 
 const ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE = 5;
@@ -67,13 +67,13 @@ async function syncModelLabels(params: {
   const [owner, repo] = params.repository.split('/');
   if (!owner || !repo) return;
 
-  const [oldLabel, newLabel, octokit] = await Promise.all([
-    getLlmLabel(params.currentModelName, params.currentAgentAlias),
+  const [oldLabels, newLabel, octokit] = await Promise.all([
+    getAttachedLlmLabels(params.currentModelName, params.currentAgentAlias),
     getLlmLabel(params.modelName, params.agentAlias),
     params.octokit ? Promise.resolve(params.octokit) : getAuthenticatedOctokit()
   ]);
 
-  const labelsToRemove = oldLabel && oldLabel !== newLabel ? [oldLabel] : [];
+  const labelsToRemove = oldLabels.filter(label => label !== newLabel);
   const labelsToAdd = newLabel ? [newLabel] : [];
   if (labelsToRemove.length === 0 && labelsToAdd.length === 0) return;
 

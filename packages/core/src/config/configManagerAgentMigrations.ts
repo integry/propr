@@ -8,7 +8,8 @@ import { ANTIGRAVITY_MODEL_LABELS, getAntigravityCompatibilityRoute } from '../a
 import {
     AGENT_DEFAULTS,
     MODEL_INFO_MAP,
-    OPENCODE_MODELS
+    OPENCODE_MODELS,
+    OPENCODE_RETIRED_MODEL_ROUTES
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
@@ -31,13 +32,7 @@ const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const OPENCODE_CURRENT_MODELS = OPENCODE_MODELS.map(model => model.id);
-const RETIRED_OPENCODE_DEFAULT_MODELS = new Set([
-    'opencode-minimax-m3-free',
-    'opencode-deepseek-v4-flash-free',
-    'opencode-laguna-s-2.1-free',
-    'opencode-ling-3.0-flash-free',
-    'opencode-north-mini-code-free'
-]);
+const RETIRED_OPENCODE_DEFAULT_MODELS = new Set(Object.keys(OPENCODE_RETIRED_MODEL_ROUTES));
 const RETIRED_VIBE_MODELS = new Set(['devstral-small', 'devstral-small-latest', 'devstral-2', 'devstral-2512']);
 const MANAGED_AGENT_IMAGE_PREFIX = 'propr/agent:';
 
@@ -253,7 +248,9 @@ function updateOpenCodeDefaultModels(agent: AgentConfig): boolean {
     }
 
     if (!agent.defaultModel || RETIRED_OPENCODE_DEFAULT_MODELS.has(agent.defaultModel)) {
-        agent.defaultModel = nextModels[0];
+        // A retired default runs on the free model OpenCode now serves in its place.
+        const successor = agent.defaultModel ? OPENCODE_RETIRED_MODEL_ROUTES[agent.defaultModel] : undefined;
+        agent.defaultModel = successor && nextModels.includes(successor) ? successor : nextModels[0];
         migrated = true;
     }
 

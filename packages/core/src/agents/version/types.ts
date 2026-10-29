@@ -40,7 +40,7 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.293',
     codex: '0.160.0',
     antigravity: '1.4.0',
-    opencode: '1.18.31',
+    opencode: '1.19.5',
     vibe: '2.25.8'
 };
 

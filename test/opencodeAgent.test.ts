@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getManagedAgentConfigPath } from '@propr/shared';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, shouldForwardEnvVar, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, resolveOpenCodeFailureReason, shouldForwardEnvVar, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { resolveProviderCredentialRoot } from '../packages/core/src/diagnostics/providerRoots.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
@@ -34,7 +34,7 @@ function createAgent(): OpenCodeAgent {
     return new OpenCodeAgent(config);
 }
 
-function parseOutput(output: string): { summary?: string; modelUsed?: string; sessionId?: string; error?: string; tokenUsage?: TokenUsage } {
+function parseOutput(output: string): { summary?: string; modelUsed?: string; sessionId?: string; error?: string; errorRef?: string; tokenUsage?: TokenUsage } {
     return parseOpenCodeJsonl(output);
 }
 
@@ -114,6 +114,34 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
         assert.strictEqual(parsed.sessionId, 'ses_1636ccd92ffeqefe412qL8ll1f');
         assert.strictEqual(parsed.error, 'Unexpected server error. Check server logs for details.');
+        assert.strictEqual(parsed.errorRef, 'err_12358dd0');
+    });
+
+    test('keeps the data.message of an OpenCode error event over a later generic server error', () => {
+        const modelNotFound = 'Model not found: opencode/ling-3.0-flash-fin-free. Did you mean: deepseek-v4.1-flash-free, glm-5.3-flash-free, mimo-v2.6-flash-free?';
+        const specific = JSON.stringify({ type: 'error', error: { name: 'UnknownError', data: { message: modelNotFound } } });
+        const generic = JSON.stringify({ type: 'error', error: { name: 'UnknownError', data: { message: 'Unexpected server error. Check server logs for details.', ref: 'err_1' } } });
+
+        assert.strictEqual(parseOpenCodeJsonl(specific).error, modelNotFound);
+        assert.strictEqual(parseOpenCodeJsonl([specific, generic].join('\n')).error, modelNotFound);
+        assert.strictEqual(parseOpenCodeJsonl([generic, specific].join('\n')).error, modelNotFound);
+    });
+
+    test('resolves a generic OpenCode server error to the cause logged under the same ref', () => {
+        const parsed = { error: 'Unexpected server error. Check server logs for details.', errorRef: 'err_f7bf4344' };
+        const stderr = [
+            'timestamp=2026-10-29T18:43:24.540Z level=ERROR run=1 message=failed ref=err_other error="Other: unrelated"',
+            'timestamp=2026-10-29T18:43:24.540Z level=ERROR run=97348562 message=failed ref=err_f7bf4344 error="ProviderModelNotFoundError: Model not found: opencode/x. Did you mean: \\"y\\"?" cause="ProviderModelNotFoundError"',
+        ].join('\n');
+
+        assert.strictEqual(resolveOpenCodeFailureReason(parsed, stderr), 'Model not found: opencode/x. Did you mean: "y"?');
+        assert.strictEqual(
+            resolveOpenCodeFailureReason(parsed, 'level=ERROR message=failed ref=err_f7bf4344 error="TypeError: boom\\n    at x (y.js:1:2)"'),
+            'boom\n    at x (y.js:1:2)'
+        );
+        assert.strictEqual(resolveOpenCodeFailureReason(parsed, 'no logs'), parsed.error);
+        assert.strictEqual(resolveOpenCodeFailureReason({ error: 'rate limited', errorRef: 'err_f7bf4344' }, stderr), 'rate limited');
+        assert.strictEqual(resolveOpenCodeFailureReason({}, stderr), undefined);
     });
 
     test('prefers the final assistant message over duplicate streaming deltas', () => {
@@ -320,6 +348,11 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(openAiArgs[openAiArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
         assert.strictEqual(goArgs[goArgs.indexOf('--model') + 1], 'opencode-go/qwen3.7-max');
         assert.strictEqual(freeArgs[freeArgs.indexOf('--model') + 1], 'opencode/big-pickle');
+        // Saved selections of free models OpenCode retired run on their successor.
+        const retiredArgs = buildDockerArgs(agent, 'opencode-ling-3.0-flash-fin-free');
+        assert.strictEqual(retiredArgs[retiredArgs.indexOf('--model') + 1], 'opencode/deepseek-v4.1-flash-free');
+        const routedRetiredArgs = buildDockerArgs(agent, 'opencode:opencode-mimo-v2.5-free');
+        assert.strictEqual(routedRetiredArgs[routedRetiredArgs.indexOf('--model') + 1], 'opencode/mimo-v2.6-flash-free');
         assert.strictEqual(normalizeOpenCodeCliModelName('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(normalizeOpenCodeCliModelName('opencode:openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(toProprOpenCodeModelId('openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
@@ -472,7 +505,14 @@ describe('OpenCodeAgent Docker args', () => {
     test('opencode-run keeps prompt attachment separate from the final message', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
-        assert.match(script, /opencode run "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
+        assert.match(script, /opencode run --print-logs --log-level ERROR "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
+    });
+
+    test('opencode-run streams error-level logs so a failure reason can name the logged cause', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
+
+        assert.match(script, /exec opencode run --print-logs --log-level ERROR "\$@"\n/);
+        assert.doesNotMatch(script, /\.local\/share\/opencode\/log/);
     });
 
     test('entrypoint seeds only durable credentials into disposable OpenCode state', () => {

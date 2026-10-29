@@ -1,4 +1,5 @@
 import { ANTIGRAVITY_MODELS, ANTIGRAVITY_RETAINED_MODELS, MODEL_INFO_MAP, type ModelInfo } from './modelDefinitions.js';
+import { currentOpenCodeModel } from './openCodeCompatibility.js';
 import { REASONING_LEVELS, getReasoningLevelsForAgentType, type ModelReasoningLevel, type ReasoningLevel } from './reasoningLevels.js';
 
 // Compatibility routes are deliberately absent from the selectable catalog.
@@ -49,14 +50,21 @@ export function getAntigravityCompatibilityRoute(id: string) {
     return ANTIGRAVITY_COMPATIBILITY_ROUTES[clean];
 }
 
+function savedModelBase(type: string, id: string): string {
+    if (type === 'antigravity') return getAntigravityCompatibilityRoute(id)?.model ?? id;
+    return type === 'opencode' ? currentOpenCodeModel(id) : id;
+}
+
+/** Antigravity and OpenCode also accept saved IDs of retired models routed to one the agent supports. */
 export function antigravitySupportedModel(config: { type: string; supportedModels: string[] }, id: string): boolean {
-    const base = config.type === 'antigravity' ? getAntigravityCompatibilityRoute(id)?.model ?? id : id;
+    const base = savedModelBase(config.type, id);
     return config.supportedModels.some(model => model.toLowerCase() === base.toLowerCase());
 }
 
-/** Exact for other agents; Antigravity also accepts saved routes to a model it supports. */
+/** Exact for other agents; Antigravity and OpenCode also accept saved routes to a model they support. */
 export function agentSupportsSavedModel(config: { type: string; supportedModels: string[] }, id: string): boolean {
-    return config.supportedModels.includes(id) || (config.type === 'antigravity' && antigravitySupportedModel(config, id));
+    return config.supportedModels.includes(id)
+        || ((config.type === 'antigravity' || config.type === 'opencode') && antigravitySupportedModel(config, id));
 }
 
 /** A saved Antigravity base ID the CLI retired resolves to the model it now runs on; effort routes stay as saved. */

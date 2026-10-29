@@ -7,6 +7,9 @@ const mockSafeUpdateLabels = mock.fn(async () => {});
 const mockGetLlmLabel = mock.fn(async (modelName: string | null, agentAlias?: string | null) => (
   modelName ? `llm:${agentAlias || 'default'}:${modelName}` : null
 ));
+const mockGetAttachedLlmLabels = mock.fn(async (modelName: string | null, agentAlias?: string | null) => (
+  modelName ? [`llm:${agentAlias || 'default'}:${modelName}`] : []
+));
 const mockLoggerError = mock.fn();
 const mockLoggerWarn = mock.fn();
 const mockLoggerWithCorrelation = mock.fn(() => ({
@@ -33,6 +36,7 @@ await mock.module('@propr/core', {
 
 await mock.module('../packages/api/routes/planIssueHelpers.js', {
   namedExports: {
+    getAttachedLlmLabels: mockGetAttachedLlmLabels,
     getLlmLabel: mockGetLlmLabel,
     getOrCreateEpicLabel: mock.fn(async () => null),
   },
@@ -48,6 +52,7 @@ function resetMocks(): void {
   mockSafeUpdateLabels.mock.resetCalls();
   mockGetAuthenticatedOctokit.mock.resetCalls();
   mockGetLlmLabel.mock.resetCalls();
+  mockGetAttachedLlmLabels.mock.resetCalls();
   mockLoggerError.mock.resetCalls();
   mockLoggerWarn.mock.resetCalls();
   mockLoggerWithCorrelation.mock.resetCalls();
@@ -104,8 +109,10 @@ describe('planIssueConfigSync rollback behavior', () => {
       },
     });
 
-    assert.deepStrictEqual(mockGetLlmLabel.mock.calls.map((call) => call.arguments), [
+    assert.deepStrictEqual(mockGetAttachedLlmLabels.mock.calls.map((call) => call.arguments), [
       ['gpt-5.6-sol', 'codex'],
+    ]);
+    assert.deepStrictEqual(mockGetLlmLabel.mock.calls.map((call) => call.arguments), [
       ['gpt-5.6-sol', 'codex2'],
     ]);
     assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments.slice(1), [
@@ -116,6 +123,37 @@ describe('planIssueConfigSync rollback behavior', () => {
       'draft-alias',
       12,
       { agent_alias: 'codex2' },
+    ]);
+  });
+
+  test('removes the retired OpenCode label already on the issue when the model changes', async () => {
+    resetMocks();
+    mockGetAttachedLlmLabels.mock.mockImplementationOnce(async () => [
+      'llm-opencode-big-pickle',
+      'llm-opencode-muse-spark13-free',
+    ]);
+    mockGetLlmLabel.mock.mockImplementationOnce(async () => 'llm-opencode-big-pickle');
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async (_draftId, issueNumber, updates) => ({
+      issue_number: issueNumber as number,
+      ...updates,
+    }));
+
+    await updateIssueConfigWithRollback({
+      draftId: 'draft-retired',
+      issueNumber: 13,
+      repository: 'owner/repo',
+      currentIssue: {
+        agent_alias: null,
+        model_name: 'opencode-muse-spark-1.3-contributor-free',
+      },
+      updates: {
+        model_name: 'opencode-big-pickle',
+      },
+    });
+
+    assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments.slice(1), [
+      ['llm-opencode-muse-spark13-free'],
+      ['llm-opencode-big-pickle'],
     ]);
   });
 
