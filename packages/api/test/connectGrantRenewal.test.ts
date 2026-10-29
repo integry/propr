@@ -7,6 +7,7 @@ import { up as addGitHubOAuthGrantRevision } from '../../core/src/db/migrations/
 import { up as addRelayRenewal, down as dropRelayRenewal } from '../../core/src/db/migrations/20261029180000_add_github_user_grant_relay_renewal.js';
 import type { GitHubUser } from '../authTypes.js';
 import { redeemConnectAuthorizationCode } from '../connectAuth.js';
+import { ConnectGrantRenewer } from '../connectGrantRenewer.js';
 import { grantIdHash, renewalBackoffMs, renewalDueAt } from '../connectGrantRenewal.js';
 import { GitHubMetadataAuthorizationError, resolveGitHubMetadataToken } from '../githubMetadataAuth.js';
 import { GitHubUserGrantService } from '../githubUserGrantService.js';
@@ -338,6 +339,43 @@ test('a Retry-After longer than the local backoff cap is honoured in full', asyn
   await service.resolve(user.id);
   assert.ok(Number((await storedGrant()).renewal_retry_after_ms) >= before + 1800 * 1000);
   assert.equal(calls.length, 1);
+});
+
+test('a backoff persisted by another process blocks a caller holding a stale due row', async () => {
+  const { fetchImpl, calls } = relay(() => Response.json(
+    { error: 'rate_limited' }, { status: 429, headers: { 'retry-after': '1800' } },
+  ));
+  const api = new GitHubUserGrantService(database, environment, fetchImpl);
+  const daemon = new ConnectGrantRenewer(database, environment, fetchImpl, token => token);
+  await captureRenewable(api, 5 * 60_000);
+  // The daemon read the due grant before the API persisted the relay's 429 backoff and released its lease.
+  const stale = await storedGrant();
+  await api.resolve(user.id);
+  const persisted = await storedGrant();
+  assert.equal(persisted.renewal_lease_owner, null);
+
+  const resolved = await daemon.renewIfDue(stale, false);
+  assert.equal(resolved !== 'missing' && resolved !== 'temporarily_unavailable' && resolved.access_token_encrypted,
+    persisted.access_token_encrypted);
+  assert.equal(calls.length, 1);
+  const after = await storedGrant();
+  assert.equal(Number(after.renewal_retry_after_ms), Number(persisted.renewal_retry_after_ms));
+  assert.equal(Number(after.renewal_failures), 1);
+});
+
+test('failure counting after an elapsed backoff uses the leased row, not a stale read', async () => {
+  const { fetchImpl, calls } = relay(() => new Response('unavailable', { status: 503 }));
+  const service = new GitHubUserGrantService(database, environment, fetchImpl);
+  const renewer = new ConnectGrantRenewer(database, environment, fetchImpl, token => token);
+  await captureRenewable(service, 5 * 60_000);
+  const stale = await storedGrant();
+  await database('github_user_grants').update({ renewal_failures: 3, renewal_retry_after_ms: Date.now() - 1 });
+
+  await renewer.renewIfDue(stale, false);
+  assert.equal(calls.length, 1);
+  const row = await storedGrant();
+  assert.equal(Number(row.renewal_failures), 4);
+  assert.ok(Number(row.renewal_retry_after_ms) > Date.now());
 });
 
 test('an expired token with a transient relay failure is temporarily unavailable, not reauth_required', async () => {

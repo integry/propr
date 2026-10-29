@@ -115,19 +115,30 @@ export class ConnectGrantRenewer {
 
   private async renewWithLease(row: RenewableGrantRow, forced: boolean): Promise<void> {
     const leaseOwner = randomBytes(16).toString('hex');
+    const now = Date.now();
+    // The caller's row may predate a backoff another process persisted, so
+    // the retry deadline is part of the atomic acquisition. A denied caller
+    // rereads the grant and honours whatever backoff is now stored.
     const acquired = Number(await this.grants()
       .where({ github_user_id: row.github_user_id, access_token_encrypted: row.access_token_encrypted, status: 'active' })
       .andWhere(builder => builder
         .whereNull('renewal_lease_until_ms')
-        .orWhere('renewal_lease_until_ms', '<', Date.now()))
-      .update({ renewal_lease_owner: leaseOwner, renewal_lease_until_ms: Date.now() + RENEWAL_LEASE_MS })) === 1;
+        .orWhere('renewal_lease_until_ms', '<', now))
+      .andWhere(builder => builder
+        .whereNull('renewal_retry_after_ms')
+        .orWhere('renewal_retry_after_ms', '<=', now))
+      .update({ renewal_lease_owner: leaseOwner, renewal_lease_until_ms: now + RENEWAL_LEASE_MS })) === 1;
     if (!acquired) {
       await this.waitForLease(row.github_user_id);
       return;
     }
     try {
+      // Count failures from the leased row, not the caller's possibly stale read.
+      const leased = await this.grants()
+        .where({ github_user_id: row.github_user_id, renewal_lease_owner: leaseOwner })
+        .first('renewal_failures') as Pick<RenewableGrantRow, 'renewal_failures'> | undefined;
       const result = await requestRelayRenewal(this.environment, this.fetchImpl, row.github_user_id);
-      await this.apply(row, leaseOwner, result, forced);
+      await this.apply({ ...row, renewal_failures: leased?.renewal_failures ?? row.renewal_failures }, leaseOwner, result, forced);
     } catch (error) {
       console.warn('Connect grant renewal could not be stored:', (error as Error).message);
     } finally {
