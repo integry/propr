@@ -517,9 +517,14 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   no longer offers (agents that list it switch to Gemini 4 Argon on startup,
   keeping any saved Pro reasoning override; `llm-antigravity-pro` and the `pro`
   alias select Gemini 4 Argon, and saved low/high Pro routes run on Argon at the
-  same effort); Antigravity Gemini 3.5 Flash (its labels no longer resolve),
-  with Gemini 3.6 and 3.7 Flash leaving the picker while saved selections still
-  run; OpenCode DeepSeek V4 Flash Free, Laguna S 2.1 Free, Ling
+  same effort); Antigravity Gemini 3.6 and 3.7 Flash, which Antigravity CLI
+  1.4.0 no longer serves (agents that list them switch to Gemini 3.8 Flash on
+  startup, keeping any saved reasoning override; saved defaults, routes, review
+  and plan selections, `llm-antigravity-flash36`/`flash37` labels and the
+  `flash36`/`flash37` aliases select Gemini 3.8 Flash, and saved effort routes
+  run on it at the same effort; runs that reported the old models still match);
+  Antigravity Gemini 3.5 Flash (its labels no longer resolve); OpenCode DeepSeek
+  V4 Flash Free, Laguna S 2.1 Free, Ling
   3.0 Flash Free and North Mini Code Free; Vibe Devstral Small, whose saved
   defaults move to Mistral Medium.
 - **Legacy Compose files**: `docker-compose.prod.yml`, the root `Dockerfile` it
@@ -532,6 +537,11 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   the startup error now names the migration error (for example a corrupt
   migration directory) instead of an unrelated tini init warning or Node's
   source-location line. The message is one line of at most 500 characters.
+- **Agent failure reasons**: a failed task, goal, agent run or PR follow-up now
+  reports the agent or CLI error line (for example Antigravity's `error:
+  invalid model selection …`) instead of the container entrypoint's preamble.
+  The reason shown by the API, MCP, CLI and GitHub comments is one redacted line
+  of at most 500 characters, never raw container output.
 - **Ultrafix and CI**: a loop paused on failing CI resumes when green `check_run`
   or `check_suite` events or polling show the build fixed, and a deferred step
   survives restarts and failed jobs. Review readiness honours the repository's

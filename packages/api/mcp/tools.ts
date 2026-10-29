@@ -5,7 +5,7 @@ import packageInfo from '../package.json' with { type: 'json' };
 import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
-import { parseTaskAssignmentFilter, type InstancePermission } from '@propr/shared';
+import { agentSupportsSavedModel, parseTaskAssignmentFilter, type InstancePermission } from '@propr/shared';
 import {
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
@@ -600,7 +600,7 @@ async function validatePlanImplementation(principal: McpPrincipal, args: Args,
     epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
   const [agents, synthetic] = await Promise.all([loadAgents(), loadSyntheticAgents()]);
   for (const model of args.models) {
-    const supported = agents.some(agent => agent.enabled && agent.alias === model.agent_alias && agent.supportedModels.includes(model.model_name))
+    const supported = agents.some(agent => agent.enabled && agent.alias === model.agent_alias && agentSupportsSavedModel(agent, model.model_name))
       || synthetic.some(agent => agent.enabled && agent.alias === model.agent_alias && agent.models.some(choice => choice.enabled && choice.id === model.model_name));
     if (!supported) throw new McpError('INVALID_MODEL', 'Choose an enabled agent and supported model from list_models.');
   }

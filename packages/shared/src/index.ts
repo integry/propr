@@ -558,7 +558,7 @@ export * from './analyticsTimeframe.js';
 export * from './goalCheckpoints.js';
 export * from './goalCreation.js';
 
-export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility } from './antigravityCompatibility.js';
+export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility, antigravitySupportedModel, agentSupportsSavedModel, currentAntigravityModel } from './antigravityCompatibility.js';
 export * from './goalBlockers.js';
 export * from './goalWait.js';
 
@@ -585,3 +585,4 @@ export * from './fleetData.js';
 export * from './extensionProfiles.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
+export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';

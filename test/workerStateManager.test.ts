@@ -1192,6 +1192,30 @@ test('markTaskFailed stores error message in lastError', async () => {
     await stateManager.close();
 });
 
+test('markTaskFailed redacts secrets from the stored failure reason', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-redact',
+        issueRef: { number: 203, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-redact',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 1,
+        history: [{ state: TaskStates.CLAUDE_EXECUTION, timestamp: new Date().toISOString(), reason: 'Agent running' }]
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const token = `ghp_${'a'.repeat(36)}`;
+    const result = await stateManager.markTaskFailed('task-fail-redact', new Error(`error: push rejected for ${token}`));
+
+    assert.strictEqual(result.lastError?.message, 'error: push rejected for [REDACTED_GITHUB_TOKEN]');
+    assert.strictEqual(result.history.at(-1)?.reason, 'Task failed: error: push rejected for [REDACTED_GITHUB_TOKEN]');
+    assert.ok(!JSON.stringify(result).includes(token));
+
+    await stateManager.close();
+});
+
 test('markTaskFailed defaults errorCategory to unknown when not specified', async () => {
     const existingState: TaskStateData = {
         taskId: 'task-fail-default-cat',

@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- native goal execution and its fenced result reconciliation share one worker boundary */
 import fs from 'node:fs';
 import type { Job } from 'bullmq';
+import { agentFailureLine } from '@propr/shared';
 import {
     AgentRegistry,
     GOAL_CONTINUE_INPUT,
@@ -624,7 +625,7 @@ async function handleGoalResult(
     const missingFinalPr = result.success && !artifacts.finalPr;
     const failure = missingFinalPr
         ? 'Provider completed without the required open draft PR for the saved goal branch and expected base'
-        : result.error || 'Native goal execution failed';
+        : (result.error && agentFailureLine(result.error)) || 'Native goal execution failed';
     const resultState = result.success && !missingFinalPr ? 'completed' : 'failed';
     const completed = await operations.finalizeGoal(data, resultState, resultState === 'failed' ? failure : undefined);
     if (!completed) return { status: 'skipped', reason: 'goal_finalize_fence' };

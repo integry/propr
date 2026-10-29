@@ -442,24 +442,40 @@ test('Antigravity migration rewrites legacy credential paths only', () => {
 });
 
 
-test('Antigravity migration retains older Flash defaults and their effort', () => {
+test('Antigravity migration moves retired Gemini 3.6/3.7 Flash selections to Gemini 3.8 Flash', () => {
+    const flash = 'antigravity-gemini-3.8-flash';
     for (const version of ['3.6', '3.7']) {
         for (const effort of ['low', 'medium', 'high'] as const) {
             const base = `antigravity-gemini-${version}-flash`;
             const saved = `${base}-${effort}`;
-            const agent = createAgent({ type: 'antigravity', supportedModels: [saved], defaultModel: saved,
+            const agent = createAgent({ type: 'antigravity', supportedModels: [saved, base], defaultModel: saved,
                 modelCustomLabels: { [saved]: 'retained-flash' } });
             assert.equal(migrateAgentConfig(agent), true);
-            assert.equal(agent.defaultModel, base);
-            assert.ok(agent.supportedModels.includes(base));
-            assert.equal(agent.modelReasoningLevels?.[base], effort);
+            assert.equal(agent.defaultModel, flash);
+            assert.ok(!agent.supportedModels.some(model => model.startsWith(base)));
+            assert.equal(agent.supportedModels.filter(model => model === flash).length, 1);
+            assert.equal(agent.modelReasoningLevels?.[flash], effort);
+            assert.equal(agent.modelReasoningLevels?.[saved], undefined);
+            // The custom label stays a durable route to 3.8 Flash at the saved effort.
             assert.equal(agent.modelCustomLabels?.[saved], 'retained-flash');
-            assert.equal(getOpenRouterId(saved), `google/gemini-${version}-flash`);
-            assert.equal(getOpenRouterId(agent.defaultModel!), `google/gemini-${version}-flash`);
-            assert.equal(getOpenRouterId(agent.supportedModels.find(model => model === base)!), `google/gemini-${version}-flash`);
-            const cli = toAntigravityCliModelId(agent.defaultModel!, agent.modelReasoningLevels?.[base]);
-            assert.equal(antigravityModelIdsMatch(cli, `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`), true);
+            assert.equal(toAntigravityCliModelId(saved), `gemini-3.8-flash-${effort}`);
+            assert.equal(getOpenRouterId(saved), 'google/gemini-3.8-flash');
+            assert.equal(toAntigravityCliModelId(agent.defaultModel!, agent.modelReasoningLevels?.[flash]), `gemini-3.8-flash-${effort}`);
+            // Runs that reported the old identity still match the selection.
+            assert.equal(antigravityModelIdsMatch(saved, `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`), true);
             assert.equal(migrateAgentConfig(agent), false);
         }
+        const base = `antigravity-gemini-${version}-flash`;
+        // A saved base override carries over, and an existing 3.8 Flash override wins.
+        const withOverride = createAgent({ type: 'antigravity', supportedModels: [base], defaultModel: base,
+            modelReasoningLevels: { [base]: 'high' } });
+        migrateAgentConfig(withOverride);
+        assert.equal(withOverride.defaultModel, flash);
+        assert.deepEqual(withOverride.modelReasoningLevels, { [flash]: 'high' });
+        const both = createAgent({ type: 'antigravity', supportedModels: [base, flash], defaultModel: flash,
+            modelReasoningLevels: { [base]: 'high', [flash]: 'low' } });
+        migrateAgentConfig(both);
+        assert.deepEqual(both.modelReasoningLevels, { [flash]: 'low' });
+        assert.equal(both.supportedModels.filter(model => model === flash).length, 1);
     }
 });

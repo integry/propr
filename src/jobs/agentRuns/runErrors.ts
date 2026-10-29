@@ -1,11 +1,11 @@
-import { AUTOMATION_ACTION_SUMMARY_MAX_CHARS } from '@propr/shared';
+import { AUTOMATION_ACTION_SUMMARY_MAX_CHARS, agentFailureLine } from '@propr/shared';
 import { AGENT_REPORT_TRUNCATED_MARKER, extractAgentReport } from './reportPrompt.js';
 import { describeAgentTermination, resolveAgentTerminationReason, type AgentExecutionResult } from '@propr/core';
 
 /** Errors of the report-run executor and the agent result they are derived from. */
 
 function failureMessage(result: AgentExecutionResult): string {
-    const detail = result.error?.trim() || (result.exitCode != null ? `exit code ${result.exitCode}` : '');
+    const detail = (result.error && agentFailureLine(result.error)) || (result.exitCode != null ? `exit code ${result.exitCode}` : '');
     return detail ? `Agent execution failed: ${detail}` : 'Agent execution failed';
 }
 

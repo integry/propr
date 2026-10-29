@@ -33,6 +33,7 @@ import {
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import {
+  agentSupportsSavedModel,
   GOAL_CREATION_CONTRACT,
   GOAL_WAIT_CONDITIONS,
   GOAL_WAIT_MAX_TIMEOUT_SECONDS,
@@ -268,7 +269,7 @@ async function resolveCreationAgent(
   if (!agent) return { error: 'Selected agent was not found', status: 400 };
   const promptError = nativeGoalPromptValidationError(agent.config.type, initialPrompt);
   if (promptError) return { error: promptError, status: 400 };
-  if (!agent.config.supportedModels.includes(body.model as string) && agent.config.defaultModel !== body.model) {
+  if (!agentSupportsSavedModel(agent.config, body.model as string) && agent.config.defaultModel !== body.model) {
     return { error: 'Selected model is not supported by this agent', status: 400 };
   }
   const capability = (await getCapabilities()).find(item => item.agentId === agent.config.id);
@@ -980,7 +981,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const agent = registry.getAgentById(row.agent_id);
-    if (typeof model !== 'string' || !agent || (!agent.config.supportedModels.includes(model) && agent.config.defaultModel !== model)) return void res.status(400).json({ error: 'Unsupported model' });
+    if (typeof model !== 'string' || !agent || (!agentSupportsSavedModel(agent.config, model) && agent.config.defaultModel !== model)) return void res.status(400).json({ error: 'Unsupported model' });
     const changed = await deps.db('goals').where({
       goal_id: row.goal_id, owner_id: row.owner_id,
       run_generation: row.run_generation, run_claim: row.run_claim,
@@ -1200,7 +1201,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       const registry = AgentRegistry.getInstance();
       await registry.ensureInitialized();
       const agent = registry.getAgentById(row.agent_id);
-      if (typeof model !== 'string' || !agent || (!agent.config.supportedModels.includes(model) && agent.config.defaultModel !== model)) {
+      if (typeof model !== 'string' || !agent || (!agentSupportsSavedModel(agent.config, model) && agent.config.defaultModel !== model)) {
         return void res.status(400).json({ error: 'Unsupported model' });
       }
     }

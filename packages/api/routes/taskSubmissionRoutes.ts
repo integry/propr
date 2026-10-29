@@ -18,7 +18,7 @@ import { isDemoMode } from '../demoMode.js';
 import { getLlmLabel, enqueueIssueImplementationJob } from './planIssueHelpers.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { goalUploadIdentity, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
-import { githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
+import { agentSupportsSavedModel, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
 import { uploadGitHubAttachment } from '../../../src/github/visualPreviewAttachments.js';
 
 export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
@@ -60,7 +60,7 @@ export async function routing(body: { agentAlias?: string; model?: string; exten
   const agentAlias = body.agentAlias || defaults?.agent_alias;
   const agent = agentAlias ? registry.getAgentByAlias(agentAlias) : undefined;
   const model = body.model || (body.agentAlias ? agent?.config.defaultModel : defaults?.model_name);
-  if (!agent?.config.enabled || !model || !agent.config.supportedModels.includes(model)) {
+  if (!agent?.config.enabled || !model || !agentSupportsSavedModel(agent.config, model)) {
     throw Object.assign(new Error('Selected agent or model is no longer available. Choose a supported selection in Options.'), { status: 400 });
   }
   if (body.extensionProfile && !['claude', 'codex'].includes(agent.config.type)) {

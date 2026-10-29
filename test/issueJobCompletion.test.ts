@@ -47,6 +47,34 @@ describe('issue job terminal state', () => {
     assert.equal(metadata.prResult.status, 'claude_processing_failed');
   });
 
+  test('names the Antigravity CLI error, not the entrypoint preamble, as the failure reason', async () => {
+    const stateManager = createStateManager();
+    const cliError = 'error: invalid model selection (--model "gemini-3.7-flash-medium" --effort ""): model gemini-3.7-flash-medium is not recognized as a known model or custom model in settings';
+    const stderr = [
+      'GitHub token detected (using environment variable)',
+      'GitHub CLI will use GH_TOKEN environment variable for authentication',
+      'Using disposable Antigravity runtime state',
+      'Antigravity config directory mounted at /home/node/.gemini',
+      'Executing command: exec agy --dangerously-skip-permissions --model gemini-3.7-flash-medium',
+      cliError,
+      'Available models: Gemini 4 Argon (L/M/H), Gemini 3.8 Flash (L/M/H), Claude Opus 5.5 (L/M/H), Claude Sonnet 5.5 (L/M/H), GPT-OSS 120B (Medium)',
+    ].join('\n');
+
+    await markTaskTerminalState({
+      stateManager: stateManager as unknown as StateManager,
+      taskId: 'antigravity-model-task',
+      claudeResult: {
+        success: false, error: stderr, executionTime: 100, output: null, logs: stderr,
+        modifiedFiles: [], commitMessage: null, summary: null,
+      },
+      postProcessingResult: null,
+      commitResult: null,
+    });
+
+    const [, error] = stateManager.markTaskFailed.mock.calls[0].arguments;
+    assert.equal(error.message, cliError);
+  });
+
   test('keeps an interrupted execution with a published PR completed', async () => {
     const stateManager = createStateManager();
 

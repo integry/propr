@@ -12,6 +12,7 @@ import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
 import { redactSecrets } from '@propr/core';
+import { agentFailureLine } from '@propr/shared';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
@@ -58,7 +59,7 @@ async function handleUnpublishableAgentFailure(options: {
     correlatedLogger: Logger; taskId?: string;
 }): Promise<PostProcessingResult> {
     const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger, taskId } = options;
-    const errorMessage = claudeResult.error?.trim() || 'The coding agent stopped before producing publishable work.';
+    const errorMessage = (claudeResult.error && agentFailureLine(claudeResult.error)) || 'The coding agent stopped before producing publishable work.';
 
     correlatedLogger.warn({ issueNumber: issueRef.number, error: redactSecrets(errorMessage) }, 'Agent execution failed without publishable work');
     const labelUpdate = await safeUpdateLabels(
@@ -88,7 +89,7 @@ async function handleUnpublishableAgentFailure(options: {
 }
 
 function formatFallbackDiagnostics(claudeResult: ClaudeCodeResponse, postProcessingError: unknown): string {
-    const systemError = claudeResult?.success === false ? claudeResult.error?.trim() : '';
+    const systemError = claudeResult?.success === false && claudeResult.error ? agentFailureLine(claudeResult.error) : '';
     const postProcessingMessage = getErrorMessage(postProcessingError).trim();
     let diagnostics = '';
 

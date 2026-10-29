@@ -12,7 +12,7 @@ import {
   ErrorCategories,
   formatPushFailureMessage
 } from '@propr/core';
-import { taskTerminalReasonForAgentTermination } from '@propr/shared';
+import { agentFailureLine, taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
@@ -96,7 +96,7 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
   if (status === 'claude_processing_failed') {
     await stateManager.markTaskFailed(
       taskId,
-      new Error(claudeResult?.error || 'Agent processing failed'),
+      new Error(claudeResult?.error ? agentFailureLine(claudeResult.error) : 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
         ...terminalReasonFields(claudeResult),
