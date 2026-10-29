@@ -413,7 +413,7 @@ export function setupRoutes(): void {
   const analyticsCache = createAnalyticsCache();
   const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
   const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
-  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', true)) !== false });
+  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', false)) === true });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();

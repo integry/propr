@@ -3,6 +3,7 @@ import { Pause, Play, RefreshCw } from 'lucide-react';
 import { useDashboardSummary } from './useDashboardSummary';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import { API_BASE_URL, getDesktopConnectionScope } from '../../api/apiClient';
+import { getDashboardNarrativeStatus } from '../../api/dashboardApi';
 
 function Freshness({ updatedAt }: { updatedAt: number }) {
   const [now, setNow] = useState(Date.now);
@@ -17,9 +18,35 @@ function Freshness({ updatedAt }: { updatedAt: number }) {
 
 interface SummaryProps { repository: string; activityToken: number }
 
+const STATUS_KEY = 'dashboard-summary-enabled-v1:';
+
+function readEnabled(instance: string): boolean {
+  try { return sessionStorage.getItem(STATUS_KEY + instance) === 'true'; } catch { return false; }
+}
+
+/**
+ * The experimental, opt-in AI activity summary. Until the instance has
+ * confirmed it is turned on there is no bar and no narrative request, so a
+ * disabled summary costs nothing and leaves no empty row above the panes. A
+ * confirmation earlier in this session lets cached prose show at once.
+ */
 export function DashboardSummary(props: SummaryProps) {
   const user = useCurrentUser();
   const desktop = getDesktopConnectionScope();
+  const instance = JSON.stringify([API_BASE_URL, desktop?.profileId ?? null, user?.id ?? null]);
+  const [status, setStatus] = useState<{ instance: string; enabled: boolean } | null>(null);
+  useEffect(() => {
+    let active = true;
+    getDashboardNarrativeStatus()
+      .then(response => response.enabled === true, () => false)
+      .then(enabled => {
+        try { sessionStorage.setItem(STATUS_KEY + instance, String(enabled)); } catch { /* Storage is optional. */ }
+        if (active) setStatus({ instance, enabled });
+      });
+    return () => { active = false; };
+  }, [instance]);
+  const enabled = status?.instance === instance ? status.enabled : readEnabled(instance);
+  if (!enabled) return null;
   const scope = JSON.stringify([API_BASE_URL, desktop?.profileId ?? null, user?.id ?? null, props.repository]);
   // A scope change remounts the readout, so another account/repository never flashes.
   const cacheKey = user ? `dashboard-summary-v2:${scope}` : null;

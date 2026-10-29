@@ -8,7 +8,7 @@ import {
   getAgents, getInstanceCatalog,
   getSummarizationSettings, updateSummarizationSettings,
   triggerReindexAll,
-  AgentConfig, SummarizationSettings, type TriggerReindexAllResponse
+  AgentConfig, SummarizationSettings
 } from '../../api/proprApi';
 import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
@@ -17,25 +17,12 @@ import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
+import { buildReindexAllSkipMessage } from './reindexAllSkipMessage';
 
 // Debounce delay for prompt changes (in milliseconds)
 const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
-
-function buildReindexAllSkipMessage(result: TriggerReindexAllResponse): string {
-  const skippedCooldown = result.repositoriesSkippedCooldown ?? 0;
-  const skippedAlreadyQueued = result.repositoriesSkippedAlreadyQueued ?? 0;
-  const failedClone = result.repositoriesFailedClone ?? 0;
-  const skipped = [
-    skippedCooldown > 0 ? `${skippedCooldown} in cooldown` : '',
-    skippedAlreadyQueued > 0 ? `${skippedAlreadyQueued} already queued` : '',
-    failedClone > 0 ? `${failedClone} failed clone` : ''
-  ].filter(Boolean).join(', ');
-  return skipped
-    ? `No repositories were queued for reindexing (${skipped}).`
-    : 'No repositories were queued for reindexing.';
-}
 
 export function useSettingsState() {
   const [loading, setLoading] = useState(true);
@@ -58,7 +45,7 @@ export function useSettingsState() {
     planner_generation_model: '',
     default_agent_alias: '',
     auto_resolve_merge_conflicts: false, followup_requires_assignment: false,
-    dashboard_summary_enabled: true,
+    dashboard_summary_enabled: false,
     usage_tips_enabled: true,
     model_reasoning_level: '',
     pr_review_model: '',
@@ -162,7 +149,6 @@ export function useSettingsState() {
         default_agent_alias: settingsToSave.default_agent_alias,
         auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
         followup_requires_assignment: settingsToSave.followup_requires_assignment,
-        dashboard_summary_enabled: settingsToSave.dashboard_summary_enabled ?? true,
         usage_tips_enabled: settingsToSave.usage_tips_enabled ?? true,
         model_reasoning_level: settingsToSave.model_reasoning_level,
         pr_review_model: settingsToSave.pr_review_model,
@@ -194,6 +180,15 @@ export function useSettingsState() {
     } catch (err) {
       failSave(await reconcileSaveFailure(err), 'Failed to save whitelist');
     }
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
+
+  // The experimental dashboard summary is opt-in, so only its own toggle
+  // writes it; other settings saves never persist an implicit value.
+  const handleDashboardSummaryChange = useCallback(async (enabled: boolean) => {
+    setSettings(previous => ({ ...previous, dashboard_summary_enabled: enabled }));
+    if (!beginSave()) return;
+    try { completeSave((await updateSettings({ dashboard_summary_enabled: enabled })).warnings); }
+    catch (err) { failSave(await reconcileSaveFailure(err), 'Failed to save dashboard AI summaries'); }
   }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const savePrLabelOnly = useCallback(async (prLabelToSave: string) => {
@@ -436,7 +431,7 @@ export function useSettingsState() {
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,
-    savePrLabelOnly,
+    handleDashboardSummaryChange, savePrLabelOnly,
     ...lists,
   };
 }

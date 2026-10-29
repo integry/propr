@@ -54,6 +54,7 @@ async function fixture(page: Page, discovery = false, savedCandidates?: UsageTip
       '/api/queue/stats': { active: 0, waiting: 0, completed: 34, failed: 0 },
       '/api/status': { status: 'ok' },
       '/api/stats/generating-plans': { count: 0 },
+      '/api/dashboard/narrative/status': { enabled: false },
       '/api/dashboard/narrative': { repository: 'all', enabled: false, summary: '' },
       '/api/dashboard/summary': { repository: 'all', needsAttention: 0, running: 0, queued: 0, completedRecently: 4, recentWindowHours: 24 },
       '/api/dashboard/attention': { repository: 'all', items: [], counts: { blocked: 0, decisions: 0, total: 0 } },

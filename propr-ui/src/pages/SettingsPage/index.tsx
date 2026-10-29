@@ -16,6 +16,7 @@ import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
 import NotificationSettingsSection from './NotificationSettingsSection';
 import DesktopNotificationSettingsSection from './DesktopNotificationSettingsSection';
 import VoiceSettingsSection from './VoiceSettingsSection';
+import ExperimentalSettingsSection from './ExperimentalSettingsSection';
 import { useDesktop } from '../../desktop/DesktopContext';
 import SettingsNavigation, { type SettingsNavigationSection } from './SettingsNavigation';
 import McpServerSection from './McpServerSection';
@@ -64,6 +65,7 @@ const AdminSettingsPage: React.FC = () => {
     handleDefaultAgentChange,
     handleReindexAll,
     handleAgentTankChange,
+    handleDashboardSummaryChange,
     savePrLabelOnly
   } = useSettingsState();
 
@@ -103,19 +105,18 @@ const AdminSettingsPage: React.FC = () => {
       content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
     },
     {
-      id: 'voice-briefings',
+      id: 'experimental',
       category: 'general',
-      searchText: 'voice briefings experimental microphone speech briefing catch me up enable disable desktop browser',
-      content: <VoiceSettingsSection />
+      searchText: 'experimental features opt-in voice briefings microphone speech briefing catch me up dashboard AI summary summaries activity overview summarization LLM cost enable disable desktop browser',
+      content: <ExperimentalSettingsSection dashboardSummaryEnabled={settings.dashboard_summary_enabled === true} onDashboardSummaryChange={handleDashboardSummaryChange} />
     },
     {
       id: 'model-selection',
       category: 'models',
-      searchText: 'dashboard summary model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context budget percentage token limit',
+      searchText: 'model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context budget percentage token limit',
       content: (
         <AIModelSelectionSection
           settings={{
-            dashboard_summary_enabled: settings.dashboard_summary_enabled,
             analysis_model_fast: settings.analysis_model_fast,
             planner_context_model: settings.planner_context_model,
             planner_generation_model: settings.planner_generation_model,

@@ -211,6 +211,11 @@ export interface DashboardNarrativeResponse {
   summary: string | null;
 }
 
+/** Whether the experimental dashboard AI summary is turned on for this instance. */
+export const getDashboardNarrativeStatus = (): Promise<{ enabled: boolean }> =>
+  shareInFlightApiRead('dashboard-narrative-status', signal =>
+    readJson<{ enabled: boolean }>('/api/dashboard/narrative/status', signal));
+
 export const getDashboardNarrative = (
   repository: RepositoryFilter = 'all',
   refresh = false,

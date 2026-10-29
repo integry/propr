@@ -7,7 +7,7 @@ import { SocketContext, type SocketContextValue } from '../contexts/SocketContex
 import { NeedsAttentionPanel } from './Dashboard/NeedsAttentionPanel';
 import { SUMMARY_COALESCE_MS } from './Dashboard/useDashboardSummary';
 import {
-  getDashboardNarrative, getDashboardActive, getDashboardAttention, getDashboardOutcomes, getDashboardStats,
+  getDashboardNarrative, getDashboardNarrativeStatus, getDashboardActive, getDashboardAttention, getDashboardOutcomes, getDashboardStats,
 } from '../api/dashboardApi';
 // The envelope these frames imitate is the one `activityEvents` declares:
 // `entityId` and a resolved `terminal`, which is what the server publishes.
@@ -19,7 +19,7 @@ import {
 vi.mock('../api/usageTipsApi', () => ({ getUsageTips: vi.fn(async () => ({ enabled: true, tips: [] })), dismissUsageTip: vi.fn(), USAGE_TIPS_SETTINGS_CHANGED: 'tips-settings-changed' }));
 
 vi.mock('../api/dashboardApi', () => ({
-  getDashboardNarrative: vi.fn(), getDashboardAttention: vi.fn(), getDashboardActive: vi.fn(),
+  getDashboardNarrative: vi.fn(), getDashboardNarrativeStatus: vi.fn(), getDashboardAttention: vi.fn(), getDashboardActive: vi.fn(),
   getDashboardOutcomes: vi.fn(), getDashboardStats: vi.fn(),
 }));
 
@@ -131,6 +131,7 @@ async function renderLoadedDashboard(initialEntry = '/') {
 describe('Dashboard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getDashboardNarrativeStatus).mockResolvedValue({ enabled: true });
     vi.mocked(getDashboardNarrative).mockResolvedValue({ repository: 'all', enabled: true, summary: 'Work is underway. Nothing needs your attention.' });
     socketConnected = true;
     activityHandler = null;

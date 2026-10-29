@@ -56,6 +56,7 @@ export interface DashboardRoutesDeps {
   liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>;
   now?: () => Date;
   narrativeModel?: NarrativeModel;
+  /** The experimental dashboard AI summary is opt-in; production reads `dashboard_summary_enabled`. */
   isSummaryEnabled?: () => Promise<boolean>;
 }
 
@@ -227,6 +228,17 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
 
   const narrative = createDashboardNarrative(deps.narrativeModel ?? (async () => null));
 
+  // Lets the dashboard check the opt-in before asking for a narrative, so a
+  // disabled summary costs no narrative request and renders no bar.
+  async function getNarrativeStatus(_req: Request, res: Response): Promise<void> {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      res.json({ enabled: deps.isSummaryEnabled ? await deps.isSummaryEnabled() : true });
+    } catch {
+      res.json({ enabled: false });
+    }
+  }
+
   async function getNarrative(req: Request, res: Response): Promise<void> {
     const repository = readRepositoryFilter(req, res);
     if (repository === null) return;
@@ -395,5 +407,5 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
   }
 
-  return { getSummary, getAttention, getActive, getOutcomes, getNarrative };
+  return { getSummary, getAttention, getActive, getOutcomes, getNarrative, getNarrativeStatus };
 }

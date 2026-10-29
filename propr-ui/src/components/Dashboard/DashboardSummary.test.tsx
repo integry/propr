@@ -3,12 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DashboardSummary } from './DashboardSummary';
 import { SUMMARY_COALESCE_MS } from './useDashboardSummary';
 import { useCurrentUser } from '../../contexts/AuthContext';
-import { getDashboardNarrative } from '../../api/dashboardApi';
+import { getDashboardNarrative, getDashboardNarrativeStatus } from '../../api/dashboardApi';
 
 vi.mock('../../api/apiClient', () => ({ API_BASE_URL: 'https://example.test', getDesktopConnectionScope: vi.fn(() => null) }));
 vi.mock('../../contexts/AuthContext', () => ({ useCurrentUser: vi.fn(() => ({ id: 'user-a' })) }));
-vi.mock('../../api/dashboardApi', () => ({ getDashboardNarrative: vi.fn() }));
+vi.mock('../../api/dashboardApi', () => ({ getDashboardNarrative: vi.fn(), getDashboardNarrativeStatus: vi.fn() }));
 const narrative = vi.mocked(getDashboardNarrative);
+const status = vi.mocked(getDashboardNarrativeStatus);
 const response = { repository: 'all', enabled: true, summary: 'Retry handling is running. A review needs your attention.' };
 const tick = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_COALESCE_MS); }); };
 const visible = (state: DocumentVisibilityState) => {
@@ -28,8 +29,35 @@ beforeEach(() => {
   vi.mocked(useCurrentUser).mockReturnValue({ id: 'user-a' } as ReturnType<typeof useCurrentUser>);
   visible('visible');
   narrative.mockReset().mockResolvedValue(response);
+  status.mockReset().mockResolvedValue({ enabled: true });
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+describe('dashboard summary opt-in', () => {
+  it.each([
+    ['unset or off', () => status.mockResolvedValue({ enabled: false })],
+    ['unreadable', () => status.mockRejectedValue(new Error('Offline'))],
+  ])('renders no bar and requests no narrative when the setting is %s', async (_name, arrange) => {
+    arrange();
+    const { container } = await mount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_COALESCE_MS * 4); });
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('dashboard-summary')).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+    expect(narrative).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing while the opt-in is unconfirmed, then the bar once it is on', async () => {
+    let resolve!: (value: { enabled: boolean }) => void;
+    status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    render(<DashboardSummary repository="all" activityToken={0} />);
+    expect(screen.queryByTestId('dashboard-summary')).not.toBeInTheDocument();
+    expect(narrative).not.toHaveBeenCalled();
+    await act(async () => resolve({ enabled: true }));
+    expect(screen.getByTestId('dashboard-summary')).toHaveTextContent(response.summary);
+    expect(narrative).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('dashboard narrative', () => {
   it('ticks freshness without requests and retains its age after failures or while paused', async () => {

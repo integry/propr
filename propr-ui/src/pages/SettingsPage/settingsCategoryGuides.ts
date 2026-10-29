@@ -20,7 +20,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
     summary: 'Preferences for how ProPR presents work to you. Nothing here changes how agents run.',
     notes: [
       'Usage tips are ranked about once a day from activity in this instance. Dismissing a tip hides it for 45 days.',
-      'Voice briefings are experimental and off by default. Turning them on does not start audio or ask for the microphone.',
+      'Experimental features are off by default. Voice briefings do not start audio or ask for the microphone when turned on; dashboard AI summaries cost LLM calls on the summarization model.',
     ],
     links: [
       { label: 'Usage tips', href: `${DOCS}/features/usage-tips` },

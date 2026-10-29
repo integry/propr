@@ -18,9 +18,10 @@ there is no launcher to open, the vendor-processing disclosure cannot be reached
 `GET /api/voice/capabilities` or `GET /api/voice/briefing` request is issued, and no
 speech-synthesis, speech-recognition, or microphone API is touched.
 
-To turn them on, open **Settings** and enable **Voice briefings · Experimental**.
-Administrators find it under **Integrations**; members find it in their personal
-settings view. The launcher appears immediately, without reloading the page.
+To turn them on, open **Settings** and select **Enable voice briefings**.
+Administrators find it in **General → Experimental**; members find it under
+**Voice briefings · Experimental** in their personal settings view. The launcher
+appears immediately, without reloading the page.
 
 Enabling the option does not start audio or request microphone access. Turning it off
 hides the entry points, aborts in-flight briefing requests, cancels active speech and
@@ -103,7 +104,7 @@ Use an external, purpose-built alerting system for emergencies and guaranteed pa
 
 ### The opt-in also gates the desktop app
 
-The desktop app uses the same **Voice briefings · Experimental** opt-in as every
+The desktop app uses the same **Enable voice briefings** opt-in as every
 other runtime; see [Enabling Voice Briefings](#enabling-voice-briefings). Desktop
 installations that had already acknowledged the voice disclosure are still off
 until that explicit choice is made, and the choice is scoped to the signed-in

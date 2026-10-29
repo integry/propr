@@ -330,8 +330,12 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   Add another after saving. Work and system navigation are grouped;
   Goals, repository settings and connected apps have revised layouts. The dashboard
   shows Needs attention, Happening now, Completed and Historical stats, with a
-  repository filter, activity summaries and documentation-derived usage tips;
-  Completed loads an entry's earlier updates when you expand it. `Cmd/Ctrl+K`
+  repository filter and documentation-derived usage tips;
+  Completed loads an entry's earlier updates when you expand it. The AI activity
+  summary bar above the dashboard is experimental and off by default: enable
+  **Dashboard AI summaries** under Settings → General → Experimental, next to
+  Voice briefings. Each update is an LLM call on the summarization model; while it
+  is off the dashboard shows no bar and requests no summary. `Cmd/Ctrl+K`
   opens a command palette with category tabs and a live preview pane. Lists
   share one loading skeleton. Broader reporting lives in Analytics. On phones the
   bottom bar is Dashboard, Tasks, **Create** (a sheet with New Task, Goal, Plan,
