@@ -133,9 +133,13 @@ export async function redeemConnectAuthorizationCode(options: {
     };
 }
 
-/** An explicit expiry from a renewable grant wins over the older relative `expires_in`. */
+/**
+ * An explicit expiry from a renewable grant wins over the older relative
+ * `expires_in`, including an explicit `null` for a non-expiring credential.
+ */
 function tokenExpiresAt(body: { expires_in?: number; access_token_expires_at?: unknown }): number | undefined {
     const explicit = parseConnectExpiry(body.access_token_expires_at);
+    if (explicit === null) return undefined;
     if (typeof explicit === 'number') return explicit;
     return body.expires_in ? Date.now() + body.expires_in * 1000 : undefined;
 }

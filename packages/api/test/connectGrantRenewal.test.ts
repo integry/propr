@@ -7,7 +7,7 @@ import { up as addGitHubOAuthGrantRevision } from '../../core/src/db/migrations/
 import { up as addRelayRenewal, down as dropRelayRenewal } from '../../core/src/db/migrations/20261029180000_add_github_user_grant_relay_renewal.js';
 import type { GitHubUser } from '../authTypes.js';
 import { redeemConnectAuthorizationCode } from '../connectAuth.js';
-import { grantIdHash, renewalDueAt } from '../connectGrantRenewal.js';
+import { grantIdHash, renewalBackoffMs, renewalDueAt } from '../connectGrantRenewal.js';
 import { GitHubMetadataAuthorizationError, resolveGitHubMetadataToken } from '../githubMetadataAuth.js';
 import { GitHubUserGrantService } from '../githubUserGrantService.js';
 import type { Request } from 'express';
@@ -109,6 +109,28 @@ test('a non-expiring renewable grant stores a null expiry and is not renewed pro
   const { fetchImpl, calls } = relay(() => renewed('ghu_unused'));
   const service = new GitHubUserGrantService(database, environment, fetchImpl);
   await service.capture(redeemed);
+  const resolved = await service.resolve(user.id);
+  assert.equal(resolved.status === 'active' && resolved.accessToken, 'ghu_forever');
+  assert.equal(calls.length, 0);
+});
+
+test('an explicit null expiry wins over a legacy expires_in in the same redemption', async () => {
+  const redeemed = await redeemConnectAuthorizationCode({
+    code: 'pia_code',
+    relayUrl: RELAY,
+    relayToken: 'prt_relay_secret',
+    fetchImpl: (async input => String(input) === 'https://api.github.com/user'
+      ? Response.json({ id: 583231, login: 'octocat' })
+      : Response.json({
+          username: 'octocat', avatar_url: null, access_token: 'ghu_forever', expires_in: 300,
+          access_token_expires_at: null, renewal: 'relay',
+        })) as typeof fetch,
+  });
+  assert.equal(redeemed.tokenExpiresAt, undefined);
+  const { fetchImpl, calls } = relay(() => renewed('ghu_unused'));
+  const service = new GitHubUserGrantService(database, environment, fetchImpl);
+  await service.capture(redeemed);
+  assert.equal((await storedGrant()).access_token_expires_at_ms, null);
   const resolved = await service.resolve(user.id);
   assert.equal(resolved.status === 'active' && resolved.accessToken, 'ghu_forever');
   assert.equal(calls.length, 0);
@@ -302,6 +324,21 @@ for (const [label, respond] of [
     assert.equal((await storedGrant()).status, 'active');
   });
 }
+
+test('a Retry-After longer than the local backoff cap is honoured in full', async () => {
+  assert.ok(renewalBackoffMs(1, 30 * 60_000) >= 30 * 60_000);
+  assert.ok(renewalBackoffMs(20) <= 10 * 60_000);
+
+  const { fetchImpl, calls } = relay(() => Response.json(
+    { error: 'rate_limited' }, { status: 429, headers: { 'retry-after': '1800' } },
+  ));
+  const service = new GitHubUserGrantService(database, environment, fetchImpl);
+  await captureRenewable(service, 5 * 60_000);
+  const before = Date.now();
+  await service.resolve(user.id);
+  assert.ok(Number((await storedGrant()).renewal_retry_after_ms) >= before + 1800 * 1000);
+  assert.equal(calls.length, 1);
+});
 
 test('an expired token with a transient relay failure is temporarily unavailable, not reauth_required', async () => {
   const { fetchImpl, calls } = relay((_call, index) => index === 0

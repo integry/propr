@@ -53,11 +53,14 @@ export function renewalDueAt(credentialKey: string, expiresAt: number): number {
   return expiresAt - RENEWAL_LEAD_MS - jitter;
 }
 
-/** Exponential backoff after a transient failure, honouring the relay's Retry-After. */
+/**
+ * Exponential backoff after a transient failure. Only the local backoff is
+ * capped; the relay's full Retry-After is always honoured.
+ */
 export function renewalBackoffMs(failures: number, retryAfterMs?: number): number {
   const exponential = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, Math.min(failures - 1, 10)));
   const jittered = exponential / 2 + Math.random() * (exponential / 2);
-  return Math.max(jittered, Math.min(retryAfterMs ?? 0, BACKOFF_MAX_MS));
+  return Math.max(jittered, retryAfterMs ?? 0);
 }
 
 export function logRenewalOutcome(event: {
