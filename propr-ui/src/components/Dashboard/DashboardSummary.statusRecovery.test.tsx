@@ -11,7 +11,8 @@ const summary = 'Retry handling is running. A review needs your attention.';
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 // Real dashboardApi/apiClient: the 503 body is the one getNarrativeStatus sends
-// when `dashboard_summary_enabled` cannot be read (dashboardNarrativeStatus.test.ts).
+// when `dashboard_summary_enabled` cannot be read or parsed by the production
+// strict reader (packages/api/test/dashboardNarrativeStatus.test.ts).
 it('treats the backend 503 for an unreadable opt-in as unavailable and recovers on the next activity', async () => {
   let settingReadable = false;
   const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {

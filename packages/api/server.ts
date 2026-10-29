@@ -6,7 +6,7 @@ import { createDefaultStorageService, createInstanceStorageRoutes } from './rout
 import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
 import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
-import { getConfig } from '@propr/core';
+import { isDashboardSummaryEnabled } from './routes/dashboardSummarySetting.js';
 import { officialCachePrice } from './routes/analyticsPricing.js';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
 import { GOAL_TASK_GUARD_MOUNTS } from './openapi/directRoutes.js';
@@ -413,7 +413,7 @@ export function setupRoutes(): void {
   const analyticsCache = createAnalyticsCache();
   const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
   const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
-  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', false)) === true });
+  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: isDashboardSummaryEnabled });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();

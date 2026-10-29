@@ -433,7 +433,7 @@ export {
 } from './configManagerReasoning.js';
 
 export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';
-export { getConfig, saveConfig } from './configStore.js';
+export { getConfig, getConfigStrict, saveConfig } from './configStore.js';
 export {
     clearSummarizationCooldown,
     clearSummarizationPrimaryQuotaFailures,
