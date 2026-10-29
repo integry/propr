@@ -90,6 +90,11 @@ test('an open draft PR and an existing worktree need no changes', async () => {
 
 test('a merged PR continues on a fresh branch so merged commits are not proposed again', async () => {
   const { job, goal } = await continuedGoal('goal-merged');
+  await db('goal_inputs').insert(['pending', 'pending', 'delivered'].map((state, index) => ({
+    input_id: `merged-notice-${index}`, idempotency_key: `merged-notice-${index}`, payload_hash: 'hash',
+    goal_id: goal.goal_id, owner_id: goal.owner_id, kind: 'restoration', operation: 'goal.restore',
+    message: GOAL_WORKTREE_RESTORED_NOTICE, state,
+  })));
   const { ops } = operations({ ...openDraft, state: 'closed', merged: true });
   const prepared = await prepareContinuedGoal(job, goal, ops);
   assert.equal(prepared.branch_name, null);
@@ -97,6 +102,10 @@ test('a merged PR continues on a fresh branch so merged commits are not proposed
   assert.equal(prepared.final_pr_number, null);
   assert.equal(prepared.final_pr_url, null);
   assert.equal(prepared.session_id, 'thread-1', 'the provider session is kept');
+  const notices = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).orderBy('sequence');
+  assert.deepEqual(notices.map(notice => notice.state), ['superseded', 'superseded', 'delivered']);
+  assert.ok(notices[0].delivery_error);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
 });
 
 test('a closed PR keeps the branch and drops the PR so a new draft is opened', async () => {
@@ -124,6 +133,7 @@ test('an expired worktree is rebuilt from the remote branch', async () => {
   assert.equal(prepared.worktree_path, rebuilt);
   assert.equal(prepared.branch_name, 'goal/ship-it');
   assert.deepEqual(calls, ['read:379', 'rebuild:goal/ship-it']);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
 });
 
 test('a deleted remote branch continues on a fresh branch', async () => {
@@ -134,6 +144,11 @@ test('a deleted remote branch continues on a fresh branch', async () => {
   assert.equal(prepared.branch_name, null);
   assert.equal(prepared.worktree_path, null);
   assert.equal(prepared.final_pr_number, null);
+  const notices = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' });
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].state, 'superseded');
+  assert.ok(notices[0].delivery_error);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
 });
 
 test('the continued attempt tells the provider to re-arm, then clears the flag once it ran', async () => {
@@ -230,6 +245,28 @@ test('fresh branch continuation tells the provider where preserved work can be r
   assert.ok(input.message.includes(goal.branch_name));
 });
 
+for (const merged of [false, true]) {
+  test(`claim loss during ${merged ? 'cleanup' : 'rebuild'} preserves the restoration notice and branch identity`, async () => {
+    const { job, goal } = await continuedGoal(`notice-reset-takeover-${merged}`, { worktree_path: '/missing/reset-takeover' });
+    const { ops: restoreOps } = operations(openDraft, async () => goal.worktree_path);
+    await restoreMissingGoalWorktree(job, goal, restoreOps);
+    if (merged) {
+      goal.worktree_path = existingWorktree();
+      await db('goals').where({ goal_id: goal.goal_id }).update({ worktree_path: goal.worktree_path });
+    }
+    const { ops } = operations({ ...openDraft, merged });
+    const takeover = async () => {
+      await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+      return null;
+    };
+    ops.rebuildWorktree = takeover;
+    ops.cleanupWorktree = async () => { await takeover(); };
+    await assert.rejects(prepareContinuedGoal(job, goal, ops), /lost its attempt claim/);
+    assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).branch_name, goal.branch_name);
+    assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  });
+}
+
 test('transient rebuild retries once without changing branch identity', async () => {
   const { job, goal } = await continuedGoal('goal-rebuild-retry', { worktree_path: '/missing/retry' });
   let calls = 0;
@@ -305,6 +342,13 @@ test('a pruned checkout whose branch is gone is unrecoverable', async () => {
   const { ops } = operations(openDraft, async () => null);
   await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), (error: Error) => error instanceof GoalWorktreeLostError && /goal\/ship-it/.test(error.message));
   assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, missing);
+  assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  await db('goals').where({ goal_id: goal.goal_id }).update({ continue_requested: true });
+  const continued = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+  const prepared = await prepareContinuedGoal(job, continued, ops);
+  assert.equal(prepared.branch_name, null);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
+  assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first()).state, 'superseded');
 });
 
 test('a takeover during a transient rebuild error prevents the retry', async () => {
@@ -471,6 +515,12 @@ for (const provider of ['opencode', 'codex', 'claude']) {
     assert.equal(enqueued, 0);
     assert.equal(failed, true);
     assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+    await db('goals').where({ goal_id: goal.goal_id }).update({ continue_requested: true });
+    const continued = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+    const { ops: mergedOps } = operations({ ...openDraft, merged: true });
+    const prepared = await prepareContinuedGoal(job, continued, mergedOps);
+    assert.equal(prepared.branch_name, null);
+    assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
   });
 }
 

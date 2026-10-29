@@ -186,6 +186,13 @@ export async function prepareContinuedGoal(
             goal_id: job.goalId, current_task_id: job.taskId, run_generation: job.generation, run_claim: job.claimId,
         }).whereNull('result_state').update(updates);
         if (changed !== 1) throw new Error('Continued goal preparation lost its attempt claim');
+        if ('branch_name' in updates) {
+            // These notices describe the published branch we are abandoning,
+            // not the fresh base checkout the continued attempt will receive.
+            await trx('goal_inputs').where({ goal_id: job.goalId, state: 'pending', kind: 'restoration' }).update({
+                state: 'superseded', delivery_error: 'Goal moved to a fresh branch from base; the previous checkout restoration notice no longer applies.',
+            });
+        }
         if (preservedCheckout) {
             const input = await trx('goal_inputs').where({ goal_id: job.goalId, operation: 'goal.continue', state: 'pending' })
                 .orderBy('sequence', 'desc').first('input_id', 'message');
