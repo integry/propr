@@ -250,7 +250,8 @@ test('Antigravity offers one model entry with separate supported reasoning choic
 });
 
 
-test('retained Flash metadata remains available outside the selectable catalog', () => {
+test('retired Gemini 3.6/3.7 Flash stay out of the catalog and route to Gemini 3.8 Flash', () => {
+    const flash = MODEL_INFO_MAP['antigravity-gemini-3.8-flash'];
     for (const version of ['3.6', '3.7']) {
         const base = `antigravity-gemini-${version}-flash`;
         for (const models of [ANTIGRAVITY_MODELS, AGENT_MODELS.antigravity, ALL_MODELS]) {
@@ -258,14 +259,9 @@ test('retained Flash metadata remains available outside the selectable catalog',
         }
         assert.ok(!AGENT_DEFAULTS.antigravity.defaultModels.includes(base));
         assert.equal(MODEL_INFO_MAP[base], undefined);
-        const info = getModelInfoWithAntigravityCompatibility(base);
-        assert.ok(info);
-        assert.equal(info.openRouterId, `google/gemini-${version}-flash`);
-        assert.equal(info.maxTokens, 1000000);
-        assert.equal(info.contextWindow, '1M');
-        assert.equal(info.minAgentVersion, version === '3.7' ? '1.1.12' : undefined);
+        assert.equal(getModelInfoWithAntigravityCompatibility(base), flash);
         for (const effort of ['low', 'medium', 'high']) {
-            assert.equal(getModelInfoWithAntigravityCompatibility(`${base}-${effort}`), info);
+            assert.equal(getModelInfoWithAntigravityCompatibility(`${base}-${effort}`), flash);
         }
     }
     assert.equal(getModelInfoWithAntigravityCompatibility('antigravity-gemini-3.5-flash'), undefined);

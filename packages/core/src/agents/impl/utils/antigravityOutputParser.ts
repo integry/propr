@@ -1,6 +1,6 @@
 import type { TokenUsage } from '../../types.js';
 import logger from '../../../utils/logger.js';
-import { ANTIGRAVITY_MODEL_LABELS, antigravityReportedIdentity, antigravityModelIdsMatch } from '../antigravityModelIds.js';
+import { ANTIGRAVITY_MODEL_LABELS, antigravityReportedIdentity } from '../antigravityModelIds.js';
 
 export { ANTIGRAVITY_MODEL_LABELS };
 
@@ -74,7 +74,9 @@ function isFiniteNonNegativeNumber(value: unknown): value is number { return typ
 
 /** Converts CLI canonical IDs and display names back to ProPR's namespaced model ID. */
 export function normalizeAntigravityModelId(modelId: string): string {
-    return Object.keys(ANTIGRAVITY_MODEL_LABELS).find(id => antigravityModelIdsMatch(id, modelId)) ?? modelId; }
+    // Exact identity, so a run that reported a retired model keeps its own name.
+    const { model } = antigravityReportedIdentity(modelId);
+    return Object.hasOwn(ANTIGRAVITY_MODEL_LABELS, model) ? model : modelId; }
 
 function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }>): string | undefined {
     const resultLines: string[] = [];

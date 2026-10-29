@@ -164,3 +164,116 @@ are preserved. These are local targeted validation results, not a claim that
 broader CI or the full backend suite passed. The resulting PR must remain
 **draft**, with ProPR owning commits, push and PR creation; no merge, release
 publication, deployment, Ultrafix or recursive tasks were performed.
+
+## 2026-10-29 scope extension to `de0c884b6`
+
+No `v0.9.0` tag exists yet, so the release scope now extends from `v0.8.15`
+through `de0c884b6` (upstream `main` at preparation time; if the release is cut
+from a later base, re-audit the merges after it). The earlier audit history
+above is unchanged and still describes the review through `c2de30509`.
+
+Changelog changes:
+
+- Everything that was under `## [Unreleased]` is folded into `## [0.9.0]` under
+  its matching heading. The Claude Haiku 5.5, Gemini 4 Argon and Antigravity
+  CLI 1.4.0 facts are merged into the existing **Agent models** bullet, and the
+  Gemini 3.1 Pro retirement into **Retired models**. `## [Unreleased]` is
+  empty, the 0.9.0 date is 2026-10-29, and the comparison links are unchanged.
+- All 334 first-parent changes from `c2de30509` to `de0c884b6` were checked
+  against the changelog. This window covers every edit made to the 0.9.0 section
+  since the original audit. The missing user-facing changes now have entries,
+  among them task assignment, Auto CI follow-up, continuing a finished goal,
+  agent extension profiles, follow-up publication recovery, instance data, the
+  settings reorganisation, Inbox triage, worktree disk reclaim and admission,
+  `better-sqlite3` 13 and grouped UI, worker and follow-up fixes. Existing
+  bullets were corrected where later work changed them: Automations naming and
+  routes, settings paths, the Coding Agents health check and the MCP request
+  limit. Internal refactors, tests, CI, Fleet/Routing infrastructure and
+  docs-only changes have no entries.
+- Contract changes are marked. **Breaking** marks changes to v0.8.15 contracts:
+  the canonical `llm-claude-fable`/`llm-claude-haiku` labels and the redacted
+  agent `envVars`. **Contract change** marks the `GET /api/stats/dashboard`
+  `dailyCompleted` removal, because that endpoint is new since v0.8.15.
+- Sections for 0.8.15 and earlier compare byte-for-byte with the base.
+
+Notices and package metadata:
+
+- `scripts/generate-notices.sh` regenerated `THIRD_PARTY_LICENSES.md`. Its
+  inventory now includes `better-sqlite3@13.0.3`, `braces@3.0.4-depthguard.1`,
+  `undici@7.30.1` and the `sharp` platform packages, including the
+  LGPL-3.0-or-later `@img/sharp-libvips-*` libraries.
+- `NOTICE` gains a libvips entry and an updated license summary.
+- The six `@propr` workspace packages without a `license` field (`api`, `cli`,
+  `client`, `core`, `local-setup`, `shared`) now declare `Apache-2.0`, matching
+  the root `LICENSE` and the published CLI. `npm install --package-lock-only`
+  changed only those six lockfile entries, versions are unchanged, and no
+  first-party package is listed as `UNKNOWN`.
+
+Independent validation of `de0c884b6`, run before these metadata changes:
+
+- zero-warning lint across all workspaces and the root typecheck
+- hosted Full Test Suite run 40788729011: all 4 shards, native Electron and docs
+- all 10 integration test files
+- rebuilt app and launcher images and the full image smoke
+- SQLite startup smoke: blank database three times, upgrade, and a genuine
+  migration failure
+- live API E2E against the remote
+- `EXPECTED_VERSION=0.9.0 RELEASE_TAG=v0.9.0 RELEASE_CANDIDATE=true npm run release:verify`
+
+That validation found no logic defects.
+
+Passed on this change:
+
+- `EXPECTED_VERSION=0.9.0 RELEASE_TAG=v0.9.0 RELEASE_CANDIDATE=true npm run release:verify`: release metadata consistent for v0.9.0.
+- `node --test test/releaseValidation.test.mjs`: 15 tests.
+- `npx tsx --test test/orchestratorProprUrlsDrift.test.ts`: 13 tests.
+- `node scripts/validate-third-party-notices.mjs installed` and `... file THIRD_PARTY_LICENSES.md`: 259 npm production packages.
+- `test/thirdPartyNotices.test.mjs` (8), `test/npmArtifactReconciliation.test.mjs` (9) and `test/buildImages.test.mjs` (19).
+- `npm run build --prefix docs` and `git diff --check`.
+
+CI follow-up: the `audit:runtime` gate then failed on the newly published
+GHSA-rmxm-3fg6-px4f (`@hono/node-server` `>=1.19.10 <2.1.3`), which affected
+both the root 2.1.0 copy and the 1.19.17 copy nested under
+`@modelcontextprotocol/node` 2.1.1. A lockfile-only update within the existing
+ranges moves `@modelcontextprotocol/node` to 2.1.2 (which accepts
+`@hono/node-server` 2.x), `@hono/node-server` to 2.1.5 and, through the node
+package's peer range, `@modelcontextprotocol/server` and `core` to 2.4.0. No
+`package.json` range changed. `npm run audit:runtime` and
+`npm run desktop:audit:packaging` pass, npm 10 leaves the lock byte-identical,
+the API typecheck and the six `packages/api/test/mcp*.test.ts` files pass, and
+`scripts/generate-notices.sh` leaves `THIRD_PARTY_LICENSES.md` unchanged.
+
+Only release metadata, notices and that lockfile update changed: `CHANGELOG.md`,
+this audit, `THIRD_PARTY_LICENSES.md`, `NOTICE`, the six `license` fields and
+their lockfile entries, and the MCP/Hono lockfile entries. That pass changed no application code, lint rule, CI routing or styling; the logic fixes listed below came later. No tag,
+release, publication or deployment was performed.
+
+Later merges: current `main` (`2727fe3ad`) was merged into this branch. It adds
+two logic fixes that ship in 0.9.0, now recorded in the **Worker restarts**
+bullet under **Fixed**:
+
+- #3364: a storage lifecycle gate left by a crashed holder (for example an
+  out-of-memory kill) is reclaimed instead of freezing every worker, waits on
+  the gate are logged, and recovery steps no longer pile up behind a stuck one.
+- #3366: a live goal whose saved worktree was pruned is rebuilt from its
+  published branch on recovery, or fails cleanly, instead of relaunching
+  endlessly while showing as running.
+
+The release scope now runs through `2727fe3ad`.
+
+Logic fixes on this branch: unlike the metadata changes above, these change
+application code, and each is recorded in the changelog.
+
+- **Retired models**: saved Antigravity Gemini 3.6/3.7 Flash selections,
+  aliases, labels and effort routes launch on Gemini 3.8 Flash, startup moves
+  agents that list them to 3.8 Flash, and saved references elsewhere are checked
+  through the shared `agentSupportsSavedModel` helper.
+- **Agent failure reasons**: the shared `agentFailureLine` helper reduces a
+  failed task, goal, agent run or PR follow-up to one line of at most 500
+  characters. After an entrypoint preamble or a source location it picks the
+  CLI or Node error line; any other message keeps its first line.
+  `buildTaskStateTransition` redacts task-state reasons and last-error messages.
+
+Validation: zero-warning lint across workspaces and root `src/`, the root, API
+and UI typechecks, the affected unit and integration tests (including
+`packages/shared/test/agentFailureLine.test.ts`) and `release:verify` pass.

@@ -80,18 +80,18 @@ test('analysis launches configured custom models and requires their exact provid
 });
 
 
-test('analysis executes retained Flash defaults with their saved effort', async () => {
+test('analysis runs retired Flash defaults on Gemini 3.8 Flash with their saved effort', async () => {
     for (const version of ['3.6', '3.7']) {
         for (const effort of ['low', 'medium', 'high']) {
             const saved = `antigravity-gemini-${version}-flash-${effort}`;
-            const display = `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`;
+            const cli = `gemini-3.8-flash-${effort}`;
             const retained = new AntigravityAgent({ id: 'retained', alias: 'antigravity', type: 'antigravity', enabled: true,
                 configPath: '~/.gemini', dockerImage: 'propr/agent:latest', supportedModels: [saved], defaultModel: saved });
-            for (const identity of [display, `Gemini ${version} Flash (${effort === 'low' ? 'High' : 'Low'})`]) {
+            for (const identity of [cli, `Gemini 3.8 Flash (${effort === 'low' ? 'High' : 'Low'})`]) {
                 reportedModel = identity;
                 const result = await retained.analyze('test', { model: saved, suppressLlmLog: true });
-                assert.equal(launchedArgs[launchedArgs.indexOf('--model') + 1], version === '3.6' ? display : `gemini-${version}-flash-${effort}`);
-                assert.equal(result.success, identity === display);
+                assert.equal(launchedArgs[launchedArgs.indexOf('--model') + 1], cli);
+                assert.equal(result.success, identity === cli);
             }
         }
     }

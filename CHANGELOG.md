@@ -7,98 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Agent Tank usage history**: a unified usage chart on the Analytics page
-  plots every provider's session, weekly and per-model metrics over the last
-  24 hours to 14 days, with provider and metric toggles. Hovering (or tapping)
-  a metric in the sidebar Usage section opens a chart of that metric over its
-  last two periods: 10 hours for a 5-hour session, 14 days for a weekly limit.
-  History comes from an external Agent Tank 0.10+ daemon when it keeps one.
-  Otherwise ProPR records its own, in a new `agent_tank_usage_history` table
-  kept for 15 days, served by `GET /api/config/agent-tank/history`.
-- **Agent Tank 0.10.0**: the bundled CLI moves to 0.10.0, and ProPR reads its
-  canonical `{ "providers": [...] }` response format as well as the 0.9.x map,
-  so an external daemon can be upgraded independently. Antigravity's separately
-  tracked **Gemini 4 Argon** quota appears in the sidebar under its own
-  *Gemini 4 Argon* group.
-
-- **Epic merge progress**: when a child PR merges into an epic branch, ProPR
-  updates a single "x of y PRs merged" tracking comment on the epic PR in
-  place, and posts a one-time *Epic fully merged* confirmation comment once
-  the final child PR has merged.
-- **MCP `resolve_merge_conflicts`**: the MCP equivalent of typing `/merge` on a
-  pull request. It posts the same `/merge` command, whose intake merges the base
-  branch into the PR branch and resolves conflicts with an agent. It requires
-  `expectedHead` (a moved head fails with `STALE_HEAD`) and an `idempotencyKey`,
-  refuses a PR without a ProPR processing label with `PULL_REQUEST_NOT_MANAGED`,
-  and returns a durable receipt that `get_operation` follows to the merge task.
-  `update_pull_request_branch` is unchanged and still covers the clean case
-  GitHub can update itself.
-- **Claude Haiku 5.5**: added to the Claude model catalog
-  (`llm-claude-haiku55`, 1M context) and made the target of the plain `haiku`
-  alias. The bundled Claude Code CLI moves to 2.1.293, the first release that
-  serves Haiku 5.5. Agent health checks and the summarization and context
-  analysis recommendations now prefer it. Existing agents gain the model on
-  startup.
-- **Gemini 4 Argon**: added to the Antigravity model catalog
-  (`llm-antigravity-argon`, 1M context, low/medium/high reasoning) and
-  recommended for plan generation and PR review. Gemini 3.8 Flash remains the
-  Antigravity default. The bundled Antigravity CLI moves to 1.4.0, the first
-  release that serves Argon. Existing agents gain the model on startup.
-- **Antigravity CLI model IDs**: ProPR now launches Gemini 4 Argon, Claude
-  Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B with the IDs `agy models` lists
-  (for example `gemini-4-argon-high` and `claude-opus-5-5-high`) instead of
-  display names such as `Gemini 4 Argon (High)`. Runs that report either form
-  are still matched to the requested model.
-
-### Changed
-
-- **Gemini 3.1 Pro retired from Antigravity**: Antigravity CLI 1.4.0 no longer
-  offers Gemini 3.1 Pro and substitutes Gemini 4 Argon, so ProPR does the same.
-  Agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, keeping
-  any saved Pro reasoning override, and `llm-antigravity-pro` and the `pro`
-  alias now select Gemini 4 Argon. Saved low/high Pro routes run on Argon at
-  the same effort.
-- **Canonical Fable and Haiku labels**: `llm-claude-fable` and
-  `llm-claude-haiku` (and the `claude-fable` / `claude-haiku` model names) now
-  select Claude Fable 5.1 and Claude Haiku 5.5, matching the plain `fable` and
-  `haiku` aliases. Previously the labels selected Fable 5 and Haiku 4.5, which
-  are now labelled `llm-claude-fable5` and `llm-claude-haiku45`.
-
-- **Instance access**: role assignments are now described as assigned
-  instance roles instead of "explicit" assignments across the **Access** page,
-  the `add_instance_member` MCP description, the `MEMBER_EXISTS` error and the
-  docs. After adding a user, the page offers to add them to the GitHub trigger
-  whitelist; after removing one, it offers to remove them from it. Both offers
-  reuse the existing `github_user_whitelist` setting with revision checks, are
-  skipped when the whitelist is empty or would become empty, and can be
-  declined.
-- **Ultrafix CI wait comment**: the "Ultrafix is waiting for CI before the next
-  `/review`" comment is now edited in place with the wait's outcome instead of
-  staying on the PR next to it. The review that runs once blocking checks pass
-  turns it into its "AI Code Review Complete" comment, and a CI wait timeout
-  turns it into the "CI did not settle" stop comment.
-- **`GET /api/stats/dashboard`** reports its daily series as `dailyTasks`
-  (tasks created per UTC day, the series the Analytics activity chart plots)
-  and no longer reports `dailyCompleted` (completions per day). The bundled
-  dashboard reads `dailyTasks`, and still draws `dailyCompleted` from an older
-  server; a script that read `dailyCompleted` should read `dailyTasks`.
-- **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
-  `create_task` with `todoIds`, or a submission retry) now marks the to-do
-  completed once its GitHub issue exists and records that issue
-  (`linkedIssueRepository`, `linkedIssueNumber`, `linkedTaskId`). The REST API,
-  MCP `list_todos`/`get_todo`, the CLI and the Web UI carry the link, and the
-  UI shows a `#<issue number>` chip opening the issue on active and completed
-  to-dos. Only the submitting user's to-dos in the issue's repository are
-  touched, and a failed to-do write never fails the submission.
-
-## [0.9.0] - 2026-09-29
+## [0.9.0] - 2026-10-29
 
 Covers every change merged since v0.8.15. This section records delivered source
 changes; it does not announce published packages, images, desktop installers or a
 release tag. The [coverage audit](docs/release-0.9.0-audit.md) covers changes
-through `c2de30509`.
+through `de0c884b6`. Changes that break a v0.8.15 contract are marked
+**Breaking**; a contract change to an interface added since v0.8.15 is marked
+**Contract change**.
 
 ### Added
 
@@ -123,10 +39,11 @@ through `c2de30509`.
   `create_goal` accepts `ultrafix` and `maxParallelTasks` (default 1 over MCP).
 - **Automations**: saved prompts that run on demand or on a UTC cron schedule
   (15-minute minimum) and produce a free-form Markdown report. Create them on the
-  **Agents** page, trigger them with **Run now**, `POST
-  /api/agent-definitions/:id/runs` (with an `Idempotency-Key`), MCP
-  `trigger_agent_run` or `propr automation run --wait`, and read the report in the
-  UI, over MCP or with `propr automation report`. Each run is an isolated ProPR
+  **Automations** page (old `/agents` links redirect), trigger them with **Run
+  now**, `POST /api/automation-definitions/:id/runs` (with an
+  `Idempotency-Key`), MCP `trigger_automation_run` or `propr automation run
+  --wait`, and read the report in the UI, over MCP or with `propr automation
+  report`. Each run is an isolated ProPR
   task that never commits or pushes, with up to 10 repositories read-only,
   optional web access, up to 10 input files and up to 5 previous reports as
   context. Autonomy is **Dry run** (report only, the default), **Preview +
@@ -137,10 +54,13 @@ through `c2de30509`.
   settings or trigger other automations. Acting and ProPR tool access need
   Claude Code or Codex. Unattended runs are skipped or deferred when Agent Tank reports
   usage at or above `agent_run_usage_pause_percent` (default 90%); missed
-  schedule slots coalesce into one run. New MCP tools: `list_agent_definitions`,
-  `get_agent_definition`, `get_agent_definition_contract`, `list_agent_runs`,
-  `get_agent_run`, `trigger_agent_run`, `approve_agent_run` and
-  `reject_agent_run`; new optional environment variables
+  schedule slots coalesce into one run. New MCP tools:
+  `list_automation_definitions`, `get_automation_definition`,
+  `get_automation_definition_contract`, `list_automation_runs`,
+  `get_automation_run`, `trigger_automation_run`, `approve_automation_run` and
+  `reject_automation_run`; the `/api/agent-definitions` and `/api/agent-runs`
+  routes and `*_agent_*` tool names remain as deprecated aliases. New optional
+  environment variables
   `PROPR_INTERNAL_API_URL` and `PROPR_AGENT_MCP_URL`. See the
   [Agents guide](docs/docs/features/agents.md).
 - **New Task**: launch a single instruction against a repository without planning
@@ -194,7 +114,8 @@ through `c2de30509`.
   typed task and task submission methods, generated `ProprApi.*` types and a
   README covering authentication, examples and Socket.IO events.
 - **Desktop application**: browser-approved pairing, saved accounts and instances,
-  local setup, connection diagnostics, native menus and notifications, and separate
+  guided local setup on Linux and on macOS with Docker Desktop, connection
+  diagnostics, native menus and notifications, and separate
   application/runtime version displays. Linux/macOS packaging and Linux preview
   verification are present; Linux previews embed a digest-pinned managed agent
   image built from the same commit. Distribution remains subject to the
@@ -242,8 +163,8 @@ through `c2de30509`.
   deltas, is stopped instead of holding its worker slot until the 24-hour
   timeout. Partial work is published, the task ends `stalled` or
   `degenerate_output`, and the Inbox and GitHub comment explain the stop.
-  Thresholds are instance settings under **Settings → Automation → Agent
-  watchdog** and apply to the next run.
+  Thresholds are instance settings under **Settings → Sandbox & Network →
+  Agent watchdog** and apply to the next run.
 - **Automatic replacement runs**: an issue task lost with its worker gets one
   replacement, and a run that ends on a transient provider error (5xx,
   overloaded, connection reset) gets up to `max_provider_replacements` (default
@@ -271,8 +192,8 @@ through `c2de30509`.
   `host:port`. DNS resolves on the worker, and loopback, private and link-local
   addresses (including cloud metadata) are refused unless the instance lists
   the IP. The instance sets the default mode (`open` by default) and can
-  enforce restricted mode across repositories (**Settings → Automation → Agent
-  network**, `propr setting update`, MCP `update_execution_settings`). Issue
+  enforce restricted mode across repositories (**Settings → Sandbox & Network →
+  Agent network**, `propr setting update`, MCP `update_execution_settings`). Issue
   runs, PR commands, reviews, goals and indexing are covered; Automation runs
   follow restricted mode only when the instance enforces it, and plan generation
   is not covered. Each restricted issue, PR, review or goal run records one
@@ -309,9 +230,98 @@ through `c2de30509`.
 - **Bundled Agent Tank**: Agent Tank usage tracking has three modes, **Disabled**
   (default), **Bundled** and **External**. Bundled mode runs Agent Tank inside
   the agent image with nothing to install; external mode points at your own
-  daemon. Set it in **Settings → Integrations → Agent Tank**, with
+  daemon. Set it in **Settings → Integrations & MCP → Agent Tank**, with
   `propr tank bundled|external|off` or MCP `update_provider_policy`. Existing
   settings migrate.
+- **Agent Tank 0.10.0**: the bundled CLI moves to 0.10.0, and ProPR reads its
+  canonical `{ "providers": [...] }` response format as well as the 0.9.x map,
+  so an external daemon can be upgraded independently. Antigravity's separately
+  tracked **Gemini 4 Argon** quota appears in the sidebar under its own
+  *Gemini 4 Argon* group.
+- **Agent Tank usage history**: a unified usage chart on the Analytics page
+  plots every provider's session, weekly and per-model metrics over the last
+  24 hours to 14 days, with provider and metric toggles. Hovering (or tapping)
+  a metric in the sidebar Usage section opens a chart of that metric over its
+  last two periods: 10 hours for a 5-hour session, 14 days for a weekly limit.
+  History comes from an external Agent Tank 0.10+ daemon when it keeps one.
+  Otherwise ProPR records its own, in a new `agent_tank_usage_history` table
+  kept for 15 days, served by `GET /api/config/agent-tank/history`.
+- **Epic merge progress**: when a child PR merges into an epic branch, ProPR
+  updates a single "x of y PRs merged" tracking comment on the epic PR in
+  place, and posts a one-time *Epic fully merged* confirmation comment once
+  the final child PR has merged.
+- **MCP `resolve_merge_conflicts`**: the MCP equivalent of typing `/merge` on a
+  pull request. It posts the same `/merge` command, whose intake merges the base
+  branch into the PR branch and resolves conflicts with an agent. It requires
+  `expectedHead` (a moved head fails with `STALE_HEAD`) and an `idempotencyKey`,
+  refuses a PR without a ProPR processing label with `PULL_REQUEST_NOT_MANAGED`,
+  and returns a durable receipt that `get_operation` follows to the merge task.
+  `update_pull_request_branch` is unchanged and still covers the clean case
+  GitHub can update itself.
+- **Claude Haiku 5.5**: added to the Claude model catalog
+  (`llm-claude-haiku55`, 1M context) and made the target of the plain `haiku`
+  alias. The bundled Claude Code CLI moves to 2.1.293, the first release that
+  serves Haiku 5.5. Agent health checks and the summarization and context
+  analysis recommendations now prefer it. Existing agents gain the model on
+  startup.
+- **Gemini 4 Argon**: added to the Antigravity model catalog
+  (`llm-antigravity-argon`, 1M context, low/medium/high reasoning) and
+  recommended for plan generation and PR review. Gemini 3.8 Flash remains the
+  Antigravity default. The bundled Antigravity CLI moves to 1.4.0, the first
+  release that serves Argon. Existing agents gain the model on startup.
+- **Antigravity CLI model IDs**: ProPR now launches Gemini 4 Argon, Claude
+  Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B with the IDs `agy models` lists
+  (for example `gemini-4-argon-high` and `claude-opus-5-5-high`) instead of
+  display names such as `Gemini 4 Argon (High)`. Runs that report either form
+  are still matched to the requested model.
+- **Auto CI follow-up**: an opt-in repository setting (**Repositories →
+  Automation**, `propr repo toggle owner/repo --auto-ci-followup`) posts one
+  comment per failing check on a PR's current head, naming the check, commit and
+  failure output, and that comment starts follow-up work. Cancelled checks and
+  gates that failed only because their shards were cancelled are not reported.
+  While Ultrafix waits for CI, failures whose webhook was missed are recovered.
+- **Continue a finished goal**: failed, completed and cancelled goals can be
+  reopened with **Continue goal**, `POST /api/goals/:goalId/continue`, MCP
+  `continue_goal` or `propr goal continue <goal-id> [message]`, on the same
+  agent, branch, PR and session; the agent is told why the goal stopped. A
+  merged PR continues on a fresh branch and draft PR, a closed one gets a new
+  draft PR, and a removed worktree is rebuilt from the remote branch.
+- **Agent extension profiles**: instance administrators manage MCP servers and
+  skill bundles under **Settings → Agent Extensions & Packages**
+  (`/api/instance/extensions/v1`), which also holds the agent MCP/skills
+  configuration and **Agent runtime packages** previously under **Integrations
+  & MCP**. Profiles are revisioned and scoped to agents and repositories, and
+  New Task and Automations can select one for Claude Code or Codex runs. HTTPS
+  MCP tools are allow-listed, operator stdio servers come from
+  `PROPR_EXTENSION_CATALOG_FILE`, and skills are imported from a tar archive or
+  a pinned GitHub commit. Skill runs need Docker Engine 25+.
+- **Follow-up publication recovery**: when a worker dies while publishing a
+  PR follow-up, ProPR resumes the missing publication step instead of losing or
+  repeating it. Administrators inspect and act on held handoffs with `propr
+  handoffs list|inspect|resume|release` or `GET /api/admin/followup-handoffs`
+  and its `resume` and `release` routes (`instance.manage_runtime`); release
+  never deletes retained files. A hold that can publish nothing more is released
+  by a new PR comment or after `FOLLOWUP_HOLD_AUTO_RELEASE_HOURS` (default 24).
+- **Desktop menus, shortcuts and sign-in**: on Linux the frameless window has
+  an **Application menu** button (also `F10`/`Alt+F`); **File** adds New Task,
+  New Goal, New Automation and New To-do, and every menu action has a shortcut.
+  Desktop sign-in works with GitHub OAuth apps that expire user access tokens,
+  renewing the token before it expires and asking you to sign in again only when
+  the refresh grant is revoked or expired.
+
+- **Task assignment**: tasks are assigned through their GitHub issue or pull
+  request. Tasks shows an **Assignees** column and an **Assignee** filter
+  (`?assignee=me|unassigned|<logins>`, `propr task list --assignee`, MCP
+  `list_tasks`), and task details can change assignees (`GET`/`PUT
+  /api/task/:taskId/assignees`). The opt-in `followup_requires_assignment`
+  setting takes follow-ups on an assigned PR only from its assignees, and
+  per-repository auto-assignment (`propr repo toggle --auto-assign`,
+  `--auto-assign-to`, `--auto-assign-review`) assigns the PR when work
+  finishes. Goals, plans, automations and to-dos show their creator.
+- **Instance data**: administrators can download a one-time SQLite database
+  export and review per-repository storage with guarded, confirmed cache
+  cleanup under **Settings → Integrations & MCP → Instance data**, also served
+  under `/api/instance/storage/v1`. Automatic idle-cache cleanup is opt-in.
 
 ### Changed
 
@@ -323,7 +333,9 @@ through `c2de30509`.
   repository filter, activity summaries and documentation-derived usage tips;
   Completed loads an entry's earlier updates when you expand it. `Cmd/Ctrl+K`
   opens a command palette with category tabs and a live preview pane. Lists
-  share one loading skeleton. Broader reporting lives in Analytics.
+  share one loading skeleton. Broader reporting lives in Analytics. On phones the
+  bottom bar is Dashboard, Tasks, **Create** (a sheet with New Task, Goal, Plan,
+  Automation and To-do), Inbox and More.
 - **Tasks console**: Tasks is one ledger with a row per task (status, agent,
   duration, score, a **Merged** state and a run-count chip summarizing earlier
   runs) and 25 tasks per page. From 1280px wide a task opens in a side pane
@@ -337,8 +349,9 @@ through `c2de30509`.
   merge, autonomy) sit over daily activity bars for runs and tasks, repository
   performance, a per-model table counting runs, task status and token
   consumption with cache hit rate and savings from caching. Rows open the
-  filtered Tasks list or the LLM log. The dashboard's Historical stats use the
-  same aggregation and window, so the figures match.
+  filtered Tasks list or the LLM log. Token totals include cache tokens, and
+  tasks are counted per issue or PR rather than per run. The dashboard's
+  Historical stats use the same aggregation and window, so the figures match.
 - **Planner Studio**: plans move through a **Define › Review › Execute** stepper.
   Define has a **Scope** control (**Focused**, **Expanded**, **Full Scan**) and a
   docked composer for task size, model and context export. Review adds a step
@@ -350,7 +363,11 @@ through `c2de30509`.
   "Ready for Review" now **In Review**.
 - **Coding Agents screen**: compact model chips copy their alias on click,
   providers collapse, and **Log in**, **Edit path** and **Delete provider** moved
-  into each provider's actions menu.
+  into each provider's actions menu. Opening the screen checks each enabled agent
+  with a short prompt to a cheap model (`POST /api/agents/:agentId/health`); a
+  failing agent shows **Rate Limit Exceeded** with its quota usage,
+  **Authentication Expired** with **Log in**, or **Agent unavailable**, and
+  **Check again** reruns the check.
 - **Live activity**: push-driven refresh, hidden-tab reconciliation, append-based
   logs, cached/coalesced reads and bounded output reduce polling and rendering work.
 - **Review commands**: `/fix F20 S3 S5` can select findings and optional suggestions
@@ -364,7 +381,9 @@ through `c2de30509`.
   `expectedHead` is optional on `review_pull_request`, `fix_review_findings`,
   `run_ultrafix` and `comment_on_pull_request`; supplying it still rejects a
   moved head. `fix_review_findings` re-anchors findings onto a newer head like a
-  typed `/fix`. `merge_pull_request` names the failed precondition (for example
+  typed `/fix`; it refuses only with `NOT_A_REVIEW`, `FINDINGS_UNAVAILABLE` (with
+  a per-ID `reason`) or `FINDINGS_CODE_REMOVED`. MCP request bodies are limited
+  to 1 MiB (larger ones get `413` before authentication). `merge_pull_request` names the failed precondition (for example
   `CHECKS_FAILING` or `MERGE_CONFLICT`). `publish_plan` accepts `resume: true` to
   continue a partly published plan. `delete_plan` deletes idle and finished
   plans without a revision and reports `PLAN_NOT_DELETABLE` separately from
@@ -376,12 +395,13 @@ through `c2de30509`.
   Per-repository non-blocking check patterns keep selected checks from delaying
   ProPR automation, Ultrafix and Epic advancement while preserving their visible
   GitHub results.
-- **Agent models**: Claude Code adds Claude Opus 5.5 (the new default), Fable 5.1
-  and Sonnet 5.5, bundled at Claude Code 2.1.284. Codex adds GPT-6 Astra (the new
-  default), GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna on Codex CLI 0.160.0.
-  Antigravity lists one entry per model (Gemini 3.8 Flash by default, Gemini 3.1
-  Pro, Claude Sonnet 5.5, Claude Opus 5.5, GPT-OSS 120B) with a separate
-  reasoning selector instead of effort-suffixed entries; saved suffixed selections
+- **Agent models**: Claude Code adds Claude Opus 5.5 (the new default), Fable
+  5.1, Sonnet 5.5 and Haiku 5.5, bundled at Claude Code 2.1.293. Codex adds GPT-6
+  Astra (the new default), GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna on Codex CLI
+  0.160.0. Antigravity lists one entry per model (Gemini 3.8 Flash by default,
+  Gemini 4 Argon, Claude Sonnet 5.5, Claude Opus 5.5, GPT-OSS 120B) on
+  Antigravity CLI 1.4.0, with a separate reasoning selector instead of
+  effort-suffixed entries; saved suffixed selections
   and labels still resolve. OpenCode defaults to Big Pickle and adds Ling 3.0
   Flash Fin Free, Muse Spark 1.2 and 1.3 Contributor Free and Nemotron 3.5
   Lightning Free. Mistral Vibe adds GLM 5.3 and GLM 5.2 on the same Mistral
@@ -398,6 +418,88 @@ through `c2de30509`.
 - **Security and operations**: durable instance roles, scoped repository access,
   guarded agent runtimes and desktop network/credential boundaries; improved
   health signals, rootless CI worker routing and change-aware validation.
+- **Breaking — canonical Fable and Haiku labels**: `llm-claude-fable` and
+  `llm-claude-haiku` (and the `claude-fable` / `claude-haiku` model names) now
+  select Claude Fable 5.1 and Claude Haiku 5.5, matching the plain `fable` and
+  `haiku` aliases. Previously the labels selected Fable 5 and Haiku 4.5, which
+  are now labelled `llm-claude-fable5` and `llm-claude-haiku45`.
+- **Contract change — `GET /api/stats/dashboard`** reports its daily series as
+  `dailyTasks` (tasks created per UTC day, the series the Analytics activity
+  chart plots) and no longer reports `dailyCompleted` (completions per day). The
+  endpoint is new since v0.8.15, so only clients built against pre-release main
+  are affected. The bundled dashboard reads `dailyTasks`, and still draws
+  `dailyCompleted` from an older server; a script that read `dailyCompleted`
+  should read `dailyTasks`.
+- **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
+  `create_task` with `todoIds`, or a submission retry) now marks the to-do
+  completed once its GitHub issue exists and records that issue
+  (`linkedIssueRepository`, `linkedIssueNumber`, `linkedTaskId`). The REST API,
+  MCP `list_todos`/`get_todo`, the CLI and the Web UI carry the link, and the
+  UI shows a `#<issue number>` chip opening the issue on active and completed
+  to-dos. Only the submitting user's to-dos in the issue's repository are
+  touched, and a failed to-do write never fails the submission.
+- **Instance access**: role assignments are now described as assigned
+  instance roles instead of "explicit" assignments across the **Access** page,
+  the `add_instance_member` MCP description, the `MEMBER_EXISTS` error and the
+  docs. After adding a user, the page offers to add them to the GitHub trigger
+  whitelist; after removing one, it offers to remove them from it. Both offers
+  reuse the existing `github_user_whitelist` setting with revision checks, are
+  skipped when the whitelist is empty or would become empty, and can be
+  declined.
+- **Ultrafix CI wait comment**: the "Ultrafix is waiting for CI before the next
+  `/review`" comment is now edited in place with the wait's outcome instead of
+  staying on the PR next to it. The review that runs once blocking checks pass
+  turns it into its "AI Code Review Complete" comment, and a CI wait timeout
+  turns it into the "CI did not settle" stop comment.
+- **Inbox triage**: from 1280px wide, selecting a task-backed item opens a
+  **Triage Verdict** beside the queue (`?notification=<id>`) with the full task
+  or review summary, findings with `path:line`, visual previews, a short diff,
+  `/fix`, `/review` and `/ultrafix` for the newest run, and **Inspect in
+  Tasks**. `j`/`k` step through the queue and `x` dismisses.
+- **Follow Up and PR commands from the app**: the Follow Up dialog names the
+  issue or PR it will post to (`followupTarget` in task history) and is disabled
+  when the target cannot be resolved. On a failed issue run with no PR, `POST
+  /api/tasks/:taskId/followup` posts the request on the issue and queues a new
+  run with the same model, and the page links to it (`GET
+  /api/tasks/:taskId/followup-runs`); a PR command there returns 400 and a run
+  that has not failed, a closed issue or a queued run returns 409. `/fix`,
+  `/review` and `/ultrafix` sent from task details or Inbox run as the
+  signed-in user; **Review** uses the new `POST /api/tasks/:taskId/review`.
+  Follow-up results report `queued`, `batched`, `handled`, `refused`, `failed`
+  or `unknown`, and `GET /api/tasks` adds `reviewOutcome`; runs whose review
+  came back clean no longer offer `/fix`.
+- **Reviews honour accepted follow-ups**: `/review` judges a PR against its
+  original objective plus the follow-up requests ProPR completed; a follow-up
+  overrides only what it explicitly changes, and `/fix S#` selections never
+  become requirements.
+- **Visual evidence**: task and goal captures show on a full-width stage with
+  a **Fit** / **100%** toggle that keeps the image's aspect ratio, a measured
+  resolution chip and numbered capture tabs, replacing the mock browser window.
+- **Shown defaults**: New Task's **Advanced Options** preselect the instance's
+  default agent and model, and a plan's **Run ultrafix after PR** shows the
+  instance's minimum review score and maximum loops (`ultrafixDefaults` in the
+  instance catalog). Unchanged fields still follow the instance setting.
+- **Worktree disk reclaim**: finished worktrees whose contents are all stored
+  in Git are removed (branches are kept) instead of being left on disk. A daemon
+  sweep (`WORKTREE_SWEEP_INTERVAL_MS`, default 1 hour) removes worktrees idle
+  for `WORKTREE_RETENTION_HOURS` (default 24) that are not used by a running
+  container, unfinished goal or held follow-up;
+  `WORKTREE_RETENTION_STRATEGY=always_keep` turns removal off. With
+  `keep_for_hours` a failed run's worktree is now actually kept, detached so its
+  branch is free for a retry.
+- **SQLite driver**: `better-sqlite3` 13.0.3 (SQLite 3.53.4) replaces 11.x and
+  fixes a native abort on Node 24. Installs outside the Docker images must
+  reinstall dependencies from the updated lockfile to rebuild the native
+  module.
+- **Settings layout**: Settings is split into categories (General, AI Models &
+  Reasoning, Workflow & PR Rules, Ultrafix & Escalation, Sandbox & Network,
+  Agent Extensions & Packages, Integrations & MCP, Notifications) with a
+  keyboard-navigable rail, and **Rating Goal** is now **Target Review Score**.
+  Setting keys are unchanged, and old `?tab=` links still resolve.
+- **Worker disk admission**: workers admit new jobs only while the worktree
+  filesystem keeps `WORKTREE_ADMISSION_RESERVE_BYTES` (default 2 GiB) free plus
+  `WORKTREE_TASK_BUDGET_BYTES` (default 1 GiB) per admitted task; unknown
+  capacity refuses work. No files are deleted to make room.
 
 ### Removed
 
@@ -411,11 +513,23 @@ through `c2de30509`.
 - **iptables firewall**: the allowlist firewall script (`scripts/init-firewall.sh`)
   needed privileged containers, so no entrypoint ran it. The script and the agent
   image's `iptables` package are gone; restricted network mode replaces them.
-- **Retired models**: Antigravity Gemini 3.5 Flash (its labels no longer
-  resolve), with Gemini 3.6 and 3.7 Flash leaving the picker while saved
-  selections still run; OpenCode DeepSeek V4 Flash Free, Laguna S 2.1 Free, Ling
+- **Retired models**: Antigravity Gemini 3.1 Pro, which Antigravity CLI 1.4.0
+  no longer offers (agents that list it switch to Gemini 4 Argon on startup,
+  keeping any saved Pro reasoning override; `llm-antigravity-pro` and the `pro`
+  alias select Gemini 4 Argon, and saved low/high Pro routes run on Argon at the
+  same effort); Antigravity Gemini 3.6 and 3.7 Flash, which Antigravity CLI
+  1.4.0 no longer serves (agents that list them switch to Gemini 3.8 Flash on
+  startup, keeping any saved reasoning override; saved defaults, routes, review
+  and plan selections, `llm-antigravity-flash36`/`flash37` labels and the
+  `flash36`/`flash37` aliases select Gemini 3.8 Flash, and saved effort routes
+  run on it at the same effort; runs that reported the old models still match);
+  Antigravity Gemini 3.5 Flash (its labels no longer resolve); OpenCode DeepSeek
+  V4 Flash Free, Laguna S 2.1 Free, Ling
   3.0 Flash Free and North Mini Code Free; Vibe Devstral Small, whose saved
   defaults move to Mistral Medium.
+- **Legacy Compose files**: `docker-compose.prod.yml`, the root `Dockerfile` it
+  built and the unused `docker-compose.claude.yml` overlay are gone; deploy with
+  the launcher or the prebuilt images.
 
 ### Fixed
 
@@ -423,6 +537,12 @@ through `c2de30509`.
   the startup error now names the migration error (for example a corrupt
   migration directory) instead of an unrelated tini init warning or Node's
   source-location line. The message is one line of at most 500 characters.
+- **Agent failure reasons**: a failed task, goal, agent run or PR follow-up now
+  reports the agent or CLI error line (for example Antigravity's `error:
+  invalid model selection …`) instead of the container entrypoint's preamble.
+  The reason is one line of at most 500 characters, never raw container output;
+  a message ProPR wrote itself keeps its own first line. Task-state reasons and
+  last-error messages are also redacted.
 - **Ultrafix and CI**: a loop paused on failing CI resumes when green `check_run`
   or `check_suite` events or polling show the build fixed, and a deferred step
   survives restarts and failed jobs. Review readiness honours the repository's
@@ -449,17 +569,69 @@ through `c2de30509`.
 - **Web, mobile and WebKit**: list search on phones for Tasks, Plans and Goals,
   repository tabs and the sidebar fit narrow screens, Tasks pagination no longer
   overlaps pages, New Task attachment recovery works in Safari, and lightbox
-  keyboard focus no longer strands in WebKit.
+  keyboard focus no longer strands in WebKit. When the toolbar search field is
+  hidden, `Cmd/Ctrl+K` and the desktop Search command open a search sheet, and
+  the phone menu has a Search button. Dialogs, creation sheets, diffs, the
+  planner, Playground and to-do rows stay usable at 320px, in short or zoomed
+  windows and above the on-screen keyboard; drafts, open tasks and panel state
+  survive resizing across the 1280px layout breakpoint.
 - **Third-party notices**: the notices generator refuses to produce a
   `THIRD_PARTY_LICENSES.md` without the full Claude Code and Anthropic SDK license
   texts and a complete production dependency inventory, so images no longer ship
   incomplete notices.
+- **Auto-merge without GitHub auto-merge**: when GitHub refuses to arm
+  auto-merge because the repository's **Allow auto-merge** setting is off,
+  ProPR merges directly through its usual gates and comments on the PR
+  suggesting the setting. A merge is blocked whenever CI status cannot be read.
+- **Follow-ups and retries**: a PR comment job blocked behind an earlier held
+  follow-up waits in place instead of queueing a cancelled task every minute,
+  and stops once the PR is merged or closed. A deleted worktree is rebuilt from
+  the local branch so unpushed commits still publish. A scheduled retry after a
+  provider usage limit runs the request it was waiting for instead of skipping
+  it as `already_processed`, and a successful automatic retry ends Completed.
+- **Worker restarts**: a stalled job that is delivered again first stops the
+  agent containers of its earlier attempt, so two agents never run side by side.
+  Branches held by leftover or deleted worktrees are freed without deleting
+  files, and storage claims whose process is gone no longer block admission.
+  A storage lifecycle gate left by a crashed holder, for example a worker
+  killed for running out of memory, is reclaimed instead of freezing every
+  worker; waits on the gate are logged, and recovery steps no longer pile up
+  behind a stuck one. A live goal whose saved worktree was pruned is rebuilt
+  from its published branch on recovery, or fails cleanly, instead of
+  relaunching endlessly while showing as running.
+- **Run outcomes**: a Claude Code run that exits nonzero after streaming a
+  successful result is reported as failed. A New Task whose first job fails
+  before any task exists is marked failed with the cause instead of staying
+  queued. A Codex goal no longer fails with "expected active turn id" when a
+  checkpoint acknowledgement arrives after the turn finished.
+- **Agent credential directories**: login, health checks and task runs
+  resolve each provider's credential directory the same way (`HOST_CLAUDE_DIR`,
+  `HOST_CODEX_DIR`, `HOST_ANTIGRAVITY_DIR`, `HOST_OPENCODE_XDG_DIR`,
+  `HOST_VIBE_DIR` or the matching `*_CONFIG_PATH`). A containerized install with
+  no mapping now fails with an error naming the variable instead of using
+  `/root`.
+- **Task records**: completed tasks keep their file diffs and line counts,
+  execution logs open from the API in multi-container installs, each run shows
+  the model that actually ran, review tasks are labelled Review, automation
+  report tasks show their model without Follow Up, and plan issues return to
+  **In Review** once follow-up work ends.
+- **Desktop runtime**: published runtimes run agents and health checks on the
+  signed managed agent image instead of building a local bundle, GitHub
+  authorization recovery renews the user grant on the configured callback
+  origin, a failed sign-in shows its error, and a failed log write no longer
+  raises a main-process error dialog.
+- **Agent image recovery**: when the base agent image is pruned, the worker
+  rebuilds the runtime image in the background, and health checks report that
+  the image is being prepared instead of failing with "manifest unknown".
 - Bounded SQLite lock retries and explicit transaction replay rules protect
   concurrent workers and goal heartbeat writes.
 - Durable task reconciliation, worktree cleanup before lock release, follow-up
   retries, fork PR handling and merged-PR completion avoid lost or repeated work.
 - Plan prompt autosave, full-plan refinement, title preservation and partial
-  generation rejection prevent silent loss of planning content.
+  generation rejection prevent silent loss of planning content. **Generate**
+  creates exactly one draft and moves to Review without a reload, malformed
+  refinement JSON is repaired in place, and when Claude restarts an answer after
+  its output limit only the restarted copy is kept.
 - Private preview diagnostics, notification cleanup, live logs, partial indexing
   retries, model-aware review concurrency and alias-aware usage pricing.
 
@@ -470,7 +642,14 @@ through `c2de30509`.
   `@modelcontextprotocol/sdk` 1.32.1, `sharp` 0.35.5, `hono` 4.13.12,
   `proxy-addr`, `fast-copy`, `argv-parser` and `tinypool`; process-local Git
   authentication now strips inherited Git, editor, pager and SSH overrides.
+  Later updates include `@modelcontextprotocol/server` 2.4.0,
+  `@modelcontextprotocol/node` 2.1.2, `@hono/node-server` 2.1.5
+  (GHSA-rmxm-3fg6-px4f), `ip-address` 10.7.4 and Electron 45.
   Desktop packaging and documentation build tooling are patched as well.
+- **Breaking — agent environment values redacted**: `GET`/`POST
+  /api/config/agents` and `propr agent list`/`add --json` return each agent
+  `envVars` value as `[REDACTED]`; saving the marker back keeps the stored
+  value.
 
 ## [0.8.15] - 2026-08-15
 

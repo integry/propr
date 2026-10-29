@@ -19,6 +19,7 @@ import {
   withRetry,
   retryConfigs
 } from '@propr/core';
+import { agentSupportsSavedModel, currentAntigravityModel } from '@propr/shared';
 
 export interface ImplementIssueContext {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -130,6 +131,8 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
     effectiveAgentAlias = effectiveAgentAlias || selection.agent_alias;
   }
   if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+  // A saved retired Antigravity model is labelled with the model it now runs on.
+  effectiveModel = currentAntigravityModel(effectiveModel);
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
   if (modelInfo?.githubLabel && !effectiveAgentAlias) return modelInfo.githubLabel;
 
@@ -143,7 +146,7 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
         a.config.supportedModels.some(model => {
           if (model.toLowerCase() === effectiveModel.toLowerCase()) return true;
           return a.config.type === 'opencode' && model.toLowerCase() === toProprOpenCodeModelId(effectiveModel).toLowerCase();
-        })
+        }) || agentSupportsSavedModel(a.config, effectiveModel)
       );
     }
 
@@ -152,7 +155,7 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
     const labelModel = agent.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
     const modelSupported = agent.config.supportedModels.some(m =>
       m.toLowerCase() === labelModel.toLowerCase() || m.toLowerCase() === effectiveModel.toLowerCase()
-    );
+    ) || agentSupportsSavedModel(agent.config, effectiveModel);
     if (!modelSupported) {
       logger.warn({ agentAlias: agent.config.alias, model: labelModel }, 'Agent does not support the specified model, skipping label');
       return null;

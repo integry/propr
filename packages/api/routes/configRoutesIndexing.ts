@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
+import { agentSupportsSavedModel } from '@propr/shared';
 import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 import type { AgentConfig } from '@propr/core';
@@ -217,7 +218,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
   ): string | null {
     if (!setting.model) return null;
     const supportedModels = Array.isArray(agent.supportedModels) ? agent.supportedModels : [];
-    return supportedModels.includes(setting.model)
+    return agentSupportsSavedModel({ type: agent.type, supportedModels }, setting.model)
       ? null
       : `summarization model '${setting.model}' is not supported by agent '${setting.alias}'`;
   }

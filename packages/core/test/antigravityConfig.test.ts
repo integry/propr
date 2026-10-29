@@ -1130,41 +1130,56 @@ test('Antigravity analysis inherits reasoning only when enabled', async t => {
 });
 
 
-test('retained Flash saved routes and migrated bases preserve pricing and metadata', () => {
+test('retired Gemini 3.6/3.7 Flash labels, aliases and saved IDs run on Gemini 3.8 Flash', async t => {
+    const config = createAntigravityConfig({ alias: 'my-agy', supportedModels: ANTIGRAVITY_MODELS.map(m => m.id) });
+    const registry = AgentRegistry.getInstance();
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getAllAgents', () => [{ config } as Agent]);
+    t.mock.method(registry, 'getAgentByAlias', alias => alias === config.alias ? { config } as Agent : undefined);
+    const flash = 'antigravity-gemini-3.8-flash';
     for (const version of ['3.6', '3.7']) {
         const base = `antigravity-gemini-${version}-flash`;
-        const pricingId = `google/gemini-${version}-flash`;
-        assert.equal(getOpenRouterId(base), pricingId);
-        assert.equal(getModelName(base), `Antigravity Gemini ${version} Flash`);
-        assert.equal(getModelShortName(base), `Gemini ${version} Flash`);
+        const shortAlias = `flash${version.replace('.', '')}`;
+        assert.equal(resolveModelAlias(`antigravity-${shortAlias}`), flash);
+        assert.deepEqual(await resolveLlmLabel(`antigravity-${shortAlias}`), { agentAlias: config.alias, model: flash });
+        assert.deepEqual(await resolveLlmLabel(`my-agy-${shortAlias}`), { agentAlias: config.alias, model: flash });
+        assert.equal(toAntigravityCliModelId(base), 'gemini-3.8-flash-medium');
+        assert.equal(toAntigravityCliModelId(base, 'high'), 'gemini-3.8-flash-high');
+        assert.equal(toAntigravityCliModelId(`antigravity:${base}`), 'gemini-3.8-flash-medium');
+        assert.equal(getOpenRouterId(base), 'google/gemini-3.8-flash');
+        assert.equal(getModelShortName(base), 'Gemini 3.8 Flash');
         assert.equal(getModelHardLimit(base), 980000);
         assert.equal(getEffectiveTokenLimit(base, 50), 490000);
-        for (const effort of ['low', 'medium', 'high']) {
+        for (const effort of ['low', 'medium', 'high'] as const) {
             const saved = `${base}-${effort}`;
-            const alias = `antigravity-flash${version.replace('.', '')}-${effort}`;
-            assert.equal(getOpenRouterId(saved), pricingId);
-            assert.equal(getOpenRouterId(`antigravity:${saved}`), pricingId);
-            assert.equal(getOpenRouterId(alias), pricingId);
-            assert.equal(getModelName(saved), getModelName(base));
-            assert.equal(getModelShortName(saved), getModelShortName(base));
-            assert.equal(getModelHardLimit(saved), 980000);
-            assert.equal(getEffectiveTokenLimit(saved, 50), 490000);
+            const alias = `antigravity-${shortAlias}-${effort}`;
+            assert.equal(resolveModelAlias(alias), saved);
+            assert.deepEqual(await resolveLlmLabel(alias), { agentAlias: config.alias, model: saved });
+            assert.equal(toAntigravityCliModelId(saved), `gemini-3.8-flash-${effort}`);
+            assert.equal(getOpenRouterId(alias), 'google/gemini-3.8-flash');
+            assert.equal(getModelName(saved), 'Antigravity Gemini 3.8 Flash');
+            assert.equal((await resolveReviewModels([alias]))[0].model, saved);
+            assert.equal((await validatePrReviewModelValue(`${config.alias}:${saved}`)).valid, true);
         }
     }
 });
 
-test('retained Flash defaults execute against provider display identities', async () => {
+test('retired Flash selections launch Gemini 3.8 Flash and still match old reported identities', async () => {
     for (const version of ['3.6', '3.7']) {
         for (const effort of ['low', 'medium', 'high'] as const) {
-            const base = `antigravity-gemini-${version}-flash`;
-            const saved = `${base}-${effort}`;
-            const display = `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`;
+            const saved = `antigravity-gemini-${version}-flash-${effort}`;
+            const level = `${effort[0].toUpperCase()}${effort.slice(1)}`;
             const requestedCliModel = toAntigravityCliModelId(saved);
-            assert.equal(requestedCliModel, version === '3.6' ? display : `gemini-${version}-flash-${effort}`);
+            assert.equal(requestedCliModel, `gemini-3.8-flash-${effort}`);
             const agent = new AntigravityAgent(createAntigravityConfig({ supportedModels: [saved], defaultModel: saved }));
             const internals = agent as unknown as AntigravityTestInternals;
             internals.persistImplementationLog = async () => undefined;
-            for (const reported of [display, `Gemini ${version} Flash (${effort === 'low' ? 'High' : 'Low'})`, `Gemini ${version === '3.6' ? '3.7' : '3.6'} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`]) {
+            const wrong = effort === 'low' ? 'High' : 'Low';
+            for (const [reported, matches] of [
+                [requestedCliModel, true], [`Gemini 3.8 Flash (${level})`, true],
+                [`Gemini ${version} Flash (${level})`, true], [`gemini-${version}-flash-${effort}`, true],
+                [`Gemini 3.8 Flash (${wrong})`, false], [`Gemini ${version} Flash (${wrong})`, false], ['gemini-4-argon-medium', false],
+            ] as const) {
                 const stdout = [
                     JSON.stringify({ event: 'init', conversation_id: 'retained', init: { model: reported, cwd: '/tmp', tools: [] } }),
                     JSON.stringify({ event: 'result', result: { conversation_id: 'retained', status: 'SUCCESS', response: 'done' } }),
@@ -1174,8 +1189,8 @@ test('retained Flash defaults execute against provider display identities', asyn
                     issueRef: { number: 1, repoOwner: 'integry', repoName: 'propr' }, effectiveModel: saved,
                     requestedCliModel, prompt: '', worktreePath: '/tmp', worktreeGitContent: null,
                 });
-                assert.equal(result.success, reported === display, result.error);
-                if (reported === display) assert.equal(result.modelUsed, base);
+                assert.equal(result.success, matches, `${reported}: ${result.error}`);
+                if (matches) assert.equal(result.modelUsed, 'antigravity-gemini-3.8-flash');
             }
         }
     }

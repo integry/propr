@@ -1,6 +1,7 @@
 import { ANTIGRAVITY_MODELS, REASONING_LEVELS, getReasoningLevelsForAgentType, getAntigravityCompatibilityRoute, type ModelReasoningLevel } from '@propr/shared';
 
-// Runtime identities outlive the selectable catalog so saved defaults keep working.
+// Retired identities stay recognizable in reports after their saved selections
+// route to a served model; only ANTIGRAVITY_MODELS are ever launched.
 const ANTIGRAVITY_RUNTIME_MODELS = [
     ...ANTIGRAVITY_MODELS,
     ...['3.6', '3.7'].map(version => ({
@@ -14,12 +15,8 @@ export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = Object.fromEntri
     ANTIGRAVITY_RUNTIME_MODELS.map(model => [model.id, model.shortName])
 );
 
-export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute } from '@propr/shared';
+export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, antigravitySupportedModel, agentSupportsSavedModel, currentAntigravityModel } from '@propr/shared';
 
-export function antigravitySupportedModel(config: { type: string; supportedModels: string[] }, id: string): boolean {
-    const base = config.type === 'antigravity' ? getAntigravityCompatibilityRoute(id)?.model ?? id : id;
-    return config.supportedModels.some(model => model.toLowerCase() === base.toLowerCase());
-}
 
 // `agy models` IDs: Gemini keeps its version dot, Claude uses dashes (claude-opus-5-5-high).
 // Gemini 3.6 Flash predates these IDs and keeps the display-name form.
@@ -37,7 +34,7 @@ export function toAntigravityCliModelId(modelName: string, reasoningLevel?: Mode
     const route = getAntigravityCompatibilityRoute(modelName);
     const modelId = route?.model ?? modelName.replace(/^antigravity:/, '');
     reasoningLevel ??= route?.effort;
-    const model = ANTIGRAVITY_RUNTIME_MODELS.find(candidate => candidate.id === modelId);
+    const model = ANTIGRAVITY_MODELS.find(candidate => candidate.id === modelId);
     // Explicitly configured custom IDs are passed through without catalog effort encoding.
     if (!model) return modelId.replace(/^antigravity-/, '');
 
@@ -79,5 +76,7 @@ export function antigravityModelIdsMatch(requestedModel: string, reportedModel: 
     if (!ANTIGRAVITY_RUNTIME_MODELS.some(model => model.id === requested.model)) {
         return toAntigravityCliModelId(requestedModel) === reportedModel;
     }
-    return requested.model === reported.model && (!requested.effort || !reported.effort || requested.effort === reported.effort);
+    // A retired identity matches the model its saved selections now run on.
+    const successor = (model: string) => getAntigravityCompatibilityRoute(model)?.model ?? model;
+    return successor(requested.model) === successor(reported.model) && (!requested.effort || !reported.effort || requested.effort === reported.effort);
 }

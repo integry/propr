@@ -17,7 +17,7 @@ import {
     TaskStates,
     VISUAL_PREVIEW_SLOT,
 } from '@propr/core';
-import { taskTerminalReasonForAgentTermination } from '@propr/shared';
+import { agentFailureLine, taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type {
     ClaudeCodeResponse,
     CommentJobData,
@@ -356,7 +356,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     const terminalReason = taskTerminalReasonForAgentTermination(terminationReason);
     const partial = disposition === 'partial';
     if (disposition === 'failed') {
-        throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+        throw new Error(`Agent execution failed: ${state.claudeResult.error ? agentFailureLine(state.claudeResult.error) : 'Unknown error'}`);
     }
 
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;

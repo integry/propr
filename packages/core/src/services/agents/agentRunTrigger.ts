@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
-import { agentTypeSupportsProprMcp, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
+import { agentSupportsSavedModel, agentTypeSupportsProprMcp, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
 import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
@@ -197,7 +197,7 @@ export async function enqueueAgentRunActionOrFail(
 }
 
 function directAgentSupportsModel(agent: AgentConfig, modelName: string | null): boolean {
-  return agent.enabled && (modelName === null || agent.supportedModels.includes(modelName));
+  return agent.enabled && (modelName === null || agentSupportsSavedModel(agent, modelName));
 }
 
 function syntheticAgentSupportsModel(agent: SyntheticAgentConfig, modelName: string | null): boolean {

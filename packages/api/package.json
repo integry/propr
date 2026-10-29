@@ -2,6 +2,7 @@
   "name": "@propr/api",
   "version": "0.9.0",
   "description": "API server for ProPR Web UI",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/server.js",
   "engines": {

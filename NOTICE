@@ -72,19 +72,29 @@ Bundled third-party components
                components (V8, libuv, OpenSSL, etc.)
    Upstream:   https://nodejs.org/
 
+9. libvips (via sharp, npm packages @img/sharp-libvips-*)
+   License:    LGPL-3.0-or-later
+   Upstream:   https://github.com/lovell/sharp-libvips
+   The image-processing library `sharp` (Apache License 2.0) loads prebuilt
+   libvips shared libraries from these platform packages. They are
+   distributed unmodified as separate shared libraries that can be replaced
+   with a compatible build; corresponding source is available upstream. The
+   GNU LGPL text is at https://www.gnu.org/licenses/lgpl-3.0.html.
+
 
 npm dependencies of the Propr application
 -----------------------------------------
 The Propr application image bundles its Node.js production dependencies.
 A license summary produced by `license-checker --production --summary`:
 
-  MIT: 244
-  ISC: 15
-  Apache-2.0: 8
-  BSD-3-Clause: 4
-  LGPL-3.0-or-later: 1
+  MIT: 224
+  Apache-2.0: 12
+  ISC: 11
+  BSD-3-Clause: 3
+  LGPL-3.0-or-later: 2 (@img/sharp-libvips-*, see item 9)
   BSD-2-Clause: 1
-  Others (0BSD, dual-licensed): ~6
+  Others (Claude Code proprietary terms, 0BSD, MIT*, the private root
+  package): 6
 
 Full per-package attribution is in THIRD_PARTY_LICENSES.md, generated at
 build time. To reproduce locally:

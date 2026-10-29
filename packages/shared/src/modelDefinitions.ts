@@ -85,7 +85,8 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-gpt-oss-120b', name: 'Antigravity GPT-OSS 120B', shortName: 'GPT-OSS 120B', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
 ];
 
-// Metadata for saved models retained at runtime, outside the selectable catalog.
+// Retired models the pinned Antigravity CLI no longer serves. Saved references
+// route to Gemini 3.8 Flash; the metadata identifies runs that reported them.
 export const ANTIGRAVITY_RETAINED_MODELS: ModelInfo[] = [
   { id: 'antigravity-gemini-3.7-flash', name: 'Antigravity Gemini 3.7 Flash', shortName: 'Gemini 3.7 Flash', shortAlias: 'flash37', githubLabel: 'llm-antigravity-flash37', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
   { id: 'antigravity-gemini-3.6-flash', name: 'Antigravity Gemini 3.6 Flash', shortName: 'Gemini 3.6 Flash', shortAlias: 'flash36', githubLabel: 'llm-antigravity-flash36', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },

@@ -10,6 +10,7 @@ import type {
 import { db } from '../db/connection.js';
 import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
+import { redactSecrets } from './secretRedaction.js';
 import { runCostCapTerminalReason } from '../budget/runCostGuardContext.js';
 
 const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
@@ -78,7 +79,8 @@ export function buildTaskStateTransition(
     metadata: UpdateMetadata,
 ): TaskStateTransition {
     const previousState = current.state;
-    const reason = metadata.reason ?? `State changed from ${previousState}`;
+    // Failure reasons quote agent output, which the API, MCP, CLI and comments show.
+    const reason = redactSecrets(metadata.reason ?? `State changed from ${previousState}`);
     const state = buildTaskStateMutation(current, (next, timestamp) => {
         next.state = newState;
         next.terminalReason = resolveTerminalReason(current.taskId, newState, metadata);
@@ -86,7 +88,7 @@ export function buildTaskStateTransition(
 
         if (metadata.error) {
             next.lastError = {
-                message: metadata.error.message,
+                message: redactSecrets(metadata.error.message),
                 category: metadata.error.category ?? 'unknown',
                 timestamp,
             };

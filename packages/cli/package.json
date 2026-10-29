@@ -2,6 +2,7 @@
   "name": "@propr/cli",
   "version": "0.9.0",
   "description": "CLI for interacting with the ProPR backend",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
