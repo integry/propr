@@ -249,6 +249,28 @@ test('concurrent reclaimers of a dead slot: exactly one proceeds at a time', asy
     assert.equal(maximumActive, 1);
 });
 
+test('a callback that throws synchronously still stops renewal and releases the slot', async () => {
+    const client = new FakeRedis();
+    let renewals = 0;
+    const evalScript = client.eval.bind(client);
+    client.eval = async (script, ...args) => {
+        if (script.includes('pexpire')) renewals += 1;
+        return evalScript(script, ...args);
+    };
+    await assert.rejects(
+        withAgentImageBuildSlot((): Promise<string> => { throw new Error('validation failed'); }, {
+            client, leaseMs: 1000, pollIntervalMs: 1, token: 'sync-throw', owner: owner(LIVE_HOST, 1),
+        }),
+        /validation failed/,
+    );
+    assert.equal(client.value, null, 'the slot is released immediately');
+    await wait(1100);
+    assert.equal(renewals, 0, 'the renewal timer must not outlive the failed callback');
+    assert.equal(await withAgentImageBuildSlot(async () => 'next', {
+        client, leaseMs: 1000, acquireTimeoutMs: 50, pollIntervalMs: 1, token: 'next', owner: owner(LIVE_HOST, 1),
+    }), 'next');
+});
+
 // Shutdown is permanent for the process, so this runs last.
 test('graceful shutdown aborts the in-flight build, releases the slot and refuses new builds', async () => {
     const client = new FakeRedis();

@@ -292,16 +292,18 @@ export async function withAgentImageBuildSlot<T>(
     }, Math.max(1000, Math.floor(leaseMs / 3)));
     renewTimer.unref?.();
 
-    const running = work(shutdownController.signal);
-    const slot: ActiveSlot = { client, value, settled: running.catch(() => undefined) };
-    activeSlots.add(slot);
+    let slot: ActiveSlot | undefined;
     try {
+        // Deferred so a callback that throws synchronously still rejects into this cleanup.
+        const running = Promise.resolve().then(() => work(shutdownController.signal));
+        slot = { client, value, settled: running.catch(() => undefined) };
+        activeSlots.add(slot);
         const result = await running;
         if (leaseLost) throw new Error('Agent image build lock lease was lost during the Docker build');
         return result;
     } finally {
         clearInterval(renewTimer);
-        activeSlots.delete(slot);
+        if (slot) activeSlots.delete(slot);
         try {
             await releaseLock(client, value);
         } catch (error) {
