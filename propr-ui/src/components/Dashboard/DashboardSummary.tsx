@@ -18,35 +18,41 @@ function Freshness({ updatedAt }: { updatedAt: number }) {
 
 interface SummaryProps { repository: string; activityToken: number }
 
-const STATUS_KEY = 'dashboard-summary-enabled-v1:';
-
-function readEnabled(instance: string): boolean {
-  try { return sessionStorage.getItem(STATUS_KEY + instance) === 'true'; } catch { return false; }
-}
+type SummaryStatus = { instance: string; value: 'on' | 'off' | 'unavailable' };
+const recheckUnavailable = (status: SummaryStatus | null) => status?.value === 'unavailable' ? null : status;
 
 /**
  * The experimental, opt-in AI activity summary. Until the instance has
  * confirmed it is turned on there is no bar and no narrative request, so a
- * disabled summary costs nothing and leaves no empty row above the panes. A
- * confirmation earlier in this session lets cached prose show at once.
+ * disabled summary costs nothing and leaves no empty row above the panes. The
+ * confirmation is never cached: a setting turned off elsewhere must not mount
+ * the readout. An unreadable status stays hidden and is checked again on the
+ * next dashboard activity or when the page becomes visible.
  */
 export function DashboardSummary(props: SummaryProps) {
   const user = useCurrentUser();
   const desktop = getDesktopConnectionScope();
   const instance = JSON.stringify([API_BASE_URL, desktop?.profileId ?? null, user?.id ?? null]);
-  const [status, setStatus] = useState<{ instance: string; enabled: boolean } | null>(null);
+  const [status, setStatus] = useState<SummaryStatus | null>(null);
+  const current = status?.instance === instance ? status.value : null;
+  const pending = current === null;
   useEffect(() => {
+    if (!pending) return;
     let active = true;
     getDashboardNarrativeStatus()
-      .then(response => response.enabled === true, () => false)
-      .then(enabled => {
-        try { sessionStorage.setItem(STATUS_KEY + instance, String(enabled)); } catch { /* Storage is optional. */ }
-        if (active) setStatus({ instance, enabled });
-      });
+      .then(response => response.enabled === true ? 'on' as const : 'off' as const, () => 'unavailable' as const)
+      .then(value => { if (active) setStatus({ instance, value }); });
     return () => { active = false; };
-  }, [instance]);
-  const enabled = status?.instance === instance ? status.enabled : readEnabled(instance);
-  if (!enabled) return null;
+  }, [instance, pending]);
+  useEffect(() => { setStatus(recheckUnavailable); }, [props.activityToken]);
+  const unavailable = current === 'unavailable';
+  useEffect(() => {
+    if (!unavailable) return;
+    const onVisibility = () => { if (document.visibilityState === 'visible') setStatus(recheckUnavailable); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [unavailable]);
+  if (current !== 'on') return null;
   const scope = JSON.stringify([API_BASE_URL, desktop?.profileId ?? null, user?.id ?? null, props.repository]);
   // A scope change remounts the readout, so another account/repository never flashes.
   const cacheKey = user ? `dashboard-summary-v2:${scope}` : null;

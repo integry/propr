@@ -57,6 +57,64 @@ describe('dashboard summary opt-in', () => {
     expect(screen.getByTestId('dashboard-summary')).toHaveTextContent(response.summary);
     expect(narrative).toHaveBeenCalledTimes(1);
   });
+
+  it('does not mount from an earlier confirmation after the setting is turned off', async () => {
+    (await mount()).unmount();
+    expect(screen.queryByText(response.summary)).not.toBeInTheDocument();
+    let resolve!: (value: { enabled: boolean }) => void;
+    status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    narrative.mockClear();
+    const { container } = render(<DashboardSummary repository="all" activityToken={0} />);
+    expect(container).toBeEmptyDOMElement();
+    await act(async () => resolve({ enabled: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_COALESCE_MS * 4); });
+    expect(container).toBeEmptyDOMElement();
+    expect(narrative).not.toHaveBeenCalled();
+  });
+
+  it('shows prose cached by an earlier session only after a fresh confirmation', async () => {
+    (await mount()).unmount();
+    let resolve!: (value: { enabled: boolean }) => void;
+    status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    narrative.mockImplementation(() => new Promise(() => {}));
+    render(<DashboardSummary repository="all" activityToken={0} />);
+    expect(screen.queryByText(response.summary)).not.toBeInTheDocument();
+    await act(async () => resolve({ enabled: true }));
+    expect(screen.getByText(response.summary)).toBeInTheDocument();
+  });
+
+  it('re-checks an unreadable status on activity and on regaining visibility, staying hidden until confirmed', async () => {
+    status.mockRejectedValue(new Error('Offline'));
+    const view = await mount();
+    view.rerender(<DashboardSummary repository="all" activityToken={1} />);
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(view.container).toBeEmptyDOMElement();
+    visible('hidden');
+    expect(status).toHaveBeenCalledTimes(2);
+    status.mockResolvedValue({ enabled: true });
+    visible('visible');
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId('dashboard-summary')).toHaveTextContent(response.summary);
+    expect(narrative).toHaveBeenCalledTimes(1);
+    view.rerender(<DashboardSummary repository="all" activityToken={2} />);
+    visible('hidden');
+    visible('visible');
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not re-check a confirmed disablement on activity', async () => {
+    status.mockResolvedValue({ enabled: false });
+    const view = await mount();
+    view.rerender(<DashboardSummary repository="all" activityToken={1} />);
+    visible('hidden');
+    visible('visible');
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(narrative).not.toHaveBeenCalled();
+  });
 });
 
 describe('dashboard narrative', () => {
@@ -105,6 +163,7 @@ describe('dashboard narrative', () => {
     narrative.mockImplementationOnce(() => new Promise(() => {}));
     visible('hidden');
     render(<DashboardSummary repository="all" activityToken={0} />);
+    await act(async () => {});
     expect(screen.getByText(response.summary)).toBeInTheDocument();
     expect(screen.getByText('Updated 5s ago')).toBeInTheDocument();
     expect(screen.getByText('Saved')).toBeInTheDocument();
