@@ -164,3 +164,74 @@ are preserved. These are local targeted validation results, not a claim that
 broader CI or the full backend suite passed. The resulting PR must remain
 **draft**, with ProPR owning commits, push and PR creation; no merge, release
 publication, deployment, Ultrafix or recursive tasks were performed.
+
+## 2026-10-29 scope extension to `de0c884b6`
+
+No `v0.9.0` tag exists yet, so the release scope now extends from `v0.8.15`
+through `de0c884b6` (upstream `main` at preparation time; if the release is cut
+from a later base, re-audit the merges after it). The earlier audit history
+above is unchanged and still describes the review through `c2de30509`.
+
+Changelog changes:
+
+- Everything that was under `## [Unreleased]` is folded into `## [0.9.0]` under
+  its matching heading. The Claude Haiku 5.5, Gemini 4 Argon and Antigravity
+  CLI 1.4.0 facts are merged into the existing **Agent models** bullet, and the
+  Gemini 3.1 Pro retirement into **Retired models**. `## [Unreleased]` is
+  empty, the 0.9.0 date is 2026-10-29, and the comparison links are unchanged.
+- All 334 first-parent changes from `c2de30509` to `de0c884b6` were checked
+  against the changelog. This window covers every edit made to the 0.9.0 section
+  since the original audit. The missing user-facing changes now have entries,
+  among them task assignment, Auto CI follow-up, continuing a finished goal,
+  agent extension profiles, follow-up publication recovery, instance data, the
+  settings reorganisation, Inbox triage, worktree disk reclaim and admission,
+  `better-sqlite3` 13 and grouped UI, worker and follow-up fixes. Existing
+  bullets were corrected where later work changed them: Automations naming and
+  routes, settings paths, the Coding Agents health check and the MCP request
+  limit. Internal refactors, tests, CI, Fleet/Routing infrastructure and
+  docs-only changes have no entries.
+- Contract changes are marked. **Breaking** marks changes to v0.8.15 contracts:
+  the canonical `llm-claude-fable`/`llm-claude-haiku` labels and the redacted
+  agent `envVars`. **Contract change** marks the `GET /api/stats/dashboard`
+  `dailyCompleted` removal, because that endpoint is new since v0.8.15.
+- Sections for 0.8.15 and earlier compare byte-for-byte with the base.
+
+Notices and package metadata:
+
+- `scripts/generate-notices.sh` regenerated `THIRD_PARTY_LICENSES.md`. Its
+  inventory now includes `better-sqlite3@13.0.3`, `braces@3.0.4-depthguard.1`,
+  `undici@7.30.1` and the `sharp` platform packages, including the
+  LGPL-3.0-or-later `@img/sharp-libvips-*` libraries.
+- `NOTICE` gains a libvips entry and an updated license summary.
+- The six `@propr` workspace packages without a `license` field (`api`, `cli`,
+  `client`, `core`, `local-setup`, `shared`) now declare `Apache-2.0`, matching
+  the root `LICENSE` and the published CLI. `npm install --package-lock-only`
+  changed only those six lockfile entries, versions are unchanged, and no
+  first-party package is listed as `UNKNOWN`.
+
+Independent validation of `de0c884b6`, run before these metadata changes:
+
+- zero-warning lint across all workspaces and the root typecheck
+- hosted Full Test Suite run 40788729011: all 4 shards, native Electron and docs
+- all 10 integration test files
+- rebuilt app and launcher images and the full image smoke
+- SQLite startup smoke: blank database three times, upgrade, and a genuine
+  migration failure
+- live API E2E against the remote
+- `EXPECTED_VERSION=0.9.0 RELEASE_TAG=v0.9.0 RELEASE_CANDIDATE=true npm run release:verify`
+
+That validation found no logic defects.
+
+Passed on this change:
+
+- `EXPECTED_VERSION=0.9.0 RELEASE_TAG=v0.9.0 RELEASE_CANDIDATE=true npm run release:verify`: release metadata consistent for v0.9.0.
+- `node --test test/releaseValidation.test.mjs`: 15 tests.
+- `npx tsx --test test/orchestratorProprUrlsDrift.test.ts`: 13 tests.
+- `node scripts/validate-third-party-notices.mjs installed` and `... file THIRD_PARTY_LICENSES.md`: 259 npm production packages.
+- `test/thirdPartyNotices.test.mjs` (8), `test/npmArtifactReconciliation.test.mjs` (9) and `test/buildImages.test.mjs` (19).
+- `npm run build --prefix docs` and `git diff --check`.
+
+Only release metadata and notices changed: `CHANGELOG.md`, this audit,
+`THIRD_PARTY_LICENSES.md`, `NOTICE`, the six `license` fields and their lockfile
+entries. No application code, lint rule, CI routing or styling changed. No tag,
+release, publication or deployment was performed.
