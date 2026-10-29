@@ -247,3 +247,16 @@ Only release metadata, notices and that lockfile update changed: `CHANGELOG.md`,
 this audit, `THIRD_PARTY_LICENSES.md`, `NOTICE`, the six `license` fields and
 their lockfile entries, and the MCP/Hono lockfile entries. No application code, lint rule, CI routing or styling changed. No tag,
 release, publication or deployment was performed.
+
+Later merges: current `main` (`2727fe3ad`) was merged into this branch. It adds
+two logic fixes that ship in 0.9.0, now recorded in the **Worker restarts**
+bullet under **Fixed**:
+
+- #3364: a storage lifecycle gate left by a crashed holder (for example an
+  out-of-memory kill) is reclaimed instead of freezing every worker, waits on
+  the gate are logged, and recovery steps no longer pile up behind a stuck one.
+- #3366: a live goal whose saved worktree was pruned is rebuilt from its
+  published branch on recovery, or fails cleanly, instead of relaunching
+  endlessly while showing as running.
+
+The release scope now runs through `2727fe3ad`.

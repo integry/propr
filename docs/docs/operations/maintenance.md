@@ -39,6 +39,8 @@ A safe upgrade, in order:
 2. Update the control plane and restart (the flows above); persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
 3. From a source checkout, apply pending [database migrations](#database-migrations) with `npm run db:migrate`.
 
+Restart all service containers in the same upgrade: while versions are mixed, a [storage lifecycle gate](#the-storage-lifecycle-gate) created by an older service carries no holder record and is removed after 10 minutes regardless of whether that service is still inside its operation.
+
 After the upgrade, the API's public `/api/compatibility` endpoint reports the stack version and the API/UI compatibility contract — the hosted UI checks it before login and stops at a clear version-mismatch screen rather than running against an incompatible stack. `/api/status` includes the same metadata for authenticated diagnostics.
 
 The unified agent image replaces the older per-agent image families. After confirming the upgraded worker is healthy, reclaim disk used by stale local agent images with `docker image ls 'propr/*agent*'` and remove only obsolete per-agent repositories that are no longer referenced by your running containers or configuration.
@@ -143,6 +145,16 @@ Both workers and the daemon need the Docker CLI on PATH and access to the Docker
 The daemon needs access to the Docker socket, the clone/worktree roots at their host paths, and the same `PUSH_RESCUE_WORKTREE_RECORD_DIR` as workers. The supplied Compose and packaged launcher mount `/var/run/docker.sock` and `/tmp/git-processor` for the daemon; custom root paths need equivalent mounts. An unreadable worktree root logs a skipped-sweep warning.
 
 Job-end removal also retains any checkout named by an unreleased follow-up handoff, including committed work awaiting publication.
+
+### The storage lifecycle gate
+
+Storage changes on a host are serialized by one lock shared by all service containers: the directory `<clone root>/../.clones-storage-lifecycle/gate` (by default `/tmp/git-processor/.clones-storage-lifecycle/gate`). It is held briefly: a job, an indexing scan or a retrieval holds it only while it is admitted and while its claim is released, and runs under a reader claim in between, while the gate is free; the daemon's cleanup and sweeps and registry updates hold it for the whole operation. So the holder named in a wait warning is usually a brief admission or a cleanup in progress, not a running job.
+
+The holder's record (container id, pid, process start time) sits inside the gate as `owner-<token>`, with a token unique to that acquisition. The record is in place before the directory becomes the gate: the holder prepares `gate-<token>` beside it with the record inside and renames that directory onto `gate`, a rename that fails while the gate exists and replaces it only while it is empty. A process waiting for the gate reads the record once the wait exceeds 5 seconds and then probes the holder every 5 seconds; when the holder is gone (its container restarted or was removed, or its pid no longer exists in the same container) the waiter removes the holder's record under its own name and renames its own prepared gate onto the emptied directory, so a crashed process cannot freeze the others. Because the record is removed by name and only an empty directory can be replaced, a waiter whose probe or inspection answers late cannot remove or take over the gate of a process that has reclaimed and retaken it in the meantime. Only the services' Docker containers can be probed: on a host running the services natively (a development install), a holder is never provably gone, so an owned gate left by a crash there is not reclaimed automatically and needs the manual unblock below.
+
+A gate with no owner record is treated as abandoned after 10 minutes. Such a gate was left either by a holder that died while releasing it, or by a service from a ProPR version older than the record. During a mixed-version upgrade this is a bounded trade-off: the older service's gate is removed 10 minutes after it was created even if that service is still inside its operation, which is far longer than any gated operation runs (the API's cleanup has a 60-second deadline). Finish the upgrade of all service containers before relying on the gate across versions.
+
+Waits are logged every minute as `Still waiting for the storage lifecycle gate after Ns (held by <container> pid <pid>)`, and a reclaim as `Removed an abandoned storage lifecycle gate`. Jobs that sit in `active` without a log line and no such warnings point at an older ProPR version or a native install; removing the stale `gate` directory by hand unblocks it. A leftover `gate-<token>` directory beside it belongs to a process that died before taking the gate and can be removed as well.
 
 ### Stuck follow-ups settle themselves
 

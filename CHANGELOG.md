@@ -592,6 +592,12 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   agent containers of its earlier attempt, so two agents never run side by side.
   Branches held by leftover or deleted worktrees are freed without deleting
   files, and storage claims whose process is gone no longer block admission.
+  A storage lifecycle gate left by a crashed holder, for example a worker
+  killed for running out of memory, is reclaimed instead of freezing every
+  worker; waits on the gate are logged, and recovery steps no longer pile up
+  behind a stuck one. A live goal whose saved worktree was pruned is rebuilt
+  from its published branch on recovery, or fails cleanly, instead of
+  relaunching endlessly while showing as running.
 - **Run outcomes**: a Claude Code run that exits nonzero after streaming a
   successful result is reported as failed. A New Task whose first job fails
   before any task exists is marked failed with the cause instead of staying
