@@ -108,9 +108,10 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
     // closing application creates no replacement and records nothing.
     const failureJourney = journey();
     for (const [key, attempt] of attempts) {
-      if (!replacedDocuments.has(attempt.contextId) || attempt.count !== 1 || attempt.denials.size > 0) continue;
+      if (!replacedDocuments.has(attempt.contextId) || attempt.count !== 1 || attempt.denials.size > 0
+        || attempt.fulfilled) continue;
       const record = { scenario: 'csp-reload', pageId, mainFrame: true, journey: attempt.journey, failureJourney,
-        url: JSON.parse(key)[2], method: 'GET', resourceType: 'fetch', errorText: DOCUMENT_REPLACED_BEFORE_AUDIT };
+        url: attempt.url, method: 'GET', resourceType: 'fetch', errorText: DOCUMENT_REPLACED_BEFORE_AUDIT };
       records.push(record);
     }
     replacedDocuments.clear();
@@ -138,6 +139,13 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
     try { attempt = JSON.parse(text.slice(marker.length)); } catch { return; }
     if (attempt?.method !== 'GET' || typeof attempt.url !== 'string'
       || fixtureRequest(attempt.url, origin) === 'other') return;
+    if (attempt.settled === 'fulfilled') {
+      // A response proves CSP allowed that fetch, whatever phase it ended in.
+      for (const item of attempts.values()) {
+        if (item.contextId === context.id && item.url === attempt.url) item.fulfilled = true;
+      }
+      return;
+    }
     const phase = journey();
     const key = attemptKey(context.id, phase, attempt.url);
     const previous = attempts.get(key);
@@ -147,7 +155,7 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
       record.method = 'unknown';
       record.resourceType = 'unknown';
     }
-    attempts.set(key, { contextId: context.id, journey: phase, count: (previous?.count ?? 0) + 1,
+    attempts.set(key, { contextId: context.id, url: attempt.url, journey: phase, count: (previous?.count ?? 0) + 1,
       denials: new Map() });
   });
   session.on('Audits.issueAdded', ({ issue }) => {
@@ -187,13 +195,22 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
       const url = typeof input === 'string' ? input
         : input instanceof Request ? input.url : input instanceof URL ? input.href : undefined;
       const method = args[1]?.method ?? (input instanceof Request ? input.method : 'GET');
+      let observed = false;
       if (method === 'GET' && typeof url === 'string' && url.startsWith(`${origin}/`)) {
         const path = url.slice(origin.length);
         if (path === '/api/auth/demo-mode' || /^\/api\/auth\/user\?proprDesktopScopeGeneration=[1-9]\d*$/.test(path)) {
           debug(`${marker}${JSON.stringify({ url, method })}`);
+          observed = true;
         }
       }
-      return Reflect.apply(fetch, this, args);
+      const result = Reflect.apply(fetch, this, args);
+      // A fulfilled fetch was allowed, so its later document replacement is
+      // never evidence for a denial. The caller still receives the original
+      // promise and its rejection.
+      if (observed && typeof result?.then === 'function') {
+        result.then(() => debug(`${marker}${JSON.stringify({ url, method, settled: 'fulfilled' })}`), () => {});
+      }
+      return result;
     };
   };
   await page.addInitScript(install, { marker, origin });

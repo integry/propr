@@ -428,9 +428,9 @@ const requestObserverFixture = async () => {
     listeners.get('Debugger.scriptParsed')({ scriptId, executionContextId: id });
   };
   document(1);
-  const attempt = (url, method = 'GET') => listeners.get('Runtime.consoleAPICalled')({
+  const attempt = (url, method = 'GET', settled) => listeners.get('Runtime.consoleAPICalled')({
     type: 'debug', executionContextId: contextId,
-    args: [{ value: `[propr-acceptance-csp-fetch]${JSON.stringify({ url, method })}` }],
+    args: [{ value: `[propr-acceptance-csp-fetch]${JSON.stringify({ url, method, settled })}` }],
   });
   const issue = (url, change = {}) => listeners.get('Audits.issueAdded')({ issue: {
     code: 'ContentSecurityPolicyIssue', details: { contentSecurityPolicyIssueDetails: {
@@ -729,6 +729,17 @@ test('document replacement never exempts other requests, diagnostics, phases or 
   repeated.clear();
   repeated.document(2, 'main', 'replacement');
   assert.deepEqual(repeated.records, []);
+  // A fetch that received a response was allowed, even if its phase changed since.
+  for (const settledPhase of ['csp-reload-pairing', 'csp-reload-restart']) {
+    const fulfilled = await requestObserverFixture();
+    fulfilled.attempt(currentUserUrl);
+    fulfilled.phase(settledPhase);
+    fulfilled.attempt(currentUserUrl, 'GET', 'fulfilled');
+    fulfilled.phase('csp-reload-pairing');
+    fulfilled.clear();
+    fulfilled.document(2, 'main', 'replacement');
+    assert.deepEqual(fulfilled.records, [], settledPhase);
+  }
   const unobserved = await requestObserverFixture();
   unobserved.clear();
   unobserved.document(2, 'main', 'replacement');
@@ -773,6 +784,20 @@ test('fetch observation delegates unchanged arguments and ignores subframes and 
   window.fetch(new URL(url));
   window.fetch(new Request(url));
   assert.equal(markers.length, 3);
+  // Only an observed fetch's fulfilment is reported; rejection stays the caller's.
+  window.fetch = async () => 'response';
+  runInNewContext(`(${install.toString()})(${JSON.stringify(configuration)})`, context);
+  markers.length = 0;
+  assert.equal(await window.fetch(url), 'response');
+  await window.fetch(origin + '/api/tasks');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(markers.map(text => JSON.parse(text.slice('[propr-acceptance-csp-fetch]'.length))),
+    [{ url, method: 'GET' }, { url, method: 'GET', settled: 'fulfilled' }]);
+  window.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  runInNewContext(`(${install.toString()})(${JSON.stringify(configuration)})`, context);
+  markers.length = 0;
+  await assert.rejects(window.fetch(url), TypeError);
+  assert.equal(markers.length, 1);
   const subframe = { fetch: window.fetch, top: {} };
   const original = subframe.fetch;
   runInNewContext(`(${install.toString()})(${JSON.stringify(configuration)})`, { ...context, window: subframe });
