@@ -1087,13 +1087,25 @@ test('F23: recovery cleanup keeps the handoff when the worktree path is inaccess
     const record = await seedHandoff(h);
     const pending = await advanceFollowupHandoff({ database }, record, { phase: 'cleanup_pending' });
     assert.ok(pending);
+    // Detached, so the branch has no registrations: reading the access error
+    // as 'missing' would settle the handoff.
+    git(h.fx.wt, 'checkout', '--detach');
     const ops = createFollowupHandoffGitOps(async () => 'token');
-    await chmod(h.fx.dir, 0o000);
+    // Injected so the rule holds for every uid: root bypasses a chmod 0 fixture.
+    const realAccess = fsPromises.access;
+    const denied = mock.method(fsPromises, 'access', async (...[target, mode]: Parameters<typeof fsPromises.access>) => {
+        if (path.resolve(String(target)).startsWith(h.fx.dir + path.sep)) {
+            throw Object.assign(new Error(`EACCES: injected, access '${target}'`), { code: 'EACCES' });
+        }
+        return realAccess(target, mode);
+    });
+    syncBuiltinESMExports();
     try {
         const outcome = await resumeFollowupHandoff({ ...trackedResumeParams(h, pending), git: ops as never });
         assert.equal(outcome.outcome, 'cleanup_pending', 'an access error is not release evidence');
     } finally {
-        await chmod(h.fx.dir, 0o755);
+        denied.mock.restore();
+        syncBuiltinESMExports();
     }
     assert.equal((await loadFollowupHandoff({ database }, KEY))?.phase, 'cleanup_pending');
 });
