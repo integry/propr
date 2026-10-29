@@ -4,7 +4,8 @@ import knex from 'knex';
 import { DelayedError } from 'bullmq';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import fsPromises, { chmod, mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { up } from '../packages/core/src/db/migrations/20261017000000_add_pr_followup_handoffs.js';
@@ -1005,6 +1006,26 @@ test('F23: the default git ops report missing only for absent paths and reject a
     const h = await createHarness();
     const ops = createFollowupHandoffGitOps(async () => 'token');
     assert.equal(await ops.worktreeAttachment(path.join(h.fx.dir, 'absent'), BRANCH), 'missing');
+    await writeFile(path.join(h.fx.dir, 'plain-file'), '');
+    assert.equal(await ops.worktreeAttachment(path.join(h.fx.dir, 'plain-file', 'wt'), BRANCH), 'missing');
+    // Injected so the rule holds for every uid: root bypasses directory modes.
+    for (const code of ['EACCES', 'EPERM', 'EIO']) {
+        const denied = mock.method(fsPromises, 'access', async () => { throw Object.assign(new Error(`${code}: injected`), { code }); });
+        syncBuiltinESMExports();
+        try {
+            await assert.rejects(ops.worktreeAttachment(h.fx.wt, BRANCH), { code });
+        } finally {
+            denied.mock.restore();
+            syncBuiltinESMExports();
+        }
+    }
+});
+
+test('F23: a real permission-denied worktree path rejects instead of reporting missing', {
+    skip: process.getuid?.() === 0 && 'uid 0 bypasses directory permissions, so chmod cannot produce EACCES; the injected-error test above covers root',
+}, async () => {
+    const h = await createHarness();
+    const ops = createFollowupHandoffGitOps(async () => 'token');
     const guarded = path.join(h.fx.dir, 'guarded');
     await mkdir(path.join(guarded, 'wt'), { recursive: true });
     await chmod(guarded, 0o000);

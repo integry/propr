@@ -146,10 +146,15 @@ function runtimeHarness(build: (policy: AgentToolPolicy) => ToolPolicyLaunchArgs
         } : policy;
         const launchArgs = build(withMcp);
         assert.ok(!launchArgs.cliArgs.some(arg => arg.includes(TOKEN)), 'the token never appears in the arguments');
-        // Outside Docker, map only the image-installed adapter path to its exact source.
-        if (policy.localMcpServers?.length) launchArgs.cliArgs = launchArgs.cliArgs.map(arg => arg.replaceAll('/opt/propr/extension-stdio-bridge.mjs', fileURLToPath(new URL('../scripts/extension-stdio-bridge.mjs', import.meta.url))));
+        // Outside Docker, map only the image-installed adapter and its Node to this
+        // test's exact sources: a host Node at the image path may be absent or another version.
+        if (policy.localMcpServers?.length) launchArgs.cliArgs = launchArgs.cliArgs.map(arg => arg
+            .replaceAll('/opt/propr/extension-stdio-bridge.mjs', fileURLToPath(new URL('../scripts/extension-stdio-bridge.mjs', import.meta.url)))
+            .replaceAll('/usr/local/bin/node', process.execPath));
         const { command, args, env } = launch({ baseUrl, home, launchArgs });
-        const stderr = await runCli(command, args, { PATH: process.env.PATH ?? '', HOME: home, ...env, ...launchArgs.env }, 'Reply with OK.');
+        // Only the temporary home: never the host user's agent config, logins or caches.
+        const xdg = { XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'), XDG_STATE_HOME: join(home, '.local', 'state'), XDG_CACHE_HOME: join(home, '.cache') };
+        const stderr = await runCli(command, args, { PATH: process.env.PATH ?? '', HOME: home, ...xdg, ...env, ...launchArgs.env }, 'Reply with OK.');
         assert.ok(captured.modelBodies.length > 0, `${command} reached the model stand-in${stderr ? `; stderr: ${stderr}` : ''}`);
         assert.ok(!JSON.stringify(captured).includes(LOCAL_SENTINEL));
         return { ...captured, tools: toolNames(captured.modelBodies[0]) };
