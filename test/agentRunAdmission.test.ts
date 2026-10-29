@@ -65,6 +65,9 @@ after(async () => {
     syncBuiltinESMExports();
     for (const child of children) child.kill('SIGKILL');
     redis?.disconnect(); server?.kill('SIGTERM');
+    // The Docker executor's import graph opens the database pool; its reaper
+    // interval would otherwise keep this file alive until the unit timeout.
+    if (available) await (await import('../packages/core/src/db/connection.js')).closeConnection();
     if (root) await rm(root, { force: true, recursive: true });
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
     Object.assign(process.env, previous);

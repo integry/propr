@@ -1,5 +1,8 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { AGENT_LOGIN_DESCRIPTORS, getManagedAgentConfigPath, isAgentLoginSupported, type AgentType } from '@propr/shared';
 import {
     DEFAULT_CONFIG_PATHS,
@@ -13,8 +16,15 @@ import type { AgentConfig } from '../packages/core/src/agents/types.ts';
 import { buildAgentLoginCreateArgs, resolveAgentLoginConfigPath } from '../packages/api/services/agentLoginDocker.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 
+// Stands in for the launcher's host `.claude.json`, so the container HOME
+// (/root) is never consulted: on a root host it holds a real agent login.
+const fixtureDir = mkdtempSync(path.join(tmpdir(), 'agent-default-config-paths-'));
+const HOST_CLAUDE_JSON = path.join(fixtureDir, '.claude.json');
+writeFileSync(HOST_CLAUDE_JSON, '{}\n');
+
 after(async () => {
     await closeConnection();
+    rmSync(fixtureDir, { recursive: true, force: true });
 });
 
 const HOST = '/home/desktop-user';
@@ -27,7 +37,7 @@ const HOST_DIRS: Record<AgentType, string> = {
     vibe: `${HOST}/.vibe`,
 };
 const ENV_KEYS = [
-    'HOME', 'PROPR_CONTAINERIZED', 'PROPR_MANAGED_CREDENTIALS_DIR', 'HOST_OPENCODE_DATA_DIR',
+    'HOME', 'PROPR_CONTAINERIZED', 'PROPR_MANAGED_CREDENTIALS_DIR', 'HOST_OPENCODE_DATA_DIR', 'CLAUDE_JSON_PATH',
     ...Object.values(DEFAULT_CONFIG_PATH_MAPPINGS).flat(),
 ];
 
@@ -99,7 +109,7 @@ describe('provider default credential paths', () => {
 
 describe('login and execution bind the same host credential store', () => {
     test('Claude login, task launch and the shared resolver agree under container HOME=/root', () => {
-        withEnv({ ...containerized, CLAUDE_CONFIG_PATH: HOST_DIRS.claude }, () => {
+        withEnv({ ...containerized, CLAUDE_CONFIG_PATH: HOST_DIRS.claude, CLAUDE_JSON_PATH: HOST_CLAUDE_JSON }, () => {
             const claude = agent('claude');
             const loginPath = resolveAgentLoginConfigPath(claude);
             assert.equal(loginPath, HOST_DIRS.claude);
@@ -109,7 +119,8 @@ describe('login and execution bind the same host credential store', () => {
             const taskArgs = buildClaudeDockerArgs(claude, 10, { worktreePath: '/tmp/worktree', githubToken: '', issueNumber: 42 });
             assert.deepEqual(mountSources(loginArgs, '/home/node/.claude'), [HOST_DIRS.claude]);
             assert.deepEqual(mountSources(taskArgs, '/home/node/.claude'), [HOST_DIRS.claude]);
-            assert.ok(!taskArgs.some(arg => arg.startsWith('/root/.claude')));
+            assert.ok(taskArgs.some(arg => arg.startsWith('type=bind,') && arg.includes(`source=${HOST_CLAUDE_JSON},`)), taskArgs.join(' '));
+            assert.ok(!taskArgs.some(arg => arg.includes('/root/.claude')), taskArgs.join(' '));
         });
     });
 
