@@ -10,6 +10,8 @@ export interface GitHubUser {
     tokenExpiresAt?: number;
     refreshTokenExpiresAt?: number;
     oauthSource?: 'github' | 'connect';
+    /** Set when ProPR Connect can renew this credential through the relay. */
+    connectRenewal?: 'relay';
     githubAuthInvalid?: boolean;
 }
 

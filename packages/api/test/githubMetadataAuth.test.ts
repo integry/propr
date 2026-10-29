@@ -111,7 +111,7 @@ test('denies expired and revoked grants with reauthorization guidance', async ()
   await expired.capture({
     ...desktopUser, accessToken: 'gho_expired-secret', tokenExpiresAt: Date.now() - 1, oauthSource: 'github',
   });
-  assert.deepEqual(await expired.resolve(desktopUser.id), { status: 'reauth_required' });
+  assert.deepEqual(await expired.resolve(desktopUser.id), { status: 'reauth_required', reason: 'missing_refresh_token' });
 
   await expired.capture({
     ...desktopUser,

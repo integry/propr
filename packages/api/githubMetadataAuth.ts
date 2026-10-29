@@ -11,10 +11,28 @@ export class GitHubMetadataAuthorizationError extends Error {
   constructor(
     public readonly code: 'GITHUB_AUTHORIZATION_REQUIRED' | 'GITHUB_REAUTH_REQUIRED' | 'GITHUB_AUTHORIZATION_UNAVAILABLE',
     message: string,
+    /** Why a browser sign-in is needed, when the stored grant records it. */
+    public readonly reason?: GitHubReauthReason,
   ) {
     super(message);
     this.name = 'GitHubMetadataAuthorizationError';
   }
+}
+
+const SIGN_IN_AGAIN = 'Sign in to this ProPR instance again in a browser, then retry from the desktop app.';
+
+/** Reasons a stored grant needs a browser sign-in that clients can show precisely. */
+const REAUTH_REASON_MESSAGES = {
+  renewal_revoked: `Your GitHub authorization for Connect was revoked. ${SIGN_IN_AGAIN}`,
+  renewal_expired: `Your GitHub authorization for Connect expired after the refresh window. ${SIGN_IN_AGAIN}`,
+  reauth_required: `ProPR Connect needs you to sign in to GitHub again. ${SIGN_IN_AGAIN}`,
+  missing_refresh_token: 'This GitHub sign-in cannot be renewed automatically. Sign in to this ProPR instance again in a browser once to get a renewable authorization, then retry from the desktop app.',
+} as const;
+
+export type GitHubReauthReason = keyof typeof REAUTH_REASON_MESSAGES;
+
+function knownReauthReason(reason: string | undefined): GitHubReauthReason | undefined {
+  return reason && Object.hasOwn(REAUTH_REASON_MESSAGES, reason) ? reason as GitHubReauthReason : undefined;
 }
 
 function errorForGrant(result: GitHubUserGrantResolution): GitHubMetadataAuthorizationError {
@@ -30,6 +48,8 @@ function errorForGrant(result: GitHubUserGrantResolution): GitHubMetadataAuthori
       'GitHub authorization could not be refreshed right now. Please retry shortly.',
     );
   }
+  const reason = result.status === 'reauth_required' ? knownReauthReason(result.reason) : undefined;
+  if (reason) return new GitHubMetadataAuthorizationError('GITHUB_REAUTH_REQUIRED', REAUTH_REASON_MESSAGES[reason], reason);
   return new GitHubMetadataAuthorizationError(
     'GITHUB_REAUTH_REQUIRED',
     'GitHub authorization has expired or was revoked. Sign in to this ProPR instance again in a browser, then retry from the desktop app.',
@@ -99,7 +119,9 @@ export function sendGitHubMetadataAuthorizationError(
   res: Response,
 ): void {
   const status = error.code === 'GITHUB_AUTHORIZATION_UNAVAILABLE' ? 503 : 403;
-  res.status(status).json({ error: error.message, code: error.code, message: error.message });
+  res.status(status).json({
+    error: error.message, code: error.code, message: error.message, ...(error.reason ? { reason: error.reason } : {}),
+  });
 }
 
 export async function handleGitHubRepositoryAccessError(

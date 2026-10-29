@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, type DesktopAccessInvalidEventDetail, type DesktopAdapters, type DesktopProfile } from './types';
+import { DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, GITHUB_REAUTH_REASON_MESSAGES, knownGitHubReauthReason, type GitHubReauthReason, type DesktopAccessInvalidEventDetail, type DesktopAdapters, type DesktopProfile } from './types';
 
 /** Recovery keeps the connected tree mounted so the original action can be retried. */
 export function DesktopGitHubAuthorizationRecovery({ adapters, profile, transportScope }: {
@@ -12,6 +12,7 @@ export function DesktopGitHubAuthorizationRecovery({ adapters, profile, transpor
   const [visible, setVisible] = useState(false);
   const [opening, setOpening] = useState(false);
   const [browserError, setBrowserError] = useState(false);
+  const [reason, setReason] = useState<GitHubReauthReason | undefined>();
 
   useEffect(() => {
     const required = (event: Event) => {
@@ -21,6 +22,7 @@ export function DesktopGitHubAuthorizationRecovery({ adapters, profile, transpor
       // active dialog so recovery is usable without closing the original form.
       const dialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'));
       setContainer(dialogs.filter(dialog => !dialog.closest('[inert], [hidden]')).at(-1) ?? document.body);
+      setReason(knownGitHubReauthReason(detail.reason));
       setVisible(true);
     };
     window.addEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, required);
@@ -48,6 +50,7 @@ export function DesktopGitHubAuthorizationRecovery({ adapters, profile, transpor
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setVisible(false); }
   }}>
     <h2 id="desktop-github-recovery-title">Authorize GitHub repository access</h2>
+    {reason && <p className="desktop-github-recovery-reason">{GITHUB_REAUTH_REASON_MESSAGES[reason]}</p>}
     <p>Your Desktop pairing is still connected. Pairing again does not renew GitHub authorization.</p>
     <p>Sign in to this instance in your browser with {profile.account ? <strong>@{profile.account.username}</strong> : 'the same GitHub account as Desktop'}. If the browser uses another account, switch to this account first.</p>
     <p>After GitHub sign-in, return to Desktop and retry your original action. Your current work stays open.</p>

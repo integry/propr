@@ -105,4 +105,30 @@ describe('Desktop GitHub grant recovery', () => {
     expect(document.body).not.toHaveTextContent('secret-host-sentinel');
     expect(screen.getByRole('button', { name: 'Sign in with GitHub in browser' })).toBeEnabled();
   });
+
+  it('shows the precise reason the instance reports for a Connect grant needing sign-in', async () => {
+    const adapters = adaptersFor();
+    render(<DesktopGitHubAuthorizationRecovery adapters={adapters} profile={remoteProfile} transportScope="current-scope" />);
+    setDesktopConnectionScope({ bridge: { connection: { invalidate: vi.fn() } } as never, profileId: remoteProfile.id, transportScope: 'current-scope' });
+    await act(async () => {
+      await expect(handleApiResponse(new Response(JSON.stringify({ code: 'GITHUB_REAUTH_REQUIRED', reason: 'renewal_revoked' }), { status: 403 })))
+        .rejects.toThrow('Your GitHub authorization for Connect was revoked. GitHub authorization is required.');
+    });
+    expect(screen.getByRole('region')).toHaveTextContent('Your GitHub authorization for Connect was revoked.');
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, {
+        detail: { profileId: remoteProfile.id, transportScope: 'current-scope', code: 'GITHUB_REAUTH_REQUIRED', reason: 'missing_refresh_token' },
+      }));
+    });
+    expect(screen.getByRole('region')).toHaveTextContent('Signing in again once gives this instance a renewable authorization.');
+
+    // Unknown reasons fall back to the generic guidance only.
+    act(() => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, {
+        detail: { profileId: remoteProfile.id, transportScope: 'current-scope', code: 'GITHUB_REAUTH_REQUIRED', reason: '<script>' },
+      }));
+    });
+    expect(screen.getByRole('region')).not.toHaveTextContent(/revoked|renewable/);
+  });
 });

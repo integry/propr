@@ -82,6 +82,20 @@ export const DESKTOP_AUTHENTICATION_COMPLETE_EVENT = 'propr:desktop-authenticati
 export const DESKTOP_ACCESS_INVALID_EVENT = 'propr:desktop-access-invalid';
 export const DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT = 'propr:desktop-github-authorization-required';
 
+/** Precise stored-grant reasons the API reports with GITHUB_REAUTH_REQUIRED (#3387). */
+export const GITHUB_REAUTH_REASON_MESSAGES = {
+  renewal_revoked: 'Your GitHub authorization for Connect was revoked.',
+  renewal_expired: 'Your GitHub authorization for Connect expired after the refresh window.',
+  reauth_required: 'ProPR Connect needs you to sign in to GitHub again.',
+  missing_refresh_token: 'This GitHub sign-in cannot be renewed automatically. Signing in again once gives this instance a renewable authorization.',
+} as const;
+
+export type GitHubReauthReason = keyof typeof GITHUB_REAUTH_REASON_MESSAGES;
+
+export const knownGitHubReauthReason = (value: unknown): GitHubReauthReason | undefined => (
+  typeof value === 'string' && Object.prototype.hasOwnProperty.call(GITHUB_REAUTH_REASON_MESSAGES, value) ? value as GitHubReauthReason : undefined
+);
+
 export interface DesktopAuthenticationCompleteEventDetail {
   profileId: string;
 }
@@ -90,6 +104,8 @@ export interface DesktopAccessInvalidEventDetail {
   profileId: string;
   transportScope: string;
   code: string;
+  /** Why GitHub authorization needs a browser sign-in, when the instance reports it. */
+  reason?: string;
 }
 
 export interface DesktopExternalBrowserAdapter {
