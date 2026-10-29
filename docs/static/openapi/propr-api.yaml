@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 306
+    total: 307
     documented: 69
-    undocumented: 237
+    undocumented: 238
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -3104,6 +3104,26 @@ paths:
     get:
       operationId: getApiDashboardNarrative
       summary: GET /api/dashboard/narrative
+      description: This route is registered but not documented yet.
+      tags:
+        - Observability
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/dashboard/narrative/status:
+    get:
+      operationId: getApiDashboardNarrativeStatus
+      summary: GET /api/dashboard/narrative/status
       description: This route is registered but not documented yet.
       tags:
         - Observability

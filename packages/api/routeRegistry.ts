@@ -353,6 +353,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/usage-tips', usageTipsRoutes.get],
     ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
     ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative],
+    ['get', '/api/dashboard/narrative/status', dashboardRoutes.getNarrativeStatus],
     ['get', '/api/dashboard/summary', dashboardRoutes.getSummary],
     ['get', '/api/dashboard/attention', dashboardRoutes.getAttention],
     ['get', '/api/dashboard/active', dashboardRoutes.getActive],

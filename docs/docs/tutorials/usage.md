@@ -105,7 +105,7 @@ Most recovery starts from the PR conversation: add a clearer follow-up comment, 
 
 Use [New Task](../features/launching-work.md) for a single instruction, a [goal](../features/goals.md)
 for continuing work with corrections, or Planner Studio for a reviewed issue plan.
-The dashboard summarizes current activity and [Inbox](../features/inbox.md) opens
+The dashboard shows current activity and [Inbox](../features/inbox.md) opens
 the corresponding task, plan or goal. Notification preferences are personal;
 repository settings can suppress future notifications without stopping work.
 

@@ -3,12 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DashboardSummary } from './DashboardSummary';
 import { SUMMARY_COALESCE_MS } from './useDashboardSummary';
 import { useCurrentUser } from '../../contexts/AuthContext';
-import { getDashboardNarrative } from '../../api/dashboardApi';
+import { getDashboardNarrative, getDashboardNarrativeStatus } from '../../api/dashboardApi';
 
 vi.mock('../../api/apiClient', () => ({ API_BASE_URL: 'https://example.test', getDesktopConnectionScope: vi.fn(() => null) }));
 vi.mock('../../contexts/AuthContext', () => ({ useCurrentUser: vi.fn(() => ({ id: 'user-a' })) }));
-vi.mock('../../api/dashboardApi', () => ({ getDashboardNarrative: vi.fn() }));
+vi.mock('../../api/dashboardApi', () => ({ getDashboardNarrative: vi.fn(), getDashboardNarrativeStatus: vi.fn() }));
 const narrative = vi.mocked(getDashboardNarrative);
+const status = vi.mocked(getDashboardNarrativeStatus);
 const response = { repository: 'all', enabled: true, summary: 'Retry handling is running. A review needs your attention.' };
 const tick = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_COALESCE_MS); }); };
 const visible = (state: DocumentVisibilityState) => {
@@ -28,8 +29,93 @@ beforeEach(() => {
   vi.mocked(useCurrentUser).mockReturnValue({ id: 'user-a' } as ReturnType<typeof useCurrentUser>);
   visible('visible');
   narrative.mockReset().mockResolvedValue(response);
+  status.mockReset().mockResolvedValue({ enabled: true });
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+describe('dashboard summary opt-in', () => {
+  it.each([
+    ['unset or off', () => status.mockResolvedValue({ enabled: false })],
+    ['unreadable', () => status.mockRejectedValue(new Error('Offline'))],
+  ])('renders no bar and requests no narrative when the setting is %s', async (_name, arrange) => {
+    arrange();
+    const { container } = await mount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_COALESCE_MS * 4); });
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('dashboard-summary')).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+    expect(narrative).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing while the opt-in is unconfirmed, then the bar once it is on', async () => {
+    let resolve!: (value: { enabled: boolean }) => void;
+    status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    render(<DashboardSummary repository="all" activityToken={0} />);
+    expect(screen.queryByTestId('dashboard-summary')).not.toBeInTheDocument();
+    expect(narrative).not.toHaveBeenCalled();
+    await act(async () => resolve({ enabled: true }));
+    expect(screen.getByTestId('dashboard-summary')).toHaveTextContent(response.summary);
+    expect(narrative).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mount from an earlier confirmation after the setting is turned off', async () => {
+    (await mount()).unmount();
+    expect(screen.queryByText(response.summary)).not.toBeInTheDocument();
+    let resolve!: (value: { enabled: boolean }) => void;
+    status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    narrative.mockClear();
+    const { container } = render(<DashboardSummary repository="all" activityToken={0} />);
+    expect(container).toBeEmptyDOMElement();
+    await act(async () => resolve({ enabled: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(SUMMARY_COALESCE_MS * 4); });
+    expect(container).toBeEmptyDOMElement();
+    expect(narrative).not.toHaveBeenCalled();
+  });
+
+  it('shows prose cached by an earlier session only after a fresh confirmation', async () => {
+    (await mount()).unmount();
+    let resolve!: (value: { enabled: boolean }) => void;
+    status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    narrative.mockImplementation(() => new Promise(() => {}));
+    render(<DashboardSummary repository="all" activityToken={0} />);
+    expect(screen.queryByText(response.summary)).not.toBeInTheDocument();
+    await act(async () => resolve({ enabled: true }));
+    expect(screen.getByText(response.summary)).toBeInTheDocument();
+  });
+
+  it('re-checks an unreadable status on activity and on regaining visibility, staying hidden until confirmed', async () => {
+    status.mockRejectedValue(new Error('Offline'));
+    const view = await mount();
+    view.rerender(<DashboardSummary repository="all" activityToken={1} />);
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(view.container).toBeEmptyDOMElement();
+    visible('hidden');
+    expect(status).toHaveBeenCalledTimes(2);
+    status.mockResolvedValue({ enabled: true });
+    visible('visible');
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId('dashboard-summary')).toHaveTextContent(response.summary);
+    expect(narrative).toHaveBeenCalledTimes(1);
+    view.rerender(<DashboardSummary repository="all" activityToken={2} />);
+    visible('hidden');
+    visible('visible');
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not re-check a confirmed disablement on activity', async () => {
+    status.mockResolvedValue({ enabled: false });
+    const view = await mount();
+    view.rerender(<DashboardSummary repository="all" activityToken={1} />);
+    visible('hidden');
+    visible('visible');
+    await act(async () => {});
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(narrative).not.toHaveBeenCalled();
+  });
+});
 
 describe('dashboard narrative', () => {
   it('ticks freshness without requests and retains its age after failures or while paused', async () => {
@@ -77,6 +163,7 @@ describe('dashboard narrative', () => {
     narrative.mockImplementationOnce(() => new Promise(() => {}));
     visible('hidden');
     render(<DashboardSummary repository="all" activityToken={0} />);
+    await act(async () => {});
     expect(screen.getByText(response.summary)).toBeInTheDocument();
     expect(screen.getByText('Updated 5s ago')).toBeInTheDocument();
     expect(screen.getByText('Saved')).toBeInTheDocument();

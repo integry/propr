@@ -538,7 +538,7 @@ Settings keys:
 | `planner_generation_model` | Model for planner generation |
 | `auto_resolve_merge_conflicts` | Automatically resolve merge conflicts |
 | `followup_requires_assignment` | Only people assigned to a pull request may start follow-up work on it; unassigned pull requests are unaffected (default `false`). See [the assignment gate](./assignment.md#the-assignment-gate). |
-| `dashboard_summary_enabled` | Enable AI-generated dashboard activity summaries |
+| `dashboard_summary_enabled` | Experimental: show AI-generated dashboard activity summaries, made with the summarization model (default `false`) |
 | `model_reasoning_level` | System reasoning preference for Claude, Codex, and Antigravity, resolved against the selected model's supported levels (empty = default effort; model overrides and explicit run / `level-*` selections take precedence). See [Reasoning Levels](./agents-and-models.md#reasoning-levels). |
 | `usage_tips_enabled` | Show daily documentation tips on the dashboard |
 | `pr_review_model` | Model for full PR reviews |

@@ -14,6 +14,7 @@ import Dashboard from './Dashboard';
 import { HeaderScopeSlotContext } from './headerScopeSlot';
 import {
   getDashboardNarrative,
+  getDashboardNarrativeStatus,
   getDashboardActive,
   getDashboardAttention,
   getDashboardOutcomes,
@@ -39,7 +40,7 @@ import {
 } from './Dashboard.fixtures';
 
 vi.mock('../api/dashboardApi', () => ({
-  getDashboardNarrative: vi.fn(),
+  getDashboardNarrative: vi.fn(), getDashboardNarrativeStatus: vi.fn(),
   getDashboardSummary: vi.fn(),
   getDashboardAttention: vi.fn(),
   getDashboardActive: vi.fn(),
@@ -114,6 +115,7 @@ async function waitForSections() {
 describe('Dashboard studio design rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getDashboardNarrativeStatus).mockResolvedValue({ enabled: true });
     vi.mocked(getDashboardNarrative).mockResolvedValue({ repository: 'all', enabled: true, summary: 'Work is underway. Nothing needs your attention.' });
     mockSummary.mockResolvedValue(summaryResponse());
     mockAttention.mockResolvedValue(attentionResponse());

@@ -263,7 +263,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         },
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         usage_tips_enabled: parseUsageTipsSettings({ usage_tips_enabled: await configStore.getConfig('usage_tips_enabled', true) }).enabled,
-        dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', true)) !== false,
+        // Experimental and opt-in: only an explicitly saved true turns it on.
+        dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', false)) === true,
         followup_requires_assignment: await followupRequiresAssignmentResponse(configStore),
         model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,

@@ -58,6 +58,7 @@ const agentTankUsage = { enabled: true, agents: {
 } };
 
 export const dashboardResponses = (attentionItems: typeof attention, runningItems: typeof running): Record<string, unknown> => ({
+  '/api/dashboard/narrative/status': { enabled: true },
   '/api/dashboard/narrative': { repository: 'all', enabled: true, summary: 'Dashboard improvements are being tested, while recent fixes await review.' },
   '/api/dashboard/summary': { repository: 'all', needsAttention: attentionItems.length,
     running: runningItems.length, queued: 2, completedRecently: 4, recentWindowHours: 24 },

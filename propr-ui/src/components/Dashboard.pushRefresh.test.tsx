@@ -39,6 +39,7 @@ vi.mock('../api/dashboardApi', () => ({
   getDashboardAttention: vi.fn(),
   getDashboardActive: vi.fn(),
   getDashboardNarrative: vi.fn(),
+  getDashboardNarrativeStatus: vi.fn(async () => ({ enabled: true })),
   getDashboardOutcomes: vi.fn(),
   getDashboardStats: vi.fn(),
 }));
