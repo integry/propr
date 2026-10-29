@@ -30,10 +30,15 @@ export const sanitizedCspReloadError = (record, origin) => {
   };
 };
 
+// Chromium delivers pre-network CSP Audits issues asynchronously. A policy
+// reload can replace the denying document before its issue reaches CDP.
+const DOCUMENT_REPLACED_BEFORE_AUDIT = 'document-replaced-before-audit';
+
 export const sanitizedCspReloadRequestFailure = (record, origin) => ({
   request: fixtureRequest(record.url, origin),
   ownedFixtureOrigin: Boolean(origin && record.url?.startsWith(`${origin}/`)),
   failureClass: record.errorText === 'net::ERR_BLOCKED_BY_CSP' ? 'csp-blocked'
+    : record.errorText === DOCUMENT_REPLACED_BEFORE_AUDIT ? 'document-replaced'
     : record.errorText === 'net::ERR_ABORTED' ? 'aborted'
       : record.errorText === 'net::ERR_FAILED' ? 'network-failed' : 'other',
 });
@@ -54,13 +59,19 @@ export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evid
     const denial = cspDenial(record.text);
     const request = fixtureRequest(denial?.url, origin);
     if (request === 'other') continue;
-    const matchingRequests = deniedRequests.filter(item => item.scenario === 'csp-reload'
+    const matching = errorText => deniedRequests.filter(item => item.scenario === 'csp-reload'
       && item.journey === record.journey && item.failureJourney === record.journey
       && item.url === denial.url && item.method === 'GET' && item.resourceType === 'fetch'
       && item.mainFrame === true && Number.isSafeInteger(record.pageId) && record.pageId > 0
       && item.pageId === record.pageId
-      && item.errorText === 'net::ERR_BLOCKED_BY_CSP');
-    if (matchingRequests.length !== 1) return [];
+      && item.errorText === errorText);
+    const nativeDenials = matching('net::ERR_BLOCKED_BY_CSP');
+    // Without a native issue, only the old document's single current-user
+    // fetch, observed being replaced by a new main-frame document in this
+    // phase, can explain its connect-src console diagnostic.
+    const replacedRequests = nativeDenials.length === 0 && request === 'current-user'
+      && denial.kind === 'csp-connect-policy' ? matching(DOCUMENT_REPLACED_BEFORE_AUDIT) : [];
+    if (nativeDenials.length + replacedRequests.length !== 1) return [];
     if (request === 'current-user') {
       const value = new URL(denial.url).searchParams.get('proprDesktopScopeGeneration');
       if (generation && generation !== value) return [];
@@ -84,14 +95,35 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
   const session = await page.context().newCDPSession(page);
   const contexts = new Map();
   const scripts = new Map();
+  const replacedDocuments = new Set();
   const { frameTree } = await session.send('Page.getFrameTree');
   session.on('Runtime.executionContextCreated', ({ context }) => {
     // uniqueId survives numeric context-ID reuse across document replacements.
-    contexts.set(context.id, { id: context.uniqueId,
-      mainFrame: context.auxData?.isDefault === true && context.auxData.frameId === frameTree.frame.id });
+    const created = { id: context.uniqueId,
+      mainFrame: context.auxData?.isDefault === true && context.auxData.frameId === frameTree.frame.id };
+    contexts.set(context.id, created);
+    if (!created.mainFrame || replacedDocuments.size === 0) return;
+    // A new main-frame document replaced the old one. Its unique fetches that
+    // still lack a native issue record that replacement, never a denial; a
+    // closing application creates no replacement and records nothing.
+    const failureJourney = journey();
+    for (const [key, attempt] of attempts) {
+      if (!replacedDocuments.has(attempt.contextId) || attempt.count !== 1 || attempt.denials.size > 0) continue;
+      const record = { scenario: 'csp-reload', pageId, mainFrame: true, journey: attempt.journey, failureJourney,
+        url: JSON.parse(key)[2], method: 'GET', resourceType: 'fetch', errorText: DOCUMENT_REPLACED_BEFORE_AUDIT };
+      records.push(record);
+    }
+    replacedDocuments.clear();
   });
-  session.on('Runtime.executionContextDestroyed', ({ executionContextId }) => contexts.delete(executionContextId));
-  session.on('Runtime.executionContextsCleared', () => contexts.clear());
+  const retire = context => { if (context?.mainFrame) replacedDocuments.add(context.id); };
+  session.on('Runtime.executionContextDestroyed', ({ executionContextId }) => {
+    retire(contexts.get(executionContextId));
+    contexts.delete(executionContextId);
+  });
+  session.on('Runtime.executionContextsCleared', () => {
+    for (const context of contexts.values()) retire(context);
+    contexts.clear();
+  });
   session.on('Debugger.scriptParsed', ({ scriptId, executionContextId }) => {
     // Retain the originating context for delayed old-document native issues.
     scripts.set(scriptId, contexts.get(executionContextId));
@@ -115,7 +147,7 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
       record.method = 'unknown';
       record.resourceType = 'unknown';
     }
-    attempts.set(key, { journey: phase, count: (previous?.count ?? 0) + 1,
+    attempts.set(key, { contextId: context.id, journey: phase, count: (previous?.count ?? 0) + 1,
       denials: new Map() });
   });
   session.on('Audits.issueAdded', ({ issue }) => {

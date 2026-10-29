@@ -642,6 +642,105 @@ test('missing, duplicate, wrong-method and cross-phase attempts cannot exempt CS
   }
 });
 
+// Nightly linux-x64 shape: the pairing reload replaced the old document after
+// its single current-user connect-src console diagnostic, before Chromium
+// delivered the Audits issue for that fetch.
+const currentUserUrl = `${origin}/api/auth/user?proprDesktopScopeGeneration=1`;
+const replacedCurrentUserError = () => transitionErrors()[0];
+const replacedBeforeAudit = async ({ lifecycle = 'clear', replacement = 'main', path } = {}) => {
+  const f = await requestObserverFixture();
+  f.attempt(path ? origin + path : currentUserUrl);
+  f[lifecycle]();
+  if (replacement) f.document(2, replacement, 'replacement');
+  return f;
+};
+
+test('a pairing reload that replaces the document before its Audits issue explains only that current-user denial', async () => {
+  for (const lifecycle of ['clear', 'destroy']) {
+    const f = await replacedBeforeAudit({ lifecycle });
+    assert.deepEqual(f.records, [{ scenario: 'csp-reload', pageId: 1, mainFrame: true,
+      journey: 'csp-reload-pairing', failureJourney: 'csp-reload-pairing', url: currentUserUrl,
+      method: 'GET', resourceType: 'fetch', errorText: 'document-replaced-before-audit' }], lifecycle);
+    assert.equal(sanitizedCspReloadRequestFailure(f.records[0], origin).failureClass, 'document-replaced');
+    const records = [replacedCurrentUserError()];
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records, origin,
+      evidence: convergedEvidence, deniedRequests: f.records }), records, lifecycle);
+    // Header and meta diagnostics for the same fetch remain bounded.
+    const both = [replacedCurrentUserError(), replacedCurrentUserError()];
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: both, origin,
+      evidence: convergedEvidence, deniedRequests: f.records }), both, lifecycle);
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: [...both, replacedCurrentUserError()], origin,
+      evidence: convergedEvidence, deniedRequests: f.records }), [], lifecycle);
+    const context = { ...diagnosticContext(records), cspDeniedRequests: f.records };
+    const summary = runInNewContext(`${runnerDiagnosticFunctions}; sanitizedRendererErrorDiagnostics()`, context);
+    assert.equal(summary.unexpectedErrors, 0, lifecycle);
+    assert.equal(summary.errorCategoryCounts.expectedCspPolicyTransition, 1, lifecycle);
+    assert.equal(summary.errorCategoryCounts.other, 0, lifecycle);
+    context.consoleRecords.push({ type: 'error', journey: 'csp-reload-pairing', text: 'Unexpected error' });
+    assert.equal(runInNewContext('rendererErrorAcceptanceSummary()', context).unexpectedErrors, 1, lifecycle);
+  }
+});
+
+test('a late native issue after document replacement still supplies the single denial', async () => {
+  const f = await replacedBeforeAudit();
+  f.issue(currentUserUrl, { sourceCodeLocation: { scriptId: 'script-document-1', lineNumber: 1 } });
+  assert.equal(f.records.length, 2);
+  const records = [replacedCurrentUserError()];
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records, origin,
+    evidence: convergedEvidence, deniedRequests: f.records }), records);
+});
+
+test('document replacement never exempts other requests, diagnostics, phases or unobserved fetches', async () => {
+  const correlate = (records, deniedRequests, evidence = convergedEvidence) =>
+    correlateExpectedCspReloadConsoleRecords({ records, origin, evidence, deniedRequests });
+  const record = replacedCurrentUserError();
+  // Application close and subframe documents are not a policy-reload replacement.
+  for (const options of [{ replacement: null }, { lifecycle: 'destroy', replacement: null }, { replacement: 'child' }]) {
+    const f = await replacedBeforeAudit(options);
+    assert.deepEqual(f.records, [], JSON.stringify(options));
+    assert.deepEqual(correlate([record], f.records), [], JSON.stringify(options));
+  }
+  const replaced = (await replacedBeforeAudit()).records;
+  // Only current-user's connect-src diagnostic may use replacement evidence.
+  const [, , fetchDenied, demoMode] = transitionErrors();
+  assert.deepEqual(correlate([{ ...fetchDenied, text: fetchDenied.text }], replaced), []);
+  const demo = (await replacedBeforeAudit({ path: '/api/auth/demo-mode' })).records;
+  assert.equal(demo.length, 1);
+  assert.deepEqual(correlate([demoMode], demo), []);
+  // The console diagnostic must match the replaced fetch exactly.
+  for (const transform of [
+    item => ({ ...item, pageId: 2 }),
+    item => ({ ...item, journey: 'csp-reload-removal' }),
+    item => ({ ...item, text: item.text.replace('Generation=1', 'Generation=2') }),
+    item => ({ ...item, text: item.text.replace(origin, 'http://127.0.0.3:41731') }),
+  ]) assert.deepEqual(correlate([transform(record)], replaced), []);
+  for (const evidence of [null, { ...convergedEvidence, firstActivationReloads: 2 },
+    { ...convergedEvidence, removalNarrowed: false }]) assert.deepEqual(correlate([record], replaced, evidence), []);
+  // Replacement in a later phase, a repeated fetch, or no observed fetch never qualifies.
+  const crossPhase = await requestObserverFixture();
+  crossPhase.attempt(currentUserUrl);
+  crossPhase.phase('csp-reload-restart');
+  crossPhase.clear();
+  crossPhase.document(2, 'main', 'replacement');
+  assert.deepEqual(correlate([record], crossPhase.records), []);
+  const repeated = await requestObserverFixture();
+  repeated.attempt(currentUserUrl);
+  repeated.attempt(currentUserUrl);
+  repeated.clear();
+  repeated.document(2, 'main', 'replacement');
+  assert.deepEqual(repeated.records, []);
+  const unobserved = await requestObserverFixture();
+  unobserved.clear();
+  unobserved.document(2, 'main', 'replacement');
+  assert.deepEqual(unobserved.records, []);
+  assert.deepEqual(correlate([record], [...replaced, ...replaced]), []);
+  // Replacement evidence is spent once: a later document does not repeat it.
+  const f = await replacedBeforeAudit();
+  f.clear();
+  f.document(3, 'main', 'third');
+  assert.equal(f.records.length, 1);
+});
+
 test('Audits report-only, unrelated directives, origins and paths never supply denial evidence', async () => {
   const f = await requestObserverFixture();
   const url = origin + '/api/auth/demo-mode';
