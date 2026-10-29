@@ -656,6 +656,16 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   its output limit only the restarted copy is kept.
 - Private preview diagnostics, notification cleanup, live logs, partial indexing
   retries, model-aware review concurrency and alias-aware usage pricing.
+- **Multi-model runs on one issue**: when one request asks for several models
+  (API, CLI, MCP or several `llm-*` labels) and a model's job starts after
+  another model already finished, it no longer logs "Issue already has
+  'AI-done' tag. Skipping." and drops that model. Every model of the same
+  dispatch runs and opens its own branch and PR whatever the worker
+  concurrency. Jobs that really are stale, such as duplicate deliveries of a
+  finished task or jobs dispatched after the issue was already done, are still
+  skipped. A skipped job's task no longer stays `pending` forever: it ends
+  `cancelled` with "Skipped because the issue was already completed by another
+  run." or, when the trigger label was removed, the label-removed reason.
 
 ### Security
 

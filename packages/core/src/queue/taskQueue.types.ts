@@ -42,6 +42,13 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     /** Per-issue reasoning level override from a level-* label. */
     reasoningLevel?: ReasoningLevel;
     isChildJob?: boolean;
+    /**
+     * The matrix dispatch that enqueued this child, shared by every model and base
+     * of one request so a sibling's completion label does not skip the others.
+     */
+    dispatchId?: string;
+    /** The issue's label names when the dispatch first ran; its retries keep them. */
+    dispatchIssueLabels?: string[];
     issuePayload?: Record<string, unknown>;
     repoPayload?: Record<string, unknown>;
     title?: string;

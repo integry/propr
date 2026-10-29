@@ -79,7 +79,8 @@ describe('issueJobDispatcher handleDispatch', () => {
         number: 1701,
         correlationId: 'test-correlation',
       },
-    } as Job<IssueJobData>, deps);
+      updateData: async () => undefined,
+    } as unknown as Job<IssueJobData>, deps);
 
     assert.deepEqual(result, {
       status: 'dispatched',
@@ -93,5 +94,7 @@ describe('issueJobDispatcher handleDispatch', () => {
     assert.equal(queuedJobs[0].jobData.agentAlias, 'codex');
     assert.equal(queuedJobs[0].jobData.modelName, 'codex:gpt-5.5');
     assert.equal(queuedJobs[0].options.jobId, 'issue-integry-propr-1701-codex-codex:gpt-5.5-develop');
+    // Children of one dispatch share its ID, so a sibling's done label does not skip the others.
+    assert.equal(queuedJobs[0].jobData.dispatchId, 'parent-job');
   });
 });

@@ -53,15 +53,35 @@ export async function ensureProcessingLabel(
   }, context.AI_PROCESSING_TAG);
 }
 
-export function checkLabelConditions(currentLabels: string[], context: JobContext): LabelCheckResult {
+/**
+ * A child of a matrix dispatch that saw the issue unfinished belongs to the
+ * request whose first finished model may have labelled the issue done; that
+ * label must not drop the request's other models. A job without a dispatch,
+ * or dispatched after the issue was already done, is a stale duplicate.
+ */
+export function isUnfinishedDispatchSibling(issueRef: IssueJobData, doneTag: string): boolean {
+  if (!issueRef.isChildJob || !issueRef.dispatchId || !Array.isArray(issueRef.dispatchIssueLabels)) return false;
+  return !issueRef.dispatchIssueLabels.includes(doneTag);
+}
+
+/**
+ * @param ownTaskState - This job's task state when it started; a task that already
+ * completed is a duplicate delivery even within its own dispatch.
+ */
+export function checkLabelConditions(currentLabels: string[], context: JobContext, ownTaskState?: string): LabelCheckResult {
   const { jobId, issueRef, AI_PRIMARY_TAG, AI_DONE_TAG } = context;
   if (!currentLabels.includes(AI_PRIMARY_TAG)) {
     logger.warn({ jobId, issueNumber: issueRef.number }, `Issue no longer has primary tag '${AI_PRIMARY_TAG}'. Skipping.`);
-    return { skip: true, reason: 'Primary tag missing' };
+    return { skip: true, reason: 'Primary tag missing', terminalReason: 'cancelled_label_removed' };
   }
   if (currentLabels.includes(AI_DONE_TAG)) {
+    if (ownTaskState !== 'completed' && isUnfinishedDispatchSibling(issueRef, AI_DONE_TAG)) {
+      logger.info({ jobId, issueNumber: issueRef.number, dispatchId: issueRef.dispatchId },
+        `Issue has '${AI_DONE_TAG}' from a sibling model of the same request. Continuing.`);
+      return { skip: false };
+    }
     logger.warn({ jobId, issueNumber: issueRef.number }, `Issue already has '${AI_DONE_TAG}' tag. Skipping.`);
-    return { skip: true, reason: 'Already done' };
+    return { skip: true, reason: 'Already done', terminalReason: 'skipped_issue_done' };
   }
   return { skip: false };
 }

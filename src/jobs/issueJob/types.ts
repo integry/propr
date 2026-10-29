@@ -50,6 +50,8 @@ export interface IssueComment {
 export interface LabelCheckResult {
   skip: boolean;
   reason?: string;
+  /** Recorded on the skipped job's task, which otherwise stays pending. */
+  terminalReason?: import('@propr/core').TaskTerminalReason;
 }
 
 export interface TaskCompletionParams {

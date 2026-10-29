@@ -10,7 +10,7 @@ import {
   isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, excludeWithdrawnIssue, retainClosureCleanup, releaseWithdrawalCleanup, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
-import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
+import type { TaskStateData, TaskTerminalReason, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
 import { issueRunCostCapDeps, issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
@@ -28,6 +28,8 @@ import {
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 import { recordReplayableIssueTask } from '../taskReplacement/store.js';
+
+const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
 function isStoppedTask(task: TaskStateData | null): task is TaskStateData & { state: 'cancelled' } {
   return !!task && task.state === TaskStates.CANCELLED && !isBookkeepingCancellation(task);
@@ -111,6 +113,20 @@ async function checkIssueCancellation(
   const latest = await stateManager.getTaskState(taskId);
   if (isStoppedTask(latest)) return { status: 'cancelled', reason: latest.terminalReason };
   return null;
+}
+
+/**
+ * A skipped job's task ends instead of staying pending; one that already
+ * ended, such as a duplicate delivery's completed task, keeps its outcome.
+ */
+async function terminalizeSkippedTask(context: JobContext, task: TaskStateData | null, terminalReason: TaskTerminalReason): Promise<void> {
+  const { stateManager, taskId, correlatedLogger } = context;
+  if (task && TERMINAL_TASK_STATES.has(task.state)) return;
+  try {
+    await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(terminalReason), terminalReason });
+  } catch (stateError) {
+    correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to record the skipped task as cancelled');
+  }
 }
 
 async function cleanupUserStoppedIssue(
@@ -243,8 +259,12 @@ async function processIssueWithAdmission(
     const cancellation = await checkIssueCancellation(context, currentIssueData);
     if (cancellation) return cancellation;
     currentLabels = currentIssueData.data.labels.map(label => label.name);
-    const labelCheck = checkLabelConditions(currentLabels, context);
-    if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
+    const ownTask = await stateManager.getTaskState(taskId);
+    const labelCheck = checkLabelConditions(currentLabels, context, ownTask?.state);
+    if (labelCheck.skip) {
+      await terminalizeSkippedTask(context, ownTask, labelCheck.terminalReason ?? 'skipped_issue_done');
+      return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
+    }
   } catch (error) {
     return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
   }
