@@ -1,6 +1,7 @@
 import { repositoryWorkflowExecution, buildWorkflowWrapper, markWorkflowWrapperBuilt } from '../../workflow/workflowExecution.js';
 import type { AgentType } from '../../agents/types.js';
 import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
+import { claudeConfigSeedScript } from './claudeConfigSeed.js';
 
 export { buildAgentContainerResourceArgs };
 
@@ -29,6 +30,7 @@ const REPO_SETUP_WRAPPER_SCRIPT = `
 set -e
 
 entrypoint="$0"
+${claudeConfigSeedScript()}
 setup_script="\${PROPR_WORKSPACE:-/home/node/workspace}/.propr/setup.sh"
 
 export PROPR_WORKSPACE="\${PROPR_WORKSPACE:-/home/node/workspace}"

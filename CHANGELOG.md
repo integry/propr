@@ -533,6 +533,15 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
 
 ### Fixed
 
+- **Claude config on launcher-managed installs**: Claude agent runs no longer
+  fail with "Claude configuration file not found at: /home/node/.claude.json /
+  A backup file exists at: …" after the first run. The launcher mounts the
+  host's `.claude.json` (next to `HOST_CLAUDE_DIR`, or `HOST_CLAUDE_JSON`)
+  read-only, and each agent container works on a private copy, or on a minimal
+  config when the host has none. Agent runs keep their config backups in the
+  container, so they no longer add stub backups to, or prune, the host's
+  `~/.claude/backups`. `propr check` reports whether the file is present and
+  mounted.
 - **Database migration failures**: when the launcher's migration phase fails,
   the startup error now names the migration error (for example a corrupt
   migration directory) instead of an unrelated tini init warning or Node's

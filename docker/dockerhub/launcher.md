@@ -15,6 +15,7 @@ docker run --rm \
   -e PROPR_LOGS_DIR=$PWD/logs \
   -e PROPR_REPOS_DIR=$PWD/repos \
   -e HOST_CLAUDE_DIR=$HOME/.claude \
+  -e HOST_CLAUDE_JSON=$HOME/.claude.json \
   -e HOST_CODEX_DIR=$HOME/.codex \
   -e HOST_ANTIGRAVITY_DIR=$HOME/.gemini \
   propr/launcher:latest

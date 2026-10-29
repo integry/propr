@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { AgentTankUsage, AgentValidationRow } from "./agentValidation.js";
 import {
+  claudeConfigCheck,
   configurationErrorCheck,
   createCheckCommand,
   isDockerInfoTemplateError,
@@ -178,4 +181,27 @@ test("check agents prints completed rows and exits only for validation failures"
   rows[1].host = { status: "ok", detail: "OpenCode host completed" };
   await createCheckCommand(dependencies).parseAsync(["agents"], { from: "user" });
   assert.deepEqual(exitCodes, [1], "malformed subscription usage must not add an exit failure");
+});
+
+test("propr check reports whether the Claude config file is present and mounted", () => {
+  const home = mkdtempSync(join(tmpdir(), "propr-check-claude-"));
+  const claudeDir = join(home, ".claude");
+  const claudeJson = join(home, ".claude.json");
+
+  assert.equal(claudeConfigCheck({}), undefined, "no row when Claude is not configured");
+
+  const missing = claudeConfigCheck({ hostClaudeDir: claudeDir });
+  assert.equal(missing?.status, "warn");
+  assert.match(missing?.detail ?? "", new RegExp(`${claudeJson} not found — not mounted`));
+  assert.match(missing?.fix ?? "", /HOST_CLAUDE_JSON/);
+
+  writeFileSync(claudeJson, "{}");
+  const mounted = claudeConfigCheck({ hostClaudeDir: claudeDir, hostClaudeJson: claudeJson });
+  assert.equal(mounted?.status, "ok");
+  assert.match(mounted?.detail ?? "", /mounted read-only; each Claude run gets a private copy/);
+  assert.equal(mounted?.group, "Agents");
+
+  const badOverride = claudeConfigCheck({ hostClaudeDir: claudeDir, hostClaudeJson: join(home, "nope.json"), hostClaudeJsonExplicit: true });
+  assert.equal(badOverride?.status, "fail");
+  assert.match(badOverride?.fix ?? "", /HOST_CLAUDE_JSON/);
 });

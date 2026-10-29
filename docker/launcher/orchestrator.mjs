@@ -338,6 +338,15 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
+    // Claude Code keeps its account/onboarding config in the `.claude.json` file
+    // next to its credential dir (~/.claude → ~/.claude.json). An explicit
+    // HOST_CLAUDE_JSON is always mounted (a missing file then fails loudly); the
+    // derived sibling only when it exists, because a launcher running in a
+    // container cannot see host files it was not given.
+    const hostClaudeJsonOverride = get('HOST_CLAUDE_JSON');
+    const derivedClaudeJson = hostClaudeDir ? defaultHostClaudeJson(hostClaudeDir) : undefined;
+    const hostClaudeJson = hostClaudeJsonOverride
+        || (derivedClaudeJson && isReadableFile(derivedClaudeJson) ? derivedClaudeJson : undefined);
     const mistralApiKey = get('MISTRAL_API_KEY');
 
     const vibePromptCacheDir = get('VIBE_PROMPT_CACHE_DIR') || '/tmp/propr-vibe-prompts';
@@ -400,7 +409,8 @@ export function resolveConfig(env = process.env, overrides = {}) {
         authRateLimitMax, authRateLimitWindowMs,
         webhookRateLimitMax, webhookRateLimitWindowMs,
         webPushVapidSubject, webPushVapidPublicKey, webPushVapidPrivateKey,
-        hostClaudeDir, hostCodexDir, hostAntigravityDir,
+        hostClaudeDir, hostClaudeJson, hostClaudeJsonExplicit: Boolean(hostClaudeJsonOverride),
+        hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
         hostGhPrivateKey,
@@ -491,6 +501,17 @@ export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, 
 // docker arg builders
 // ---------------------------------------------------------------------------
 
+// The `.claude.json` that sits next to a Claude credential dir (~/.claude →
+// ~/.claude.json).
+export function defaultHostClaudeJson(hostClaudeDir) {
+    const dir = hostClaudeDir.replace(/\/+$/, '') || '/';
+    return `${dir}.json`;
+}
+
+function mountField(key, value) {
+    return /[",]/.test(value) ? `"${key}=${value.replace(/"/g, '""')}"` : `${key}=${value}`;
+}
+
 // Mount host credentials at the same path on both sides (HOST:HOST) and set the
 // *_CONFIG_PATH env vars to that path, so the worker/api can re-mount them into
 // agent containers without any path translation.
@@ -499,6 +520,13 @@ export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false, readOn
     if (cfg.hostClaudeDir) {
         args.push('-v', `${cfg.hostClaudeDir}:${cfg.hostClaudeDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `CLAUDE_CONFIG_PATH=${cfg.hostClaudeDir}`);
+    }
+    if (cfg.hostClaudeJson) {
+        // Always read-only: the backend only seeds a private per-agent copy from
+        // it and must never write the user's config. `--mount` fails on a missing
+        // source instead of creating a directory at the config file's path.
+        args.push('--mount', ['type=bind', mountField('source', cfg.hostClaudeJson), mountField('target', cfg.hostClaudeJson), 'readonly'].join(','));
+        args.push('-e', `CLAUDE_JSON_PATH=${cfg.hostClaudeJson}`);
     }
     if (cfg.hostCodexDir) {
         args.push('-v', `${cfg.hostCodexDir}:${cfg.hostCodexDir}${readOnly ? ':ro' : ''}`);
@@ -2338,6 +2366,15 @@ export function validateEnv(cfg) {
         .map(([name, value]) => (value ? validateDockerBindPath(name, value) : null))
         .find(Boolean);
     if (invalidCredential) errors.push(invalidCredential);
+
+    if (cfg.hostClaudeJsonExplicit && cfg.hostClaudeJson) {
+        const invalidClaudeJson = validateDockerBindPath('HOST_CLAUDE_JSON', cfg.hostClaudeJson);
+        if (invalidClaudeJson) {
+            errors.push(invalidClaudeJson);
+        } else if (cfg.validateHostPaths && !isReadableFile(cfg.hostClaudeJson)) {
+            errors.push(`HOST_CLAUDE_JSON (${cfg.hostClaudeJson}) is not a file. Point it at the .claude.json written by \`claude\` login on this host, or unset it.`);
+        }
+    }
 
     if (cfg.hostGhPrivateKey) {
         const invalidKeyPath = validateDockerBindPath('HOST_GH_PRIVATE_KEY', cfg.hostGhPrivateKey);
