@@ -15,14 +15,19 @@ const ENTRYPOINT_NOTICE = new RegExp([
 ].join('|'));
 // `error: …` from a CLI, `Error: …`/`TypeError: …` from Node, `fatal: …` from git.
 const ERROR_LINE = /^(?:[A-Za-z]*Error\b|error\b|ERROR\b|fatal\b|FATAL\b|panic\b)/;
+// Node's `file:line[:column]` source location printed above an uncaught error.
+const STACK_LOCATION = /^\S+:\d+(?::\d+)?$/;
 
 /**
- * Picks the line of an agent's output that names its failure: the first error
- * line after the entrypoint preamble, else the first other line. Callers redact.
+ * Picks the line of an agent's output that names its failure. After an
+ * entrypoint preamble or a source location that is the first error line, else
+ * the first other line; any other message keeps its own first line. Callers redact.
  */
 export function agentFailureLine(output: string): string {
     const lines = output.replace(ANSI_ESCAPE, '').split('\n').map(line => line.trim()).filter(Boolean);
     const candidates = lines.filter(line => !ENTRYPOINT_NOTICE.test(line));
-    const line = candidates.find(candidate => ERROR_LINE.test(candidate)) ?? candidates[0] ?? lines.at(-1) ?? '';
+    const searchErrorLine = candidates.length < lines.length || STACK_LOCATION.test(candidates[0] ?? '');
+    const errorLine = searchErrorLine ? candidates.find(candidate => ERROR_LINE.test(candidate)) : undefined;
+    const line = errorLine ?? candidates[0] ?? lines.at(-1) ?? '';
     return line.length > AGENT_FAILURE_LINE_MAX_CHARS ? `${line.slice(0, AGENT_FAILURE_LINE_MAX_CHARS)}…` : line;
 }

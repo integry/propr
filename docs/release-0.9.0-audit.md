@@ -245,7 +245,7 @@ the API typecheck and the six `packages/api/test/mcp*.test.ts` files pass, and
 
 Only release metadata, notices and that lockfile update changed: `CHANGELOG.md`,
 this audit, `THIRD_PARTY_LICENSES.md`, `NOTICE`, the six `license` fields and
-their lockfile entries, and the MCP/Hono lockfile entries. No application code, lint rule, CI routing or styling changed. No tag,
+their lockfile entries, and the MCP/Hono lockfile entries. That pass changed no application code, lint rule, CI routing or styling; the logic fixes listed below came later. No tag,
 release, publication or deployment was performed.
 
 Later merges: current `main` (`2727fe3ad`) was merged into this branch. It adds
@@ -260,3 +260,20 @@ bullet under **Fixed**:
   endlessly while showing as running.
 
 The release scope now runs through `2727fe3ad`.
+
+Logic fixes on this branch: unlike the metadata changes above, these change
+application code, and each is recorded in the changelog.
+
+- **Retired models**: saved Antigravity Gemini 3.6/3.7 Flash selections,
+  aliases, labels and effort routes launch on Gemini 3.8 Flash, startup moves
+  agents that list them to 3.8 Flash, and saved references elsewhere are checked
+  through the shared `agentSupportsSavedModel` helper.
+- **Agent failure reasons**: the shared `agentFailureLine` helper reduces a
+  failed task, goal, agent run or PR follow-up to one line of at most 500
+  characters. After an entrypoint preamble or a source location it picks the
+  CLI or Node error line; any other message keeps its first line.
+  `buildTaskStateTransition` redacts task-state reasons and last-error messages.
+
+Validation: zero-warning lint across workspaces and root `src/`, the root, API
+and UI typechecks, the affected unit and integration tests (including
+`packages/shared/test/agentFailureLine.test.ts`) and `release:verify` pass.

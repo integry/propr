@@ -540,8 +540,9 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
 - **Agent failure reasons**: a failed task, goal, agent run or PR follow-up now
   reports the agent or CLI error line (for example Antigravity's `error:
   invalid model selection …`) instead of the container entrypoint's preamble.
-  The reason shown by the API, MCP, CLI and GitHub comments is one redacted line
-  of at most 500 characters, never raw container output.
+  The reason is one line of at most 500 characters, never raw container output;
+  a message ProPR wrote itself keeps its own first line. Task-state reasons and
+  last-error messages are also redacted.
 - **Ultrafix and CI**: a loop paused on failing CI resumes when green `check_run`
   or `check_suite` events or polling show the build fixed, and a deferred step
   survives restarts and failed jobs. Review readiness honours the repository's

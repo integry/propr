@@ -39,6 +39,15 @@ test('agentFailureLine falls back to the first non-preamble line and keeps singl
     assert.equal(agentFailureLine(''), '');
 });
 
+test('agentFailureLine keeps the first line of a message without an entrypoint preamble', () => {
+    const goal = 'Claude cleared the native goal before it was met: the tests still fail';
+    assert.equal(agentFailureLine(`${goal}\nError: expected 2 to equal 3\n    at test (/app/a.test.js:4:5)`), goal);
+    assert.equal(agentFailureLine('Push failed: remote rejected the branch\nfatal: refusing to update ref'), 'Push failed: remote rejected the branch');
+    assert.equal(agentFailureLine('The review found gaps\nerror handling was incomplete in two paths'), 'The review found gaps');
+    assert.equal(agentFailureLine('/app/x.js:3\n  ^\n\nTypeError: boom\n    at main (/app/x.js:3:1)'), 'TypeError: boom');
+    assert.equal(agentFailureLine('/app/x.js:3:7\nnothing named the error'), '/app/x.js:3:7');
+});
+
 test('agentFailureLine bounds one line and never returns the rest of the output', () => {
     const long = `error: ${'x'.repeat(AGENT_FAILURE_LINE_MAX_CHARS * 4)}`;
     const line = agentFailureLine(`${long}\n${'raw output\n'.repeat(10_000)}`);

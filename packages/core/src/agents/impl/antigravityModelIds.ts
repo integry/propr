@@ -80,4 +80,3 @@ export function antigravityModelIdsMatch(requestedModel: string, reportedModel: 
     const successor = (model: string) => getAntigravityCompatibilityRoute(model)?.model ?? model;
     return successor(requested.model) === successor(reported.model) && (!requested.effort || !reported.effort || requested.effort === reported.effort);
 }
-
