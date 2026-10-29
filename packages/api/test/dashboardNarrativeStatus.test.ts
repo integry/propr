@@ -19,10 +19,12 @@ test('narrative status reports the opt-in without reading data or resolving a mo
   }
 });
 
-test('an unreadable opt-in reports the summary as off', async () => {
+test('an unreadable opt-in is a retryable 503, not a confirmed disablement', async () => {
   const routes = createDashboardRoutes({
     db: unreadable, redisClient: {} as never, taskQueue: {} as never,
     isSummaryEnabled: async () => { throw new Error('Config unavailable'); },
   });
-  assert.deepEqual((await call(routes.getNarrativeStatus)).body, { enabled: false });
+  const result = await call(routes.getNarrativeStatus);
+  assert.equal(result.status, 503);
+  assert.deepEqual(result.body, { error: 'Dashboard summary status is unavailable' });
 });

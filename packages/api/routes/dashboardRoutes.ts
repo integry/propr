@@ -229,13 +229,15 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   const narrative = createDashboardNarrative(deps.narrativeModel ?? (async () => null));
 
   // Lets the dashboard check the opt-in before asking for a narrative, so a
-  // disabled summary costs no narrative request and renders no bar.
+  // disabled summary costs no narrative request and renders no bar. An
+  // unreadable setting is a retryable 503, never a confirmed `enabled: false`,
+  // so the dashboard keeps checking until the setting can be read.
   async function getNarrativeStatus(_req: Request, res: Response): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');
     try {
       res.json({ enabled: deps.isSummaryEnabled ? await deps.isSummaryEnabled() : true });
     } catch {
-      res.json({ enabled: false });
+      res.status(503).json({ error: 'Dashboard summary status is unavailable' });
     }
   }
 
