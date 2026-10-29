@@ -376,6 +376,11 @@ function isLastAttempt(job: Job<IssueJobData>): boolean {
     return (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
 }
 
+/** A retried dispatch keeps its job ID, so children it re-adds stay siblings of the first ones. */
+function dispatchIdOf(job: Job<IssueJobData>, correlationId: string): string {
+    return job.id ?? correlationId;
+}
+
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const { submission, run, trigger } = await resolveCurrentRun(issueRef, deps);
@@ -433,6 +438,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
                     modelLabel: agentModel.label,
                     reasoningLevel,
                     isChildJob: true,
+                    dispatchId: dispatchIdOf(job, correlationId),
                     issuePayload: currentIssueData.data as unknown as Record<string, unknown>,
                     repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
                 };

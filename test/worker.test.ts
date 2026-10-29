@@ -54,12 +54,25 @@ describe('worker behavioral contracts', () => {
         assert.deepEqual(checkLabelConditions(['bug'], context as never), {
             skip: true,
             reason: 'Primary tag missing',
+            terminalReason: 'cancelled_label_removed',
         });
         assert.deepEqual(checkLabelConditions(['AI', 'AI-done'], context as never), {
             skip: true,
             reason: 'Already done',
+            terminalReason: 'skipped_issue_done',
         });
         assert.deepEqual(checkLabelConditions(['AI'], context as never), { skip: false });
+    });
+
+    test('a done label from a sibling model of the same dispatch does not skip the job', () => {
+        const dispatched = (labels: string[]) => ({
+            ...createJobContext(),
+            issueRef: { number: 42, repoOwner: 'integry', repoName: 'propr', isChildJob: true, dispatchId: 'dispatch-1', issuePayload: { labels: labels.map(name => ({ name })) } },
+        });
+        assert.deepEqual(checkLabelConditions(['AI', 'AI-done'], dispatched(['AI']) as never, 'pending'), { skip: false });
+        // A duplicate of a sibling that already completed, or a dispatch that already saw the issue done, is stale.
+        assert.equal(checkLabelConditions(['AI', 'AI-done'], dispatched(['AI']) as never, 'completed').skip, true);
+        assert.equal(checkLabelConditions(['AI', 'AI-done'], dispatched(['AI', 'AI-done']) as never, 'pending').skip, true);
     });
 
     test('processing-label behavior adds the tag once and preserves an existing tag', async () => {
