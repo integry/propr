@@ -4,7 +4,34 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
-import { claimOwnerGone, currentClaimOwner, isClaimOwner, type ClaimOwnerProbe } from './claimOwner.js';
+import { claimOwnerGone, currentClaimOwner, isClaimOwner, type ClaimOwner, type ClaimOwnerProbe } from './claimOwner.js';
+
+/**
+ * The holder's record inside the gate directory, named `owner-<token>` with the
+ * holder's unique token. Removing it by name is the only atomic compare-and-remove
+ * a filesystem offers, so a reclaim or release that unlinks the record it
+ * inspected can never touch a successor's record: that one has another name.
+ */
+const GATE_OWNER_PREFIX = 'owner-';
+/** A holder prepares its gate, record included, under `gate-<token>` and then renames it into place. */
+const GATE_PREPARED_PREFIX = 'gate-';
+/** How often a waiter probes whether the gate holder is still alive. */
+const GATE_ORPHAN_CHECK_MS = 5_000;
+/** A gate with no owner record (a release that died between removing its record and the directory, or an older release) is abandoned after this. */
+const GATE_UNOWNED_GRACE_MS = 10 * 60_000;
+/** Without a caller-supplied warning, a wait for the gate is reported this often. */
+const DEFAULT_WAIT_WARNING_MS = 60_000;
+
+interface GateRecord { owner: ClaimOwner; token: string; takenAt: number }
+/** What a waiter saw inside the gate: the holder's record (by file name) and every other entry. */
+interface GateContents { holder: { file: string; record: GateRecord } | null; entries: string[] }
+
+export interface StorageLifecycleOptions {
+  /** Interval of the default "still waiting for the gate" warning. */
+  waitWarningMs?: number;
+  /** How often a waiter probes the gate holder; the first probe waits a full interval. */
+  orphanCheckMs?: number;
+}
 
 /** Durable instance policy, registry and audit records, outside repository working copies. */
 export function storageControlRoot(): string {
@@ -50,10 +77,21 @@ interface StorageUseScope {
  * No TTL stealing: a crashed process is uncertainty, not permission to delete.
  * A claim records its owning process, and only proof that the owner is gone
  * (see claimOwnerGone) releases it; elapsed time never does.
+ *
+ * One bounded exception: a gate with no holder record is replaced after
+ * GATE_UNOWNED_GRACE_MS. Such a gate was left by a holder that died between
+ * removing its record and its directory, or by a release older than the record,
+ * whose gate is a plain directory; during a mixed-version deploy the grace period
+ * is therefore a TTL on that older process's gate, chosen far above the longest
+ * gated operation (API cleanup runs under a 60 s deadline).
  */
 export class StorageLifecycle {
   private context = new AsyncLocalStorage<StorageUseScope>();
-  constructor(readonly root: string = repositoryLifecycleRoot(), private readonly ownerProbe?: ClaimOwnerProbe) {}
+  constructor(
+    readonly root: string = repositoryLifecycleRoot(),
+    private readonly ownerProbe?: ClaimOwnerProbe,
+    private readonly options: StorageLifecycleOptions = {},
+  ) {}
 
   async initialize(): Promise<void> {
     await fs.mkdir(this.root, { recursive: true });
@@ -62,20 +100,161 @@ export class StorageLifecycle {
     await assertRealDirectory(path.join(this.root, 'readers'));
   }
 
+  /**
+   * The gate is a directory shared by every ProPR process on the host. Its
+   * holder records itself inside it; a waiter that finds the holder gone
+   * (crashed process, restarted container) removes the gate instead of waiting
+   * forever, which once froze every worker after an out-of-memory crash.
+   *
+   * The record is written before the directory becomes the gate: the holder
+   * prepares `gate-<token>` with its record inside and renames it onto `gate`.
+   * That rename is the only way in, and it replaces nothing but an empty
+   * directory, so a takeover authorized by an earlier look at the gate can
+   * never consume a directory another holder has published its record in, and
+   * a record can never land in a directory its writer did not prepare.
+   */
   async exclusive<T>(run: () => Promise<T>, waitMs = 10_000): Promise<T> {
     await this.initialize();
     const gate = path.join(this.root, 'gate');
+    const token = randomUUID();
+    const prepared = await this.prepareGate(token);
     const until = Date.now() + waitMs;
-    for (;;) {
-      try { await fs.mkdir(gate); break; }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    const orphanCheckMs = this.options.orphanCheckMs ?? GATE_ORPHAN_CHECK_MS;
+    // Routine contention (admission, release, queue adds) lasts milliseconds; the
+    // holder is probed only after a full interval, so the common path never
+    // reads the record or spawns `docker inspect`.
+    let nextOrphanCheck = Date.now() + orphanCheckMs;
+    try {
+      for (;;) {
+        if (await this.takeGate(gate, prepared)) break;
         if (Date.now() >= until) throw new StorageBusyError();
-        await new Promise(resolve => setTimeout(resolve, 25));
+        if (Date.now() >= nextOrphanCheck) {
+          nextOrphanCheck = Date.now() + orphanCheckMs;
+          const why = await this.reclaimAbandonedGate(gate);
+          if (why && await this.takeGate(gate, prepared, true)) {
+            console.warn(`[storage] Removed an abandoned storage lifecycle gate: ${why}`);
+            break;
+          }
+        }
+        await delay(25);
       }
+    } catch (error) {
+      await fs.rm(prepared, { recursive: true, force: true });
+      throw error;
     }
     try { return await run(); }
-    finally { await fs.rmdir(gate); }
+    finally { await this.releaseGate(gate, token); }
+  }
+
+  /** This call's gate-to-be, with its record already inside, under a name only this call uses. */
+  private async prepareGate(token: string): Promise<string> {
+    const prepared = path.join(this.root, GATE_PREPARED_PREFIX + token);
+    const record: GateRecord = { owner: currentClaimOwner(), token, takenAt: Date.now() };
+    await fs.mkdir(prepared);
+    try { await fs.writeFile(path.join(prepared, GATE_OWNER_PREFIX + token), JSON.stringify(record), { flag: 'wx' }); }
+    catch (error) { await fs.rm(prepared, { recursive: true, force: true }); throw error; }
+    return prepared;
+  }
+
+  /**
+   * Moves the prepared directory onto the gate path. rename(2) replaces a
+   * directory only while it is empty, atomically, so this succeeds only when no
+   * holder has a record in place: never against a holder, whatever this caller
+   * saw earlier. Outside a reclaim the gate is first created plainly, so an
+   * empty gate (another version's holder, or a release in progress) is waited
+   * on rather than replaced before the grace period.
+   */
+  private async takeGate(gate: string, prepared: string, replaceEmpty = false): Promise<boolean> {
+    if (!replaceEmpty) {
+      try { await fs.mkdir(gate); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        return false;
+      }
+    }
+    try { await fs.rename(prepared, gate); return true; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // The empty directory was replaced by another holder's rename in between.
+      if (code === 'ENOTEMPTY' || code === 'EEXIST') return false;
+      // Do not leave the plain directory just created for others to wait on (rmdir never touches a published gate: that one is not empty).
+      if (!replaceEmpty) await fs.rmdir(gate).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** What the gate holds right now; null when the gate does not exist. A record is only valid under its own token's file name. */
+  private async gateContents(gate: string): Promise<GateContents | null> {
+    let entries: string[];
+    try { entries = await fs.readdir(gate); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      return { holder: null, entries: [] };
+    }
+    for (const file of entries) {
+      if (!file.startsWith(GATE_OWNER_PREFIX)) continue;
+      try {
+        const record = JSON.parse(await fs.readFile(path.join(gate, file), 'utf8')) as Partial<GateRecord>;
+        if (isClaimOwner(record?.owner) && record.token === file.slice(GATE_OWNER_PREFIX.length)) {
+          return { holder: { file, record: record as GateRecord }, entries };
+        }
+      } catch { /* a vanished or half-written record: treated like any other stale entry */ }
+    }
+    return { holder: null, entries };
+  }
+
+  /**
+   * Empties the gate when its holder is gone, or when it has had no holder
+   * record for the grace period, and says why; null while it is to be waited on.
+   * Concurrent waiters all probe the same record, and a probe may resolve long
+   * after another waiter has reclaimed and retaken the gate: removal is
+   * therefore tied to the record that was probed, by unlinking it under its
+   * token-specific name. Only the one waiter whose unlink succeeds goes on to
+   * take the emptied directory; the others lose the race with ENOENT and keep
+   * waiting on whoever holds the gate now. The directory itself is never
+   * removed by name: the caller renames its own gate onto it, which only
+   * replaces it while it is still empty.
+   */
+  private async reclaimAbandonedGate(gate: string): Promise<string | null> {
+    const contents = await this.gateContents(gate);
+    if (!contents) return null;
+    if (contents.holder) {
+      const { file, record } = contents.holder;
+      if (!await claimOwnerGone(record.owner, this.ownerProbe)) return null;
+      try { await fs.unlink(path.join(gate, file)); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }
+      return `its holder (${record.owner.host} pid ${record.owner.pid}) is gone`;
+    }
+    let age: number;
+    try { age = Date.now() - (await fs.stat(gate)).mtimeMs; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (age < GATE_UNOWNED_GRACE_MS) return null;
+    // Stale leftovers (a half-written record) go by the names seen above; a record written since has another name and keeps the directory.
+    for (const file of contents.entries) await fs.unlink(path.join(gate, file)).catch(() => undefined);
+    return `it has had no holder record for ${Math.round(age / 60_000)} minutes`;
+  }
+
+  /** Releases only the gate this call took: the record is removed under this call's token, so a gate reclaimed and retaken by another process is left alone. */
+  private async releaseGate(gate: string, token: string): Promise<void> {
+    try { await fs.unlink(path.join(gate, GATE_OWNER_PREFIX + token)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      console.warn('[storage] The storage lifecycle gate was reclaimed while held; the holder was probably judged dead');
+      return;
+    }
+    // ENOTEMPTY: a successor renamed its gate onto this briefly empty one.
+    await fs.rmdir(gate).catch(error => { if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; });
+  }
+
+  /** Who holds the gate right now, for wait warnings. */
+  async gateHolder(): Promise<ClaimOwner | null> {
+    return (await this.gateContents(path.join(this.root, 'gate')))?.holder?.record.owner ?? null;
   }
 
   /** Optional cleanup yields its proof to published admissions, across processes.
@@ -158,11 +337,20 @@ export class StorageLifecycle {
     });
   }
 
+  /** A caller's warning fires once; without one, a wait is reported every interval so it can never be silent. */
   private async withWaitWarning<T>(run: () => Promise<T>, warning?: StorageUseOptions['waitWarning']): Promise<T> {
-    const timer = warning ? setTimeout(warning.warn, warning.afterMs) : undefined;
-    timer?.unref();
+    const started = Date.now();
+    const timer = warning
+      ? setTimeout(warning.warn, warning.afterMs)
+      : setInterval(() => {
+        void this.gateHolder().then(holder => console.warn(
+          `[storage] Still waiting for the storage lifecycle gate after ${Math.round((Date.now() - started) / 1000)}s`
+          + (holder ? ` (held by ${holder.host} pid ${holder.pid})` : ' (no holder record)'),
+        ));
+      }, this.options.waitWarningMs ?? DEFAULT_WAIT_WARNING_MS);
+    timer.unref();
     try { return await run(); }
-    finally { if (timer) clearTimeout(timer); }
+    finally { clearTimeout(timer); clearInterval(timer); }
   }
 
   private async admit(admission: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<void> {
