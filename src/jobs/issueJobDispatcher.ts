@@ -83,6 +83,8 @@ export interface DispatcherDeps {
     getAllCustomLabels: typeof getAllCustomLabels;
     resolveDefaultAgentForDispatcher: typeof resolveDefaultAgentForDispatcher;
     retryRequests?: RetryRequestStore;
+    /** Durably stores the dispatch job's data, so a retry of the job reads what its first attempt saved. */
+    saveDispatchData?: (job: Job<IssueJobData>, data: IssueJobData) => Promise<void>;
 }
 
 async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promise<{ agentAlias: string; modelToUse: string | undefined }> {
@@ -133,6 +135,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveCustomLabel,
         getAllCustomLabels,
         resolveDefaultAgentForDispatcher,
+        saveDispatchData: (dispatchJob, data) => dispatchJob.updateData(data),
         retryRequests: {
             select: (issue, { submission }) => selectRetryRun(issue, submission
                 ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id, runs: request => retryRuns.read(request) }
@@ -385,10 +388,10 @@ function dispatchIdOf(job: Job<IssueJobData>, correlationId: string): string {
  * The issue's labels when this dispatch first ran, saved before any child is added. A retry
  * reuses them: a child it adds late is not made stale by a sibling that already labelled the issue done.
  */
-async function firstDispatchLabels(job: Job<IssueJobData>, storedData: IssueJobData, currentIssueData: CurrentIssueData): Promise<string[]> {
+async function firstDispatchLabels(job: Job<IssueJobData>, storedData: IssueJobData, currentIssueData: CurrentIssueData, deps: DispatcherDeps): Promise<string[]> {
     if (Array.isArray(storedData.dispatchIssueLabels)) return storedData.dispatchIssueLabels;
     const dispatchIssueLabels = currentIssueData.data.labels.map(label => label.name);
-    await job.updateData({ ...storedData, dispatchIssueLabels });
+    await deps.saveDispatchData?.(job, { ...storedData, dispatchIssueLabels });
     return dispatchIssueLabels;
 }
 
@@ -438,7 +441,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
             { currentIssueData, repoValidation, issueNumber: issueRef.number }, deps, correlatedLogger,
         );
 
-        issueRef.dispatchIssueLabels = await firstDispatchLabels(job, storedData, currentIssueData);
+        issueRef.dispatchIssueLabels = await firstDispatchLabels(job, storedData, currentIssueData, deps);
         const children: RetryRunChild[] = [];
         for (const base of basesToProcess) {
             for (const agentModel of agentModelsToProcess) {

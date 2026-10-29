@@ -166,6 +166,7 @@ test('a retried dispatch whose first child already finished the issue still runs
     } },
     resolveLlmLabel: async (model: string) => ({ agentAlias: 'claude', model }),
     getAllCustomLabels: async () => [],
+    saveDispatchData: (job: Job<IssueJobData>, data: IssueJobData) => job.updateData(data),
   } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
   // BullMQ hands a retry the job data it stored, not the previous attempt's in-memory copy.
   let stored: IssueJobData = { repoOwner: 'o', repoName: 'r', number: 7, correlationId: 'submission' } as IssueJobData;
