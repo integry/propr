@@ -625,8 +625,9 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   `@modelcontextprotocol/sdk` 1.32.1, `sharp` 0.35.5, `hono` 4.13.12,
   `proxy-addr`, `fast-copy`, `argv-parser` and `tinypool`; process-local Git
   authentication now strips inherited Git, editor, pager and SSH overrides.
-  Later updates include `@modelcontextprotocol/server` 2.3.1,
-  `@modelcontextprotocol/node` 2.1.1, `ip-address` 10.7.4 and Electron 45.
+  Later updates include `@modelcontextprotocol/server` 2.4.0,
+  `@modelcontextprotocol/node` 2.1.2, `@hono/node-server` 2.1.5
+  (GHSA-rmxm-3fg6-px4f), `ip-address` 10.7.4 and Electron 45.
   Desktop packaging and documentation build tooling are patched as well.
 - **Breaking — agent environment values redacted**: `GET`/`POST
   /api/config/agents` and `propr agent list`/`add --json` return each agent

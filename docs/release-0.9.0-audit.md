@@ -231,7 +231,19 @@ Passed on this change:
 - `test/thirdPartyNotices.test.mjs` (8), `test/npmArtifactReconciliation.test.mjs` (9) and `test/buildImages.test.mjs` (19).
 - `npm run build --prefix docs` and `git diff --check`.
 
-Only release metadata and notices changed: `CHANGELOG.md`, this audit,
-`THIRD_PARTY_LICENSES.md`, `NOTICE`, the six `license` fields and their lockfile
-entries. No application code, lint rule, CI routing or styling changed. No tag,
+CI follow-up: the `audit:runtime` gate then failed on the newly published
+GHSA-rmxm-3fg6-px4f (`@hono/node-server` `>=1.19.10 <2.1.3`), which affected
+both the root 2.1.0 copy and the 1.19.17 copy nested under
+`@modelcontextprotocol/node` 2.1.1. A lockfile-only update within the existing
+ranges moves `@modelcontextprotocol/node` to 2.1.2 (which accepts
+`@hono/node-server` 2.x), `@hono/node-server` to 2.1.5 and, through the node
+package's peer range, `@modelcontextprotocol/server` and `core` to 2.4.0. No
+`package.json` range changed. `npm run audit:runtime` and
+`npm run desktop:audit:packaging` pass, npm 10 leaves the lock byte-identical,
+the API typecheck and the six `packages/api/test/mcp*.test.ts` files pass, and
+`scripts/generate-notices.sh` leaves `THIRD_PARTY_LICENSES.md` unchanged.
+
+Only release metadata, notices and that lockfile update changed: `CHANGELOG.md`,
+this audit, `THIRD_PARTY_LICENSES.md`, `NOTICE`, the six `license` fields and
+their lockfile entries, and the MCP/Hono lockfile entries. No application code, lint rule, CI routing or styling changed. No tag,
 release, publication or deployment was performed.
