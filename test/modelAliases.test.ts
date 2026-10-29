@@ -237,6 +237,20 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'opencode-big-pickle', 'Should resolve to correct OpenCode model');
     });
 
+    await t.test('routes retired OpenCode free-model labels, aliases and IDs to a current model', async () => {
+        for (const label of [
+            'opencode-muse-spark13-free',
+            'opencode-muse-spark12-free',
+            'muse-spark13-free',
+            'opencode-muse-spark-1.3-contributor-free',
+            'opencode:opencode-muse-spark-1.2-contributor-free',
+        ]) {
+            const result = await resolveLlmLabel(label);
+            assert.strictEqual(result.agentAlias, 'opencode', label);
+            assert.strictEqual(result.model, 'opencode-big-pickle', label);
+        }
+    });
+
     await t.test('Step 1: resolves prefixed OpenCode provider model IDs', async () => {
         const result = await resolveLlmLabel('opencode-kimi-k2.6');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
@@ -653,8 +667,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
     await t.test('returns correct short name for OpenCode models', () => {
         assert.strictEqual(getModelShortName('opencode-big-pickle'), 'Big Pickle');
         assert.strictEqual(
-            getModelShortName('opencode-muse-spark-1.3-contributor-free'),
-            'Muse Spark 1.3 Free'
+            getModelShortName('opencode-deepseek-v4.1-flash-free'),
+            'DeepSeek V4.1 Flash Free'
         );
     });
 
@@ -899,6 +913,13 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(results[0].agentAlias, 'opencode');
         assert.strictEqual(results[0].model, 'opencode-big-pickle');
         assert.strictEqual(results[0].displayLabel, 'Big Pickle');
+    });
+
+    await t.test('retired OpenCode free-model labels review on their current successor', async () => {
+        const results = await resolveReviewModels(['opencode-muse-spark13-free']);
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].agentAlias, 'opencode');
+        assert.strictEqual(results[0].model, 'opencode-big-pickle');
     });
 
     await t.test('dynamic OpenCode provider model IDs resolve through /review validation', async () => {

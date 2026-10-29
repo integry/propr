@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, currentOpenCodeModel } from '../packages/shared/src/openCodeCompatibility.ts';
 import { AGENT_DEFAULTS, AGENT_MODELS, ALL_MODELS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
-import { getModelInfoWithAntigravityCompatibility } from '../packages/shared/src/antigravityCompatibility.ts';
+import { agentSupportsSavedModel, getModelInfoWithAntigravityCompatibility } from '../packages/shared/src/antigravityCompatibility.ts';
 import { getReasoningLevelsForAgentType } from '../packages/shared/src/reasoningLevels.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
@@ -112,13 +113,37 @@ test('Claude Fable 5.1, Opus 5, and Sonnet 5 remain supported Claude Code models
 test('OpenCode catalog matches the current built-in free model set', () => {
     assert.deepStrictEqual(OPENCODE_MODELS.map(model => model.id), [
         'opencode-big-pickle',
-        'opencode-ling-3.0-flash-fin-free',
-        'opencode-mimo-v2.5-free',
-        'opencode-muse-spark-1.2-contributor-free',
-        'opencode-muse-spark-1.3-contributor-free',
-        'opencode-nemotron-3-ultra-free',
+        'opencode-beam-free',
+        'opencode-deepseek-v4.1-flash-free',
+        'opencode-flint-40b-free',
+        'opencode-glm-5.3-flash-free',
+        'opencode-mimo-v2.6-flash-free',
         'opencode-nemotron-3.5-lightning-free',
+        'opencode-nemotron-3.5-super-vl-free',
     ]);
+    assert.strictEqual(AGENT_DEFAULTS.opencode.defaultModels[0], 'opencode-big-pickle');
+});
+
+test('retired OpenCode free models route to a current catalog model', () => {
+    const current = new Set(OPENCODE_MODELS.map(model => model.id));
+    for (const [retired, successor] of Object.entries(OPENCODE_RETIRED_MODEL_ROUTES)) {
+        assert.ok(!current.has(retired), `${retired} must not stay selectable`);
+        assert.ok(current.has(successor), `${retired} must route to a current model, not ${successor}`);
+    }
+    for (const [alias, successor] of Object.entries(OPENCODE_RETIRED_MODEL_ALIASES)) {
+        assert.ok(current.has(successor), alias);
+        assert.ok(!OPENCODE_MODELS.some(model => `opencode-${model.shortAlias}` === alias), `${alias} must not shadow a current label`);
+    }
+    assert.strictEqual(currentOpenCodeModel('opencode-ling-3.0-flash-fin-free'), 'opencode-deepseek-v4.1-flash-free');
+    assert.strictEqual(currentOpenCodeModel('opencode/mimo-v2.5-free'), 'opencode-mimo-v2.6-flash-free');
+    assert.strictEqual(currentOpenCodeModel('opencode:opencode-nemotron-3-ultra-free'), 'opencode-nemotron-3.5-super-vl-free');
+    assert.strictEqual(currentOpenCodeModel('opencode-muse-spark-1.3-contributor-free'), 'opencode-big-pickle');
+    assert.strictEqual(currentOpenCodeModel('opencode-big-pickle'), 'opencode-big-pickle');
+    assert.strictEqual(currentOpenCodeModel('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+    const agent = { type: 'opencode', supportedModels: ['opencode-deepseek-v4.1-flash-free'] };
+    assert.ok(agentSupportsSavedModel(agent, 'opencode-ling-3.0-flash-fin-free'));
+    assert.ok(!agentSupportsSavedModel(agent, 'opencode-mimo-v2.5-free'));
+    assert.ok(!agentSupportsSavedModel({ type: 'claude', supportedModels: agent.supportedModels }, 'opencode-ling-3.0-flash-fin-free'));
 });
 
 test('GPT-6 Astra is the preferred Codex default', () => {

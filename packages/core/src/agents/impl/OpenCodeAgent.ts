@@ -11,6 +11,7 @@ import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwners
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { resolveOpenCodeFailureReason } from './openCodeParsing.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, evaluateOpenCodeAnalysis, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
@@ -104,7 +105,7 @@ export class OpenCodeAgent implements Agent {
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
             const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
             const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
-            const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
+            const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {
                 success,
                 executionTimeMs: executionTime,

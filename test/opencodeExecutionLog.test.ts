@@ -19,6 +19,7 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 let failureAt: 'ownership' | 'docker' | undefined;
+let dockerResult = { stdout: '', stderr: 'execution failed', exitCode: 1 };
 const setWorktreeOwnership = mock.fn(async () => {
   await Promise.resolve();
   if (failureAt === 'ownership') throw new Error('ownership failed');
@@ -35,7 +36,7 @@ await mock.module('../packages/core/src/claude/claudeHelpers.js', {
 const executeDockerCommand = mock.fn(async () => {
   await Promise.resolve();
   if (failureAt === 'docker') throw new Error('docker failed');
-  return { stdout: '', stderr: 'execution failed', exitCode: 1 };
+  return dockerResult;
 });
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
   namedExports: { executeDockerCommand },
@@ -73,6 +74,7 @@ after(() => closeConnection());
 beforeEach(() => {
   persistLlmLog.mock.resetCalls();
   executeDockerCommand.mock.resetCalls();
+  dockerResult = { stdout: '', stderr: 'execution failed', exitCode: 1 };
 });
 
 const config: AgentConfig = {
@@ -112,3 +114,62 @@ for (const stage of ['ownership', 'docker', undefined] as const) {
     assert.equal(entry.metadata?.proprLogAttribution, undefined);
   });
 }
+
+// Reproduced on a 0.9.0 launcher install with OpenCode CLI 1.18.31: the model
+// had been retired server-side, and the task only showed the generic error.
+const MODEL_NOT_FOUND = 'Model not found: opencode/ling-3.0-flash-fin-free. Did you mean: deepseek-v4.1-flash-free, glm-5.3-flash-free, mimo-v2.6-flash-free?';
+const GENERIC_ERROR_EVENT = JSON.stringify({ type: 'error', timestamp: 1793299358906, sessionID: 'ses_e77075dcfffeCZerQlZ6a23wb2', error: { name: 'UnknownError', data: { message: 'Unexpected server error. Check server logs for details.', ref: 'err_1fd9db03' } } });
+
+async function failedTaskReason(): Promise<string | undefined> {
+  failureAt = undefined;
+  const { agentFailureLine } = await import('@propr/shared');
+  const response = await new OpenCodeAgent(config).executeTask({
+    worktreePath: '/tmp/opencode-failure-reason',
+    issueRef: { number: 42, repoOwner: 'owner', repoName: 'repo' },
+    prompt: 'Implement the issue',
+    githubToken: 'test-token',
+    taskId: 'task-1',
+  });
+  assert.equal(response.success, false);
+  return response.error && agentFailureLine(response.error);
+}
+
+test('an OpenCode JSON error event becomes the task failure reason', async () => {
+  dockerResult = {
+    stdout: JSON.stringify({ type: 'error', error: { name: 'UnknownError', data: { message: MODEL_NOT_FOUND } } }),
+    stderr: 'Using disposable OpenCode data directory at /tmp/propr-opencode-data/opencode',
+    exitCode: 1,
+  };
+  assert.equal(await failedTaskReason(), MODEL_NOT_FOUND);
+});
+
+test('a generic OpenCode server error does not hide the specific error event before it', async () => {
+  dockerResult = {
+    stdout: [JSON.stringify({ type: 'error', error: { name: 'UnknownError', data: { message: MODEL_NOT_FOUND } } }), GENERIC_ERROR_EVENT].join('\n'),
+    stderr: '',
+    exitCode: 1,
+  };
+  assert.equal(await failedTaskReason(), MODEL_NOT_FOUND);
+});
+
+test('a generic OpenCode server error is replaced by the cause logged under its ref', async () => {
+  dockerResult = {
+    stdout: GENERIC_ERROR_EVENT,
+    stderr: [
+      'Using disposable OpenCode data directory at /tmp/propr-opencode-data/opencode',
+      `timestamp=2026-10-29T18:42:38.883Z level=ERROR run=287a387a message="share subscriber failed" type=message.updated cause="Cause([Fail(ProviderModelNotFoundError: ${MODEL_NOT_FOUND})])"`,
+      `timestamp=2026-10-29T18:42:38.906Z level=ERROR run=287a387a message=failed ref=err_1fd9db03 error="ProviderModelNotFoundError: ${MODEL_NOT_FOUND}" cause="ProviderModelNotFoundError: ${MODEL_NOT_FOUND}\\n    at <anonymous> (/$bunfs/root/chunk-pbkyvgma.js:439:94278)"`,
+    ].join('\n'),
+    exitCode: 1,
+  };
+  assert.equal(await failedTaskReason(), MODEL_NOT_FOUND);
+});
+
+test('a generic OpenCode server error stays when no logged cause matches its ref', async () => {
+  dockerResult = {
+    stdout: GENERIC_ERROR_EVENT,
+    stderr: 'timestamp=2026-10-29T18:42:38.906Z level=ERROR run=1 message=failed ref=err_other error="Other: unrelated"',
+    exitCode: 1,
+  };
+  assert.equal(await failedTaskReason(), 'Unexpected server error. Check server logs for details.');
+});

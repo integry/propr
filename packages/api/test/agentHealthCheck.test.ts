@@ -19,7 +19,7 @@ test('probes use configured lightweight models for each provider and respect cus
     ['claude', ['claude-opus-5-5', 'claude-sonnet-5-5'], 'claude-sonnet-5-5'],
     ['antigravity', ['antigravity-gemini-4-argon', 'antigravity-gemini-3.8-flash'], 'antigravity-gemini-3.8-flash'],
     ['antigravity', ['antigravity-claude-opus-5.5', 'antigravity-gemini-3.8-flash'], 'antigravity-gemini-3.8-flash'],
-    ['opencode', ['opencode-big-pickle', 'opencode-ling-3.0-flash-fin-free'], 'opencode-ling-3.0-flash-fin-free'],
+    ['opencode', ['opencode-big-pickle', 'opencode-deepseek-v4.1-flash-free'], 'opencode-deepseek-v4.1-flash-free'],
     ['vibe', ['zai-glm-5-3', 'mistral-medium-3.5'], 'mistral-medium-3.5'],
   ] as const) {
     assert.equal(agentHealthModel({ ...config, type, supportedModels: [...models] }), expected);

@@ -2,7 +2,7 @@ import { ANTIGRAVITY_COMPATIBILITY_ALIASES, antigravitySupportedModel } from '..
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
-import { shortHash } from '@propr/shared';
+import { OPENCODE_RETIRED_MODEL_ALIASES, currentOpenCodeModel, shortHash } from '@propr/shared';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -86,6 +86,11 @@ function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }
         const agent = findAgentByType('antigravity', agents);
         return { agentAlias: agent?.config.alias || 'antigravity', model: compatibility };
     }
+    const openCodeRoute = OPENCODE_RETIRED_MODEL_ALIASES[fullLabel.replace(/^llm-/, '')];
+    if (openCodeRoute) {
+        const agent = findAgentByType('opencode', agents);
+        return { agentAlias: agent?.config.alias || 'opencode', model: openCodeRoute };
+    }
     for (const modelInfo of ALL_MODELS) {
         if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
             const agentType = getAgentTypeFromModel(modelInfo.id);
@@ -168,7 +173,7 @@ function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentCo
     }
 
     const candidateModels = agent.config.type === 'opencode'
-        ? [resolvedModel, toProprOpenCodeModelId(resolvedModel)]
+        ? [resolvedModel, toProprOpenCodeModelId(resolvedModel), currentOpenCodeModel(toProprOpenCodeModelId(resolvedModel))]
         : [resolvedModel];
     const supportedModel = agent.config.supportedModels.find(m =>
         candidateModels.some(candidate => m.toLowerCase() === candidate.toLowerCase())

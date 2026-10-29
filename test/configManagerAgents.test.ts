@@ -302,11 +302,36 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.ok(!agent.supportedModels.includes('opencode-minimax-m3-free'));
         assert.ok(agent.supportedModels.includes('opencode-big-pickle'));
-        assert.ok(agent.supportedModels.includes('opencode-ling-3.0-flash-fin-free'));
-        assert.ok(agent.supportedModels.includes('opencode-muse-spark-1.3-contributor-free'));
+        assert.ok(agent.supportedModels.includes('opencode-deepseek-v4.1-flash-free'));
+        assert.ok(agent.supportedModels.includes('opencode-nemotron-3.5-super-vl-free'));
         assert.ok(!agent.supportedModels.includes('opencode-deepseek-v4-flash-free'));
         assert.ok(agent.supportedModels.includes('opencode-openai/gpt-5.5'));
         assert.strictEqual(agent.defaultModel, 'opencode-big-pickle');
+    });
+
+    test('removes free models OpenCode 1.19.5 no longer serves and routes a retired default to its successor', () => {
+        const retired = [
+            'opencode-ling-3.0-flash-fin-free',
+            'opencode-mimo-v2.5-free',
+            'opencode-muse-spark-1.2-contributor-free',
+            'opencode-muse-spark-1.3-contributor-free',
+            'opencode-nemotron-3-ultra-free',
+        ];
+        const agent = createAgent({
+            type: 'opencode',
+            supportedModels: ['opencode-big-pickle', ...retired, 'opencode-openai/gpt-5.5'],
+            defaultModel: 'opencode-ling-3.0-flash-fin-free',
+            cliVersionType: 'default',
+            cliVersionResolved: '1.18.31'
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        for (const model of retired) assert.ok(!agent.supportedModels.includes(model), model);
+        for (const model of AGENT_DEFAULTS.opencode.defaultModels) assert.ok(agent.supportedModels.includes(model), model);
+        assert.ok(agent.supportedModels.includes('opencode-openai/gpt-5.5'));
+        assert.strictEqual(agent.defaultModel, 'opencode-deepseek-v4.1-flash-free');
+        assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.opencode);
+        assert.strictEqual(migrateAgentConfig(agent), false);
     });
 
     test('adds current Antigravity base models and preserves the selected default', () => {

@@ -73,8 +73,8 @@ describe('agent version management', () => {
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
         assert.strictEqual(AGENT_CLI_PACKAGES.opencode, 'opencode-ai');
         assert.deepStrictEqual(AGENT_CLI_TAGS.opencode, ['latest', 'beta', 'dev']);
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.18.31');
-        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.18.31');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.19.5');
+        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.19.5');
         assert.strictEqual(AGENT_IMAGE_NAME, 'propr/agent');
         assert.strictEqual(DEFAULT_AGENT_DOCKER_IMAGES.opencode, 'propr/agent:latest');
     });
@@ -123,7 +123,7 @@ describe('agent version management', () => {
 
     test('generates unified bundle image tags', () => {
         const versions = getDefaultAgentCliVersionMatrix();
-        versions.opencode = '1.18.31';
+        versions.opencode = '1.19.5';
         assert.match(generateAgentBundleImageTag(versions, 'abc123'), /^propr\/agent:bundle-[0-9a-f]{12}-abc123$/);
     });
 
@@ -305,7 +305,7 @@ describe('agent version management', () => {
 
         assert.strictEqual(metadata.agentType, 'opencode');
         assert.strictEqual(metadata.packageName, 'opencode-ai');
-        assert.strictEqual(metadata.defaultVersion, '1.18.31');
+        assert.strictEqual(metadata.defaultVersion, '1.19.5');
         assert.deepStrictEqual(metadata.availableTags, [
             { tag: 'latest', version: '1.17.10' },
             { tag: 'beta', version: '1.18.0-beta.1' },

@@ -1,5 +1,5 @@
 import { ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
-import { getModelInfoWithAntigravityCompatibility } from '@propr/shared';
+import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, getModelInfoWithAntigravityCompatibility } from '@propr/shared';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../agents/impl/openCodeModelIds.js';
@@ -200,6 +200,9 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
     if (ANTIGRAVITY_COMPATIBILITY_ALIASES[lowerCaseModel]) return ANTIGRAVITY_COMPATIBILITY_ALIASES[lowerCaseModel];
     if (getAntigravityCompatibilityRoute(lowerCaseModel)) return lowerCaseModel;
+    const openCodeRoute = OPENCODE_RETIRED_MODEL_ROUTES[lowerCaseModel] ?? OPENCODE_RETIRED_MODEL_ALIASES[lowerCaseModel]
+        ?? OPENCODE_RETIRED_MODEL_ALIASES[`opencode-${lowerCaseModel}`];
+    if (openCodeRoute) return openCodeRoute;
 
     // 1. Check static MODEL_ALIASES (backwards compatibility for Claude aliases)
     if (MODEL_ALIASES[lowerCaseModel]) {

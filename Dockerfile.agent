@@ -119,7 +119,7 @@ RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
 
 
 FROM agent-base AS opencode-cli
-ARG OPENCODE_CLI_VERSION=1.18.31
+ARG OPENCODE_CLI_VERSION=1.19.5
 USER root
 RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
     && npm cache clean --force \
@@ -129,6 +129,8 @@ RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
     && grep -qE '(^|[[:space:],])--file([=[:space:],]|$)' /tmp/opencode-help \
     && grep -qE '(^|[[:space:],])--format([=[:space:],]|$)' /tmp/opencode-help \
     && grep -qE '(^|[[:space:],])--model([=[:space:],]|$)' /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--print-logs([=[:space:],]|$)' /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--log-level([=[:space:],]|$)' /tmp/opencode-help \
     && rm -f /tmp/opencode-help
 
 
@@ -213,7 +215,7 @@ FROM agent-base AS final
 ARG CLAUDE_CLI_VERSION=2.1.293
 ARG CODEX_CLI_VERSION=0.160.0
 ARG ANTIGRAVITY_CLI_VERSION=1.4.0
-ARG OPENCODE_CLI_VERSION=1.18.31
+ARG OPENCODE_CLI_VERSION=1.19.5
 ARG VIBE_CLI_VERSION=2.25.8
 ARG AGENT_TANK_CLI_VERSION=0.10.0
 

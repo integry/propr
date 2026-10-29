@@ -8,7 +8,7 @@ const OPEN_CODE_TOOL_EVENT_TYPES = new Set(['tool_use', 'tool_result', 'tool', '
 export interface OpenCodeEvent {
     type?: string; timestamp?: number | string;
     sessionID?: string; sessionId?: string; session_id?: string; part?: OpenCodePart; parts?: OpenCodePart[]; message?: OpenCodeMessage;
-    error?: { name?: string; data?: { message?: string }; message?: string } | string;
+    error?: { name?: string; data?: { message?: string; ref?: string }; message?: string } | string;
     model?: string; text?: string; content?: unknown; delta?: string;
     tool?: string; tool_name?: string; name?: string; input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
     output?: string; result?: string; status?: string; id?: string; tool_id?: string;
@@ -34,10 +34,10 @@ interface OpenCodePart extends OpenCodeTextContainer {
 
 interface OpenCodeMessage extends OpenCodeTextContainer { role?: string; model?: string; parts?: OpenCodePart[]; }
 
-export interface ParsedOpenCodeOutput { sessionId?: string; modelUsed?: string; summary?: string; error?: string; tokenUsage?: TokenUsage; conversationLog: OpenCodeEvent[]; }
+export interface ParsedOpenCodeOutput { sessionId?: string; modelUsed?: string; summary?: string; error?: string; errorRef?: string; tokenUsage?: TokenUsage; conversationLog: OpenCodeEvent[]; }
 
 interface OpenCodeParseState {
-    sessionId?: string; modelUsed?: string; error?: string; tokenUsage: TokenUsage; lastCumulativeTopLevelUsage?: TokenUsage;
+    sessionId?: string; modelUsed?: string; error?: string; errorRef?: string; specificError?: boolean; tokenUsage: TokenUsage; lastCumulativeTopLevelUsage?: TokenUsage;
     streamTextParts: string[]; assistantMessages: string[];
 }
 
@@ -59,7 +59,7 @@ export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
         }
     }
 
-    return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: buildOpenCodeSummary(state), error: state.error, tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined, conversationLog };
+    return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: buildOpenCodeSummary(state), error: state.error, errorRef: state.errorRef, tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined, conversationLog };
 }
 
 export const parseOpenCodeStreamOutput = parseOpenCodeJsonl;
@@ -71,9 +71,42 @@ function applyOpenCodeEvent(event: OpenCodeEvent, state: OpenCodeParseState): vo
     const text = extractOpenCodeText(event);
     state.streamTextParts.push(...text.streamParts);
     if (text.assistantMessage) state.assistantMessages.push(text.assistantMessage);
-    if (event.type?.toLowerCase() === 'error' || event.error) {
-        state.error = extractOpenCodeError(event);
+    if (event.type?.toLowerCase() === 'error' || event.error) applyOpenCodeError(event, state);
+}
+
+// OpenCode ends a failed run with a generic server error whose `ref` points at
+// the real cause in its log. It must not hide a specific error emitted earlier.
+const OPENCODE_GENERIC_SERVER_ERROR = /^Unexpected server error\b/i;
+
+function applyOpenCodeError(event: OpenCodeEvent, state: OpenCodeParseState): void {
+    const error = extractOpenCodeError(event);
+    const generic = OPENCODE_GENERIC_SERVER_ERROR.test(error);
+    if (generic && typeof event.error === 'object' && event.error?.data?.ref) state.errorRef = event.error.data.ref;
+    if (generic && state.specificError) return;
+    state.error = error;
+    // Only a message names the cause; a bare error name such as UnknownError does not.
+    state.specificError = !generic && (typeof event.error === 'string' ? !!event.error : !!(event.error?.data?.message || event.error?.message));
+}
+
+/**
+ * The failure reason for a parsed OpenCode run. A generic server error is
+ * replaced by the cause OpenCode logged to stderr under the same `ref`.
+ */
+export function resolveOpenCodeFailureReason(parsed: Pick<ParsedOpenCodeOutput, 'error' | 'errorRef'>, stderr?: string): string | undefined {
+    if (!parsed.error || !parsed.errorRef || !stderr || !OPENCODE_GENERIC_SERVER_ERROR.test(parsed.error)) return parsed.error;
+    return findOpenCodeLoggedError(stderr, parsed.errorRef) || parsed.error;
+}
+
+function findOpenCodeLoggedError(stderr: string, ref: string): string | undefined {
+    for (const line of stderr.split('\n')) {
+        if (!line.includes(` ref=${ref} `)) continue;
+        const logged = /\berror="((?:[^"\\]|\\.)*)"/.exec(line)?.[1];
+        if (!logged) continue;
+        const unescaped = logged.replace(/\\(.)/g, (_, char: string) => char === 'n' ? '\n' : char === 't' ? '\t' : char);
+        const message = unescaped.replace(/^[A-Za-z]*Error:\s*/, '').trim();
+        if (message) return message;
     }
+    return undefined;
 }
 
 function applyOpenCodeModel(event: OpenCodeEvent, state: OpenCodeParseState): void {

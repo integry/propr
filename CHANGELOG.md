@@ -406,11 +406,16 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   Gemini 4 Argon, Claude Sonnet 5.5, Claude Opus 5.5, GPT-OSS 120B) on
   Antigravity CLI 1.4.0, with a separate reasoning selector instead of
   effort-suffixed entries; saved suffixed selections
-  and labels still resolve. OpenCode defaults to Big Pickle and adds Ling 3.0
-  Flash Fin Free, Muse Spark 1.2 and 1.3 Contributor Free and Nemotron 3.5
-  Lightning Free. Mistral Vibe adds GLM 5.3 and GLM 5.2 on the same Mistral
+  and labels still resolve. OpenCode defaults to Big Pickle and lists the free
+  models OpenCode CLI 1.19.5 serves: Beam Free, DeepSeek V4.1 Flash Free, Flint
+  40B Free, GLM 5.3 Flash Free, MiMo V2.6 Flash Free, Nemotron 3.5 Lightning
+  Free and Nemotron 3.5 Super VL Free. Mistral Vibe adds GLM 5.3 and GLM 5.2 on the same Mistral
   credentials (Vibe 2.25.8, Python 3.12). Older models remain selectable behind
   the legacy fold. GitHub comments and commit messages show model display names.
+- **OpenCode CLI 1.19.5**: the agent image bundles OpenCode CLI 1.19.5 (was
+  1.18.31). OpenCode had rotated its server-side free models, so every run on
+  Ling 3.0 Flash Fin Free failed with "Model not found"; the free-model catalog
+  now matches what 1.19.5 lists and serves.
 - **Read-only agent GitHub access**: implementation, follow-up, review-fix and
   direct-goal containers receive a read-only installation token, and the
   worktree's `.git` and shared clones are mounted read-only; ProPR performs every
@@ -527,16 +532,28 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   and plan selections, `llm-antigravity-flash36`/`flash37` labels and the
   `flash36`/`flash37` aliases select Gemini 3.8 Flash, and saved effort routes
   run on it at the same effort; runs that reported the old models still match);
-  Antigravity Gemini 3.5 Flash (its labels no longer resolve); OpenCode DeepSeek
-  V4 Flash Free, Laguna S 2.1 Free, Ling
-  3.0 Flash Free and North Mini Code Free; Vibe Devstral Small, whose saved
-  defaults move to Mistral Medium.
+  Antigravity Gemini 3.5 Flash (its labels no longer resolve); OpenCode Ling 3.0
+  Flash Fin Free, MiMo V2.5 Free, Muse Spark 1.2 and 1.3 Contributor Free and
+  Nemotron 3 Ultra Free, which OpenCode no longer serves, and the earlier
+  DeepSeek V4 Flash Free, Laguna S 2.1 Free, Ling 3.0 Flash Free, MiniMax M3
+  Free and North Mini Code Free (OpenCode agents drop them on startup; saved
+  defaults, selections, routes, aliases and labels run on a current free model:
+  DeepSeek V4.1 Flash Free for the Ling and DeepSeek models, MiMo V2.6 Flash
+  Free for MiMo, Nemotron 3.5 Super VL Free for Nemotron 3 Ultra, Big Pickle for
+  the rest); Vibe Devstral Small, whose saved defaults move to Mistral Medium.
 - **Legacy Compose files**: `docker-compose.prod.yml`, the root `Dockerfile` it
   built and the unused `docker-compose.claude.yml` overlay are gone; deploy with
   the launcher or the prebuilt images.
 
 ### Fixed
 
+- **OpenCode failure reasons**: a failed OpenCode task now shows why it failed,
+  for example `Model not found: opencode/ling-3.0-flash-fin-free. Did you mean:
+  …`, instead of only "Unexpected server error. Check server logs for details."
+  The OpenCode wrapper sends OpenCode's error-level log to stderr, and ProPR
+  replaces OpenCode's generic error with the logged cause that has the same
+  `ref`. A generic error that follows a specific one no longer hides it. The
+  reason stays a single bounded, redacted line.
 - **Claude config on launcher-managed installs**: Claude agent runs no longer
   fail with "Claude configuration file not found at: /home/node/.claude.json /
   A backup file exists at: …" after the first run. The launcher mounts the

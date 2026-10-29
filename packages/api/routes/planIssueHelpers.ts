@@ -19,7 +19,7 @@ import {
   withRetry,
   retryConfigs
 } from '@propr/core';
-import { agentSupportsSavedModel, currentAntigravityModel } from '@propr/shared';
+import { agentSupportsSavedModel, currentAntigravityModel, currentOpenCodeModel } from '@propr/shared';
 
 export interface ImplementIssueContext {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -131,8 +131,8 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
     effectiveAgentAlias = effectiveAgentAlias || selection.agent_alias;
   }
   if (!effectiveModel) throw new NoDefaultModelConfiguredError();
-  // A saved retired Antigravity model is labelled with the model it now runs on.
-  effectiveModel = currentAntigravityModel(effectiveModel);
+  // A saved retired Antigravity or OpenCode model is labelled with the model it now runs on.
+  effectiveModel = currentOpenCodeModel(currentAntigravityModel(effectiveModel));
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
   if (modelInfo?.githubLabel && !effectiveAgentAlias) return modelInfo.githubLabel;
 
