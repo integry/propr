@@ -5,8 +5,14 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
-import { prepareContinuedGoal, type GoalContinuationOperations, type GoalPullRequestState } from '../src/jobs/goalContinuation.ts';
-import { executePreparedGoal } from '../src/jobs/processGoalJob.ts';
+import {
+  GoalWorktreeLostError,
+  prepareContinuedGoal,
+  restoreMissingGoalWorktree,
+  type GoalContinuationOperations,
+  type GoalPullRequestState,
+} from '../src/jobs/goalContinuation.ts';
+import { executePreparedGoal, prepareGoalAttemptInputs, ensureGoalWorktree, GOAL_WORKTREE_RESTORED_NOTICE, acknowledgeWholeSessionInput, scheduleFurtherWork, processGoalJob } from '../src/jobs/processGoalJob.ts';
 import type { GoalRow } from '../src/jobs/goalAttemptState.ts';
 
 let db: typeof import('../packages/core/src/db/connection.ts')['db'];
@@ -84,6 +90,11 @@ test('an open draft PR and an existing worktree need no changes', async () => {
 
 test('a merged PR continues on a fresh branch so merged commits are not proposed again', async () => {
   const { job, goal } = await continuedGoal('goal-merged');
+  await db('goal_inputs').insert(['pending', 'pending', 'delivered'].map((state, index) => ({
+    input_id: `merged-notice-${index}`, idempotency_key: `merged-notice-${index}`, payload_hash: 'hash',
+    goal_id: goal.goal_id, owner_id: goal.owner_id, kind: 'restoration', operation: 'goal.restore',
+    message: GOAL_WORKTREE_RESTORED_NOTICE, state,
+  })));
   const { ops } = operations({ ...openDraft, state: 'closed', merged: true });
   const prepared = await prepareContinuedGoal(job, goal, ops);
   assert.equal(prepared.branch_name, null);
@@ -91,6 +102,10 @@ test('a merged PR continues on a fresh branch so merged commits are not proposed
   assert.equal(prepared.final_pr_number, null);
   assert.equal(prepared.final_pr_url, null);
   assert.equal(prepared.session_id, 'thread-1', 'the provider session is kept');
+  const notices = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).orderBy('sequence');
+  assert.deepEqual(notices.map(notice => notice.state), ['superseded', 'superseded', 'delivered']);
+  assert.ok(notices[0].delivery_error);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
 });
 
 test('a closed PR keeps the branch and drops the PR so a new draft is opened', async () => {
@@ -118,6 +133,7 @@ test('an expired worktree is rebuilt from the remote branch', async () => {
   assert.equal(prepared.worktree_path, rebuilt);
   assert.equal(prepared.branch_name, 'goal/ship-it');
   assert.deepEqual(calls, ['read:379', 'rebuild:goal/ship-it']);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
 });
 
 test('a deleted remote branch continues on a fresh branch', async () => {
@@ -128,6 +144,11 @@ test('a deleted remote branch continues on a fresh branch', async () => {
   assert.equal(prepared.branch_name, null);
   assert.equal(prepared.worktree_path, null);
   assert.equal(prepared.final_pr_number, null);
+  const notices = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' });
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].state, 'superseded');
+  assert.ok(notices[0].delivery_error);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
 });
 
 test('the continued attempt tells the provider to re-arm, then clears the flag once it ran', async () => {
@@ -224,6 +245,28 @@ test('fresh branch continuation tells the provider where preserved work can be r
   assert.ok(input.message.includes(goal.branch_name));
 });
 
+for (const merged of [false, true]) {
+  test(`claim loss during ${merged ? 'cleanup' : 'rebuild'} preserves the restoration notice and branch identity`, async () => {
+    const { job, goal } = await continuedGoal(`notice-reset-takeover-${merged}`, { worktree_path: '/missing/reset-takeover' });
+    const { ops: restoreOps } = operations(openDraft, async () => goal.worktree_path);
+    await restoreMissingGoalWorktree(job, goal, restoreOps);
+    if (merged) {
+      goal.worktree_path = existingWorktree();
+      await db('goals').where({ goal_id: goal.goal_id }).update({ worktree_path: goal.worktree_path });
+    }
+    const { ops } = operations({ ...openDraft, merged });
+    const takeover = async () => {
+      await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+      return null;
+    };
+    ops.rebuildWorktree = takeover;
+    ops.cleanupWorktree = async () => { await takeover(); };
+    await assert.rejects(prepareContinuedGoal(job, goal, ops), /lost its attempt claim/);
+    assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).branch_name, goal.branch_name);
+    assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  });
+}
+
 test('transient rebuild retries once without changing branch identity', async () => {
   const { job, goal } = await continuedGoal('goal-rebuild-retry', { worktree_path: '/missing/retry' });
   let calls = 0;
@@ -261,4 +304,237 @@ test('a stale provider cannot acknowledge the replacement attempt re-arm', async
     } },
   } as never), /lost its attempt claim/);
   assert.equal(Boolean((await db('goals').where({ goal_id: goal.goal_id }).first()).continue_requested), true);
+});
+
+test('a live goal whose checkout was pruned is rebuilt in place without touching the PR', async () => {
+  const missing = path.join(os.tmpdir(), `goal-live-missing-${Date.now()}`);
+  const { job, goal } = await continuedGoal('goal-live-pruned', { worktree_path: missing, continue_requested: false });
+  const { ops, calls } = operations(openDraft, async () => missing);
+  const { goal: restored, restored: flag } = await restoreMissingGoalWorktree(job, goal, ops);
+  assert.equal(flag, true);
+  assert.equal(restored.worktree_path, missing);
+  assert.equal(restored.branch_name, 'goal/ship-it');
+  assert.deepEqual(calls, ['rebuild:goal/ship-it']);
+});
+
+test('a rebuilt checkout at a new path is saved under the attempt claim', async () => {
+  const missing = path.join(os.tmpdir(), `goal-live-moved-${Date.now()}`);
+  const rebuilt = existingWorktree();
+  const { job, goal } = await continuedGoal('goal-live-moved', { worktree_path: missing, continue_requested: false });
+  const { ops } = operations(openDraft, async () => rebuilt);
+  const { goal: restored } = await restoreMissingGoalWorktree(job, goal, ops);
+  assert.equal(restored.worktree_path, rebuilt);
+  assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, rebuilt);
+});
+
+test('an existing checkout is left alone', async () => {
+  const { job, goal } = await continuedGoal('goal-live-present', { continue_requested: false });
+  const { ops, calls } = operations(openDraft);
+  const result = await restoreMissingGoalWorktree(job, goal, ops);
+  assert.equal(result.restored, false);
+  assert.equal(result.goal, goal);
+  assert.deepEqual(calls, []);
+});
+
+test('a pruned checkout whose branch is gone is unrecoverable', async () => {
+  const missing = path.join(os.tmpdir(), `goal-live-gone-${Date.now()}`);
+  const { job, goal } = await continuedGoal('goal-live-gone', { worktree_path: missing, continue_requested: false });
+  const { ops } = operations(openDraft, async () => null);
+  await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), (error: Error) => error instanceof GoalWorktreeLostError && /goal\/ship-it/.test(error.message));
+  assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, missing);
+  assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  await db('goals').where({ goal_id: goal.goal_id }).update({ continue_requested: true });
+  const continued = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+  const prepared = await prepareContinuedGoal(job, continued, ops);
+  assert.equal(prepared.branch_name, null);
+  assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
+  assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first()).state, 'superseded');
+});
+
+test('a takeover during a transient rebuild error prevents the retry', async () => {
+  const { job, goal } = await continuedGoal('goal-live-takeover', { worktree_path: '/missing/live-takeover', continue_requested: false });
+  let calls = 0;
+  const { ops } = operations(openDraft, async () => {
+    calls++;
+    await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+    throw Object.assign(new Error('fetch reset'), { code: 'ECONNRESET' });
+  });
+  await assert.rejects(restoreMissingGoalWorktree(job, goal, ops), /lost its attempt claim/);
+  assert.equal(calls, 1);
+});
+
+for (const continued of [false, true]) {
+  test(`restoration notice survives a pause during ${continued ? 'continued' : 'live'} checkout rebuilding`, async () => {
+    const missing = path.join(existingWorktree(), 'checkout');
+    const { job, goal } = await continuedGoal(`notice-pause-${continued}`, { worktree_path: missing, continue_requested: continued, agent_type: 'opencode' });
+    const { ops } = operations(openDraft, async () => {
+      await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'paused' });
+      fs.mkdirSync(missing);
+      return missing;
+    });
+    if (continued) await prepareContinuedGoal(job, goal, ops);
+    else await restoreMissingGoalWorktree(job, goal, ops);
+    let latest = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+    assert.equal(latest.desired_state, 'paused');
+    const notice = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first();
+    assert.equal(notice.state, 'pending');
+    // Resume in a new attempt: the checkout now exists and reports no restoration.
+    await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'running', run_generation: job.generation + 1, run_claim: 'resume' });
+    latest = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+    const resumedJob = { ...job, generation: latest.run_generation, claimId: 'resume' };
+    const worktree = await ensureGoalWorktree(latest, resumedJob, 'token');
+    assert.equal(worktree.restored, undefined);
+    const inputs = await prepareGoalAttemptInputs(latest);
+    assert.equal(inputs.pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+  });
+}
+
+for (const provider of ['opencode', 'codex', 'claude']) {
+  test(`${provider} delivers restoration notices with independent user-input acknowledgement`, async () => {
+    const { job, goal } = await continuedGoal(`notice-delivery-${provider}`, { worktree_path: '/missing/notice', continue_requested: false, agent_type: provider });
+    await db('goal_inputs').insert({ input_id: `user-${provider}`, goal_id: goal.goal_id, owner_id: goal.owner_id,
+      idempotency_key: `user-${provider}`, operation: 'goal.input', payload_hash: 'user', message: 'Preserve the API.' });
+    const { ops } = operations(openDraft, async () => goal.worktree_path);
+    await restoreMissingGoalWorktree(job, goal, ops);
+    const notice = await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first();
+    const inputs = await prepareGoalAttemptInputs(goal);
+    const captured: AgentTaskOptions[] = [];
+    const prepared = { goal, ...inputs, githubToken: 'token', worktree: { worktreePath: '/tmp/checkout', branchName: goal.branch_name! },
+      agent: { executeTask: async (options: AgentTaskOptions) => {
+        captured.push(options);
+        return { success: false, modelUsed: 'test', executionTimeMs: 1, logs: '', modifiedFiles: [] };
+      } },
+    };
+    await executePreparedGoal(job, prepared as never);
+    assert.equal((await db('goal_inputs').where({ input_id: notice.input_id }).first()).state, 'pending');
+    const userState = async () => (await db('goal_inputs').where({ input_id: `user-${provider}` }).first()).state;
+    if (provider === 'opencode') {
+      assert.equal(captured[0].prompt, `${GOAL_WORKTREE_RESTORED_NOTICE}\n\nPreserve the API.`);
+      await acknowledgeWholeSessionInput(job, prepared as never, { success: false } as never);
+      assert.equal((await db('goal_inputs').where({ input_id: notice.input_id }).first()).state, 'pending', 'startup failure cannot discharge restoration');
+      await acknowledgeWholeSessionInput(job, prepared as never, { success: true } as never);
+      assert.equal((await db('goal_inputs').where({ input_id: notice.input_id }).first()).state, 'delivered');
+      assert.equal(await userState(), 'delivered');
+    } else {
+      assert.equal(captured[0].initialControlInputMessage, GOAL_WORKTREE_RESTORED_NOTICE);
+      assert.equal(captured[0].initialControlInputId, notice.input_id);
+      assert.equal(await userState(), 'pending');
+      await captured[0].goalControl!.markInputDelivered(notice.input_id, 'accepted-turn');
+      assert.equal(await userState(), 'pending', 'notice acknowledgement cannot acknowledge the queued user message');
+      assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.input_id, `user-${provider}`);
+    }
+  });
+}
+
+for (const continued of [false, true]) {
+  for (const samePath of [false, true]) {
+    test(`takeover after ${continued ? 'continued' : 'live'} rebuild cannot persist checkout state (same path: ${samePath})`, async () => {
+      const { job, goal } = await continuedGoal(`notice-takeover-success-${continued}-${samePath}`, { worktree_path: '/missing/takeover', continue_requested: continued });
+      const { ops } = operations(openDraft, async () => {
+        await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+        return samePath ? goal.worktree_path : '/rebuilt/takeover';
+      });
+      await assert.rejects((continued ? prepareContinuedGoal : restoreMissingGoalWorktree)(job, goal, ops), /lost its attempt claim/);
+      assert.equal((await db('goals').where({ goal_id: goal.goal_id }).first()).worktree_path, goal.worktree_path);
+      assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first()).state, 'pending',
+        'the obligation committed before rebuilding remains for the replacement attempt');
+    });
+  }
+}
+
+for (const continued of [false, true]) {
+  for (const completedRebuild of [false, true]) {
+    test(`worker interruption ${completedRebuild ? 'after' : 'before'} rebuild preserves ${continued ? 'continued' : 'live'} restoration obligation`, async () => {
+      const missing = path.join(existingWorktree(), 'checkout');
+      const { job, goal } = await continuedGoal(`interrupted-${continued}-${completedRebuild}`, {
+        worktree_path: missing, continue_requested: continued, agent_type: 'opencode',
+      });
+      const prepare = continued ? prepareContinuedGoal : restoreMissingGoalWorktree;
+      const { ops } = operations(openDraft, async () => {
+        assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' }).first()).state, 'pending',
+          'the obligation must be durable before the external mutation');
+        if (completedRebuild) fs.mkdirSync(missing);
+        throw new Error('worker interrupted');
+      });
+      await assert.rejects(prepare(job, goal, ops), /worker interrupted/);
+      await db('goals').where({ goal_id: goal.goal_id }).update({ run_generation: job.generation + 1, run_claim: 'recovered' });
+      const recovered = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+      const recoveredJob = { ...job, generation: recovered.run_generation, claimId: 'recovered' };
+      const { ops: recoveredOps, calls } = operations(openDraft, async () => { fs.mkdirSync(missing); return missing; });
+      await prepare(recoveredJob, recovered, recoveredOps);
+      assert.equal(calls.filter(call => call.startsWith('rebuild:')).length, completedRebuild ? 0 : 1);
+      assert.equal((await db('goal_inputs').where({ goal_id: goal.goal_id, kind: 'restoration' })).length, 1);
+      const inputs = await prepareGoalAttemptInputs(recovered);
+      assert.equal(inputs.pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+      await acknowledgeWholeSessionInput(recoveredJob, { goal: recovered, ...inputs } as never, { success: false } as never);
+      assert.equal((await prepareGoalAttemptInputs(recovered)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+      await acknowledgeWholeSessionInput(recoveredJob, { goal: recovered, ...inputs } as never, { success: true } as never);
+      assert.equal((await prepareGoalAttemptInputs(recovered)).pendingInput, null);
+    });
+  }
+
+  test(`stale ${continued ? 'continued' : 'live'} restoration cannot create an obligation or rebuild`, async () => {
+    const { job, goal } = await continuedGoal(`stale-obligation-${continued}`, { worktree_path: '/missing/stale', continue_requested: continued });
+    await db('goals').where({ goal_id: goal.goal_id }).update({ run_claim: 'replacement' });
+    const { ops, calls } = operations(openDraft);
+    await assert.rejects((continued ? prepareContinuedGoal : restoreMissingGoalWorktree)(job, goal, ops), /lost its attempt claim/);
+    assert.equal(calls.some(call => call.startsWith('rebuild:')), false);
+    assert.equal(await db('goal_inputs').where({ goal_id: goal.goal_id }).first(), undefined);
+  });
+}
+
+for (const provider of ['opencode', 'codex', 'claude']) {
+  test(`${provider} permanent failure with a pending restoration notice reaches failure without scheduling`, async () => {
+    const { job, goal } = await continuedGoal(`notice-terminal-${provider}`, {
+      worktree_path: '/missing/terminal', continue_requested: false, agent_type: provider, launch_strategy: 'orchestrate',
+    });
+    const { ops } = operations(openDraft, async () => goal.worktree_path);
+    await restoreMissingGoalWorktree(job, goal, ops);
+    const inputs = await prepareGoalAttemptInputs(goal);
+    const result = { success: false, error: 'Invalid credentials', modifiedFiles: [], logs: '' };
+    let enqueued = 0;
+    let failed = false;
+    const outcome = await processGoalJob({ data: job } as never, {
+      claim: async () => goal,
+      withHeartbeat: async (_data: unknown, operation: () => Promise<unknown>) => operation(),
+      prepare: async () => ({ ready: true, value: { goal, ...inputs, worktree: { worktreePath: goal.worktree_path, branchName: goal.branch_name } } }),
+      execute: async () => result,
+      result: {
+        loadGoal: async () => goal, fencedGoal: async () => goal,
+        acknowledgeInput: acknowledgeWholeSessionInput,
+        recordMetrics: async () => {}, handleStopped: async () => null,
+        saveProviderResult: async () => ({}),
+        scheduleFurtherWork: (data: GoalJobData, latest: GoalRow, execution: never) =>
+          scheduleFurtherWork(data, latest, execution, false, async () => { enqueued++; return true; }),
+        finalizeGoal: async (_data: unknown, state: string) => { assert.equal(state, 'failed'); return true; },
+        markTaskReconciled: async () => {},
+        stateManager: () => ({ markTaskFailed: async () => { failed = true; return { state: 'failed' }; } }),
+      },
+    } as never);
+    assert.deepEqual(outcome, { status: 'failed', goalId: goal.goal_id });
+    assert.equal(enqueued, 0);
+    assert.equal(failed, true);
+    assert.equal((await prepareGoalAttemptInputs(goal)).pendingInput?.message, GOAL_WORKTREE_RESTORED_NOTICE);
+    await db('goals').where({ goal_id: goal.goal_id }).update({ continue_requested: true });
+    const continued = await db('goals').where({ goal_id: goal.goal_id }).first() as GoalRow;
+    const { ops: mergedOps } = operations({ ...openDraft, merged: true });
+    const prepared = await prepareContinuedGoal(job, continued, mergedOps);
+    assert.equal(prepared.branch_name, null);
+    assert.equal((await prepareGoalAttemptInputs(prepared)).pendingInput, null);
+  });
+}
+
+test('pending restoration scheduling preserves successful turns, recoverable interruptions, and queued user input', async () => {
+  const { job, goal } = await continuedGoal('notice-scheduling', { worktree_path: '/missing/scheduling', continue_requested: false });
+  const { ops } = operations(openDraft, async () => goal.worktree_path);
+  await restoreMissingGoalWorktree(job, goal, ops);
+  let enqueued = 0;
+  const enqueue = async () => { enqueued++; return true; };
+  for (const result of [{ success: true }, { success: false, error: 'socket hang up' }]) {
+    assert.deepEqual(await scheduleFurtherWork(job, goal, result as never, false, enqueue), { status: 'continuing' });
+  }
+  await db('goal_inputs').insert({ input_id: 'scheduling-user', goal_id: goal.goal_id, owner_id: goal.owner_id,
+    idempotency_key: 'scheduling-user', operation: 'goal.input', payload_hash: 'user', message: 'Use the new credentials.' });
+  assert.deepEqual(await scheduleFurtherWork(job, goal, { success: false, error: 'Invalid credentials' } as never, false, enqueue), { status: 'continuing' });
+  assert.equal(enqueued, 3);
 });
