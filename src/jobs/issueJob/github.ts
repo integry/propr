@@ -60,10 +60,8 @@ export async function ensureProcessingLabel(
  * or dispatched after the issue was already done, is a stale duplicate.
  */
 export function isUnfinishedDispatchSibling(issueRef: IssueJobData, doneTag: string): boolean {
-  if (!issueRef.isChildJob || !issueRef.dispatchId) return false;
-  const labels = (issueRef.issuePayload as { labels?: unknown } | undefined)?.labels;
-  if (!Array.isArray(labels)) return false;
-  return !labels.some(label => (typeof label === 'string' ? label : (label as { name?: unknown } | null)?.name) === doneTag);
+  if (!issueRef.isChildJob || !issueRef.dispatchId || !Array.isArray(issueRef.dispatchIssueLabels)) return false;
+  return !issueRef.dispatchIssueLabels.includes(doneTag);
 }
 
 /**

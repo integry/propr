@@ -42,6 +42,7 @@ await mock.module('@propr/core', { namedExports: {
   ensureGitRepository: async () => undefined,
   loadSettings: async () => ({ worker_concurrency: 1 }),
 } });
+const { handleDispatchWithDeps } = await import('../src/jobs/issueJobDispatcher.js');
 await mock.module('../src/jobs/issueJobDispatcher.js', { namedExports: { handleDispatch: async () => ({ status: 'dispatched' }) } });
 await mock.module('../src/jobs/issueJobHelpers.js', { namedExports: {
   handleUsageLimitError: async () => undefined,
@@ -85,8 +86,8 @@ function childJob(modelName: string, extra: Partial<IssueJobData> = {}, dispatch
     id: `issue-o-r-7-claude-${modelName}-main`, name: 'processGitHubIssue',
     data: {
       repoOwner: 'o', repoName: 'r', number: 7, isChildJob: true, agentAlias: 'claude', modelName, correlationId: 'submission',
-      baseBranch: 'main', dispatchId: 'dispatch-job-1', repoPayload: { defaultBranch: 'main' },
-      issuePayload: { title: 'Fix dates', body: 'Fix invoice dates', labels: dispatchLabels.map(name => ({ name })) },
+      baseBranch: 'main', dispatchId: 'dispatch-job-1', dispatchIssueLabels: dispatchLabels, repoPayload: { defaultBranch: 'main' },
+      issuePayload: { title: 'Fix dates', body: 'Fix invoice dates', labels: [...liveLabels].map(name => ({ name })) },
       ...extra,
     } as IssueJobData,
     updateData: async (data: IssueJobData) => { job.data = data; },
@@ -147,4 +148,55 @@ test('the primary-tag-removed skip also ends its task', async () => {
   assert.deepEqual(result, { status: 'skipped', reason: 'Primary tag missing', issueNumber: 7 });
   assert.equal(tasks.get('task-model-a')?.state, 'cancelled');
   assert.equal(tasks.get('task-model-a')?.terminalReason, 'cancelled_label_removed');
+});
+
+test('a retried dispatch whose first child already finished the issue still runs its remaining models', async () => {
+  liveLabels = ['AI', 'llm-model-a', 'llm-model-b', 'llm-model-c'];
+  const queued = new Map<string, { name: string; data: IssueJobData }>();
+  let failNextAdd = false;
+  const deps = {
+    findSubmission: async () => undefined,
+    getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { labels: liveLabels.map(name => ({ name })) } }) }),
+    withRetry: async (fn: () => Promise<unknown>) => fn(),
+    retryConfigs: { githubApi: {} },
+    validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
+    issueQueue: { add: async (name: string, data: IssueJobData, opts: { jobId: string }) => {
+      if (failNextAdd && queued.size === 1) throw new Error('redis connection lost');
+      if (!queued.has(opts.jobId)) queued.set(opts.jobId, { name, data });
+    } },
+    resolveLlmLabel: async (model: string) => ({ agentAlias: 'claude', model }),
+    getAllCustomLabels: async () => [],
+  } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+  // BullMQ hands a retry the job data it stored, not the previous attempt's in-memory copy.
+  let stored: IssueJobData = { repoOwner: 'o', repoName: 'r', number: 7, correlationId: 'submission' } as IssueJobData;
+  const dispatcherAttempt = () => ({
+    id: 'dispatch-job-1', name: 'processGitHubIssue', data: structuredClone(stored),
+    updateData: async (data: IssueJobData) => { stored = structuredClone(data); },
+  }) as unknown as Job<IssueJobData>;
+  const runChild = (jobId: string) => processGitHubIssueJob({
+    id: jobId, ...structuredClone(queued.get(jobId)!), updateData: async () => undefined, updateProgress: async () => undefined,
+  } as unknown as Job<IssueJobData>);
+
+  failNextAdd = true;
+  await assert.rejects(handleDispatchWithDeps(dispatcherAttempt(), deps), /redis connection lost/);
+  assert.deepEqual([...queued.keys()], ['issue-o-r-7-claude-model-a-main'], 'only the first child was accepted');
+  // The accepted child finishes and labels the issue done before the dispatcher retries.
+  assert.equal((await runChild('issue-o-r-7-claude-model-a-main')).status, 'processed');
+  assert.ok(liveLabels.includes('AI-done'));
+
+  failNextAdd = false;
+  assert.equal((await handleDispatchWithDeps(dispatcherAttempt(), deps)).status, 'dispatched');
+  for (const model of ['model-b', 'model-c']) {
+    const result = await runChild(`issue-o-r-7-claude-${model}-main`);
+    assert.equal(result.status, 'processed', `${model} ran after the retried dispatch`);
+  }
+  assert.deepEqual(ran, ['model-a', 'model-b', 'model-c']);
+  assert.deepEqual(['model-a', 'model-b', 'model-c'].map(model => tasks.get(`task-${model}`)?.state), ['completed', 'completed', 'completed']);
+
+  // A new dispatch that first sees the issue done still records it, so its children stay stale.
+  stored = { repoOwner: 'o', repoName: 'r', number: 7, correlationId: 'submission' } as IssueJobData;
+  queued.clear();
+  await handleDispatchWithDeps(dispatcherAttempt(), deps);
+  assert.ok(stored.dispatchIssueLabels?.includes('AI-done'));
+  assert.deepEqual(await runChild('issue-o-r-7-claude-model-b-main'), { status: 'skipped', reason: 'Already done', issueNumber: 7 });
 });

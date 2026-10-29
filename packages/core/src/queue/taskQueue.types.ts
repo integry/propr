@@ -47,6 +47,8 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
      * of one request so a sibling's completion label does not skip the others.
      */
     dispatchId?: string;
+    /** The issue's label names when the dispatch first ran; its retries keep them. */
+    dispatchIssueLabels?: string[];
     issuePayload?: Record<string, unknown>;
     repoPayload?: Record<string, unknown>;
     title?: string;

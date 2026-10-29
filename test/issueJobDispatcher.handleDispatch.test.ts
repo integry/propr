@@ -79,7 +79,8 @@ describe('issueJobDispatcher handleDispatch', () => {
         number: 1701,
         correlationId: 'test-correlation',
       },
-    } as Job<IssueJobData>, deps);
+      updateData: async () => undefined,
+    } as unknown as Job<IssueJobData>, deps);
 
     assert.deepEqual(result, {
       status: 'dispatched',
