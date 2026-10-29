@@ -1006,11 +1006,14 @@ const dispatchDirect = async (application, userData, link, env, processGroups, l
   await group.waitForSuccessfulExit(15_000);
 };
 
-export const linuxProtocolDispatch = async ({ application, profile, link, env, processGroups }, {
+export const linuxProtocolDispatch = async ({ application, profile, link, env, processGroups, launchArguments = [] }, {
   runCommand = run,
+  dispatch = dispatchDirect,
 } = {}) => {
   if (!application.desktopFile) {
-    await dispatchDirect(application, profile.userData, link, env, processGroups);
+    // The ZIP second instance starts with the same launch arguments as every
+    // other warm dispatch and as the relocated package Exec line below.
+    await dispatch(application, profile.userData, link, env, processGroups, launchArguments);
     return 'direct-second-instance; ZIP has no OS launcher registration';
   }
   const applications = join(profile.xdgData, 'applications');
@@ -1797,6 +1800,7 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
         link: WARM_TUNNEL,
         env: dispatchEnvironment,
         processGroups,
+        launchArguments: launchContext.arguments,
       });
     } else {
       operationStage = 'LS_REGISTER';

@@ -117,6 +117,23 @@ describe('native staged artifact lifecycle authority', () => {
       }), /xdg-mime-registration\+gio-dispatch/);
       assert.equal(calls.length, 4);
       assert.deepEqual(calls.at(-1), ['/usr/bin/gio', ['open', parameters.link]]);
+      const launchArguments = createNativeLaunchContext({
+        platform: 'linux',
+        baseEnvironment: {},
+        sessionAddress: 'unix:path=/tmp/propr-native-bus',
+      }).arguments;
+      const dispatched = [];
+      assert.match(await linuxProtocolDispatch({
+        ...parameters,
+        application: { ...parameters.application, desktopFile: null },
+        launchArguments,
+      }, {
+        runCommand: async () => assert.fail('ZIP dispatch must not register an OS launcher'),
+        dispatch: async (...args) => { dispatched.push(args); },
+      }), /direct-second-instance/);
+      assert.equal(dispatched.length, 1);
+      assert.equal(dispatched[0][2], parameters.link);
+      assert.deepEqual(dispatched[0][5], ['--disable-gpu', '--password-store=gnome-libsecret']);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
