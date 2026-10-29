@@ -19,7 +19,7 @@ import {
 import {
     AGENT_IMAGE_PREPARATION_QUEUE_NAME,
     createAgentImagePreparationQueue,
-    closeAgentImageBuildLock,
+    abortAgentImageBuildsForShutdown, closeAgentImageBuildLock,
     type AgentImagePreparationJobData,
 } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
@@ -414,7 +414,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
-        agentImageWatchdog.close();
+        // Before draining jobs: an image build would otherwise run on (or keep
+        // waiting for the slot) until the stop timeout kills the process and
+        // leaves the slot held by a dead owner.
+        agentImageWatchdog.close(); await abortAgentImageBuildsForShutdown();
         await usageTipsRunner.close();
         await taskStateRecovery.close();
         // Proxies close only after running jobs (and their containers) have drained.

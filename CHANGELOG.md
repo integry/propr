@@ -623,6 +623,15 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
 - **Agent image recovery**: when the base agent image is pruned, the worker
   rebuilds the runtime image in the background, and health checks report that
   the image is being prepared instead of failing with "manifest unknown".
+  An agent image build or pull interrupted by `propr stop`, a restart or a
+  crashed worker no longer leaves the next start without agents for up to 45
+  minutes: a stopping worker aborts the build and releases the build slot, and
+  a slot whose holder container or process is gone is reclaimed. Waits for a
+  live holder are logged, and the image status reads "waiting for build slot
+  held by …". A slot taken by an earlier release records no holder, so it
+  cannot be proven abandoned and is still only freed when its lease expires
+  (up to 45 minutes); status shows it as "an unidentified holder". To recover
+  sooner, stop ProPR and delete the `propr:agent-image-build:slot` Redis key.
 - Bounded SQLite lock retries and explicit transaction replay rules protect
   concurrent workers and goal heartbeat writes.
 - Durable task reconciliation, worktree cleanup before lock release, follow-up
