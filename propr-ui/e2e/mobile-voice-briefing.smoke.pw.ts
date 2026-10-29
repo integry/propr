@@ -298,7 +298,7 @@ test('shows the administrator opt-in under General', async ({ page }) => {
   await page.goto('/settings');
 
   const optIn = page.getByRole('checkbox', { name: 'Enable voice briefings' });
-  await expect(page.getByRole('heading', { name: 'Voice briefings · Experimental' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Experimental', exact: true })).toBeVisible();
   await expect(optIn).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Voice briefing' })).toBeHidden();
 
