@@ -55,8 +55,8 @@ function bundleBuildArgs(versions: AgentCliVersionMatrix): string[] {
     ];
 }
 
-async function pullImage(image: string): Promise<boolean> {
-    const result = await executeDockerCommand('docker', ['pull', image], { timeout: 10 * 60 * 1000 });
+async function pullImage(image: string, signal?: AbortSignal): Promise<boolean> {
+    const result = await executeDockerCommand('docker', ['pull', image], { timeout: 10 * 60 * 1000, signal });
     return result.exitCode === 0;
 }
 
@@ -70,10 +70,10 @@ async function buildBundle(
         return { success: false, imageTag, error: `Unified agent Dockerfile not found: ${dockerfile}` };
     }
 
-    return withAgentImageBuildSlot(async () => {
+    return withAgentImageBuildSlot(async signal => {
         // Recheck after acquiring the installation-wide slot so concurrent
         // processes do not build an image that another process just produced.
-        if (await agentDockerImageExists(imageTag) || await pullImage(imageTag)) {
+        if (await agentDockerImageExists(imageTag) || await pullImage(imageTag, signal)) {
             return { success: true, imageTag };
         }
         await assertAgentImageBuildCapacity();
@@ -84,7 +84,7 @@ async function buildBundle(
             ...bundleBuildArgs(versions),
             '-t', imageTag,
             basePath
-        ], { timeout: 20 * 60 * 1000 });
+        ], { timeout: 20 * 60 * 1000, signal });
         if (result.exitCode !== 0) {
             // Docker reports disk pressure on either stream depending on the
             // builder and progress mode. Both are kept so the message-based

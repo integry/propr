@@ -325,13 +325,18 @@ export type { RunningTaskContainer } from './claude/docker/dockerExecutor.js';
 export { cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerImageManager.js';
 export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.js';
 export {
+    abortAgentImageBuildsForShutdown,
     closeAgentImageBuildLock,
+    describeAgentImageBuildSlotHolder,
+    describeAgentImageBuildSlotWait,
+    inspectAgentImageBuildSlot,
     runAgentImageBuild,
     withAgentImageBuildSlot,
     AGENT_IMAGE_BUILD_LOCK_ACQUIRE_TIMEOUT_MS,
     AGENT_IMAGE_BUILD_LOCK_KEY,
     AGENT_IMAGE_BUILD_LOCK_LEASE_MS,
 } from './agents/agentImageBuildLock.js';
+export type { AgentImageBuildSlotHolder } from './agents/agentImageBuildLock.js';
 export {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
     buildAgentRuntimePackageProfile,

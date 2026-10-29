@@ -36,9 +36,12 @@ async function resolveBundleBaseImage(
             ? { image: result.imageTag, imageTag: result.imageTag }
             : { imageTag: result.imageTag, error: result.error || 'Unified agent image is unavailable' };
     }
-    return await agentDockerImageExists(imageTag)
-        ? { image: imageTag, imageTag }
-        : { imageTag, error: `Unified agent image ${imageTag} has not been prepared by the worker` };
+    if (await agentDockerImageExists(imageTag)) return { image: imageTag, imageTag };
+    // Imported lazily so inspect-only callers and module mocks of the lock do
+    // not depend on it.
+    const { describeAgentImageBuildSlotWait } = await import('./agentImageBuildLock.js');
+    const wait = await describeAgentImageBuildSlotWait();
+    return { imageTag, error: `Unified agent image ${imageTag} has not been prepared by the worker${wait ? `; ${wait}` : ''}` };
 }
 
 export async function resolveUnifiedAgentImage(
