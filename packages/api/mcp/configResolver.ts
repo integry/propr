@@ -3,6 +3,10 @@ import type { Knex } from 'knex';
 import { db } from '@propr/core';
 import { loadMcpConfig, type McpConfig, type McpScope, MCP_SCOPES } from './config.js';
 import { isDemoMode } from '../demoMode.js';
+import {
+  deriveTunnelMcpEnvironment, getConnectMcpState, isHostedTunnelMode, loadTunnelMcpEncryptionKey,
+  McpSetupError, type ConnectMcpState,
+} from './tunnelMode.js';
 
 export const DEFAULT_UI_SCOPE_CEILING: McpScope[] = ['read', 'plan', 'review'];
 const MCP_ENCRYPTION_CONTEXT = 'propr:mcp:v1';
@@ -27,6 +31,15 @@ export interface McpStatus {
   resource?: string;
   instanceId?: string;
   connectAvailable?: boolean;
+  /** Hosted UI tunnel mode: MCP is reachable through ProPR Connect without MCP_* settings. */
+  tunnelMode?: boolean;
+  /** Settings toggle "Allow MCP clients through ProPR Connect" (tunnel mode only). */
+  connectEnabled?: boolean;
+  /** Public MCP URL clients add when Connect trust is on. */
+  connectResource?: string;
+  connectMcp?: ConnectMcpState;
+  /** Tunnel-mode setup error code, e.g. KEY_MISSING. Never contains secrets. */
+  setupError?: string;
   scopeCeiling: McpScope[];
 }
 
@@ -36,6 +49,7 @@ let _cacheTimestamp = 0;
 let _cachedOrigin: string | undefined = undefined;
 let _cachedEnabled = false;
 let _cachedScopeCeiling: McpScope[] | undefined = undefined;
+let _tunnelSetupError: string | undefined = undefined;
 
 // Only drop the resolved config, forcing the next resolve to re-read. The
 // derived values below stay at their last resolved state: the synchronous
@@ -54,6 +68,8 @@ export function getMcpOriginSync(): string | undefined { return _cachedOrigin; }
 export function isMcpEnabledSync(): boolean { return _cachedEnabled; }
 /** Admin scope ceiling from the last resolve, or undefined when no ceiling applies. */
 export function getMcpScopeCeilingSync(): McpScope[] | undefined { return _cachedScopeCeiling; }
+/** Tunnel-mode setup error code from the last resolve (KEY_MISSING, CONFIG_INVALID, …). */
+export function getMcpTunnelSetupErrorSync(): string | undefined { return _tunnelSetupError; }
 
 function cacheResolved(config: McpConfig | null, now: number, origin?: string): McpConfig | null {
   _cachedConfig = config;
@@ -62,6 +78,11 @@ function cacheResolved(config: McpConfig | null, now: number, origin?: string): 
   _cachedEnabled = config !== null;
   _cachedScopeCeiling = config?.scopeCeiling;
   return config;
+}
+
+/** The resolved config while it is within the TTL, otherwise undefined. */
+function freshCachedConfig(now: number): McpConfig | null | undefined {
+  return _cachedConfig !== undefined && now - _cacheTimestamp < CACHE_TTL_MS ? _cachedConfig : undefined;
 }
 
 export async function loadMcpAdminSettings(database: Knex = db): Promise<McpAdminSettings> {
@@ -150,7 +171,76 @@ function derivePublicOrigin(env: NodeJS.ProcessEnv): string | undefined {
   return undefined;
 }
 
+/**
+ * The hosted UI tunnel configuration, independent of the Settings toggle.
+ * Explicit MCP_* values win; the rest is derived from the tunnel setup and the
+ * persisted instance key. Throws McpSetupError with a safe code.
+ */
+export async function loadHostedTunnelMcpConfig(database: Knex = db, env: NodeJS.ProcessEnv = process.env): Promise<McpConfig> {
+  const key = env.MCP_ENCRYPTION_KEY ? undefined : await loadTunnelMcpEncryptionKey(env, database);
+  try {
+    return loadMcpConfig(deriveTunnelMcpEnvironment(env, key), { hostedTunnel: true })!;
+  } catch (error) {
+    // Validation messages name variables, never their values.
+    throw new McpSetupError('CONFIG_INVALID', error instanceof Error ? error.message : 'Invalid MCP configuration');
+  }
+}
+
+function recordTunnelSetupError(code: string | undefined, error?: unknown): void {
+  if (code && code !== _tunnelSetupError) {
+    console.error(`[mcp] MCP through ProPR Connect is unavailable (${code}):`, error instanceof Error ? error.message : code);
+  }
+  _tunnelSetupError = code;
+}
+
+/**
+ * Hosted UI tunnel mode with MCP_ENABLED unset: MCP through Connect is on by
+ * default, and the admin-only Settings toggle (connect_enabled) turns it off.
+ */
+async function resolveHostedTunnelMcpConfig(database: Knex, env: NodeJS.ProcessEnv): Promise<McpConfig | null> {
+  const now = Date.now();
+  const cached = freshCachedConfig(now);
+  if (cached !== undefined) return cached;
+  const adminSettings = await loadMcpAdminSettings(database);
+  if (!adminSettings.connectEnabled) {
+    recordTunnelSetupError(undefined);
+    return cacheResolved(null, now);
+  }
+  try {
+    const config = await loadHostedTunnelMcpConfig(database, env);
+    recordTunnelSetupError(undefined);
+    return cacheResolved({ ...config, scopeCeiling: adminSettings.scopeCeiling }, now);
+  } catch (error) {
+    recordTunnelSetupError(error instanceof McpSetupError ? error.code : 'CONFIG_INVALID', error);
+    return cacheResolved(null, now);
+  }
+}
+
+/**
+ * Operator-forced on in tunnel mode: the env-managed contract, so errors
+ * propagate, but unset values are still derived from the tunnel setup.
+ */
+async function resolveForcedHostedTunnelMcpConfig(database: Knex, env: NodeJS.ProcessEnv): Promise<McpConfig> {
+  const config = await loadHostedTunnelMcpConfig(database, env);
+  _cachedOrigin = config.origin;
+  _cachedEnabled = true;
+  _cachedScopeCeiling = config.scopeCeiling;
+  return config;
+}
+
+/** Hosted UI tunnel mode applies unless MCP is forced off or the API runs in demo mode. */
+function usesHostedTunnelMcp(env: NodeJS.ProcessEnv): boolean {
+  return isHostedTunnelMode(env) && env.MCP_ENABLED !== 'false' && !isDemoMode();
+}
+
+function resolveTunnelOrNull(database: Knex, env: NodeJS.ProcessEnv): Promise<McpConfig | null> {
+  return env.MCP_ENABLED === 'true'
+    ? resolveForcedHostedTunnelMcpConfig(database, env)
+    : resolveHostedTunnelMcpConfig(database, env);
+}
+
 export async function resolveMcpConfig(database: Knex = db, env: NodeJS.ProcessEnv = process.env): Promise<McpConfig | null> {
+  if (usesHostedTunnelMcp(env)) return resolveTunnelOrNull(database, env);
   // env-managed path: keep existing behavior unchanged
   if (env.MCP_ENABLED === 'true') {
     const config = loadMcpConfig(env) ?? null;
@@ -168,9 +258,8 @@ export async function resolveMcpConfig(database: Knex = db, env: NodeJS.ProcessE
   }
   // check TTL cache
   const now = Date.now();
-  if (_cachedConfig !== undefined && now - _cacheTimestamp < CACHE_TTL_MS) {
-    return _cachedConfig;
-  }
+  const cached = freshCachedConfig(now);
+  if (cached !== undefined) return cached;
   const adminSettings = await loadMcpAdminSettings(database);
   if (!adminSettings.enabled) return cacheResolved(null, now);
   const origin = derivePublicOrigin(env);
@@ -192,13 +281,42 @@ export async function resolveMcpConfig(database: Knex = db, env: NodeJS.ProcessE
   return cacheResolved({ origin, resource: `${origin}/api/mcp`, instanceId, encryptionKey, scopeCeiling: adminSettings.scopeCeiling }, now);
 }
 
+function configStatus(config: McpConfig | null): Omit<McpStatus, 'scopeCeiling'> {
+  return {
+    enabled: config !== null,
+    origin: config?.origin,
+    resource: config?.resource,
+    instanceId: config?.instanceId,
+    connectAvailable: !!config?.connect,
+    connectResource: config?.connect?.resource,
+    connectMcp: getConnectMcpState(),
+  };
+}
+
+async function resolveHostedTunnelMcpStatus(database: Knex, env: NodeJS.ProcessEnv): Promise<McpStatus> {
+  const adminSettings = await loadMcpAdminSettings(database);
+  const config = await resolveMcpConfig(database, env).catch((error: unknown) => {
+    _tunnelSetupError = error instanceof McpSetupError ? error.code : 'CONFIG_INVALID';
+    return null;
+  });
+  return {
+    ...configStatus(config),
+    ...(env.MCP_ENABLED === 'true' ? { operatorForced: 'on' as const } : {}),
+    tunnelMode: true,
+    connectEnabled: adminSettings.connectEnabled,
+    ...(!config && _tunnelSetupError ? { setupError: _tunnelSetupError } : {}),
+    scopeCeiling: adminSettings.scopeCeiling,
+  };
+}
+
 export async function resolveMcpStatus(database: Knex = db, env: NodeJS.ProcessEnv = process.env): Promise<McpStatus> {
   const base: McpStatus = { enabled: false, scopeCeiling: DEFAULT_UI_SCOPE_CEILING };
   if (isDemoMode()) return { ...base, demoMode: true };
+  if (isHostedTunnelMode(env) && env.MCP_ENABLED !== 'false') return resolveHostedTunnelMcpStatus(database, env);
   if (env.MCP_ENABLED === 'true') {
     const cfg = loadMcpConfig(env) ?? null;
     const adminSettings = await loadMcpAdminSettings(database);
-    return { enabled: cfg !== null, operatorForced: 'on', origin: cfg?.origin, resource: cfg?.resource, instanceId: cfg?.instanceId, scopeCeiling: adminSettings.scopeCeiling };
+    return { ...configStatus(cfg), operatorForced: 'on', scopeCeiling: adminSettings.scopeCeiling };
   }
   if (env.MCP_ENABLED === 'false') {
     return { ...base, operatorForced: 'off' };

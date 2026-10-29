@@ -9,6 +9,10 @@ MCP lets a connected coding or chat client inspect and operate ProPR using scope
 
 ![MCP server settings with enablement, public endpoint and scope controls](/img/screenshots/0.9.0/mcp-settings.png)
 
+### Hosted UI tunnel
+
+With the hosted UI tunnel (`propr tunnel setup … --start`), MCP works automatically through ProPR Connect on Plus installations. Add `https://mcp.propr.dev/mcp` to your MCP client; there are no MCP settings to configure and no extra commands to run. The instance registers with Connect on startup. The settings page shows the registration status and an admin-only **Allow MCP clients through ProPR Connect** toggle to turn it off. `MCP_ENABLED=false` still forces MCP off.
+
 ## Consent and connected apps
 
 Connect the client to the instance's `/api/mcp` endpoint. Sign in through the browser and review the requested permissions and repository selection. Optional scopes begin unchecked. Select only the requested capabilities and repositories you intend to grant; refresh cannot expand the grant. A rejected GitHub session returns you to sign-in.

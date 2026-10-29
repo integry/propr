@@ -222,6 +222,10 @@ export function createAdminMcpRoutes({ database = db, redisClient }: AdminMcpRou
         const prereqError = await checkEnablePrerequisites(database);
         if (prereqError) { res.status(prereqError.status).json({ error: prereqError.error, code: prereqError.code }); return; }
       }
+      // MCP_ENABLED=false forces MCP off; the Connect toggle cannot override it.
+      if (connectEnabled === true && process.env.MCP_ENABLED === 'false') {
+        res.status(403).json({ error: 'MCP is disabled by operator configuration', code: 'OPERATOR_DISABLED' }); return;
+      }
 
       const updates: Record<string, string> = {};
       if (enabled !== undefined) updates.enabled = String(enabled);
@@ -232,8 +236,10 @@ export function createAdminMcpRoutes({ database = db, redisClient }: AdminMcpRou
         await saveMcpAdminSettingRows(updates, database);
         invalidateMcpConfigCache();
         await publishMcpUpdate(redisClient);
-        const desc = enabled !== undefined ? (enabled ? 'enabled' : 'disabled') : 'updated';
-        await logActivity(redisClient, `MCP server ${desc}`, req.user?.username);
+        const desc = enabled !== undefined ? `MCP server ${enabled ? 'enabled' : 'disabled'}`
+          : connectEnabled !== undefined ? `MCP clients through ProPR Connect ${connectEnabled ? 'allowed' : 'disallowed'}`
+            : 'MCP server updated';
+        await logActivity(redisClient, desc, req.user?.username);
       }
 
       const newStatus = await resolveMcpStatus(database);

@@ -16,7 +16,9 @@ system-task or session secret chain. It persists an instance identity. Preserve
 these secrets across restarts. A changed key turns MCP off (**Reconnect required**)
 until an administrator revokes all connections; clients then reconnect.
 `MCP_ENABLED=false` forces MCP off; `true` selects the explicit environment-managed
-setup below. See the [illustrated connection guide](docs/features/mcp.md).
+setup below. With the hosted UI tunnel, MCP through Connect is on by default; see
+[MCP works automatically with the hosted UI tunnel](#mcp-works-automatically-with-the-hosted-ui-tunnel).
+See the [illustrated connection guide](docs/features/mcp.md).
 
 ## Direct instance setup
 
@@ -206,29 +208,83 @@ documents `--callback-port` and HTTP transport setup. Hosted Claude CIMD does
 not need the loopback exception. No live ChatGPT/Claude OAuth session has
 been exercised by the local fixture tests.
 
-## Connect instance registration
+## MCP works automatically with the hosted UI tunnel
 
-Connect lets public clients reach an instance through the hosted ProPR Connect
-gateway at `https://mcp.propr.dev`. That hosted gateway is not yet publicly
-available; this section describes the instance side, which is implemented.
-Connect trust requires the environment-managed setup (`MCP_ENABLED=true`).
-Direct OAuth works independently of Connect trust. Hosted access uses the
+A Plus user provisions a Connect tunnel, runs the existing
+`propr tunnel setup --token … --url … --start`, and adds
+`https://mcp.propr.dev/mcp` to their MCP client. There are no MCP-specific
+settings and no extra commands. The public gateway uses the
 [implemented Connect contract](mcp-connect-contract.md).
+
+Hosted UI tunnel mode means `PROPR_UI_TUNNEL_ENABLED=true` with
+`PROPR_INSTANCE_ID` set. Each derived value below applies only when its
+explicit variable is unset:
+
+| Setting | Derived value in tunnel mode |
+| --- | --- |
+| `MCP_PUBLIC_ORIGIN` | The tunnel API origin, `https://t-<PROPR_INSTANCE_ID>.propr.dev` (same derivation as the tunnel-mode `API_PUBLIC_URL`) |
+| `MCP_INSTANCE_ID` | `PROPR_INSTANCE_ID`, the tunnel id Connect has on record |
+| `MCP_ENCRYPTION_KEY` | A random 32-byte key generated on first start and stored in `<data dir>/mcp/encryption-key` (owner-only), next to the SQLite database |
+| `MCP_CONNECT_TRUST` | `true`; Connect is the authorization server |
+| `MCP_ENABLED` | On by default; **Settings → Integrations & MCP → MCP Server → Allow MCP clients through ProPR Connect** turns it off |
+
+On startup, the API runs the same flow as `npm run mcp:connect:register`: it
+creates or loads the persistent P-256 instance key and registers with Connect
+using the existing `GH_INSTALLATION_ID` and `PROPR_GH_RELAY_TOKEN`. A current
+registration is left alone. A missing, stale (older than a day) or rejected
+registration, or one for another tunnel id, is sent again, with exponential
+backoff after a failure (5 s doubling up to 15 minutes). A Connect outage never
+delays API startup. `GET /health`, `GET /api/status` and the Settings page
+report `connect_mcp`: `registered`, `pending`, `failed:<code>` or `disabled`.
+They never include secrets.
+
+Keep the data directory in backups with the database. The key is reused on
+every start and never regenerated silently. If it is missing after first use
+(its fingerprint is recorded in the database), MCP reports
+`failed:KEY_MISSING` instead of creating a new one, because a new key would
+orphan every connection and the registration. Restore the file, or set
+`MCP_ENCRYPTION_KEY` to the original value. A changed file reports
+`failed:KEY_CHANGED`. Re-provisioning the tunnel changes `PROPR_INSTANCE_ID`;
+the instance then registers a new identity and users reconnect.
+
+The tunnel-mode default applies the Settings scope ceiling (default `read`,
+`plan`, `review`); widen it there if clients need more. Plus is enforced by
+Connect: a Community installation's registration is refused and shows
+`failed:ACCESS_REVOKED`.
+
+`MCP_ENABLED=false` still forces MCP off. `MCP_ENABLED=true` keeps the
+environment-managed contract (the Settings toggle no longer applies, and
+invalid configuration fails startup), but unset values are still derived.
+`MCP_CONNECT_TRUST=false` opts out of Connect. Outside tunnel mode nothing
+changes: Connect requires the explicit settings below.
+
+Default-on only makes the instance reachable *through Connect*. It adds no
+public unauthenticated surface. MCP requests are accepted only with a valid
+Connect-signed delegation bound to the signed-in GitHub user, installation
+membership, Plus, and the instance id and key thumbprint, which the instance
+validates online. It fails closed when that validation is unavailable. The
+existing `/api/mcp` local authorization checks still apply: add each intended
+user through the Access settings and configure the allowed repositories.
+
+### Advanced: explicit Connect settings
+
+Custom deployments can set the values explicitly; explicit values always win.
+Direct OAuth works independently of Connect trust.
 
 1. Complete the existing operator/browser relay and `propr tunnel setup` flow.
    Keep its `GH_INSTALLATION_ID`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`,
    `PROPR_UI_TUNNEL_ENABLED=true`, `PROPR_UI_TUNNEL_TOKEN` and `PROPR_INSTANCE_ID`.
-   The last value is the **tunnel registry UUID**, not the stable MCP identity.
-   An operator configuring a tunnel outside that flow can set
-   `MCP_CONNECT_TUNNEL_ID` to the active registry `tunnel_id` shown by Connect.
-   This is not Cloudflare's separate `cf_tunnel_id`.
+   The last value is the **tunnel registry UUID**. An operator configuring a
+   tunnel outside that flow can set `MCP_CONNECT_TUNNEL_ID` to the active
+   registry `tunnel_id` shown by Connect. This is not Cloudflare's separate
+   `cf_tunnel_id`.
 2. Configure the direct setup variables above in the same instance environment.
-   For a new instance, generate `MCP_INSTANCE_ID` once with
-   `node -e 'console.log(require("node:crypto").randomUUID())'`.
-   Preserve it separately from the tunnel ID. Keep `MCP_ENCRYPTION_KEY` in the
-   operator secret manager and point `DB_FILENAME` at the running API's durable
-   SQLite database. Use the actual API public origin for `MCP_PUBLIC_ORIGIN`.
-3. Explicitly opt in:
+   An explicit `MCP_INSTANCE_ID` is a UUID or a 16–100 character identifier;
+   generate one with `node -e 'console.log(require("node:crypto").randomUUID())'`.
+   Keep `MCP_ENCRYPTION_KEY` in the operator secret manager and point
+   `DB_FILENAME` at the running API's durable SQLite database. Use the actual
+   API public origin for `MCP_PUBLIC_ORIGIN`.
+3. Opt in:
 
    ```dotenv
    MCP_CONNECT_TRUST=true
@@ -239,8 +295,8 @@ Direct OAuth works independently of Connect trust. Hosted access uses the
    public resource, validation and handoff URLs are derived from it. The old
    `MCP_CONNECT_INTROSPECTION_*`, `MCP_CONNECT_INSTALLATION_ID` and configurable
    JWKS URL belong to the incompatible proposal and are no longer used.
-4. After the ordinary instance database migrations, run from the core checkout
-   with the **same environment and database** as the API:
+4. Outside tunnel mode, after the ordinary instance database migrations, run
+   from the core checkout with the **same environment and database** as the API:
 
    ```sh
    DOTENV_CONFIG_PATH=/path/to/instance/.env npm run mcp:connect:register
@@ -248,18 +304,20 @@ Direct OAuth works independently of Connect trust. Hosted access uses the
 
    In a built installation the equivalent entry point is
    `DOTENV_CONFIG_PATH=/path/to/instance/.env node dist/scripts/mcp-connect-register.js`.
-   This operator command generates a P-256 key once, persists it encrypted in
-   SQLite before making a network request, signs registration, and stores the
-   verified registration receipt. It prints only the public instance/resource
-   identifiers. It never asks an operator to construct or paste JWTs. Retry the
-   command after a network failure; it reuses the same identity. A changed
-   `MCP_INSTANCE_ID` cannot overwrite an existing identity.
+   In tunnel mode the same command repairs the automatic registration by hand.
+   It generates a P-256 key once, persists it encrypted in SQLite before making
+   a network request, signs registration, and stores the verified registration
+   receipt. It prints only the public instance/resource identifiers. It never
+   asks an operator to construct or paste JWTs. Retry it after a network
+   failure; it reuses the same identity. A changed explicit `MCP_INSTANCE_ID`
+   cannot overwrite an existing identity.
 5. Restart the API with the matching configuration. Add each intended user
    through the existing Access settings and configure the allowed repositories.
-   Connect membership alone does not create local access. Once the hosted
-   gateway is available, connect a public client to `https://mcp.propr.dev/mcp`, then explicitly select its installation,
-   requested permissions and repositories in the Connect browser consent flow.
-   GitHub credential handoff happens server-to-server on the first request.
+   Connect membership alone does not create local access. Connect a public
+   client to `https://mcp.propr.dev/mcp`, then explicitly select its
+   installation, requested permissions and repositories in the Connect browser
+   consent flow. GitHub credential handoff happens server-to-server on the
+   first request.
 
 Secrets belong only in operator/browser setup, never chat inputs or public
 OAuth client traffic. Keep SQLite and its encryption key together across

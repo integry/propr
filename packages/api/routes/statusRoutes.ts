@@ -21,6 +21,7 @@ import {
 } from '@propr/core';
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import type { SyntheticAgentConfig } from '@propr/shared';
+import { getConnectMcpState } from '../mcp/tunnelMode.js';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
 import { getOrCreatePublicInstanceIdentity } from '../publicInstanceIdentity.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
@@ -334,6 +335,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     // GitHub event delivery path so operators can tell a healthy intake from a
     // stalled one independent of the intake method name.
     status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
+    // MCP through ProPR Connect: registered | pending | failed:<code> | disabled.
+    status.connect_mcp = getConnectMcpState();
 
     const [agentSnapshot, indexing, cachedWarnings] = await Promise.all([
       timeApiStage('status.agent-health', agentStatusCache.read),

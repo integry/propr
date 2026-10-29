@@ -9,6 +9,12 @@ export const MCP_PROTOCOL_VERSIONS = ['2026-07-28', '2025-11-25'];
 export const instanceAudience = (id: string): string => `urn:propr:instance:${id}:mcp`;
 export interface InstanceIdentity { instanceId: string; privateJwk: JWK }
 
+let registrationRejectedListener: (() => void) | undefined;
+/** Notified when Connect answers 409: it no longer accepts this instance's registration or contract. */
+export function onConnectRegistrationRejected(listener: (() => void) | undefined): void {
+  registrationRejectedListener = listener;
+}
+
 /** Only operator code creates identities; request handling never rotates a key. */
 export class McpConnect {
   constructor(readonly config: McpConfig, readonly store: McpStore) {}
@@ -16,7 +22,7 @@ export class McpConnect {
     const identity = await this.store.get<InstanceIdentity>('connect_identity', 'instance');
     if (!identity || identity.instanceId !== this.config.instanceId || identity.privateJwk.kty !== 'EC'
       || identity.privateJwk.crv !== 'P-256' || !identity.privateJwk.d) {
-      throw new McpError('CONNECT_SETUP_REQUIRED', 'Run npm run mcp:connect:register with the instance configuration.', 401);
+      throw new McpError('CONNECT_SETUP_REQUIRED', 'Connect registration is not complete. Hosted UI tunnel mode registers automatically; otherwise run npm run mcp:connect:register with the instance configuration.', 401);
     }
     const publicJwk: JWK = { kty: 'EC', crv: 'P-256', x: identity.privateJwk.x, y: identity.privateJwk.y };
     return { ...identity, publicJwk, thumbprint: await calculateJwkThumbprint(publicJwk) };
@@ -42,6 +48,7 @@ export class McpConnect {
     } catch { throw new McpError('CONNECT_UNAVAILABLE', 'Connect validation is unavailable. No offline access is allowed.', 503); }
     if (!response.ok) {
       await response.body?.cancel();
+      if (response.status === 409) registrationRejectedListener?.();
       throw new McpError(response.status === 409 ? 'INSTANCE_VERSION_MISMATCH' : response.status >= 500 ? 'CONNECT_UNAVAILABLE' : 'ACCESS_REVOKED',
         'Connect rejected the current grant, instance proof or registration. Check setup and reconnect if access was revoked.', response.status === 409 ? 409 : response.status >= 500 ? 503 : 403);
     }
@@ -60,7 +67,13 @@ export class McpConnect {
     const result = await this.post('/v1/mcp/instances/register', { ...binding, instance_id: identity.instanceId, public_jwk: identity.publicJwk }, binding);
     if (result.registered !== true || result.instance_id !== identity.instanceId || result.audience !== instanceAudience(identity.instanceId)
       || result.contract_version !== MCP_CONNECT_CONTRACT) throw new McpError('CONNECT_SETUP_REQUIRED', 'Connect registration response does not match this instance.', 401);
-    await this.store.put('connect_registration', 'instance', { ...binding, issuer: connect.issuer, installationId: connect.installationId, instanceId: identity.instanceId });
+    await this.store.put('connect_registration', 'instance', { ...binding, issuer: connect.issuer, installationId: connect.installationId,
+      instanceId: identity.instanceId, registered_at: Date.now() });
+  }
+  /** When the current registration receipt was stored, or undefined if it predates the timestamp. */
+  async registeredAt(): Promise<number | undefined> {
+    const registration = await this.store.get<Record<string, unknown>>('connect_registration', 'instance');
+    return typeof registration?.registered_at === 'number' ? registration.registered_at : undefined;
   }
   async registeredThumbprint(): Promise<string> {
     const identity = await this.identity();
@@ -93,14 +106,19 @@ export class McpConnect {
   }
 }
 
-/** Explicit operator opt-in; never called by an MCP client request. */
-export async function registerMcpInstance(config: McpConfig, store: McpStore): Promise<void> {
+/**
+ * Operator command or hosted-tunnel startup; never called by an MCP client request.
+ * `replaceIdentity` is only for a tunnel-derived instance id: a re-provisioned
+ * tunnel is a new instance to Connect, so it gets a new key. An explicit
+ * MCP_INSTANCE_ID never overwrites a persisted identity.
+ */
+export async function registerMcpInstance(config: McpConfig, store: McpStore, { replaceIdentity = false }: { replaceIdentity?: boolean } = {}): Promise<void> {
   if (!config.connect) throw new Error('MCP Connect trust must be explicitly enabled');
   await store.db.transaction(async tx => {
     const existing = await store.get<InstanceIdentity>('connect_identity', 'instance', tx);
     if (existing) {
-      if (existing.instanceId !== config.instanceId) throw new Error('MCP_INSTANCE_ID differs from the persisted identity. Restore the original ID.');
-      return;
+      if (existing.instanceId === config.instanceId) return;
+      if (!replaceIdentity) throw new Error('MCP_INSTANCE_ID differs from the persisted identity. Restore the original ID.');
     }
     const pair = await generateKeyPair('ES256', { extractable: true });
     await store.put('connect_identity', 'instance', { instanceId: config.instanceId, privateJwk: await exportJWK(pair.privateKey) }, { database: tx });

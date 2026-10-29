@@ -14,6 +14,13 @@ export interface McpStatus {
   resource?: string;
   instanceId?: string;
   connectAvailable?: boolean;
+  /** Hosted UI tunnel mode: MCP is reachable through ProPR Connect without MCP_* settings. */
+  tunnelMode?: boolean;
+  connectEnabled?: boolean;
+  /** Public MCP URL for clients when Connect trust is on. */
+  connectResource?: string;
+  connectMcp?: 'registered' | 'pending' | 'disabled' | `failed:${string}`;
+  setupError?: string;
   scopeCeiling: McpScope[];
 }
 

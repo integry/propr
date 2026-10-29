@@ -9,11 +9,14 @@ import {
 } from '../../api/adminMcpApi';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
+import { ConnectToggle } from './McpConnectTunnel';
+import { tunnelStatusDescription, tunnelStatusLabel, tunnelStatusTone } from './mcpConnectTunnelStatus';
 
 function statusLabel(data: McpAdminResponse | null): string {
   if (!data) return 'Loading…';
   const { status } = data;
   if (status.demoMode) return 'Demo mode';
+  if (status.tunnelMode) return tunnelStatusLabel(status);
   if (status.operatorForced === 'off') return 'Disabled by operator';
   if (status.operatorForced === 'on') return 'Managed by environment';
   if (status.keyChanged) return 'Reconnect required';
@@ -25,6 +28,7 @@ function statusLabel(data: McpAdminResponse | null): string {
 function statusTone(data: McpAdminResponse | null): SettingsStatusTone {
   if (!data) return 'pending';
   const { status } = data;
+  if (status.tunnelMode) return tunnelStatusTone(status);
   if (status.enabled || status.operatorForced === 'on') return 'ok';
   if (status.keyChanged || status.missingHttpsOrigin || status.missingSecretChain) return 'error';
   return 'pending';
@@ -33,6 +37,7 @@ function statusTone(data: McpAdminResponse | null): SettingsStatusTone {
 function statusDescriptionSuffix(data: McpAdminResponse | null): string {
   if (!data) return '';
   const { status } = data;
+  if (status.tunnelMode) return tunnelStatusDescription(status);
   if (status.operatorForced === 'off') return ' MCP is disabled by operator configuration.';
   if (status.operatorForced === 'on') return ' MCP is enabled and managed through environment variables.';
   if (status.missingHttpsOrigin) return ' An HTTPS public URL is required (set API_PUBLIC_URL or GH_OAUTH_CALLBACK_URL).';
@@ -86,6 +91,26 @@ function EnableToggle({ isEnabled, saving, canToggle, confirmEnable, onToggle, o
   );
 }
 
+interface EnablementControlsProps extends EnableToggleProps {
+  data: McpAdminResponse | null;
+  isDemoMode: boolean;
+  onToggleConnect: (enabled: boolean) => void;
+}
+
+/** Hosted UI tunnel mode switches MCP through ProPR Connect; otherwise the direct server is switched. */
+function EnablementControls({ data, isDemoMode, onToggleConnect, ...enableProps }: EnablementControlsProps) {
+  if (data?.status.tunnelMode) {
+    return (
+      <ConnectToggle
+        checked={data.settings.connectEnabled}
+        disabled={enableProps.saving || isDemoMode}
+        onToggle={onToggleConnect}
+      />
+    );
+  }
+  return <EnableToggle {...enableProps} />;
+}
+
 interface McpDetailsProps {
   data: McpAdminResponse;
   saving: boolean;
@@ -97,7 +122,8 @@ interface McpDetailsProps {
 
 function McpDetails({ data, saving, revoking, isOperatorManaged, onUpdateScopes, onRevokeAll }: McpDetailsProps) {
   const { status, settings } = data;
-  const connectionUrl = status.resource;
+  // Through the hosted tunnel, clients connect to ProPR Connect, not the instance.
+  const connectionUrl = status.tunnelMode ? status.connectResource : status.resource;
   return (
     <>
       {connectionUrl && (
@@ -148,7 +174,7 @@ function McpDetails({ data, saving, revoking, isOperatorManaged, onUpdateScopes,
       <div className="flex max-w-2xl items-center justify-between gap-3 border-t border-slate-200 pt-4">
         {/* The /mcp/apps page is served by the API app, whose origin can differ
             from the SPA origin, so the link must target the resolved MCP origin. */}
-        {status.origin ? (
+        {status.origin && !status.tunnelMode ? (
           <a href={`${status.origin}/mcp/apps`} className="text-[12px] text-primary-600 underline hover:text-primary-700">
             View connected apps →
           </a>
@@ -254,6 +280,21 @@ export default function McpServerSection({ onError }: McpServerSectionProps) {
     }
   };
 
+  const toggleConnect = async (connectEnabled: boolean) => {
+    setSaving(true);
+    setErrorMessage(null);
+    try {
+      const result = await updateMcpAdminSettings({ connectEnabled });
+      setData(prev => prev ? { ...prev, status: result.status, settings: { ...prev.settings, connectEnabled } } : prev);
+      setSuccessMessage(connectEnabled ? 'MCP clients can connect through ProPR Connect.' : 'MCP clients through ProPR Connect are turned off.');
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: unknown) {
+      reportError(err instanceof Error ? err.message : 'Failed to update MCP settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const updateScopes = async (scopes: McpScope[]) => {
     setSaving(true);
     setErrorMessage(null);
@@ -305,12 +346,15 @@ export default function McpServerSection({ onError }: McpServerSectionProps) {
 
       {!isOperatorManaged && (
         <div className="mb-6 flex max-w-2xl items-center gap-3">
-          <EnableToggle
+          <EnablementControls
+            data={data}
             isEnabled={isEnabled}
             saving={saving}
             canToggle={canToggle}
             confirmEnable={confirmEnable}
+            isDemoMode={isDemoMode}
             onToggle={enabled => void toggleEnable(enabled)}
+            onToggleConnect={enabled => void toggleConnect(enabled)}
             onCancelConfirm={() => setConfirmEnable(false)}
           />
         </div>
