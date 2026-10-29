@@ -31,6 +31,12 @@ export class McpStore {
     try { return this.unseal<T>(row.value); } catch { return undefined; }
   }
 
+  /** Whether a live row exists, including one this key can no longer decrypt (which get() reports as a miss). */
+  async has(kind: string, id: string, database: Knex = this.db): Promise<boolean> {
+    const row = await database('mcp_records').where({ kind, id }).first('expires_at');
+    return !!row && !(row.expires_at && Number(row.expires_at) <= Date.now());
+  }
+
   async put(kind: string, id: string, value: unknown, { expiresAt, database = this.db }: { expiresAt?: number; database?: Knex } = {}): Promise<void> {
     const owner = value && typeof value === 'object' && 'ownerId' in value && typeof value.ownerId === 'string' ? value.ownerId : null;
     await database('mcp_records').insert({ kind, id, value: this.seal(value), owner_id: owner, expires_at: expiresAt ?? null })

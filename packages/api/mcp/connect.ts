@@ -116,6 +116,11 @@ export async function registerMcpInstance(config: McpConfig, store: McpStore, { 
   if (!config.connect) throw new Error('MCP Connect trust must be explicitly enabled');
   await store.db.transaction(async tx => {
     const existing = await store.get<InstanceIdentity>('connect_identity', 'instance', tx);
+    // A row this key cannot decrypt is not a missing identity: replacing it
+    // would destroy the original key, so fail closed until the key is restored.
+    if (!existing && await store.has('connect_identity', 'instance', tx)) {
+      throw new McpError('KEY_CHANGED', 'The persisted Connect identity cannot be decrypted with the current MCP encryption key. Restore the original key; the identity is not replaced.', 409);
+    }
     if (existing) {
       if (existing.instanceId === config.instanceId) return;
       if (!replaceIdentity) throw new Error('MCP_INSTANCE_ID differs from the persisted identity. Restore the original ID.');

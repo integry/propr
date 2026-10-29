@@ -71,7 +71,10 @@ export function startConnectMcpRegistration(options: ConnectRegistrationOptions 
   let running: Promise<ConnectMcpState> | undefined;
   let rerun = false;
   let stopped = false;
+  // Set by a Connect 409 and kept until a registration sent after it succeeds:
+  // a fresh local receipt cannot prove Connect still accepts it.
   let forceRegister = false;
+  let rejections = 0;
   let lastRegistrationAt = 0;
 
   const automatic = () => isHostedTunnelMode(env) && env.MCP_ENABLED !== 'false';
@@ -120,11 +123,13 @@ export function startConnectMcpRegistration(options: ConnectRegistrationOptions 
     const registeredAt = current ? await connect.registeredAt() : undefined;
     const stale = registeredAt === undefined || now() - registeredAt >= CONNECT_REGISTRATION_REFRESH_MS;
     if (current && !stale && !forceRegister) return { state: 'registered', current };
-    forceRegister = false;
     if (!current) setState('pending');
+    const rejectionsBefore = rejections;
     try {
       lastRegistrationAt = now();
       await register(config, store, { replaceIdentity: isTunnelDerivedInstanceId(env) });
+      // A rejection that arrived during the request may postdate it; keep that obligation.
+      if (rejections === rejectionsBefore) forceRegister = false;
       return { state: 'registered', current: true };
     } catch (error) {
       return { state: `failed:${errorCode(error)}`, current, error };
@@ -167,6 +172,7 @@ export function startConnectMcpRegistration(options: ConnectRegistrationOptions 
   onConnectRegistrationRejected(() => {
     if (stopped || !automatic()) return;
     forceRegister = true;
+    rejections += 1;
     const since = now() - lastRegistrationAt;
     if (since >= REJECTION_REREGISTER_INTERVAL_MS) void trigger();
     else if (delay === undefined || delay > REJECTION_REREGISTER_INTERVAL_MS - since) schedule(REJECTION_REREGISTER_INTERVAL_MS - since);

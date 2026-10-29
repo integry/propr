@@ -267,6 +267,70 @@ test('a Connect rejection (409) of request traffic forces re-registration', asyn
   } finally { manager.stop(); }
 });
 
+test('a 409 keeps forcing registration through transient failures until one succeeds', async () => {
+  let available = true;
+  let rejectDuringRequest: (() => Promise<void>) | undefined;
+  const registrations = stubConnect(async body => { await rejectDuringRequest?.(); rejectDuringRequest = undefined; return available
+    ? Response.json({ registered: true, instance_id: body.instance_id, audience: `urn:propr:instance:${body.instance_id as string}:mcp`, contract_version: 'propr-connect-mcp/1' })
+    : new Response('unavailable', { status: 503 }); });
+  const env = tunnelEnv();
+  let clock = Date.now();
+  const timers = fakeTimers();
+  const manager = startConnectMcpRegistration({ database, env, logger: quietLogger, now: () => clock, ...timers });
+  try {
+    await manager.trigger();
+    const config = (await resolveMcpConfig(database, env))!;
+    const { McpConnect } = await import('../mcp/connect.js');
+    const reject = async () => {
+      const stub = globalThis.fetch;
+      globalThis.fetch = (async () => new Response('', { status: 409 })) as typeof fetch;
+      try { await assert.rejects(new McpConnect(config, new McpStore(database, config.encryptionKey)).online('/v1/mcp/delegations/validate', 'delegation')); }
+      finally { globalThis.fetch = stub; }
+    };
+    await reject();
+    available = false;
+    clock += 60_000;
+    assert.equal(await manager.trigger(), 'registered', 'the fresh receipt stays usable while Connect is unavailable');
+    assert.equal(registrations.length, 2);
+    assert.equal(manager.scheduledDelayMs(), 5_000, 'a short retry, not the daily refresh');
+    available = true;
+    clock += 5_000;
+    // The callback starts the check; trigger() joins it (its coalesced rerun sends nothing once registered).
+    timers.pending().at(-1)!.callback();
+    assert.equal(await manager.trigger(), 'registered');
+    assert.equal(registrations.length, 3, 'the timer-driven retry registers again despite the fresh receipt');
+    assert.equal(manager.scheduledDelayMs(), CONNECT_REGISTRATION_REFRESH_MS);
+    assert.equal(await manager.trigger(), 'registered');
+    assert.equal(registrations.length, 3, 'success clears the obligation');
+    // A rejection during the awaited request may postdate it, so it survives that success.
+    await reject();
+    clock += 60_000;
+    rejectDuringRequest = reject;
+    assert.equal(await manager.trigger(), 'registered');
+    assert.equal(registrations.length, 4);
+    clock += 60_000;
+    assert.equal(await manager.trigger(), 'registered');
+    assert.equal(registrations.length, 5, 'the newer rejection still forces a registration');
+  } finally { manager.stop(); }
+});
+
+test('a Connect identity the explicit key cannot decrypt is never replaced', async () => {
+  const registrations = stubConnect();
+  const env = tunnelEnv({ MCP_ENCRYPTION_KEY: randomBytes(32).toString('base64') });
+  const first = startConnectMcpRegistration({ database, env, logger: quietLogger, ...fakeTimers() });
+  try { assert.equal(await first.trigger(), 'registered'); } finally { first.stop(); }
+  const before = await database('mcp_records').where({ kind: 'connect_identity', id: 'instance' }).first<{ value: string }>('value');
+  env.MCP_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+  invalidateMcpConfigCache();
+  const manager = startConnectMcpRegistration({ database, env, logger: quietLogger, ...fakeTimers() });
+  try { assert.equal(await manager.trigger(), 'failed:KEY_CHANGED'); } finally { manager.stop(); }
+  const config = (await resolveMcpConfig(database, env))!;
+  await assert.rejects(registerMcpInstance(config, new McpStore(database, config.encryptionKey), { replaceIdentity: true }), { code: 'KEY_CHANGED' });
+  const afterwards = await database('mcp_records').where({ kind: 'connect_identity', id: 'instance' }).first<{ value: string }>('value');
+  assert.equal(afterwards?.value, before?.value, 'the original identity is preserved');
+  assert.equal(registrations.length, 1, 'nothing is sent to Connect');
+});
+
 test('the Settings toggle disables MCP through Connect, and MCP_ENABLED=false forces it off', async () => {
   const registrations = stubConnect();
   const env = tunnelEnv();
