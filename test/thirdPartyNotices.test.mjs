@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -70,11 +71,28 @@ const completeRows = () => [
   ['transitive-b@2.0.0', 'ISC'],
 ];
 
-const generate = (root, bin) => spawnSync('bash', [join(root, 'scripts/generate-notices.sh')], {
+const generate = (root, bin, env = {}) => spawnSync('bash', [join(root, 'scripts/generate-notices.sh')], {
   cwd: root,
   encoding: 'utf8',
-  env: { ...process.env, PATH: [bin, dirname(process.execPath), process.env.PATH].join(delimiter), TMPDIR: root },
+  env: {
+    ...withoutDateOverrides(process.env),
+    PATH: [bin, dirname(process.execPath), process.env.PATH].join(delimiter),
+    TMPDIR: root,
+    ...env,
+  },
 });
+
+const withoutDateOverrides = ({ NOTICES_DATE, SOURCE_DATE_EPOCH, ...env }) => env;
+
+// Stands in for the system clock: `date` reports the given day.
+const fakeClock = (bin, day) => {
+  writeFileSync(join(bin, 'date'), `#!/bin/sh\necho ${day}\n`);
+  chmodSync(join(bin, 'date'), 0o755);
+};
+
+const generatedDate = text => text.match(/^Generated: (.*)$/m)?.[1];
+// The notice's share of the agent bundle content hash (build-images.sh, versionService.ts).
+const contentHash = text => createHash('sha256').update(text).digest('hex').slice(0, 6);
 
 // The degraded artifact observed from a real clean-checkout run: the bundled
 // Anthropic sections vanish and the inventory collapses to the root package.
@@ -126,6 +144,82 @@ describe('third-party notice generation from a clean checkout', () => {
     }
     assert.match(notice, /"transitive-b@2\.0\.0","ISC",""/);
     assert.deepEqual(validateNoticeText(notice), { packages: completeRows().length });
+  });
+});
+
+describe('third-party notice Generated date is deterministic per commit', () => {
+  const git = (root, args, env = {}) => execFileSync('git', args, {
+    cwd: root, encoding: 'utf8', env: { ...process.env, ...env },
+  }).trim();
+
+  const committedCheckout = authorDate => {
+    const root = cleanCheckout();
+    installPinnedTree(root);
+    git(root, ['init', '-q']);
+    git(root, ['add', 'package.json', 'package-lock.json', 'THIRD_PARTY_LICENSES.md', 'scripts']);
+    git(root, ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'lock'], {
+      GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: '2031-05-05T12:00:00Z',
+    });
+    return root;
+  };
+
+  const generateOn = (root, bin, day, env = {}) => {
+    fakeClock(bin, day);
+    const result = generate(root, bin, { TZ: 'Pacific/Kiritimati', ...env });
+    assert.equal(result.status, 0, result.stderr);
+    return readFileSync(join(root, 'THIRD_PARTY_LICENSES.md'), 'utf8');
+  };
+
+  test('regenerating the same commit on different days yields identical bytes and content hash', () => {
+    const root = committedCheckout('2030-03-04T23:30:00-05:00');
+    const bin = fakeNpx(root, completeRows());
+    const first = generateOn(root, bin, '2031-01-01');
+    const second = generateOn(root, bin, '2031-06-15');
+    assert.equal(generatedDate(first), '2030-03-05');
+    assert.equal(second, first);
+    assert.equal(contentHash(second), contentHash(first));
+  });
+
+  test('without git history the existing notice date is kept', () => {
+    const root = cleanCheckout();
+    installPinnedTree(root);
+    const bin = fakeNpx(root, completeRows());
+    assert.equal(generatedDate(generateOn(root, bin, '2031-01-01')), generatedDate(committedNotice));
+    assert.equal(generatedDate(generateOn(root, bin, '2031-06-15')), generatedDate(committedNotice));
+  });
+
+  test('an uncommitted package-lock.json change is dated today, the day its commit is authored', () => {
+    const root = committedCheckout('2030-03-04T12:00:00Z');
+    writeFileSync(join(root, 'package-lock.json'), `${readFileSync(join(root, 'package-lock.json'), 'utf8')}\n`);
+    assert.equal(generatedDate(generateOn(root, fakeNpx(root, completeRows()), '2031-01-01')), '2031-01-01');
+  });
+
+  test('NOTICES_DATE and SOURCE_DATE_EPOCH override the commit date', () => {
+    const root = committedCheckout('2030-03-04T12:00:00Z');
+    const bin = fakeNpx(root, completeRows());
+    assert.equal(generatedDate(generateOn(root, bin, '2031-01-01', { SOURCE_DATE_EPOCH: '1700000000' })), '2023-11-14');
+    assert.equal(generatedDate(generateOn(root, bin, '2031-01-01', {
+      SOURCE_DATE_EPOCH: '1700000000', NOTICES_DATE: '2029-02-03',
+    })), '2029-02-03');
+    fakeClock(bin, '2031-01-01');
+    const invalid = generate(root, bin, { NOTICES_DATE: 'today' });
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, /NOTICES_DATE must be YYYY-MM-DD/);
+  });
+
+  test('the committed notice carries the date a build of this checkout derives', context => {
+    const history = spawnSync('git', ['rev-parse', '--is-shallow-repository'], { encoding: 'utf8' });
+    if (history.status !== 0 || history.stdout.trim() !== 'false') {
+      context.skip('needs a git checkout with full history');
+      return;
+    }
+    if (spawnSync('git', ['diff', '--quiet', 'HEAD', '--', 'package-lock.json']).status !== 0) {
+      context.skip('package-lock.json has uncommitted changes');
+      return;
+    }
+    const epoch = Number(git('.', ['log', '-1', '--format=%at', '--', 'package-lock.json']));
+    assert.equal(generatedDate(committedNotice), new Date(epoch * 1000).toISOString().slice(0, 10),
+      'THIRD_PARTY_LICENSES.md is stale for this commit; run scripts/generate-notices.sh');
   });
 });
 

@@ -673,6 +673,13 @@ through `de0c884b6`. Changes that break a v0.8.15 contract are marked
   its output limit only the restarted copy is kept.
 - Private preview diagnostics, notification cleanup, live logs, partial indexing
   retries, model-aware review concurrency and alias-aware usage pricing.
+- **Reproducible third-party notices**: `scripts/generate-notices.sh` no longer
+  stamps the build day into `THIRD_PARTY_LICENSES.md`. The `Generated:` date
+  comes from the last commit that changed `package-lock.json`. `NOTICES_DATE`
+  or `SOURCE_DATE_EPOCH` override it. Rebuilding the same commit on a later
+  day, for example when re-running a failed release publish, now produces the
+  same agent bundle tag. The committed notice also stays byte-identical to the
+  one baked into the images.
 - **Multi-model runs on one issue**: when one request asks for several models
   (API, CLI, MCP or several `llm-*` labels) and a model's job starts after
   another model already finished, it no longer logs "Issue already has
