@@ -97,6 +97,15 @@ export function startConnectMcpRegistration(options: ConnectRegistrationOptions 
     timer = setTimer(() => { timer = undefined; delay = undefined; void trigger(); }, ms);
   }
 
+  /**
+   * After a success: the daily refresh, unless a rejection that arrived during
+   * the request still forces registration. Then its cooldown applies instead.
+   */
+  function nextCheckMs(): number {
+    if (!forceRegister) return CONNECT_REGISTRATION_REFRESH_MS;
+    return Math.max(0, REJECTION_REREGISTER_INTERVAL_MS - (now() - lastRegistrationAt));
+  }
+
   /** Resolves to the new state, or throws with the failure; `current` tells whether a valid registration remains. */
   async function attempt(): Promise<{ state: ConnectMcpState; current: boolean; error?: unknown }> {
     if (env.MCP_ENABLED === 'false') return { state: 'disabled', current: false };
@@ -143,7 +152,7 @@ export function startConnectMcpRegistration(options: ConnectRegistrationOptions 
     if (!result.state.startsWith('failed:')) {
       failures = 0;
       setState(result.state);
-      if (result.state === 'registered' && automatic()) schedule(CONNECT_REGISTRATION_REFRESH_MS);
+      if (result.state === 'registered' && automatic()) schedule(nextCheckMs());
       return;
     }
     if (!automatic()) { setState(result.state); return; }

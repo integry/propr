@@ -308,9 +308,13 @@ test('a 409 keeps forcing registration through transient failures until one succ
     rejectDuringRequest = reject;
     assert.equal(await manager.trigger(), 'registered');
     assert.equal(registrations.length, 4);
+    assert.equal(manager.scheduledDelayMs(), 60_000, 'the success keeps the newer rejection\'s cooldown, not the daily refresh');
     clock += 60_000;
+    timers.pending().at(-1)!.callback();
+    for (let tick = 0; tick < 100 && registrations.length < 5; tick += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(registrations.length, 5, 'the newer rejection still forces a registration through the timer');
     assert.equal(await manager.trigger(), 'registered');
-    assert.equal(registrations.length, 5, 'the newer rejection still forces a registration');
+    assert.equal(manager.scheduledDelayMs(), CONNECT_REGISTRATION_REFRESH_MS);
   } finally { manager.stop(); }
 });
 
