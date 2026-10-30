@@ -1,12 +1,13 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync,
-  mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync,
+  mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, type Stats,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Knex } from 'knex';
 import { proprInstanceProxyUrl } from '@propr/shared';
 import { instanceDataDirectory } from '../services/instanceWebPushConfiguration.js';
+import { privateKeyStorage } from './privateKeyStorage.js';
 
 /**
  * Hosted UI tunnel mode: `propr tunnel setup` enabled the managed tunnel and
@@ -91,7 +92,11 @@ class InvalidKeyFile extends Error {}
 
 function readKeyFile(filename: string): Buffer | undefined {
   let fd: number;
+  let visible: Stats;
   try {
+    // Windows has no O_NOFOLLOW: refuse a visible link, then pin what was opened.
+    visible = lstatSync(filename);
+    if (visible.isSymbolicLink()) throw new InvalidKeyFile();
     fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
@@ -99,7 +104,8 @@ function readKeyFile(filename: string): Buffer | undefined {
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size > 128) throw new InvalidKeyFile();
+    if (!stat.isFile() || stat.dev !== visible.dev || stat.ino !== visible.ino || stat.size > 128) throw new InvalidKeyFile();
+    if (!privateKeyStorage().isPrivateFile(filename, stat)) throw new InvalidKeyFile();
     const key = Buffer.from(readFileSync(fd, 'utf8').trim(), 'base64');
     if (key.length !== 32) throw new InvalidKeyFile();
     return key;
@@ -107,6 +113,7 @@ function readKeyFile(filename: string): Buffer | undefined {
 }
 
 function syncDirectory(directory: string): void {
+  if (!privateKeyStorage().syncsDirectories) return;
   const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
@@ -114,9 +121,15 @@ function syncDirectory(directory: string): void {
 /** Write a fresh key next to the target and publish it with a hard link, which never overwrites a concurrent winner. */
 function publishNewKey(filename: string): void {
   const directory = dirname(filename);
+  const storage = privateKeyStorage();
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stat = lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o700) throw new InvalidKeyFile();
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new InvalidKeyFile();
+  // Windows: cut the key directory off from inherited access before the key is written into it.
+  if (!storage.isPrivateDirectory(directory, stat)) {
+    storage.restrictDirectory(directory);
+    if (!storage.isPrivateDirectory(directory, lstatSync(directory))) throw new InvalidKeyFile();
+  }
   const temporary = join(directory, `.${KEY_FILENAME}-${randomUUID()}.tmp`);
   try {
     const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
@@ -147,7 +160,8 @@ async function hasConnectIdentity(database: Knex): Promise<boolean> {
  * Load the persisted MCP encryption key, generating it only on first use.
  *
  * The key lives with the stack's other persistent secrets in the durable data
- * directory (owner-only file in an owner-only directory). Its fingerprint is
+ * directory (owner-only file in an owner-only directory; on Windows, a
+ * directory whose DACL grants only the current account). Its fingerprint is
  * recorded in the instance database the first time it is used. A missing file
  * after that, or a file that no longer matches, is a setup error: a new key
  * would silently orphan every connection and the Connect registration.
