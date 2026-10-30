@@ -32,7 +32,9 @@ jobs:
   validate-release:
     name: Validate Release
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The unsharded full server and UI suites alone exceed an hour on a hosted
+    # runner (945 units); 60 minutes cancelled the v0.9.0 release mid-suite.
+    timeout-minutes: 150
     permissions:
       contents: read
     outputs:
