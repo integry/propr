@@ -304,16 +304,19 @@ for (const [label, respond] of [
   ['a 5xx', () => new Response('unavailable', { status: 503 })],
   ['a 429', () => Response.json({ error: 'rate_limited' }, { status: 429, headers: { 'retry-after': '120' } })],
   ['a network failure', () => { throw new TypeError('fetch failed'); }],
+  ['a success response missing access_token_expires_at', () => Response.json({ access_token: 'ghu_renewed-no-expiry' })],
 ] as const) {
   test(`${label} backs off without marking the grant reauth_required`, async () => {
     const { fetchImpl, calls } = relay(respond);
     const service = new GitHubUserGrantService(database, environment, fetchImpl);
     await captureRenewable(service, 5 * 60_000);
+    const originalExpiry = Number((await storedGrant()).access_token_expires_at_ms);
 
     const first = await service.resolve(user.id);
     assert.equal(first.status === 'active' && first.accessToken, 'ghu_initial-access');
     const row = await storedGrant();
     assert.equal(row.status, 'active');
+    assert.equal(Number(row.access_token_expires_at_ms), originalExpiry);
     assert.equal(Number(row.renewal_failures), 1);
     assert.ok(Number(row.renewal_retry_after_ms) > Date.now());
 

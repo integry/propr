@@ -142,7 +142,8 @@ export async function requestRelayRenewal(
   }
   try {
     const body = await response.json() as { access_token?: unknown; access_token_expires_at?: unknown };
-    const expiresAt = body.access_token_expires_at === undefined ? null : parseConnectExpiry(body.access_token_expires_at);
+    // Only an explicit `null` means non-expiring; an absent field is malformed.
+    const expiresAt = parseConnectExpiry(body.access_token_expires_at);
     if (typeof body.access_token !== 'string' || !body.access_token.trim() || expiresAt === undefined) {
       return { kind: 'transient', code: 'invalid_response' };
     }
