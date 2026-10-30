@@ -224,7 +224,7 @@ explicit variable is unset:
 | --- | --- |
 | `MCP_PUBLIC_ORIGIN` | The tunnel API origin, `https://t-<PROPR_INSTANCE_ID>.propr.dev` (same derivation as the tunnel-mode `API_PUBLIC_URL`) |
 | `MCP_INSTANCE_ID` | `PROPR_INSTANCE_ID`, the tunnel id Connect has on record |
-| `MCP_ENCRYPTION_KEY` | A random 32-byte key generated on first start and stored in `<data dir>/mcp/encryption-key` (owner-only; on Windows the `mcp` directory's ACL is restricted to the account running ProPR), next to the SQLite database |
+| `MCP_ENCRYPTION_KEY` | A random 32-byte key generated on first start and stored in `<data dir>/mcp/encryption-key` (owner-only; on Windows the `<data dir>/mcp` directory's ACL is restricted to the account running ProPR), next to the SQLite database |
 | `MCP_CONNECT_TRUST` | `true`; Connect is the authorization server |
 | `MCP_ENABLED` | On by default; **Settings → Integrations & MCP → MCP Server → Allow MCP clients through ProPR Connect** turns it off |
 
