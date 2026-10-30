@@ -688,4 +688,5 @@ body:has(.desktop-platform-macos),
 
 .desktop-github-recovery h2 { margin: 0 0 1rem; font-size: 1.2rem; }
 .desktop-github-recovery p { margin: 0 0 1rem; line-height: 1.5; }
+.desktop-github-recovery .desktop-github-recovery-reason { font-weight: 600; }
 .desktop-github-recovery .desktop-actions { display: flex; flex-wrap: wrap; gap: .75rem; }

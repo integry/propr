@@ -336,6 +336,49 @@ self-hosted (own) relay must implement this contract:
 The relay token is the long-lived secret binding your stack to your installation;
 treat it like a password. ProPR redacts it (and `ghs_` tokens) from logs.
 
+## Connect browser sign-in renewal
+
+With `PROPR_WEB_AUTH_MODE=connect`, Connect hands the instance a one-use code. The
+instance redeems it at `POST <PROPR_GH_RELAY_URL>/auth/instance-grants/redeem`
+and stores the GitHub user credential as the durable grant that desktop, MCP and
+agent runs use. GitHub App user tokens expire eight hours after issue, and only
+Connect holds the secret that renews them. Connect therefore renews the
+credential for the instance:
+
+- **Redemption fields.** The redemption response can include
+  `access_token_expires_at` (an ISO 8601 timestamp, or `null` for a non-expiring
+  credential) and `renewal: "relay"` when the relay can renew the credential.
+  ProPR stores both on the grant. Older relays send neither field, and the grant
+  then behaves as before: once the token is rejected or reaches its expiry, a
+  browser sign-in is required (`missing_refresh_token`).
+- **Renewal call.** `POST <PROPR_GH_RELAY_URL>/instance-auth/renew` with the
+  relay token as `Authorization: Bearer` and body `{ "github_user_id": "<id>" }`
+  returns `{ "access_token", "access_token_expires_at" }`. ProPR replaces the
+  stored credential in one conditional write, so a newer browser sign-in always
+  wins over a renewal that was in flight.
+- **When ProPR renews.** About ten minutes before `access_token_expires_at`,
+  plus a per-credential jitter of up to two minutes, on the next use of the
+  grant. If GitHub returns 401 for the credential earlier, ProPR renews once and
+  retries the request once. One renewal is in flight per grant: callers in a
+  process share it, and the API, daemon and workers share a database lease on
+  the grant row.
+- **Failures.** Errors are matched on the relay's stable codes:
+
+  | Relay code | Result | Shown to the user |
+  | --- | --- | --- |
+  | `renewal_revoked` | Grant set to `reauth_required` | "Your GitHub authorization for Connect was revoked." |
+  | `renewal_expired` | Grant set to `reauth_required` | "Your GitHub authorization for Connect expired after the refresh window." |
+  | `reauth_required` | Grant set to `reauth_required` | "ProPR Connect needs you to sign in to GitHub again." |
+  | `renewal_unavailable` | The grant was issued before renewal existed. It is used until it nears expiry or is rejected, then set to `reauth_required` with reason `missing_refresh_token` | Sign in again once to get a renewable grant. |
+  | Network error, 5xx, 429 | Exponential backoff (honours `Retry-After`); the grant stays `active` | Nothing while the token is valid. After expiry, callers get a retryable "temporarily unavailable" until renewal succeeds. |
+
+  `GITHUB_REAUTH_REQUIRED` responses include the reason as `reason`, and
+  ProPR Desktop shows it in its GitHub sign-in notice.
+- **Logging.** Renewal outcomes are logged under `[connect-grant-renewal]` with
+  sanitized metadata only: a hash of the grant id, the outcome, the access-token
+  expiry, the relay error code and the next retry time. Tokens and GitHub user
+  ids are never logged.
+
 ## Verifying
 
 Run `propr check` — it reports the detected auth mode and flags missing/invalid

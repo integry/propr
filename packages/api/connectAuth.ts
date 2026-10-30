@@ -1,4 +1,5 @@
 import type { GitHubUser } from './authTypes.js';
+import { parseConnectExpiry } from './connectGrantRenewal.js';
 import {
     DEFAULT_PROPR_GH_RELAY_URL,
     canonicalProprHttpUrlOrigin,
@@ -122,12 +123,25 @@ export async function redeemConnectAuthorizationCode(options: {
         avatarUrl: body.avatar_url,
         accessToken: body.access_token,
         refreshToken: body.refresh_token,
-        tokenExpiresAt: body.expires_in ? Date.now() + body.expires_in * 1000 : undefined,
+        tokenExpiresAt: tokenExpiresAt(body),
         refreshTokenExpiresAt: body.refresh_token_expires_in
             ? Date.now() + body.refresh_token_expires_in * 1000
             : undefined,
         oauthSource: 'connect',
+        // Older relays send neither field; the grant then behaves as before.
+        ...(body.renewal === 'relay' ? { connectRenewal: 'relay' as const } : {}),
     };
+}
+
+/**
+ * An explicit expiry from a renewable grant wins over the older relative
+ * `expires_in`, including an explicit `null` for a non-expiring credential.
+ */
+function tokenExpiresAt(body: { expires_in?: number; access_token_expires_at?: unknown }): number | undefined {
+    const explicit = parseConnectExpiry(body.access_token_expires_at);
+    if (explicit === null) return undefined;
+    if (typeof explicit === 'number') return explicit;
+    return body.expires_in ? Date.now() + body.expires_in * 1000 : undefined;
 }
 
 function isGitHubIdentity(value: unknown): value is { id: number; login: string } {
@@ -199,6 +213,9 @@ function isRedeemedIdentity(value: unknown): value is {
     refresh_token?: string;
     expires_in?: number;
     refresh_token_expires_in?: number;
+    // Optional renewal fields (#3387); malformed values are ignored, not fatal.
+    access_token_expires_at?: unknown;
+    renewal?: unknown;
 } {
     if (typeof value !== 'object' || value === null) return false;
     const candidate = value as Record<string, unknown>;

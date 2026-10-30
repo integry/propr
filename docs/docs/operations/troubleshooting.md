@@ -63,6 +63,8 @@ If you use the hosted UI tunnel, the callback lives on the **proxy host** (`http
 
 After correcting `.env`, restart the stack (`propr start --restart`) so the API picks up the new values.
 
+If Connect sign-in works but GitHub access keeps asking for a new browser sign-in every few hours, the stored grant may not be renewable. Check the API log for `[connect-grant-renewal]` entries. `renewal_unavailable` means the grant was issued before Connect supported renewal: sign in through the instance browser once more to get a renewable grant. `renewal_revoked` or `renewal_expired` means the GitHub authorization behind Connect was removed or its refresh window ended. See [Connect browser sign-in renewal](./github-auth.md#connect-browser-sign-in-renewal).
+
 ## Worker Not Processing Issues
 
 **Symptom:** you add a processing label to an issue and no task ever appears.

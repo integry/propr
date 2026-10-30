@@ -3,7 +3,7 @@ import { normalizeApiBaseUrl, ProprClient, ProprClientError } from '@propr/clien
 import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
 import { getRuntimeApiBaseUrlState, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
-import { DESKTOP_ACCESS_INVALID_EVENT, DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT } from '../desktop/types';
+import { DESKTOP_ACCESS_INVALID_EVENT, DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, GITHUB_REAUTH_REASON_MESSAGES, knownGitHubReauthReason } from '../desktop/types';
 
 export interface DesktopConnectionScope {
   bridge: DesktopBridge;
@@ -433,10 +433,11 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
   // Only these statuses describe the caller's grant (an agent owner's 409 does not).
   const scope = scopeForResponse(response);
   if (isCurrentDesktopGrantFailure(response, data, scope)) {
+    const reason = knownGitHubReauthReason(data?.reason);
     window.dispatchEvent(new CustomEvent(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, {
-      detail: { profileId: scope.profileId, transportScope: scope.transportScope, code: data?.code },
+      detail: { profileId: scope.profileId, transportScope: scope.transportScope, code: data?.code, ...(reason ? { reason } : {}) },
     }));
-    throw new Error(GITHUB_REAUTH_MESSAGE);
+    throw new Error(reason ? `${GITHUB_REAUTH_REASON_MESSAGES[reason]} ${GITHUB_REAUTH_MESSAGE}` : GITHUB_REAUTH_MESSAGE);
   }
   if (response.status === 401) return await throwUnauthorizedResponse(data, response);
   const errorMessage = getApiErrorMessage(data);
