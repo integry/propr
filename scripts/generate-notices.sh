@@ -5,6 +5,20 @@
 # instead of overwriting the notice with an incomplete one.
 #
 # Usage: scripts/generate-notices.sh
+#
+# The notice is an agent bundle content file (build-images.sh and
+# packages/core/src/agents/version/versionService.ts hash it into the agent
+# image tag), so its bytes must depend only on the commit, never on the day it
+# is built. The `Generated:` date therefore comes from, in order:
+#   1. NOTICES_DATE=YYYY-MM-DD (explicit override)
+#   2. SOURCE_DATE_EPOCH (reproducible-builds convention)
+#   3. the author date (UTC) of the last commit that changed package-lock.json,
+#      i.e. when the inventory last changed - or today while package-lock.json
+#      has uncommitted changes, since the commit carrying it is being authored
+#   4. the date already in THIRD_PARTY_LICENSES.md (no git or shallow history)
+#   5. today (UTC)
+# The commit's own date (BUILD_DATE) cannot be used: a committed notice can
+# never contain the date of the commit that adds it, so it would never match.
 
 set -euo pipefail
 
@@ -12,7 +26,51 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 FINAL="THIRD_PARTY_LICENSES.md"
-DATE="$(date +%Y-%m-%d)"
+
+utc_date_from_epoch() {
+  node -e 'const s = process.argv[1];
+    if (!/^\d+$/.test(s)) process.exit(1);
+    process.stdout.write(new Date(Number(s) * 1000).toISOString().slice(0, 10));' "$1"
+}
+
+resolve_notice_date() {
+  local epoch existing
+  if [[ -n "${NOTICES_DATE:-}" ]]; then
+    if [[ ! "$NOTICES_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      echo "NOTICES_DATE must be YYYY-MM-DD, got: $NOTICES_DATE" >&2
+      return 1
+    fi
+    printf '%s\n' "$NOTICES_DATE"
+    return
+  fi
+  if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+    utc_date_from_epoch "$SOURCE_DATE_EPOCH" \
+      || { echo "SOURCE_DATE_EPOCH must be a Unix timestamp, got: $SOURCE_DATE_EPOCH" >&2; return 1; }
+    echo
+    return
+  fi
+  if [[ "$(git rev-parse --show-toplevel 2>/dev/null)" == "$REPO_ROOT" ]] \
+    && [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "false" ]]; then
+    if ! git diff --quiet HEAD -- package-lock.json 2>/dev/null; then
+      date -u +%Y-%m-%d
+      return
+    fi
+    epoch="$(git log -1 --format=%at -- package-lock.json 2>/dev/null || true)"
+    if [[ -n "$epoch" ]]; then
+      utc_date_from_epoch "$epoch"
+      echo
+      return
+    fi
+  fi
+  existing="$(sed -n 's/^Generated: \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)$/\1/p' "$FINAL" 2>/dev/null | head -n 1)"
+  if [[ -n "$existing" ]]; then
+    printf '%s\n' "$existing"
+    return
+  fi
+  date -u +%Y-%m-%d
+}
+
+DATE="$(resolve_notice_date)"
 
 node scripts/validate-third-party-notices.mjs installed
 
