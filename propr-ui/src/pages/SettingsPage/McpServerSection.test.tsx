@@ -69,4 +69,20 @@ describe('McpServerSection in hosted UI tunnel mode', () => {
     expect(await screen.findByText('Setup required')).toBeInTheDocument();
     expect(screen.getByText(/persisted MCP encryption key is missing or changed/)).toBeInTheDocument();
   });
+
+  test('an explicit MCP_CONNECT_TRUST=false opt-out reads as disabled by configuration, not registering', async () => {
+    api.getMcpAdminSettings.mockResolvedValue(tunnelResponse({
+      enabled: true, connectAvailable: false, connectResource: undefined, connectMcp: 'disabled', connectTrustDisabled: true,
+    }));
+    render(<McpServerSection />);
+
+    const toggle = await screen.findByLabelText('Allow MCP clients through ProPR Connect');
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Disabled by configuration');
+    expect(screen.queryByText('Registering')).toBeNull();
+    expect(screen.getByText(/MCP_CONNECT_TRUST=false turns off MCP through ProPR Connect, and this setting cannot override it/)).toBeInTheDocument();
+    expect(screen.queryByText(/no extra setup/)).toBeNull();
+    expect(screen.queryByText('https://mcp.propr.dev/mcp')).toBeNull();
+  });
 });

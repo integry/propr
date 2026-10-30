@@ -101,6 +101,7 @@ test('tunnel mode derives the public origin, instance id and Connect trust from 
   assert.equal(status.connectEnabled, true);
   assert.equal(status.connectResource, 'https://mcp.propr.dev/mcp');
   assert.equal(status.operatorForced, undefined);
+  assert.equal(status.connectTrustDisabled, undefined);
   assert.ok(!JSON.stringify(status).includes(config.encryptionKey.toString('base64')), 'status never carries the key');
 });
 
@@ -120,6 +121,12 @@ test('explicit MCP values override every derived value', async () => {
   const noTrust = await loadHostedTunnelMcpConfig(database, tunnelEnv({ MCP_CONNECT_TRUST: 'false', MCP_ENCRYPTION_KEY: key.toString('base64') }));
   assert.equal(noTrust.connect, undefined);
   assert.equal(deriveTunnelMcpEnvironment(tunnelEnv({ MCP_CONNECT_TRUST: 'false' })).MCP_CONNECT_TRUST, 'false');
+  // Status reports the opt-out so Settings does not show Connect as registering.
+  invalidateMcpConfigCache();
+  const noTrustStatus = await resolveMcpStatus(database, tunnelEnv({ MCP_CONNECT_TRUST: 'false', MCP_ENCRYPTION_KEY: key.toString('base64') }));
+  assert.equal(noTrustStatus.connectTrustDisabled, true);
+  assert.equal(noTrustStatus.connectAvailable, false);
+  assert.equal(noTrustStatus.connectResource, undefined);
 });
 
 test('the encryption key is generated once, persisted owner-only, and reused', async () => {

@@ -20,6 +20,8 @@ export interface McpStatus {
   /** Public MCP URL for clients when Connect trust is on. */
   connectResource?: string;
   connectMcp?: 'registered' | 'pending' | 'disabled' | `failed:${string}`;
+  /** Tunnel mode: MCP_CONNECT_TRUST turns Connect off; the Settings toggle cannot override it. */
+  connectTrustDisabled?: boolean;
   setupError?: string;
   scopeCeiling: McpScope[];
 }

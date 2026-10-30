@@ -38,6 +38,8 @@ export interface McpStatus {
   /** Public MCP URL clients add when Connect trust is on. */
   connectResource?: string;
   connectMcp?: ConnectMcpState;
+  /** Tunnel mode: an explicit MCP_CONNECT_TRUST other than true turns Connect off; the Settings toggle cannot override it. */
+  connectTrustDisabled?: boolean;
   /** Tunnel-mode setup error code, e.g. KEY_MISSING. Never contains secrets. */
   setupError?: string;
   scopeCeiling: McpScope[];
@@ -304,6 +306,7 @@ async function resolveHostedTunnelMcpStatus(database: Knex, env: NodeJS.ProcessE
     ...(env.MCP_ENABLED === 'true' ? { operatorForced: 'on' as const } : {}),
     tunnelMode: true,
     connectEnabled: adminSettings.connectEnabled,
+    ...(deriveTunnelMcpEnvironment(env).MCP_CONNECT_TRUST !== 'true' ? { connectTrustDisabled: true } : {}),
     ...(!config && _tunnelSetupError ? { setupError: _tunnelSetupError } : {}),
     scopeCeiling: adminSettings.scopeCeiling,
   };

@@ -102,8 +102,8 @@ function EnablementControls({ data, isDemoMode, onToggleConnect, ...enableProps 
   if (data?.status.tunnelMode) {
     return (
       <ConnectToggle
-        checked={data.settings.connectEnabled}
-        disabled={enableProps.saving || isDemoMode}
+        checked={data.settings.connectEnabled && !data.status.connectTrustDisabled}
+        disabled={enableProps.saving || isDemoMode || !!data.status.connectTrustDisabled}
         onToggle={onToggleConnect}
       />
     );
