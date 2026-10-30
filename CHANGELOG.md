@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-10-29
+## [0.9.0] - 2026-10-30
 
 Covers every change merged since v0.8.15. This section records delivered source
 changes; it does not announce published packages, images, desktop installers or a
