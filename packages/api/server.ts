@@ -17,6 +17,8 @@ import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 import express, { Request, Response } from 'express';
 import { mountMcp, mcpResponseHeaders, isMcpEndpointPath } from './mcp/server.js';
 import { getMcpOriginSync, isMcpEnabledSync, invalidateMcpConfigCache, resolveMcpConfig } from './mcp/configResolver.js';
+import { startConnectMcpRegistration, type ConnectRegistrationManager } from './mcp/connectRegistration.js';
+import { getConnectMcpState } from './mcp/tunnelMode.js';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
@@ -289,6 +291,7 @@ let webPushDispatcherConfigured = false;
 let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: false, issue: 'disabled' };
 let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
 let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
+let connectMcpRegistration: ConnectRegistrationManager | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -597,7 +600,7 @@ function setupWebhookRoute(): void {
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
 }
 
-app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
+app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok', connect_mcp: getConnectMcpState() }); });
 
 // Create HTTP server to wrap Express app (required for Socket.IO)
 const httpServer: HttpServer = createServer(app);
@@ -650,6 +653,8 @@ async function start(): Promise<void> {
       configReloadSubscription = await startConfigReloadSubscription(redisClient, async () => {
         invalidateMcpConfigCache();
         await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
+        // A Settings toggle can turn MCP through Connect on or off.
+        void connectMcpRegistration?.trigger();
         await reloadConfigs();
       }, console, subtype => {
         if (subtype === 'agents_update' || subtype === 'synthetic_agents_update') {
@@ -686,6 +691,10 @@ async function start(): Promise<void> {
       } else {
         await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
       }
+      // Hosted UI tunnel mode registers with ProPR Connect in the background,
+      // with backoff, so a Connect outage never delays API readiness.
+      connectMcpRegistration = startConnectMcpRegistration({ database: db });
+      void connectMcpRegistration.trigger();
     }
     setupRoutes();
     // Configured Fleet transport is required for readiness. In a rolling overlap,
@@ -762,6 +771,7 @@ async function start(): Promise<void> {
         { name: 'redis client', close: () => redisClient.quit() }
       ];
       if (desktopPairingCleanupTimer) clearInterval(desktopPairingCleanupTimer);
+      connectMcpRegistration?.stop();
       if (!demoMode) {
         shutdownTasks.push(
           { name: 'notification background service', close: () => notificationBackground?.close() ?? Promise.resolve() },

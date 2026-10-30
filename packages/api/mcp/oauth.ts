@@ -33,7 +33,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
     private readonly scopeCeiling: () => McpScope[] | undefined = () => config.scopeCeiling) { this.clientsStore = createClientsStore(store); }
 
   /** Scopes this instance permits. 'read' is always grantable; no ceiling means every scope. */
-  private allowedScopes(): Set<string> {
+  allowedScopes(): Set<string> {
     const ceiling = this.scopeCeiling();
     return new Set<string>(ceiling ? [...ceiling, 'read'] : MCP_SCOPES);
   }

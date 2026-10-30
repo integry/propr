@@ -44,7 +44,10 @@ export class McpPolicy {
         if (error instanceof joseErrors.JWKSTimeout || !(error instanceof joseErrors.JOSEError)) throw new McpError('CONNECT_UNAVAILABLE', 'Connect grant validation is unavailable.', 503);
         throw new McpError('INVALID_DELEGATION', 'Connect signature or token claims are invalid.', 401);
       }
-      scopes = grant.scopes;
+      // Connect signs the delegation without knowing this instance's admin
+      // ceiling; apply the current ceiling here, as verifyAccessToken does.
+      const allowed = this.oauth.allowedScopes();
+      scopes = grant.scopes.filter(scope => allowed.has(scope));
     }
     const { github, identity, user: verifiedUser } = await this.verifiedGitHubCredential(bearer, grant);
     let user = verifiedUser;

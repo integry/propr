@@ -1,8 +1,8 @@
 # Core / Connect MCP contract: propr-connect-mcp/1
 
 This is the instance side of the wire contract shared with the separately
-maintained ProPR Connect routing service. The core implementation is complete;
-the hosted gateway at `https://mcp.propr.dev` is not yet publicly available.
+maintained ProPR Connect routing service. The hosted gateway at
+`https://mcp.propr.dev` is live.
 
 ## Identities and endpoints
 
@@ -17,20 +17,23 @@ the hosted gateway at `https://mcp.propr.dev` is not yet publicly available.
 | Credential handoff creation | `POST /v1/mcp/credentials` |
 | Credential redemption | `POST /v1/auth/instance-grants/redeem` |
 
-Core explicitly opts in with `MCP_CONNECT_TRUST=true`. Its stable
-`MCP_INSTANCE_ID` is a UUID or a 16–100 character identifier, independent of
-hostnames and the existing `PROPR_INSTANCE_ID` tunnel routing identifier.
+Core opts in with `MCP_CONNECT_TRUST=true`, which hosted UI tunnel mode
+implies. Its stable `MCP_INSTANCE_ID` is a UUID or a 16–100 character
+identifier. In hosted UI tunnel mode it defaults to `PROPR_INSTANCE_ID`, the
+tunnel id Connect has on record; an explicit value stays independent of it.
 The installation is a positive JSON integer. The P-256 instance private key
 and registration receipt live encrypted in `mcp_records`, protected by the
-existing `MCP_ENCRYPTION_KEY`. Requests never create or rotate that key.
+existing `MCP_ENCRYPTION_KEY` (in tunnel mode, a persisted key generated once
+on first start). Requests never create or rotate that key.
 
-The [operator registration command](mcp.md#connect-instance-registration)
+The [operator registration command](mcp.md#advanced-explicit-connect-settings)
 reuses `GH_INSTALLATION_ID`, `PROPR_GH_RELAY_TOKEN`, enabled tunnel
 configuration, and the registry UUID written by `propr tunnel setup` to
 `PROPR_INSTANCE_ID` (or explicit `MCP_CONNECT_TUNNEL_ID`). Registration checks
 the current tunnel belongs to the relay credential's installation. A local
 receipt pins issuer, installation, instance, tunnel, key thumbprint and contract.
-Changed configuration fails closed until the operator registers it explicitly.
+Changed configuration fails closed until it is registered again: automatically
+on startup in hosted UI tunnel mode, otherwise by the operator command.
 Registration retries reuse the persisted key. Restoring a different instance ID
 never silently overwrites the identity.
 
