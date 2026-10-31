@@ -122,6 +122,11 @@ if [[ "$(docker image inspect --format '{{.Config.User}}' "$AGENT_IMAGE")" != no
 fi
 echo '✓ agent image defaults to the unprivileged node user'
 
+# Restricted snapshotters (rootless, userxattr overlay, OrbStack's containerd
+# store) cannot unpack a layer that carries overlayfs whiteouts.
+"$REPO_ROOT/scripts/check-image-whiteouts.sh" "$AGENT_IMAGE"
+echo '✓ no agent image layer contains an overlayfs whiteout'
+
 mkdir -p "$(dirname "$SMOKE_EVIDENCE")"
 AGENT_IMAGE="$AGENT_IMAGE" SOURCE_REVISION="$SOURCE_REVISION" SMOKE_CONFIG_DIGEST="$config_digest" \
 SMOKE_VERSIONS="$(for cli in "${!versions[@]}"; do printf '%s=%s\n' "$cli" "${versions[$cli]}"; done)" \
@@ -146,6 +151,7 @@ node --input-type=module -e '
       "gh-wrapper-through-every-entrypoint",
       "no-baked-provider-credentials",
       "non-root-runtime-user",
+      "no-overlay-whiteouts",
     ],
     cliVersions,
   }, null, 2)}\n`);
