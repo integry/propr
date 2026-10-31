@@ -550,6 +550,7 @@ jobs:
               "$ACTIONLINT_IMAGE" \
               --exclude=SC2016 \
               scripts/build-images.sh \
+              scripts/check-image-whiteouts.sh \
               scripts/ci-install-chromium.sh \
               scripts/ci-redis.sh \
               scripts/ci-runner-evidence.sh \

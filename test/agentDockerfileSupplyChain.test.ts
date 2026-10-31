@@ -101,3 +101,60 @@ test('every CLI the final stage verifies is linked into PATH in that same stage'
 test('the agent image no longer installs iptables: restricted networking needs no firewall inside the container', () => {
   assert.doesNotMatch(dockerfile, /iptables/i);
 });
+
+const BASE_STAGE = 'FROM --platform=${AGENT_PLATFORM} scratch AS agent-base';
+
+// #3399: snapshotters that cannot set trusted overlay xattrs (rootless Docker,
+// userxattr overlay, OrbStack's containerd store) refuse layers carrying
+// `.wh..wh..opq` entries, which builders' overlayfs differs emit for the system
+// package install. scripts/check-image-whiteouts.sh proves the built image.
+test('the agent base is flattened into one whiteout-free layer before any CLI stage', () => {
+  const stages = [...dockerfile.matchAll(/^FROM (.+)$/gm)].map(match => match[1]);
+  const buildIndex = stages.findIndex(stage => / AS agent-base-build$/.test(stage));
+  const baseIndex = stages.indexOf('--platform=${AGENT_PLATFORM} scratch AS agent-base');
+  assert.ok(buildIndex >= 0, 'agent-base-build should install the system packages');
+  assert.equal(baseIndex, buildIndex + 1, 'agent-base should start from scratch right after agent-base-build');
+
+  const baseStage = dockerfile.slice(dockerfile.indexOf(BASE_STAGE), dockerfile.indexOf('FROM agent-base AS claude-cli'));
+  assert.match(baseStage, /^COPY --from=agent-base-build \/ \/$/m);
+  assert.doesNotMatch(baseStage, /^(RUN|ADD)\b/m, 'the flattened base may only copy the build stage and declare config');
+  assert.doesNotMatch(baseStage, /--link\b/);
+
+  // Every stage that builds on the base, and so the published image, sees the
+  // flattened stage, never the multi-layer build stage.
+  for (const stage of stages.slice(baseIndex + 1)) {
+    assert.doesNotMatch(stage, /agent-base-build|node:/, `${stage} must build on the flattened agent-base`);
+  }
+  assert.equal(dockerfile.match(/--from=agent-base-build\b/g)?.length, 1, 'only the flattening COPY may read the build stage');
+});
+
+test('the flattened agent base re-declares the node image config exactly', () => {
+  const nodeVersion = dockerfile.match(/^ARG AGENT_NODE_VERSION=(\d+\.\d+\.\d+)$/m)?.[1];
+  const yarnVersion = dockerfile.match(/^ARG AGENT_YARN_VERSION=(\d+\.\d+\.\d+)$/m)?.[1];
+  assert.ok(nodeVersion, 'the node base must be pinned to an exact release');
+  assert.ok(yarnVersion);
+  assert.match(dockerfile, /node:\$\{AGENT_NODE_VERSION\}-bookworm-slim AS agent-base-build/);
+
+  const buildStage = dockerfile.slice(dockerfile.indexOf('AS agent-base-build'), dockerfile.indexOf(BASE_STAGE));
+  assert.match(buildStage, /test "\$NODE_VERSION" = "\$AGENT_NODE_VERSION"/);
+  assert.match(buildStage, /test "\$YARN_VERSION" = "\$AGENT_YARN_VERSION"/);
+  assert.match(buildStage, /test "\$\(node --version\)" = "v\$AGENT_NODE_VERSION"/);
+
+  const baseStage = dockerfile.slice(dockerfile.indexOf(BASE_STAGE), dockerfile.indexOf('FROM agent-base AS claude-cli'));
+  assert.match(baseStage, /PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin\b/);
+  assert.match(baseStage, /NODE_VERSION=\$\{AGENT_NODE_VERSION\}/);
+  assert.match(baseStage, /YARN_VERSION=\$\{AGENT_YARN_VERSION\}/);
+  assert.match(baseStage, /^ENTRYPOINT \["docker-entrypoint\.sh"\]$/m);
+  assert.match(baseStage, /^CMD \["node"\]$/m);
+  assert.match(baseStage, /^USER node$/m);
+  assert.match(baseStage, /^WORKDIR \/home\/node\/workspace$/m);
+});
+
+test('every agent image smoke rejects overlayfs whiteouts in the built image', () => {
+  const releaseSmoke = readFileSync(new URL('../scripts/smoke-test-images.sh', import.meta.url), 'utf8');
+  const previewSmoke = readFileSync(new URL('../scripts/smoke-test-preview-agent-image.sh', import.meta.url), 'utf8');
+  const restrictedSmoke = readFileSync(new URL('../.github/workflows/restricted-network-smoke.yml', import.meta.url), 'utf8');
+  assert.match(releaseSmoke, /scripts\/check-image-whiteouts\.sh" "\$AGENT_TAG"/);
+  assert.match(previewSmoke, /scripts\/check-image-whiteouts\.sh" "\$AGENT_IMAGE"/);
+  assert.match(restrictedSmoke, /\.\/scripts\/check-image-whiteouts\.sh "\$PROPR_TEST_AGENT_IMAGE"/);
+});
