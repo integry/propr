@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hosted UI release deploy**: the release workflow now deploys
+  `app.propr.dev` (the `propr-hosted-ui` Worker) after the GitHub release is
+  published, for tag pushes and manual releases. Until now it was deployed only
+  by hand, so v0.9.0 left it on 0.8.15. The new job builds `propr-ui` from the
+  exact release ref and runs `wrangler deploy` in the protected
+  `hosted-ui-production` environment, the only place the Cloudflare token
+  lives. It then checks that the served bundle contains the released version.
+  If the environment secrets are missing, it skips with a notice instead of
+  failing the release. `npm run deploy:hosted-ui` still works for manual
+  deploys. Token scope and setup are in Operations > Hosted UI Release Deploy.
+
 ### Fixed
 
 - **Agent image on rootless and restricted Docker hosts**: `propr/agent` (and the
