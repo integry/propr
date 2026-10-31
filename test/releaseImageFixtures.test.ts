@@ -218,6 +218,20 @@ test('release publication requires authenticated Antigravity verification of the
   );
 });
 
+test('release publishes multi-arch service images while the agent stays amd64-pinned', () => {
+  // The macOS setup platform gate requires a declared native linux/arm64 core
+  // image, so app/ui/docs/launcher must ship as multi-arch manifest lists;
+  // the agent image is deliberately pinned to linux/amd64.
+  assert.match(
+    releaseImageWorkflow,
+    /\.\/scripts\/build-images\.sh --push --dockerhub --platform linux\/amd64,linux\/arm64 --only app,ui,docs,launcher/,
+  );
+  assert.match(
+    releaseImageWorkflow,
+    /Stage, preflight, and publish smoke-tested images\n\s+run: \.\/scripts\/build-images\.sh --push-only --dockerhub --only agent/,
+  );
+});
+
 test('authenticated image verifier accepts pinned 1.4.0 canonical init.model envelopes', () => {
   const result = runAntigravityVerification();
 

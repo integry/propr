@@ -309,8 +309,22 @@ jobs:
 
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
+      # app/ui/docs/launcher are platform-agnostic Node images, so publish them
+      # as linux/amd64,linux/arm64 manifest lists. On Apple Silicon the setup
+      # platform gate requires a declared native linux/arm64 core image, and
+      # amd64-only tags make `propr setup` fail with "Image does not declare the
+      # required linux/arm64 platform". The agent image stays pinned to
+      # linux/amd64 (Debian binNMU pins) and is published from the local build.
+      - name: Ensure QEMU binfmt handlers for cross-architecture builds
+        run: |
+          docker run --rm --privileged tonistiigi/binfmt --install arm64 \
+            || echo "warning: could not register arm64 binfmt; the multi-arch build below fails without emulation" >&2
+
+      - name: Build and publish multi-arch service images
+        run: ./scripts/build-images.sh --push --dockerhub --platform linux/amd64,linux/arm64 --only app,ui,docs,launcher
+
       - name: Stage, preflight, and publish smoke-tested images
-        run: ./scripts/build-images.sh --push-only --dockerhub
+        run: ./scripts/build-images.sh --push-only --dockerhub --only agent
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
