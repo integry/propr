@@ -56,6 +56,7 @@ import {
 import { goalInputPage } from '../mcp/goalTaskDetail.js';
 import { GoalWaitError, waitForGoal } from '../services/goalWait.js';
 import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
+import { demoGoalRepositories, type DemoRepositoryLoader } from '../services/demoGoalScope.js';
 import {
   appendGoalAttachments,
   deleteGoalAttachmentDirectory,
@@ -70,6 +71,8 @@ import {
 
 interface GoalRoutesDeps {
   db: Knex;
+  /** The demo viewer's repository whitelist; defaults to the demo's configured repositories. */
+  loadDemoRepositories?: DemoRepositoryLoader;
   previewReader?: typeof previewMediaReader;
   taskQueue: Queue;
   redisClient: RedisClientType;
@@ -336,19 +339,20 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const taskId = Array.isArray(req.params.taskId) ? req.params.taskId[0] : req.params.taskId;
     const sessionId = Array.isArray(req.params.sessionId) ? req.params.sessionId[0] : req.params.sessionId;
     const correlationId = Array.isArray(req.params.correlationId) ? req.params.correlationId[0] : req.params.correlationId;
-    let goal: Pick<GoalRow, 'goal_id' | 'owner_id'> | undefined;
+    let goal: Pick<GoalRow, 'goal_id' | 'owner_id' | 'repository'> | undefined;
     if (taskId) {
-      goal = await deps.db('goals').select('goal_id', 'owner_id').where({ current_task_id: taskId }).first() as Pick<GoalRow, 'goal_id' | 'owner_id'> | undefined;
+      goal = await deps.db('goals').select('goal_id', 'owner_id', 'repository').where({ current_task_id: taskId }).first() as Pick<GoalRow, 'goal_id' | 'owner_id' | 'repository'> | undefined;
     } else if (sessionId) {
       goal = await deps.db('goals')
-        .select('goal_id', 'owner_id')
+        .select('goal_id', 'owner_id', 'repository')
         .where({ session_id: sessionId })
         .orWhere({ conversation_id: sessionId })
-        .first() as Pick<GoalRow, 'goal_id' | 'owner_id'> | undefined;
+        .first() as Pick<GoalRow, 'goal_id' | 'owner_id' | 'repository'> | undefined;
     } else if (correlationId) {
-      goal = await deps.db('goals').select('goal_id', 'owner_id').where({ goal_id: correlationId }).first() as Pick<GoalRow, 'goal_id' | 'owner_id'> | undefined;
+      goal = await deps.db('goals').select('goal_id', 'owner_id', 'repository').where({ goal_id: correlationId }).first() as Pick<GoalRow, 'goal_id' | 'owner_id' | 'repository'> | undefined;
     }
-    if (goal && goal.owner_id !== currentOwnerId(req)) {
+    const demoRepositories = goal ? await demoGoalRepositories(req, deps.loadDemoRepositories) : null;
+    if (goal && goal.owner_id !== currentOwnerId(req) && !demoRepositories?.includes(goal.repository)) {
       res.status(404).json({ error: 'Task not found' });
       return;
     }
@@ -357,6 +361,16 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       return;
     }
     next();
+  };
+
+  /** findOwnedGoal for reads, widened to the demo's repositories for the demo viewer. */
+  const findVisibleGoal = async (req: Request, res: Response): Promise<GoalRow | null> => {
+    const demoRepositories = await demoGoalRepositories(req, deps.loadDemoRepositories);
+    if (!demoRepositories) return findOwnedGoal(deps.db, req, res);
+    const goalId = Array.isArray(req.params.goalId) ? req.params.goalId[0] : req.params.goalId;
+    const row = await deps.db('goals').where({ goal_id: goalId }).whereIn('repository', demoRepositories).first() as GoalRow | undefined;
+    if (!row) res.status(404).json({ error: 'Goal not found' });
+    return row ?? null;
   };
 
   const capabilities = async (req: Request, res: Response) => {
@@ -381,8 +395,11 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const listQuery = parseGoalListQuery(req.query ?? {});
     if ('error' in listQuery) return void res.status(400).json({ error: listQuery.error });
     const { repository, state, offset, limit, paginated } = listQuery;
+    const demoRepositories = await demoGoalRepositories(req, deps.loadDemoRepositories);
     const rows = await timeApiStage('sql.goals.list', () => {
-      const query = deps.db<GoalRow>('goals').where({ owner_id: ownerId });
+      const query = demoRepositories
+        ? deps.db<GoalRow>('goals').whereIn('repository', demoRepositories)
+        : deps.db<GoalRow>('goals').where({ owner_id: ownerId });
       if (repository) query.where('repository', repository);
       applyGoalLifecycleFilter(query, state);
       // Explicit pages use the immutable creation order so a goal updated mid-walk is neither
@@ -402,13 +419,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   const get = async (req: Request, res: Response) => {
-    const row = await findOwnedGoal(deps.db, req, res);
+    const row = await findVisibleGoal(req, res);
     if (row) res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
   };
 
   /** The goal projection plus the shared narration/progress/checkpoint/pending-input detail MCP `get_goal` reads. */
   const detail = async (req: Request, res: Response) => {
-    const row = await findOwnedGoal(deps.db, req, res);
+    const row = await findVisibleGoal(req, res);
     if (!row) return;
     res.json({
       goal: await serializeGoal(deps.db, deps.redisClient, row),
@@ -430,8 +447,12 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
     if ('error' in page) return void res.status(400).json({ error: page.error });
+    const demoRepositories = await demoGoalRepositories(req, deps.loadDemoRepositories);
+    const repositories = demoRepositories
+      ? demoRepositories.filter(candidate => repository === undefined || candidate === repository)
+      : repository ? [repository] : null;
     const listed = await timeApiStage('sql.goals.attention', () => listGoalsNeedingAttention(deps.db, {
-      ownerId, repositories: repository ? [repository] : null, offset: page.offset, limit: page.limit,
+      ownerId: demoRepositories ? null : ownerId, repositories, offset: page.offset, limit: page.limit,
     }));
     res.json({
       goals: listed.entries.map(goalAttentionSummary),
@@ -458,12 +479,19 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (timeoutSeconds === null) {
       return void res.status(400).json({ error: `timeoutSeconds must be a number from 0 to ${GOAL_WAIT_MAX_TIMEOUT_SECONDS}` });
     }
+    // The demo viewer waits on a visible goal under its owner's identity.
+    let waitOwnerId = ownerId;
+    if (await demoGoalRepositories(req, deps.loadDemoRepositories)) {
+      const visible = await findVisibleGoal(req, res);
+      if (!visible) return;
+      waitOwnerId = visible.owner_id;
+    }
     const disconnected = new AbortController();
     const onClose = () => { if (!res.writableEnded) disconnected.abort(); };
     res.once?.('close', onClose);
     try {
       const result = await (deps.waitForGoal ?? waitForGoal)({
-        db: deps.db, ownerId, goalId: String(goalId), until, timeoutSeconds,
+        db: deps.db, ownerId: waitOwnerId, goalId: String(goalId), until, timeoutSeconds,
         afterCursor: queryValue(query, 'afterCursor'), signal: disconnected.signal,
       });
       res.json(result);
@@ -478,7 +506,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
 
   /** Bounded, newest-first operator input history with persisted delivery state. */
   const inputs = async (req: Request, res: Response) => {
-    const row = await findOwnedGoal(deps.db, req, res);
+    const row = await findVisibleGoal(req, res);
     if (!row) return;
     const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
     if ('error' in page) return void res.status(400).json({ error: page.error });
@@ -486,8 +514,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   const previews = async (req: Request, res: Response) => {
-    const row = await findOwnedGoal(deps.db, req, res);
+    const row = await findVisibleGoal(req, res);
     if (!row) return;
+    // Published previews are read from GitHub; the demo has no live GitHub access.
+    if (row.owner_id !== currentOwnerId(req)) return void res.json({ previews: [] });
     if (!(await loadVisualPreviewSettings(row.repository)).enabled || !row.final_pr_number) return void res.json({ previews: [] });
     try {
       const [owner, repo] = row.repository.split('/');
@@ -1329,7 +1359,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   const attachment = async (req: Request, res: Response) => {
-    const row = await findOwnedGoal(deps.db, req, res);
+    const row = await findVisibleGoal(req, res);
     if (!row) return;
     const attachmentId = Array.isArray(req.params.attachmentId) ? req.params.attachmentId[0] : req.params.attachmentId;
     const item = parseGoalAttachments(row.attachments).find(candidate => candidate.id === attachmentId);

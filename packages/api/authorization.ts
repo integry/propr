@@ -9,7 +9,7 @@ import {
     type InstancePermission,
     type InstanceRole
 } from '@propr/shared';
-import { isDemoMode } from './demoMode.js';
+import { DEMO_VIEWER_PERMISSIONS, isDemoMode } from './demoMode.js';
 import type { GitHubUser } from './authTypes.js';
 import { timeApiStage } from './apiPerformanceTiming.js';
 
@@ -63,7 +63,9 @@ export async function resolveInstanceAuthorization(
     database: Knex = db
 ): Promise<InstanceAuthorization> {
     if (isDemoMode()) {
-        return { role: 'member', permissions: [], source: 'demo' };
+        // A read-only viewer of every section. The role stays member so admin-role
+        // surfaces backed by live installation state (instance storage) stay closed.
+        return { role: 'member', permissions: [...DEMO_VIEWER_PERMISSIONS], source: 'demo' };
     }
 
     // Environment administrators do not require a database lookup. Besides

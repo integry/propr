@@ -21,6 +21,7 @@ import type {
   InstanceRoleAuditEntry
 } from '../api/proprTypes';
 import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
+import { useDemoMode } from '../contexts/DemoModeContext';
 import { ListSkeleton } from '../components/ui/Skeleton';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
@@ -51,9 +52,12 @@ function getCollectionState(loading: boolean, itemCount: number, error: string):
   return itemCount === 0 ? 'empty' : 'ready';
 }
 
+const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="mb-6 border-l-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">Demo mode is read-only. Instance access can be inspected but not changed.</p> : null;
+
 const AccessManagementPage: React.FC = () => {
   const currentUser = useCurrentUser();
   const refreshCurrentUser = useRefreshCurrentUser();
+  const { isDemoMode } = useDemoMode();
   const [data, setData] = useState<InstanceMembersResponse>(EMPTY_RESPONSE);
   const [auditEntries, setAuditEntries] = useState<InstanceRoleAuditEntry[]>([]);
   const [username, setUsername] = useState('');
@@ -208,7 +212,7 @@ const AccessManagementPage: React.FC = () => {
     );
   };
 
-  const roleControlsDisabled = saving || whitelistOffer !== null;
+  const roleControlsDisabled = isDemoMode || saving || whitelistOffer !== null;
   const canStoreBootstrapRole = currentUser?.authorizationSource === 'bootstrap'
     && !data.members.some(member => member.githubUserId === currentUser.id && member.role === 'admin');
   const memberState = getCollectionState(loading, data.members.length, error);
@@ -227,6 +231,8 @@ const AccessManagementPage: React.FC = () => {
           </p>
         </div>
       </div>
+
+      <DemoReadOnlyNotice />
 
       {data.bootstrapAdmins.length > 0 && (
         <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
@@ -302,6 +308,7 @@ const AccessManagementPage: React.FC = () => {
               value={username}
               onChange={event => setUsername(event.target.value)}
               placeholder="GitHub username"
+              disabled={isDemoMode}
               autoComplete="off"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
             />
@@ -311,6 +318,7 @@ const AccessManagementPage: React.FC = () => {
             <select
               value={role}
               onChange={event => setRole(event.target.value as InstanceRole)}
+              disabled={isDemoMode}
               className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
             >
               <option value="member">Member</option>

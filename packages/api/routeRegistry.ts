@@ -13,6 +13,7 @@ import {
   requireManageRuntime,
   requireManageSettings,
 } from './permissionGuards.js';
+import { withDemoViewerBoundary } from './demoViewerRoutes.js';
 import { timeApiRouteHandler } from './apiPerformanceTiming.js';
 
 export type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
@@ -87,7 +88,7 @@ export function createManagementRouteEntries({
   operatorRateLimiter,
   visualPreviewAuthRoutes,
 }: ManagementRouteDeps): RouteEntry[] {
-  return [
+  const entries: RouteEntry[] = [
     ['get', '/api/config/followup-keywords', requireManageSettings, configRoutes.getFollowupKeywords],
     ['post', '/api/config/followup-keywords', requireManageSettings, configRoutes.postFollowupKeywords],
     ['get', '/api/config/followup-ignore-keywords', requireManageSettings, configRoutes.getFollowupIgnoreKeywords],
@@ -165,6 +166,7 @@ export function createManagementRouteEntries({
     ['post', '/api/agents/resolve-version', requireManageAgents, agentVersionRoutes.resolveVersionEndpoint],
     ['get', '/api/agents/:agentType/image-tag', requireManageAgents, agentVersionRoutes.getImageTag],
   ];
+  return entries.map(withDemoViewerBoundary);
 }
 
 /**

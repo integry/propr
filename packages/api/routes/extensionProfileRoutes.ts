@@ -7,9 +7,13 @@ import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
 import { requestExtensionMcp } from '../../core/src/extensions/endpointPolicy.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
 import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../githubMetadataAuth.js';
+import { isDemoViewer } from '../demoMode.js';
+import { refuseDemoViewer } from '../permissionGuards.js';
 
 export function createExtensionProfileRoutes(store = new ExtensionProfileStore(db)) {
-  const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res) => {
+  const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
+    // Profiles hold sealed per-installation secrets; the demo explains instead of reading them.
+    if (isDemoViewer(req.authorization)) return refuseDemoViewer(req, res, next);
     try {
       if (!req.user?.id) throw new ExtensionError(401, 'Authentication required');
       if (req.authorization?.role !== 'admin' || !req.authorization.permissions.includes('instance.manage_settings')) throw new ExtensionError(403, 'Instance settings administration is required');
