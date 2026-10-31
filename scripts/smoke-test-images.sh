@@ -334,6 +334,10 @@ fi
 check_ui_api_configuration
 
 # --- Agent and launcher artifact checks ------------------------------------
+# Restricted snapshotters (rootless, userxattr overlay, OrbStack's containerd
+# store) cannot unpack a layer that carries overlayfs whiteouts.
+"$REPO_ROOT/scripts/check-image-whiteouts.sh" "$AGENT_TAG"
+
 docker run --rm "$AGENT_TAG" sh -c '
   set -eu
   for executable in claude codex agy opencode vibe agent-tank git gh rg python3; do

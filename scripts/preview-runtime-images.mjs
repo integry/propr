@@ -45,6 +45,7 @@ export const AGENT_SMOKE_CHECKS = Object.freeze([
   'gh-wrapper-through-every-entrypoint',
   'no-baked-provider-credentials',
   'non-root-runtime-user',
+  'no-overlay-whiteouts',
 ]);
 const AGENT_CLI_LABELS = Object.freeze({
   claude: 'dev.propr.agent.claude.version',

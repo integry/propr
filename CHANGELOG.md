@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agent image on rootless and restricted Docker hosts**: `propr/agent` (and the
+  managed preview agent image) no longer contains overlayfs whiteouts. Earlier
+  images carried about 150 opaque-directory markers (`.wh..wh..opq`) in the
+  system-package layer, which hosts that cannot set trusted overlay xattrs refuse
+  to unpack: for example OrbStack or Docker 29 with the containerd image store
+  failed with `failed to convert whiteout file "etc/bash_completion.d/.wh..wh..opq":
+  operation not permitted` (#3399). Some builders mark every directory a layer
+  creates as opaque, COPY destinations included, so Dockerfile.agent now
+  assembles the image in internal stages and publishes it as a single layer
+  (`FROM scratch` + `COPY --from=agent-image-build / /`) with the image config
+  re-declared exactly. The Node base is pinned to `node:22.23.4-bookworm-slim` so
+  the re-declared `NODE_VERSION`/`YARN_VERSION` stay exact. The image content is
+  unchanged, but it no longer shares layers with a locally pulled `node` image or
+  with other agent bundle tags, so pulling a new bundle downloads the whole image. The release, preview-agent and
+  restricted-network smokes now `docker save` the built image and fail if any
+  layer contains a `.wh.` entry (`scripts/check-image-whiteouts.sh`).
+
 ### Security
 
 - **minimatch denial of service (GHSA-g3hv-75wg-m249)**: Repomix context
