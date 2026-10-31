@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repositories, and the Inbox shows a representative Inbox from the curated
   database, limited to the demo repositories and without host health events.
 
+### Security
+
+- **minimatch denial of service (GHSA-g3hv-75wg-m249)**: Repomix context
+  packing and the desktop packager's `@electron/asar` now resolve `minimatch`
+  11.0.3 (and `glob` 14.0.3) through scoped npm overrides. The runtime and
+  desktop packaging audits pass again without an audit exception. Dev-only
+  tooling (ESLint, nodemon, the deb/rpm makers) still uses older minimatch until
+  those upstreams update; see
+  [dependency audit exceptions](docs/dependency-audit-exceptions.md).
+
 ## [0.9.0] - 2026-10-30
 
 Covers every change merged since v0.8.15. This section records delivered source
