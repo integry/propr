@@ -154,7 +154,7 @@ test('the single-layer agent image re-declares the layered image config exactly'
   assert.match(finalStage, /^ENTRYPOINT \["\/usr\/bin\/tini", "--", "\/home\/node\/agent-entrypoint\.sh"\]$/m);
   assert.doesNotMatch(finalStage, /^CMD\b/m, 'the layered image had no CMD once it set its ENTRYPOINT');
   for (const label of ['agent-bundle', 'agent.claude.version', 'agent.codex.version', 'agent.antigravity.version', 'agent.opencode.version', 'agent.vibe.version', 'agent-tank.version']) {
-    assert.match(finalStage, new RegExp(`dev\\.propr\\.${label.replace(/\./g, '\\.')}=`), `the published stage must label ${label}`);
+    assert.match(finalStage, new RegExp(`dev\\.propr\\.${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=`), `the published stage must label ${label}`);
   }
   assert.doesNotMatch(dockerfile.slice(0, dockerfile.indexOf(FINAL_STAGE)), /^LABEL\b/m, 'labels set before scratch are dropped');
 });
