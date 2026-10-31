@@ -3,7 +3,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
-  copyFile, lstat, mkdtemp, mkdir, open, readFile, readdir, rm, stat, writeFile,
+  copyFile, lstat, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -12,6 +12,17 @@ import { promisify } from 'node:util';
 import { requireRpmIdentity, rpmIdentityFromEnvironment, verifyRpm, signRpm, rpmContentDigest } from './rpm-signing.mjs';
 import { authAssets, aptAssets, createApt, verifyApt, signMetadata, verifyMetadata } from './linux-package-auth.mjs';
 import { inspectSignedPreviewPayload } from './rpm-preview-payload.mjs';
+import {
+  exactKeys,
+  exactRuntimeImage,
+  findReleaseByTag as findPreviewReleaseByTag,
+  githubClient,
+  listAssets as listPreviewAssets,
+  parseChecksums as parsePreviewChecksums,
+  sha256File as sha256,
+  trustedUploadBase,
+  verifyRemoteAsset,
+} from './preview-release-github.mjs';
 import {
   expectedProfileArtifacts,
   LINUX_PREVIEW_RELEASE_PROFILE,
@@ -22,7 +33,6 @@ const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const API_PAGE_SIZE = 100;
 const MAX_METADATA_BYTES = 1024 * 1024;
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024;
 const PREVIEW_MANIFEST = 'linux-preview.json';
@@ -43,52 +53,15 @@ export const linuxPreviewTag = (version, sourceRevision, rpmIdentity) => {
   return `desktop-linux-preview-v${version}-${sourceRevision.slice(0, 12)}${rpmIdentity ? '-all-signed' : ''}`;
 };
 
-const sha256 = async path => {
-  const hash = createHash('sha256');
-  const handle = await open(path, 'r');
-  try {
-    for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
-  } finally {
-    await handle.close();
-  }
-  return hash.digest('hex');
-};
-
-const exactKeys = (value, keys, label) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).length !== keys.length
-    || Object.keys(value).some(key => !keys.includes(key))) {
-    throw new Error(`${label} has missing or unknown fields`);
-  }
-};
-
-const exactRuntimeImage = (value, repository, sourceRevision) => (
-  typeof value === 'string'
-  && value === value.trim()
-  && value.startsWith(`propr/${repository}:${sourceRevision}@sha256:`)
-  && SHA256.test(value.slice(value.lastIndexOf(':') + 1))
-);
-
 const previewFileNames = version => {
   const profile = resolveReleaseProfile(LINUX_PREVIEW_RELEASE_PROFILE);
   return [...expectedProfileArtifacts(profile, version).keys()].sort();
 };
 
-const parseChecksums = contents => {
-  if (!contents.endsWith('\n') || contents.includes('\r')) {
-    throw new Error('Linux preview SHA256SUMS must be canonical LF-terminated text');
-  }
-  const entries = contents.trimEnd().split('\n').map(line => {
-    const match = /^([a-f0-9]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(line);
-    if (!match) throw new Error('Linux preview SHA256SUMS contains a malformed entry');
-    return [match[2], match[1]];
-  });
-  const names = entries.map(([name]) => name);
-  if (new Set(names).size !== names.length || names.join('\n') !== [...names].sort().join('\n')) {
-    throw new Error('Linux preview SHA256SUMS must be unique and sorted by asset name');
-  }
-  return new Map(entries);
-};
+const LABEL = 'Linux preview';
+const parseChecksums = contents => parsePreviewChecksums(contents, LABEL);
+const findReleaseByTag = (json, tag) => findPreviewReleaseByTag(json, tag, LABEL);
+const listAssets = (json, releaseId) => listPreviewAssets(json, releaseId, LABEL);
 
 const unsignedInstallNotes = ({ version, sourceRevision, tag }) => `# ProPR Desktop Linux preview
 
@@ -541,36 +514,6 @@ export async function signLinuxPreviewBundle({ directory, outputDirectory, versi
   return manifest;
 }
 
-const githubRequest = async ({ fetchImpl, apiUrl, repository, token, path, method = 'GET', json, body, headers = {}, allowNotFound = false }) => {
-  const url = path.startsWith('https://') ? path : `${apiUrl}/repos/${repository}${path}`;
-  const response = await fetchImpl(url, {
-    method,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(json === undefined ? {} : { 'Content-Type': 'application/json' }),
-      ...headers,
-    },
-    ...(json === undefined ? {} : { body: JSON.stringify(json) }),
-    ...(body === undefined ? {} : { body, duplex: 'half' }),
-  });
-  if (allowNotFound && response.status === 404) return undefined;
-  if (!response.ok) throw new Error(`GitHub API ${method} ${path} failed with HTTP ${response.status}`);
-  return response;
-};
-
-const githubClient = ({ repository, token, apiUrl, fetchImpl }) => {
-  const request = (path, options = {}) => githubRequest({
-    repository, token, apiUrl, fetchImpl, path, ...options,
-  });
-  const json = async (path, options = {}) => {
-    const response = await request(path, options);
-    return response === undefined ? undefined : response.json();
-  };
-  return { request, json };
-};
-
 const previewReleaseName = (version, sourceRevision, rpmIdentity) => (
   `ProPR Desktop Linux preview ${version} (${sourceRevision.slice(0, 12)})${rpmIdentity ? ' (authenticated DEB and RPM)' : ''}`
 );
@@ -584,72 +527,6 @@ const assertDraft = (release, { tag, sourceRevision, version, rpmIdentity }) => 
     || typeof release.upload_url !== 'string') {
     throw new Error('GitHub release is not the exact unpublished Linux preview draft');
   }
-};
-
-const findReleaseByTag = async (json, tag) => {
-  let release;
-  for (let page = 1; ; page += 1) {
-    const result = await json(`/releases?per_page=${API_PAGE_SIZE}&page=${page}`);
-    if (!Array.isArray(result)) throw new Error('GitHub returned an invalid Linux preview release list');
-    for (const candidate of result) {
-      if (candidate?.tag_name !== tag) continue;
-      if (release !== undefined) {
-        throw new Error('GitHub returned duplicate releases for the Linux preview tag');
-      }
-      release = candidate;
-    }
-    if (result.length < API_PAGE_SIZE) return release;
-  }
-};
-
-const listAssets = async (json, releaseId) => {
-  const assets = [];
-  for (let page = 1; ; page += 1) {
-    const result = await json(`/releases/${releaseId}/assets?per_page=${API_PAGE_SIZE}&page=${page}`);
-    if (!Array.isArray(result)) throw new Error('GitHub returned an invalid Linux preview asset list');
-    assets.push(...result);
-    if (result.length < API_PAGE_SIZE) return assets;
-  }
-};
-
-const digestResponse = async (response, expectedSize, name, outputPath) => {
-  if (!response.body) throw new Error(`GitHub preview asset has no body: ${name}`);
-  const hash = createHash('sha256');
-  let size = 0;
-  const chunks = [];
-  const handle = outputPath ? await open(outputPath, 'wx', 0o600) : undefined;
-  try {
-    for await (const chunk of response.body) {
-      size += chunk.length;
-      if (size > expectedSize) throw new Error(`GitHub preview asset exceeds expected size: ${name}`);
-      hash.update(chunk);
-      if (handle) await handle.write(chunk);
-      else chunks.push(chunk);
-    }
-  } finally {
-    await handle?.close();
-  }
-  if (size !== expectedSize) throw new Error(`GitHub preview asset has an unexpected size: ${name}`);
-  return { sha256: hash.digest('hex'), bytes: outputPath ? undefined : Buffer.concat(chunks) };
-};
-
-const verifyRemoteAsset = async ({ request, asset, expected, apiOrigin, outputPath }) => {
-  if (!Number.isSafeInteger(asset?.id) || asset.name !== expected.name || asset.state !== 'uploaded'
-    || asset.size !== expected.size || typeof asset.url !== 'string') {
-    throw new Error(`GitHub preview asset metadata mismatch: ${expected.name}`);
-  }
-  const url = new URL(asset.url);
-  if (url.origin !== apiOrigin) throw new Error(`GitHub preview asset has an untrusted API URL: ${expected.name}`);
-  if (expected.sha256 && asset.digest != null && asset.digest !== `sha256:${expected.sha256}`) {
-    throw new Error(`GitHub preview asset digest metadata mismatch: ${expected.name}`);
-  }
-  const response = await request(asset.url, { headers: { Accept: 'application/octet-stream' } });
-  const downloaded = await digestResponse(response, expected.size, expected.name, outputPath);
-  if ((expected.sha256 && downloaded.sha256 !== expected.sha256)
-    || (!expected.sha256 && asset.digest != null && asset.digest !== `sha256:${downloaded.sha256}`)) {
-    throw new Error(`GitHub preview asset content digest mismatch: ${expected.name}`);
-  }
-  return downloaded.bytes;
 };
 
 export const stageLinuxPreviewDraft = async ({
@@ -691,11 +568,7 @@ export const stageLinuxPreviewDraft = async ({
     remoteByName.set(asset.name, asset);
     await verifyRemoteAsset({ request, asset, expected: assets.get(asset.name), apiOrigin });
   }
-  const uploadBase = release.upload_url.replace(/\{.*$/, '');
-  const uploadOrigin = new URL(uploadBase).origin;
-  if (uploadOrigin !== apiOrigin && !(apiOrigin === 'https://api.github.com' && uploadOrigin === 'https://uploads.github.com')) {
-    throw new Error('GitHub returned an untrusted Linux preview upload URL');
-  }
+  const uploadBase = trustedUploadBase(release, apiOrigin, LABEL);
   for (const asset of assets.values()) {
     if (remoteByName.has(asset.name)) continue;
     const uploadUrl = new URL(uploadBase);

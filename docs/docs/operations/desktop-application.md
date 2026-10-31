@@ -35,6 +35,40 @@ sha256sum --check --ignore-missing SHA256SUMS         # Linux, from the download
 shasum -a 256 ProPR-Desktop-0.9.0-macos-arm64.dmg     # macOS: compare with the SHA256SUMS line
 ```
 
+### macOS preview builds
+
+Unsigned macOS builds are published as GitHub **pre-releases** named **ProPR Desktop macOS preview**, with tags of the
+form `desktop-macos-preview-v<version>-<commit>`, for example `desktop-macos-preview-v0.9.0-0123456789ab`. They are never
+marked as the latest release, so open the [Releases](https://github.com/integry/propr/releases) page and pick the newest
+macOS preview. Each one contains:
+
+- `ProPR-Desktop-<version>-macos-arm64.dmg` and `.zip` for Apple Silicon
+- `ProPR-Desktop-<version>-macos-x64.dmg` and `.zip` for Intel Macs
+- `SHA256SUMS`, `macos-preview.json` (the source commit and runtime images the build is bound to) and `INSTALL.md`
+
+These builds are not signed with an Apple Developer ID or notarized. Verify a download in two ways before opening it.
+First check its checksum, from the folder that holds the download and `SHA256SUMS`:
+
+```sh
+VERSION=0.9.0
+ARCH=arm64   # or x64
+grep " ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg$" SHA256SUMS | shasum -a 256 -c -
+shasum -a 256 -c SHA256SUMS   # if you downloaded every asset of the release
+```
+
+Then check its GitHub build provenance attestation with the [GitHub CLI](https://cli.github.com/). This proves the file
+was built by the `desktop-macos-preview.yml` workflow on `main` of `integry/propr`, on a GitHub-hosted runner:
+
+```sh
+gh attestation verify "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg" \
+  --repo integry/propr \
+  --signer-workflow integry/propr/.github/workflows/desktop-macos-preview.yml \
+  --source-ref refs/heads/main \
+  --deny-self-hosted-runners
+```
+
+Don't install the build if either check fails. Then install it as described under [macOS](#macos) below.
+
 ## Install
 
 ### Linux
@@ -196,8 +230,9 @@ and **Needs attention** are selected by default.
 - **Linux:** the app does not update itself and there is no apt or dnf repository yet. Download the newer package and run
   `sudo apt install ./ProPR-Desktop-<version>-linux-<arch>.deb` or
   `sudo dnf upgrade ./ProPR-Desktop-<version>-linux-<arch>.rpm`.
-- **macOS:** the unsigned builds do not update themselves. Quit ProPR, then replace the app in Applications with the newer
-  download.
+- **macOS:** the unsigned builds, including the macOS preview pre-releases, do not update themselves and never contact
+  the signed update channel. Quit ProPR, verify the newer download as described in
+  [macOS preview builds](#macos-preview-builds), then replace the app in Applications with it.
 
 Saved instances and accounts are kept across updates.
 

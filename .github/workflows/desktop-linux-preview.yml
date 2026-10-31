@@ -60,18 +60,21 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout the exact requested source revision
+      - name: Checkout the reviewed main revision with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
+      # Shared with the macOS preview: binds the frozen source to main and
+      # validates the three digest-pinned runtime images.
       - name: Validate immutable source, version, and preview runtime inputs
         id: identity
         shell: bash
         env:
           OPERATION: ${{ inputs.operation }}
+          DISPATCH_REF: ${{ github.ref }}
           REQUESTED_SHA: ${{ inputs.source_revision }}
           WORKFLOW_SHA: ${{ github.sha }}
           RUNTIME_APP_IMAGE: ${{ inputs.runtime_app_image }}
@@ -79,52 +82,11 @@ jobs:
           RUNTIME_AGENT_IMAGE: ${{ inputs.runtime_agent_image }}
         run: |
           set -euo pipefail
-          [[ "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]] || {
-            echo 'source_revision must be a full lowercase 40-character commit SHA.' >&2
-            exit 1
-          }
-          test "$(git rev-parse HEAD)" = "$REQUESTED_SHA"
-          git merge-base --is-ancestor "$REQUESTED_SHA" "$WORKFLOW_SHA" || {
-            echo 'source_revision must already be reachable from the dispatched main revision.' >&2
-            exit 1
-          }
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-            echo 'apps/desktop/package.json must contain a canonical semantic package version.' >&2
-            exit 1
-          }
-          tag="desktop-linux-preview-v${version}-${REQUESTED_SHA:0:12}"
-          if [ "$OPERATION" = stage-draft ]; then
-            app_pattern="propr/app:${REQUESTED_SHA}@sha256:"
-            ui_pattern="propr/ui:${REQUESTED_SHA}@sha256:"
-            [[ "$RUNTIME_APP_IMAGE" =~ ^${app_pattern}[a-f0-9]{64}$ ]] || {
-              echo "runtime_app_image must be a published, digest-pinned propr/app image tagged with $REQUESTED_SHA." >&2
-              exit 1
-            }
-            [[ "$RUNTIME_UI_IMAGE" =~ ^${ui_pattern}[a-f0-9]{64}$ ]] || {
-              echo "runtime_ui_image must be a published, digest-pinned propr/ui image tagged with $REQUESTED_SHA." >&2
-              exit 1
-            }
-            # First-user task setup pulls the managed agent from the packaged
-            # launcher manifest; never fall back to its unpublished version tag.
-            agent_pattern="propr/agent:${REQUESTED_SHA}@sha256:"
-            [[ "$RUNTIME_AGENT_IMAGE" =~ ^${agent_pattern}[a-f0-9]{64}$ ]] || {
-              echo "runtime_agent_image must be a published, digest-pinned linux/amd64 propr/agent image tagged with $REQUESTED_SHA (Preview Runtime Images publish-agent)." >&2
-              exit 1
-            }
-          else
+          if [ "$OPERATION" != stage-draft ]; then
             echo 'Unsupported preview operation.' >&2
             exit 1
           fi
-          {
-            echo "release_sha=$REQUESTED_SHA"
-            echo "version=$version"
-            echo "tag=$tag"
-            echo "source_date_epoch=$(git show -s --format=%ct HEAD)"
-            echo "runtime_app_image=$RUNTIME_APP_IMAGE"
-            echo "runtime_ui_image=$RUNTIME_UI_IMAGE"
-            echo "runtime_agent_image=$RUNTIME_AGENT_IMAGE"
-          } >> "$GITHUB_OUTPUT"
+          node apps/desktop/scripts/desktop-preview-identity.mjs --channel linux >> "$GITHUB_OUTPUT"
 
   runtime-preflight:
     name: Verify published preview runtime manifests
