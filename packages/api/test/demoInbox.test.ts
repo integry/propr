@@ -32,15 +32,19 @@ const service = {
     },
 };
 
-before(async () => {
-    database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-    await database.schema.createTable('notification_events', table => {
+async function createInboxTables(target: Knex): Promise<void> {
+    await target.schema.createTable('notification_events', table => {
         table.string('event_id').primary(); table.string('kind'); table.text('target_json');
     });
-    await database.schema.createTable('notification_user_states', table => {
+    await target.schema.createTable('notification_user_states', table => {
         table.string('event_id'); table.string('user_id'); table.boolean('inbox_enabled');
         table.timestamp('read_at').nullable(); table.timestamp('dismissed_at').nullable();
     });
+}
+
+before(async () => {
+    database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    await createInboxTables(database);
     await database('notification_events').insert([
         { event_id: 'e1', kind: 'task', target_json: JSON.stringify({ type: 'task', repository: DEMO_REPOSITORY }) },
         { event_id: 'e2', kind: 'review', target_json: JSON.stringify({ type: 'review', repository: DEMO_REPOSITORY }) },
@@ -103,12 +107,51 @@ describe('demo Inbox', () => {
         assert.equal(await reader().getUnreadNotificationCount(), 2);
     });
 
+    test('skips a higher-volume recipient whose receipts the demo cannot show', async () => {
+        const curated = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+        try {
+            await createInboxTables(curated);
+            await curated('notification_events').insert([
+                { event_id: 'h1', kind: 'system_failure', target_json: JSON.stringify({ type: 'system_failure' }) },
+                { event_id: 'h2', kind: 'system_failure', target_json: JSON.stringify({ type: 'system_failure' }) },
+                { event_id: 'p1', kind: 'task', target_json: JSON.stringify({ type: 'task', repository: 'acme/private' }) },
+                { event_id: 'd1', kind: 'task', target_json: JSON.stringify({ type: 'task', repository: DEMO_REPOSITORY }) },
+                { event_id: 'v1', kind: 'task', target_json: JSON.stringify({ type: 'task', repository: DEMO_REPOSITORY }) },
+            ]);
+            const receipt = (event_id: string, user_id: string, extra: Record<string, unknown> = {}) => ({
+                event_id, user_id, inbox_enabled: true, read_at: null, dismissed_at: null, ...extra,
+            });
+            await curated('notification_user_states').insert([
+                // "noisy" holds the most receipts, but none the demo Inbox shows.
+                receipt('h1', 'noisy'), receipt('h2', 'noisy'), receipt('p1', 'noisy'),
+                receipt('d1', 'noisy', { dismissed_at: '2026-10-01T00:00:00.000Z' }),
+                receipt('v1', 'noisy', { inbox_enabled: false }),
+                receipt('v1', 'reviewer'),
+            ]);
+            const inbox = createDemoInboxReader({ service, database: curated, loadRepositories: async () => [DEMO_REPOSITORY] });
+
+            const page = await inbox.listNotifications({ limit: 20 });
+            assert.deepEqual(listedFor, ['reviewer']);
+            assert.deepEqual(page.notifications.map(item => item.id), ['event-visible']);
+            assert.equal(page.unreadCount, 1);
+            assert.equal(await inbox.getUnreadNotificationCount(), 1);
+            assert.deepEqual(listedFor, ['reviewer']);
+        } finally {
+            await curated.destroy();
+        }
+    });
+
+    test('no configured demo repository yields an empty Inbox', async () => {
+        const inbox = createDemoInboxReader({ service, database, loadRepositories: async () => [] });
+        assert.deepEqual(await inbox.listNotifications({}), { notifications: [], unreadCount: 0, nextCursor: null });
+        assert.equal(await inbox.getUnreadNotificationCount(), 0);
+        assert.deepEqual(listedFor, []);
+    });
+
     test('an empty curated database yields an empty Inbox', async () => {
         const empty = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
         try {
-            await empty.schema.createTable('notification_user_states', table => {
-                table.string('event_id'); table.string('user_id'); table.boolean('inbox_enabled');
-            });
+            await createInboxTables(empty);
             const inbox = createDemoInboxReader({ service, database: empty, loadRepositories: async () => [DEMO_REPOSITORY] });
             assert.deepEqual(await inbox.listNotifications({}), { notifications: [], unreadCount: 0, nextCursor: null });
             assert.equal(await inbox.getUnreadNotificationCount(), 0);
