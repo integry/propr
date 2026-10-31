@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, afterEach, before, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
-import { closeConnection, closeEventPublisher } from '@propr/core';
+import { closeConnection, closeEventPublisher, decodeNotificationCursor, encodeNotificationCursor, type NotificationListOptions } from '@propr/core';
 import { INSTANCE_PERMISSIONS, type Notification, type NotificationListResponse } from '@propr/shared';
 import { configureDemoMode, getDemoUser, resetConfiguredDemoMode } from '../demoMode.js';
 import { createNotificationRoutes } from '../routes/notificationRoutes.js';
@@ -13,24 +13,38 @@ const DEMO_REPOSITORY = 'acme/demo';
 let database: Knex;
 const listedFor: string[] = [];
 
-const notification = (id: string, kind: string, repository?: string) => ({
-    id, kind, target: repository ? { type: kind, repository } : { type: kind, component: 'redis' },
+const notification = (id: string, kind: string, repository?: string, occurredAt = '2026-10-01T00:00:00.000Z') => ({
+    id, kind, occurredAt, target: repository ? { type: kind, repository } : { type: kind, component: 'redis' },
 }) as unknown as Notification;
 
-const service = {
-    listNotifications: async (userId: string): Promise<NotificationListResponse> => {
-        listedFor.push(userId);
-        return {
-            notifications: [
-                notification('event-visible', 'task', DEMO_REPOSITORY),
-                notification('event-other-repository', 'task', 'acme/private'),
-                notification('event-system', 'system_failure'),
-            ],
-            unreadCount: 99,
-            nextCursor: 'cursor-2',
-        };
-    },
-};
+// Pages a newest-first receipt list the way NotificationService does: keyset
+// cursor, limit, and a next cursor only while older receipts remain.
+function pagedService(inboxes: Record<string, Notification[]>) {
+    return {
+        listNotifications: async (userId: string, options: NotificationListOptions = {}): Promise<NotificationListResponse> => {
+            listedFor.push(userId);
+            const boundary = options.cursor ? decodeNotificationCursor(options.cursor) : null;
+            const remaining = (inboxes[userId] ?? []).filter(item => !boundary
+                || item.occurredAt < boundary.occurredAt
+                || (item.occurredAt === boundary.occurredAt && item.id < boundary.eventId));
+            const limit = options.limit ?? 25;
+            const notifications = remaining.slice(0, limit);
+            const last = notifications[notifications.length - 1];
+            return {
+                notifications,
+                unreadCount: 99,
+                nextCursor: remaining.length > limit ? encodeNotificationCursor({ occurredAt: last.occurredAt, eventId: last.id }) : null,
+            };
+        },
+    };
+}
+
+const representativeInbox = [
+    notification('event-visible', 'task', DEMO_REPOSITORY),
+    notification('event-other-repository', 'task', 'acme/private'),
+    notification('event-system', 'system_failure'),
+];
+const service = pagedService({ operator: representativeInbox, reviewer: representativeInbox });
 
 async function createInboxTables(target: Knex): Promise<void> {
     await target.schema.createTable('notification_events', table => {
@@ -101,7 +115,7 @@ describe('demo Inbox', () => {
 
         assert.deepEqual(listedFor, ['operator']);
         assert.deepEqual(page.notifications.map(item => item.id), ['event-visible']);
-        assert.equal(page.nextCursor, 'cursor-2');
+        assert.equal(page.nextCursor, null);
         // Unread: e1 and e5; e2 is read, e3 is outside the demo, e4 is host health.
         assert.equal(page.unreadCount, 2);
         assert.equal(await reader().getUnreadNotificationCount(), 2);
@@ -139,6 +153,29 @@ describe('demo Inbox', () => {
         } finally {
             await curated.destroy();
         }
+    });
+
+    test('fills the page past an entirely hidden first page and resumes without skipping or repeating', async () => {
+        const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
+        const hidden = Array.from({ length: 120 }, (_, index) => index % 2
+            ? notification(`hidden-${String(index).padStart(3, '0')}`, 'system_failure', undefined, at(500 - index))
+            : notification(`hidden-${String(index).padStart(3, '0')}`, 'task', 'acme/private', at(500 - index)));
+        const shown = ['shown-1', 'shown-2', 'shown-3'].map((id, index) => notification(id, 'task', DEMO_REPOSITORY, at(100 - index * 2)));
+        const between = notification('hidden-between', 'system_failure', undefined, at(99));
+        const inbox = createDemoInboxReader({
+            service: pagedService({ operator: [...hidden, shown[0], between, shown[1], shown[2]] }),
+            database, loadRepositories: async () => [DEMO_REPOSITORY],
+        });
+
+        const first = await inbox.listNotifications({ limit: 2 });
+        assert.deepEqual(first.notifications.map(item => item.id), ['shown-1', 'shown-2']);
+        assert.ok(first.nextCursor);
+        // The first underlying page (100 receipts) held nothing the demo shows.
+        assert.deepEqual(listedFor, ['operator', 'operator']);
+
+        const second = await inbox.listNotifications({ limit: 2, cursor: first.nextCursor });
+        assert.deepEqual(second.notifications.map(item => item.id), ['shown-3']);
+        assert.equal(second.nextCursor, null);
     });
 
     test('no configured demo repository yields an empty Inbox', async () => {

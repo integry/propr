@@ -1,5 +1,12 @@
 import type { Knex } from 'knex';
-import { db, type NotificationListOptions, type NotificationService } from '@propr/core';
+import {
+    db,
+    encodeNotificationCursor,
+    MAX_NOTIFICATION_LIST_LIMIT,
+    parseNotificationListLimit,
+    type NotificationListOptions,
+    type NotificationService,
+} from '@propr/core';
 import type { Notification, NotificationListResponse } from '@propr/shared';
 import { loadDemoConfiguredRepoNames } from '../routes/demoRepositoryMetadata.js';
 import type { DemoRepositoryLoader } from './demoGoalScope.js';
@@ -84,17 +91,36 @@ export function createDemoInboxReader({
     }
 
     async function listNotifications(options: NotificationListOptions): Promise<NotificationListResponse> {
+        const limit = parseNotificationListLimit(options.limit);
         const repositories = await loadRepositories();
         const recipient = await representativeRecipient(repositories);
         if (!recipient) return { notifications: [], unreadCount: 0, nextCursor: null };
         const visible = new Set(repositories);
-        // Filtering keeps the recipient's cursor, so a page may be short but paging stays exact.
-        const page = await service.listNotifications(recipient, options);
-        return {
-            notifications: page.notifications.filter(notification => isVisible(visible, notification)),
-            unreadCount: await unreadCount(recipient, repositories),
-            nextCursor: page.nextCursor,
-        };
+        // The recipient's pages also hold receipts the demo hides, so read on
+        // until the visible page is full. The cursor then marks the last shown
+        // notification, so the next page neither skips nor repeats one.
+        const notifications: Notification[] = [];
+        let cursor = options.cursor ?? null;
+        for (;;) {
+            const page = await service.listNotifications(recipient, {
+                ...options, cursor, limit: MAX_NOTIFICATION_LIST_LIMIT,
+            });
+            for (const notification of page.notifications) {
+                if (!isVisible(visible, notification)) continue;
+                if (notifications.length === limit) {
+                    const last = notifications[notifications.length - 1];
+                    return {
+                        notifications,
+                        unreadCount: await unreadCount(recipient, repositories),
+                        nextCursor: encodeNotificationCursor({ occurredAt: last.occurredAt, eventId: last.id }),
+                    };
+                }
+                notifications.push(notification);
+            }
+            if (!page.nextCursor) break;
+            cursor = page.nextCursor;
+        }
+        return { notifications, unreadCount: await unreadCount(recipient, repositories), nextCursor: null };
     }
 
     return { listNotifications, getUnreadNotificationCount };
