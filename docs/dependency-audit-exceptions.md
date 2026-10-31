@@ -1,5 +1,38 @@
 # Dependency audit exception
 
+**minimatch GHSA-g3hv-75wg-m249, remediated 2026-10-31 without an exception.**
+This moderate-severity globparts amplification advisory was published on
+2026-10-30. It affects all `minimatch < 11.0.1`, has no 10.x or 3.x backport,
+and made `npm run audit:runtime` fail. Repomix 1.18.x still declares
+`minimatch ^10.2.6` (`npm audit` suggests "downgrading" to repomix 0.2.4, which
+is wrong). Scoped `package.json` overrides now resolve the affected paths to
+patched versions:
+
+- `repomix` → `minimatch` 11.0.3, the only runtime minimatch.
+- `@electron/asar@4` → `minimatch` 11.0.3 and `glob` 14.0.3 (glob 14 requires
+  minimatch 11 and also fixes GHSA-3g3m-2fjr-6pw4, `glob >=9 <=14.0.1`). This is
+  the asar that `@electron/packager` uses to build `app.asar` and match the
+  `unpack` glob.
+
+Both packages only use the `minimatch`, `Minimatch` and `braceExpand` exports,
+which minimatch 11 keeps. Repomix packing (include and ignore patterns,
+ignore-control files, nested paths, dotfiles) and asar `unpack` produce the same
+file sets as with minimatch 10. `test/minimatchAdvisory.test.mjs` guards the
+lockfile and this matching behaviour. Remove the overrides once Repomix and
+`@electron/asar` declare minimatch 11 themselves.
+
+The audits stay fail-closed, and the wrapper's thresholds are unchanged. The
+following dev-only paths still use vulnerable minimatch. The runtime audit omits
+them and they are below the packaging audit's `high` threshold:
+`eslint`/`@eslint/*` and `glob@7` (3.1.5);
+`@electron/asar@3` in `electron-installer-common`, which the deb/rpm makers use
+only to read `package.json` from a built `app.asar` (3.1.5); and `nodemon` and
+`@typescript-eslint/typescript-estree` (10.2.6). None of these takes
+repository-controlled patterns at runtime. They should move to minimatch 11 when
+their upstreams do.
+
+## braces GHSA-vfj7-8cjw-p6xm
+
 **Remediated 2026-10-17.** The `braces` dependency is now resolved to the
 reviewed, vendored depth-guard build in `vendor/braces` (see
 `vendor/braces/README.md` for provenance), so GHSA-vfj7-8cjw-p6xm no longer
