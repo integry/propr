@@ -7,8 +7,8 @@
 # snapshotters cannot create, for example rootless Docker, userxattr overlay
 # mounts and OrbStack's containerd image store, which then refuse the whole
 # image ("failed to convert whiteout file ... operation not permitted").
-# Dockerfile.agent flattens its base so the agent image ships none; this check
-# proves it on the image that was actually built.
+# Dockerfile.agent publishes a single layer so the agent image ships none;
+# this check proves it on the image that was actually built.
 #
 # Usage:
 #   scripts/check-image-whiteouts.sh IMAGE          # runs `docker save IMAGE`

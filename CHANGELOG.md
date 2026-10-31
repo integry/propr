@@ -15,12 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system-package layer, which hosts that cannot set trusted overlay xattrs refuse
   to unpack: for example OrbStack or Docker 29 with the containerd image store
   failed with `failed to convert whiteout file "etc/bash_completion.d/.wh..wh..opq":
-  operation not permitted` (#3399). Dockerfile.agent now builds the Node base and
-  system packages in an internal stage and flattens them into one fresh layer, so
-  every later layer only adds paths. The Node base is pinned to
-  `node:22.23.4-bookworm-slim` so its re-declared `NODE_VERSION`/`YARN_VERSION`
-  stay exact. The image size is unchanged apart from no longer sharing layers
-  with a locally pulled `node` image. The release, preview-agent and
+  operation not permitted` (#3399). Some builders mark every directory a layer
+  creates as opaque, COPY destinations included, so Dockerfile.agent now
+  assembles the image in internal stages and publishes it as a single layer
+  (`FROM scratch` + `COPY --from=agent-image-build / /`) with the image config
+  re-declared exactly. The Node base is pinned to `node:22.23.4-bookworm-slim` so
+  the re-declared `NODE_VERSION`/`YARN_VERSION` stay exact. The image content is
+  unchanged, but it no longer shares layers with a locally pulled `node` image or
+  with other agent bundle tags, so pulling a new bundle downloads the whole image. The release, preview-agent and
   restricted-network smokes now `docker save` the built image and fail if any
   layer contains a `.wh.` entry (`scripts/check-image-whiteouts.sh`).
 

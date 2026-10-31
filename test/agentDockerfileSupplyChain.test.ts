@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const dockerfile = readFileSync(new URL('../Dockerfile.agent', import.meta.url), 'utf8');
 const buildScript = readFileSync(new URL('../scripts/build-images.sh', import.meta.url), 'utf8');
+const FINAL_STAGE = 'FROM --platform=${AGENT_PLATFORM} scratch AS final';
 const appDockerfiles = [
   'docker/Dockerfile.node',
   'docker/Dockerfile.app.prod',
@@ -82,18 +83,18 @@ test('the image build script uses the same pinned Agent Tank version', () => {
   assert.match(buildScript, /"--build-arg" "AGENT_TANK_CLI_VERSION=\$AGENT_TANK_CLI_VERSION"/);
 });
 
-test('every CLI the final stage verifies is linked into PATH in that same stage', () => {
-  const finalStage = dockerfile.slice(dockerfile.indexOf('FROM agent-base AS final'));
+test('every CLI the image build stage verifies is linked into PATH in that same stage', () => {
+  const finalStage = dockerfile.slice(dockerfile.indexOf('FROM agent-base AS agent-image-build'), dockerfile.indexOf(FINAL_STAGE));
   // Stages are independent: copying a package's node_modules tree does not bring
   // along the npm bin symlink created where it was installed. A command that is
   // verified but never linked here fails the build with "command not found".
   const verified = [...finalStage.matchAll(/&& ([a-z][a-z-]*) --version/g)].map(match => match[1]);
-  assert.ok(verified.includes('agent-tank'), 'the final stage should verify bundled Agent Tank');
+  assert.ok(verified.includes('agent-tank'), 'the image build stage should verify bundled Agent Tank');
   for (const command of verified) {
     assert.match(
       finalStage,
       new RegExp(`link_npm_bin \\S+ ${command}\\b|ln -sf \\S+ /usr/local/bin/${command}\\b|COPY --from=\\S+ \\S+ /usr/local/bin/${command}\\b`),
-      `${command} is verified in the final stage but nothing links its executable there`
+      `${command} is verified in the image build stage but nothing links its executable there`
     );
   }
 });
@@ -102,52 +103,60 @@ test('the agent image no longer installs iptables: restricted networking needs n
   assert.doesNotMatch(dockerfile, /iptables/i);
 });
 
-const BASE_STAGE = 'FROM --platform=${AGENT_PLATFORM} scratch AS agent-base';
-
 // #3399: snapshotters that cannot set trusted overlay xattrs (rootless Docker,
 // userxattr overlay, OrbStack's containerd store) refuse layers carrying
-// `.wh..wh..opq` entries, which builders' overlayfs differs emit for the system
-// package install. scripts/check-image-whiteouts.sh proves the built image.
-test('the agent base is flattened into one whiteout-free layer before any CLI stage', () => {
+// `.wh..wh..opq` entries, which some builders' overlayfs differs emit for every
+// directory a layer creates, COPY destinations included. Only a single-layer
+// image avoids them; scripts/check-image-whiteouts.sh proves the built image.
+test('the published agent image is one layer copied from the image build stage', () => {
   const stages = [...dockerfile.matchAll(/^FROM (.+)$/gm)].map(match => match[1]);
-  const buildIndex = stages.findIndex(stage => / AS agent-base-build$/.test(stage));
-  const baseIndex = stages.indexOf('--platform=${AGENT_PLATFORM} scratch AS agent-base');
-  assert.ok(buildIndex >= 0, 'agent-base-build should install the system packages');
-  assert.equal(baseIndex, buildIndex + 1, 'agent-base should start from scratch right after agent-base-build');
+  assert.equal(stages.at(-1), '--platform=${AGENT_PLATFORM} scratch AS final', 'the published stage must start from scratch');
+  assert.equal(stages.at(-2), 'agent-base AS agent-image-build');
 
-  const baseStage = dockerfile.slice(dockerfile.indexOf(BASE_STAGE), dockerfile.indexOf('FROM agent-base AS claude-cli'));
-  assert.match(baseStage, /^COPY --from=agent-base-build \/ \/$/m);
-  assert.doesNotMatch(baseStage, /^(RUN|ADD)\b/m, 'the flattened base may only copy the build stage and declare config');
-  assert.doesNotMatch(baseStage, /--link\b/);
-
-  // Every stage that builds on the base, and so the published image, sees the
-  // flattened stage, never the multi-layer build stage.
-  for (const stage of stages.slice(baseIndex + 1)) {
-    assert.doesNotMatch(stage, /agent-base-build|node:/, `${stage} must build on the flattened agent-base`);
-  }
-  assert.equal(dockerfile.match(/--from=agent-base-build\b/g)?.length, 1, 'only the flattening COPY may read the build stage');
+  const finalStage = dockerfile.slice(dockerfile.indexOf(FINAL_STAGE));
+  assert.match(finalStage, /^COPY --from=agent-image-build \/ \/$/m);
+  assert.equal(finalStage.match(/^(COPY|ADD|RUN)\b/gm)?.length, 1, 'the published stage may only copy the build stage and declare config');
+  assert.doesNotMatch(finalStage, /--link\b/);
+  assert.equal(dockerfile.match(/--from=agent-image-build\b/g)?.length, 1, 'only the flattening COPY may read the image build stage');
 });
 
-test('the flattened agent base re-declares the node image config exactly', () => {
+test('the single-layer agent image re-declares the layered image config exactly', () => {
   const nodeVersion = dockerfile.match(/^ARG AGENT_NODE_VERSION=(\d+\.\d+\.\d+)$/m)?.[1];
   const yarnVersion = dockerfile.match(/^ARG AGENT_YARN_VERSION=(\d+\.\d+\.\d+)$/m)?.[1];
   assert.ok(nodeVersion, 'the node base must be pinned to an exact release');
   assert.ok(yarnVersion);
-  assert.match(dockerfile, /node:\$\{AGENT_NODE_VERSION\}-bookworm-slim AS agent-base-build/);
+  assert.match(dockerfile, /node:\$\{AGENT_NODE_VERSION\}-bookworm-slim AS agent-base$/m);
 
-  const buildStage = dockerfile.slice(dockerfile.indexOf('AS agent-base-build'), dockerfile.indexOf(BASE_STAGE));
-  assert.match(buildStage, /test "\$NODE_VERSION" = "\$AGENT_NODE_VERSION"/);
-  assert.match(buildStage, /test "\$YARN_VERSION" = "\$AGENT_YARN_VERSION"/);
-  assert.match(buildStage, /test "\$\(node --version\)" = "v\$AGENT_NODE_VERSION"/);
+  const baseStage = dockerfile.slice(dockerfile.indexOf('AS agent-base\n'), dockerfile.indexOf('FROM agent-base AS claude-cli'));
+  assert.match(baseStage, /test "\$NODE_VERSION" = "\$AGENT_NODE_VERSION"/);
+  assert.match(baseStage, /test "\$YARN_VERSION" = "\$AGENT_YARN_VERSION"/);
+  assert.match(baseStage, /test "\$\(node --version\)" = "v\$AGENT_NODE_VERSION"/);
 
-  const baseStage = dockerfile.slice(dockerfile.indexOf(BASE_STAGE), dockerfile.indexOf('FROM agent-base AS claude-cli'));
-  assert.match(baseStage, /PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin\b/);
-  assert.match(baseStage, /NODE_VERSION=\$\{AGENT_NODE_VERSION\}/);
-  assert.match(baseStage, /YARN_VERSION=\$\{AGENT_YARN_VERSION\}/);
-  assert.match(baseStage, /^ENTRYPOINT \["docker-entrypoint\.sh"\]$/m);
-  assert.match(baseStage, /^CMD \["node"\]$/m);
-  assert.match(baseStage, /^USER node$/m);
-  assert.match(baseStage, /^WORKDIR \/home\/node\/workspace$/m);
+  // Same config as the layered 0.9.0 image (docker inspect), labels aside:
+  // the OCI labels come from build-images.sh --label.
+  const finalStage = dockerfile.slice(dockerfile.indexOf(FINAL_STAGE));
+  const env = finalStage.match(/^ENV ((?:.*\\\n)*.*)$/m)?.[1].split(/\s*\\\n\s*/).map(entry => entry.trim());
+  assert.deepEqual(env, [
+    'PATH=/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    'NODE_VERSION=${AGENT_NODE_VERSION}',
+    'YARN_VERSION=${AGENT_YARN_VERSION}',
+    'NODE_OPTIONS="--max-old-space-size=8192"',
+    'UV_TOOL_DIR=/opt/uv/tools',
+    'UV_TOOL_BIN_DIR=/usr/local/bin',
+    'UV_PYTHON_INSTALL_DIR=/opt/uv/python',
+    'AGY_CLI_DISABLE_AUTO_UPDATE=true',
+  ]);
+  assert.equal(finalStage.match(/^ENV\b/gm)?.length, 1);
+  assert.match(finalStage, /^ARG AGENT_NODE_VERSION$/m);
+  assert.match(finalStage, /^ARG AGENT_YARN_VERSION$/m);
+  assert.match(finalStage, /^USER node$/m);
+  assert.match(finalStage, /^WORKDIR \/home\/node\/workspace$/m);
+  assert.match(finalStage, /^ENTRYPOINT \["\/usr\/bin\/tini", "--", "\/home\/node\/agent-entrypoint\.sh"\]$/m);
+  assert.doesNotMatch(finalStage, /^CMD\b/m, 'the layered image had no CMD once it set its ENTRYPOINT');
+  for (const label of ['agent-bundle', 'agent.claude.version', 'agent.codex.version', 'agent.antigravity.version', 'agent.opencode.version', 'agent.vibe.version', 'agent-tank.version']) {
+    assert.match(finalStage, new RegExp(`dev\\.propr\\.${label.replace(/\./g, '\\.')}=`), `the published stage must label ${label}`);
+  }
+  assert.doesNotMatch(dockerfile.slice(0, dockerfile.indexOf(FINAL_STAGE)), /^LABEL\b/m, 'labels set before scratch are dropped');
 });
 
 test('every agent image smoke rejects overlayfs whiteouts in the built image', () => {
