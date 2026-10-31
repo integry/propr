@@ -13,6 +13,7 @@ import {
 } from '../demoMode.js';
 import { DEMO_LIVE_DATA_UNAVAILABLE_CODE } from '../permissionGuards.js';
 import { DEMO_VIEWER_MANAGEMENT_READS } from '../demoViewerRoutes.js';
+import { createRequestRateLimiter } from '../requestRateLimits.js';
 import { createExtensionProfileRoutes } from '../routes/extensionProfileRoutes.js';
 import { createManagementRouteEntries, registerRouteEntries, type RouteEntry } from '../routeRegistry.js';
 
@@ -41,9 +42,16 @@ function managementRoutes(): RouteEntry[] {
   });
 }
 
+/** Every fixture app is rate limited first, as server.ts limits /api before authorization. */
+function rateLimitedApp() {
+  const app = express();
+  app.use(createRequestRateLimiter({ identifier: 'demo-viewer-test-fixture', limit: 1000, windowMs: 60_000 }));
+  return app;
+}
+
 /** The demo request path as server.ts assembles it: write barrier, demo identity, then the routes. */
 function createDemoApp(options: { writeBarrier: boolean }) {
-  const app = express();
+  const app = rateLimitedApp();
   if (options.writeBarrier) app.use('/api', demoModeReadOnlyMiddleware);
   app.use(async (req, _res, next) => {
     req.user = getDemoUser();
@@ -134,7 +142,7 @@ describe('demo viewer authorization', () => {
 
   test('a demo-shaped authorization unlocks nothing with demo mode off', async () => {
     configureDemoMode(false);
-    const app = express();
+    const app = rateLimitedApp();
     app.use((req, _res, next) => {
       req.user = getDemoUser();
       req.authorization = { role: 'member', permissions: [...INSTANCE_PERMISSIONS], source: 'demo' };
@@ -154,7 +162,7 @@ describe('demo viewer authorization', () => {
     configureDemoMode(true);
     const store = new Proxy({}, { get: () => () => { throw new Error('demo must not read extension profiles'); } });
     const routes = createExtensionProfileRoutes(store as never);
-    const app = express();
+    const app = rateLimitedApp();
     app.use((req, _res, next) => {
       req.user = getDemoUser();
       req.authorization = { role: 'member', permissions: [...INSTANCE_PERMISSIONS], source: 'demo' };
