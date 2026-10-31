@@ -229,7 +229,9 @@ describe('agent version management', () => {
         const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
 
         assert.match(agentDockerfile, /^ARG AGENT_PLATFORM=linux\/amd64$/m);
-        assert.match(agentDockerfile, /^FROM --platform=\$\{AGENT_PLATFORM\} node:22-bookworm-slim AS agent-base$/m);
+        assert.match(agentDockerfile, /^ARG AGENT_NODE_VERSION=22\.\d+\.\d+$/m);
+        assert.match(agentDockerfile, /^FROM --platform=\$\{AGENT_PLATFORM\} node:\$\{AGENT_NODE_VERSION\}-bookworm-slim AS agent-base$/m);
+        assert.match(agentDockerfile, /^FROM --platform=\$\{AGENT_PLATFORM\} scratch AS final$/m);
         assert.match(agentDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
         assert.match(agentDockerfile, /^ARG GITHUBCLI_KEYRING_SHA256=[0-9a-f]{64}$/m);
         assert.match(agentDockerfile, /^ARG CURL_VERSION_PREFIX=/m);

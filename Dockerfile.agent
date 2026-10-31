@@ -2,16 +2,33 @@
 #
 # The common Debian runtime is an internal stage. Each CLI is installed in its
 # own stage so changing one version preserves the build cache for every other
-# agent. Only this final image is published.
+# agent. Only the final image is published.
+#
+# The published image must contain no overlayfs whiteouts (`.wh.*` entries).
+# Some builders' overlayfs differs mark every directory a layer creates as
+# opaque (`.wh..wh..opq`), including RUN outputs and COPY destinations, and
+# snapshotters that cannot set trusted overlay xattrs (rootless Docker,
+# OrbStack's containerd image store, userxattr overlay mounts) refuse to unpack
+# such layers. So the whole image is assembled in `agent-image-build` and the
+# published `final` stage is that filesystem copied into one layer on scratch:
+# with no lower layer there is nothing to white out.
+# scripts/check-image-whiteouts.sh enforces this on the built image.
 
 # The managed agent image is currently linux/amd64. Debian package pins below
 # include amd64 binNMU suffixes, so do not build this Dockerfile for arm64
 # until those pins are split per architecture.
 ARG AGENT_PLATFORM=linux/amd64
 ARG UV_VERSION=0.8.17
+# The node base is pinned to an exact release because `final` re-declares that
+# image's ENV (NODE_VERSION, YARN_VERSION) after flattening. Bump both
+# together; agent-base fails if they disagree with the base image.
+ARG AGENT_NODE_VERSION=22.23.4
+ARG AGENT_YARN_VERSION=1.22.22
 FROM --platform=${AGENT_PLATFORM} ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 
-FROM --platform=${AGENT_PLATFORM} node:22-bookworm-slim AS agent-base
+FROM --platform=${AGENT_PLATFORM} node:${AGENT_NODE_VERSION}-bookworm-slim AS agent-base
+ARG AGENT_NODE_VERSION
+ARG AGENT_YARN_VERSION
 
 # These package prefixes intentionally constrain the apt install set while
 # allowing Debian security rebuild suffixes to move forward in the live archive.
@@ -35,6 +52,9 @@ ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057
 
 # GitHub publishes this keyring as a binary .gpg file; no dearmor step is needed.
 RUN set -eu; \
+    test "$NODE_VERSION" = "$AGENT_NODE_VERSION"; \
+    test "$YARN_VERSION" = "$AGENT_YARN_VERSION"; \
+    test "$(node --version)" = "v$AGENT_NODE_VERSION"; \
     apt_version_arg() { \
         package="$1"; \
         prefix="$2"; \
@@ -211,22 +231,7 @@ RUN set -eu; \
     agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
 
 
-FROM agent-base AS final
-ARG CLAUDE_CLI_VERSION=2.1.293
-ARG CODEX_CLI_VERSION=0.160.0
-ARG ANTIGRAVITY_CLI_VERSION=1.4.0
-ARG OPENCODE_CLI_VERSION=1.19.5
-ARG VIBE_CLI_VERSION=2.25.8
-ARG AGENT_TANK_CLI_VERSION=0.10.0
-
-LABEL dev.propr.agent-bundle="true" \
-      dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
-      dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
-      dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
-      dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
-      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}" \
-      dev.propr.agent-tank.version="${AGENT_TANK_CLI_VERSION}"
-
+FROM agent-base AS agent-image-build
 USER root
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
@@ -291,5 +296,44 @@ RUN git config --global user.name "ProPR Agent Bot" \
     && git config --global init.defaultBranch main \
     && git config --global --add safe.directory '*'
 
+WORKDIR /home/node/workspace
+
+
+# The published image: the whole filesystem above in one layer, so no
+# whiteout from any stage survives. Ownership and modes are kept. No image
+# config survives `FROM scratch`, so it is re-declared exactly as the layered
+# image had it: ENV, USER, WORKDIR, ENTRYPOINT and the bundle labels. CMD stays
+# unset, as it was after the layered image set its own ENTRYPOINT. The platform
+# pin keeps a bare `FROM scratch` from labelling the amd64 contents with the
+# build host's architecture.
+FROM --platform=${AGENT_PLATFORM} scratch AS final
+ARG AGENT_NODE_VERSION
+ARG AGENT_YARN_VERSION
+ARG CLAUDE_CLI_VERSION=2.1.293
+ARG CODEX_CLI_VERSION=0.160.0
+ARG ANTIGRAVITY_CLI_VERSION=1.4.0
+ARG OPENCODE_CLI_VERSION=1.19.5
+ARG VIBE_CLI_VERSION=2.25.8
+ARG AGENT_TANK_CLI_VERSION=0.10.0
+
+LABEL dev.propr.agent-bundle="true" \
+      dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
+      dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
+      dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
+      dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
+      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}" \
+      dev.propr.agent-tank.version="${AGENT_TANK_CLI_VERSION}"
+
+COPY --from=agent-image-build / /
+
+ENV PATH=/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    NODE_VERSION=${AGENT_NODE_VERSION} \
+    YARN_VERSION=${AGENT_YARN_VERSION} \
+    NODE_OPTIONS="--max-old-space-size=8192" \
+    UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+USER node
 WORKDIR /home/node/workspace
 ENTRYPOINT ["/usr/bin/tini", "--", "/home/node/agent-entrypoint.sh"]

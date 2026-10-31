@@ -31,6 +31,7 @@ on:
       - 'packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts'
       - 'scripts/*-entrypoint.sh'
       - 'scripts/build-images.sh'
+      - 'scripts/check-image-whiteouts.sh'
       - 'Dockerfile.agent'
       - 'test/egressProxyContainerSmoke.test.ts'
       - 'test/agentProviderEgress.test.ts'
@@ -85,6 +86,12 @@ jobs:
         # Same build as the preview pipeline: a local full-SHA tag, never pushed. The root
         # dependency tree installed above feeds the bundled third-party notices.
         run: ./scripts/build-images.sh --sha-only --only agent --platform linux/amd64
+
+      - name: No agent image layer contains an overlayfs whiteout
+        # Rootless, userxattr overlay and OrbStack containerd snapshotters refuse such layers (#3399).
+        # Only for the image built here: published images before 0.9.1 still carry them.
+        if: inputs.agent_image == ''
+        run: ./scripts/check-image-whiteouts.sh "$PROPR_TEST_AGENT_IMAGE"
 
       - name: Proxy, socket mount and bridge in a real container
         run: npx tsx --test test/egressProxyContainerSmoke.test.ts
