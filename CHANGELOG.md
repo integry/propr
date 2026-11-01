@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-01
+
 ### Added
 
 - **macOS desktop preview releases without an Apple Developer account**: a new manual, main-only
@@ -72,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tooling (ESLint, nodemon, the deb/rpm makers) still uses older minimatch until
   those upstreams update; see
   [dependency audit exceptions](docs/dependency-audit-exceptions.md).
+- **joi denial of service in the docs build (GHSA-4528-x5fx-h6hg)**: the
+  documentation site's build tooling now resolves `joi` 17.13.9. Only the docs
+  build used the affected version; the runtime packages and images never did.
 
 ## [0.9.0] - 2026-10-30
 
@@ -1133,7 +1138,8 @@ ProPR 0.8.15 is the first public release.
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
-[Unreleased]: https://github.com/integry/propr/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/integry/propr/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/integry/propr/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/integry/propr/compare/v0.8.15...v0.9.0
 [0.8.15]: https://github.com/integry/propr/compare/v0.8.14...v0.8.15
 [0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14
