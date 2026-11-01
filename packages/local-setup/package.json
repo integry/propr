@@ -1,6 +1,6 @@
 {
   "name": "@propr/local-setup",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "UI-agnostic local ProPR setup state machine",
   "license": "Apache-2.0",
   "type": "module",
@@ -14,7 +14,7 @@
     "test": "npx tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@propr/shared": "^0.9.0"
+    "@propr/shared": "^0.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

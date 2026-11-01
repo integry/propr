@@ -362,7 +362,7 @@ Contributions are welcome — bug reports, documentation fixes, and code. Start 
 
 ## Status
 
-The current release is **0.9.0** ([changelog](CHANGELOG.md)). ProPR is pre-1.0 and in daily use since May 2025 on its author's products, including this repository, where most pull requests are opened by ProPR itself. The test suite runs nightly on `main`.
+The current release is **0.9.1** ([changelog](CHANGELOG.md)). ProPR is pre-1.0 and in daily use since May 2025 on its author's products, including this repository, where most pull requests are opened by ProPR itself. The test suite runs nightly on `main`.
 
 Current boundaries, so you can tell quickly whether it fits:
 

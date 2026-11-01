@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
+  runners `scripts/ci-install-chromium.sh` bounds apt with
+  `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each
+  `playwright install --with-deps chromium` attempt to 3 minutes and retries a
+  timed-out attempt once. Any other failure still fails the step. Every
+  workflow step that installs Chromium has a 10-minute `timeout-minutes`, and
+  `.propr/setup.sh` bounds its browser download. The self-hosted path is
+  unchanged.
+
+## [0.9.1] - 2026-11-01
+
 ### Added
 
+- **macOS desktop preview releases without an Apple Developer account**: a new manual, main-only
+  `desktop-macos-preview.yml` workflow builds unsigned ProPR Desktop DMG and ZIP packages for Intel (`x64`) and Apple
+  Silicon (`arm64`) on native macOS runners. It builds from a frozen `source_revision`, pins the `propr/app`, `propr/ui`
+  and `propr/agent` runtime digests, and applies the existing local ad-hoc signature on arm64. It runs the existing
+  unsigned-package validation and native lifecycle checks, and writes `SHA256SUMS` plus a GitHub build provenance
+  attestation for every asset. It stages a draft first, then publishes it as a GitHub pre-release (never the latest
+  release) through the protected `desktop-macos-preview-publication` environment, tagged
+  `desktop-macos-preview-v<version>-<commit>`. The workflow uses no secrets, and these builds never self-update. The
+  [desktop guide](docs/docs/operations/desktop-application.md#macos-preview-builds) explains where to download them and
+  how to verify them with `shasum -a 256 -c` and `gh attestation verify`. The Linux preview now binds its identity with
+  the same shared script.
 - **Hosted UI release deploy**: the release workflow now deploys
   `app.propr.dev` (the `propr-hosted-ui` Worker) after the GitHub release is
   published, for tag pushes and manual releases. Until now it was deployed only
@@ -51,14 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with other agent bundle tags, so pulling a new bundle downloads the whole image. The release, preview-agent and
   restricted-network smokes now `docker save` the built image and fail if any
   layer contains a `.wh.` entry (`scripts/check-image-whiteouts.sh`).
-- **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
-  runners `scripts/ci-install-chromium.sh` bounds apt with
-  `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each
-  `playwright install --with-deps chromium` attempt to 3 minutes and retries a
-  timed-out attempt once. Any other failure still fails the step. Every
-  workflow step that installs Chromium has a 10-minute `timeout-minutes`, and
-  `.propr/setup.sh` bounds its browser download. The self-hosted path is
-  unchanged.
 
 ### Security
 
@@ -69,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tooling (ESLint, nodemon, the deb/rpm makers) still uses older minimatch until
   those upstreams update; see
   [dependency audit exceptions](docs/dependency-audit-exceptions.md).
+- **joi denial of service in the docs build (GHSA-4528-x5fx-h6hg)**: the
+  documentation site's build tooling now resolves `joi` 17.13.9. Only the docs
+  build used the affected version; the runtime packages and images never did.
 
 ## [0.9.0] - 2026-10-30
 
@@ -1130,7 +1149,8 @@ ProPR 0.8.15 is the first public release.
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
-[Unreleased]: https://github.com/integry/propr/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/integry/propr/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/integry/propr/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/integry/propr/compare/v0.8.15...v0.9.0
 [0.8.15]: https://github.com/integry/propr/compare/v0.8.14...v0.8.15
 [0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14

@@ -22,7 +22,10 @@ describe('desktop Linux preview workflow', () => {
     assert.match(job('identity', 'runtime-preflight'), /DISPATCH_REF.*github\.ref/);
     assert.match(job('identity', 'runtime-preflight'), /refs\/heads\/main/);
     assert.match(job('identity', 'runtime-preflight'), /WORKFLOW_SHA: \$\{\{ github\.sha \}\}/);
-    assert.match(job('identity', 'runtime-preflight'), /merge-base --is-ancestor "\$REQUESTED_SHA" "\$WORKFLOW_SHA"/);
+    // Source binding runs from the reviewed main checkout through the script
+    // shared with the macOS preview (desktop-preview-identity.test.mjs).
+    assert.match(job('identity', 'runtime-preflight'), /ref: \$\{\{ github\.sha \}\}\n\s+fetch-depth: 0/);
+    assert.match(job('identity', 'runtime-preflight'), /node apps\/desktop\/scripts\/desktop-preview-identity\.mjs --channel linux >> "\$GITHUB_OUTPUT"/);
     assert.equal(workflow.match(/runner: ubuntu-24\.04(?:-arm)?/g)?.length, 2);
     assert.doesNotMatch(workflow, /runs-on: (?:macos|windows)/);
     assert.doesNotMatch(workflow, /secrets\./);
@@ -33,8 +36,8 @@ describe('desktop Linux preview workflow', () => {
   test('builds the exact x64/arm64 DEB/RPM profile with source-aligned published runtime images', () => {
     const packageJob = job('package', 'finalize');
     assert.match(workflow, /verify-release/);
-    assert.match(workflow, /propr\/app:\$\{REQUESTED_SHA\}@sha256:/);
-    assert.match(workflow, /propr\/ui:\$\{REQUESTED_SHA\}@sha256:/);
+    assert.match(workflow, /RUNTIME_APP_IMAGE: \$\{\{ inputs\.runtime_app_image \}\}/);
+    assert.match(workflow, /RUNTIME_UI_IMAGE: \$\{\{ inputs\.runtime_ui_image \}\}/);
     assert.match(packageJob, /- arch: x64\n\s+runner: ubuntu-24\.04/);
     assert.match(packageJob, /- arch: arm64\n\s+runner: ubuntu-24\.04-arm/);
     assert.match(packageJob, /PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1/);
@@ -48,9 +51,8 @@ describe('desktop Linux preview workflow', () => {
     const packageJob = job('package', 'finalize');
     const finalize = job('finalize', 'stage-draft');
     assert.match(workflow, /runtime_agent_image:\n\s+description: Stage only - propr\/agent:<source SHA>@sha256:<digest> published linux\/amd64/);
-    assert.match(identity, /agent_pattern="propr\/agent:\$\{REQUESTED_SHA\}@sha256:"/);
-    assert.match(identity, /\[\[ "\$RUNTIME_AGENT_IMAGE" =~ \^\$\{agent_pattern\}\[a-f0-9\]\{64\}\$ \]\] \|\| \{/);
-    assert.match(identity, /echo "runtime_agent_image=\$RUNTIME_AGENT_IMAGE"/);
+    assert.match(identity, /RUNTIME_AGENT_IMAGE: \$\{\{ inputs\.runtime_agent_image \}\}/);
+    assert.match(identity, /runtime_agent_image: \$\{\{ steps\.identity\.outputs\.runtime_agent_image \}\}/);
     assert.match(preflight, /--agent-image "\$RUNTIME_AGENT_IMAGE"/);
     assert.match(packageJob, /desktop-runtime-manifest\.mjs release[\s\S]+--agent-image "\$RUNTIME_AGENT_IMAGE"/);
     assert.match(packageJob, /PROPR_DESKTOP_RUNTIME_AGENT_IMAGE: \$\{\{ needs\.identity\.outputs\.runtime_agent_image \}\}/);

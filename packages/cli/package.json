@@ -1,6 +1,6 @@
 {
   "name": "@propr/cli",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "CLI for interacting with the ProPR backend",
   "license": "Apache-2.0",
   "type": "module",
@@ -36,8 +36,8 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
-    "@propr/local-setup": "^0.9.0",
-    "@propr/shared": "^0.9.0",
+    "@propr/local-setup": "^0.9.1",
+    "@propr/shared": "^0.9.1",
     "commander": "^13.1.0",
     "dotenv": "^16.5.0",
     "ink": "^7.0.5",

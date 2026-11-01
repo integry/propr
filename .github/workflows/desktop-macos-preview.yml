@@ -1,0 +1,484 @@
+name: Desktop macOS Preview Release
+
+# Unsigned macOS preview: no Apple Developer ID, notarization, signing or update
+# secret exists anywhere in this workflow. Users verify downloads with
+# SHA256SUMS and GitHub build provenance attestations instead. The production
+# path (desktop-release-guard.yml, desktop-v* tags) is separate and unchanged.
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full lowercase commit SHA already reachable from main
+        required: true
+        type: string
+      runtime_app_image:
+        description: propr/app:<source SHA>@sha256:<digest> published multi-arch image
+        required: true
+        type: string
+      runtime_ui_image:
+        description: propr/ui:<source SHA>@sha256:<digest> published multi-arch image
+        required: true
+        type: string
+      runtime_agent_image:
+        description: propr/agent:<source SHA>@sha256:<digest> published linux/amd64 managed-agent image
+        required: true
+        type: string
+
+env:
+  PROPR_DESKTOP_GITHUB_CLIENT_ID: ${{ vars.PROPR_DESKTOP_GITHUB_CLIENT_ID }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-macos-preview-${{ inputs.source_revision }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Bind macOS preview identity to main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.identity.outputs.release_sha }}
+      version: ${{ steps.identity.outputs.version }}
+      tag: ${{ steps.identity.outputs.tag }}
+      source_date_epoch: ${{ steps.identity.outputs.source_date_epoch }}
+      runtime_app_image: ${{ steps.identity.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.identity.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.identity.outputs.runtime_agent_image }}
+    steps:
+      - name: Require dispatch of the reviewed workflow from main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != refs/heads/main ]; then
+            echo 'Dispatch Desktop macOS Preview Release from the main branch workflow only.' >&2
+            exit 1
+          fi
+
+      - name: Checkout the reviewed main revision with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Shared with the Linux preview: binds the frozen source to main and
+      # validates the three digest-pinned runtime images.
+      - name: Validate immutable source, version, and preview runtime inputs
+        id: identity
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          REQUESTED_SHA: ${{ inputs.source_revision }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          RUNTIME_APP_IMAGE: ${{ inputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ inputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ inputs.runtime_agent_image }}
+        run: |
+          set -euo pipefail
+          node apps/desktop/scripts/desktop-preview-identity.mjs --channel macos >> "$GITHUB_OUTPUT"
+
+  runtime-preflight:
+    name: Verify published preview runtime manifests
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact preview source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Verify app/UI contain x64 and arm64 and the managed agent is source-bound linux/amd64
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+          RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
+        run: |
+          node apps/desktop/scripts/desktop-runtime-manifest.mjs verify-release \
+            --source-revision "$RELEASE_SHA" \
+            --app-image "$RUNTIME_APP_IMAGE" \
+            --ui-image "$RUNTIME_UI_IMAGE" \
+            --agent-image "$RUNTIME_AGENT_IMAGE"
+
+  package:
+    name: Build unsigned macOS preview ${{ matrix.arch }} DMG/ZIP
+    needs: [identity, runtime-preflight]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    permissions:
+      contents: read
+    env:
+      PROPR_DESKTOP_VERSION: ${{ needs.identity.outputs.version }}
+      PROPR_DESKTOP_RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+      RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
+      RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+      RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
+      PROPR_DESKTOP_RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
+      PREVIEW_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Prove preview packaging has no signing, notarization, or update configuration
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const forbidden = Object.keys(process.env).filter(name =>
+            /^(?:PROPR_DESKTOP_(?:MAC_|APPLE_|WINDOWS_CERTIFICATE|UPDATE_|ENABLE_UPDATES|CODE_SIGNED|PRODUCTION_RELEASE|REQUIRE_SIGNED_ARTIFACTS|ACTUAL_)|APPLE_API_KEY|APPLE_ID|APPLE_APP_SPECIFIC_PASSWORD|CSC_LINK|CSC_KEY_PASSWORD)/.test(name));
+          if (forbidden.length) throw new Error(`Signing or update configuration reached macOS preview packaging: ${forbidden.join(', ')}`);
+          NODE
+
+      - name: Checkout exact preview source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Set up native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify native macOS runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e 'if(process.platform!=="darwin"||process.arch!==process.env.EXPECTED_ARCH) throw new Error(`Expected darwin-${process.env.EXPECTED_ARCH}, got ${process.platform}-${process.arch}`)'
+
+      - name: Audit and install locked dependencies
+        shell: bash
+        run: |
+          npm run audit:runtime
+          npm run desktop:audit:packaging
+          node apps/desktop/scripts/retry-transient-download.mjs -- npm ci
+
+      - name: Generate the exact source-aligned published runtime manifest
+        shell: bash
+        run: |
+          runtime_manifest="$RUNNER_TEMP/propr-macos-preview-runtime/manifest.json"
+          node apps/desktop/scripts/desktop-runtime-manifest.mjs release \
+            --source-revision "$PROPR_DESKTOP_RELEASE_SHA" \
+            --app-image "$RUNTIME_APP_IMAGE" \
+            --ui-image "$RUNTIME_UI_IMAGE" \
+            --agent-image "$RUNTIME_AGENT_IMAGE" \
+            --api-compatibility 2026-06-27 \
+            --output "$runtime_manifest"
+          echo "PROPR_DESKTOP_RUNTIME_MANIFEST=$runtime_manifest" >> "$GITHUB_ENV"
+
+      - name: Typecheck and test the unsigned desktop runtime
+        shell: bash
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:typecheck
+          npm run desktop:test
+
+      # The forge postPackage hook applies the local ad-hoc signature to the
+      # unsigned arm64 bundle before the ZIP and DMG are made.
+      - name: Build unsigned DMG and ZIP packages
+        shell: bash
+        run: |
+          test -z "${PROPR_DESKTOP_ENABLE_UPDATES:-}"
+          test -z "${PROPR_DESKTOP_MAC_SIGNING_IDENTITY:-}"
+          node apps/desktop/scripts/retry-transient-download.mjs --attempts 5 --backoff-ms 30000 \
+            -- npm run make -w @propr/desktop -- --arch="$PREVIEW_ARCH"
+          npm run make:dmg -w @propr/desktop -- --arch="$PREVIEW_ARCH"
+
+      - name: Verify version, runtime binding, and absence of a Developer ID signature
+        shell: bash
+        run: |
+          application="apps/desktop/out/propr-desktop-darwin-$PREVIEW_ARCH/propr-desktop.app"
+          test "$(plutil -extract CFBundleShortVersionString raw "$application/Contents/Info.plist")" = "$PROPR_DESKTOP_VERSION"
+          if codesign --display --verbose=4 "$application" 2>&1 | grep -E '^(Authority|TeamIdentifier)=' | grep -v '^TeamIdentifier=not set$'; then
+            echo 'The macOS preview must not carry a Developer ID signature.' >&2
+            exit 1
+          fi
+          node --input-type=module -e '
+            import { readDesktopRuntimeManifest } from "./apps/desktop/scripts/desktop-runtime-manifest.mjs";
+            const manifest = readDesktopRuntimeManifest(process.argv[1], {
+              sourceRevision: process.env.PROPR_DESKTOP_RELEASE_SHA,
+              distribution: "published",
+              agentImage: process.env.RUNTIME_AGENT_IMAGE,
+            });
+            if (manifest.images.agent !== process.env.RUNTIME_AGENT_IMAGE) throw new Error("Packaged launcher manifest does not bind the managed agent image");
+          ' "$application/Contents/Resources/manifest.json"
+          npm run icons:verify-packaged -w @propr/desktop -- darwin "$(pwd)/$application"
+
+      - name: Verify final local ARM64 signatures and tamper rejection
+        if: matrix.arch == 'arm64'
+        shell: bash
+        env:
+          PROPR_DESKTOP_TEST_LOCAL_SIGNATURE_APP: apps/desktop/out/propr-desktop-darwin-arm64/propr-desktop.app
+        run: node --test apps/desktop/scripts/sign-darwin-local-package.test.mjs
+
+      - name: Inspect the packaged application and native packages
+        shell: bash
+        run: |
+          npm run desktop:smoke:inspect
+          node apps/desktop/scripts/verify-darwin-image.mjs "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+          unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
+
+      - name: Prove private-snapshot native DMG mounting is available
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile macos-preview-v1 \
+            --make-directory apps/desktop/out/make \
+            --arch "$PREVIEW_ARCH"
+
+      - name: Stage architecture-verified preview packages
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs stage \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile macos-preview-v1 \
+            --platform darwin \
+            --arch "$PREVIEW_ARCH" \
+            --make-directory apps/desktop/out/make \
+            --output "desktop-macos-preview-$PREVIEW_ARCH"
+
+      # Installs private copies of the staged DMG/ZIP; the staged bytes are
+      # re-hashed against their fragment in finalize.
+      - name: Exercise staged native install, deep-link, relaunch, and removal lifecycle
+        shell: bash
+        run: |
+          lifecycle_log="$(mktemp)"
+          for attempt in 1 2; do
+            if bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh \
+              "$PREVIEW_ARCH" native-lifecycle "$PROPR_DESKTOP_VERSION" \
+              "desktop-macos-preview-$PREVIEW_ARCH" 2>&1 | tee "$lifecycle_log"; then
+              break
+            else
+              status=$?
+            fi
+            # Same single retry as PR validation: only an inconclusive
+            # LaunchServices postcondition deadline is retried.
+            if [ "$attempt" -eq 2 ] \
+              || ! grep -qE '^(NativeLifecycleFailure|[[:space:]]*Error): Native lifecycle cleanup failed: launchservices-postcondition \[result:COMMAND_DEADLINE\]$' "$lifecycle_log"; then
+              exit "$status"
+            fi
+            echo '::warning::The macOS LaunchServices postcondition query hit its deadline; rerunning the native lifecycle once.'
+          done
+
+      - name: Upload immutable preview fragment
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-macos-preview-${{ matrix.arch }}-${{ github.run_id }}
+          path: desktop-macos-preview-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 30
+
+  finalize:
+    name: Finalize macOS preview identity and checksums
+    needs: [identity, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact preview source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install cross-format DMG and ZIP inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes p7zip-full unzip
+
+      - name: Download both native package fragments
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-macos-preview-*-${{ github.run_id }}
+          path: desktop-macos-preview-fragments
+
+      - name: Revalidate matrix and create preview-only metadata
+        env:
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+          RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
+          SOURCE_DATE_EPOCH: ${{ needs.identity.outputs.source_date_epoch }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$RELEASE_VERSION" \
+            --profile macos-preview-v1 \
+            --input desktop-macos-preview-fragments \
+            --output desktop-macos-preview-validated
+          node apps/desktop/scripts/macos-preview-release.mjs prepare \
+            --version "$RELEASE_VERSION" \
+            --source-revision "$RELEASE_SHA" \
+            --runtime-app-image "$RUNTIME_APP_IMAGE" \
+            --runtime-ui-image "$RUNTIME_UI_IMAGE" \
+            --runtime-agent-image "$RUNTIME_AGENT_IMAGE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --input desktop-macos-preview-validated \
+            --output desktop-macos-preview-final
+          (cd desktop-macos-preview-final && sha256sum --check --strict SHA256SUMS)
+          test ! -e desktop-macos-preview-final/desktop-release.json
+          test ! -e desktop-macos-preview-final/desktop-release.json.sig
+
+      - name: Upload the exact draft candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-macos-preview-final-${{ needs.identity.outputs.tag }}-${{ github.run_id }}
+          path: desktop-macos-preview-final
+          if-no-files-found: error
+          retention-days: 90
+
+  # Only this job can mint an OIDC token. It runs no repository code: it checks
+  # the finalized bytes against SHA256SUMS and attests every asset.
+  attest:
+    name: Attest macOS preview build provenance
+    needs: [identity, finalize]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing certificate for the attestations
+      attestations: write # store the provenance attestations in this repository
+    steps:
+      - name: Download the exact finalized draft candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-macos-preview-final-${{ needs.identity.outputs.tag }}-${{ github.run_id }}
+          path: desktop-macos-preview-final
+
+      - name: Recheck every finalized asset against SHA256SUMS
+        working-directory: desktop-macos-preview-final
+        env:
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s\n' INSTALL.md SHA256SUMS macos-preview.json \
+            "ProPR-Desktop-$RELEASE_VERSION-macos-arm64.dmg" "ProPR-Desktop-$RELEASE_VERSION-macos-arm64.zip" \
+            "ProPR-Desktop-$RELEASE_VERSION-macos-x64.dmg" "ProPR-Desktop-$RELEASE_VERSION-macos-x64.zip" | LC_ALL=C sort)"
+          test "$(find . -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)" = "$expected"
+          test "$(find . -mindepth 1 | wc -l)" -eq 7
+          test "$(wc -l < SHA256SUMS)" -eq 6
+          sha256sum --check --strict SHA256SUMS
+
+      - name: Attest build provenance for every preview asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: desktop-macos-preview-final/*
+
+  stage-draft:
+    name: Stage private macOS preview draft release
+    needs: [identity, finalize, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # create and upload to the draft release only
+    steps:
+      - name: Checkout the reviewed publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Download the exact finalized draft candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-macos-preview-final-${{ needs.identity.outputs.tag }}-${{ github.run_id }}
+          path: desktop-macos-preview-final
+
+      - name: Create or safely resume a draft prerelease without publishing it
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+        run: |
+          node apps/desktop/scripts/macos-preview-release.mjs stage-draft \
+            --version "$RELEASE_VERSION" \
+            --source-revision "$RELEASE_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --directory desktop-macos-preview-final
+
+  publish:
+    name: Publish macOS preview prerelease
+    needs: [identity, stage-draft]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: desktop-macos-preview-publication
+    permissions:
+      contents: write # flip the verified draft to a published prerelease
+      attestations: read # gh attestation verify
+    steps:
+      - name: Require explicit protected macOS preview publication authority
+        env:
+          AUTHORIZED: ${{ vars.PROPR_DESKTOP_MACOS_PREVIEW_PUBLICATION_AUTHORIZED }}
+        run: test "$AUTHORIZED" = 1
+
+      - name: Checkout the reviewed publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Download the exact finalized draft candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-macos-preview-final-${{ needs.identity.outputs.tag }}-${{ github.run_id }}
+          path: desktop-macos-preview-final
+
+      - name: Verify the provenance attestation of every asset as a user would
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for asset in desktop-macos-preview-final/*; do
+            gh attestation verify "$asset" \
+              --repo "$REPOSITORY" \
+              --signer-workflow "$REPOSITORY/.github/workflows/desktop-macos-preview.yml" \
+              --source-ref refs/heads/main \
+              --deny-self-hosted-runners
+          done
+
+      - name: Reverify draft bytes and publish as a prerelease, never latest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+        run: |
+          node apps/desktop/scripts/macos-preview-release.mjs publish-draft \
+            --version "$RELEASE_VERSION" \
+            --source-revision "$RELEASE_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --directory desktop-macos-preview-final

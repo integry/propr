@@ -105,7 +105,7 @@ scope and platform-specific scenario expectations are unchanged.
 
 ### Source-built Linux local runtime
 
-The checked-in `0.9.0` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
+The checked-in `0.9.1` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
 commit-scoped local tags, generate its explicit local-only manifest, smoke the discovery/auth capability surface in
 owned ephemeral containers, and package the desktop against that manifest:
 
@@ -487,6 +487,57 @@ socket/filesystem permissions would need a threat-model review plus installed-pa
 Unvalidated classic confinement, broad filesystem/socket access, or portal fallbacks would weaken the current boundary,
 so neither format blocks DEB/RPM delivery and neither is emitted by the preview workflow.
 
+### Independent macOS preview channel
+
+The manual **Desktop macOS Preview Release** workflow (`desktop-macos-preview.yml`) distributes unsigned macOS builds
+without an Apple Developer account. It is independent of the production `desktop-v*` workflow and its
+`desktop-release`/`desktop-release-preflight` environments, reads no secret at all, and never notarizes or Developer ID
+signs anything. It runs only on manual dispatch from `main` and takes the same frozen `source_revision` and three
+digest-pinned runtime image references as the Linux preview. Identity binding (`scripts/desktop-preview-identity.mjs`)
+and the registry preflight (`desktop-runtime-manifest.mjs verify-release`) are shared with the Linux preview; the
+identity step also refuses a source revision that predates the macOS preview tooling.
+
+```sh
+gh workflow run desktop-macos-preview.yml --ref main \
+  -f source_revision="$SOURCE_SHA" \
+  -f runtime_app_image="propr/app:$SOURCE_SHA@sha256:<app-manifest-digest>" \
+  -f runtime_ui_image="propr/ui:$SOURCE_SHA@sha256:<ui-manifest-digest>" \
+  -f runtime_agent_image="propr/agent:$SOURCE_SHA@sha256:<agent-manifest-digest>"
+```
+
+One run performs every stage, and any failure stops before publication:
+
+1. `package` builds `ProPR-Desktop-<version>-macos-{x64,arm64}.{dmg,zip}` on native `macos-15-intel` and `macos-15`
+   runners from the frozen SHA with the runtime manifest bound to the pinned digests. The forge `postPackage` hook
+   applies the local ad-hoc signature to the arm64 bundle. The job then runs the desktop typecheck and tests, the
+   packaged icon, version and runtime-manifest checks, the arm64 signature/tamper test, `desktop:smoke:inspect`, DMG and
+   ZIP inspection, the private-snapshot DMG probe, the `macos-preview-v1` staging, and the native install, deep-link,
+   relaunch and removal lifecycle. It also fails if any signing, notarization or update variable reaches it, or if the
+   app carries a Developer ID signature.
+2. `finalize` re-inspects both fragments (`release-artifacts.mjs finalize --profile macos-preview-v1`) and writes
+   `macos-preview.json`, `INSTALL.md` and `SHA256SUMS` (`macos-preview-release.mjs prepare`). The manifest records the
+   source commit, runtime images, `unsigned-preview` trust, `appleDeveloperId: false`, `notarized: false`, and
+   `selfUpdate: false`.
+3. `attest`, the only job with `id-token: write`, rechecks `SHA256SUMS` without running repository code and creates a
+   GitHub build provenance attestation (`actions/attest-build-provenance`) for all seven assets.
+4. `stage-draft` creates or safely resumes the draft prerelease
+   `desktop-macos-preview-v<version>-<first-12-source-SHA>`, uploads the assets and re-downloads them to verify them.
+5. `publish` waits for the `desktop-macos-preview-publication` environment. It runs `gh attestation verify` on every
+   asset, re-downloads and hashes the draft against the attested bundle, refuses an existing tag, and publishes it as a
+   prerelease with `make_latest=false`.
+
+Create the dedicated `desktop-macos-preview-publication` environment before the first run. It is separate from
+`desktop-linux-preview-publication`, so approving one platform never approves the other. Give it required reviewers,
+restrict deployment to `main`, set environment variable `PROPR_DESKTOP_MACOS_PREVIEW_PUBLICATION_AUTHORIZED=1`, and add
+a tag ruleset for `refs/tags/desktop-macos-preview-v*` that blocks updates and deletion. Store no secrets in it. If
+publication is rejected or fails, the run leaves only a draft; delete it or re-run the failed `publish` job.
+
+The workflow must be dispatched from `main`: the identity job refuses any other ref, and attestation verification
+requires `--source-ref refs/heads/main`. A pull-request branch cannot produce a preview. The workflow contract test
+(`scripts/macos-preview-workflow.test.mjs`) covers these properties. Unsigned macOS builds never self-update: without
+`PROPR_DESKTOP_ENABLE_UPDATES=1` and `PROPR_DESKTOP_CODE_SIGNED=1` the main process embeds no update manifest URL and
+never calls the signed update client (`src/macos-preview-update-policy.test.ts`).
+
 The first production release uses the explicit, fail-closed `macos-linux-v1` profile. It produces exactly 10 native
 artifacts for these four targets: `linux-x64`, `linux-arm64`, `darwin-x64`, and `darwin-arm64`.
 
@@ -529,7 +580,7 @@ Debian/Ubuntu DEB installation and native removal:
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.9.0
+VERSION=0.9.1
 sudo apt install "./ProPR-Desktop-${VERSION}-linux-${ARCH}.deb"
 propr-desktop
 xdg-open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
@@ -541,7 +592,7 @@ Fedora/RHEL-family RPM installation, followed by the package-manager-independent
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.9.0
+VERSION=0.9.1
 sudo rpm --install "ProPR-Desktop-${VERSION}-linux-${ARCH}.rpm"
 propr-desktop
 sudo rpm --erase propr-desktop
@@ -557,7 +608,7 @@ removing it:
 
 ```sh
 ARCH=arm64 # use x64 on an Intel Mac
-VERSION=0.9.0
+VERSION=0.9.1
 mount_point="$(mktemp -d)"
 hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" \
   "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg"
