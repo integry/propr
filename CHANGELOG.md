@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
+  runners `scripts/ci-install-chromium.sh` bounds apt with
+  `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each
+  `playwright install --with-deps chromium` attempt to 3 minutes and retries a
+  timed-out attempt once. Any other failure still fails the step. Every
+  workflow step that installs Chromium has a 10-minute `timeout-minutes`, and
+  `.propr/setup.sh` bounds its browser download. The self-hosted path is
+  unchanged.
+
 ## [0.9.1] - 2026-11-01
 
 ### Added

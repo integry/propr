@@ -664,6 +664,8 @@ jobs:
         # `!= 'false'` and not `== 'true'`: an empty decision is never read as
         # permission to skip.
         if: steps.filter.outputs.ui != 'false'
+        # A stalled apt mirror otherwise holds the check for an hour.
+        timeout-minutes: 10
         run: ./scripts/ci-install-chromium.sh
 
       - name: Run PWA and Mobile Browser Smoke Test
