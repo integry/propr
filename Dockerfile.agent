@@ -121,7 +121,7 @@ WORKDIR /home/node/workspace
 
 
 FROM agent-base AS claude-cli
-ARG CLAUDE_CLI_VERSION=2.1.293
+ARG CLAUDE_CLI_VERSION=2.1.316
 USER root
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
     && npm cache clean --force \
@@ -130,7 +130,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
 
 
 FROM agent-base AS codex-cli
-ARG CODEX_CLI_VERSION=0.160.0
+ARG CODEX_CLI_VERSION=0.166.0
 USER root
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
     && npm cache clean --force \
@@ -309,8 +309,8 @@ WORKDIR /home/node/workspace
 FROM --platform=${AGENT_PLATFORM} scratch AS final
 ARG AGENT_NODE_VERSION
 ARG AGENT_YARN_VERSION
-ARG CLAUDE_CLI_VERSION=2.1.293
-ARG CODEX_CLI_VERSION=0.160.0
+ARG CLAUDE_CLI_VERSION=2.1.316
+ARG CODEX_CLI_VERSION=0.166.0
 ARG ANTIGRAVITY_CLI_VERSION=1.4.0
 ARG OPENCODE_CLI_VERSION=1.19.5
 ARG VIBE_CLI_VERSION=2.25.8

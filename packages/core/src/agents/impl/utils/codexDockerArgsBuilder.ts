@@ -76,6 +76,10 @@ export function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] 
         '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.supports_standalone_web_search=true`,
         '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.stream_idle_timeout_ms=${config.idleTimeoutMs}`,
         '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.stream_max_retries=${config.maxRetries}`,
+        // Codex 0.163+ refuses to start `exec` when Daybreak (saved by the TUI's
+        // /daybreak toggle in a mounted config.toml) is on for any provider other
+        // than the built-in `openai`. Older CLIs only warn the key is ignored.
+        '--config', 'daybreak=false',
     ];
 }
 

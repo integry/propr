@@ -92,7 +92,7 @@ export const REVIEW_OUTPUT_TOKEN_RESERVE = 32000;
 /** Conservative window for a model the routed runtime does not know. */
 export const REVIEW_FALLBACK_CONTEXT_WINDOW = 200000;
 
-// Claude Code 2.1.293 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
+// Claude Code 2.1.316 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
 // catalog: models flagged `native_1m` run with a 1,000,000-token window; the
 // other models run with the runtime's 200,000-token default unless the model
 // name carries the `[1m]` suffix. ProPR does not add that suffix, and
@@ -112,7 +112,7 @@ const CLAUDE_CODE_DEFAULT_WINDOW = 200000;
 // window before auto-compacting a session.
 const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 
-// Codex CLI 0.160.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
+// Codex CLI 0.166.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
 // models.json: every listed model has a default `context_window` of 272,000
 // even where the provider advertises a larger model maximum (GPT-6 Astra lists
 // `max_context_window` 872,000 and the ProPR catalog 1,050,000). The larger

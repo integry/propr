@@ -107,12 +107,25 @@ function runCli(command: string, args: string[], env: Record<string, string>, st
     });
 }
 
-/** Tool names from Anthropic `tools` or from Responses API tools, including Codex `additional_tools` input items. */
+/**
+ * Claude Code turns tool search on by default behind a custom ANTHROPIC_BASE_URL
+ * (2.1.304+): deferred tools leave `tools` and are offered by name in a
+ * system-reminder message listing them one per line, loadable through ToolSearch.
+ */
+function deferredToolNames(body: Record<string, unknown>): string[] {
+    const texts = (Array.isArray(body.messages) ? body.messages as Array<{ content?: unknown }> : []).flatMap(message =>
+        typeof message.content === 'string' ? [message.content]
+            : (Array.isArray(message.content) ? message.content as Array<{ text?: unknown }> : []).map(block => String(block.text ?? '')));
+    return texts.flatMap(text => [...text.matchAll(/to load tool schemas before calling them:\n((?:[^\s<]+\n)+)/g)]
+        .flatMap(match => match[1].split('\n').filter(Boolean)));
+}
+
+/** Tool names from Anthropic `tools` (plus deferred ones) or from Responses API tools, including Codex `additional_tools` input items. */
 function toolNames(body: Record<string, unknown>): string[] {
     const walk = (tools: unknown): string[] => (Array.isArray(tools) ? tools : []).flatMap((tool: { type?: string; name?: string; tools?: unknown }) =>
         tool.type === 'namespace' ? walk(tool.tools) : [tool.name ?? tool.type ?? '']);
     const input = Array.isArray(body.input) ? body.input as Array<{ type?: string; tools?: unknown }> : [];
-    return [...walk(body.tools), ...input.filter(item => item.type === 'additional_tools').flatMap(item => walk(item.tools))];
+    return [...walk(body.tools), ...deferredToolNames(body), ...input.filter(item => item.type === 'additional_tools').flatMap(item => walk(item.tools))];
 }
 
 interface RuntimeObservation extends Captured { tools: string[] }
@@ -262,6 +275,37 @@ describe('Codex extension configuration on the pinned CLI', { skip: skipUnlessPi
             const exclusive = await runCli('codex', [...args.slice(0, -1), ...codexToolPolicyArgs({ allowWeb: false, exclusiveMcp: true }).cliArgs, '-c', 'model_provider="operator"', '-'], env, 'Reply OK.');
             assert.equal(requests.length, 0);
             assert.match(exclusive, /[Pp]rovider.*operator.*not found/);
+        } finally { server.close(); rmSync(home, { recursive: true, force: true }); }
+    });
+
+    test('the ProPR provider still starts when a mounted config.toml turned Daybreak on', { timeout: 120_000 }, async () => {
+        const home = mkdtempSync(join(tmpdir(), 'codex-daybreak-'));
+        const requests: string[] = [];
+        const server = createServer(async (req, res) => {
+            await readBody(req); requests.push(req.url ?? '');
+            res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'fixture ends here' } }));
+        });
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+            // What the TUI's /daybreak toggle saves in a host-mounted CODEX_HOME.
+            writeFileSync(join(home, 'config.toml'), 'daybreak = true\n');
+            const env = { PATH: process.env.PATH ?? '', HOME: home, CODEX_HOME: home };
+            // The provider switches buildCodexStreamConfigArgs emits (contextAnalysisRuntime.test.ts
+            // checks the builder includes daybreak=false); importing it here would open the test database.
+            const provider = ['-c', 'model_provider="propr_openai"', '-c', 'model_providers.propr_openai.name="OpenAI"',
+                '-c', 'model_providers.propr_openai.wire_api="responses"', '-c', 'model_providers.propr_openai.requires_openai_auth=true',
+                '-c', 'model_providers.propr_openai.supports_websockets=false', '-c', 'model_providers.propr_openai.stream_max_retries=0',
+                '-c', `model_providers.propr_openai.base_url="${baseUrl}/propr"`, '-c', 'model_providers.propr_openai.request_max_retries=0'];
+            const args = (daybreak: string[]) => ['exec', '--ephemeral', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', '--model', 'gpt-5.5',
+                ...provider, ...daybreak, '-'];
+            const stderr = await runCli('codex', args(['-c', 'daybreak=false']), env, 'Reply OK.');
+            assert.ok(requests.some(url => url.startsWith('/propr/')), stderr);
+            // Without the override the pinned CLI refuses before the first request.
+            requests.length = 0;
+            const refused = await runCli('codex', args([]), env, 'Reply OK.');
+            assert.equal(requests.length, 0);
+            assert.match(refused, /Daybreak requires the OpenAI model provider/);
         } finally { server.close(); rmSync(home, { recursive: true, force: true }); }
     });
 });

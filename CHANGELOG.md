@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stores its secrets. Token scope and setup are in Operations > Hosted UI
   Release Deploy.
 
+### Changed
+
+- **Bundled Claude Code 2.1.316 and Codex 0.166.0**: the `propr/agent` image
+  moves from Claude Code 2.1.293 and Codex 0.160.0. The flags, stream-json and
+  `codex exec --json` events, app-server goal calls, log locations and
+  context windows ProPR relies on are unchanged. Codex runs on ProPR's OpenAI
+  provider now pass `daybreak=false`: Codex 0.163+ refuses to start `exec` when
+  a mounted `config.toml` has Daybreak on for any provider but the built-in
+  `openai` one. Claude Code transcripts also record each API request's system
+  prompt and tools, so `~/.claude/projects` grows faster.
+
 ### Fixed
 
 - **Demo mode shows the whole product again**: with `PROPR_DEMO_MODE=true` the demo
