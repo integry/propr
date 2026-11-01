@@ -169,6 +169,7 @@ jobs:
       # Avoid an apt refresh here: a stalled mirror can exhaust this prerequisite's
       # timeout and leave the unsigned packaging matrix skipped.
       - name: Install real Chromium
+        timeout-minutes: 10
         run: npx playwright install chromium
 
       - name: Run focused stock Chromium existing-target axe regressions
@@ -454,6 +455,7 @@ jobs:
       # Pairing acceptance launches Chromium on this package job's runner too.
       - name: Install Chromium for packaged Linux x64 browser approval
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        timeout-minutes: 10
         run: npx playwright install chromium
 
       - name: Capture packaged Linux x64 visual and accessibility acceptance evidence

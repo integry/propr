@@ -933,7 +933,8 @@ describe('PR check routing', () => {
             encoding: 'utf8',
             env: { PATH: `${root}:${process.env.PATH}`, ...(environment ? { RUNNER_ENVIRONMENT: environment } : {}) },
         }).stdout.trim();
-        assert.equal(install('github-hosted'), 'npx playwright install --with-deps chromium');
+        // The hosted --with-deps path, with its bounded apt retry, is covered
+        // in ciChromiumInstall.test.mjs.
         assert.equal(install('self-hosted'), 'npx playwright install chromium');
         assert.equal(install(undefined), 'npx playwright install chromium');
         for (const [name, block] of routedJobs()) {

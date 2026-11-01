@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with other agent bundle tags, so pulling a new bundle downloads the whole image. The release, preview-agent and
   restricted-network smokes now `docker save` the built image and fail if any
   layer contains a `.wh.` entry (`scripts/check-image-whiteouts.sh`).
+- **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
+  runners `scripts/ci-install-chromium.sh` bounds apt with
+  `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each
+  `playwright install --with-deps chromium` attempt to 3 minutes and retries a
+  timed-out attempt once. Any other failure still fails the step. Every
+  workflow step that installs Chromium has a 10-minute `timeout-minutes`, and
+  `.propr/setup.sh` bounds its browser download. The self-hosted path is
+  unchanged.
 
 ### Security
 

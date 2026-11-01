@@ -183,6 +183,7 @@ jobs:
       # system packages are never installed on the shared host.
       - name: Install Chromium for browser tests
         id: browser
+        timeout-minutes: 10
         run: npm exec --workspace propr-ui -- playwright install chromium
 
       # Matrix entries share GITHUB_RUN_ID and GITHUB_JOB and may run on the
