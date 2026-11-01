@@ -47,8 +47,20 @@ The account ID is shown on the account's **Workers & Pages** overview, and in th
 
 ## Add the token to the GitHub environment
 
+`scripts/setup-hosted-ui-environment.sh` sets up the environment in one step. It is the script that provisioned `hosted-ui-production` on `integry/propr`. It needs an authenticated `gh` with admin rights on the repository:
+
+```bash
+scripts/setup-hosted-ui-environment.sh               # integry/propr, hosted-ui-production
+scripts/setup-hosted-ui-environment.sh --reviewer    # also require your approval for each deploy
+scripts/setup-hosted-ui-environment.sh --repo owner/name --env name
+```
+
+The script creates or updates the environment and limits it to the tag rule `v*` and the branch `main`. It then stores `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as environment secrets. It reads each value from a hidden prompt, or from the variable of the same name if it is already exported, and never echoes the value or passes it on a command line. You can re-run it: deployment rules that already exist are kept, and the secrets are overwritten. It finishes by printing the environment's rules, allowed refs and secret names.
+
+To do the same by hand:
+
 1. In the repository, open **Settings > Environments > New environment** and name it `hosted-ui-production`. If a release has already referenced it, it may exist already, with no protection.
-2. Under **Deployment branches and tags**, choose **Selected branches and tags** and add the tag rule `v*.*.*`. Every deploy then runs from a release tag. Manual releases also check out `v<expected_version>`, but the environment matches the ref the workflow was dispatched from. If you dispatch manual releases from `main`, add `main` too.
+2. Under **Deployment branches and tags**, choose **Selected branches and tags**. Add the tag rule `v*` and the branch `main`. Tag pushes deploy from the release tag. Manual releases also check out `v<expected_version>`, but the environment matches the ref the workflow was dispatched from, which is usually `main`. Without the `main` rule, a manual release fails on the environment rule instead of deploying.
 3. Optional: under **Required reviewers**, add release maintainers so that each deploy waits for approval.
 4. Under **Environment secrets**, add:
    - `CLOUDFLARE_API_TOKEN`: the token created above.
@@ -56,7 +68,7 @@ The account ID is shown on the account's **Workers & Pages** overview, and in th
 
 Store these only as **environment** secrets. Do not add them as repository or organization secrets, because every job could then read them, including PR and build jobs. The workflow contract test (`test/hostedUiReleaseDeploy.test.mjs`) fails if any other job in the release workflow refers to the Cloudflare credentials.
 
-To deploy a release whose deploy was skipped, add the secrets and then re-run the **Deploy hosted UI (app.propr.dev)** job from that release's workflow run.
+To deploy a release whose deploy was skipped, add the secrets (for example with `scripts/setup-hosted-ui-environment.sh`) and then re-run the **Deploy hosted UI (app.propr.dev)** job from that release's workflow run.
 
 ## Manual deploy
 

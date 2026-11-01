@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lives. It then checks that the served bundle contains the released version.
   If the environment secrets are missing, it skips with a notice instead of
   failing the release. `npm run deploy:hosted-ui` still works for manual
-  deploys. Token scope and setup are in Operations > Hosted UI Release Deploy.
+  deploys. `scripts/setup-hosted-ui-environment.sh` creates the environment and
+  stores its secrets. Token scope and setup are in Operations > Hosted UI
+  Release Deploy.
 
 ### Fixed
 
