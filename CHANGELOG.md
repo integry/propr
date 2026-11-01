@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **macOS desktop preview releases without an Apple Developer account**: a new manual, main-only
+  `desktop-macos-preview.yml` workflow builds unsigned ProPR Desktop DMG and ZIP packages for Intel (`x64`) and Apple
+  Silicon (`arm64`) on native macOS runners. It builds from a frozen `source_revision`, pins the `propr/app`, `propr/ui`
+  and `propr/agent` runtime digests, and applies the existing local ad-hoc signature on arm64. It runs the existing
+  unsigned-package validation and native lifecycle checks, and writes `SHA256SUMS` plus a GitHub build provenance
+  attestation for every asset. It stages a draft first, then publishes it as a GitHub pre-release (never the latest
+  release) through the protected `desktop-macos-preview-publication` environment, tagged
+  `desktop-macos-preview-v<version>-<commit>`. The workflow uses no secrets, and these builds never self-update. The
+  [desktop guide](docs/docs/operations/desktop-application.md#macos-preview-builds) explains where to download them and
+  how to verify them with `shasum -a 256 -c` and `gh attestation verify`. The Linux preview now binds its identity with
+  the same shared script.
 - **Hosted UI release deploy**: the release workflow now deploys
   `app.propr.dev` (the `propr-hosted-ui` Worker) after the GitHub release is
   published, for tag pushes and manual releases. Until now it was deployed only

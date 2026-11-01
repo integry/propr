@@ -1,11 +1,19 @@
 export const MACOS_LINUX_RELEASE_PROFILE = 'macos-linux-v1';
 export const WINDOWS_INCLUSIVE_RELEASE_PROFILE = 'macos-linux-windows-v1';
 export const LINUX_PREVIEW_RELEASE_PROFILE = 'linux-preview-v1';
+export const MACOS_PREVIEW_RELEASE_PROFILE = 'macos-preview-v1';
+// Preview profiles are unsigned validation channels: they never produce trusted
+// update metadata and never enter the stable publication helper.
+const PREVIEW_RELEASE_PROFILES = new Set([LINUX_PREVIEW_RELEASE_PROFILE, MACOS_PREVIEW_RELEASE_PROFILE]);
 
 const profileEntries = [
   [LINUX_PREVIEW_RELEASE_PROFILE, [
     ['linux-x64', ['deb', 'rpm']],
     ['linux-arm64', ['deb', 'rpm']],
+  ]],
+  [MACOS_PREVIEW_RELEASE_PROFILE, [
+    ['darwin-x64', ['dmg', 'zip']],
+    ['darwin-arm64', ['dmg', 'zip']],
   ]],
   [MACOS_LINUX_RELEASE_PROFILE, [
     ['linux-x64', ['deb', 'rpm', 'zip']],
@@ -30,7 +38,7 @@ const PROFILES = new Map(profileEntries.map(([name, targets]) => [
     targets: new Map(targets.map(([target, kinds]) => [target, Object.freeze([...kinds])])),
     artifactCount: targets.reduce((count, [, kinds]) => count + kinds.length, 0),
     windowsIncluded: targets.some(([target]) => target.startsWith('win32-')),
-    previewOnly: name === LINUX_PREVIEW_RELEASE_PROFILE,
+    previewOnly: PREVIEW_RELEASE_PROFILES.has(name),
   }),
 ]));
 

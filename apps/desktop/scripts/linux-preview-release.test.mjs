@@ -348,7 +348,7 @@ describe('Linux preview release channel', () => {
       directory: '/unused',
       profile: LINUX_PREVIEW_RELEASE_PROFILE,
       token: 'token',
-    }), /explicitly authorized Linux preview publication channel/);
+    }), /explicitly authorized Linux or macOS preview publication channel/);
   });
 
   test('stages, resumes, and publishes via paginated release lists when release-by-tag returns 404', async () => {
