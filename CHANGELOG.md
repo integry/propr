@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflow step that installs Chromium has a 10-minute `timeout-minutes`, and
   `.propr/setup.sh` bounds its browser download. The self-hosted path is
   unchanged.
+- **Release: hosted UI deploy builds `@propr/shared` first**: the v0.9.1
+  release published everything except app.propr.dev, because the
+  `Deploy hosted UI` job ran `npm run build -w propr-ui` after a clean
+  `npm ci`, where `packages/shared/dist` does not exist yet. The deploy steps
+  now live in a reusable `.github/workflows/hosted-ui-deploy.yml` that builds
+  `@propr/shared` before the UI, and `npm run deploy:hosted-ui` does the same.
+  Maintainers can (re)deploy an already-published release by dispatching that
+  workflow from `main` with `release_tag` (for example `v0.9.1`). It checks out
+  the tag, confirms `package.json` has the tag's version, deploys with the
+  pinned wrangler and verifies the served bundle. Re-running the failed job of
+  a tag run reuses the tag's broken workflow, so it cannot fix that release.
 
 ## [0.9.1] - 2026-11-01
 
