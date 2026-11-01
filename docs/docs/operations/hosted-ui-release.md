@@ -80,7 +80,7 @@ gh workflow run hosted-ui-deploy.yml --repo integry/propr --ref main -f release_
 
 Or open **Actions > Hosted UI Deploy > Run workflow**, keep **Use workflow from** on `main`, and enter the tag. The workflow:
 
-1. Refuses to run from any ref other than `main`, and refuses a `release_tag` that is not `v<semver>` (for example `v0.9.1`) or that does not exist in the repository.
+1. Refuses to run from any ref other than `main`, and refuses a `release_tag` that is not `v<semver>` (for example `v0.9.1`) or that does not exist in the repository. It also refuses a tag without a published GitHub release, such as a tag whose release run failed before publishing or whose release is still a draft.
 2. Runs in `hosted-ui-production`, the same environment and secrets as the release job. If the secrets are missing it skips with the same notice.
 3. Checks out the tag, not `main`, and confirms that the root `package.json` version equals the tag version.
 4. Runs `npm ci`, builds `@propr/shared` and then the UI, deploys with the pinned wrangler version, and verifies that `app.propr.dev` serves the release.

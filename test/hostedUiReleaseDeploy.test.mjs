@@ -119,7 +119,7 @@ describe('hosted UI release deploy workflow contract', () => {
       'npm run build -w @propr/shared && npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml');
   });
 
-  test('accepts only an existing v<semver> release tag, dispatched from main', () => {
+  test('accepts only a v<semver> tag with a published release, dispatched from main', () => {
     const validate = step('Validate release tag');
     assert.deepEqual(validate.env, {
       GH_TOKEN: '${{ github.token }}',
@@ -129,11 +129,20 @@ describe('hosted UI release deploy workflow contract', () => {
     });
     const dir = mkdtempSync(join(tmpdir(), 'hosted-ui-tag-'));
     try {
-      // A stub gh: only refs/tags/v0.9.1 and v1.0.0-rc.1 exist.
+      // A stub gh: tags v0.9.1, v1.0.0-rc.1, v0.9.2 and v0.9.3 exist. v0.9.1 and
+      // v1.0.0-rc.1 have published releases; v0.9.2's release run failed before
+      // publishing, and v0.9.3's release is a draft.
       const bin = join(dir, 'bin');
       mkdirSync(bin);
       const calls = join(dir, 'gh-calls');
-      writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$*" >> "${calls}"\ncase "$2" in\n  */git/ref/tags/v0.9.1|*/git/ref/tags/v1.0.0-rc.1) exit 0;;\n  *) exit 1;;\nesac\n`);
+      writeFileSync(join(bin, 'gh'), [
+        '#!/bin/sh', `echo "$*" >> "${calls}"`, 'case "$2" in',
+        '  */git/ref/tags/v0.9.1|*/git/ref/tags/v1.0.0-rc.1|*/git/ref/tags/v0.9.2|*/git/ref/tags/v0.9.3) exit 0;;',
+        '  */releases/tags/v0.9.1|*/releases/tags/v1.0.0-rc.1) echo false;;',
+        '  */releases/tags/v0.9.3) echo true;;',
+        '  *) echo \'gh: Not Found (HTTP 404)\' >&2; exit 1;;',
+        'esac', '',
+      ].join('\n'));
       chmodSync(join(bin, 'gh'), 0o755);
       let runs = 0;
       const execute = env => runStep(validate.run, {
@@ -148,6 +157,7 @@ describe('hosted UI release deploy workflow contract', () => {
         assert.equal(ok.output, `version=${version}\n`);
       }
       assert.match(readFileSync(calls, 'utf8'), /^api repos\/integry\/propr\/git\/ref\/tags\/v0\.9\.1 --silent$/m);
+      assert.match(readFileSync(calls, 'utf8'), /^api repos\/integry\/propr\/releases\/tags\/v0\.9\.1 --jq \.draft$/m);
 
       for (const tag of ['', '0.9.1', 'v0.9', 'v01.9.1', 'v0.9.1 ', 'main', 'v0.9.1;id', 'refs/tags/v0.9.1']) {
         const bad = execute({ RELEASE_TAG: tag });
@@ -158,6 +168,20 @@ describe('hosted UI release deploy workflow contract', () => {
       const missing = execute({ RELEASE_TAG: 'v9.9.9' });
       assert.equal(missing.status, 1);
       assert.match(missing.stderr, /v9\.9\.9 does not exist/);
+
+      // The tag exists but its release run failed before publish-github-release.
+      const unpublished = execute({ RELEASE_TAG: 'v0.9.2' });
+      assert.equal(unpublished.status, 1);
+      assert.match(unpublished.stderr, /v0\.9\.2 has no published GitHub release/);
+      assert.equal(unpublished.output, '');
+      const draft = execute({ RELEASE_TAG: 'v0.9.3' });
+      assert.equal(draft.status, 1);
+      assert.match(draft.stderr, /v0\.9\.3 is not published \(draft: 'true'\)/);
+      assert.equal(draft.output, '');
+      // The release workflow's call needs the published release too.
+      const unpublishedFromRelease = execute({ RELEASE_TAG: 'v0.9.2', DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/docker-images.yml@refs/tags/v0.9.2', DISPATCHED_REF: 'refs/tags/v0.9.2' });
+      assert.equal(unpublishedFromRelease.status, 1);
+      assert.match(unpublishedFromRelease.stderr, /no published GitHub release/);
 
       const fromBranch = execute({ RELEASE_TAG: 'v0.9.1', DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/hosted-ui-deploy.yml@refs/heads/feature', DISPATCHED_REF: 'refs/heads/feature' });
       assert.equal(fromBranch.status, 1);

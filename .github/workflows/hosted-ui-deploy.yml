@@ -67,6 +67,17 @@ jobs:
             echo "Release tag $RELEASE_TAG does not exist in $GITHUB_REPOSITORY." >&2
             exit 1
           fi
+          # Only a published release may reach production: a tag whose release
+          # run failed before publish-github-release has no release, and the
+          # by-tag endpoint does not return drafts. Check draft anyway.
+          if ! release_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')"; then
+            echo "Release tag $RELEASE_TAG has no published GitHub release in $GITHUB_REPOSITORY; publish the release before deploying it." >&2
+            exit 1
+          fi
+          if [ "$release_draft" != "false" ]; then
+            echo "GitHub release $RELEASE_TAG is not published (draft: '$release_draft'); publish it before deploying it." >&2
+            exit 1
+          fi
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       # Release artifacts are already public when this runs: a missing
