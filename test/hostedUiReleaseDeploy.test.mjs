@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -8,18 +8,28 @@ import { parse } from 'yaml';
 import { bundleHasVersion, requireVersion, resolveEntryBundle, verifyHostedUi }
   from '../scripts/verify-hosted-ui-release.mjs';
 
-const text = readFileSync('.github/workflows/docker-images.yml', 'utf8');
-const workflow = parse(text);
+const workflow = parse(readFileSync('.github/workflows/docker-images.yml', 'utf8'));
 const job = workflow.jobs['deploy-hosted-ui'];
-const steps = job.steps;
+const deployWorkflow = parse(readFileSync('.github/workflows/hosted-ui-deploy.yml', 'utf8'));
+const deployJob = deployWorkflow.jobs.deploy;
+const steps = deployJob.steps;
 const step = name => {
   const found = steps.find(candidate => candidate.name === name);
   assert.ok(found, `missing step ${name}`);
   return found;
 };
-const RELEASE_REF = "${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}";
 const CONFIGURED = "steps.credentials.outputs.configured == 'true'";
 const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
+
+const runStep = (run, env, dir, label) => {
+  const output = join(dir, `output-${label}`);
+  const summary = join(dir, `summary-${label}`);
+  const result = spawnSync('bash', ['-e', '-c', run], {
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, ...env }, encoding: 'utf8',
+  });
+  const read = file => { try { return readFileSync(file, 'utf8'); } catch { return ''; } };
+  return { ...result, output: read(output), summary: read(summary) };
+};
 
 describe('hosted UI release deploy workflow contract', () => {
   test('runs only after the GitHub release is published, on tag and manual release paths', () => {
@@ -31,8 +41,26 @@ describe('hosted UI release deploy workflow contract', () => {
     assert.doesNotMatch(job.if, /always\(\)|failure\(\)|cancelled\(\)/);
   });
 
+  test('the release job and the manual re-deploy share one reusable workflow', () => {
+    assert.equal(job.name, 'Deploy hosted UI (app.propr.dev)');
+    assert.equal(job.uses, './.github/workflows/hosted-ui-deploy.yml');
+    assert.deepEqual(job.with, { release_tag: '${{ needs.validate-release.outputs.release_tag }}' });
+    assert.equal(job.secrets, undefined, 'no caller secrets: the environment-scoped job reads its own');
+    assert.equal(job.steps, undefined);
+    assert.deepEqual(Object.keys(deployWorkflow.on).sort(), ['workflow_call', 'workflow_dispatch']);
+    for (const trigger of ['workflow_call', 'workflow_dispatch']) {
+      assert.deepEqual(Object.keys(deployWorkflow.on[trigger].inputs), ['release_tag']);
+      assert.equal(deployWorkflow.on[trigger].inputs.release_tag.required, true);
+      assert.equal(deployWorkflow.on[trigger].inputs.release_tag.type, 'string');
+    }
+    assert.deepEqual(Object.keys(deployWorkflow.jobs), ['deploy']);
+  });
+
   test('runs in the protected hosted-ui-production environment with read-only contents', () => {
-    assert.deepEqual(job.environment, { name: 'hosted-ui-production', url: 'https://app.propr.dev/' });
+    assert.deepEqual(deployJob.environment, { name: 'hosted-ui-production', url: 'https://app.propr.dev/' });
+    assert.deepEqual(deployJob.concurrency, { group: 'hosted-ui-production', 'cancel-in-progress': false });
+    assert.deepEqual(deployWorkflow.permissions, { contents: 'read' });
+    assert.deepEqual(deployJob.permissions, { contents: 'read' });
     assert.deepEqual(job.permissions, { contents: 'read' });
     assert.equal(workflow.jobs['publish-github-release'].environment, undefined);
   });
@@ -40,9 +68,11 @@ describe('hosted UI release deploy workflow contract', () => {
   test('Cloudflare secrets are read only by the environment-scoped job', () => {
     for (const [name, other] of Object.entries(workflow.jobs)) {
       if (name === 'deploy-hosted-ui') continue;
-      assert.doesNotMatch(JSON.stringify(other), /CLOUDFLARE|hosted-ui-production|wrangler/i, `${name} must not see the Cloudflare deploy`);
+      assert.doesNotMatch(JSON.stringify(other), /CLOUDFLARE|hosted-ui-production|wrangler|hosted-ui-deploy/i, `${name} must not see the Cloudflare deploy`);
     }
-    assert.equal(job.env, undefined, 'no job-level env exposes secrets to every step');
+    assert.doesNotMatch(JSON.stringify(job), /CLOUDFLARE|secrets/);
+    assert.equal(deployJob.env, undefined, 'no job-level env exposes secrets to every step');
+    assert.equal(deployWorkflow.env, undefined);
     const secretSteps = steps.filter(candidate => JSON.stringify(candidate).includes('secrets.')).map(candidate => candidate.name);
     assert.deepEqual(secretSteps, ['Check Cloudflare credentials', 'Deploy to Cloudflare Workers']);
     for (const name of secretSteps) {
@@ -53,25 +83,119 @@ describe('hosted UI release deploy workflow contract', () => {
     }
   });
 
-  test('checks out the exact release ref without persisting credentials', () => {
-    const checkout = step('Checkout repository');
-    assert.match(checkout.uses, /^actions\/checkout@[0-9a-f]{40}$/);
-    assert.deepEqual(checkout.with, { ref: RELEASE_REF, 'persist-credentials': false });
-    assert.equal(workflow.jobs['validate-release'].steps[0].with.ref, RELEASE_REF);
-    assert.match(step('Confirm checkout is the release version').env.RELEASE_VERSION, /needs\.validate-release\.outputs\.version/);
+  test('pins every action by commit SHA', () => {
+    const uses = steps.filter(candidate => candidate.uses).map(candidate => candidate.uses);
+    assert.ok(uses.length >= 2);
+    for (const action of uses) assert.match(action, /^actions\/[a-z-]+@[0-9a-f]{40}$/);
   });
 
-  test('builds and deploys the same way as npm run deploy:hosted-ui, with a locked install', () => {
-    const order = ['Check Cloudflare credentials', 'Checkout repository', 'Set up Node.js', 'Confirm checkout is the release version',
-      'Install dependencies', 'Build hosted UI', 'Deploy to Cloudflare Workers', 'Verify app.propr.dev serves the release'];
-    assert.deepEqual(steps.map(candidate => candidate.name).filter(name => order.includes(name)), order);
+  test('checks out the release tag, not the dispatching ref, without persisting credentials', () => {
+    const checkout = step('Checkout release tag');
+    assert.deepEqual(checkout.with, { ref: 'refs/tags/${{ inputs.release_tag }}', 'persist-credentials': false });
+    for (const name of ['Confirm checkout is the release version', 'Verify app.propr.dev serves the release']) {
+      assert.deepEqual(step(name).env, { RELEASE_VERSION: '${{ steps.release.outputs.version }}' });
+    }
+    const confirm = step('Confirm checkout is the release version').run;
+    assert.match(confirm, /require\('\.\/package\.json'\)\.version/);
+    assert.match(confirm, /exit 1/);
+  });
+
+  test('builds @propr/shared before the UI and deploys with a locked install', () => {
+    const order = ['Validate release tag', 'Check Cloudflare credentials', 'Checkout release tag', 'Set up Node.js',
+      'Confirm checkout is the release version', 'Install dependencies', 'Build shared workspace', 'Build hosted UI',
+      'Deploy to Cloudflare Workers', 'Verify app.propr.dev serves the release'];
+    assert.deepEqual(steps.map(candidate => candidate.name).slice(0, order.length), order);
     assert.equal(step('Install dependencies').run, 'npm ci');
+    assert.equal(step('Build shared workspace').run, 'npm run build -w @propr/shared');
     assert.equal(step('Build hosted UI').run, 'npm run build -w propr-ui');
-    assert.match(step('Deploy to Cloudflare Workers').run, /^npx --yes wrangler@\d+\.\d+\.\d+ deploy --config wrangler\.hosted-ui\.toml$/);
-    assert.equal(rootPackage.scripts['deploy:hosted-ui'],
-      'npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml');
-    for (const name of order.slice(1)) assert.equal(step(name).if, CONFIGURED, `${name} must skip without credentials`);
+    assert.equal(step('Deploy to Cloudflare Workers').run, 'npx --yes wrangler@4.156.0 deploy --config wrangler.hosted-ui.toml');
+    assert.equal(step('Validate release tag').if, undefined, 'a bad release_tag fails even without credentials');
+    for (const name of order.slice(2)) assert.equal(step(name).if, CONFIGURED, `${name} must skip without credentials`);
     for (const candidate of steps) assert.equal(candidate['continue-on-error'], undefined);
+  });
+
+  test('npm run deploy:hosted-ui builds @propr/shared before the UI', () => {
+    assert.equal(rootPackage.scripts['deploy:hosted-ui'],
+      'npm run build -w @propr/shared && npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml');
+  });
+
+  test('accepts only a v<semver> tag with a published release, dispatched from main', () => {
+    const validate = step('Validate release tag');
+    assert.deepEqual(validate.env, {
+      GH_TOKEN: '${{ github.token }}',
+      RELEASE_TAG: '${{ inputs.release_tag }}',
+      DISPATCHED_WORKFLOW: '${{ github.workflow_ref }}',
+      DISPATCHED_REF: '${{ github.ref }}',
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'hosted-ui-tag-'));
+    try {
+      // A stub gh: tags v0.9.1, v1.0.0-rc.1, v0.9.2 and v0.9.3 exist. v0.9.1 and
+      // v1.0.0-rc.1 have published releases; v0.9.2's release run failed before
+      // publishing, and v0.9.3's release is a draft.
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      const calls = join(dir, 'gh-calls');
+      writeFileSync(join(bin, 'gh'), [
+        '#!/bin/sh', `echo "$*" >> "${calls}"`, 'case "$2" in',
+        '  */git/ref/tags/v0.9.1|*/git/ref/tags/v1.0.0-rc.1|*/git/ref/tags/v0.9.2|*/git/ref/tags/v0.9.3) exit 0;;',
+        '  */releases/tags/v0.9.1|*/releases/tags/v1.0.0-rc.1) echo false;;',
+        '  */releases/tags/v0.9.3) echo true;;',
+        '  *) echo \'gh: Not Found (HTTP 404)\' >&2; exit 1;;',
+        'esac', '',
+      ].join('\n'));
+      chmodSync(join(bin, 'gh'), 0o755);
+      let runs = 0;
+      const execute = env => runStep(validate.run, {
+        PATH: `${bin}:${process.env.PATH}`, GITHUB_REPOSITORY: 'integry/propr', GH_TOKEN: 'token',
+        DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/hosted-ui-deploy.yml@refs/heads/main',
+        DISPATCHED_REF: 'refs/heads/main', ...env,
+      }, dir, String(runs += 1));
+
+      for (const [tag, version] of [['v0.9.1', '0.9.1'], ['v1.0.0-rc.1', '1.0.0-rc.1']]) {
+        const ok = execute({ RELEASE_TAG: tag });
+        assert.equal(ok.status, 0, ok.stderr);
+        assert.equal(ok.output, `version=${version}\n`);
+      }
+      assert.match(readFileSync(calls, 'utf8'), /^api repos\/integry\/propr\/git\/ref\/tags\/v0\.9\.1 --silent$/m);
+      assert.match(readFileSync(calls, 'utf8'), /^api repos\/integry\/propr\/releases\/tags\/v0\.9\.1 --jq \.draft$/m);
+
+      for (const tag of ['', '0.9.1', 'v0.9', 'v01.9.1', 'v0.9.1 ', 'main', 'v0.9.1;id', 'refs/tags/v0.9.1']) {
+        const bad = execute({ RELEASE_TAG: tag });
+        assert.equal(bad.status, 1, JSON.stringify(tag));
+        assert.match(bad.stderr, /must look like v<semver>/);
+        assert.equal(bad.output, '');
+      }
+      const missing = execute({ RELEASE_TAG: 'v9.9.9' });
+      assert.equal(missing.status, 1);
+      assert.match(missing.stderr, /v9\.9\.9 does not exist/);
+
+      // The tag exists but its release run failed before publish-github-release.
+      const unpublished = execute({ RELEASE_TAG: 'v0.9.2' });
+      assert.equal(unpublished.status, 1);
+      assert.match(unpublished.stderr, /v0\.9\.2 has no published GitHub release/);
+      assert.equal(unpublished.output, '');
+      const draft = execute({ RELEASE_TAG: 'v0.9.3' });
+      assert.equal(draft.status, 1);
+      assert.match(draft.stderr, /v0\.9\.3 is not published \(draft: 'true'\)/);
+      assert.equal(draft.output, '');
+      // The release workflow's call needs the published release too.
+      const unpublishedFromRelease = execute({ RELEASE_TAG: 'v0.9.2', DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/docker-images.yml@refs/tags/v0.9.2', DISPATCHED_REF: 'refs/tags/v0.9.2' });
+      assert.equal(unpublishedFromRelease.status, 1);
+      assert.match(unpublishedFromRelease.stderr, /no published GitHub release/);
+
+      const fromBranch = execute({ RELEASE_TAG: 'v0.9.1', DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/hosted-ui-deploy.yml@refs/heads/feature', DISPATCHED_REF: 'refs/heads/feature' });
+      assert.equal(fromBranch.status, 1);
+      assert.match(fromBranch.stderr, /from main/);
+      const fromTag = execute({ RELEASE_TAG: 'v0.9.1', DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/hosted-ui-deploy.yml@refs/tags/v0.9.1', DISPATCHED_REF: 'refs/tags/v0.9.1' });
+      assert.equal(fromTag.status, 1);
+
+      // Called from the release workflow, github.* describes the tag run.
+      const fromRelease = execute({ RELEASE_TAG: 'v0.9.1', DISPATCHED_WORKFLOW: 'integry/propr/.github/workflows/docker-images.yml@refs/tags/v0.9.1', DISPATCHED_REF: 'refs/tags/v0.9.1' });
+      assert.equal(fromRelease.status, 0, fromRelease.stderr);
+      assert.equal(fromRelease.output, 'version=0.9.1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('skips with a notice instead of failing when the environment secrets are missing', () => {
@@ -79,15 +203,7 @@ describe('hosted UI release deploy workflow contract', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hosted-ui-credentials-'));
     try {
       let runs = 0;
-      const execute = env => {
-        runs += 1;
-        const output = join(dir, `output-${runs}`);
-        const summary = join(dir, `summary-${runs}`);
-        const result = spawnSync('bash', ['-e', '-c', run], {
-          env: { PATH: process.env.PATH, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, ...env }, encoding: 'utf8',
-        });
-        return { ...result, output: readFileSync(output, 'utf8'), summary: (() => { try { return readFileSync(summary, 'utf8'); } catch { return ''; } })() };
-      };
+      const execute = env => runStep(run, env, dir, String(runs += 1));
       const configured = execute({ CLOUDFLARE_API_TOKEN: 'token', CLOUDFLARE_ACCOUNT_ID: 'account' });
       assert.equal(configured.status, 0);
       assert.equal(configured.output, 'configured=true\n');
@@ -96,7 +212,7 @@ describe('hosted UI release deploy workflow contract', () => {
         const skipped = execute(env);
         assert.equal(skipped.status, 0, JSON.stringify(env));
         assert.equal(skipped.output, 'configured=false\n');
-        assert.match(skipped.stdout, /^::notice title=Hosted UI deploy skipped::.*hosted-ui-production/);
+        assert.match(skipped.stdout, /^::notice title=Hosted UI deploy skipped::.*hosted-ui-production.*Hosted UI Deploy workflow from main/);
         assert.match(skipped.summary, /Hosted UI deploy skipped/);
         assert.doesNotMatch(skipped.stdout + skipped.summary, /cf-secret-sentinel/, 'secret values are never echoed');
       }
@@ -105,12 +221,24 @@ describe('hosted UI release deploy workflow contract', () => {
     }
   });
 
-  test('verifies the released version after deploy and leaves reconciliation guidance on failure', () => {
-    const verify = step('Verify app.propr.dev serves the release');
-    assert.equal(verify.run, 'node scripts/verify-hosted-ui-release.mjs');
-    assert.deepEqual(verify.env, { RELEASE_VERSION: '${{ needs.validate-release.outputs.version }}' });
-    assert.equal(steps.at(-1).if, 'failure()');
-    assert.match(steps.at(-1).run, /deploy:hosted-ui/);
+  test('verifies the released version after deploy and points reconciliation at the dispatch workflow', () => {
+    assert.equal(step('Verify app.propr.dev serves the release').run, 'node scripts/verify-hosted-ui-release.mjs');
+    const guidance = steps.at(-1);
+    assert.equal(guidance.name, 'Show hosted UI reconciliation guidance');
+    assert.equal(guidance.if, 'failure()');
+    assert.deepEqual(guidance.env, { RELEASE_TAG: '${{ inputs.release_tag }}' });
+    const dir = mkdtempSync(join(tmpdir(), 'hosted-ui-guidance-'));
+    try {
+      const result = runStep(guidance.run, { RELEASE_TAG: 'v0.9.1' }, dir, 'guidance');
+      assert.equal(result.status, 0);
+      assert.match(result.stderr, /Hosted UI Deploy workflow from main with release_tag v0\.9\.1/);
+      assert.match(result.stderr, /deploy:hosted-ui/);
+      assert.match(result.summary, /### Hosted UI reconciliation/);
+      assert.match(result.summary, /hosted-ui-deploy\.yml.*`main`.*`v0\.9\.1`/);
+      assert.doesNotMatch(result.summary, /Re-run the Deploy hosted UI job/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

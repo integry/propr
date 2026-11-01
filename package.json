@@ -83,7 +83,7 @@
     "release:verify": "node scripts/verify-release.mjs",
     "cli:pack": "node packages/cli/scripts/build-publish.mjs",
     "cli:publish": "node packages/cli/scripts/build-publish.mjs --publish",
-    "deploy:hosted-ui": "npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml",
+    "deploy:hosted-ui": "npm run build -w @propr/shared && npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml",
     "desktop": "npm run dev -w @propr/desktop",
     "desktop:dev": "npm run dev -w @propr/desktop",
     "desktop:prepare": "npm run build -w @propr/shared && npm run build -w @propr/client",
