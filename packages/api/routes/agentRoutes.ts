@@ -17,7 +17,7 @@ import {
   SyntheticAgent,
 } from '@propr/core';
 import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
-import { requireManageAgents } from '../permissionGuards.js';
+import { refuseDemoViewer, requireManageAgents } from '../permissionGuards.js';
 import { createAgentHealthCheck } from '../services/agentHealthCheck.js';
 
 const execFileAsync = promisify(execFile);
@@ -263,7 +263,7 @@ export function createAgentRoutes() {
     }
   });
 
-  router.get('/opencode/models', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
+  router.get('/opencode/models', requireManageAgents, refuseDemoViewer, async (req: Request, res: Response): Promise<void> => {
     try {
       const agentId = typeof req.query.agentId === 'string' ? req.query.agentId : undefined;
       const models = await discoverOpenCodeModels(agentId);

@@ -121,13 +121,12 @@ describe('instance authorization', () => {
         assert.equal(authorization.source, 'local');
     });
 
-    test('resolves demo users without installation permissions', async () => {
+    test('resolves demo users as read-only viewers without the administrator role', async () => {
         configureDemoMode(true);
 
         const authorization = await resolveInstanceAuthorization(actor, database);
 
-        assert.equal(authorization.source, 'demo');
-        assert.deepEqual(authorization.permissions, []);
+        assert.deepEqual(authorization, { role: 'member', permissions: [...INSTANCE_PERMISSIONS], source: 'demo' });
     });
 
     test('permission middleware rejects members with a stable error code', () => {

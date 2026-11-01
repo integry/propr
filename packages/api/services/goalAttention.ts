@@ -53,12 +53,16 @@ export function whereGoalNeedsAttention(db: Knex, builder: Knex.QueryBuilder, ta
     )));
 }
 
-/** Open blocker rows for these goals, scoped to their owner. */
-async function openBlockerRows(db: Knex, ownerId: string, goalIds: string[]): Promise<Map<string, GoalBlockerRow[]>> {
+/**
+ * Open blocker rows for these goals, scoped to their owner. A `null` owner is the
+ * demo viewer reading goals already scoped by repository; a blocker always
+ * belongs to its goal's owner.
+ */
+async function openBlockerRows(db: Knex, ownerId: string | null, goalIds: string[]): Promise<Map<string, GoalBlockerRow[]>> {
   const byGoal = new Map<string, GoalBlockerRow[]>();
   for (let index = 0; index < goalIds.length; index += ID_CHUNK) {
     const rows = await db('goal_blockers')
-      .where({ owner_id: ownerId, status: 'open' })
+      .where(ownerId === null ? { status: 'open' } : { owner_id: ownerId, status: 'open' })
       .whereIn('goal_id', goalIds.slice(index, index + ID_CHUNK))
       .orderBy('first_observed_at', 'asc').orderBy('blocker_id', 'asc')
       .select(BLOCKER_COLUMNS) as GoalBlockerRow[];
@@ -70,7 +74,7 @@ async function openBlockerRows(db: Knex, ownerId: string, goalIds: string[]): Pr
 /** Project attention for owned goal rows that were already loaded. */
 export async function loadGoalAttention(
   db: Knex,
-  ownerId: string,
+  ownerId: string | null,
   goals: readonly GoalBlockerGoalState[],
 ): Promise<Map<string, GoalAttention>> {
   const ids = [...new Set(goals.map(goal => goal.goal_id))];
@@ -102,10 +106,13 @@ export interface GoalAttentionEntry {
  */
 export async function listGoalsNeedingAttention(
   db: Knex,
-  options: { ownerId: string; repositories: string[] | null; offset: number; limit: number },
+  options: { ownerId: string | null; repositories: string[] | null; offset: number; limit: number },
 ): Promise<{ entries: GoalAttentionEntry[]; hasMore: boolean }> {
   if (options.repositories && options.repositories.length === 0) return { entries: [], hasMore: false };
-  const query = db('goals').where('goals.owner_id', options.ownerId);
+  // Every owner's goals (`ownerId: null`) is only ever bounded by a repository scope.
+  if (options.ownerId === null && !options.repositories) return { entries: [], hasMore: false };
+  const query = db('goals');
+  if (options.ownerId !== null) query.where('goals.owner_id', options.ownerId);
   if (options.repositories) query.whereIn('goals.repository', options.repositories);
   whereGoalNeedsAttention(db, query);
   const rows = await query

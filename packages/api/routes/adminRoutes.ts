@@ -5,6 +5,7 @@ import { db } from '@propr/core';
 import type { InstanceRole } from '@propr/shared';
 import { getBootstrapAdminUsernames, type InstanceAuthorization } from '../authorization.js';
 import { InstanceMemberError, InstanceMemberService } from '../instanceMemberService.js';
+import { isDemoViewer } from '../demoMode.js';
 import type { GitHubUser } from '../authTypes.js';
 
 interface ResolvedGitHubUser {
@@ -81,7 +82,8 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         try {
             res.json({
                 members: await service.listMembers(),
-                bootstrapAdmins: getBootstrapAdminUsernames()
+                // Bootstrap administrators come from the host environment, not the curated demo database.
+                bootstrapAdmins: isDemoViewer(req.authorization) ? [] : getBootstrapAdminUsernames()
             });
         } catch (error) {
             sendAdminError(error, res);

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Demo mode shows the whole product again**: with `PROPR_DEMO_MODE=true` the demo
+  visitor is a read-only viewer of every instance permission, so Access, the AI
+  agents page, MCP logs and every Settings category render as they do for an
+  administrator. The viewer permissions authorize `GET`/`HEAD` only and only while
+  demo mode is on; writes are still refused with `405 DEMO_MODE_READ_ONLY`.
+  Management reads that would probe live installation state (Agent Tank status
+  and history, runtime packages, agent images and versions, login sessions,
+  visual preview credentials, follow-up handoffs) answer `403
+  DEMO_MODE_LIVE_DATA_UNAVAILABLE`. Goals list every goal of the demo
+  repositories, and the Inbox shows a representative Inbox from the curated
+  database, limited to the demo repositories and without host health events.
 - **Agent image on rootless and restricted Docker hosts**: `propr/agent` (and the
   managed preview agent image) no longer contains overlayfs whiteouts. Earlier
   images carried about 150 opaque-directory markers (`.wh..wh..opq`) in the
