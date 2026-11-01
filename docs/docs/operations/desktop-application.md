@@ -24,21 +24,21 @@ local ProPR stack for you. The desktop app does not change the browser Web UI, C
 
 Desktop packages are published as assets on the ProPR
 [GitHub Releases](https://github.com/integry/propr/releases) page. Asset names follow
-`ProPR-Desktop-<version>-<os>-<arch>.<ext>`, for example `ProPR-Desktop-0.9.0-linux-x64.deb` or
-`ProPR-Desktop-0.9.0-macos-arm64.dmg`. Choose the package that matches your operating system and CPU (`x64` for
+`ProPR-Desktop-<version>-<os>-<arch>.<ext>`, for example `ProPR-Desktop-0.9.1-linux-x64.deb` or
+`ProPR-Desktop-0.9.1-macos-arm64.dmg`. Choose the package that matches your operating system and CPU (`x64` for
 Intel/AMD, `arm64` for ARM and Apple Silicon).
 
 Each release includes a `SHA256SUMS` file. Verify downloads before installing:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS         # Linux, from the download folder
-shasum -a 256 ProPR-Desktop-0.9.0-macos-arm64.dmg     # macOS: compare with the SHA256SUMS line
+shasum -a 256 ProPR-Desktop-0.9.1-macos-arm64.dmg     # macOS: compare with the SHA256SUMS line
 ```
 
 ### macOS preview builds
 
 Unsigned macOS builds are published as GitHub **pre-releases** named **ProPR Desktop macOS preview**, with tags of the
-form `desktop-macos-preview-v<version>-<commit>`, for example `desktop-macos-preview-v0.9.0-0123456789ab`. They are never
+form `desktop-macos-preview-v<version>-<commit>`, for example `desktop-macos-preview-v0.9.1-0123456789ab`. They are never
 marked as the latest release, so open the [Releases](https://github.com/integry/propr/releases) page and pick the newest
 macOS preview. Each one contains:
 
@@ -50,7 +50,7 @@ These builds are not signed with an Apple Developer ID or notarized. Verify a do
 First check its checksum, from the folder that holds the download and `SHA256SUMS`:
 
 ```sh
-VERSION=0.9.0
+VERSION=0.9.1
 ARCH=arm64   # or x64
 grep " ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg$" SHA256SUMS | shasum -a 256 -c -
 shasum -a 256 -c SHA256SUMS   # if you downloaded every asset of the release
@@ -74,8 +74,8 @@ Don't install the build if either check fails. Then install it as described unde
 ### Linux
 
 ```sh
-sudo apt install ./ProPR-Desktop-0.9.0-linux-x64.deb   # Debian, Ubuntu
-sudo dnf install ./ProPR-Desktop-0.9.0-linux-x64.rpm   # Fedora, RHEL family
+sudo apt install ./ProPR-Desktop-0.9.1-linux-x64.deb   # Debian, Ubuntu
+sudo dnf install ./ProPR-Desktop-0.9.1-linux-x64.rpm   # Fedora, RHEL family
 propr-desktop                                          # launch (or use your application menu)
 ```
 

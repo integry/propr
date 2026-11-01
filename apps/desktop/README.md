@@ -105,7 +105,7 @@ scope and platform-specific scenario expectations are unchanged.
 
 ### Source-built Linux local runtime
 
-The checked-in `0.9.0` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
+The checked-in `0.9.1` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
 commit-scoped local tags, generate its explicit local-only manifest, smoke the discovery/auth capability surface in
 owned ephemeral containers, and package the desktop against that manifest:
 
@@ -580,7 +580,7 @@ Debian/Ubuntu DEB installation and native removal:
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.9.0
+VERSION=0.9.1
 sudo apt install "./ProPR-Desktop-${VERSION}-linux-${ARCH}.deb"
 propr-desktop
 xdg-open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
@@ -592,7 +592,7 @@ Fedora/RHEL-family RPM installation, followed by the package-manager-independent
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.9.0
+VERSION=0.9.1
 sudo rpm --install "ProPR-Desktop-${VERSION}-linux-${ARCH}.rpm"
 propr-desktop
 sudo rpm --erase propr-desktop
@@ -608,7 +608,7 @@ removing it:
 
 ```sh
 ARCH=arm64 # use x64 on an Intel Mac
-VERSION=0.9.0
+VERSION=0.9.1
 mount_point="$(mktemp -d)"
 hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" \
   "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg"

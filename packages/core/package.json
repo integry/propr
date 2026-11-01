@@ -1,6 +1,6 @@
 {
   "name": "@propr/core",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Shared utilities and modules for ProPR",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,7 +29,7 @@
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",
-    "@propr/shared": "^0.9.0",
+    "@propr/shared": "^0.9.1",
     "@types/fast-levenshtein": "^0.0.4",
     "better-sqlite3": "13.0.3",
     "bullmq": "^5.81.3",
