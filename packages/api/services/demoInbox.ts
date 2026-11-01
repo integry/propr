@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import {
     db,
+    decodeNotificationCursor,
     encodeNotificationCursor,
     MAX_NOTIFICATION_LIST_LIMIT,
     parseNotificationListLimit,
@@ -42,13 +43,15 @@ export function createDemoInboxReader({
     database = db,
     loadRepositories = loadDemoConfiguredRepoNames,
 }: DemoInboxDependencies): DemoInboxReader {
-    // Receipts the default demo Inbox can show: inbox-enabled, not dismissed,
-    // not host health, and targeting one of the demo's repositories.
-    function eligibleReceipts(repositories: readonly string[]) {
-        return database('notification_user_states as receipt')
+    // Receipts the demo Inbox can show: inbox-enabled, not host health, and
+    // targeting one of the demo's repositories. Dismissed receipts count only
+    // when the list asks for them, as in the ordinary service.
+    function eligibleReceipts(repositories: readonly string[], includeDismissed = false) {
+        const query = database('notification_user_states as receipt')
             .join('notification_events as event', 'event.event_id', 'receipt.event_id')
-            .where({ 'receipt.inbox_enabled': true })
-            .whereNull('receipt.dismissed_at')
+            .where({ 'receipt.inbox_enabled': true });
+        if (!includeDismissed) query.whereNull('receipt.dismissed_at');
+        return query
             .whereNotIn('event.kind', DEMO_EXCLUDED_KINDS)
             .whereRaw(
                 `json_extract(event.target_json, '$.repository') IN (${repositories.map(() => '?').join(', ')})`,
@@ -58,15 +61,27 @@ export function createDemoInboxReader({
 
     // Ranked on eligible receipts only, so a recipient whose volume is host
     // health or other repositories never hides one with visible notifications.
-    async function representativeRecipient(repositories: readonly string[]): Promise<string | null> {
+    async function rankedRecipient(repositories: readonly string[], includeDismissed: boolean): Promise<string | null> {
         if (repositories.length === 0) return null;
-        const row = await eligibleReceipts(repositories)
+        const row = await eligibleReceipts(repositories, includeDismissed)
             .select('receipt.user_id as user_id')
             .count({ receipts: '*' })
             .groupBy('receipt.user_id')
             .orderBy([{ column: 'receipts', order: 'desc' }, { column: 'user_id', order: 'asc' }])
             .first() as { user_id: string } | undefined;
         return row?.user_id ?? null;
+    }
+
+    // The default representative stays the same when dismissed receipts are
+    // requested, so toggling the option never switches Inboxes. Only when no
+    // one has an active receipt to show does a dismissed-only Inbox stand in.
+    async function representativeRecipient(
+        repositories: readonly string[],
+        includeDismissed = false,
+    ): Promise<string | null> {
+        const recipient = await rankedRecipient(repositories, false);
+        if (recipient || !includeDismissed) return recipient;
+        return rankedRecipient(repositories, true);
     }
 
     function isVisible(repositories: ReadonlySet<string>, notification: Notification): boolean {
@@ -91,9 +106,15 @@ export function createDemoInboxReader({
     }
 
     async function listNotifications(options: NotificationListOptions): Promise<NotificationListResponse> {
+        // Validate options as the ordinary service does, even when no
+        // representative exists and the service is never called.
         const limit = parseNotificationListLimit(options.limit);
+        if (options.includeDismissed !== undefined && typeof options.includeDismissed !== 'boolean') {
+            throw new TypeError('includeDismissed must be a boolean');
+        }
+        if (options.cursor !== undefined && options.cursor !== null) decodeNotificationCursor(options.cursor);
         const repositories = await loadRepositories();
-        const recipient = await representativeRecipient(repositories);
+        const recipient = await representativeRecipient(repositories, options.includeDismissed === true);
         if (!recipient) return { notifications: [], unreadCount: 0, nextCursor: null };
         const visible = new Set(repositories);
         // The recipient's pages also hold receipts the demo hides, so read on

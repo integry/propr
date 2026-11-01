@@ -178,6 +178,111 @@ describe('demo Inbox', () => {
         assert.equal(second.nextCursor, null);
     });
 
+    // NotificationListOptions supports cursor, limit and includeDismissed; each
+    // must hold against the representative selection, not only the service.
+    async function withCurated(
+        receipts: Array<{ event_id: string; user_id: string; dismissed_at?: string }>,
+        check: (curated: Knex) => Promise<void>,
+    ): Promise<void> {
+        const curated = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+        try {
+            await createInboxTables(curated);
+            await curated('notification_events').insert(['d1', 'd2', 'd3'].map(event_id => ({
+                event_id, kind: 'task', target_json: JSON.stringify({ type: 'task', repository: DEMO_REPOSITORY }),
+            })));
+            await curated('notification_user_states').insert(receipts.map(receipt => ({
+                inbox_enabled: true, read_at: null, dismissed_at: null, ...receipt,
+            })));
+            await check(curated);
+        } finally {
+            await curated.destroy();
+        }
+    }
+    const dismissed = '2026-10-01T00:00:00.000Z';
+
+    test('includeDismissed: an entirely dismissed Inbox is shown when dismissed receipts are requested', async () => {
+        await withCurated([
+            { event_id: 'd1', user_id: 'reviewer', dismissed_at: dismissed },
+            { event_id: 'd2', user_id: 'reviewer', dismissed_at: dismissed },
+            { event_id: 'd3', user_id: 'teammate', dismissed_at: dismissed },
+        ], async curated => {
+            const seen: NotificationListOptions[] = [];
+            const inbox = createDemoInboxReader({
+                service: {
+                    listNotifications: async (userId, options = {}) => {
+                        seen.push(options);
+                        return service.listNotifications(userId, options);
+                    },
+                },
+                database: curated, loadRepositories: async () => [DEMO_REPOSITORY],
+            });
+
+            assert.deepEqual(await inbox.listNotifications({}), { notifications: [], unreadCount: 0, nextCursor: null });
+            assert.deepEqual(listedFor, []);
+
+            const page = await inbox.listNotifications({ includeDismissed: true });
+            assert.deepEqual(listedFor, ['reviewer']);
+            assert.equal(seen[0]?.includeDismissed, true);
+            assert.deepEqual(page.notifications.map(item => item.id), ['event-visible']);
+            // Unread counts active receipts only, as the ordinary service does.
+            assert.equal(page.unreadCount, 0);
+            assert.equal(await inbox.getUnreadNotificationCount(), 0);
+        });
+    });
+
+    test('includeDismissed: keeps the default representative over a recipient with more dismissed receipts', async () => {
+        await withCurated([
+            { event_id: 'd1', user_id: 'noisy', dismissed_at: dismissed },
+            { event_id: 'd2', user_id: 'noisy', dismissed_at: dismissed },
+            { event_id: 'd3', user_id: 'reviewer' },
+        ], async curated => {
+            const inbox = createDemoInboxReader({ service, database: curated, loadRepositories: async () => [DEMO_REPOSITORY] });
+
+            await inbox.listNotifications({ includeDismissed: true });
+            await inbox.listNotifications({ includeDismissed: false });
+            assert.deepEqual(listedFor, ['reviewer', 'reviewer']);
+            await assert.rejects(
+                inbox.listNotifications({ includeDismissed: 'yes' as unknown as boolean }),
+                /includeDismissed must be a boolean/,
+            );
+        });
+    });
+
+    test('cursor: forwarded to the representative Inbox and validated even when no representative exists', async () => {
+        const cursor = encodeNotificationCursor({ occurredAt: '2026-10-02T00:00:00.000Z', eventId: 'event-z' });
+        const seen: NotificationListOptions[] = [];
+        const inbox = createDemoInboxReader({
+            service: {
+                listNotifications: async (userId, options = {}) => {
+                    seen.push(options);
+                    return service.listNotifications(userId, options);
+                },
+            },
+            database, loadRepositories: async () => [DEMO_REPOSITORY],
+        });
+        const page = await inbox.listNotifications({ cursor });
+        assert.equal(seen[0]?.cursor, cursor);
+        assert.deepEqual(page.notifications.map(item => item.id), ['event-visible']);
+
+        const empty = createDemoInboxReader({ service, database, loadRepositories: async () => [] });
+        await assert.rejects(empty.listNotifications({ cursor: 'not-a-cursor' }));
+        assert.deepEqual(await empty.listNotifications({ cursor: null }), { notifications: [], unreadCount: 0, nextCursor: null });
+    });
+
+    test('limit: pages the visible notifications at the requested size and rejects an invalid one', async () => {
+        const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
+        const inbox = createDemoInboxReader({
+            service: pagedService({ operator: ['a', 'b', 'c'].map((id, index) => notification(id, 'task', DEMO_REPOSITORY, at(10 - index))) }),
+            database, loadRepositories: async () => [DEMO_REPOSITORY],
+        });
+        const page = await inbox.listNotifications({ limit: 1 });
+        assert.deepEqual(page.notifications.map(item => item.id), ['a']);
+        assert.deepEqual(decodeNotificationCursor(page.nextCursor ?? ''), { occurredAt: at(10), eventId: 'a' });
+
+        const empty = createDemoInboxReader({ service, database, loadRepositories: async () => [] });
+        await assert.rejects(empty.listNotifications({ limit: 0 }));
+    });
+
     test('no configured demo repository yields an empty Inbox', async () => {
         const inbox = createDemoInboxReader({ service, database, loadRepositories: async () => [] });
         assert.deepEqual(await inbox.listNotifications({}), { notifications: [], unreadCount: 0, nextCursor: null });
