@@ -422,6 +422,96 @@ jobs:
               --title "ProPR $RELEASE_TAG"
           fi
 
+  deploy-hosted-ui:
+    name: Deploy hosted UI (app.propr.dev)
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [validate-release, publish-github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The Cloudflare token lives only in this protected environment, so no
+    # build, PR or other release job can read it.
+    environment:
+      name: hosted-ui-production
+      url: https://app.propr.dev/
+    permissions:
+      contents: read
+
+    steps:
+      # Release artifacts are already public at this point: a missing
+      # environment secret skips the deploy with a notice instead of failing
+      # the release.
+      - name: Check Cloudflare credentials
+        id: credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          message="CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set in the hosted-ui-production environment; app.propr.dev was not deployed. Add them (docs/docs/operations/hosted-ui-release.md) and re-run this job, or run npm run deploy:hosted-ui from the release tag."
+          echo "::notice title=Hosted UI deploy skipped::$message"
+          {
+            echo "### Hosted UI deploy skipped"
+            echo "$message"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout repository
+        if: steps.credentials.outputs.configured == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.credentials.outputs.configured == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Confirm checkout is the release version
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          checkout_version="$(node -p "require('./package.json').version")"
+          if [ -z "$RELEASE_VERSION" ] || [ "$checkout_version" != "$RELEASE_VERSION" ]; then
+            echo "Checked-out package.json version '$checkout_version' does not match release '$RELEASE_VERSION'." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm ci
+
+      - name: Build hosted UI
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm run build -w propr-ui
+
+      - name: Deploy to Cloudflare Workers
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npx --yes wrangler@4.156.0 deploy --config wrangler.hosted-ui.toml
+
+      - name: Verify app.propr.dev serves the release
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: node scripts/verify-hosted-ui-release.mjs
+
+      - name: Show hosted UI reconciliation guidance
+        if: failure()
+        run: |
+          echo "Hosted UI deployment did not finish; the release artifacts are already published. Re-run this job, or run npm run deploy:hosted-ui from the release tag." >&2
+          echo "### Hosted UI reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run the Deploy hosted UI job for the same release tag, or deploy by hand with \`npm run deploy:hosted-ui\` from a checkout of the tag. Re-deploying the same build is idempotent." >> "$GITHUB_STEP_SUMMARY"
+
   promote-latest:
     name: Promote latest images on Docker Hub
     if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.push_latest }}

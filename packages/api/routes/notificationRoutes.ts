@@ -26,6 +26,8 @@ import {
     type ValidatedWebPushConfiguration,
     type WebPushServerConfiguration
 } from '../services/webPushConfiguration.js';
+import { isDemoViewer } from '../demoMode.js';
+import { createDemoInboxReader, type DemoInboxReader } from '../services/demoInbox.js';
 
 export type NotificationRouteService = Pick<
     NotificationService,
@@ -48,6 +50,8 @@ export interface NotificationRouteDependencies {
     getWebPushConfiguration?: () => WebPushServerConfiguration;
     webPushDispatcherConfigured?: boolean;
     logWarning?: (message: string) => void;
+    /** The representative Inbox the read-only demo identity sees. */
+    demoInbox?: DemoInboxReader;
 }
 
 function authenticatedUserId(req: Request, res: Response): string | null {
@@ -155,6 +159,7 @@ export function createNotificationRoutes(
     dependencies: NotificationRouteDependencies = {}
 ) {
     const service = dependencies.service ?? notificationService;
+    const demoInbox = dependencies.demoInbox ?? createDemoInboxReader({ service });
     // NotificationService publishes the committed receipt changes.
     const getWebPushConfiguration = dependencies.getWebPushConfiguration
         ?? webPushConfigurationFromEnvironment;
@@ -184,11 +189,14 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         try {
-            const response = await service.listNotifications(userId, {
+            const options = {
                 cursor: parseCursor(req.query.cursor),
                 limit: parseNotificationListLimit(req.query.limit),
                 includeDismissed: parseIncludeDismissed(req.query.includeDismissed)
-            });
+            };
+            const response = isDemoViewer(req.authorization)
+                ? await demoInbox.listNotifications(options)
+                : await service.listNotifications(userId, options);
             res.json({ ...response, notifications: await projectNotificationPreviews(response.notifications) });
         } catch (error) {
             handleRouteError(res, error, 'list notifications');
@@ -200,7 +208,9 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         try {
-            const unreadCount = await service.getUnreadNotificationCount(userId);
+            const unreadCount = isDemoViewer(req.authorization)
+                ? await demoInbox.getUnreadNotificationCount()
+                : await service.getUnreadNotificationCount(userId);
             res.json(parseNotificationUnreadCountResponse({ unreadCount }));
         } catch (error) {
             handleRouteError(res, error, 'count unread notifications');

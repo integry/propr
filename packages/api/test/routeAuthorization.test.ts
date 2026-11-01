@@ -10,6 +10,7 @@ import {
   registerRouteEntries,
 } from '../routeRegistry.js';
 import { createOperatorRequestRateLimiter } from '../requestRateLimits.js';
+import { configureDemoMode, DEMO_VIEWER_PERMISSIONS, resetConfiguredDemoMode } from '../demoMode.js';
 import { SUMMARY_TREE_ROUTE_PATH } from '../routes/summaryBrowserRoutes.js';
 
 after(async () => closeConnection());
@@ -39,7 +40,7 @@ function createAuthorizationTestApp(operatorRateLimiter: RequestHandler = create
             'instance.manage_runtime',
             'instance.manage_settings',
           ]
-        : [],
+        : demo ? [...DEMO_VIEWER_PERMISSIONS] : [],
       source: admin ? 'local' : demo ? 'demo' : 'implicit',
     };
     next();
@@ -149,17 +150,22 @@ describe('assembled instance permission routes', () => {
   });
 
   test('demo users can read only the synthetic Agent Tank usage feed', async () => {
-    await withServer(async origin => {
-      const headers = { 'x-test-role': 'demo' };
-      const usageResponse = await fetch(`${origin}/api/config/agent-tank/usage`, { headers });
-      assert.equal(usageResponse.status, 200);
+    configureDemoMode(true);
+    try {
+      await withServer(async origin => {
+        const headers = { 'x-test-role': 'demo' };
+        const usageResponse = await fetch(`${origin}/api/config/agent-tank/usage`, { headers });
+        assert.equal(usageResponse.status, 200);
 
-      // History is real installation data, not the synthetic usage feed.
-      for (const path of ['/api/config/agent-tank', '/api/config/agent-tank/status', '/api/config/agent-tank/history']) {
-        const response = await fetch(`${origin}${path}`, { headers });
-        assert.equal(response.status, 403, path);
-      }
-    });
+        // History is real installation data, not the synthetic usage feed.
+        for (const path of ['/api/config/agent-tank', '/api/config/agent-tank/status', '/api/config/agent-tank/history']) {
+          const response = await fetch(`${origin}${path}`, { headers });
+          assert.equal(response.status, 403, path);
+        }
+      });
+    } finally {
+      resetConfiguredDemoMode();
+    }
   });
 
   test('every follow-up handoff operator route is rate limited after the admin guard', async () => {

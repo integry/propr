@@ -5,6 +5,11 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     credentials: 'include', cache: 'no-store',
     ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ProPR-Extensions': '1' }, body: JSON.stringify(body) }),
   });
+  if (response.status === 403) {
+    const body = await response.json().catch(() => null) as { code?: string; message?: string } | null;
+    // The read-only demo explains why extension profiles are not shown.
+    if (body?.code === 'DEMO_MODE_LIVE_DATA_UNAVAILABLE' && body.message) throw new Error(body.message);
+  }
   if (!response.ok) throw new Error(response.status === 403 ? 'A current durable instance administrator is required.' : response.status === 409 ? 'The profile changed. Refresh and select its current revision.' : 'Extension operation unavailable. Check the configuration and try again.');
   return response.json();
 }
