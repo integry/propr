@@ -298,6 +298,8 @@ Instead of (or in addition to) your own reverse proxy, a local stack can publish
 
 The full picture — architecture, provisioning, the `FRONTEND_URL` / `API_PUBLIC_URL` / `GH_OAUTH_CALLBACK_URL` configuration, verification, and troubleshooting — lives in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
+The hosted UI itself is redeployed by the release workflow; see [Hosted UI Release Deploy](./hosted-ui-release.md) for the job, its Cloudflare token and the manual fallback.
+
 ## After Startup
 
 1. Open the Web UI.
