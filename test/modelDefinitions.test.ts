@@ -63,7 +63,7 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.293');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.316');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, AGENT_DEFAULT_VERSIONS.claude);
 });
 
