@@ -286,12 +286,20 @@ export async function queueIndexingJob(
 
   const correlationId = generateCorrelationId();
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
-  const job = await queue.add(
-    'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
-    { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
-  );
+  // Persist before making the job available to a worker. An incremental job
+  // can finish during add(), so writing afterwards could erase its terminal state.
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
+  let job;
+  try {
+    job = await queue.add(
+      'indexRepository',
+      { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
+      { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
+    );
+  } catch (error) {
+    await updateRepositoryStatus(repository, 'failed', effectiveBranch);
+    throw error;
+  }
 
   // Return the normalized branch so callers report/match the same value that was
   // stored on the job and used to update repository status.
