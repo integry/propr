@@ -7,7 +7,6 @@ interface RepositoriesErrorStateProps {
 
 export const RepositoriesErrorState: React.FC<RepositoriesErrorStateProps> = ({ error, onRetry }) => (
   <div className="p-4 sm:p-8">
-    <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
     <div className="p-6 bg-red-50 border border-red-200 rounded-md">
       <div className="flex items-start gap-3">
         <svg className="h-5 w-5 text-red-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

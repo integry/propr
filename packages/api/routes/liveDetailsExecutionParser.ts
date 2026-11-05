@@ -148,14 +148,23 @@ function extractMessageContentBlocks(content: unknown): ClaudeMessageContent[] |
 
 function appendStoredMessageEvent(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
   if ((row.event_type !== 'user' && row.event_type !== 'assistant') || !row.content) return false;
+  let message: unknown;
   try {
-    const contentBlocks = (JSON.parse(row.content) as { content?: ClaudeMessageContent[] }).content;
-    if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return false;
-    if (row.event_type === 'assistant') return appendClaudeAssistantMessageEvents(contentBlocks, context);
-    return appendClaudeUserMessageEvents(contentBlocks, context);
+    message = JSON.parse(row.content);
   } catch {
     return false;
   }
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  // A Claude message row is consumed whole, as the live Claude parser consumes
+  // it: user text (including the prepended prompt) and empty messages show nothing.
+  const contentBlocks = (message as { content?: unknown }).content;
+  if (typeof contentBlocks === 'string' && row.event_type === 'assistant' && contentBlocks.trim()) {
+    context.events.push({ type: 'thought', content: contentBlocks, timestamp: context.timestamp });
+  }
+  if (!Array.isArray(contentBlocks)) return true;
+  if (row.event_type === 'assistant') appendClaudeAssistantMessageEvents(contentBlocks as ClaudeMessageContent[], context);
+  else appendClaudeUserMessageEvents(contentBlocks as ClaudeMessageContent[], context);
+  return true;
 }
 
 function appendCodexLifecycleEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext, pendingCommandStarts: PendingCommandStarts): boolean {

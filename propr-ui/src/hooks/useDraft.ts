@@ -12,7 +12,7 @@ interface UseDraftResult {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
-  activateGenerationRun: (runId: string) => void;
+  activateGenerationRun: (runId: string, draftId: string, snapshot?: PlannerDraft) => void;
 }
 
 function ensureArray(value: unknown): unknown[] {
@@ -94,34 +94,57 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
   const [error, setError] = useState<string | null>(null);
   const activeRunIdRef = useRef(draft?.generation_trace?.runId);
   activeRunIdRef.current = draft?.generation_trace?.runId;
+  // Callers may hold an activation callback from a render before an in-place draft id arrived.
+  const draftIdRef = useRef(draftId);
+  draftIdRef.current = draftId;
+  // Bumped when a run is acknowledged locally; a fetch requested before that can only return
+  // the pre-generation snapshot and must not replace the acknowledged run.
+  const activationSeqRef = useRef(0);
+
+  // Each read is owned by the selection that requested it: changing draftId or unmounting
+  // invalidates every read in flight, and a newer read for the same draft supersedes an older one,
+  // so a late completion cannot alter a newer selection even when the draft ID matches again.
+  const fetchSeqRef = useRef(0);
 
   // Fetch function - only sets loading for explicit refetch, not background refresh
   const fetchDraft = useCallback(async (showLoading = true) => {
-    if (!draftId) return;
+    if (!draftId || draftId !== draftIdRef.current) return;
 
+    const activationSeq = activationSeqRef.current;
+    const isSuperseded = () => activationSeq !== activationSeqRef.current;
+    const fetchSeq = ++fetchSeqRef.current;
+    const isCurrent = () => fetchSeq === fetchSeqRef.current && draftIdRef.current === draftId;
     try {
       if (showLoading) {
         setLoading(true);
       }
       setError(null);
       const data = await getDraft(draftId);
+      if (!isCurrent() || isSuperseded()) return;
       const parsedDraft = parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft;
       activeRunIdRef.current = parsedDraft.generation_trace?.runId;
       setDraft(parsedDraft);
     } catch (err) {
-      setError((err as Error).message || 'Failed to fetch draft');
+      if (isCurrent() && !isSuperseded()) setError((err as Error).message || 'Failed to fetch draft');
     } finally {
-      if (showLoading) {
+      // The latest read ends loading for its selection, including a loading read it superseded;
+      // a read abandoned for /studio/new (no selection) still ends its own loading state.
+      if (isCurrent() || (showLoading && !draftIdRef.current)) {
         setLoading(false);
       }
     }
   }, [draftId]);
 
+  useEffect(() => () => { fetchSeqRef.current += 1; }, [draftId]);
+
   // Initial fetch effect - handles both initial load and draftId changes
   useEffect(() => {
-    // If we already have draft data (from initialData), skip the fetch
+    // If we already have draft data (from initialData), skip the loading fetch
     // The draft state was set during initialization
     if (draft && draft.draft_id === draftId) {
+      // A generating snapshot from router state is stale when the entry is revisited via
+      // back/forward or reload; resync once so a finished run is not shown as in progress.
+      if (draft.status === 'generating') void fetchDraft(false);
       return;
     }
     // When draftId changes to a different value, reset state and fetch new data
@@ -155,17 +178,28 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     });
   }, []);
 
-  const activateGenerationRun = useCallback((runId: string) => {
+  // draftId names the draft the run was started for; a delayed acknowledgement for another draft
+  // is ignored. The snapshot stands in for the draft while its first fetch is still in flight.
+  const activateGenerationRun = useCallback((runId: string, runDraftId: string, snapshot?: PlannerDraft) => {
+    const currentDraftId = draftIdRef.current;
+    if (!currentDraftId || runDraftId !== currentDraftId) return;
+    if (snapshot && snapshot.draft_id !== currentDraftId) return;
     activeRunIdRef.current = runId;
+    if (snapshot) activationSeqRef.current += 1;
     setDraft(currentDraft => {
-      if (!currentDraft || currentDraft.draft_id !== draftId) return currentDraft;
+      const base = currentDraft?.draft_id === currentDraftId ? currentDraft : snapshot;
+      if (!base) return currentDraft;
       return {
-        ...currentDraft,
+        ...base,
         status: 'generating',
         generation_trace: { steps: [], runId },
       };
     });
-  }, [draftId]);
+    if (snapshot) {
+      setError(null);
+      setLoading(false);
+    }
+  }, []);
 
   // Handle draft update from WebSocket
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {

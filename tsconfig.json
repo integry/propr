@@ -17,6 +17,7 @@
     "baseUrl": ".",
     "paths": {
       "@propr/core": ["packages/core/src/index.ts"],
+      "@propr/core/diagnostics": ["packages/core/src/diagnostics/index.ts"],
       "@propr/shared": ["packages/shared/src/index.ts"]
     }
   },

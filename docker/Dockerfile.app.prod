@@ -1,5 +1,5 @@
 # Multi-stage prod build for the Propr application image.
-# Single image runs daemon, worker, analysis-worker, indexing-worker, or api
+# Single image runs daemon, worker, indexing-worker, or api
 # depending on the command passed at runtime.
 #
 # Build from the monorepo root:
@@ -10,6 +10,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /build
 
+ARG GIT_SHA
+
 RUN apk add --no-cache python3 make g++ git
 
 # Copy workspace manifests first so npm ci layer caches when source changes.
@@ -18,6 +20,8 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/local-setup/package*.json ./packages/local-setup/
 COPY packages/core/package*.json ./packages/core/
 COPY packages/api/package*.json ./packages/api/
+# Vendored braces tarball referenced by the root package.json overrides
+COPY vendor ./vendor
 
 # Install all deps (incl. dev) so we can compile TypeScript. Postinstall
 # scripts must run — better-sqlite3 rebuilds its native binding here.
@@ -28,11 +32,23 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY config ./config
 COPY scripts ./scripts
+COPY docs/docs ./docs/docs
+COPY docs/sidebars.ts docs/mcp.md docs/mcp-coverage.md docs/mcp-operator-surface.md ./docs/
 COPY knexfile.ts ./
 COPY packages/shared ./packages/shared
 COPY packages/local-setup ./packages/local-setup
 COPY packages/core ./packages/core
 COPY packages/api ./packages/api
+# Compile-time input only: scripts/check-client-contract.ts imports the client's
+# operation table. The client is not installed or shipped as a workspace here.
+COPY packages/client/src ./packages/client/src
+# Compile-time input only: scripts/preview-cli-workflow.mjs imports the CLI
+# preview packager. The CLI is not installed or shipped as a workspace here.
+COPY packages/cli/scripts/preview-package.mjs ./packages/cli/scripts/
+
+# Record the exact release and source revision alongside the Markdown that is
+# shipped. sidebars.ts is parsed as text and is never executed by this step.
+RUN GIT_SHA="$GIT_SHA" node scripts/build-docs-manifest.mjs
 
 # Build workspace packages in dependency order, then root.
 RUN cd packages/shared && npm run build \
@@ -44,6 +60,14 @@ RUN cd packages/shared && npm run build \
 # install step above — we keep build toolchain in this stage so any rebuilds
 # during prune succeed.
 RUN npm prune --omit=dev
+
+# npm keeps a workspace's dependency nested (packages/<name>/node_modules) when
+# its range conflicts with the hoisted root tree — e.g. sharp for core and api.
+# Stage those pruned trees, checked against package-lock.json, so the runtime
+# stage receives the complete production closure for every shipped workspace.
+# Workspaces without nested dependencies simply contribute nothing.
+RUN node scripts/stage-app-runtime-dependencies.mjs --root /build --out /runtime-deps \
+    shared local-setup core api
 
 
 # --- Stage 2: runtime ---------------------------------------------------------
@@ -74,7 +98,8 @@ RUN apk add --no-cache git sudo docker-cli curl jq tini util-linux-misc \
     && mkdir -p /tmp/git-processor \
     && git config --system --add safe.directory /usr/src/app/repos \
     && git config --system --add safe.directory /tmp/pr-worktrees \
-    && git config --system --add safe.directory /tmp/git-processor
+    && git config --system --add safe.directory /tmp/git-processor \
+    && git config --system --add safe.directory '/tmp/git-processor/*'
 
 # Copy built artifacts and pruned dependencies from the builder.
 COPY --from=builder /build/node_modules ./node_modules
@@ -87,11 +112,24 @@ COPY --from=builder /build/packages/local-setup/dist ./packages/local-setup/dist
 COPY --from=builder /build/packages/core/package.json ./packages/core/
 COPY --from=builder /build/packages/core/dist ./packages/core/dist
 COPY --from=builder /build/packages/api/package.json ./packages/api/
+# Nested workspace production dependencies, plus dist/packages/<name>/node_modules
+# symlinks so the root build output resolves the same trees.
+COPY --from=builder /runtime-deps/ ./
+
+# MCP-readable documentation. Keep this deliberately limited to Markdown and
+# its manifest so the app image does not inherit the docs site's dependencies,
+# generated website or images.
+COPY --from=builder /build/docs/docs /app/docs/docs
+COPY --from=builder /build/docs/mcp.md /build/docs/mcp-coverage.md /build/docs/mcp-operator-surface.md /build/docs/docs-manifest.json /app/docs/
 
 # Unified agent image build context. The API builds custom CLI version bundles
 # through the mounted Docker socket, using /usr/src/app as the Docker context.
+# Every local COPY source of Dockerfile.agent must be listed here; see
+# scripts/smoke-check-app-agent-build-context.sh, which checks the built image.
 COPY Dockerfile.agent ./Dockerfile.agent
 COPY scripts/agent-entrypoint.sh ./scripts/agent-entrypoint.sh
+COPY scripts/agent-tank-runtime.mjs ./scripts/agent-tank-runtime.mjs
+COPY patches/agent-tank-0.10.0.patch ./patches/agent-tank-0.10.0.patch
 COPY scripts/claude-entrypoint.sh ./scripts/claude-entrypoint.sh
 COPY scripts/codex-entrypoint.sh ./scripts/codex-entrypoint.sh
 COPY scripts/antigravity-entrypoint.sh ./scripts/antigravity-entrypoint.sh
@@ -99,8 +137,8 @@ COPY scripts/opencode-entrypoint.sh ./scripts/opencode-entrypoint.sh
 COPY scripts/opencode-run.sh ./scripts/opencode-run.sh
 COPY scripts/vibe-entrypoint.sh ./scripts/vibe-entrypoint.sh
 COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
-COPY scripts/init-firewall.sh ./scripts/init-firewall.sh
 COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
+COPY scripts/extension-stdio-bridge.mjs ./scripts/extension-stdio-bridge.mjs
 COPY NOTICE ./NOTICE
 COPY THIRD_PARTY_LICENSES.md ./THIRD_PARTY_LICENSES.md
 
@@ -115,7 +153,6 @@ ENTRYPOINT ["/sbin/tini", "--"]
 
 # Default command: daemon. Override at `docker run` for worker / api / etc.
 #   docker run propr/app node dist/src/worker.js
-#   docker run propr/app node dist/src/analysis_worker.js
 #   docker run propr/app node dist/src/indexing_worker.js
 #   docker run propr/app node dist/packages/api/server.js
 #   docker run --rm propr/app node dist/src/migrate.js

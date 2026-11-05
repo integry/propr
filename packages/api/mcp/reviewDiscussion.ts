@@ -3,8 +3,75 @@ import { getProcessedReviewCommentsKey } from '@propr/core';
 import { parseStructuredReview } from '../../../src/jobs/reviewOutputParser.js';
 import type { McpPrincipal } from './policy.js';
 import type { ToolDeps } from './tools.js';
+import { parseCommentAttachments } from '../services/commentAttachmentFetch.js';
 
-interface ReviewComment { id: number; body?: string | null; html_url: string; created_at: string; user: { login: string } | null }
+export interface ReviewComment { id: number; body?: string | null; html_url: string; created_at: string; user: { login: string } | null }
+
+export interface ReviewSummary {
+  score: number | null;
+  reviewedHead: string | null;
+  matchesCurrentHead: boolean | null;
+}
+
+/** Parse the non-prose fields from a ProPR AI review comment. */
+export function summarizeReviewComment(body: string | null | undefined, currentHead: string): ReviewSummary | null {
+  const text = body || '';
+  const marker = /<!-- propr:ai-review\b([^>]*)-->/.exec(text);
+  if (!marker) return null;
+  const reviewedHead = /\bhead="([a-f0-9]{40})"/.exec(marker[1] || '')?.[1] || null;
+  return {
+    score: parseStructuredReview(text).score,
+    reviewedHead,
+    matchesCurrentHead: reviewedHead === null ? null : reviewedHead === currentHead,
+  };
+}
+
+/**
+ * GitHub's per-issue comments REST endpoint pages oldest-first only — it has no
+ * ordering parameters — so reading from the newest end has to go through the
+ * GraphQL comment connection with `last`/`before`.
+ */
+const NEWEST_COMMENTS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$last:Int!,$before:String){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      comments(last:$last,before:$before){
+        pageInfo{hasPreviousPage startCursor}
+        nodes{databaseId body url createdAt author{login}}
+      }
+    }
+  }
+}`;
+
+interface GraphCommentPage {
+  repository: { pullRequest: { comments: {
+    pageInfo: { hasPreviousPage: boolean; startCursor: string | null };
+    nodes: Array<{ databaseId: number | null; body: string | null; url: string; createdAt: string; author: { login: string } | null }>;
+  } | null } | null } | null;
+}
+
+/**
+ * The newest `limit` comments, newest first, with the cursor that continues
+ * backwards through the discussion. `nextCursor` is null at the first comment.
+ */
+export async function readNewestComments(
+  principal: McpPrincipal, target: { repository: string; pullRequest: number; limit: number; before?: string },
+): Promise<{ comments: ReviewComment[]; nextCursor: string | null }> {
+  const [owner, repo] = target.repository.split('/');
+  const response = await principal.github.graphql<GraphCommentPage>(NEWEST_COMMENTS_QUERY, {
+    owner, repo, number: target.pullRequest, last: target.limit, before: target.before ?? null,
+  });
+  const connection = response.repository?.pullRequest?.comments;
+  if (!connection) throw new McpError('NOT_FOUND', 'Pull request discussion is not readable.', 404);
+  // A connection window is always returned oldest-first; newest-first is its reverse.
+  const comments = [...connection.nodes].reverse().map(node => ({
+    id: Number(node.databaseId), body: node.body, html_url: node.url,
+    created_at: node.createdAt, user: node.author ? { login: node.author.login } : null,
+  }));
+  return { comments, nextCursor: connection.pageInfo?.hasPreviousPage ? connection.pageInfo.startCursor : null };
+}
+
+/** The worker's `/fix` only gathers reviews this recent; older ones offer nothing to select. */
+const FIX_REVIEW_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 export async function projectDiscussionComment(deps: ToolDeps, comment: ReviewComment, target: { repository: string; pullRequest: number; head: string; bodyOffset: number }): Promise<Record<string, unknown>> {
   const body = comment.body || '';
@@ -18,18 +85,35 @@ export async function projectDiscussionComment(deps: ToolDeps, comment: ReviewCo
     const key = getProcessedReviewCommentsKey(owner, repo, target.pullRequest);
     const [processedComments, processedFindings] = await Promise.all([deps.redisClient.sMembers(key), deps.redisClient.sMembers(`${key}:findings`)]);
     const parsed = parseStructuredReview(body);
-    const eligible = Date.parse(comment.created_at) >= Date.now() - 7 * 24 * 3600 * 1000 && (reviewedHead === null || reviewedHead === target.head);
+    const recent = Date.parse(comment.created_at) >= Date.now() - FIX_REVIEW_MAX_AGE_MS;
+    const eligible = recent && (reviewedHead === null || reviewedHead === target.head);
     const findings = parsed.actionableFindings.map(finding => {
       const consumed = processedComments.includes(String(comment.id)) || processedFindings.includes(`${comment.id}:F:${finding.id}`);
-      return { ...finding, consumed, current: eligible && !consumed };
+      return { ...finding, consumed, current: eligible && !consumed, selectable: recent && !consumed };
+    });
+    // Suggestions get the identical consumed filtering as findings: a suggestion
+    // an earlier /fix run already implemented must not be selectable again, or a
+    // retry would silently redo work and its receipt would misreport the scope.
+    const suggestions = parsed.suggestions.map(suggestion => {
+      const consumed = processedComments.includes(String(comment.id)) || processedFindings.includes(`${comment.id}:S:${suggestion.id}`);
+      return { ...suggestion, consumed, current: eligible && !consumed, selectable: recent && !consumed };
     });
     review = { ...parsed, actionableFindings: findings, currentFindingIds: findings.filter(finding => finding.current).map(finding => finding.id),
+      suggestions, currentSuggestionIds: suggestions.filter(suggestion => suggestion.current).map(suggestion => suggestion.id),
+      // Head-independent, like the worker's `/fix`: fix_review_findings re-anchors
+      // these onto the current head instead of refusing a review of an older one.
+      selectableFindingIds: findings.filter(finding => finding.selectable).map(finding => finding.id),
+      selectableSuggestionIds: suggestions.filter(suggestion => suggestion.selectable).map(suggestion => suggestion.id),
       reviewedHead, matchesCurrentHead: reviewedHead === null ? null : reviewedHead === target.head,
       partial: /\bpartial="true"/.test(metadata), coverage: reviewedHead === null ? 'legacy_head_unknown' : /\bpartial="true"/.test(metadata) ? 'partial' : 'full_diff',
       taskId: taskId ? decodeTaskId(taskId) : null };
   }
+  // Attachments are discovered across the whole body, not just the returned chunk,
+  // so get_comment_attachment can address every image by index or id.
+  const attachments = parseCommentAttachments(body).map(({ index, attachmentId, type, alt }) => ({ index, attachmentId, type, alt, fetchable: type !== 'video' }));
   return { id: comment.id, url: comment.html_url, author: comment.user?.login, createdAt: comment.created_at,
-    body: body.slice(target.bodyOffset, target.bodyOffset + 4096), nextBodyOffset: target.bodyOffset + 4096 < body.length ? target.bodyOffset + 4096 : null, review };
+    body: body.slice(target.bodyOffset, target.bodyOffset + 4096), nextBodyOffset: target.bodyOffset + 4096 < body.length ? target.bodyOffset + 4096 : null,
+    ...(attachments.length ? { attachments } : {}), review };
 }
 
 export async function readDiscussionComment(principal: McpPrincipal, target: { repository: string; commentId: number; pullRequest: number }) {

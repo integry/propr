@@ -1,25 +1,41 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
+import { analyticsTimeframeStart } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { validateEnum, validateRepositoryFilter } from './validation.js';
-import { loadCompletionStats, loadRecordedSpend, successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
+import { successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
+import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { executionTokenSums, loadModelUsage } from './analyticsModelUsage.js';
+import {
+  loadCacheUsage,
+  loadRecordedSpend,
+  loadRunVolume,
+  loadDailyRuns,
+  loadTaskSummary,
+  activityDays,
+  type CachePriceLookup,
+} from './analyticsAggregates.js';
+import { loadAutonomy, loadDeliveryMetrics } from './analyticsDelivery.js';
+import { createAnalyticsCache, type AnalyticsCache } from './analyticsCache.js';
 
 /** Periods the dashboard's historical stats section can request. */
 export const DASHBOARD_STATS_PERIODS = ['7d', '30d'] as const;
 export type DashboardStatsPeriod = typeof DASHBOARD_STATS_PERIODS[number];
 
-const PERIOD_DAYS: Record<DashboardStatsPeriod, number> = { '7d': 7, '30d': 30 };
-
-/** Window boundaries are whole days so the daily chart buckets line up. */
-function statsWindow(now: Date, days: number): { from: Date; to: Date } {
-  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  return { from: new Date(to.getTime() - days * 24 * 60 * 60 * 1000), to };
-}
-
 interface StatsRoutesDeps {
   db: Knex;
   /** Seam for tests that need a fixed window. */
   now?: () => Date;
+  /**
+   * Prompt and cache-read prices per recorded model name, for the cache
+   * savings estimate. Without one, savings are reported as unknown.
+   */
+  cachePrice?: CachePriceLookup;
+  /**
+   * Remembers the all-time delivery and review-quality aggregations for a
+   * short while; shared with the review score routes so both read one copy.
+   */
+  analyticsCache?: AnalyticsCache;
 }
 
 interface DailyCountRow {
@@ -50,7 +66,6 @@ interface OverviewTaskStats {
 interface UsageAggregation {
   inputTokens: number | string | null;
   outputTokens: number | string | null;
-  cost: number | string | null;
 }
 
 interface ModelCountRow {
@@ -71,26 +86,51 @@ interface RepositoryStatsRow {
   in_progress: number;
 }
 
+/**
+ * The days on which anything happened, in order: those with a task created
+ * and those with only a run started, which the task grouping alone omits.
+ */
+function recordedActivityDays(
+  taskDays: DailyCountRow[], dailyRuns: Map<string, number>,
+): Array<DailyCountRow & { runs: number }> {
+  const tasks = new Map(taskDays.map(day => [day.date, day.count]));
+  return [...new Set([...tasks.keys(), ...dailyRuns.keys()])].sort()
+    .map(date => ({ date, count: tasks.get(date) ?? 0, runs: dailyRuns.get(date) ?? 0 }));
+}
+
 export function createStatsRoutes(deps: StatsRoutesDeps) {
   const { db } = deps;
+  const now = deps.now ?? (() => new Date());
+  const cachePrice: CachePriceLookup = deps.cachePrice ?? (() => null);
+  const aggregationCache = deps.analyticsCache ?? createAnalyticsCache();
 
-  async function getTaskStats(_req: Request, res: Response): Promise<void> {
+  async function getTaskStats(req: Request, res: Response): Promise<void> {
+    const analyticsWindow = readAnalyticsWindow(req, res, now());
+    if (analyticsWindow === false) return;
+
     try {
-      // Get task counts by day for the last 30 days
-      const thirtyDaysAgo = new Date();
+      // Without a period: task counts by day for the last 30 days
+      const thirtyDaysAgo = new Date(now().getTime());
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
 
-      // Daily task counts
-      const dailyCounts = await db('tasks')
-        .select(db.raw("date(created_at) as date"))
-        .count('* as count')
-        .where('created_at', '>=', thirtyDaysAgoStr)
-        .groupByRaw('date(created_at)')
-        .orderBy('date', 'asc') as unknown as DailyCountRow[];
+      // Volume comes from the aggregation the dashboard widget shares. With a
+      // period every bucket in the window is listed, including empty ones:
+      // a day each, or an hour each over the last 24 hours; without one,
+      // totals are all-time and the days are the last 30, so only those 30
+      // are grouped, listing just the days with a task or a run.
+      // Runs beside tasks, per bucket: the compute behind each one's deliverables.
+      const dailySince = analyticsWindow ? undefined : thirtyDaysAgo;
+      const [summary, dailyRuns] = await Promise.all([
+        loadTaskSummary(db, analyticsWindow, 'all', { dailySince }),
+        loadDailyRuns(db, analyticsWindow, dailySince),
+      ]);
+      const dailyCounts: Array<DailyCountRow & { runs: number }> = analyticsWindow
+        ? activityDays(summary.dailyCounts, dailyRuns, analyticsWindow)
+        : recordedActivityDays(summary.dailyCounts, dailyRuns);
 
       // Status distribution from latest task_history entries
-      const statusDistribution = await db('task_history as h')
+      const statusDistributionQuery = db('task_history as h')
         .join(
           db('task_history')
             .select('task_id')
@@ -104,10 +144,15 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         )
         .select('h.state')
         .count('* as count')
-        .groupBy('h.state') as unknown as StatusDistributionRow[];
+        .groupBy('h.state');
+      if (analyticsWindow) {
+        statusDistributionQuery.join('tasks as t', 't.task_id', 'h.task_id');
+        whereCreatedWithin(statusDistributionQuery, 't.created_at', analyticsWindow);
+      }
+      const statusDistribution = await statusDistributionQuery as unknown as StatusDistributionRow[];
 
       // Average processing time by day (for completed tasks)
-      const avgProcessingTime = await db('tasks as t')
+      const avgProcessingTimeQuery = db('tasks as t')
         .join('task_history as h_start', function(this: Knex.JoinClause) {
           this.on('t.task_id', '=', 'h_start.task_id')
               .andOnIn('h_start.state', ['processing', 'claude_execution']);
@@ -119,30 +164,21 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         .select(
           db.raw("date(t.created_at) as date"),
           db.raw("avg((julianday(h_end.timestamp) - julianday(h_start.timestamp)) * 24 * 60) as avg_minutes")
-        )
-        .where('t.created_at', '>=', thirtyDaysAgoStr)
+        );
+      if (analyticsWindow) {
+        whereCreatedWithin(avgProcessingTimeQuery, 't.created_at', analyticsWindow);
+      } else {
+        avgProcessingTimeQuery.where('t.created_at', '>=', thirtyDaysAgoStr);
+      }
+      const avgProcessingTime = await avgProcessingTimeQuery
         .groupByRaw('date(t.created_at)')
         .orderBy('date', 'asc') as unknown as AvgProcessingTimeRow[];
-
-      // Total counts for summary
-      const totalCounts = await db('tasks')
-        .count('* as total')
-        .first() as unknown as CountRow | undefined;
-
-      const completedCount = await db('task_history')
-        .countDistinct('task_id as count')
-        .where('state', 'completed')
-        .first() as unknown as CountRow | undefined;
-
-      const failedCount = await db('task_history')
-        .countDistinct('task_id as count')
-        .where('state', 'failed')
-        .first() as unknown as CountRow | undefined;
 
       res.json({
         dailyCounts: dailyCounts.map((row) => ({
           date: String(row.date),
-          count: Number(row.count)
+          count: Number(row.count),
+          runs: row.runs,
         })),
         statusDistribution: statusDistribution.map((row) => ({
           status: String(row.state),
@@ -152,11 +188,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           date: String(row.date),
           avgMinutes: row.avg_minutes ? Number(Number(row.avg_minutes).toFixed(2)) : 0
         })),
-        summary: {
-          total: Number(totalCounts?.total || 0),
-          completed: Number(completedCount?.count || 0),
-          failed: Number(failedCount?.count || 0)
-        }
+        summary: { total: summary.total, completed: summary.completed, failed: summary.failed }
       });
     } catch (error) {
       console.error('Error in /api/stats/tasks:', error);
@@ -164,10 +196,13 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
-  async function getRepositoryStats(_req: Request, res: Response): Promise<void> {
+  async function getRepositoryStats(req: Request, res: Response): Promise<void> {
+    const analyticsWindow = readAnalyticsWindow(req, res, now());
+    if (analyticsWindow === false) return;
+
     try {
       // Get task counts and success rates per repository
-      const repoStats = await db('tasks as t')
+      const repoStatsQuery = db('tasks as t')
         .leftJoin(
           db('task_history')
             .select('task_id')
@@ -189,7 +224,9 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         )
         .groupBy('t.repository')
         .orderBy('total', 'desc')
-        .limit(20) as unknown as RepositoryStatsRow[];
+        .limit(20);
+      whereCreatedWithin(repoStatsQuery, 't.created_at', analyticsWindow);
+      const repoStats = await repoStatsQuery as unknown as RepositoryStatsRow[];
 
       // Calculate success rates and format response
       const repositories = repoStats.map((row) => {
@@ -216,11 +253,59 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
-  async function getOverview(_req: Request, res: Response): Promise<void> {
+  /** Token, cost and model usage; a period bounds it by when each execution started. */
+  async function loadOverviewUsage(analyticsWindow: AnalyticsWindow | null) {
+    // Cache-inclusive token totals recorded on each execution
+    const tokens = executionTokenSums(db);
+    const usageStatsQuery = db('llm_executions as e')
+      .select(db.raw('? as ??', [tokens.input, 'inputTokens']), db.raw('? as ??', [tokens.output, 'outputTokens']));
+    whereCreatedWithin(usageStatsQuery, 'e.start_time', analyticsWindow);
+    const usageStats = await usageStatsQuery.first() as unknown as UsageAggregation | undefined;
+
+    // The same recorded spend the dashboard widget reports
+    const recordedSpend = await loadRecordedSpend(db, analyticsWindow);
+
+    // Model Distribution - count unique tasks per model from llm_executions.
+    // This is the legacy `usage.models` figure: distinct tasks, not runs.
+    // `model_usage` (loadModelUsage) carries runs per model, and the Models
+    // table only falls back to this one when a server predates it; the two
+    // are kept apart so older clients keep reading the figure they expect.
+    const modelStatsQuery = db('llm_executions')
+      .select('model_name')
+      .countDistinct('task_id as count')
+      .whereNotNull('model_name')
+      .groupBy('model_name')
+      .orderBy('count', 'desc');
+    whereCreatedWithin(modelStatsQuery, 'start_time', analyticsWindow);
+    const modelStats = await modelStatsQuery as unknown as ModelCountRow[];
+
+    // Format model stats as object
+    const modelDistribution: Record<string, number> = {};
+    for (const row of modelStats) {
+      if (row.model_name) {
+        modelDistribution[row.model_name] = Number(row.count);
+      }
+    }
+
+    const inputTokens = Number(usageStats?.inputTokens || 0);
+    const outputTokens = Number(usageStats?.outputTokens || 0);
+    const totalCost = recordedSpend ?? 0;
+    return {
+      total_tokens: inputTokens + outputTokens,
+      input_tokens: inputTokens, output_tokens: outputTokens,
+      total_cost_usd: Number(totalCost.toFixed(2)),
+      models: modelDistribution
+    };
+  }
+
+  async function getOverview(req: Request, res: Response): Promise<void> {
+    const analyticsWindow = readAnalyticsWindow(req, res, now());
+    if (analyticsWindow === false) return;
+
     try {
       // 1. Task Stats - count completed tasks (latest state = completed)
       // Using subquery to get the latest state for each task
-      const taskStats = await db('task_history as h')
+      const taskStatsQuery = db('task_history as h')
         .join(
           db('task_history')
             .select('task_id')
@@ -235,46 +320,35 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         .select(
           db.raw("SUM(CASE WHEN h.state = 'completed' THEN 1 ELSE 0 END) as completed"),
           db.raw("SUM(CASE WHEN h.state = 'pending' THEN 1 ELSE 0 END) as planned")
-        )
-        .first() as unknown as OverviewTaskStats | undefined;
-
-      // 2. Token & Cost Usage from llm_execution_details and llm_executions
-      const usageStats = await db('llm_execution_details')
-        .sum({
-          inputTokens: 'token_count_input',
-          outputTokens: 'token_count_output'
-        })
-        .first() as unknown as UsageAggregation | undefined;
-
-      const costStats = await db('llm_executions')
-        .sum({
-          cost: 'cost_usd'
-        })
-        .first() as unknown as { cost: number | string | null } | undefined;
-
-      // 3. Model Distribution - count unique tasks per model from llm_executions
-      // This gives accurate counts since a task may use multiple models or have retries
-      const modelStats = await db('llm_executions')
-        .select('model_name')
-        .countDistinct('task_id as count')
-        .whereNotNull('model_name')
-        .groupBy('model_name')
-        .orderBy('count', 'desc') as unknown as ModelCountRow[];
-
-      // Format model stats as object
-      const modelDistribution: Record<string, number> = {};
-      for (const row of modelStats) {
-        if (row.model_name) {
-          modelDistribution[row.model_name] = Number(row.count);
-        }
+        );
+      if (analyticsWindow) {
+        taskStatsQuery.join('tasks as t', 't.task_id', 'h.task_id');
+        whereCreatedWithin(taskStatsQuery, 't.created_at', analyticsWindow);
       }
+      const taskStats = await taskStatsQuery.first() as unknown as OverviewTaskStats | undefined;
+
+      // 2-3. Token, cost and model usage
+      const usage = await loadOverviewUsage(analyticsWindow);
+      const modelUsage = await loadModelUsage(db, analyticsWindow, aggregationCache);
+
+      // Run volume, prompt caching, delivery and autonomy. Delivery and
+      // autonomy read PR and task history, so they are remembered briefly
+      // between the page's refreshes; see `analyticsCache`.
+      const [runs, cache, delivery, autonomy] = await Promise.all([
+        loadRunVolume(db, analyticsWindow),
+        loadCacheUsage(db, analyticsWindow, cachePrice),
+        aggregationCache.remember('delivery', analyticsWindow, () => loadDeliveryMetrics(db, analyticsWindow)),
+        aggregationCache.remember('autonomy', analyticsWindow, () => loadAutonomy(db, analyticsWindow)),
+      ]);
 
       // 4. PR Iterations Average - count tasks per unique issue
-      const allIssueIterations = await db('tasks')
+      const allIssueIterationsQuery = db('tasks')
         .select('repository', 'issue_number')
         .count('* as task_count')
         .whereNotNull('issue_number')
-        .groupBy('repository', 'issue_number') as unknown as PrIterationRow[];
+        .groupBy('repository', 'issue_number');
+      whereCreatedWithin(allIssueIterationsQuery, 'created_at', analyticsWindow);
+      const allIssueIterations = await allIssueIterationsQuery as unknown as PrIterationRow[];
 
       // Calculate average iterations across ALL issues
       let prIterationsAvg = 0;
@@ -288,7 +362,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       }
 
       // Count PRs created (completed tasks result in PRs being created)
-      const prsCreated = await db('tasks as t')
+      const prsCreatedQuery = db('tasks as t')
         .join(
           db('task_history')
             .select('task_id')
@@ -302,20 +376,16 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
               .andOn('h.timestamp', '=', 'latest.max_ts');
         })
         .countDistinct('t.issue_number as count')
-        .where('h.state', 'completed')
-        .first() as unknown as CountRow | undefined;
+        .where('h.state', 'completed');
+      whereCreatedWithin(prsCreatedQuery, 't.created_at', analyticsWindow);
+      const prsCreated = await prsCreatedQuery.first() as unknown as CountRow | undefined;
 
-      // 5. Repos Indexed - count repositories with last_indexed_at not null
+      // 5. Repos Indexed - count repositories with last_indexed_at not null.
+      // A point-in-time fact, so a period never narrows it.
       const repoStats = await db('repositories')
         .count('* as count')
         .whereNotNull('last_indexed_at')
         .first() as unknown as CountRow | undefined;
-
-      // Calculate totals
-      const inputTokens = Number(usageStats?.inputTokens || 0);
-      const outputTokens = Number(usageStats?.outputTokens || 0);
-      const totalTokens = inputTokens + outputTokens;
-      const totalCost = Number(costStats?.cost || 0);
 
       res.json({
         tasks: {
@@ -325,11 +395,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           merged_prs: Number(prsCreated?.count || 0),
           total_followups: totalFollowups
         },
-        usage: {
-          total_tokens: totalTokens,
-          total_cost_usd: Number(totalCost.toFixed(2)),
-          models: modelDistribution
-        },
+        usage: { ...usage, cache },
+        model_usage: modelUsage,
+        runs,
+        delivery,
+        autonomy,
         system: {
           repos_indexed: Number(repoStats?.count || 0)
         }
@@ -342,6 +412,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
   /**
    * Period-aware historical stats for the dashboard.
+   *
+   * The widget is a summary of the Analytics page, so it reads the same
+   * aggregation over the same rolling window the page uses for the same
+   * period: its task count, success rate, spend and daily curve always match
+   * the page's totals band and activity chart.
    *
    * Every scalar is nullable: unavailable data is null, never 0. Cost is
    * reported as recorded spend, because only executions that recorded a cost
@@ -361,30 +436,40 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       return;
     }
     const period: DashboardStatsPeriod = periodValidation.value ?? '7d';
-    const days = PERIOD_DAYS[period];
 
     try {
-      const current = statsWindow(deps.now ? deps.now() : new Date(), days);
-      const previous = { from: new Date(current.from.getTime() - days * 24 * 60 * 60 * 1000), to: current.from };
+      const to = now();
+      const from = analyticsTimeframeStart(period, to)!;
+      const current: AnalyticsWindow = { timeframe: period, from, to };
+      // The same number of whole days, ending where the current window starts:
+      // `from` is the current period's first instant, so it is outside the
+      // previous one, whose last whole day is the day before.
+      const previousLastInstant = new Date(from.getTime() - 1);
+      const previous: AnalyticsWindow = {
+        timeframe: period, from: analyticsTimeframeStart(period, previousLastInstant)!, to: from, toExclusive: true,
+      };
 
       const [currentStats, previousStats, currentSpend, previousSpend] = await timeApiStage(
         'dashboard.stats',
         () => Promise.all([
-          loadCompletionStats(db, repository, current),
-          loadCompletionStats(db, repository, previous),
-          loadRecordedSpend(db, repository, current),
-          loadRecordedSpend(db, repository, previous),
+          loadTaskSummary(db, current, repository),
+          loadTaskSummary(db, previous, repository),
+          loadRecordedSpend(db, current, repository),
+          loadRecordedSpend(db, previous, repository),
         ]),
       );
 
       res.json({
         period,
         repository,
+        tasks: currentStats.total,
         completed: currentStats.completed,
+        failed: currentStats.failed,
         successRate: calculateSuccessRate(currentStats.completed, currentStats.failed),
         recordedSpend: currentSpend,
-        dailyCompleted: currentStats.dailyCompleted,
+        dailyTasks: currentStats.dailyCounts,
         previous: {
+          tasks: previousStats.total,
           completed: previousStats.completed,
           successRate: calculateSuccessRate(previousStats.completed, previousStats.failed),
           recordedSpend: previousSpend,

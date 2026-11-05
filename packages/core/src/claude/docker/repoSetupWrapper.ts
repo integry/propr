@@ -1,5 +1,7 @@
+import { repositoryWorkflowExecution, buildWorkflowWrapper, markWorkflowWrapperBuilt } from '../../workflow/workflowExecution.js';
 import type { AgentType } from '../../agents/types.js';
 import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
+import { claudeConfigSeedScript } from './claudeConfigSeed.js';
 
 export { buildAgentContainerResourceArgs };
 
@@ -20,16 +22,19 @@ const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
 };
 
 const WORKSPACE_PATH = '/home/node/workspace';
-const DEFAULT_CACHE_ROOT = '/tmp/git-processor/propr-cache';
+// The shared git-processor tree is mounted read-only in agent containers.
+// Keep setup caches on the container's writable filesystem instead.
+const DEFAULT_CACHE_ROOT = '/tmp/propr-setup-cache';
 
 const REPO_SETUP_WRAPPER_SCRIPT = `
 set -e
 
 entrypoint="$0"
+${claudeConfigSeedScript()}
 setup_script="\${PROPR_WORKSPACE:-/home/node/workspace}/.propr/setup.sh"
 
 export PROPR_WORKSPACE="\${PROPR_WORKSPACE:-/home/node/workspace}"
-export PROPR_CACHE_DIR="\${PROPR_CACHE_DIR:-/tmp/git-processor/propr-cache/\${PROPR_AGENT_TYPE:-agent}}"
+export PROPR_CACHE_DIR="\${PROPR_CACHE_DIR:-/tmp/propr-setup-cache/\${PROPR_AGENT_TYPE:-agent}}"
 
 if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     mkdir -p "$PROPR_CACHE_DIR" 2>/dev/null || true
@@ -89,13 +94,18 @@ export function wrapDockerRunArgsWithRepoSetup(
         ? [beforeImage[0], ...resourceArgs, ...setupEnv, ...beforeImage.slice(1)]
         : [...resourceArgs, ...setupEnv, ...beforeImage];
 
-    return [
+    const execution = repositoryWorkflowExecution.getStore();
+    const args = [
         ...beforeImageWithSetupEnv,
         '--entrypoint', '/bin/bash',
         dockerImage,
         '-lc',
-        REPO_SETUP_WRAPPER_SCRIPT,
+        execution
+            ? buildWorkflowWrapper(execution.workflow, execution.marker)
+            : REPO_SETUP_WRAPPER_SCRIPT,
         ENTRYPOINT_PATHS[agentType],
         ...afterImage
     ];
+    if (execution) markWorkflowWrapperBuilt(args);
+    return args;
 }

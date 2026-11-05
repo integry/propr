@@ -16,6 +16,7 @@ export interface RequestRateLimitPolicies {
   api: RequestRateLimitPolicy;
   auth: RequestRateLimitPolicy;
   discovery: RequestRateLimitPolicy;
+  operator: RequestRateLimitPolicy;
   pairingStart: RequestRateLimitPolicy;
   pairingPoll: RequestRateLimitPolicy;
   webhook: RequestRateLimitPolicy;
@@ -25,6 +26,7 @@ const DEFAULT_POLICIES: RequestRateLimitPolicies = {
   api: { identifier: 'api', limit: 600, windowMs: 60_000 },
   auth: { identifier: 'auth', limit: 30, windowMs: 15 * 60_000 },
   discovery: { identifier: 'desktop-discovery', limit: 60, windowMs: 60_000 },
+  operator: { identifier: 'operator-recovery', limit: 30, windowMs: 60_000 },
   pairingStart: { identifier: 'desktop-pairing-start', limit: 10, windowMs: 15 * 60_000 },
   pairingPoll: { identifier: 'desktop-pairing-poll', limit: 180, windowMs: 15 * 60_000 },
   webhook: { identifier: 'webhook', limit: 300, windowMs: 60_000 },
@@ -112,6 +114,11 @@ export function resolveRequestRateLimitPolicies(
       limit: positiveInteger(environment, 'PROPR_DISCOVERY_RATE_LIMIT_MAX', DEFAULT_POLICIES.discovery.limit),
       windowMs: windowMilliseconds(environment, 'PROPR_DISCOVERY_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.discovery.windowMs),
     },
+    operator: {
+      identifier: 'operator-recovery',
+      limit: positiveInteger(environment, 'PROPR_OPERATOR_RATE_LIMIT_MAX', DEFAULT_POLICIES.operator.limit),
+      windowMs: windowMilliseconds(environment, 'PROPR_OPERATOR_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.operator.windowMs),
+    },
     pairingStart: {
       identifier: 'desktop-pairing-start',
       limit: positiveInteger(environment, 'PROPR_PAIRING_START_RATE_LIMIT_MAX', DEFAULT_POLICIES.pairingStart.limit),
@@ -173,6 +180,8 @@ export function createRequestRateLimiter(policy: RequestRateLimitPolicy): RateLi
 export function createApiRequestRateLimiter(
   environment: RateLimitEnvironment = process.env,
 ): RateLimitRequestHandler {
+  // Authentication has not happened yet, including on the extension gateway.
+  // Every token (valid, malformed or forged) must share the client's IP bound.
   return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).api);
 }
 
@@ -186,6 +195,17 @@ export function createDiscoveryRequestRateLimiter(
   environment: RateLimitEnvironment = process.env,
 ): RateLimitRequestHandler {
   return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).discovery);
+}
+
+/**
+ * Admin recovery/operator endpoints. Mounted after the instance permission
+ * guard, so only authorized operators spend this budget; the pre-auth global
+ * API limiter still bounds everyone else.
+ */
+export function createOperatorRequestRateLimiter(
+  environment: RateLimitEnvironment = process.env,
+): RateLimitRequestHandler {
+  return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).operator);
 }
 
 export function createPairingStartRateLimiter(

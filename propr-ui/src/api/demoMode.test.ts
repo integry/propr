@@ -13,6 +13,8 @@ import {
   TokenRefreshRetryRequiredError,
 } from './proprApi';
 
+import { DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT } from '../desktop/types';
+
 describe('demo mode API helpers', () => {
   afterEach(() => {
     setDesktopConnectionScope(null);
@@ -249,9 +251,58 @@ describe('demo mode API helpers', () => {
     });
 
     await expect(handleApiResponse(response)).rejects.toThrow(
-      'GitHub authorization has expired. Sign in again in a browser, then retry from desktop.'
+      'GitHub authorization is required. Sign in with the same GitHub account'
     );
     expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403])('requests scoped GitHub OAuth recovery for user grant failures (HTTP %s)', async status => {
+    const invalidate = vi.fn();
+    const listener = vi.fn();
+    const scope = { bridge: { connection: { invalidate } } as never, profileId: 'saved-user', transportScope: 'current-scope' };
+    setDesktopConnectionScope(scope);
+    window.addEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, listener);
+    try {
+      for (const code of ['GITHUB_REAUTH_REQUIRED', 'GITHUB_AUTHORIZATION_REQUIRED']) {
+        await expect(handleApiResponse(new Response(JSON.stringify({ code, message: 'private-error-sentinel' }), { status })))
+          .rejects.toThrow('Desktop pairing does not renew GitHub authorization');
+        expect(listener.mock.lastCall?.[0].detail).toEqual({ profileId: scope.profileId, transportScope: scope.transportScope, code });
+      }
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(invalidate).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, listener);
+    }
+  });
+
+  it('discards a grant failure from a previous Desktop transport before recovery', async () => {
+    const bridge = {} as never;
+    setDesktopConnectionScope({ bridge, profileId: 'saved-user', transportScope: 'old-scope' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ code: 'GITHUB_REAUTH_REQUIRED' }), { status: 403 }));
+    const response = await apiFetch('/api/task-submissions', { method: 'POST' });
+    setDesktopConnectionScope({ bridge, profileId: 'another-user', transportScope: 'new-scope' });
+    const listener = vi.fn();
+    window.addEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, listener);
+    try {
+      await expect(handleApiResponse(response)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, listener);
+    }
+  });
+
+  it('does not direct agent owner or repository permission errors into caller OAuth recovery', async () => {
+    setDesktopConnectionScope({ bridge: {} as never, profileId: 'saved-user', transportScope: 'scope' });
+    const listener = vi.fn();
+    window.addEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, listener);
+    try {
+      for (const [code, status] of [['GITHUB_AUTHORIZATION_REQUIRED', 409], ['REPOSITORY_NOT_ACCESSIBLE', 404], ['GITHUB_AUTHORIZATION_UNAVAILABLE', 503]] as const) {
+        await expect(handleApiResponse(new Response(JSON.stringify({ code }), { status }))).rejects.toThrow();
+      }
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, listener);
+    }
   });
 
   it('converts demo read-only 405 responses into a clear error', async () => {

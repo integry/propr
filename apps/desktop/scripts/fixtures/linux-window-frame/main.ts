@@ -1,8 +1,11 @@
-import { app, BrowserWindow, ipcMain, nativeImage, net, protocol, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, screen } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBrowserWindowOptions } from '../../../src/window-options';
 import { synchronizeLinuxWindowFrame } from '../../../src/linux-window-frame';
+import { createApplicationMenuPopup } from '../../../src/application-menu';
+import type { DesktopNativeCommandDispatcher } from '../../../src/native-commands';
+import { isDesktopApplicationMenuRequest } from '../../../src/shared/contract';
 
 // Isolated fixture: production window options/state and renderer components,
 // in-memory profiles, no user session, services, authentication or tray.
@@ -28,6 +31,29 @@ void app.whenReady().then(async () => {
   ipcMain.handle('fixture:minimize', () => window.minimize());
   ipcMain.handle('fixture:toggle-maximize', () => window.isMaximized() ? window.unmaximize() : window.maximize());
   ipcMain.handle('fixture:close', () => window.close());
+  // Real native popup of the production template; commands are only recorded.
+  const menuEvents: string[] = [];
+  Object.assign(globalThis, { __applicationMenuEvents: menuEvents });
+  const commands: DesktopNativeCommandDispatcher = {
+    dispatch: command => { menuEvents.push(`command:${command}`); },
+    getState: () => ({ authenticated: true, nativeNotificationsAvailable: false, nativeNotificationsEnabled: false }),
+    subscribe: () => () => undefined,
+    rendererReady: () => undefined, rendererUnavailable: () => undefined,
+    connectionAvailable: () => undefined, connectionUnavailable: () => undefined,
+    refresh: () => undefined, close: () => undefined,
+  };
+  const applicationMenu = createApplicationMenuPopup<BrowserWindow>({
+    buildFromTemplate: template => {
+      const menu = Menu.buildFromTemplate(template);
+      menu.on('menu-will-show', () => menuEvents.push('show'));
+      menu.on('menu-will-close', () => menuEvents.push('close'));
+      return menu;
+    },
+  }, commands, 'linux');
+  ipcMain.handle('fixture:application-menu', (_event, request) => {
+    if (!isDesktopApplicationMenuRequest(request)) throw new Error('Invalid application menu request');
+    applicationMenu.show(window, request);
+  });
   await window.loadURL('frame-fixture://app/renderer.html');
   window.show();
 });

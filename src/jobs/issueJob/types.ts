@@ -10,6 +10,7 @@ import type { GitHubToken } from '../githubTypes.js';
 export type { GitHubToken };
 
 export interface JobContext {
+  repositoryWorkflow?: import('@propr/core').ResolvedRepositoryWorkflow;
   jobId: string | undefined;
   jobName: string;
   issueRef: IssueJobData;
@@ -28,6 +29,7 @@ export interface JobContext {
 
 export interface CurrentIssueData {
   data: {
+    state?: string;
     title: string;
     body: string | null | undefined;
     body_html?: string;
@@ -48,6 +50,8 @@ export interface IssueComment {
 export interface LabelCheckResult {
   skip: boolean;
   reason?: string;
+  /** Recorded on the skipped job's task, which otherwise stays pending. */
+  terminalReason?: import('@propr/core').TaskTerminalReason;
 }
 
 export interface TaskCompletionParams {
@@ -86,4 +90,6 @@ export interface ExecutionParams {
   githubToken: GitHubToken;
   currentIssueData: CurrentIssueData;
   issueComments: IssueComment[];
+  /** Effective preview settings for the whole run, shared by the prompt and post-processing. */
+  visualPreviewSettings: import('@propr/core').VisualPreviewSettings;
 }

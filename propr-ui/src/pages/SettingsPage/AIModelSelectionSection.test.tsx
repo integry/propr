@@ -55,6 +55,10 @@ describe('AIModelSelectionSection', () => {
       />
     );
 
+    expect(screen.getByText('Fast Analysis Model')).toBeInTheDocument();
+    expect(screen.getByText('Used by /review to gather repository context before the review.')).toBeInTheDocument();
+    expect(screen.queryByText('Post-Implementation Analysis Model')).not.toBeInTheDocument();
+
     const options = within(screen.getByLabelText('Reasoning Level'))
       .getAllByRole('option')
       .map(option => option.textContent);
@@ -70,6 +74,22 @@ describe('AIModelSelectionSection', () => {
       'Ultracode (Claude only) — GitHub: level-ultracode',
       'Auto (Claude only) — GitHub: level-auto'
     ]);
+  });
+
+  it('leaves the experimental dashboard summary toggle out of model selection', () => {
+    render(<AIModelSelectionSection
+      settings={{ analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
+        default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
+        pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0,
+        pr_review_context_budget_percent: 100 }}
+      summarizationSettings={{ enabled: true, agent_alias: '' }} agents={[]}
+      onSettingChange={vi.fn()} onReviewPromptChange={vi.fn()} onReviewPromptBlur={vi.fn()}
+      onReviewContextEnabledChange={vi.fn()} onReviewContextBudgetPercentChange={vi.fn()}
+      onReviewContextBudgetPercentCommit={vi.fn()} onRemoveLegacyReviewCap={vi.fn()}
+      onSummarizationModelChange={vi.fn()} onSummarizationFallbackModelChange={vi.fn()}
+      onDefaultAgentChange={vi.fn()}
+    />);
+    expect(screen.queryByRole('checkbox', { name: /Dashboard/ })).not.toBeInTheDocument();
   });
 
   it('can disable related-code context gathering', () => {
@@ -103,7 +123,8 @@ describe('AIModelSelectionSection', () => {
     expect(onEnabledChange).toHaveBeenCalledWith(false);
   });
 
-  it('offers synthetic catalog models for planning and review', () => {
+  it('offers readable synthetic models and submits their internal values', () => {
+    const submittedSettings: Array<{ name: string; value: string }> = [];
     render(
       <AIModelSelectionSection
         settings={{
@@ -120,7 +141,9 @@ describe('AIModelSelectionSection', () => {
           enabled: true,
           supportedModels: ['virtual-code']
         }]}
-        onSettingChange={vi.fn()}
+        onSettingChange={event => {
+          submittedSettings.push({ name: event.target.name, value: event.target.value });
+        }}
         onReviewPromptChange={vi.fn()}
         onReviewPromptBlur={vi.fn()}
         onReviewContextEnabledChange={vi.fn()}
@@ -134,9 +157,14 @@ describe('AIModelSelectionSection', () => {
     );
 
     for (const label of ['Plan Context Analysis Model', 'Plan Generation Model', 'Default PR Review Model', 'Context Scout Model']) {
-      expect(within(screen.getByLabelText(label)).getByRole('option', { name: 'balanced - virtual-code' }))
+      expect(within(screen.getByLabelText(label)).getByRole('option', { name: 'balanced - Virtual Code' }))
         .toHaveValue('balanced:virtual-code');
     }
+
+    fireEvent.change(screen.getByLabelText('Plan Generation Model'), {
+      target: { value: 'balanced:virtual-code' },
+    });
+    expect(submittedSettings).toEqual([{ name: 'planner_generation_model', value: 'balanced:virtual-code' }]);
   });
 
   it('does not put a raw attacker flow on the AI Agents link when no active flow exists', () => {

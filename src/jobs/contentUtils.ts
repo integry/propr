@@ -49,10 +49,10 @@ function getSignedUrlIfAvailable(url: string, signedUrls: Map<string, string>, l
         if (assetIdMatch) {
             const signedUrl = signedUrls.get(assetIdMatch[1].toLowerCase());
             if (signedUrl) {
-                logger.debug({ originalUrl: url, signedUrl }, 'Using signed URL for GitHub user-attachment');
+                logger.debug({ assetId: assetIdMatch[1] }, 'Using signed URL for GitHub user-attachment');
                 return signedUrl;
             } else {
-                logger.warn({ url, assetId: assetIdMatch[1] }, 'No signed URL found for GitHub user-attachment');
+                logger.warn({ assetId: assetIdMatch[1] }, 'No signed URL found for GitHub user-attachment');
             }
         }
     }
@@ -126,10 +126,10 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
             // Replace only this specific occurrence by reconstructing the image syntax
             const newImageSyntax = `![${alt}](${relativePath})`;
             newContent = newContent.replace(fullMatch, newImageSyntax);
-            logger.info({ url, localPath: relativePath }, 'Successfully localized remote markdown image');
-        } catch (e) {
+            logger.info({ localPath: relativePath }, 'Successfully localized remote markdown image');
+        } catch {
             // If download fails, keep the original URL
-            logger.warn({ url, error: (e as Error).message }, 'Failed to localize markdown image, keeping remote URL');
+            logger.warn('Failed to localize markdown image, keeping remote URL');
         }
     }
 
@@ -144,10 +144,10 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
             // Replace the src URL in the img tag while preserving other attributes
             const newImgTag = fullMatch.replace(url, relativePath);
             newContent = newContent.replace(fullMatch, newImgTag);
-            logger.info({ url, localPath: relativePath }, 'Successfully localized remote HTML image');
-        } catch (e) {
+            logger.info({ localPath: relativePath }, 'Successfully localized remote HTML image');
+        } catch {
             // If download fails, keep the original URL
-            logger.warn({ url, error: (e as Error).message }, 'Failed to localize HTML image, keeping remote URL');
+            logger.warn('Failed to localize HTML image, keeping remote URL');
         }
     }
 

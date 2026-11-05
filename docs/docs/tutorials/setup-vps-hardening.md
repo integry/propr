@@ -1,5 +1,8 @@
 ---
 sidebar_position: 5
+sidebar_label: "Advanced VPS Hardening"
+title: "Harden a ProPR VPS with Cloudflare Zero Trust"
+description: "Add Cloudflare Tunnel and optional Access policies to a secured ProPR VPS while preserving GitHub webhook delivery."
 ---
 
 # Advanced VPS Hardening
@@ -299,13 +302,14 @@ add routes:
       skips SSO, the bypass is matching by bare prefix and is over-scoped —
       narrow it until only the exact `/webhook` endpoint is exempt.
 
-## Next Steps
+## Next steps
 
 **Resume at [Secure VPS Deployment](./setup-vps.md#10-restrict-who-can-trigger-propr)
 step 10** (Restrict Who Can Trigger ProPR) — do **not** go back to step 9, which
 provisions public TLS with
 Certbot and nginx and would re-expose the public web ports this tunnel setup
 deliberately avoids. Step 10 finishes configuring the application; then verify and
-start the stack. For ongoing operations, see
-[Deployment](../operations/deployment.md) and
-[Maintenance](../operations/maintenance.md).
+start the stack.
+
+- [Production deployment](../operations/deployment.md)
+- [Maintenance and troubleshooting](../operations/maintenance.md)

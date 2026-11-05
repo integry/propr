@@ -1,3 +1,4 @@
+import { configureGitRemoteAuthentication } from '../../git/repoBranching.js';
 /**
  * Git branch operations for the planning service.
  */
@@ -14,6 +15,7 @@ import type { MinimalLogger } from './planningTypes.js';
 export async function checkoutBranch(repoPath: string, branch: string): Promise<void> {
   const git = createHooklessGit(repoPath);
   try {
+    await configureGitRemoteAuthentication(git);
     await git.fetch(['origin', '--prune']);
   } catch (e) {
     logger.warn({ repoPath, branch, error: (e as Error).message }, 'Failed to fetch');

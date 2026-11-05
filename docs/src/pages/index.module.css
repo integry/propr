@@ -53,6 +53,12 @@
   margin-right: 0.45rem;
 }
 
+.signInNote {
+  max-width: 760px;
+  margin: 1.25rem auto 0;
+  color: var(--ifm-color-emphasis-700);
+}
+
 .icon {
   width: 18px;
   height: 18px;

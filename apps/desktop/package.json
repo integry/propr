@@ -1,10 +1,10 @@
 {
   "name": "@propr/desktop",
   "productName": "ProPR Desktop",
-  "version": "0.8.15",
+  "version": "0.9.1",
   "private": true,
   "description": "Secure ProPR desktop application",
-  "author": "Unchained Development OÜ / Rinalds Uzkalns",
+  "author": "Unchained Development O\u00dc / Rinalds Uzkalns",
   "license": "Apache-2.0",
   "dependencies": {
     "@propr/cli": "*",
@@ -47,7 +47,8 @@
     "premake:deb": "npm run prepare:renderer",
     "make:deb": "PROPR_DESKTOP_ENABLE_DEB=1 electron-forge make --targets deb",
     "premake:rpm": "npm run prepare:renderer",
-    "make:rpm": "PROPR_DESKTOP_ENABLE_RPM=1 electron-forge make --targets rpm"
+    "make:rpm": "PROPR_DESKTOP_ENABLE_RPM=1 electron-forge make --targets rpm",
+    "smoke:live-github": "node scripts/run-live-github-smoke.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.0-alpha.10",
@@ -62,9 +63,9 @@
     "@types/node": "^22.10.0",
     "@vitejs/plugin-react": "^4.6.0",
     "axe-core": "4.10.3",
-    "electron": "^44.0.0",
+    "electron": "^45.0.0",
     "playwright": "^1.62.1",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "socket.io": "^4.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

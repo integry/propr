@@ -5,10 +5,12 @@ import { generateKeyPair, exportJWK, SignJWT, decodeJwt, calculateJwkThumbprint 
 import knex from 'knex';
 import { closeConnection } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
+import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
 import { McpStore, digest } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { MCP_CONNECT_CONTRACT } from '../mcp/connect.js';
 import { McpPolicy } from '../mcp/policy.js';
+import type { McpScope } from '../mcp/config.js';
 import { configureDemoMode } from '../demoMode.js';
 
 after(async () => closeConnection());
@@ -18,6 +20,7 @@ test('signed hosted delegation enforces issuer/audience/instance, current grant 
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await db.schema.createTable('task_drafts', table => table.string('draft_id').primary());
   await up(db);
+  await lifecycleMigration(db);
   await db.schema.createTable('instance_members', table => { table.string('github_user_id').primary(); table.string('role'); table.string('source'); });
   await db('instance_members').insert({ github_user_id: '123', role: 'member', source: 'local' });
   const key = await generateKeyPair('ES256');
@@ -72,6 +75,17 @@ test('signed hosted delegation enforces issuer/audience/instance, current grant 
     const principal = await policy.authenticate(token);
     assert.deepEqual(principal.scopes, ['read']);
     assert.deepEqual(principal.grant.repositories, ['acme/repo']);
+    // The admin ceiling bounds a valid delegation's scopes, read live like the server's resolver-backed callback.
+    let ceiling: McpScope[] = ['read', 'plan', 'review'];
+    const ceiled = new McpPolicy(new McpOAuthProvider(store, config, () => ceiling), { ...config, scopeCeiling: ceiling });
+    const wide = await issue({ scopes: ['read', 'review', 'execute', 'merge'] });
+    const bounded = await ceiled.authenticate(wide);
+    assert.deepEqual(bounded.scopes, ['read', 'review']);
+    assert.throws(() => ceiled.requireScope(bounded, 'execute'), { code: 'INSUFFICIENT_SCOPE' });
+    ceiling = [];
+    const narrowed = await ceiled.authenticate(wide);
+    assert.deepEqual(narrowed.scopes, ['read'], 'a narrowed Settings ceiling applies to the next request');
+    assert.throws(() => ceiled.requireScope(narrowed, 'review'), { code: 'INSUFFICIENT_SCOPE' });
     const before = checks; await policy.authenticate(token); assert.equal(checks, before + 1);
     await assert.rejects(policy.authenticate(await issue({ instance_id: 'wrong-instance' })), /binding/);
     await assert.rejects(policy.authenticate(await issue({ contract_version: 2 })), { code: 'INSTANCE_VERSION_MISMATCH', status: 409 });

@@ -1,3 +1,5 @@
+import { redactDetails, redactSecrets, type McpErrorEnvelope, type McpErrorStage } from './errorEnvelope.js';
+
 export const MCP_SCOPES = ['read', 'plan', 'publish', 'execute', 'review', 'merge', 'deploy', 'manage'] as const;
 export type McpScope = typeof MCP_SCOPES[number];
 
@@ -20,7 +22,15 @@ function httpsUrl(value: string | undefined, name: string): string {
   return url.href;
 }
 
-export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfig | undefined {
+export interface LoadMcpConfigOptions {
+  /**
+   * Hosted UI tunnel mode. The tunnel token stays with the cloudflared sidecar
+   * there, so an enabled tunnel with its instance id is enough for Connect.
+   */
+  hostedTunnel?: boolean;
+}
+
+export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env, options: LoadMcpConfigOptions = {}): McpConfig | undefined {
   if (env.MCP_ENABLED !== 'true') return undefined;
   const origin = new URL(httpsUrl(env.MCP_PUBLIC_ORIGIN, 'MCP_PUBLIC_ORIGIN')).origin;
   if (new URL(env.MCP_PUBLIC_ORIGIN!).pathname !== '/') throw new Error('MCP_PUBLIC_ORIGIN must have no path');
@@ -29,22 +39,69 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfig |
   if (encryptionKey.length !== 32) throw new Error('MCP_ENCRYPTION_KEY must contain 32 random bytes encoded as base64');
   const config: McpConfig = { origin, resource: `${origin}/api/mcp`, instanceId: env.MCP_INSTANCE_ID, encryptionKey };
   if (env.MCP_CONNECT_TRUST === 'true') {
-    config.connect = loadConnectConfig(env, config.instanceId);
+    config.connect = loadConnectConfig(env, config.instanceId, options);
   }
   return config;
 }
 
+/** Largest serialized tool result (`data`) the executor returns; larger results are RESULT_TOO_LARGE. */
+export const MAX_TOOL_RESULT_BYTES = 256 * 1024;
+
+/**
+ * Largest JSON body accepted at /api/mcp, enforced by the endpoint's own parser
+ * before authentication, and by the SDK on a body it reads itself. It matches
+ * the limit every MCP request already had under the API's default parser, so no
+ * existing workflow changes. A 192 KiB upload is about 256 KiB as base64, and
+ * long plans fit with room to spare. The SDK default is 4 MiB.
+ */
+export const MCP_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Largest number of array elements plus object keys in one tool call's
+ * arguments, checked by the SDK before schema validation and the tool itself.
+ * Every bounded tool schema needs at most a few hundred (mcpToolInputBudget.test.ts
+ * computes them); synthetic agent compositions are the only unbounded inputs,
+ * and this leaves them room for dozens of models with many members each.
+ */
+export const MCP_MAX_TOOL_INPUT_ELEMENTS = 10_000;
+
 export class McpError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status = 400) { super(message); }
+  readonly stage: McpErrorStage | null;
+  readonly retryable: boolean;
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status = 400,
+    options: { stage?: McpErrorStage | null; retryable?: boolean; details?: Record<string, unknown> } = {},
+  ) {
+    super(message);
+    this.name = 'McpError';
+    this.stage = options.stage ?? null;
+    this.retryable = options.retryable ?? false;
+    this.details = options.details;
+  }
+
+  toEnvelope(): McpErrorEnvelope {
+    return {
+      code: this.code,
+      message: redactSecrets(this.message),
+      stage: this.stage,
+      retryable: this.retryable,
+      status: this.status,
+      ...(this.details ? { details: redactDetails(this.details) } : {}),
+    };
+  }
 }
 
-function loadConnectConfig(env: NodeJS.ProcessEnv, instanceId: string): McpConfig['connect'] {
+function loadConnectConfig(env: NodeJS.ProcessEnv, instanceId: string, options: LoadMcpConfigOptions): McpConfig['connect'] {
   const installationId = Number(env.GH_INSTALLATION_ID);
   // Existing tunnel setup stores the registry UUID in PROPR_INSTANCE_ID. It
   // is a routing address, separate from the persistent MCP instance identity.
   const tunnelId = env.MCP_CONNECT_TUNNEL_ID || env.PROPR_INSTANCE_ID;
   if (!/^[1-9][0-9]*$/.test(env.GH_INSTALLATION_ID || '') || !Number.isSafeInteger(installationId) || installationId <= 0 || !env.PROPR_GH_RELAY_TOKEN?.startsWith('prt_')
-    || !tunnelId || !/^[a-zA-Z0-9_-]{1,100}$/.test(tunnelId) || env.PROPR_UI_TUNNEL_ENABLED !== 'true' || !env.PROPR_UI_TUNNEL_TOKEN) {
+    || !tunnelId || !/^[a-zA-Z0-9_-]{1,100}$/.test(tunnelId) || env.PROPR_UI_TUNNEL_ENABLED !== 'true' || (!env.PROPR_UI_TUNNEL_TOKEN && !options.hostedTunnel)) {
     throw new Error('MCP Connect requires GH_INSTALLATION_ID, PROPR_GH_RELAY_TOKEN, PROPR_INSTANCE_ID (or MCP_CONNECT_TUNNEL_ID) and an enabled configured UI tunnel');
   }
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{15,99}$/.test(instanceId)) throw new Error('Connect instance identity must be a persistent 16–100 character identifier');

@@ -3,11 +3,21 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'node:child_process';
 import { VibeAgent, getMistralApiKeyFromSettings, parseVibeConversationLog, parseVibeOutput, readLatestVibeSessionTokenUsage } from '../packages/core/src/agents/impl/VibeAgent.js';
 import { executeDockerCommand } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
+
+// Native-host fixtures: provider `~/...` defaults expand against HOME rather
+// than requiring a launcher host mapping, even when the suite runs in a container.
+const previousContainerized = process.env.PROPR_CONTAINERIZED;
+process.env.PROPR_CONTAINERIZED = '0';
+after(() => {
+    if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED;
+    else process.env.PROPR_CONTAINERIZED = previousContainerized;
+});
 
 after(async () => {
     await closeConnection();
@@ -407,7 +417,7 @@ describe('VibeAgent Docker args', () => {
             assert.strictEqual(args[envFileIndex + 1], '/tmp/propr-vibe-agent.env');
             assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
             assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
-            assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+            assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/propr-setup-cache/vibe'));
             assert.ok(args.includes('VIBE_MAX_TURNS=12'));
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
 
@@ -456,6 +466,40 @@ describe('VibeAgent Docker args', () => {
                 process.env.HOME = previousHome;
             }
             fs.rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    test('containerized API-key-only execution runs without a mapped default config directory', () => {
+        // A usable backend-HOME ~/.vibe must never be mounted in place of the missing host mapping.
+        const backendHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-backend-home-'));
+        fs.mkdirSync(path.join(backendHome, '.vibe'));
+        fs.writeFileSync(path.join(backendHome, '.vibe', 'credentials.json'), '{}');
+        const keys = ['HOME', 'PROPR_CONTAINERIZED', 'HOST_VIBE_DIR', 'VIBE_CONFIG_PATH', 'MISTRAL_API_KEY'] as const;
+        const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+        try {
+            for (const key of keys) delete process.env[key];
+            process.env.HOME = backendHome;
+            process.env.PROPR_CONTAINERIZED = '1';
+            const agent = createAgent({ configPath: '~/.vibe' });
+            const args = buildArgs(agent, { mistralApiKey: 'mistral-key', envFilePath: '/tmp/propr-vibe-agent.env' });
+
+            assert.ok(!args.some(arg => arg.endsWith(':/home/node/.vibe:ro')), 'no config directory is mounted');
+            assert.ok(!args.some(arg => arg.startsWith(backendHome)), 'backend HOME is never mounted');
+            const diagnostics = (agent as unknown as {
+                diagnosticContext(nativeRoot: string, mistralApiKey?: string): { configPath?: string; authenticationRoot?: string; nativeCredentialContextComplete?: boolean };
+            }).diagnosticContext('/tmp/vibe-runtime-home', 'mistral-key');
+            assert.strictEqual(diagnostics.configPath, undefined);
+            assert.strictEqual(diagnostics.authenticationRoot, '/tmp/vibe-runtime-home');
+            assert.strictEqual(diagnostics.nativeCredentialContextComplete, true);
+
+            // Without an API key the directory is required, so the unmapped default is refused.
+            assert.throws(() => buildArgs(agent), /no host mapping.*HOST_VIBE_DIR/);
+        } finally {
+            for (const key of keys) {
+                if (previous[key] === undefined) delete process.env[key];
+                else process.env[key] = previous[key];
+            }
+            fs.rmSync(backendHome, { recursive: true, force: true });
         }
     });
 
@@ -545,5 +589,77 @@ describe('Docker command stdin delivery', () => {
 
         assert.strictEqual(result.exitCode, 0);
         assert.strictEqual(result.stdout, 'prompt from stdin');
+    });
+});
+
+
+test('GLM selection supplies a Mistral preset for execution and read-only analysis', () => {
+    withRestoredEnv(() => {
+        process.env.MISTRAL_API_KEY = 'test-key';
+        for (const modelName of ['zai-glm-5-3', 'zai-glm-5-2']) {
+            for (const mode of ['execute', 'analysis'] as const) {
+                const args = buildArgs(createAgent(), { modelName, mode });
+                assert.ok(args.includes(`VIBE_ACTIVE_MODEL=${modelName}`));
+                const prefix = `VIBE_MODELS__${modelName}=`;
+                const preset = JSON.parse(args.find(arg => arg.startsWith(prefix))!.slice(prefix.length));
+                assert.strictEqual(preset.name, modelName);
+                assert.strictEqual(preset.alias, modelName);
+                assert.strictEqual(preset.provider, 'mistral');
+                assert.strictEqual(preset.thinking, 'high');
+                assert.ok(!args.some(arg => arg.includes('test-key')));
+            }
+        }
+        assert.ok(!buildArgs(createAgent()).some(arg => arg.startsWith('VIBE_MODELS__')));
+    });
+});
+
+
+// Optional contract check against the actual pinned PyPI package (no API calls).
+// PROPR_VIBE_PYTHON=/path/to/venv/bin/python npx tsx --test test/vibeAgent.test.ts
+// Install mistral-vibe==2.25.8 in that venv first.
+test('installed Vibe resolves Docker model overrides and preserves user models', {
+    skip: !process.env.PROPR_VIBE_PYTHON,
+}, () => {
+    withRestoredEnv(() => {
+        process.env.MISTRAL_API_KEY = 'test-key';
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-contract-'));
+        try {
+            fs.writeFileSync(path.join(home, 'config.toml'),
+                'active_model = "local"\n[[models]]\nname = "private-model"\nprovider = "llamacpp"\nalias = "private"\n');
+            for (const modelName of ['mistral-medium-3.5', 'zai-glm-5-3', 'zai-glm-5-2']) {
+                const args = buildArgs(createAgent(), { modelName, mode: 'analysis' });
+                const env = { ...process.env, VIBE_HOME: home };
+                for (let i = 0; i < args.length - 1; i++) {
+                    if (args[i] !== '-e') continue;
+                    const entry = args[++i];
+                    const separator = entry.indexOf('=');
+                    if (entry.startsWith('VIBE_ACTIVE_MODEL=') || entry.startsWith('VIBE_MODELS__')) {
+                        env[entry.slice(0, separator)] = entry.slice(separator + 1);
+                    }
+                }
+                const result = spawnSync(process.env.PROPR_VIBE_PYTHON!, ['-c', `
+import asyncio, json
+from importlib.metadata import version
+from vibe.core.config.harness_files import init_harness_files_manager
+from vibe.core.config.default_orchestrator import build_default_orchestrator
+assert version("mistral-vibe") == "2.25.8"
+init_harness_files_manager("user")
+async def main():
+    config = (await build_default_orchestrator()).config
+    model = config.get_active_model()
+    assert "private" in config.models and "local" in config.models
+    assert config.get_provider_for_model(model).api_key_env_var == "MISTRAL_API_KEY"
+    print(json.dumps({"alias": model.alias, "name": model.name, "provider": model.provider}))
+asyncio.run(main())
+`], { env, encoding: 'utf8' });
+                assert.equal(result.status, 0, result.stderr);
+                const selected = JSON.parse(result.stdout);
+                assert.equal(selected.alias, modelName);
+                assert.equal(selected.provider, 'mistral');
+                assert.equal(selected.name, modelName === 'mistral-medium-3.5' ? 'mistral-vibe-cli-latest' : modelName);
+            }
+        } finally {
+            fs.rmSync(home, { recursive: true, force: true });
+        }
     });
 });

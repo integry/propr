@@ -14,6 +14,7 @@ import {
   NOW,
   seedTask,
 } from './dashboardTestHarness.js';
+import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
 let database: Knex;
 
@@ -128,14 +129,14 @@ test('the production projector reports an empty stream only when its persisted f
   // No active Redis output for either task, so both fall back to persisted
   // output; that database read fails for one of them.
   let failPersistedRead = false;
-  const redisClient = {
+  const redisClient = withLiveOutputReads({
     get: async (key: string) => {
       failPersistedRead = key === 'agent:output:unreadable-task';
       return null;
     },
     sMembers: async () => ['worker:0'],
     hGetAll: async () => ({ 'worker:0': '1' }),
-  } as unknown as RedisClientType;
+  }) as unknown as RedisClientType;
   const db = new Proxy(database, {
     apply(target, thisArg, args: unknown[]) {
       if (failPersistedRead && args[0] === 'task_history') throw new Error('database unavailable');

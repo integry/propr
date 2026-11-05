@@ -376,6 +376,7 @@ describe('synthetic direct-agent integrity and catalog', () => {
         },
         loadRepositories: async () => [],
         loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
+        loadUltrafixDefaults: async () => ({ ratingGoal: 7, maxCycles: 5 }),
       },
     });
     const { response, record } = responseRecorder();
@@ -388,6 +389,7 @@ describe('synthetic direct-agent integrity and catalog', () => {
           id: 'direct-agent-id',
           kind: 'direct',
           alias: 'codex-primary',
+          type: 'codex',
           enabled: true,
           supportedModels: ['gpt-5.6-sol'],
           defaultModel: 'gpt-5.6-sol',
@@ -403,6 +405,7 @@ describe('synthetic direct-agent integrity and catalog', () => {
       ],
       repositories: [],
       defaultAgentAlias: 'balanced-pool',
+      ultrafixDefaults: { ratingGoal: 7, maxCycles: 5 },
     });
 
     const legacy = responseRecorder();
@@ -414,12 +417,14 @@ describe('synthetic direct-agent integrity and catalog', () => {
           id: 'direct-agent-id',
           kind: 'direct',
           alias: 'codex-primary',
+          type: 'codex',
           enabled: true,
           supportedModels: ['gpt-5.6-sol'],
           defaultModel: 'gpt-5.6-sol',
         },
       ],
       repositories: [],
+      ultrafixDefaults: { ratingGoal: 7, maxCycles: 5 },
     });
     assert.equal(syntheticLoads, 1);
   });

@@ -1,5 +1,5 @@
 /**
- * Completed: a flat feed of work that finished, newest first.
+ * Completed: one row per entity, showing its newest successful outcome.
  *
  * Every row here completed, so no row says so — a status column that repeats
  * one word down the whole feed is noise. Failures are not listed: they are in
@@ -15,13 +15,13 @@
  * top, so the heading carries a title filter instead of a period toggle.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
-import { getDashboardOutcomes, type DashboardOutcomesResponse, type OutcomeItem } from '../../api/dashboardApi';
+import { getDashboardOutcomes, getDashboardOutcomeHistory, OutcomeHistoryStaleError, type DashboardOutcomesResponse, type OutcomeItem } from '../../api/dashboardApi';
+import { getAuthenticatedApiReadScopeGeneration } from '../../api/apiClient';
 import { ScoreBadge } from '../TaskList/ScoreBadge';
 import {
   RepositoryLabel,
-  RowDetail,
   RowLink,
   RowMetaLines,
   RowTitle,
@@ -32,6 +32,7 @@ import {
   SectionHeading,
   SectionSkeleton,
   WorkReference,
+  WorkTypeBadge,
 } from './sectionPrimitives';
 import {
   type DashboardSectionProps,
@@ -44,22 +45,181 @@ import { splitWorkTitle } from './workTitle';
 
 /** Completions read per request. */
 const FETCH_LIMIT = 50;
-const VISIBLE_ITEMS = 8;
-
-/** Rows drawn rather than folded behind a toggle, as in "Happening now". */
-const OVERFLOW_SLACK = 1;
+const VISIBLE_ITEMS = 5;
 
 /** How long typing has to pause before the filter reads again. */
 const SEARCH_DEBOUNCE_MS = 300;
 
-const CompletedRow: React.FC<{ item: OutcomeItem }> = ({ item }) => {
+// Recorded run metadata takes precedence over the task's mutable title.
+const RECORDED_WORK_TYPES: Record<string, string> = { review: 'Review', fix: 'Fix', 'follow-up': 'Follow-up', merge: 'Merge' };
+
+/** Compact only the structured review prefix; retain the actual findings verbatim. */
+function compactDelta(detail: string): string {
+  const summary = detail.replace(/\s+/g, ' ').trim();
+  const findings = /^(?:([0-9]+) issues? found|Found ([0-9]+) issues?):\s*(.+)$/i.exec(summary);
+  if (!findings) return summary;
+  const count = findings[1] ?? findings[2];
+  return `${findings[3].replace(/;\s+/g, ' & ')} (${count} ${count === '1' ? 'issue' : 'issues'})`;
+}
+
+function updateType(update: OutcomeItem, type: string | null): string {
+  const detail = update.detail ?? '';
+  // Some older runs record only "pr-comment" or "Follow-up" as their type.
+  // Prefer explicit review evidence, then validation-only recaps. A fix that
+  // merely mentions passing validation must remain a fix.
+  if (update.taskType === 'review' || type === 'Review' || update.score != null || /^Review\b/i.test(detail)) return 'Review';
+  if (/^(?:validation|verification|validate|verify)$/i.test(type ?? '')
+    || (/\bno (?:further )?changes\b/i.test(detail) && /\b(?:verified|lint passed|tests? passed)\b/i.test(detail))) return 'Verify';
+  if (/^ci(?: checks?)?$/i.test(type ?? '') || /^CI checks? (?:passed|completed)\b/i.test(detail)) return 'CI';
+  if ((type === 'Follow-up' || type === 'PR comment') && /^(?:Fixed|Implemented|Applied|Repaired|Removed)\b/i.test(detail)) return 'Fix';
+  return type ?? 'Task';
+}
+
+function compactElapsedLabel(at: string): string {
+  return elapsedLabel(at)
+    .replace('less than a minute', '<1m')
+    .replace(/ mins?$/, 'm')
+    .replace(/ hrs?$/, 'h')
+    .replace(/ days?$/, 'd');
+}
+
+/** Pages belong to an entity revision and authenticated connection, never a task ID alone. */
+function useOutcomeHistory(item: OutcomeItem, expanded: boolean, onStale: () => void) {
+  const scope = getAuthenticatedApiReadScopeGeneration();
+  const key = JSON.stringify([scope, item.repository, item.entityId, item.revision]);
+  const empty = { key, items: [] as OutcomeItem[], nextCursor: null as string | null, loaded: false };
+  const cache = useRef(empty);
+  if (cache.current.key !== key) cache.current = empty;
+  const [view, setView] = useState({ ...empty, loading: false, error: '' });
+  const sequence = useRef(0);
+  const activeKey = useRef(key);
+  activeKey.current = key;
+  const { repository, entityId, revision } = item;
+  const loadPage = useCallback(async (more = false) => {
+    if (!entityId || !revision) return;
+    const cursor = more ? cache.current.nextCursor : null;
+    if (more && !cursor) return;
+    const request = ++sequence.current;
+    setView({ ...cache.current, loading: true, error: '' });
+    try {
+      const page = await getDashboardOutcomeHistory(repository, entityId, revision, cursor);
+      if (request !== sequence.current || activeKey.current !== key || scope !== getAuthenticatedApiReadScopeGeneration()) return;
+      cache.current = { key, items: more ? [...cache.current.items, ...page.items] : page.items,
+        nextCursor: page.nextCursor, loaded: true };
+      setView({ ...cache.current, loading: false, error: '' });
+    } catch (error) {
+      if (request !== sequence.current || activeKey.current !== key || scope !== getAuthenticatedApiReadScopeGeneration()) return;
+      if (error instanceof OutcomeHistoryStaleError) {
+        cache.current = { key, items: [], nextCursor: null, loaded: false };
+        onStale();
+      }
+      setView({ ...cache.current, loading: false,
+        error: error instanceof OutcomeHistoryStaleError ? error.message : 'Unable to load earlier updates' });
+    }
+  }, [key, scope, repository, entityId, revision, onStale]);
+  useEffect(() => {
+    if (expanded) {
+      if (!cache.current.loaded) void loadPage();
+      else setView({ ...cache.current, loading: false, error: '' });
+    }
+    return () => { sequence.current += 1; };
+  }, [expanded, loadPage]);
+  return { ...(view.key === key ? view : { ...empty, loading: expanded, error: '' }),
+    loadMore: () => void loadPage(true), retry: () => void loadPage(cache.current.loaded) };
+}
+
+function EarlierUpdates({ item, title, updates, history }: {
+  item: OutcomeItem;
+  title: string;
+  updates: OutcomeItem[];
+  history: ReturnType<typeof useOutcomeHistory>;
+}) {
+  return (
+    <>
+      {history.loading && <li role="status" className="text-xs text-slate-500">Loading earlier updates…</li>}
+      {history.error && <li className="text-xs text-slate-600" role="alert">
+        {history.error} <button type="button" onClick={history.retry} className="underline">Retry</button>
+      </li>}
+      {item.entityId && history.loaded && !history.loading && !history.error && updates.length === 0
+        && <li className="text-xs text-slate-500">No earlier updates</li>}
+      {updates.map(update => {
+        const updateWork = splitWorkTitle(update.title, update.taskType);
+        const type = updateType(update, RECORDED_WORK_TYPES[update.taskType ?? ''] ?? updateWork.type);
+        // A missing recap is a run type, never the parent deliverable again.
+        const delta = update.detail && update.detail !== title && update.detail !== item.title
+          && update.detail !== update.title && update.detail !== updateWork.title
+          ? update.detail : `${type} run`;
+        return (
+          <li key={update.id}>
+            <RowLink href={workHref(update)} className="grid min-w-0 grid-cols-[3.5rem_5rem_minmax(0,1fr)_3rem] items-center gap-x-2 rounded-sm py-0.5 text-xs leading-5 text-slate-600 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+              <time dateTime={update.occurredAt} title={new Date(update.occurredAt).toLocaleString()} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">{compactElapsedLabel(update.occurredAt)} ago</time>
+              <WorkTypeBadge type={type} compact />
+              <span className="min-w-0 truncate text-slate-700" title={delta}>{compactDelta(delta)}</span>
+              <span className="w-12 text-right">
+                {update.score !== null && update.score !== undefined && (
+                  <>
+                    <ScoreBadge score={update.score} bracketed label="Review Score" />
+                    <span className="sr-only">Review score {update.score} out of 10</span>
+                  </>
+                )}
+              </span>
+            </RowLink>
+          </li>
+        );
+      })}
+      {history.nextCursor && !history.error && <li>
+        <button type="button" onClick={history.loadMore} disabled={history.loading}
+          className="text-xs text-slate-600 underline disabled:opacity-50">Load more updates</button>
+      </li>}
+    </>
+  );
+}
+
+function OutcomeDetail({ item, title, earlierCount, expanded, updatesId, onToggle }: {
+  item: OutcomeItem;
+  title: string;
+  earlierCount: number;
+  expanded: boolean;
+  updatesId: string;
+  onToggle: () => void;
+}) {
+  if (!(earlierCount > 0 || (item.detail && item.detail !== title))) return null;
+  return (
+    <div className="mt-0.5 flex min-w-0 items-center gap-2 px-3 text-xs leading-5 text-slate-500">
+      {earlierCount > 0 && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={updatesId}
+          onClick={onToggle}
+          className="flex-none rounded-sm hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        >
+          <span aria-hidden="true">{expanded ? '▾' : '↳'} </span>
+          {expanded ? 'Hide ' : ''}{earlierCount} earlier {earlierCount === 1 ? 'update' : 'updates'}
+        </button>
+      )}
+      {item.detail && item.detail !== title && (
+        <span className="min-w-0 truncate" title={item.detail}>
+          {earlierCount > 0 && <span aria-hidden="true">· </span>}{item.detail}
+        </span>
+      )}
+    </div>
+  );
+}
+
+const CompletedRow: React.FC<{ item: OutcomeItem; onStale: () => void }> = ({ item, onStale }) => {
+  const [expanded, setExpanded] = useState(false);
+  const updatesId = useId();
+  const history = useOutcomeHistory(item, expanded && Boolean(item.entityId) && (item.eventCount ?? 0) > 1, onStale);
+  const updates = item.entityId ? history.items : item.earlierUpdates ?? [];
+  const earlierCount = Math.max(0, (item.eventCount ?? (updates.length + 1)) - 1);
   const work = splitWorkTitle(item.title, item.taskType);
   const title = work.title || 'Untitled work';
   return (
-    <li>
+    <li className="py-2.5">
       <RowLink
         href={workHref(item)}
-        className="flex min-w-0 items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
+        className="flex min-w-0 items-start gap-2 px-3 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
       >
         <span className="min-w-0 flex-1">
           <RowMetaLines
@@ -75,8 +235,7 @@ const CompletedRow: React.FC<{ item: OutcomeItem }> = ({ item }) => {
               </time>
             )}
           />
-          <RowTitle type={work.type}>{title}</RowTitle>
-          {item.detail && item.detail !== title && <RowDetail>{item.detail}</RowDetail>}
+          <RowTitle type={RECORDED_WORK_TYPES[item.taskType ?? ''] ?? work.type}>{title}</RowTitle>
         </span>
         {/*
           A review's score, and nothing else's. Rendered only when one exists,
@@ -94,6 +253,13 @@ const CompletedRow: React.FC<{ item: OutcomeItem }> = ({ item }) => {
           </span>
         )}
       </RowLink>
+      <OutcomeDetail item={item} title={title} earlierCount={earlierCount} expanded={expanded}
+        updatesId={updatesId} onToggle={() => setExpanded(value => !value)} />
+      {earlierCount > 0 && (
+        <ul id={updatesId} hidden={!expanded} className="ml-3 mr-3 my-2 space-y-1.5 border-l-2 border-solid border-slate-200 pl-3">
+          {expanded && <EarlierUpdates item={item} title={title} updates={updates} history={history} />}
+        </ul>
+      )}
     </li>
   );
 };
@@ -126,22 +292,23 @@ export const CompletedFeed: React.FC<DashboardSectionProps> = ({ repository, ref
     return () => window.clearTimeout(timer);
   }, [query]);
 
+  const authScope = getAuthenticatedApiReadScopeGeneration();
   const load = useCallback(() => getDashboardOutcomes(repository, FETCH_LIMIT, search), [repository, search]);
   const { data, error, loading, reload } = useDashboardSection<DashboardOutcomesResponse>(
     load,
-    `${repository}::${search}`,
+    `${authScope}::${repository}::${search}`,
     refreshToken,
   );
   // "5 mins ago" advances between reads.
   useNowTick(60_000);
 
   const items = data?.items ?? [];
-  const canCollapse = items.length > VISIBLE_ITEMS + OVERFLOW_SLACK;
+  const canCollapse = items.length > VISIBLE_ITEMS;
   const overflowCount = canCollapse ? items.length - VISIBLE_ITEMS : 0;
   const visible = showAll || !canCollapse ? items : items.slice(0, VISIBLE_ITEMS);
 
   const body = () => {
-    if (loading) return <SectionSkeleton rows={4} />;
+    if (loading) return <SectionSkeleton rows={4} label="Loading completed work…" />;
     if (error && items.length === 0) {
       return <SectionError message="Unable to load completed work" onRetry={reload} />;
     }
@@ -152,7 +319,7 @@ export const CompletedFeed: React.FC<DashboardSectionProps> = ({ repository, ref
       <>
         <ul data-testid="completed-list">
           {visible.map(item => (
-            <CompletedRow key={item.id} item={item} />
+            <CompletedRow key={`${authScope}:${repository}:${item.entityId ?? item.id}`} item={item} onStale={reload} />
           ))}
         </ul>
         {/*

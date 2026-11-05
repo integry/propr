@@ -10,13 +10,14 @@ import {
 
 const unusedActions = {} as SetupActions;
 
-test("platform capabilities support Linux and make macOS/Windows explicitly remote-only", () => {
+test("platform capabilities support Linux and macOS while Windows remains remote-only", () => {
   assert.deepEqual(getLocalSetupCapability("linux"), {
     supported: true,
     kind: "local",
     platform: "linux",
   });
-  for (const platform of ["darwin", "win32"] as const) {
+  assert.deepEqual(getLocalSetupCapability("darwin"), { supported: true, kind: "local", platform: "darwin" });
+  for (const platform of ["win32"] as const) {
     const capability = getLocalSetupCapability(platform);
     assert.equal(capability.supported, false);
     assert.equal(capability.kind, "remote-only");
@@ -41,7 +42,7 @@ for (const platform of ["darwin", "win32"] as const) {
 
     assert.equal(checksRun, true);
     assert.equal(result.completed, false);
-    assert.equal(result.capability.kind, "remote-only");
+    assert.equal(result.capability.kind, platform === "darwin" ? "local" : "remote-only");
     assert.notEqual(result.errors[0]?.code, "local-unsupported");
   });
 }
@@ -111,4 +112,22 @@ test("retry preserves the previous root and re-evaluates platform capability", a
   const retried = await retrySetup(previous, { platform: "darwin", actions: unusedActions });
   assert.equal(retried.rootDir, "/chosen/root");
   assert.equal(retried.capability.platform, "darwin");
+});
+
+test('Darwin remote Docker endpoint blocks provisioning with endpoint-specific recovery', async () => {
+  const fix = 'Select a local Docker Desktop context; unset DOCKER_HOST pointing to a remote daemon.';
+  let pulls = 0;
+  const result = await runSetup({ root: '/stack', platform: 'darwin', actions: {
+    runChecks: async () => ({ rootDir: '/stack', anyFail: true, results: [
+      { name: 'Docker daemon', group: 'Docker', status: 'ok', detail: 'ready' },
+      { name: 'Docker local endpoint', group: 'Docker', status: 'fail', detail: 'Remote endpoint', fix },
+    ] }),
+    pullImages: async () => { pulls++; throw new Error('must not pull'); },
+  } as unknown as SetupActions });
+  assert.equal(pulls, 0);
+  assert.equal(result.completed, false);
+  const check = result.state.steps.find(step => step.id === 'check');
+  assert.equal(check?.status, 'failed');
+  assert.equal(check?.detail, 'Remote endpoint');
+  assert.equal(check?.nextAction, fix);
 });

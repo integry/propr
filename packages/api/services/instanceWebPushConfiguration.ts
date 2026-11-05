@@ -11,14 +11,17 @@ import {
 
 // The existing SQLite data mount is durable in native, launcher and Compose runs.
 // Do not import the DB connection: resolving paths must not open/migrate a database.
-export function instanceWebPushDirectory(environment: NodeJS.ProcessEnv): string {
+export function instanceDataDirectory(environment: NodeJS.ProcessEnv, feature: string): string {
   if (environment.DB_FILENAME === ':memory:' || environment.DB_FILENAME?.startsWith('file:')) {
-    throw new Error('Web Push requires a durable data directory');
+    throw new Error(`${feature} requires a durable data directory`);
   }
-  const dataDirectory = environment.DB_FILENAME
+  return environment.DB_FILENAME
     ? dirname(resolve(environment.DB_FILENAME))
     : environment.DATA_DIR ?? join(process.cwd(), 'data');
-  return join(dataDirectory, 'web-push');
+}
+
+export function instanceWebPushDirectory(environment: NodeJS.ProcessEnv): string {
+  return join(instanceDataDirectory(environment, 'Web Push'), 'web-push');
 }
 
 export const AUTOMATIC_VAPID_SUBJECT = 'https://propr.dev';

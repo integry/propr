@@ -1201,7 +1201,7 @@ const runPipeline = (firstCommand, firstArgs, secondCommand, secondArgs, cwd) =>
   second.on('close', code => { secondCode = code; complete(); });
 });
 
-const inspectDeb = async (path, platform, arch) => {
+const inspectDeb = async (path, platform, arch, onLinuxExtracted) => {
   const { stdout } = await execFile('dpkg-deb', ['--field', path, 'Architecture']);
   const packageArchitecture = stdout.trim();
   if (packageArchitecture !== EXPECTED_PACKAGE_ARCHITECTURE.deb[arch]) {
@@ -1211,6 +1211,7 @@ const inspectDeb = async (path, platform, arch) => {
   try {
     await execFile('dpkg-deb', ['--extract', path, directory]);
     const executable = await inspectLinuxPackageLayout({ root: directory, packageFormat: 'deb', platform, arch, artifact: path });
+    await onLinuxExtracted?.(directory);
     return { format: 'deb', packageArchitecture, executable };
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -1241,7 +1242,7 @@ export const assertRpmSandboxMetadata = (metadata, artifact = 'RPM artifact') =>
   return sandbox;
 };
 
-const inspectRpm = async (path, platform, arch) => {
+const inspectRpm = async (path, platform, arch, onLinuxExtracted) => {
   const { stdout } = await execFile('rpm', ['-qp', '--qf', '%{ARCH}', path]);
   const packageArchitecture = stdout.trim();
   if (packageArchitecture !== EXPECTED_PACKAGE_ARCHITECTURE.rpm[arch]) {
@@ -1253,6 +1254,7 @@ const inspectRpm = async (path, platform, arch) => {
   try {
     await runPipeline('rpm2cpio', [path], 'cpio', ['-idm', '--quiet'], directory);
     const executable = await inspectLinuxPackageLayout({ root: directory, packageFormat: 'rpm', platform, arch, artifact: path });
+    await onLinuxExtracted?.(directory);
     return { format: 'rpm', packageArchitecture, executable };
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -1536,10 +1538,10 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
   return inspection;
 };
 
-export const inspectArtifactArchitecture = async ({ path, heldArtifact, kind, platform, arch, onDmgMounted }) => {
+export const inspectArtifactArchitecture = async ({ path, heldArtifact, kind, platform, arch, onDmgMounted, onLinuxExtracted }) => {
   if (kind === 'releases') return { format: 'squirrel-releases', target: `${platform}-${arch}` };
-  if (kind === 'deb') return inspectDeb(path, platform, arch);
-  if (kind === 'rpm') return inspectRpm(path, platform, arch);
+  if (kind === 'deb') return inspectDeb(path, platform, arch, onLinuxExtracted);
+  if (kind === 'rpm') return inspectRpm(path, platform, arch, onLinuxExtracted);
   if (kind === 'dmg') {
     if (path !== undefined) throw new Error('DMG inspection rejects mutable pathnames; pass a held exact-artifact capability');
     if (onDmgMounted !== undefined && typeof onDmgMounted !== 'function') {

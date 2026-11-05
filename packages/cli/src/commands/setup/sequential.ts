@@ -1,3 +1,4 @@
+import { createGithubApp, hasGithubAppCredentials, openGithubAppBrowser } from "../githubAppCommands.js";
 /**
  * Sequential (readline) fallback wizard for `propr setup`.
  *
@@ -22,7 +23,7 @@
  */
 
 import { createInterface } from "node:readline/promises";
-import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, githubAppPublicUrl, type GithubAuthMode } from "@propr/shared";
 import type { AuthorizedInstallation } from "../../api/relay.js";
 import {
   INTAKE_DOCS_URL,
@@ -60,7 +61,7 @@ export interface SequentialIo {
    * newline). When `mask` is set the typed characters are not echoed, so
    * secrets like relay tokens don't linger on screen or in scrollback.
    */
-  ask(question: string, opts?: { mask?: boolean }): Promise<string>;
+  ask(question: string, opts?: { mask?: boolean; signal?: AbortSignal }): Promise<string>;
   /** Release any held resources (e.g. close the readline interface). */
   close(): void;
 }
@@ -114,7 +115,7 @@ export function createReadlineIo(
     },
     async ask(question, opts) {
       // Draw the prompt unmuted, then mute so only the typed answer is hidden.
-      const answer = rl.question(question);
+      const answer = rl.question(question, { signal: opts?.signal });
       muted = Boolean(opts?.mask);
       try {
         return await answer;
@@ -274,7 +275,7 @@ async function promptMultiSelect(
  * so both renderers honour the same safe defaults: a blank input or a "keep"
  * choice leaves existing configuration untouched.
  */
-export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePaint(false)): SetupPrompts {
+export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePaint(false), createApp = createGithubApp): SetupPrompts {
   return {
     async resolveStackRoot({ currentRoot, init }): Promise<RootDecision> {
       const entered = await promptInput(io, paint, {
@@ -312,7 +313,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       });
     },
 
-    async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
+    async configureGithubAuth({ current, rootDir }): Promise<GithubAuthDecision> {
       // ProPR Connect (the hosted ProPR GitHub App) is the zero-config default.
       // "Keep current configuration" is offered only when there is an existing
       // config to keep — on a fresh install there is nothing to preserve, so the
@@ -345,6 +346,32 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
           defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
         });
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
+      }
+      const method = await promptSelect(io, paint, {
+        title: "Configure your own GitHub App",
+        options: [{ label: "Create it for me", value: "create" }, { label: "I already have one", value: "manual" }],
+        defaultIndex: 0,
+      });
+      if (method === "create") {
+        const force = current.mode !== "none" || hasGithubAppCredentials(rootDir);
+        if (force && !await promptConfirm(io, paint, {
+          title: "Replace the current GitHub authentication?",
+          detail: "A timestamped .env backup will be created before saving the new App credentials.",
+          defaultValue: false,
+        })) return { keep: true };
+        let publicUrl: string;
+        for (;;) {
+          publicUrl = (await promptInput(io, paint, { title: "Public ProPR URL", defaultValue: "https://" })).trim();
+          try { githubAppPublicUrl(publicUrl); break; }
+          catch (error) { io.print((error as Error).message); }
+        }
+        const org = await promptInput(io, paint, { title: "App owner organization (blank for your account)", defaultValue: "" });
+        await createApp({ root: rootDir, publicUrl, ...(force ? { force: true } : {}), org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { io: {
+          log: message => io.print(message),
+          ask: (message, signal) => io.ask(message, { mask: true, signal }),
+          open: openGithubAppBrowser,
+        } });
+        return { keep: true };
       }
       const appId = await promptInput(io, paint, { title: "GitHub App ID", defaultValue: "" });
       // The CLI stack bind-mounts the key from the host via HOST_GH_PRIVATE_KEY

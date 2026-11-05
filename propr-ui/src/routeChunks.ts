@@ -13,6 +13,7 @@ const loadAccessManagementPage = preloadable(() => import('./pages/AccessManagem
 const loadAnalyticsPage = preloadable(() => import('./pages/AnalyticsPage'));
 const loadDashboard = preloadable(() => import('./components/Dashboard'));
 const loadLlmLogsPage = preloadable(() => import('./pages/LlmLogsPage'));
+const loadMcpLogsPage = preloadable(() => import('./pages/McpLogsPage'));
 const loadInboxPage = preloadable(() => import('./pages/InboxPage'));
 const loadLoginPage = preloadable(() => import('./pages/LoginPage'));
 const loadDesktopPairingPage = preloadable(() => import('./pages/DesktopPairingPage'));
@@ -24,12 +25,14 @@ const loadSettingsPage = preloadable(() => import('./pages/SettingsPage'));
 const loadSummaryBrowserPage = preloadable(() => import('./pages/SummaryBrowserPage'));
 const loadTasksPage = preloadable(() => import('./pages/TasksPage'));
 const loadGoalsPage = preloadable(() => import('./pages/GoalsPage'));
+const loadAgentsPage = preloadable(() => import('./pages/AgentsPage'));
 
 export const AiAgentsPage = lazy(loadAiAgentsPage);
 export const AccessManagementPage = lazy(loadAccessManagementPage);
 export const AnalyticsPage = lazy(loadAnalyticsPage);
 export const Dashboard = lazy(loadDashboard);
 export const LlmLogsPage = lazy(loadLlmLogsPage);
+export const McpLogsPage = lazy(loadMcpLogsPage);
 export const InboxPage = lazy(loadInboxPage);
 export const LoginPage = lazy(loadLoginPage);
 export const DesktopPairingPage = lazy(loadDesktopPairingPage);
@@ -41,6 +44,7 @@ export const SettingsPage = lazy(loadSettingsPage);
 export const SummaryBrowserPage = lazy(loadSummaryBrowserPage);
 export const TasksPage = lazy(loadTasksPage);
 export const GoalsPage = lazy(loadGoalsPage);
+export const AgentsPage = lazy(loadAgentsPage);
 
 const initialRouteChunks: Array<{
   matches: (pathname: string) => boolean;
@@ -54,6 +58,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/repositories', load: loadRepositoriesPage },
   { matches: pathname => pathname === '/tasks' || pathname.startsWith('/tasks/'), load: loadTasksPage },
   { matches: pathname => pathname === '/goals' || pathname.startsWith('/goals/'), load: loadGoalsPage },
+  { matches: pathname => pathname === '/automations' || pathname.startsWith('/automations/'), load: loadAgentsPage },
   { matches: pathname => pathname === '/studio/new' || pathname.startsWith('/studio/'), load: loadPlanStudioPage },
   { matches: pathname => pathname === '/plans', load: loadPlansPage },
   { matches: pathname => pathname === '/ai-agents', load: loadAiAgentsPage },
@@ -61,6 +66,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/admin/members', load: loadAccessManagementPage },
   { matches: pathname => pathname.startsWith('/summaries/'), load: loadSummaryBrowserPage },
   { matches: pathname => pathname === '/llm-logs', load: loadLlmLogsPage },
+  { matches: pathname => pathname === '/mcp-logs', load: loadMcpLogsPage },
   { matches: pathname => pathname === '/analytics', load: loadAnalyticsPage },
 ];
 

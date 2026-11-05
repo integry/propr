@@ -4,9 +4,6 @@
 
 set -e
 
-# Skip firewall initialization for now (requires privileged container)
-echo "Skipping firewall setup (would require --privileged Docker flag)"
-
 # Ensure GitHub token is available
 if [ -z "$GH_TOKEN" ]; then
     echo "Warning: GH_TOKEN environment variable not set"
@@ -102,6 +99,22 @@ if [ -d "/home/node/workspace" ]; then
         # ownership implicitly.
         echo "Skipping workspace chown to avoid mutating host bind-mount ownership"
     fi
+fi
+
+# Check the container-visible ancestry after repository setup has completed.
+# The user config is intentionally ignored by --ignore-user-config; project
+# config remains loadable by the pinned CLI and can expand the MCP catalog.
+if [ "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" = "1" ]; then
+    extension_config_cursor=$(cd /home/node/workspace && pwd -P) || { echo "Codex extension workspace unavailable" >&2; exit 1; }
+    while :; do
+        extension_config_candidate="$extension_config_cursor/.codex/config.toml"
+        if [ "$extension_config_candidate" != "${CODEX_HOME:-/home/node/.codex}/config.toml" ] && { [ -e "$extension_config_candidate" ] || [ -L "$extension_config_candidate" ]; }; then
+            echo "Codex extension runs cannot load project MCP configuration" >&2
+            exit 1
+        fi
+        [ "$extension_config_cursor" = "/" ] && break
+        extension_config_cursor=$(dirname "$extension_config_cursor")
+    done
 fi
 
 # If arguments are provided, execute them

@@ -33,6 +33,11 @@ function findShellExecution(source: string, relativePath: string): string[] {
   }
 
   function visit(node: ts.Node): void {
+    // A regex literal's exec method is not child_process.exec. Keep rejecting
+    // unknown receivers, imports and aliases rather than exempting all methods.
+    if (ts.isPropertyAccessExpression(node)
+      && ts.isRegularExpressionLiteral(node.expression)
+      && node.name.text === 'exec') return;
     if (ts.isIdentifier(node) && SHELL_EXECUTION_APIS.has(node.text)) {
       report(node, `uses shell-executing child_process API ${node.text}`);
     } else if (ts.isElementAccessExpression(node)
@@ -100,4 +105,10 @@ test('no-shell guard rejects aliases and enabled shell options', () => {
 
   const safeSource = "import { execFileSync, spawn } from 'child_process'; execFileSync('docker', ['ps'], { shell: false }); spawn('docker', ['ps']);";
   assert.deepEqual(findShellExecution(safeSource, 'fixture.ts'), []);
+});
+
+test('no-shell guard permits regex exec without hiding shell execution in its arguments', () => {
+  assert.deepEqual(findShellExecution('const version = /git version (\\d+)/.exec(output);', 'fixture.ts'), []);
+  assert.notDeepEqual(findShellExecution('/pattern/.exec(exec("docker ps"));', 'fixture.ts'), []);
+  assert.notDeepEqual(findShellExecution('childProcess.exec("docker ps");', 'fixture.ts'), []);
 });

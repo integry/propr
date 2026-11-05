@@ -1,11 +1,12 @@
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agents/agentGitAccess.js';
 import path from 'path';
-import os from 'os';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import type { ExecutionResult } from './docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
+import { claudeConfigDockerArgs } from './docker/claudeConfigSeed.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
 import { createContainerExecutionId } from '../agents/impl/utils/containerExecutionId.js';
 
@@ -37,6 +38,7 @@ export interface BuildClaudePromptOptions {
 export interface DockerArgsParams {
     worktreePath: string;
     githubToken: string;
+    gitMountArgs?: string[];
     prompt: string;
     promptFilePath?: string;
     modelName?: string;
@@ -248,10 +250,11 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:/home/node/workspace:rw`,
-        '-v', '/tmp/git-processor:/tmp/git-processor:rw',
+        ...(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath)),
+        ...buildAgentGitCredentialArgs(),
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${CLAUDE_CONFIG_PATH}:/home/node/.claude:rw`,
-        ...(fs.existsSync(path.join(os.homedir(), '.claude.json')) ? ['-v', `${path.join(os.homedir(), '.claude.json')}:/home/node/.claude.json:rw`] : []),
+        ...claudeConfigDockerArgs(),
         '-e', `GH_TOKEN=${githubToken}`,
         '-w', '/home/node/workspace',
         CLAUDE_DOCKER_IMAGE,
@@ -317,7 +320,16 @@ export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
         }
     }
 
+    // A streamed success event cannot erase a known nonzero process exit: the
+    // process was interrupted or failed after the provider reported its result.
+    if (hasKnownNonzeroExit(result.exitCode)) claudeOutput.success = false;
+
     return claudeOutput;
+}
+
+/** True when the process exit is known and is not a clean exit. */
+export function hasKnownNonzeroExit(exitCode: number | null | undefined): exitCode is number {
+    return typeof exitCode === 'number' && exitCode !== 0;
 }
 
 function handleRateLimitError(jsonLine: JsonLineMessage): void {

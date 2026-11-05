@@ -18,6 +18,9 @@ vi.mock('./usePlanIssuesManager', () => ({
       error: null,
       clearError: vi.fn(),
       implementingIssue: null,
+      queuedIssueNumbers: new Set<number>(),
+      queueingRemaining: false,
+      handleQueueRemaining: vi.fn(),
       issueTitles: { 1725: 'Notification intents' },
       issueTaskMap: {},
       activeIssues: issues,
@@ -97,7 +100,7 @@ describe('PlanIssuesManager execution intent', () => {
     renderManager({ onConsumed });
 
     expect(await screen.findByRole('dialog', { name: 'Start agent work?' })).toBeInTheDocument();
-    expect(screen.getByText('codex / gpt-5.6-sol')).toBeInTheDocument();
+    expect(screen.getByText('codex / GPT-5.6 Sol')).toBeInTheDocument();
     expect(screen.getByText('Epic PR with automatic merging of issue PRs')).toBeInTheDocument();
     expect(state.handleImplementIssue).not.toHaveBeenCalled();
     expect(onConsumed).toHaveBeenCalledTimes(1);

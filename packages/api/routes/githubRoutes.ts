@@ -9,6 +9,7 @@ import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
+import { listRepositoryWorkflows } from './githubWorkflows.js';
 import {
   GitHubMetadataAuthorizationError,
   refreshRejectedGitHubMetadataToken,
@@ -263,5 +264,30 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     }
   }
 
-  return { importTasks, getRepos, getBranches };
+  /** Workflow files an operator can select for follow-up CI cancellation, read with the requester's own GitHub access. */
+  async function getWorkflows(req: FlatRequest, res: Response): Promise<void> {
+    try {
+      const { owner, repo } = req.params;
+      if (!owner || !repo) {
+        res.status(400).json({ error: 'Owner and repo are required' });
+        return;
+      }
+      if (isDemoMode()) {
+        res.json({ workflows: [] });
+        return;
+      }
+      const octokit = createMetadataOctokit(await resolveMetadataToken(req));
+      res.json({ workflows: await listRepositoryWorkflows(octokit, owner, repo) });
+    } catch (error) {
+      if (error instanceof GitHubMetadataAuthorizationError || isAuthError(error)
+        || (error as { status?: number })?.status === 403 || (error as { status?: number })?.status === 404) {
+        await handleMetadataError(req, res, error);
+        return;
+      }
+      console.error('Error in /api/github/repos/:owner/:repo/workflows:', error);
+      res.status(500).json({ error: 'Failed to fetch workflows from GitHub' });
+    }
+  }
+
+  return { importTasks, getRepos, getBranches, getWorkflows };
 }

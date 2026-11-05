@@ -26,8 +26,12 @@ await mock.module('@propr/core', {
     getPlanIssuesByDraft: mockGetPlanIssuesByDraft,
     getPlanIssuesByDraftPaginated: mock.fn(async () => ({ issues: [], total: 0 })),
     updatePlanIssue: mockUpdatePlanIssue,
+    reconcileDraftPlanIssueRefinement: async () => {},
     loadPrimaryProcessingLabels: mockLoadPrimaryProcessingLabels,
     getAuthenticatedOctokit: mockGetAuthenticatedOctokit,
+    getEpicExecutionQueue: async () => null,
+    summarizeEpicQueue: () => null,
+    storeIssueCostCapOverride: async () => undefined,
     safeUpdateLabels: mockSafeUpdateLabels,
     logger: {
       withCorrelation: mockLoggerWithCorrelation,
@@ -40,6 +44,7 @@ await mock.module('@propr/core', {
 await mock.module('../packages/api/routes/planIssueHelpers.js', {
   namedExports: {
     getLlmLabel: mock.fn(async (modelName: string | null) => modelName ? `llm:${modelName}` : null),
+    getAttachedLlmLabels: mock.fn(async (modelName: string | null) => modelName ? [`llm:${modelName}`] : []),
     handleMultiAgentImplementation: mock.fn(),
     handleSingleAgentImplementation: mockHandleSingleAgentImplementation,
     getOrCreateEpicLabel: mock.fn(async () => null),

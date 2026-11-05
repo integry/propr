@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, useGenerationHandlers, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
-import { getRepoBranches, createDraft, generatePlan, updateDraft, type PlannerDraft } from '../../api/proprApi';
+import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useGenerationHandlers, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
+import { getRepoBranches, generatePlan, updateDraft, type PlannerDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
@@ -13,7 +13,6 @@ vi.mock('../../hooks/usePlannerSettings', () => ({ savePlannerSettings: vi.fn() 
 vi.mock('./imageUtils', () => ({ resizeImage: vi.fn() }));
 
 const mockGetRepoBranches = vi.mocked(getRepoBranches);
-const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
@@ -177,8 +176,38 @@ describe('useGenerationHandlers', () => {
     });
     await act(async () => firstStart);
 
-    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2');
+    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2', makeDraft().draft_id, expect.objectContaining({ draft_id: makeDraft().draft_id }));
     expect(startPolling).toHaveBeenCalledWith('generation-run-2');
+    expect(result.current.isStartingGeneration).toBe(false);
+  });
+
+  it('drops an acknowledgement that arrives after the wizard switched to another draft', async () => {
+    const generationResponse = createDeferred<Awaited<ReturnType<typeof generatePlan>>>();
+    mockGeneratePlan.mockImplementationOnce(() => generationResponse.promise);
+    const startPolling = vi.fn();
+    const onGenerationStarted = vi.fn();
+    const { result, rerender } = renderHook(({ draft }: { draft: PlannerDraft }) => useGenerationHandlers({
+      draft,
+      config: baseConfig,
+      branchError: null,
+      contextHelpers: { isContextStale: false, clearCountdown: vi.fn(), fetchPreview: vi.fn() },
+      startPolling,
+      stopPolling: vi.fn(),
+      onGenerationStarted,
+      setError: vi.fn(),
+      setGenerationError: vi.fn(),
+    }), { initialProps: { draft: makeDraft() as never } });
+
+    let start!: Promise<void>;
+    act(() => { start = result.current.handleGenerateForExistingDraft(); });
+    await waitFor(() => expect(mockGeneratePlan).toHaveBeenCalledWith('draft-1', expect.anything()));
+
+    rerender({ draft: { ...makeDraft(), draft_id: 'draft-2' } as never });
+    generationResponse.resolve({ success: true, status: 'generating', message: 'Plan generation started', runId: 'generation-run-a' });
+    await act(async () => start);
+
+    expect(onGenerationStarted).not.toHaveBeenCalled();
+    expect(startPolling).not.toHaveBeenCalled();
     expect(result.current.isStartingGeneration).toBe(false);
   });
 
@@ -316,54 +345,6 @@ describe('setupWizardHooks branch resolution', () => {
     pendingRequest.resolve({ defaultBranch: 'main', branches: ['main'] });
     await waitFor(() => expect(result.current.state).toEqual({ isLoading: false, error: null }));
     expect(result.current.config.baseBranch).toBe('');
-  });
-
-  it.each([
-    ['persists the resolved baseBranch when creating a draft before generation starts', undefined, undefined],
-    ['continues generation when persisting the resolved baseBranch fails after draft creation', new Error('Transient update failure'), expect.stringContaining('failed to save setup settings including base branch "develop"')],
-  ])('%s', async (_, updateError, expectedWarning) => {
-    mockCreateDraft.mockResolvedValue(makeDraft());
-    if (updateError) mockUpdateDraft.mockRejectedValue(updateError);
-    const navigate = vi.fn();
-    const setError = vi.fn();
-    const setIsCreating = vi.fn();
-    const { result } = renderHook(() => useDraftCreation({ selectedRepo: 'integry/propr', config: { ...baseConfig, prompt: 'Test prompt', baseBranch: 'develop' }, localFiles: [], navigate, setError, setIsCreating }));
-
-    await result.current();
-
-    expect(mockUpdateDraft).toHaveBeenCalledWith('draft-1', expect.objectContaining({
-      context_config: {
-        baseBranch: 'develop',
-        granularity: 'balanced',
-        contextLevel: 50,
-        compress: false,
-        contextRepositories: [],
-        generationModel: undefined,
-        manualFiles: [],
-        excludedFiles: [],
-      }
-    }));
-    expect(mockGeneratePlan).toHaveBeenCalledWith('draft-1', expect.objectContaining({ baseBranch: 'develop' }));
-    expect(navigate).toHaveBeenCalledWith('/studio/draft-1', expect.objectContaining({
-      replace: true,
-      state: expect.objectContaining({
-        initialBaseBranch: 'develop',
-        initialDraft: expect.objectContaining({
-          context_config: {
-            baseBranch: 'develop',
-            granularity: 'balanced',
-            contextLevel: 50,
-            compress: false,
-            contextRepositories: [],
-            generationModel: undefined,
-            manualFiles: [],
-            excludedFiles: [],
-          }
-        }),
-        baseBranchPersistenceWarning: expectedWarning ?? null,
-      })
-    }));
-    if (expectedWarning) expect(setError).not.toHaveBeenCalledWith('Transient update failure');
   });
 
   it.each([

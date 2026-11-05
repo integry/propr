@@ -31,6 +31,6 @@ describe('ModelContextSelector', () => {
 
     const modelSelect = screen.getByRole('combobox');
     expect(within(modelSelect).getByRole('group', { name: 'balanced (Synthetic pool)' })).toBeInTheDocument();
-    expect(within(modelSelect).getByRole('option', { name: 'virtual-code' })).toHaveValue('balanced:virtual-code');
+    expect(within(modelSelect).getByRole('option', { name: 'Virtual Code' })).toHaveValue('balanced:virtual-code');
   });
 });

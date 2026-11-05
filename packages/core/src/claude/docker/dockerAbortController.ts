@@ -1,3 +1,4 @@
+import { isBookkeepingCancellation } from '../../utils/workerStateManager.types.js';
 import type { ChildProcess } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Redis } from 'ioredis';
@@ -98,11 +99,21 @@ async function readAbortSignal(
     taskId: string,
     plannerAbortKey: string,
 ): Promise<boolean> {
-    const [workerAbort, plannerAbort] = await Promise.all([
+    const [workerAbort, plannerAbort, taskState] = await Promise.all([
         redis.get(`worker:abort:${taskId}`),
-        redis.get(plannerAbortKey)
+        redis.get(plannerAbortKey),
+        redis.get(`worker:state:${taskId}`)
     ]);
-    return workerAbort !== null || plannerAbort !== null;
+    if (workerAbort !== null || plannerAbort !== null) return true;
+    // Cancellation is durable and shared by every concurrent reviewer. One
+    // execution consuming the abort marker must not let its siblings continue.
+    if (taskState) {
+        try {
+            const state = JSON.parse(taskState);
+            return state.state === 'cancelled' && !isBookkeepingCancellation(state);
+        } catch { /* legacy/corrupt state */ }
+    }
+    return false;
 }
 
 export async function checkAbortSignal(

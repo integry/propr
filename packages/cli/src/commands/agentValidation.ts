@@ -17,6 +17,7 @@
  * reconstructions — verify against real images on the host.
  */
 
+import { localSetupSearchPath } from "../utils/localSetupPlatform.js";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -64,7 +65,7 @@ function execAsync(
 ): Promise<ExecResult> {
   opts.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: cmd === "docker" ? { ...(opts.env ?? process.env), PATH: localSetupSearchPath(process.platform, (opts.env ?? process.env).PATH) } : opts.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -248,7 +249,12 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostInvocation: ({ prompt }) => ({ args: ["-p", prompt, "--output-format", "text"] }),
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
-        ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir, { agentType: "claude" }),
+        // Claude prunes ~/.claude/backups to five files on each config save;
+        // keep this run's backups private so the host login's survive.
+        ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir, {
+          agentType: "claude",
+          extra: ["--tmpfs", "/home/node/.claude/backups:rw,nosuid,nodev,noexec,size=16m"],
+        }),
         "claude", "-p", "-", "--output-format", "text", "--dangerously-skip-permissions",
       ],
       stdin: VALIDATION_PROMPT,
@@ -369,9 +375,26 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
 ];
 
+// Configured images may be digest-pinned (`propr/agent:<sha>@sha256:…`).
+// `docker images -q <ref>` only filters by repository/tag and never matches that
+// combined reference, so presence is decided by `docker image inspect`, which
+// resolves the exact configured reference. Only a successful inspect that
+// reports an image ID counts; a nonzero exit, spawn error or timeout is absent.
+function imageInspectArgs(image: string): string[] {
+  return ["image", "inspect", "--format", "{{.Id}}", image];
+}
+
+function inspectFoundImage(result: { status: number | null; stdout?: string | null }): boolean {
+  return result.status === 0 && (result.stdout ?? "").trim().length > 0;
+}
+
+/** Whether the exact configured image reference (tagged or digest-pinned) is present locally. */
+export function localImagePresent(orch: Pick<OrchestratorModule, "docker">, image: string): boolean {
+  return inspectFoundImage(orch.docker(imageInspectArgs(image), { capture: true }));
+}
+
 async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {
-  const result = await orch.dockerAsync(["images", "-q", tag], { timeout: VERSION_TIMEOUT_MS, signal });
-  return result.status === 0 && result.stdout.trim().length > 0;
+  return inspectFoundImage(await orch.dockerAsync(imageInspectArgs(tag), { timeout: VERSION_TIMEOUT_MS, signal }));
 }
 
 function commandExists(bin: string): boolean {

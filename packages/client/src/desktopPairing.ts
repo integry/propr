@@ -5,18 +5,14 @@ import type {
 import { canonicalProprHttpUrlOrigin, parseProprDesktopDiscovery } from '@propr/shared';
 import type { ProprClient } from './client.js';
 import { ProprClientError } from './errors.js';
+import { operationMethod, operationPath } from './operations.js';
+import type * as ProprApi from './generated/apiTypes.js';
 
 export interface ProprDesktopDiscovery extends SharedProprDesktopDiscovery {
   compatibility: ProprApiCompatibilityResult;
 }
 
-export interface ProprDesktopPairingStart {
-  pairingId: string;
-  deviceSecret: string;
-  approvalUrl: string;
-  expiresAt: string;
-  interval: number;
-}
+export type ProprDesktopPairingStart = ProprApi.DesktopPairingStart;
 
 export interface ProprDesktopPairingComplete {
   token: string;
@@ -38,12 +34,17 @@ export interface ProprDesktopPairingBinding {
   credentialGeneration: string;
 }
 
-export interface ProprDesktopPairingActivationReceipt {
-  status: 'active';
-  receipt: string;
-  activatedAt: string;
-  expiresAt: string | null;
-}
+export type ProprDesktopPairingActivationReceipt = ProprApi.DesktopPairingActivationReceipt;
+
+/** The activation and cancellation body of a provisional pairing. */
+export const pairingTicket = (pairing: ProprDesktopPairingComplete): ProprApi.DesktopPairingTicket => ({
+  deviceSecret: pairing.deviceSecret,
+  activationTicket: pairing.activationTicket,
+  instanceId: pairing.instanceId,
+  origin: pairing.origin,
+  scope: pairing.scope,
+  credentialGeneration: pairing.credentialGeneration,
+});
 
 export interface ProprDesktopPairingOptions {
   signal?: AbortSignal;
@@ -285,11 +286,11 @@ export const completeDesktopPairing = async (
         // not race it with a faster outer rejection: completion here is the
         // operation's guarantee that no response task survives this poll.
         value = await client.requestDesktopPairing(
-          `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
+          operationPath('pollDesktopPairing', { pairingId: start.pairingId }),
           {
-            method: 'POST',
+            method: operationMethod('pollDesktopPairing'),
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceSecret: start.deviceSecret }),
+            body: JSON.stringify({ deviceSecret: start.deviceSecret } satisfies ProprApi.DesktopPairingPollRequest),
             redirect: 'manual',
             signal: lifetimeController.signal,
           },

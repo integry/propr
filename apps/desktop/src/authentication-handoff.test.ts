@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import { createDesktopAuthenticationLauncher, type TerminalCandidate } from './authentication-handoff';
 
 const writeExecutable = async (path: string, source: string): Promise<void> => {
@@ -454,4 +454,83 @@ exit "$wrapper_status"
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+test('macOS LaunchServices opens a private command file and shell quoting preserves literal arguments', async () => {
+  const { darwinTerminal, quoteAuthenticationArgument } = await import('./authentication-handoff');
+  const { spawnSync } = await import('node:child_process');
+  assert.deepEqual(darwinTerminal.args('Title', '/private/space here/login.command', []), [
+    '-a', 'Terminal', '/private/space here/login.command',
+  ]);
+  const value = "literal '$HOME' `id` $(id) ; space\nnext";
+  const result = spawnSync('/bin/sh', ['-c', `printf '%s' ${quoteAuthenticationArgument(value)}`], { encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, value);
+});
+
+test('the Mac command-file handoff waits for command completion with literal argv', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-command-file-test-'));
+  try {
+    const output = join(root, 'output');
+    const launcher = createDesktopAuthenticationLauncher([{
+      command: '/bin/sh', commandFile: true, args: (_title, file) => [file],
+    }]);
+    const literal = "space ' quote $HOME $(false)";
+    const result = await launcher(process.execPath, ['-e',
+      'require("fs").writeFileSync(process.argv[1], process.argv[2])', output, literal,
+    ], { title: 'Explicit authentication fixture' });
+    assert.equal(result.status, 0);
+    assert.equal(await readFile(output, 'utf8'), literal);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('command-file retries preserve host Docker selection over Terminal defaults without writing tokens', { timeout: 15_000 }, async () => {
+  const { readFileSync, statSync, existsSync } = await import('node:fs');
+  const root = await mkdtemp(join(tmpdir(), 'propr-command-env-'));
+  const saved = { ...process.env };
+  const files: string[] = [];
+  try {
+    process.env.DOCKER_HOST = "unix:///selected socket's/docker.sock";
+    delete process.env.DOCKER_CONTEXT;
+    process.env.DOCKER_CONFIG = join(root, 'isolated docker');
+    process.env.GH_TOKEN = 'host-secret-never-serialize';
+    process.env.GITHUB_TOKEN = 'another-secret-never-serialize';
+    const launcher = createDesktopAuthenticationLauncher([{
+      command: '/bin/sh', commandFile: true, args: (_title, file) => {
+        files.push(file);
+        const contents = readFileSync(file, 'utf8');
+        assert.equal(statSync(file).mode & 0o777, 0o700);
+        assert.equal(contents.includes(process.env.GH_TOKEN!), false);
+        assert.equal(contents.includes(process.env.GITHUB_TOKEN!), false);
+        // Simulate open exiting successfully before a cold Terminal starts.
+        return ['-c', '(sleep "$2"; export DOCKER_HOST=unix:///unavailable DOCKER_CONTEXT=terminal-default DOCKER_CONFIG=/terminal/config GH_TOKEN=terminal-secret; exec /bin/sh "$1") >/dev/null 2>&1 &', 'fixture', file, files.length === 1 ? '5.2' : '0.05'];
+      },
+    }]);
+    for (const context of [undefined, 'host-context']) {
+      if (context) process.env.DOCKER_CONTEXT = context;
+      const output = join(root, 'environment.json');
+      assert.equal((await launcher(process.execPath, ['-e',
+        'require("fs").writeFileSync(process.argv[1], JSON.stringify({host:process.env.DOCKER_HOST,context:process.env.DOCKER_CONTEXT,config:process.env.DOCKER_CONFIG,home:process.env.HOME,token:process.env.GH_TOKEN}))',
+        output,
+      ], { title: 'Environment fixture' })).status, 0);
+      assert.deepEqual(JSON.parse(await readFile(output, 'utf8')), {
+        host: process.env.DOCKER_HOST, ...(context ? { context } : {}),
+        config: process.env.DOCKER_CONFIG, home: process.env.HOME,
+      });
+      assert.equal(existsSync(files.at(-1)!), false);
+    }
+    assert.notEqual(files[0], files[1]);
+  } finally {
+    for (const key of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'GH_TOKEN', 'GITHUB_TOKEN']) {
+      if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('command-file launch refusal reports Terminal recovery before the startup deadline', { timeout: 5000 }, async () => {
+  const launcher = createDesktopAuthenticationLauncher([{
+    command: '/bin/sh', commandFile: true, args: () => ['-c', 'exit 23'],
+  }]);
+  await assert.rejects(launcher(process.execPath, ['-e', 'process.exit(0)'], { title: 'Refused launch' }), /Terminal could not be opened/);
 });

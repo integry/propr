@@ -340,7 +340,7 @@ test("rejects unsafe agent credential paths before filesystem preparation", asyn
 
     assert.equal(prepareCalled, false, `must not prepare unsafe path ${JSON.stringify(unsafePath)}`);
     assert.equal(statusOf(result.state, "configure-agents"), "failed");
-    assert.match(getStep(result.state, "configure-agents")?.detail ?? "", /absolute, non-root Linux path/);
+    assert.match(getStep(result.state, "configure-agents")?.detail ?? "", /absolute, non-root POSIX path/);
   }
 });
 
@@ -1702,4 +1702,104 @@ test("prompts drive a full unattended run to completion", async () => {
     seen.map((s) => s.split(":")[0]),
     ["check", "init-stack", "pull-images", "configure-agents", "github-auth", "intake", "start-stack", "enable-agents", "whitelist", "repo", "launch-ui"]
   );
+});
+
+test("failed account change is reported against the old saved identity, then retry succeeds", async () => {
+  let username = "first-user"; let attempts = 0; let choices = 0;
+  const result = await runSetup({ root: "/stack", prompts: relayPrompts({
+    chooseInstallation: async context => {
+      choices++;
+      if (choices === 1) return { action: "select", installationId: "100" };
+      if (choices <= 3) {
+        assert.equal(context.username, "first-user");
+        assert.deepEqual(context.installations, [inst(100, "first-user")]);
+        if (choices === 2) assert.equal(context.selectedInstallationId, "100");
+        if (choices === 3) {
+          // The old identity is not preselected and the failure is not an enrollment error.
+          assert.equal(context.selectedInstallationId, undefined);
+          assert.equal(context.enrollmentPermissionError, undefined);
+          assert.match(context.reauthenticationFailure?.detail ?? "", /GitHub authentication did not complete/);
+        }
+        return { action: "reauthenticate" };
+      }
+      assert.equal(context.username, "second-user");
+      assert.equal(context.selectedInstallationId, undefined);
+      assert.equal(context.enrollmentPermissionError, undefined);
+      assert.equal(context.reauthenticationFailure, undefined);
+      return { action: "select", installationId: "200" };
+    },
+  }), actions: mockActions({
+    hasGithubToken: () => true,
+    enrollRelay: async ({ installationId }) => {
+      if (installationId === "100") throw Object.assign(new Error("owner authorization required"), { status: 403 });
+      return { relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "fixture-relay-token" };
+    },
+    loginWithGithub: async () => { if (++attempts === 1) return false; username = "second-user"; return true; },
+    fetchRelayInstallations: async () => ({ username, installations: [inst(username === "first-user" ? 100 : 200, username)] }),
+  }) });
+  assert.equal(choices, 4); assert.equal(attempts, 2);
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+});
+
+test("after a failed account change the old identity is enrolled only after explicit keep-account", async () => {
+  const contexts: Array<{ failure?: string; error?: string }> = [];
+  const enrolled: string[] = [];
+  const result = await runSetup({ root: "/stack", prompts: relayPrompts({
+    chooseInstallation: async context => {
+      contexts.push({ failure: context.reauthenticationFailure?.detail, error: context.enrollmentPermissionError });
+      switch (contexts.length) {
+        case 1: return { action: "reauthenticate" };
+        case 2: return { action: "select", installationId: "100" };
+        case 3: return { action: "refresh" };
+        case 4: return { action: "keep-account" };
+        default: return { action: "select", installationId: "100" };
+      }
+    },
+  }), actions: mockActions({
+    hasGithubToken: () => true,
+    loginWithGithub: async () => false,
+    githubLoginRecovery: () => ({ detail: "GitHub sign-in was declined. Retry and approve the intended account.", nextAction: "Retry" }),
+    fetchRelayInstallations: async () => ({ username: "integry", installations: [inst(100, "integry")] }),
+    enrollRelay: async ({ installationId }) => { enrolled.push(installationId); return { relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "fixture-relay-token" }; },
+  }) });
+  assert.deepEqual(contexts.map(item => item.failure), [
+    undefined,
+    "GitHub sign-in was declined. Retry and approve the intended account.",
+    "GitHub sign-in was declined. Retry and approve the intended account.",
+    "GitHub sign-in was declined. Retry and approve the intended account.",
+    undefined,
+  ]);
+  assert.match(contexts[2].error ?? "", /@integry is still the saved account/);
+  assert.deepEqual(enrolled, ["100"]);
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+});
+
+test("a failed account change that leaves no saved credential stops with sign-in recovery", async () => {
+  let token = true;
+  const result = await runSetup({ root: "/stack", prompts: relayPrompts({
+    chooseInstallation: async () => ({ action: "reauthenticate" }),
+  }), actions: mockActions({
+    hasGithubToken: () => token,
+    loginWithGithub: async () => { token = false; return false; },
+    githubLoginRecovery: () => ({ detail: "Saved GitHub sign-in expired or was revoked. Sign in to GitHub again to continue.", nextAction: "Choose Retry setup." }),
+    fetchRelayInstallations: async () => ({ username: "integry", installations: [inst(100, "integry")] }),
+    enrollRelay: async () => assert.fail("no enrollment without a saved credential"),
+  }) });
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /expired or was revoked/);
+});
+
+test("incomplete initial browser login stops before enrollment and backend startup", async () => {
+  let loginCalls = 0;
+  const result = await runSetup({ root: "/stack", prompts: relayPrompts({ confirmGithubLogin: async () => true }),
+    actions: mockActions({
+      hasGithubToken: () => false,
+      loginWithGithub: async () => { loginCalls++; return false; },
+      fetchRelayInstallations: async () => assert.fail("no discovery without a token"),
+      enrollRelay: async () => assert.fail("no enrollment without a token"),
+      startStack: async () => assert.fail("no backend startup without a token"),
+    }),
+  });
+  assert.equal(loginCalls, 1);
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /not logged in/);
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
 });

@@ -1,0 +1,36 @@
+name: Desktop CI on request
+
+# Pull requests run the desktop checks only when they touch the desktop app.
+# Adding the `desktop-ci` label runs them now, as part of this workflow; the
+# shared classifier also reads the label, so later pushes keep running them.
+# The desktop workflows themselves do not listen for `labeled`: their per-PR
+# concurrency groups would let any unrelated label change cancel a real run.
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-package:
+    name: Desktop package
+    # The called workflow's release jobs declare `contents: write`, so the call
+    # must allow it; they only run for desktop tags, and every validation job
+    # stays read-only through the called workflow's own `contents: read`.
+    # Forks only ever get a read-only token, so they are left to the maintainers.
+    if: >-
+      github.event.label.name == 'desktop-ci'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-release-guard.yml
+
+  desktop-connect:
+    name: Packaged Connect
+    if: >-
+      github.event.label.name == 'desktop-ci'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-connect-discovery-guard.yml

@@ -1,10 +1,24 @@
+import { createExtensionProfileRoutes } from './routes/extensionProfileRoutes.js';
+import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
+import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
+import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
+import { createDefaultStorageService, createInstanceStorageRoutes } from './routes/instanceStorageRoutes.js';
+import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
+import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
+import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
+import { isDashboardSummaryEnabled } from './routes/dashboardSummarySetting.js';
+import { officialCachePrice } from './routes/analyticsPricing.js';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
+import { GOAL_TASK_GUARD_MOUNTS } from './openapi/directRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
+import { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 /* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
-import { mountMcp, mcpResponseHeaders } from './mcp/server.js';
+import { mountMcp, mcpResponseHeaders, isMcpEndpointPath } from './mcp/server.js';
 import { getMcpOriginSync, isMcpEnabledSync, invalidateMcpConfigCache, resolveMcpConfig } from './mcp/configResolver.js';
+import { startConnectMcpRegistration, type ConnectRegistrationManager } from './mcp/connectRegistration.js';
+import { getConnectMcpState } from './mcp/tunnelMode.js';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
@@ -15,11 +29,12 @@ import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
-import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
+import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createConnectStorageCorsMiddleware, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
   createFileChangesRoutes, createConfigRoutes,
+  createTaskAssignmentRoutes,
   createQueueRoutes, createExecutionRoutes,
   createDockerRoutes, createGitHubRoutes,
   createLLMMetricsRoutes, createLlmLogsRoutes,
@@ -27,10 +42,10 @@ import {
   createAgentRoutes, createAgentLoginRoutes,
   createAgentVersionRoutes,
   createStatsRoutes,
+  createReviewScoreRoutes,
+  createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
-  SUMMARY_PATH_ROUTE_PATH,
-  SUMMARY_TREE_ROUTE_PATH,
   createRepoChatRoutes,
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
@@ -39,13 +54,18 @@ import {
   createAdminRoutes,
   createAdminMcpRoutes,
   createGoalRoutes,
+  createAutomationDefinitionRoutes,
+  automationDefinitionAttachmentUpload,
   createVisualPreviewAuthRoutes,
+  createFollowupHandoffRoutes,
+  createDefaultFollowupHandoffDeps,
   createVoiceRoutes,
   createInstanceCatalogRoutes,
   createDesktopAuthRoutes,
   createActiveWorkRoutes,
   attachmentUpload,
-  goalAttachmentUpload
+  goalAttachmentUpload,
+  registerHostedFleetRoutes
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -66,6 +86,7 @@ import {
   getActiveTasksForPR,
   AGENT_RUNTIME_BUILD_QUEUE_NAME,
   notificationService,
+  queueSubmissionIntakeEvidence,
   runMigrations
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
@@ -75,12 +96,13 @@ import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { resolveInstanceWebPushConfiguration } from './services/instanceWebPushConfiguration.js';
 import { WEB_PUSH_CONFIGURATION_WARNINGS, type ValidatedWebPushConfiguration } from './services/webPushConfiguration.js';
-import { assertInstanceAdministratorConfigured } from './authorization.js';
+import { assertInstanceAdministratorConfigured, resolveDurableInstanceAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import {
   configureApiProxyTrust,
   createApiRequestRateLimiter,
   createDiscoveryRequestRateLimiter,
+  createOperatorRequestRateLimiter,
   createWebhookRequestRateLimiter,
 } from './requestRateLimits.js';
 import { desktopAuthService } from './desktopAuthService.js';
@@ -91,10 +113,10 @@ import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
   createMemberCatalogRouteEntries,
+  createOperationalRouteEntries,
   registerRouteEntries,
-  type RouteEntry
 } from './routeRegistry.js';
-import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { createAgentRunInternalRoutes } from './routes/agentRunInternalRoutes.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
   startVisualPreviewOAuthRefreshScheduler,
@@ -168,7 +190,8 @@ const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentE
 const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
-const app = express();
+export const app = express();
+app.use(refusePublicFleetData);
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
 
@@ -203,7 +226,10 @@ try {
 // Mark even parser/rate-limit/error responses at the instance boundary.
 app.use('/api/mcp', (req, res, next) => { if (isMcpEnabledSync()) { mcpResponseHeaders(req, res, next); } else { next(); } });
 
+app.use(createConnectStorageCorsMiddleware());
+
 app.use((req, res, next) => {
+  if (res.locals.connectStorageCors) { next(); return; }
   // Server-rendered MCP consent forms submit on the API's own public origin,
   // which can differ from FRONTEND_URL. Known remote MCP web clients also need
   // their exact origin accepted at the bearer-authenticated MCP endpoint. Keep
@@ -238,7 +264,14 @@ app.use(corsRejectionHandler);
 app.use('/api', createApiRequestRateLimiter());
 setupWebhookRoute();
 
-app.use(express.json({ limit: '1mb' }));
+const defaultJsonParser = express.json({ limit: '1mb' });
+app.use((req, res, next) => {
+  // The archive parser is installed at its route, after the member guard.
+  if (req.method === 'POST' && /^\/api\/instance\/extensions\/v1\/skills\/archive\/?$/i.test(req.path)) return next();
+  // MCP parses at its endpoint with its own documented bound (mcpJsonParser).
+  if (isMcpEndpointPath(req.path)) return next();
+  return defaultJsonParser(req, res, next);
+});
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
@@ -251,11 +284,14 @@ let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
 let invalidateStatusAgentCache: (() => void) | undefined;
+let dashboardReads: DashboardReadService | undefined;
+let fleetDataListener: ReturnType<typeof startConfiguredFleetData> = Promise.resolve(undefined);
 let notificationBackground: NotificationBackgroundService | undefined;
 let webPushDispatcherConfigured = false;
 let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: false, issue: 'disabled' };
 let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
 let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
+let connectMcpRegistration: ConnectRegistrationManager | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -270,7 +306,7 @@ function createDemoTaskQueue(): Queue {
   } as unknown as Queue;
 }
 
-async function initRedis(): Promise<void> {
+export async function initRedis(): Promise<void> {
   if (demoMode) {
     redisClient = createDemoRedisClient();
     taskQueue = createDemoTaskQueue();
@@ -287,9 +323,9 @@ async function initRedis(): Promise<void> {
   await redisClient.connect();
   
   const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
-  taskQueue = new Queue(queueName, {
+  taskQueue = protectStorageQueue(new Queue(queueName, {
     connection: { ...redisRuntimeConfig.options }
-  });
+  }));
   runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, {
     connection: { ...redisRuntimeConfig.options }
   });
@@ -298,7 +334,9 @@ async function initRedis(): Promise<void> {
   console.log('Connected to Redis');
 }
 
-function setupRoutes(): void {
+let readSystemStatus: (() => Promise<Record<string, unknown>>) | undefined;
+
+export function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({
     redisClient,
     ...(notificationBackground === undefined ? {} : {
@@ -308,6 +346,16 @@ function setupRoutes(): void {
       ) => notificationBackground!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
     }),
   });
+  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
+  readSystemStatus = async () => {
+    const snapshot = await statusRoutes.getStatusSnapshot();
+    // Health notifications must keep advancing when connected clients consume
+    // snapshots and no longer call the HTTP route that also projects them.
+    void notificationBackground?.projectSystemSnapshot(snapshot, []).catch(error => {
+      console.warn('Failed to project pushed system health notifications:', error);
+    });
+    return snapshot;
+  };
   invalidateStatusAgentCache = statusRoutes.invalidateAgentStatusCache;
   const desktopAuthRoutes = createDesktopAuthRoutes();
   // INTENTIONALLY UNAUTHENTICATED: compatibility/discovery and the bounded
@@ -315,8 +363,25 @@ function setupRoutes(): void {
   // They return only compatibility/capability metadata or pairing state gated by
   // a high-entropy secret; all operational routes below remain authenticated.
   app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
+  // Machine-to-machine bootstrap verification has its own narrow service
+  // credential and deliberately does not depend on a customer's OAuth session.
+  // Register before registerDesktopApiBoundary installs the shared API guard;
+  // registration is a no-op unless Fleet control was enabled at startup. The
+  // general /api request limiter is mounted at module load, before setupRoutes
+  // runs, so these handlers and extension MCP calls share the global IP-keyed limiter.
+  registerHostedFleetRoutes(app, {
+    operationalStatus: statusRoutes.readStatusSnapshot,
+    queueStatus: queueRoutes.collectQueueStats
+  });
+  const extensionRoutes = createExtensionProfileRoutes();
+  app.post('/api/extensions/mcp/:serverName', extensionRoutes.gateway);
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
+  // Worker-only: run-scoped MCP grants for agent containers, authenticated by
+  // an HMAC signed with SYSTEM_TASK_SECRET instead of a browser session.
+  const agentRunInternalRoutes = createAgentRunInternalRoutes({ database: db });
+  app.post('/api/internal/agent-runs/:runId/mcp-grants', createDiscoveryRequestRateLimiter(), agentRunInternalRoutes.issueGrant);
+  app.post('/api/internal/agent-runs/:runId/mcp-grants/revoke', createDiscoveryRequestRateLimiter(), agentRunInternalRoutes.revokeGrant);
   registerDesktopApiBoundary(app, {
     discovery: statusRoutes.getDesktopDiscovery,
     startPairing: desktopAuthRoutes.startPairing,
@@ -331,12 +396,13 @@ function setupRoutes(): void {
   app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
   app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
   const repositoryMediaRoutes = createRepositoryMediaRoutes({ db });
+  const previewMediaRoutes = createPreviewMediaRoutes();
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const fileChangesRoutes = createFileChangesRoutes({ db });
+  const taskAssignmentRoutes = createTaskAssignmentRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
-  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
@@ -346,14 +412,18 @@ function setupRoutes(): void {
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
-  const statsRoutes = createStatsRoutes({ db });
-  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue });
+  // The all-time delivery and review-quality aggregations read every PR's history; both routes share one short-lived copy.
+  const analyticsCache = createAnalyticsCache();
+  const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
+  const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
+  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: isDashboardSummaryEnabled });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const usageTipsRoutes = createUsageTipsRoutes();
   const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured, resolvedWebPushConfiguration });
   const voiceBriefingService = createVoiceBriefingService({
     database: db,
@@ -362,52 +432,69 @@ function setupRoutes(): void {
   });
   const voiceRoutes = createVoiceRoutes({ briefingService: voiceBriefingService });
   const adminRoutes = createAdminRoutes();
+  const followupHandoffRoutes = createFollowupHandoffRoutes(createDefaultFollowupHandoffDeps());
   const adminMcpRoutes = createAdminMcpRoutes({ database: db, redisClient });
   const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes({
     managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
   });
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
+  const storageService = createDefaultStorageService();
+  const storageRoutes = createInstanceStorageRoutes(storageService);
+  // Management-only Unix transport; no customer/tunnel route is registered.
+  fleetDataListener = demoMode ? Promise.resolve(undefined) : startConfiguredFleetData(storageService, actorId => resolveDurableInstanceAuthorization(String(actorId)));
+  // Background work is bounded/coalesced; no startup deletion or live-data scan.
+  const storageSweep = setInterval(() => {
+    void storageService.sweep().catch(() => undefined);
+  }, 60_000);
+  storageSweep.unref();
   const agentVersionRoutes = createAgentVersionRoutes();
   const activeWorkRoutes = createActiveWorkRoutes({ db, taskQueue });
-  const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
+  const taskSubmissionRoutes = createTaskSubmissionRoutes({ db, services: demoMode ? {} : { intake: queueSubmissionIntakeEvidence(() => taskQueue) } });
   const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
+  const automationDefinitionRoutes = createAutomationDefinitionRoutes({ db, redisClient });
 
-  app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
+  app.use([...GOAL_TASK_GUARD_MOUNTS], goalRoutes.requireGoalTaskOwnership);
 
-  const operationalRoutes: RouteEntry[] = [
-    ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
-    ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit], ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get], ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
-    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
-    ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input], ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
-    ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
-    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
-    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
-    ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
-    ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
-    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/task/:taskId/cancel', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
-    ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/planner/drafts', plannerRoutes.listDrafts], ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft],
-    ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft], ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft], ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft], ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
-    ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent], ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment], ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo], ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
-    ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue], ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue], ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
-    ['post', '/api/planner/preview', plannerRoutes.previewContext], ['post', '/api/planner/preview/context', plannerRoutes.downloadContext], ['post', '/api/planner/generate', plannerRoutes.generate], ['post', '/api/planner/abort', plannerRoutes.abortGeneration],
-    ['post', '/api/planner/refine', plannerRoutes.refine], ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement], ['post', '/api/planner/finalize', plannerRoutes.finalize], ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
-    ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository], ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
-    ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings], ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
-    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
-    ['get', '/api/dashboard/summary', dashboardRoutes.getSummary], ['get', '/api/dashboard/attention', dashboardRoutes.getAttention], ['get', '/api/dashboard/active', dashboardRoutes.getActive], ['get', '/api/dashboard/outcomes', dashboardRoutes.getOutcomes],
-    ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
-    ['get', SUMMARY_TREE_ROUTE_PATH, summaryBrowserRoutes.getDirectoryTree], ['get', SUMMARY_PATH_ROUTE_PATH, summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
-    ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
-    ['get', '/api/voice/capabilities', voiceRoutes.getCapabilities], ['get', '/api/voice/briefing', voiceRoutes.getBriefing],
-    ['get', '/api/repos/media', repositoryMediaRoutes.getMedia],
-    ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
-    ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
-    ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
-    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['get', '/api/notifications/config', notificationRoutes.getConfiguration], ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
-    ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/dismiss-all', notificationRoutes.dismissAll], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
-  ];
+  const operationalRoutes = createOperationalRouteEntries({
+    activeWorkRoutes,
+    automationDefinitionRoutes,
+    dashboardRoutes,
+    dockerRoutes,
+    executionRoutes,
+    fileChangesRoutes,
+    githubRoutes,
+    goalRoutes,
+    liveDetailsRoutes,
+    llmLogsRoutes,
+    llmMetricsRoutes,
+    notificationRoutes,
+    plannerRoutes,
+    previewMediaRoutes,
+    queueRoutes,
+    relevanceRoutes,
+    repoChatRoutes,
+    repoImprovementsRoutes,
+    repoTodoRoutes,
+    repositoryMediaRoutes,
+    reviewScoreRoutes,
+    statsRoutes,
+    statusRoutes,
+    summaryBrowserRoutes,
+    taskAssignmentRoutes,
+    taskHistoryRoutes,
+    taskRoutes,
+    taskSubmissionRoutes,
+    usageTipsRoutes,
+    userRepoPreferencesRoutes,
+    voiceRoutes,
+    taskSubmissionUpload,
+    goalAttachmentUpload,
+    attachmentUpload,
+    automationDefinitionAttachmentUpload,
+  });
   const routes = [
     ...operationalRoutes,
+    ...createStorageRouteEntries(storageRoutes),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createManagementRouteEntries({
       adminRoutes,
@@ -416,12 +503,23 @@ function setupRoutes(): void {
       agentRuntimeRoutes,
       agentVersionRoutes,
       configRoutes,
+      followupHandoffRoutes,
+      operatorRateLimiter: createOperatorRequestRateLimiter(),
       visualPreviewAuthRoutes,
     }),
   ];
   assertNoDuplicateRoutes(routes);
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
+  app.get('/api/instance/extensions/v1', extensionRoutes.list);
+  app.post('/api/instance/extensions/v1/profiles', extensionRoutes.save);
+  app.get('/api/instance/extensions/v1/profiles/:profileId/history', extensionRoutes.history);
+  app.post('/api/instance/extensions/v1/delete', extensionRoutes.remove);
+  app.post('/api/instance/extensions/v1/validate', extensionRoutes.validate);
+  app.post('/api/instance/extensions/v1/skills/archive', express.json({ limit: '7mb' }), extensionRoutes.importArchive);
+  app.post('/api/instance/extensions/v1/skills/github', extensionRoutes.importGithub);
+  app.post('/api/instance/extensions/v1/skills/github-source', extensionRoutes.githubSource);
+  app.post('/api/instance/extensions/v1/tools/discover', extensionRoutes.discoverTools);
 }
 
 function setupWebhookRoute(): void {
@@ -502,7 +600,7 @@ function setupWebhookRoute(): void {
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
 }
 
-app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
+app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok', connect_mcp: getConnectMcpState() }); });
 
 // Create HTTP server to wrap Express app (required for Socket.IO)
 const httpServer: HttpServer = createServer(app);
@@ -541,6 +639,7 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     await runMigrations();
+    dashboardReads = await startDashboardReadService(db);
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
@@ -554,6 +653,8 @@ async function start(): Promise<void> {
       configReloadSubscription = await startConfigReloadSubscription(redisClient, async () => {
         invalidateMcpConfigCache();
         await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
+        // A Settings toggle can turn MCP through Connect on or off.
+        void connectMcpRegistration?.trigger();
         await reloadConfigs();
       }, console, subtype => {
         if (subtype === 'agents_update' || subtype === 'synthetic_agents_update') {
@@ -590,8 +691,19 @@ async function start(): Promise<void> {
       } else {
         await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
       }
+      // Hosted UI tunnel mode registers with ProPR Connect in the background,
+      // with backoff, so a Connect outage never delays API readiness.
+      connectMcpRegistration = startConnectMcpRegistration({ database: db });
+      void connectMcpRegistration.trigger();
     }
     setupRoutes();
+    // Configured Fleet transport is required for readiness. In a rolling overlap,
+    // fail startup and let the supervisor restart after the old listener exits.
+    // Await immediately so startup failures cannot become unhandled rejections.
+    try { await fleetDataListener; }
+    catch (error) {
+      throw new Error('Configured Fleet data listener failed to start; refusing API readiness', { cause: error });
+    }
     if (!demoMode) {
       await desktopAuthService.cleanupPairings();
       desktopPairingCleanupTimer = setInterval(() => {
@@ -608,6 +720,7 @@ async function start(): Promise<void> {
       });
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({
+        readSystemStatus,
         taskQueue, redisClient, db,
         notificationProjection: notificationBackground,
       });
@@ -631,7 +744,7 @@ async function start(): Promise<void> {
         enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
       });
       if (apiIntakeMode === 'direct_webhook') {
-        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, repositoryFilter: isMonitoredRepository });
+        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, redisClient: getIoRedisClient(), repositoryFilter: isMonitoredRepository });
         console.log('[webhook] Webhook handler initialized');
       }
       setInterval(async () => {
@@ -646,13 +759,19 @@ async function start(): Promise<void> {
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
+      // Stop admissions and drain Fleet handlers before their dependencies close.
+      await (await fleetDataListener)?.shutdown().catch(error => {
+        console.warn('Fleet listener socket cleanup refused:', error);
+      });
       const shutdownTasks: ShutdownTask[] = [
+        { name: 'dashboard read service', close: () => dashboardReads?.close() ?? Promise.resolve() },
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },
         { name: 'redis client', close: () => redisClient.quit() }
       ];
       if (desktopPairingCleanupTimer) clearInterval(desktopPairingCleanupTimer);
+      connectMcpRegistration?.stop();
       if (!demoMode) {
         shutdownTasks.push(
           { name: 'notification background service', close: () => notificationBackground?.close() ?? Promise.resolve() },
@@ -660,6 +779,7 @@ async function start(): Promise<void> {
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
+          { name: 'browser sessions', close: () => socketAuthMiddleware.close() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
         );
       }
@@ -675,4 +795,6 @@ async function start(): Promise<void> {
   }
 }
 
-start();
+// Importing supervisors and symlinked entries retain the production startup contract.
+// Composition tests explicitly disable infrastructure startup before importing.
+if (process.env.PROPR_API_DISABLE_AUTOSTART !== '1') void start();

@@ -225,7 +225,7 @@ export const rendererContentSecurityPolicy = (
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   // HTTPS/WSS support remote instances and ProPR Connect. Cleartext sources
-  // are exact, main-validated active profile origins because CSP has no IPv4
+  // are exact, main-validated selected profile origins because CSP has no IPv4
   // CIDR syntax with which to express the normalizer's complete 127/8 range.
   `connect-src ${rendererConnectSources(development, apiBaseUrls)}`,
   "object-src 'none'",
@@ -238,6 +238,19 @@ interface ReloadableRenderer {
   isDestroyed(): boolean;
   reload(): void;
 }
+
+/** CSP belongs to the document; clearing account selection must not interrupt a connect attempt. */
+export const rendererPolicyOriginsForSelection = (
+  current: readonly string[],
+  origin: string | null | undefined,
+): readonly string[] => {
+  // The main request gate still rejects traffic without an active credential
+  // scope. Keep the document policy during the deselect/probe/activate sequence
+  // so reload cannot strand the renderer with a cleared durable selection.
+  if (origin === null) return current;
+  // Read failure or committed removal/logout explicitly narrows the document.
+  return origin?.startsWith('http://') ? [origin] : [];
+};
 
 export const createLatestRendererReloader = (
   getCurrentRenderer: () => ReloadableRenderer | null,

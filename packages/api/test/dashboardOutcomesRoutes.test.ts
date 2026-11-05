@@ -217,9 +217,155 @@ test('a completion shows its own run\'s recap and score, never an earlier run\'s
   const byTask = new Map((outcomes.body.items as Array<Record<string, unknown>>).map(item => [item.taskId, item]));
   const rereviewed = byTask.get('rereviewed');
   assert.deepEqual([rereviewed?.occurredAt, rereviewed?.score, rereviewed?.detail], [minutesAgo(30), null, null]);
+  const previousReview = (rereviewed?.earlierUpdates as Array<Record<string, unknown>>)[0];
+  assert.deepEqual([previousReview.taskId, previousReview.occurredAt, previousReview.taskType, previousReview.score, previousReview.detail],
+    ['rereviewed', minutesAgo(180), 'review', 9, '0 issues found']);
+  assert.notEqual(previousReview.id, rereviewed?.id);
+  assert.equal(rereviewed?.eventCount, 2);
   const twoStep = byTask.get('two-step');
   assert.deepEqual(
     [twoStep?.occurredAt, twoStep?.detail],
     [minutesAgo(80), 'Added retries across 3 files and opened a pull request.'],
   );
+});
+
+test('entity rollup precedes the limit and keeps the newest recap and complete event count', async () => {
+  for (let index = 0; index < 12; index++) {
+    await seedTask({ taskId: `fix-${index}`, issueNumber: 2583, prNumber: 2583, taskType: 'pr-comment', title: 'Keep plan revision history', states: [
+      { state: 'completed', timestamp: minutesAgo(index + 1), metadata: { notificationRecap: `Revision ${index}` } },
+    ] });
+  }
+  await seedTask({ taskId: 'other-pr', issueNumber: 2565, prNumber: 2565, states: [{ state: 'completed', timestamp: minutesAgo(40) }] });
+  await seedTask({ taskId: 'skip', issueNumber: 2583, prNumber: 2583, states: [{ state: 'completed', timestamp: minutesAgo(0), reason: 'PR comment job skipped: no work' }] });
+  // Repeated terminal bookkeeping still counts as one task outcome.
+  await database('task_history').insert({ task_id: 'fix-0', state: 'completed', timestamp: minutesAgo(0.5), metadata: '{}' });
+  const response = await call(routes().getOutcomes, { limit: '2' });
+  const items = response.body.items as Array<Record<string, unknown>>;
+  assert.deepEqual(items.map(item => [item.prNumber, item.eventCount]), [[2583, 12], [2565, 1]]);
+  assert.equal(items[0].taskId, 'fix-0');
+  assert.equal(items[0].detail, 'Revision 0');
+  const searched = await call(routes().getOutcomes, { search: 'revision', limit: '1' });
+  assert.equal((searched.body.items as Array<Record<string, unknown>>)[0].eventCount, 12);
+});
+
+test('rollup resolves PR identity from persisted, legacy, job and result records', async () => {
+  const seeds = [
+    { taskId: 'explicit', issueNumber: 10, prNumber: 900 },
+    { taskId: 'pr-comment-legacy', issueNumber: 900 },
+    { taskId: 'pr-comments-legacy', issueNumber: 900 },
+    { taskId: 'job-pr', issueNumber: 10 },
+    { taskId: 'result-pr', issueNumber: 10 },
+  ];
+  for (const [index, seed] of seeds.entries()) {
+    await seedTask({ ...seed, title: 'Preserve revision history', states: [{ state: 'completed', timestamp: minutesAgo(index + 1) }] });
+  }
+  await database('tasks').where({ task_id: 'job-pr' }).update({ initial_job_data: JSON.stringify({ pullRequestNumber: 900 }) });
+  await database('tasks').where({ task_id: 'result-pr' }).update({ final_result: JSON.stringify({ postProcessing: { pr: { number: 900 } } }) });
+  // Repository and entity kind must prevent accidental collisions.
+  await seedTask({ taskId: 'other-repo', repository: 'acme/app', prNumber: 900, states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
+  await seedTask({ taskId: 'issue-900', issueNumber: 900, states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
+  const items = (await call(routes().getOutcomes)).body.items as Array<Record<string, unknown>>;
+  assert.deepEqual(items.map(item => item.eventCount), [5, 1, 1]);
+  const scoped = (await call(routes().getOutcomes, { repository: 'acme/app' })).body.items as Array<Record<string, unknown>>;
+  assert.deepEqual(scoped.map(item => item.taskId), ['other-repo']);
+});
+
+test('goal and issue fallback identities roll up while anonymous tasks remain distinct', async () => {
+  for (const taskId of ['goal-a', 'goal-b', 'issue-a', 'issue-b', 'anonymous-a', 'anonymous-b']) {
+    await seedTask({ taskId, issueNumber: taskId.startsWith('issue') ? 42 : null, states: [{ state: 'completed', timestamp: minutesAgo(1) }] });
+  }
+  await database('tasks').whereIn('task_id', ['goal-a', 'goal-b']).update({ initial_job_data: JSON.stringify({ goalId: 'goal-1', title: 'A goal' }) });
+  await database('tasks').where({ task_id: 'anonymous-a' }).update({ initial_job_data: '{invalid', final_result: '{invalid' });
+  const items = (await call(routes().getOutcomes)).body.items as Array<Record<string, unknown>>;
+  assert.deepEqual(items.map(item => item.eventCount), [2, 2, 1, 1]);
+});
+
+test('an untitled latest event keeps the entity title and its own outcome', async () => {
+  await seedTask({ taskId: 'named', prNumber: 900, title: 'Handle "retry budget" failures', states: [{ state: 'completed', timestamp: minutesAgo(10) }] });
+  await seedTask({ taskId: 'untitled', prNumber: 900, states: [{ state: 'completed', timestamp: minutesAgo(1), metadata: { notificationRecap: 'Fixed remaining checks' } }] });
+  await database('tasks').where({ task_id: 'untitled' }).update({ initial_job_data: '{}' });
+  const items = (await call(routes().getOutcomes, { search: '"retry budget"' })).body.items as Array<Record<string, unknown>>;
+  assert.equal(items.length, 1);
+  assert.deepEqual([items[0].taskId, items[0].title, items[0].detail, items[0].eventCount],
+    ['untitled', 'Handle "retry budget" failures', 'Fixed remaining checks', 2]);
+});
+
+
+test('five parents survive many updates and prior recaps keep their own scores and order', async () => {
+  for (let parent = 0; parent < 6; parent++) {
+    for (let update = 0; update < 4; update++) {
+      await seedTask({ taskId: `parent-${parent}-update-${update}`, prNumber: 500 + parent,
+        taskType: 'review', title: `Review PR #${500 + parent}: Deliverable ${parent}`,
+        states: [{ state: 'completed', timestamp: minutesAgo(parent * 10 + update + 1),
+          metadata: { notificationRecap: `Score ${9 - update}/10 · Review pass ${update}` } }],
+      });
+    }
+  }
+  const response = await call(routes().getOutcomes, { limit: '5' });
+  const items = response.body.items as Array<{ prNumber: number; eventCount: number; earlierUpdates: Array<{ taskId: string; detail: string; score: number }> }>;
+  assert.deepEqual(items.map(item => item.prNumber), [500, 501, 502, 503, 504]);
+  for (const [parent, item] of items.entries()) {
+    assert.equal(item.eventCount, 4);
+    assert.deepEqual(item.earlierUpdates.map(update => [update.taskId, update.detail, update.score]),
+      [1, 2, 3].map(update => [`parent-${parent}-update-${update}`, `Review pass ${update}`, 9 - update]));
+  }
+});
+
+
+test('review metadata survives generic titles, absent scores and later fixes in the same PR', async () => {
+  await seedTask({ taskId: 'review-without-score', prNumber: 2587, taskType: 'pr-comment', title: 'Followup: Dashboard cleanup', states: [
+    { state: 'processing', timestamp: minutesAgo(20), metadata: { commandMode: 'review' } },
+    { state: 'completed', timestamp: minutesAgo(18), metadata: { commandMode: 'review', notificationRecap: '1 reviewer failed' } },
+    { state: 'completed', timestamp: minutesAgo(17), metadata: { notificationRecap: 'Completed the pull request follow-up.' } },
+  ] });
+  await seedTask({ taskId: 'fix', prNumber: 2587, title: 'Followup: Dashboard cleanup', states: [
+    { state: 'completed', timestamp: minutesAgo(10), metadata: { notificationRecap: 'Fixed the reported issue.' } },
+  ] });
+  const items = (await call(routes().getOutcomes, { repository: 'integry/propr', limit: '1' })).body.items as Array<Record<string, unknown>>;
+  assert.equal(items.length, 1);
+  assert.equal(items[0].eventCount, 2);
+  const updates = items[0].earlierUpdates as Array<Record<string, unknown>>;
+  assert.deepEqual(updates.map(item => [item.taskType, item.score, item.detail]), [['review', null, '1 reviewer failed']]);
+});
+
+test('same-millisecond review and fix completions keep distinct IDs, recaps and scores', async () => {
+  await seedTask({ taskId: 'reused', prNumber: 2587, taskType: 'pr-comment', title: 'Review PR #2587: Dashboard cleanup', states: [
+    { state: 'processing', timestamp: minutesAgo(1) },
+    { state: 'completed', timestamp: minutesAgo(1), metadata: { commandMode: 'review', notificationRecap: 'Score 6/10 · 2 issues found' } },
+    { state: 'processing', timestamp: minutesAgo(1) },
+    { state: 'completed', timestamp: minutesAgo(1), metadata: { commandMode: 'fix', notificationRecap: 'Fixed the review findings.' } },
+    { state: 'processing', timestamp: minutesAgo(1) },
+    { state: 'completed', timestamp: minutesAgo(1), metadata: { commandMode: 'review', notificationRecap: 'Score 9/10 · 0 issues found' } },
+  ] });
+  const items = (await call(routes().getOutcomes)).body.items as Array<Record<string, unknown>>;
+  const updates = items[0].earlierUpdates as Array<Record<string, unknown>>;
+  assert.equal(items[0].eventCount, 3);
+  assert.equal(items[0].score, 9);
+  assert.deepEqual(updates.map(item => [item.taskType, item.score, item.detail]),
+    [['fix', null, 'Fixed the review findings.'], ['review', 6, '2 issues found']]);
+  assert.equal(new Set([items[0].id, ...updates.map(item => item.id)]).size, 3);
+});
+
+test('title search ranks once per phase even when the Unicode match is beyond 500 parents', async () => {
+  for (let index = 0; index < 505; index++) {
+    await seedTask({ taskId: `unrelated-${index}`, issueNumber: 10000 + index,
+      title: `Unrelated ${index}`, states: [{ state: 'completed', timestamp: minutesAgo(1) }] });
+  }
+  await seedTask({ taskId: 'unicode-parent', issueNumber: 20000, title: 'Änderung: retry budget',
+    states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
+  const rankings: string[] = [];
+  const observe = ({ sql }: { sql: string }) => {
+    if (sql.includes('completion_history')) rankings.push(sql);
+  };
+  database.on('query', observe);
+  try {
+    const result = await call(routes().getOutcomes, { search: 'ÄNDERUNG', limit: '1' });
+    assert.deepEqual((result.body.items as Array<Record<string, unknown>>).map(row => row.taskId), ['unicode-parent']);
+    assert.equal(rankings.length, 2, 'one compact title search and one selected-entity read');
+    rankings.length = 0;
+    await call(routes().getOutcomes, { limit: '1' });
+    assert.equal(rankings.length, 1, 'parents and earlier updates share one ranking');
+  } finally {
+    database.removeListener('query', observe);
+  }
 });

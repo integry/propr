@@ -1,3 +1,4 @@
+import { assertNativeLogAdmission, prepareProviderCapture, attachProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
 /* eslint-disable max-lines -- the live Claude goal session, its transcript goal state, and the protocol loop share one boundary */
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -25,6 +26,7 @@ import type {
 } from '../types.js';
 import { boundedProviderDiagnostic } from './utils/boundedProviderOutput.js';
 import { LiveAgentOutput } from './utils/liveAgentOutput.js';
+import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { processDockerResult } from './utils/dockerResultProcessor.js';
 
 const execFileAsync = promisify(execFile);
@@ -49,6 +51,8 @@ export interface ClaudeGoalState {
     reason?: string;
     iterations: number;
     setAt?: number;
+    /** Number of accepted set sentinels in the saved transcript. */
+    setCount?: number;
 }
 
 interface GoalStatusAttachment {
@@ -90,6 +94,7 @@ export function readClaudeGoalState(transcript: string, condition: string): Clau
                 state.status = 'cleared';
             } else {
                 state.status = 'active';
+                state.setCount = (state.setCount ?? 0) + 1;
                 state.iterations = 0;
                 const setAt = record.timestamp ? Date.parse(record.timestamp) : NaN;
                 if (!Number.isNaN(setAt)) state.setAt = setAt;
@@ -164,7 +169,7 @@ export class ClaudeGoalStream {
     private texts: string[] = [];
     private wake: (() => void) | null = null;
     private requestSequence = 0;
-    private usage: Required<Omit<TokenUsage, 'reasoning_output_tokens'>> = {
+    private usage: Required<Omit<TokenUsage, 'reasoning_output_tokens' | 'cache_usage_incomplete'>> = {
         input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
     };
     sessionId?: string;
@@ -175,7 +180,8 @@ export class ClaudeGoalStream {
         taskId: string | undefined,
         persistOutput?: (records: string[]) => Promise<void>,
     ) {
-        this.output = new LiveAgentOutput(taskId, persistOutput, 'claude-goal');
+        // Output that can no longer be published or persisted fails the session.
+        this.output = new LiveAgentOutput(taskId, persistOutput, 'claude-goal', { onOverflow: error => this.close(error) });
         child.stderr?.on('data', chunk => {
             this.stderr = boundedProviderDiagnostic(this.stderr + chunk.toString());
         });
@@ -366,6 +372,8 @@ function checkpointFeedback(outcome: GoalCheckpointOutcome): string {
 
 class ClaudeGoalProtocol {
     private turn = 0;
+    private priorSetCount = 0;
+    private rearmAcknowledged = false;
     private readonly control: GoalExecutionControl;
 
     constructor(
@@ -374,6 +382,12 @@ class ClaudeGoalProtocol {
         private readonly context: ClaudeGoalContext,
     ) {
         this.control = options.goalControl!;
+    }
+
+    private async acknowledgeRearm(): Promise<void> {
+        if (!this.options.continueTerminalGoal || this.rearmAcknowledged) return;
+        await this.options.onGoalRearmed?.();
+        this.rearmAcknowledged = true;
     }
 
     private nextTurnId(): string {
@@ -519,19 +533,15 @@ class ClaudeGoalProtocol {
         }
     }
 
-    /** Establish the goal in this session and return the first steering messages, if any. */
-    private async start(state: ClaudeGoalState): Promise<ClaudeGoalCompletion | InitialMessage> {
-        const { options } = this;
-        const inputId = options.initialControlInputId;
-        const inputMessage = options.initialControlInputMessage;
-        // Checkpoint feedback and a queued input are distinct messages: the
-        // input's id is acknowledged only against the message that carries it,
-        // so an input that is not written here stays pending for a later turn.
-        const pending: GoalMessage[] = [
-            ...(options.initialGoalFeedback ? [{ text: options.initialGoalFeedback }] : []),
-            ...(inputMessage ? [{ text: inputMessage, ...(inputId ? { inputId } : {}) }] : []),
-        ];
+    /**
+     * The completion a resumed session already recorded, if it stands. A
+     * continued goal is set again despite a verdict; the new set sentinel makes
+     * it active, as for a cleared goal.
+     */
+    private async recordedVerdict(state: ClaudeGoalState): Promise<ClaudeGoalCompletion | null> {
+        if (this.options.continueTerminalGoal) return null;
         if (state.status === 'complete') {
+            const inputId = this.options.initialControlInputId;
             if (inputId) {
                 await this.control.markInputUndeliverable(
                     inputId,
@@ -545,7 +555,25 @@ class ClaudeGoalProtocol {
             this.recordGoal('failed', state);
             return { status: 'failed', error: impossibleGoalError(state) };
         }
+        return null;
+    }
+
+    /** Establish the goal in this session and return the first steering messages, if any. */
+    private async start(state: ClaudeGoalState): Promise<ClaudeGoalCompletion | InitialMessage> {
+        const { options } = this;
+        const inputId = options.initialControlInputId;
+        const inputMessage = options.initialControlInputMessage;
+        // Checkpoint feedback and a queued input are distinct messages: the
+        // input's id is acknowledged only against the message that carries it,
+        // so an input that is not written here stays pending for a later turn.
+        const pending: GoalMessage[] = [
+            ...(options.initialGoalFeedback ? [{ text: options.initialGoalFeedback }] : []),
+            ...(inputMessage ? [{ text: inputMessage, ...(inputId ? { inputId } : {}) }] : []),
+        ];
+        const verdict = await this.recordedVerdict(state);
+        if (verdict) return verdict;
         if (state.status === 'active') {
+            await this.acknowledgeRearm();
             return { messages: pending.length ? pending : [{ text: GOAL_CONTINUE_INPUT }] };
         }
         // A fresh session receives its launch context before the goal exists,
@@ -584,6 +612,7 @@ class ClaudeGoalProtocol {
         feedback: string | undefined,
     ): Promise<ClaudeGoalCompletion | { next: string; nudge: boolean }> {
         const state = await this.goalState();
+        if ((state.setCount ?? 0) > this.priorSetCount) await this.acknowledgeRearm();
         // Completion requires Claude's recorded verdict; a successful turn
         // end alone can still leave the goal unmet.
         if (state.status === 'unknown') {
@@ -609,6 +638,7 @@ class ClaudeGoalProtocol {
                 error: `Claude cleared the native goal before it was met${result.text ? `: ${result.text}` : ''}`,
             };
         }
+        await this.acknowledgeRearm();
         this.recordGoal('active', state);
         if (feedback) return { next: feedback, nudge: false };
         if (result.isError && !stopRequested) {
@@ -619,6 +649,7 @@ class ClaudeGoalProtocol {
 
     async run(): Promise<ClaudeGoalCompletion> {
         const initialState = await this.goalState();
+        this.priorSetCount = initialState.setCount ?? 0;
         // A restored session stopped before observation still clears an active goal on cancel.
         const stopRequested = await this.requestedStop();
         if (stopRequested) return this.stop(stopRequested, initialState);
@@ -671,11 +702,23 @@ async function detectContainer(
 }
 
 export interface ClaudeNativeGoalLaunch {
-    dockerArgs: string[];
+    diagnostics?: DiagnosticAgent;
+    buildDockerArgs(): Promise<string[]>;
     sessionId: string;
     transcriptPath: string;
     model: string;
     timeoutMs: number;
+}
+
+function resolveClaudeGoalExecution(options: AgentTaskOptions): { control: GoalExecutionControl; command: string } {
+    const control = options.goalControl;
+    if (!control || !options.nativeGoalObjective) {
+        throw new Error('Claude native goal execution requires durable goal controls and an objective');
+    }
+    const command = options.nativeGoalObjective.startsWith(NATIVE_GOAL_COMMAND_PREFIX)
+        ? options.nativeGoalObjective
+        : `${NATIVE_GOAL_COMMAND_PREFIX}${options.nativeGoalObjective}`;
+    return { control, command };
 }
 
 /** Run one attempt of a Claude native `/goal` session with live ProPR controls. */
@@ -684,18 +727,20 @@ export async function executeClaudeNativeGoal(
     launch: ClaudeNativeGoalLaunch,
 ): Promise<AgentExecutionResult> {
     const start = Date.now();
-    const control = options.goalControl;
-    if (!control || !options.nativeGoalObjective) {
-        throw new Error('Claude native goal execution requires durable goal controls and an objective');
-    }
-    const command = options.nativeGoalObjective.startsWith(NATIVE_GOAL_COMMAND_PREFIX)
-        ? options.nativeGoalObjective
-        : `${NATIVE_GOAL_COMMAND_PREFIX}${options.nativeGoalObjective}`;
+    const { control, command } = resolveClaudeGoalExecution(options);
     const ownership = getExecutionOwnershipContext();
-    const args = resolveExecutionArgs('docker', launch.dockerArgs, options.taskId, ownership?.attemptGeneration);
     // The identity is assigned up front, so persist it before any provider work.
     await options.onSessionId?.(launch.sessionId);
-    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+    const dockerArgs = await launch.buildDockerArgs();
+    if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
+    const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
+    assertNativeLogAdmission(launch.diagnostics);
+    const child = await spawnWithNetworkPolicy(args, (runArgs, launched) => {
+        const capture = launch.diagnostics ? prepareProviderCapture({ ...launch.diagnostics, attribution: { task: options.taskId, attempt: ownership?.attemptGeneration } }, runArgs, launched?.environment, launched?.createArgs ?? args) : null;
+        const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+        attachProviderCapture(spawned, capture);
+        return spawned;
+    });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
     const stream = new ClaudeGoalStream(child, options.taskId, records => control.appendOutput(records));
@@ -728,13 +773,22 @@ export async function executeClaudeNativeGoal(
         launch.model,
         Date.now() - start,
     );
+    return buildClaudeGoalResult(stream, completion, response, launch.sessionId);
+}
+
+function buildClaudeGoalResult(
+    stream: ClaudeGoalStream,
+    completion: ClaudeGoalCompletion,
+    response: AgentExecutionResult,
+    sessionId: string,
+): AgentExecutionResult {
     const success = completion.status === 'completed';
     return {
         ...response,
         success,
         logs: `${stream.rawOutput}${stream.stderrOutput ? `\n${stream.stderrOutput}` : ''}`,
-        sessionId: launch.sessionId,
-        conversationId: launch.sessionId,
+        sessionId,
+        conversationId: sessionId,
         modelUsed: stream.model || response.modelUsed,
         providerModel: stream.model || response.providerModel,
         tokenUsage: stream.tokenUsage,

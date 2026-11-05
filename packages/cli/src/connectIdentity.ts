@@ -11,7 +11,7 @@ import {
   realpathSync,
   unlinkSync,
 } from "node:fs";
-import type { Stats } from "node:fs";
+import type { BigIntStats, Stats } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { userInfo } from "node:os";
 import {
@@ -22,7 +22,6 @@ import {
 import {
   directoryDescriptorAccess,
   mkdirAt,
-  lstatAt,
   openAuthorityDirectoryNoFollow,
   openAt,
   renameAt,
@@ -106,7 +105,7 @@ interface HeldDirectory {
 
 interface AcquiredRoot {
   root: HeldDirectory;
-  ancestry: Array<{ path: string; stat: Stats; fd: number }>;
+  ancestry: Array<{ path: string; stat: BigIntStats; fd: number }>;
 }
 
 class ConnectSnapshotOperationError extends Error {
@@ -174,12 +173,12 @@ function heldDirectory(fd: number, platform: NodeJS.Platform, visiblePath: strin
   throw new ConnectRootError();
 }
 
-function assertSafeAncestry(ancestry: Stats[], callerUid: number): void {
+function assertSafeAncestry(ancestry: BigIntStats[], callerUid: number): void {
   for (const stat of ancestry) {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new ConnectRootError();
-    if (stat.uid !== 0 && stat.uid !== callerUid) throw new ConnectRootError();
-    const writableByOthers = (stat.mode & 0o022) !== 0;
-    const sticky = (stat.mode & 0o1000) !== 0;
+    if (stat.uid !== 0n && stat.uid !== BigInt(callerUid)) throw new ConnectRootError();
+    const writableByOthers = (stat.mode & 0o022n) !== 0n;
+    const sticky = (stat.mode & 0o1000n) !== 0n;
     if (writableByOthers && !sticky) throw new ConnectRootError();
   }
 }
@@ -216,7 +215,7 @@ function openRootNoFollow(rootDir: string, platform: NodeJS.Platform): AcquiredR
   if (platform !== "win32") directoryDescriptorAccess(platform);
   const parsed = parse(rootDir);
   let fd = openAuthorityDirectoryNoFollow(parsed.root);
-  const ancestry: Array<{ path: string; stat: Stats; fd: number }> = [];
+  const ancestry: Array<{ path: string; stat: BigIntStats; fd: number }> = [];
   let visible = parsed.root;
   try {
     for (const component of rootDir.slice(parsed.root.length).split(sep).filter(Boolean)) {
@@ -229,8 +228,8 @@ function openRootNoFollow(rootDir: string, platform: NodeJS.Platform): AcquiredR
       if (visible === parsed.root) closeSync(fd);
       fd = next;
       visible = nextVisible;
-      const named = lstatSync(visible);
-      const pinned = fstatSync(fd);
+      const named = lstatSync(visible, { bigint: true });
+      const pinned = fstatSync(fd, { bigint: true });
       if (named.isSymbolicLink() || !sameIdentity(named, pinned)) throw new ConnectRootError();
       ancestry.push({ path: visible, stat: named, fd });
     }
@@ -626,12 +625,17 @@ function assertNamedEntry(rootDir: string, name: string, held: Stats): void {
 
 function identifyHeldChild(directory: HeldDirectory, platform: NodeJS.Platform, name: string) {
   if (platform === "darwin") {
-    const stat = lstatAt(directory.fd, name);
-    return {
-      device: exactIdentityValue(stat.dev).toString(10),
-      file: exactIdentityValue(stat.ino).toString(10),
-      kind: stat.kind,
-    };
+    // The shipped addon's lstatAt exposes doubles, which cannot represent
+    // every APFS inode. Open relative to the pinned dirfd and let Node obtain
+    // exact 64-bit metadata instead. O_NONBLOCK also refuses FIFO hangs.
+    const fd = directory.openChild(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = fstatSync(fd, { bigint: true });
+      return {
+        device: stat.dev.toString(10), file: stat.ino.toString(10),
+        kind: stat.isFile() ? "file" as const : stat.isDirectory() ? "directory" as const : "other" as const,
+      };
+    } finally { closeSync(fd); }
   }
   const stat = lstatSync(platform === "linux"
     ? join(descriptorRoot(), String(directory.fd), name)
@@ -1001,10 +1005,18 @@ export async function getOrCreatePublicInstanceIdentity(
       unlink: (name) => unlinkAt(held!.fd, name),
     };
     const identity = await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
-    const named = lstatSync(dataPath);
-    const pinned = fstatSync(held.fd);
+    const named = lstatSync(dataPath, { bigint: true });
+    const pinned = fstatSync(held.fd, { bigint: true });
     if (named.isSymbolicLink() || !sameIdentity(named, pinned)) throw new PublicInstanceIdentityError();
-    assertPrivateData(pinned, callerUid, platform);
+    assertPrivateData(fstatSync(held.fd), callerUid, platform);
+    // Reacquire visible ancestry after asynchronous ACL/identity work. A held
+    // descriptor authorizes publication, but a replaced path must not escape
+    // as a Docker bind source.
+    const visible = openRootNoFollow(dataPath, platform);
+    try {
+      if (!sameIdentity(pinned, fstatSync(visible.root.fd, { bigint: true }))) throw new PublicInstanceIdentityError();
+      await assertPlatformAuthority(visible, platform, nativeConnectRootAuthorityInspector, callerUid);
+    } finally { closeAcquired(visible); }
     return identity;
   } catch (error) {
     if (error instanceof PublicInstanceIdentityError) throw error;
@@ -1036,5 +1048,36 @@ export async function readSnapshotPublicInstanceIdentity(
     if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof PublicInstanceIdentityError) throw error;
     throw new PublicInstanceIdentityError();
+  }
+}
+
+/** Verify the native authority of a fixed desktop root before host work. */
+export async function assertOwnedLocalSetupRoot(rootDir: string): Promise<void> {
+  const refuse = (reason: string, detail: string): never => {
+    const error = new ConnectRootError(reason);
+    error.message = `Local setup root refused: ${detail}`;
+    throw error;
+  };
+  try {
+    const path = resolve(rootDir);
+    if (realpathSync.native(path) !== path) refuse("NON_CANONICAL", "use a canonical directory without symlinked components.");
+    const acquired = openRootNoFollow(path, process.platform);
+    try {
+      const root = fstatSync(acquired.root.fd);
+      if (root.uid !== process.getuid?.()) refuse("NOT_OWNER", "the directory must be owned by the current user.");
+      // Match the desktop RootDirectoryAuthority: the runtime root must be
+      // exactly private, not merely free of group/other write bits.
+      if ((root.mode & 0o777) !== 0o700) {
+        refuse("UNSAFE_MODE", `the directory is mode 0${(root.mode & 0o777).toString(8)}; desktop runtime directories require mode 0700.`);
+      }
+      await assertPlatformAuthority(acquired, process.platform, nativeConnectRootAuthorityInspector, process.getuid?.());
+      const named = lstatSync(path, { bigint: true });
+      if (named.isSymbolicLink() || !sameIdentity(named, fstatSync(acquired.root.fd, { bigint: true }))) {
+        refuse("NAMED_REPLACED", "the directory changed during verification; retry with a stable, owned directory.");
+      }
+    } finally { closeAcquired(acquired); }
+  } catch (error) {
+    if (error instanceof ConnectRootError && error.reason !== "INVALID_ROOT") throw error;
+    refuse("AUTHORITY_UNVERIFIED", "ownership, permissions, or ACL authority could not be verified for the directory or its ancestors. Check that the directory is accessible and its ancestry is trusted.");
   }
 }

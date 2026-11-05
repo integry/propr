@@ -17,7 +17,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
             const empty = { stdout: '', stderr: '', messageTimestamps: new Map() };
             // The tag exists neither locally nor in the registry, so the build
             // path runs against a storage filesystem with ample capacity.
-            if (args[0] === 'images') return { exitCode: 0, ...empty };
+            if (args[0] === 'image' && args[1] === 'inspect') return { exitCode: 1, ...empty };
             if (args[0] === 'pull') return { exitCode: 1, ...empty };
             if (args[0] === 'run') return { ...empty, exitCode: 0, stdout: '10000000 4096 1000000 900000' };
             if (args[0] === 'build') return { ...buildResult, messageTimestamps: new Map() };

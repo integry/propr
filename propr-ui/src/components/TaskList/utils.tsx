@@ -1,4 +1,4 @@
-import type { Task, TaskTypeInfo } from './types';
+import type { Task } from './types';
 
 /**
  * Checks if a task should be visually dimmed based on its plan issue status.
@@ -42,81 +42,14 @@ export const getCleanDocumentTitle = (title: string | undefined, issueNumber?: n
   return title;
 };
 
-// Matches backend-generated PR task titles such as "Fix PR #2393: Add retries".
-const PR_WORKFLOW_TITLE_PATTERN = /^(Follow-up|Followup|Fix|Review|Ultrafix|Merge) PR #(\d+):\s*(.*)$/i;
-
-const normalizeWorkflowLabel = (raw: string): string => {
-  const lower = raw.toLowerCase();
-  if (lower === 'followup' || lower === 'follow-up') return 'Follow-up';
-  return raw.charAt(0).toUpperCase() + lower.slice(1);
-};
-
-export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
-  const title = task.title || '';
-
-  if (title.startsWith('New Issue:')) {
-    return {
-      type: 'new-issue',
-      cleanTitle: title.replace(/^New Issue:\s*/, '').trim()
-    };
-  }
-
-  if (title.startsWith('Followup:')) {
-    return {
-      type: 'followup',
-      cleanTitle: title.replace(/^Followup:\s*/, '').trim()
-    };
-  }
-
-  const prWorkflow = title.match(PR_WORKFLOW_TITLE_PATTERN);
-  if (prWorkflow) {
-    return {
-      type: 'pr-workflow',
-      cleanTitle: title,
-      workflowLabel: normalizeWorkflowLabel(prWorkflow[1]),
-      workflowPrNumber: Number(prWorkflow[2]),
-    };
-  }
-
-  return {
-    type: 'unknown',
-    cleanTitle: title
-  };
-};
-
 /**
- * Title shown on the parent (newest) row of a task group. The parent names the
- * entity the group is about, so PR-scoped tasks keep their full "Fix PR #N: ..." title.
+ * Status shown for a task row. A completed run whose pull request has since
+ * merged reads as merged: that is the state an engineer scans the ledger for.
  */
-export const getParentDisplayTitle = (task: Task): string => {
-  const typeInfo = getTaskTypeInfo(task);
-  if (typeInfo.type === 'followup' && task.subtitle) return task.subtitle;
-  return typeInfo.cleanTitle || task.subtitle || 'No title';
-};
+export const getDisplayStatus = (task: Task): string =>
+  task.status === 'completed' && (task.planIssueStatus?.toLowerCase() === 'merged' || task.prState === 'merged') ? 'merged' : task.status;
 
-/**
- * Title shown on a nested child row. Children describe the delta against the
- * parent entity (the specific fix, review, or follow-up request), so they never
- * repeat the parent's pull request title. Issue tasks keep their issue title,
- * because their subtitle is only a "Preparing a PR" placeholder.
- */
-export const getChildDisplayTitle = (task: Task): string => {
-  const typeInfo = getTaskTypeInfo(task);
-  const subtitle = (task.subtitle || '').trim();
-
-  if (typeInfo.type === 'followup') {
-    return subtitle || typeInfo.cleanTitle || 'Update';
-  }
-
-  if (typeInfo.type === 'pr-workflow') {
-    if (subtitle && subtitle !== typeInfo.cleanTitle) return subtitle;
-    return `${typeInfo.workflowLabel} requested`;
-  }
-
-  return typeInfo.cleanTitle || subtitle || 'Update';
-};
-
-export const getStatusPill = (status: string) => {
+export const getStatusPill = (status: string, runType?: string | null) => {
   const baseClasses = "px-2 py-0.5 text-xs font-medium rounded-full inline-flex items-center gap-1.5";
 
   switch (status) {
@@ -125,6 +58,13 @@ export const getStatusPill = (status: string) => {
         <span className={`${baseClasses} bg-gray-100 text-gray-600 border border-gray-200`}>
            <span className="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
            Completed
+        </span>
+      );
+    case 'merged':
+      return (
+        <span className={`${baseClasses} bg-violet-50 text-violet-700 border border-violet-200`}>
+           <span className="w-1.5 h-1.5 rounded-full bg-violet-500"></span>
+           Merged
         </span>
       );
     case 'failed':
@@ -149,15 +89,16 @@ export const getStatusPill = (status: string) => {
       return (
         <span className={`${baseClasses} bg-teal-50 text-teal-700 border border-teal-200`}>
            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
-           Implementing
+           {runType?.toLowerCase() === 'review' ? 'Review' : 'Implementing'}
         </span>
       );
     case 'waiting':
     case 'pending':
     case 'queued':
+      // Neutral slate: purple belongs to Merged alone. The hollow dot marks a run that has not started.
       return (
-        <span className={`${baseClasses} bg-purple-50 text-purple-700 border border-purple-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
+        <span className={`${baseClasses} bg-slate-100 text-slate-600 border border-slate-200`}>
+           <span className="w-1.5 h-1.5 rounded-full border border-slate-400"></span>
            Pending
         </span>
       );

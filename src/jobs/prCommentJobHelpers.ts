@@ -2,13 +2,17 @@ import { logger } from '@propr/core';
 import type { Logger } from 'pino';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
-import { TaskStates } from '@propr/core';
+import { TaskStates, getExecutionLogDirectory } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { db } from '@propr/core';
 import { filterCommentByAuthor } from '@propr/core';
 import type { UnprocessedComment, CommentJobData } from '@propr/core';
 import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
 import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
+import { parseLinkedIssueNumbers } from '../github/linkedIssueReferences.js';
+import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
+import { acceptedRequestDigest } from '../shared/workEvidenceMarker.js';
+import { receiptConsumesRequest } from './requestReceipts.js';
 
 interface ValidationComment {
     id: number;
@@ -85,12 +89,15 @@ export async function validateAndFilterComments(
 
         const commentWasEditedAfterQueuing = (comment as unknown as { updated_at?: string }).updated_at && currentComment.updated_at !== (comment as unknown as { updated_at?: string }).updated_at;
 
+        // The completion footer binds the request this run executes. Command
+        // metadata was parsed from the queued body, so a GitHub body that no
+        // longer matches it is not the accepted request and binds nothing.
+        const acceptedBodySha256 = currentComment.body === comment.body ? acceptedRequestDigest(comment.body) : undefined;
         if (commentWasEditedAfterQueuing) {
             correlatedLogger.info({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment has been edited since job was queued, using updated content');
-            validatedComments.push({ ...comment, body: currentComment.body || comment.body });
-        } else {
-            validatedComments.push(comment);
         }
+        const body = commentWasEditedAfterQueuing ? currentComment.body || comment.body : comment.body;
+        validatedComments.push({ ...comment, body, acceptedBodySha256 });
     }
     return validatedComments;
 }
@@ -114,11 +121,11 @@ export function filterUnprocessedComments(
                 return true;
             }
 
-            const alreadyProcessed = prCommentsForValidation.some(prComment => {
-                const isBotComment = prComment.user.login === botUsername;
-                if (!isBotComment) return false;
-                return prComment.body?.includes(`${String(comment.id)}✓`);
-            });
+            // A starting receipt alone does not end the request: a usage-limit
+            // retry of it must still run. This check runs under the PR lease, so
+            // no other writer of that receipt is live.
+            const alreadyProcessed = prCommentsForValidation.some(prComment =>
+                prComment.user.login === botUsername && receiptConsumesRequest(prComment.body, comment.id));
 
             if (alreadyProcessed) {
                 correlatedLogger.debug({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment already processed, filtering out');
@@ -139,6 +146,8 @@ export function filterUnprocessedComments(
 export interface LinkedIssueResult {
     context: string;
     linkedIssueNumber: number | null;
+    /** The first linked issue with its repository, which a closing reference may place outside the pull request's. */
+    linkedIssue?: LinkedIssueReference | null;
     bodyHtml?: string;  // HTML with signed image URLs
     linkedIssueLabels: ReasoningLevelLabel[];
 }
@@ -198,12 +207,13 @@ export async function fetchLinkedIssueContext(
 
     // Use GraphQL to get linked issues (cleaner than regex parsing)
     let linkedIssueNumbers: number[] = [];
+    let linkedIssue: LinkedIssueReference | null = null;
     try {
         const graphqlResponse = await octokit.graphql<{
             repository: {
                 pullRequest: {
                     closingIssuesReferences: {
-                        nodes: Array<{ number: number }>;
+                        nodes: Array<{ number: number; repository?: { name?: string; owner?: { login?: string } } }>;
                     };
                 };
             };
@@ -214,6 +224,7 @@ export async function fetchLinkedIssueContext(
                         closingIssuesReferences(first: 20) {
                             nodes {
                                 number
+                                repository { name owner { login } }
                             }
                         }
                     }
@@ -223,6 +234,8 @@ export async function fetchLinkedIssueContext(
 
         const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
         if (linkedIssues.length > 0) {
+            const [{ number, repository }] = linkedIssues;
+            linkedIssue = { owner: repository?.owner?.login ?? repoOwner, repo: repository?.name ?? repoName, number };
             linkedIssueNumbers = linkedIssues
                 .map(issue => issue.number)
                 .filter((issueNumber, index, all) => all.indexOf(issueNumber) === index);
@@ -231,17 +244,16 @@ export async function fetchLinkedIssueContext(
     } catch (graphqlError) {
         correlatedLogger.warn({ pullRequestNumber, error: (graphqlError as Error).message }, 'GraphQL query for linked issues failed, falling back to regex');
         // Fallback to regex parsing
-        const linkedIssueMatches = Array.from(prData.data.body?.matchAll(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/gi) ?? []);
-        if (linkedIssueMatches.length > 0) {
-            linkedIssueNumbers = linkedIssueMatches
-                .map(match => parseInt(match[1], 10))
-                .filter((issueNumber, index, all) => Number.isFinite(issueNumber) && all.indexOf(issueNumber) === index);
+        linkedIssueNumbers = parseLinkedIssueNumbers(prData.data.body);
+        if (linkedIssueNumbers.length > 0) {
             correlatedLogger.info({ pullRequestNumber, linkedIssueNumbers }, 'Found linked issues via regex fallback');
         }
     }
 
     const linkedIssueNumber = linkedIssueNumbers[0] ?? null;
-    if (linkedIssueNumbers.length === 0) return { context: originalTaskSpec, linkedIssueNumber: null, linkedIssueLabels: [] };
+    if (linkedIssueNumbers.length === 0) return { context: originalTaskSpec, linkedIssueNumber: null, linkedIssue: null, linkedIssueLabels: [] };
+    // The body fallback only parses local `Closes #n` references.
+    linkedIssue ??= { owner: repoOwner, repo: repoName, number: linkedIssueNumber! };
 
     originalTaskSpec += linkedIssueNumbers.length > 1
         ? `Here are the linked issue specifications for this pull request:\n\n`
@@ -289,7 +301,7 @@ export async function fetchLinkedIssueContext(
     }
 
     const bodyHtml = bodyHtmlParts.length > 0 ? bodyHtmlParts.join('\n') : undefined;
-    return { context: originalTaskSpec, linkedIssueNumber, bodyHtml, linkedIssueLabels };
+    return { context: originalTaskSpec, linkedIssueNumber, linkedIssue, bodyHtml, linkedIssueLabels };
 }
 
 export function formatCommentForPrompt(body: string | null): string {
@@ -359,7 +371,7 @@ export function createSessionIdCallbackForPR(
             }
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const logDir = '/tmp/claude-logs';
+            const logDir = getExecutionLogDirectory();
             await fs.ensureDir(logDir);
 
             const filePrefix = `issue-${pullRequestNumber}-${timestamp}`;

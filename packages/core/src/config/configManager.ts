@@ -11,7 +11,8 @@ import { createManagedPreviewStorageClient } from '../services/previewStorage/ru
 import { loadGitHubAttachmentCapacity } from '../services/visualPreviewCapacityService.js';
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
-import { getConfig, saveConfig } from './configStore.js';
+import { getConfig, getConfigStrict, saveConfig } from './configStore.js';
+import { loadInstanceAutoResolveMergeConflicts } from './mergeConflictSettings.js';
 import type { Knex } from 'knex';
 export {
     clearRemovedRepositoryIndexData,
@@ -28,14 +29,34 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    /** Agent context reads: installation-wide (default), task only, or an explicit list. */
+    contextRepositories?: 'all' | 'none' | string[];
     autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
     cancelCiDuringFollowup?: boolean; // Defaults to false; cancels obsolete PR validation while a follow-up implements
     // Exactly which validation workflows that option may cancel: workflow file
     // paths, file names, display names or numeric workflow IDs. Nothing is
     // cancelled while this is empty; eligibility is never inferred from a name.
     cancelCiDuringFollowupWorkflows?: string[];
+    // Check runs (by name; `*` matches any text) that never block ProPR's
+    // CI-driven automation: auto-merge, ultrafix continuation, failed-CI
+    // follow-ups and the check status reviews see. GitHub still shows them.
+    nonBlockingChecks?: string[];
     notificationsEnabled?: boolean; // Defaults to true; undefined (legacy configurations) reads as enabled
+    // Repository-wide override of the instance `auto_resolve_merge_conflicts` default.
+    // undefined/null inherits the instance default; never defaulted to false.
+    autoResolveMergeConflicts?: boolean | null;
     visualPreview?: VisualPreviewSettings; // Defaults to disabled for legacy configurations
+    // Without .propr/pr-template.md, append the repository's GitHub pull request
+    // template to ProPR's summary and run block. Defaults to true; undefined reads as enabled.
+    githubPrTemplateFallback?: boolean;
+    // Automatic pull request assignment, repository-wide across branch entries.
+    // Defaults to false; undefined (legacy configurations) reads as disabled.
+    autoAssignPullRequests?: boolean;
+    // GitHub login assigned instead of the issue author. null or undefined
+    // means the issue author is assigned.
+    autoAssignDefaultAssignee?: string | null;
+    // Also request a GitHub review from the assigned user. Defaults to false.
+    autoAssignRequestReview?: boolean;
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
@@ -78,7 +99,6 @@ export function normalizeStoredVisualPreviewSettings(value: unknown): VisualPrev
 interface ConfigSettings {
     worker_concurrency?: number;
     analysis_model_fast?: string;
-    analysis_model_advanced?: string;
     planner_context_model?: string;
     planner_generation_model?: string;
     [key: string]: unknown;
@@ -94,18 +114,17 @@ function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
     return redacted;
 }
 
-// --- Auto-Followup Score Threshold ---
+// --- Legacy API compatibility for retired analysis follow-up settings ---
 
 /**
- * Default threshold for auto-followup on low implementation scores.
- * Range: 0-9 (0 = disabled, 1-9 = trigger if score is at or below this value)
+ * Historical default retained for REST compatibility; it no longer affects execution.
  */
 const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 
 /**
  * Loads the auto-followup score threshold from the database.
- * Returns 0 if disabled, or a value 1-9 indicating the threshold.
  * Falls back to default if the stored value is malformed or out of range.
+ * @deprecated REST compatibility only; post-implementation analysis was removed.
  */
 export async function loadAutoFollowupScoreThreshold(): Promise<number> {
     const threshold = await getConfig<number>('auto_followup_score_threshold', DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD);
@@ -119,6 +138,7 @@ export async function loadAutoFollowupScoreThreshold(): Promise<number> {
 
 /**
  * Saves the auto-followup score threshold to the database.
+ * @deprecated REST compatibility only; this setting has no effect.
  * @param threshold - Value 0-9 (0 = disabled, 1-9 = threshold value)
  * @throws Error if threshold is not a valid integer in range 0-9
  */
@@ -160,6 +180,11 @@ export async function loadMonitoredRepos(): Promise<string[]> {
     const repos = rawRepos.filter(r => r.enabled).map(r => r.name);
     logger.info({ repos_to_monitor: repos, total_configured: rawRepos.length }, 'Successfully loaded enabled monitored repositories');
     return repos;
+}
+
+/** Agent launches must fail closed when repository access policy cannot be read. */
+export async function loadMonitoredReposStrict(): Promise<RepoToMonitor[]> {
+    return getConfigStrict<RepoToMonitor[]>('repos_to_monitor', []);
 }
 
 /**
@@ -206,6 +231,24 @@ export async function loadRepositoryVisualPreviewSettings(repository: string): P
     } catch (error) {
         logger.warn({ repository, error: (error as Error).message }, 'Failed to load visual-preview settings; treating previews as disabled');
         return { enabled: false, types: ['image'] };
+    }
+}
+
+/**
+ * The GitHub pull request template fallback is a repository-wide option: it is
+ * off only when an entry for the repository explicitly disables it.
+ */
+export function resolveRepositoryGitHubPrTemplateFallback(repos: readonly RepoToMonitor[], repository: string): boolean {
+    const normalizedRepository = repository.trim().toLowerCase();
+    return !repos.some(repo => repo.name.trim().toLowerCase() === normalizedRepository && repo.githubPrTemplateFallback === false);
+}
+
+export async function loadRepositoryGitHubPrTemplateFallback(repository: string): Promise<boolean> {
+    try {
+        return resolveRepositoryGitHubPrTemplateFallback(await loadMonitoredReposRaw(), repository);
+    } catch (error) {
+        logger.warn({ repository, error: (error as Error).message }, 'Failed to load the GitHub pull request template fallback setting; using the default');
+        return true;
     }
 }
 
@@ -343,13 +386,33 @@ export async function hasValidTriggerLabel(labels: Array<{ name: string } | stri
 export {
     loadPrReviewModel,
     savePrReviewModel,
+    loadUltrafixEscalationSettings,
+    type UltrafixEscalationSettings,
     loadUltrafixRatingGoal,
     saveUltrafixRatingGoal,
     loadUltrafixMaxCycles,
     saveUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
-    saveUltrafixPauseSeconds
+    saveUltrafixPauseSeconds,
+    loadDefaultMaxCostUsd,
+    saveDefaultMaxCostUsd,
+    loadUltrafixCiWaitTimeoutMs,
+    saveUltrafixCiWaitTimeoutMs,
+    DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS
 } from './configManagerUltrafix.js';
+
+export {
+    AGENT_WATCHDOG_SETTING_DEFINITIONS,
+    DEFAULT_AGENT_STALL_TIMEOUT_MS,
+    DEFAULT_AGENT_TOOL_STALL_TIMEOUT_MS,
+    DEFAULT_AGENT_DEGENERATE_OUTPUT_LIMIT,
+    loadAgentWatchdogOverrides,
+    loadAgentWatchdogSettings,
+    resolveAgentWatchdogEnvDefault,
+    resolveAgentWatchdogSettings,
+    saveAgentWatchdogSetting,
+    type AgentWatchdogSettingKey
+} from './configManagerAgentWatchdog.js';
 
 export {
     loadModelReasoningLevel,
@@ -370,7 +433,7 @@ export {
 } from './configManagerReasoning.js';
 
 export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';
-export { getConfig, saveConfig } from './configStore.js';
+export { getConfig, getConfigStrict, saveConfig } from './configStore.js';
 export {
     clearSummarizationCooldown,
     clearSummarizationPrimaryQuotaFailures,
@@ -399,12 +462,15 @@ export {
     assertCodexConfigPathAvailable,
     resolveCodexConfigPath,
     resolveConfigPath,
+    resolveDefaultConfigPath,
     getDefaultConfigPath,
     loadAgents,
     loadEffectiveAgentBaseImages,
     saveAgents,
     migrateAgentConfigs,
     type AgentTankSettings,
+    DEFAULT_AGENT_TANK_URL,
+    normalizeAgentTankSettings,
     loadAgentTankSettings,
     saveAgentTankSettings
 } from './configManagerAgents.js';
@@ -422,7 +488,7 @@ export {
  * Returns false if the setting has not been explicitly set (backward-compatible default).
  */
 export async function loadAutoResolveMergeConflicts(): Promise<boolean> {
-    const value = await getConfig<boolean>('auto_resolve_merge_conflicts', false);
+    const value = await loadInstanceAutoResolveMergeConflicts();
     logger.info({ auto_resolve_merge_conflicts: value }, 'Successfully loaded auto-resolve merge conflicts setting');
     return value;
 }
@@ -435,3 +501,14 @@ export async function saveAutoResolveMergeConflicts(enabled: boolean): Promise<b
     logger.info({ auto_resolve_merge_conflicts: enabled }, 'Successfully saved auto-resolve merge conflicts setting');
     return true;
 }
+export {
+    loadAgentNetworkOverrides,
+    loadInstanceNetworkPolicy,
+    saveAgentNetworkSetting,
+} from './configManagerAgentNetwork.js';
+
+export {
+    FOLLOWUP_REQUIRES_ASSIGNMENT_CONFIG_KEY,
+    loadFollowupRequiresAssignment,
+    saveFollowupRequiresAssignment,
+} from './configManagerAssignment.js';

@@ -1,15 +1,11 @@
+import { createPackagedAcceptanceSetup } from '../../../apps/desktop/src/acceptance-setup';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopGithubInstallationDecision, DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
 import { DesktopExperience } from './DesktopExperience';
 import { adaptersFor, localProfile } from './DesktopExperience.testSupport';
 import { LocalSetupWizard } from './LocalSetupWizard';
-import {
-  completed,
-  guidedAdapter,
-  idle,
-  openAndSubmitWizard,
-} from './LocalSetupWizard.integration.testSupport';
+import { clickAndWaitForHeading, completed, continueThrough, guidedAdapter, idle, installationSnapshot, openAndSubmitWizard } from './LocalSetupWizard.integration.testSupport';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
 const runtimeMock = vi.hoisted(() => ({ setDesktopApiBaseUrl: vi.fn() }));
@@ -19,24 +15,77 @@ vi.mock('../config/runtimeConfig', () => ({ setDesktopApiBaseUrl: runtimeMock.se
 describe('production local setup journey', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('shows a safe browser failure and retries through the desktop action', async () => {
+    const retry = vi.fn(async () => completed);
+    const setup = guidedAdapter({ status: vi.fn(async () => ({ ...idle, phase: 'failed' as const,
+      state: { rootDir: '/private/local-runtime', steps: [{ id: 'github-auth', title: 'GitHub authentication', status: 'failed',
+        detail: 'GitHub account was not confirmed. Retry sign-in and choose the intended account in GitHub.',
+        nextAction: 'Choose Retry setup to start a new GitHub browser sign-in, then return to ProPR and confirm the intended account.',
+      }] },
+    } as DesktopSetupSnapshot)), retry });
+    render(<LocalSetupWizard adapter={setup} onBack={() => undefined} onComplete={() => undefined} />);
+    expect(await screen.findByText(/GitHub account was not confirmed/)).toBeInTheDocument();
+    expect(screen.getByText(/Choose Retry setup to start a new GitHub browser sign-in/)).toBeInTheDocument();
+    expect(screen.queryByText(/propr login|propr setup/)).toBeNull();
+    await clickAndWaitForHeading('Retry setup', 'ProPR is ready');
+    expect(retry).toHaveBeenCalled();
+  });
+
+  it.each(['linux', 'macos'] as const)('opens the production wizard from the %s chooser', async platform => {
+    const adapters = adaptersFor();
+    adapters.platform = platform;
+    const setup = guidedAdapter({ status: vi.fn(async (): Promise<DesktopSetupSnapshot> => ({ ...idle,
+      capability: { supported: true, kind: 'local', platform: platform === 'macos' ? 'darwin' : 'linux' },
+    })) });
+    adapters.localSetup = setup;
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    await clickAndWaitForHeading(/Set up this computer/i, 'Check the essentials');
+    expect(setup.status).toHaveBeenCalled();
+    if (platform === 'macos') {
+      expect(screen.getByText(/Open Docker Desktop/).textContent).toContain('AMD64');
+      expect(screen.queryByText(/ProPR needs Linux/)).toBeNull();
+    }
+    await clickAndWaitForHeading(/Continue/, 'Private local storage');
+    expect(setup.start).not.toHaveBeenCalled();
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+    expect(screen.queryByText('Connected app')).not.toBeInTheDocument();
+  });
+
+  it('keeps the production wizard and secure connection action in acceptance mode', async () => {
+    window.__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn(), setupEvidence: vi.fn() };
+    const fixture = createPackagedAcceptanceSetup(true, 'setup-complete')!;
+    const adapters = adaptersFor([], null, async () => ({ status: 'authentication-required', message: 'Approve desktop access in your browser.' }));
+    adapters.localSetup = { supported: true, ...fixture.localSetup };
+    try {
+      const { container } = render(<DesktopExperience adapters={adapters}>Workspace</DesktopExperience>);
+      fireEvent.click(await screen.findByRole('button', { name: /Set up this computer/ }));
+      const connect = await screen.findByRole('button', { name: 'Connect securely' });
+      expect(container.querySelector('main.desktop-setup-wizard .desktop-setup-success')).not.toBeNull();
+      fireEvent.click(connect);
+      await screen.findByRole('button', { name: 'Sign in in browser' });
+      expect(adapters.connection.probe).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'http://127.0.0.2:41731' }));
+      expect(adapters.authentication.authenticate).not.toHaveBeenCalled();
+      expect(adapters.externalBrowser.open).not.toHaveBeenCalled();
+    } finally { delete window.__PROPR_PACKAGED_ACCEPTANCE__; }
+  });
+
+  it.each(['retry', 'replace', 'review'] as const)('uses the production %s recovery handler with acceptance snapshots', async action => {
+    const fixture = createPackagedAcceptanceSetup(true, 'setup-error')!;
+    render(<LocalSetupWizard adapter={{ supported: true, ...fixture.localSetup }} onBack={vi.fn()} onComplete={vi.fn()} />);
+    const label = { retry: 'Retry setup', replace: 'Restart with aligned runtime', review: 'Review saved choices' }[action];
+    await clickAndWaitForHeading(label, action === 'review' ? 'Connect GitHub' : 'Setting up ProPR');
+    expect(fixture.evidence().calls).toEqual(action === 'review' ? [] : [action === 'retry' ? 'retry' : 'replace-running-stack']);
+  });
+
   it('shows the authenticated identity, installation types, and explicit recovery controls', async () => {
-    const choosing: DesktopSetupSnapshot = {
-      ...idle, phase: 'running', githubIdentity: {
-        status: 'authorization-failed', username: 'member-user', installAvailable: true,
-        selectedInstallationId: '100',
-        permissionExplanation: 'This account has access, but an installation owner must authorize enrollment.',
-        installations: [
-          { installationId: '100', accountLogin: 'acme', accountType: 'Organization' },
-          { installationId: '200', accountLogin: 'member-user', accountType: 'User' },
-        ],
-      },
-    };
+    const choosing = installationSnapshot({
+      status: 'authorization-failed', selectedInstallationId: '100',
+      permissionExplanation: 'This account has access, but an installation owner must authorize enrollment.',
+    });
     const resolveGithubInstallation = vi.fn(async () => ({
       ...choosing, githubIdentity: { ...choosing.githubIdentity!, status: 'enrolling' as const, selectedInstallationId: '200' },
     }));
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByText('@member-user')).toBeInTheDocument();
     expect(screen.getByText('Organization · Installation 100')).toBeInTheDocument();
@@ -52,29 +101,44 @@ describe('production local setup journey', () => {
     expect(screen.getByRole('button', { name: 'Change GitHub account' })).toBeInTheDocument();
   });
 
-  it('requires a fresh choice after reauthentication even when identity metadata is unchanged', async () => {
-    const choosing: DesktopSetupSnapshot = {
+  it('directs browser account switching cancellation to the native dialog', async () => {
+    const waiting: DesktopSetupSnapshot = {
       ...idle, phase: 'running', githubIdentity: {
-        status: 'authorization-failed', username: 'shared-user', installAvailable: true,
-        selectedInstallationId: '100', installations: [
-          { installationId: '100', accountLogin: 'shared-org', accountType: 'Organization' },
-          { installationId: '200', accountLogin: 'shared-user', accountType: 'User' },
-        ],
+        status: 'reauthenticating', username: 'example-user', installAvailable: true, installations: [],
       },
     };
-    const afterReauthentication: DesktopSetupSnapshot = {
-      ...choosing, githubIdentity: {
-        ...choosing.githubIdentity!, status: 'selection-required', selectedInstallationId: undefined,
-      },
-    };
+    const adapter = guidedAdapter({ status: vi.fn(async () => waiting) });
+    render(<LocalSetupWizard adapter={adapter} onBack={vi.fn()} onComplete={vi.fn()} />);
+    expect(await screen.findByRole('status')).toHaveTextContent('Waiting for GitHub sign-in in your browser');
+    expect(screen.getByRole('status')).toHaveTextContent('choose Cancel sign-in in the desktop dialog');
+    expect(screen.getByRole('button', { name: 'Change GitHub account' })).toBeDisabled();
+    const cancel = screen.getByRole('button', { name: 'Cancel safely' });
+    expect(cancel).toBeEnabled();
+    fireEvent.click(cancel);
+    await waitFor(() => expect(adapter.cancel).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Retry setup' })).toBeEnabled();
+  });
+
+  it('announces initial browser sign-in without exposing authorization codes', async () => {
+    const waiting: DesktopSetupSnapshot = { ...idle, phase: 'running', state: {
+      rootDir: '/fixture', steps: [{ id: 'github-auth', title: 'GitHub authentication',
+        description: 'Connect GitHub', optional: false, status: 'active' }],
+    } };
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => waiting) })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    expect(await screen.findByRole('status')).toHaveTextContent('return to ProPR to confirm your account');
+    expect(screen.getByRole('status')).toHaveTextContent('choose Cancel sign-in in the desktop dialog');
+    expect(screen.getByRole('button', { name: 'Cancel safely' })).toBeEnabled();
+  });
+
+  it('requires a fresh choice after reauthentication even when identity metadata is unchanged', async () => {
+    const choosing = installationSnapshot({ status: 'authorization-failed', selectedInstallationId: '100' });
+    const afterReauthentication = installationSnapshot();
     const resolveGithubInstallation = vi.fn(async (decision: DesktopGithubInstallationDecision) => decision.action === 'reauthenticate'
       ? afterReauthentication : choosing);
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
-    expect(await screen.findByRole('radio', { name: /shared-org/i })).toBeChecked();
-    fireEvent.click(screen.getByRole('radio', { name: /shared-user/i }));
+    expect(await screen.findByRole('radio', { name: /acme/i })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: /member-user/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Change GitHub account' }));
 
     await waitFor(() => expect(resolveGithubInstallation).toHaveBeenCalledWith({ action: 'reauthenticate' }));
@@ -82,25 +146,35 @@ describe('production local setup journey', () => {
     expect(screen.getAllByRole('radio').every(radio => !(radio as HTMLInputElement).checked)).toBe(true);
   });
 
+  it('separates a failed account change from the previously saved identity until it is explicitly kept', async () => {
+    const failed = installationSnapshot({ status: 'reauthentication-failed', username: 'integry',
+      reauthenticationFailure: 'GitHub sign-in was declined. Retry and approve the intended account.' });
+    const kept = installationSnapshot({ username: 'integry' });
+    const resolveGithubInstallation = vi.fn(async (decision: DesktopGithubInstallationDecision) => decision.action === 'keep-account' ? kept : failed);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => failed), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Changing GitHub account did not complete.');
+    expect(alert).toHaveTextContent('GitHub sign-in was declined');
+    expect(alert).toHaveTextContent('ProPR did not replace the saved account');
+    expect(screen.getByText('Previously saved GitHub account')).toBeInTheDocument();
+    expect(screen.queryByText('Authenticated GitHub account')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('radio').every(radio => (radio as HTMLInputElement).disabled)).toBe(true);
+    expect(screen.getByRole('button', { name: 'Continue with selection' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Try changing account again' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep @integry' }));
+    await waitFor(() => expect(resolveGithubInstallation).toHaveBeenCalledWith({ action: 'keep-account' }));
+    expect(await screen.findByText('Authenticated GitHub account')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep @integry' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('radio').every(radio => !(radio as HTMLInputElement).disabled)).toBe(true);
+  });
+
   it('clears a local choice that disappears from a refreshed installation list', async () => {
-    const choosing: DesktopSetupSnapshot = {
-      ...idle, phase: 'running', githubIdentity: {
-        status: 'selection-required', username: 'member-user', installAvailable: true,
-        installations: [
-          { installationId: '100', accountLogin: 'acme', accountType: 'Organization' },
-          { installationId: '200', accountLogin: 'member-user', accountType: 'User' },
-        ],
-      },
-    };
-    const refreshed: DesktopSetupSnapshot = {
-      ...choosing, githubIdentity: {
-        ...choosing.githubIdentity!, installations: [choosing.githubIdentity!.installations[0]],
-      },
-    };
+    const choosing = installationSnapshot();
+    const refreshed = installationSnapshot({ installations: [choosing.githubIdentity!.installations[0]] });
     const resolveGithubInstallation = vi.fn(async () => refreshed);
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('radio', { name: /member-user/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh installations' }));
@@ -116,14 +190,11 @@ describe('production local setup journey', () => {
     render(<LocalSetupWizard adapter={guidedAdapter()} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     await screen.findByRole('heading', { name: 'Check the essentials' });
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-    expect(await screen.findByRole('heading', { name: 'Connect GitHub' })).toBeInTheDocument();
+    await continueThrough('Private local storage', 'Connect GitHub');
     expect(screen.queryByRole('radio', { name: /Demo/i })).not.toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'ProPR Connect' })).toBeChecked();
 
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-    expect(await screen.findByRole('heading', { name: 'GitHub event intake' })).toBeInTheDocument();
+    await clickAndWaitForHeading(/Continue/i, 'GitHub event intake');
     expect(screen.getByText('ProPR Connect uses a persistent WebSocket connection for GitHub events.')).toBeInTheDocument();
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
   });
@@ -135,16 +206,13 @@ describe('production local setup journey', () => {
     render(<LocalSetupWizard adapter={adapter} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     await screen.findByRole('heading', { name: 'Check the essentials' });
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    await continueThrough('Private local storage', 'Connect GitHub');
     fireEvent.click(await screen.findByRole('radio', { name: 'Custom GitHub App' }));
     fireEvent.change(screen.getByLabelText('App ID'), { target: { value: '123' } });
     fireEvent.change(screen.getByLabelText('Installation ID'), { target: { value: '456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Choose private key' }));
     await screen.findByText('github-app.pem');
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-
-    expect(await screen.findByRole('heading', { name: 'GitHub event intake' })).toBeInTheDocument();
+    await clickAndWaitForHeading(/Continue/i, 'GitHub event intake');
     expect(screen.getByRole('radio', { name: 'Polling' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Direct webhook' })).toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'WebSocket' })).not.toBeInTheDocument();
@@ -169,10 +237,8 @@ describe('production local setup journey', () => {
 
     await openAndSubmitWizard();
     expect(await screen.findByRole('heading', { name: 'Setting up ProPR' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Cancel safely/i }));
-    expect(await screen.findByRole('heading', { name: 'Setup needs attention' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Retry setup/i }));
-    expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
+    await clickAndWaitForHeading(/Cancel safely/i, 'Setup needs attention');
+    await clickAndWaitForHeading(/Retry setup/i, 'ProPR is ready');
     expect(cancel).toHaveBeenCalledOnce();
     expect(retry).toHaveBeenCalledWith();
   });
@@ -207,56 +273,41 @@ describe('production local setup journey', () => {
 
     expect(await screen.findByRole('heading', { name: 'Could not load setup' })).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('Setup status is unavailable.');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByRole('heading', { name: 'Check the essentials' })).toBeInTheDocument();
+    await clickAndWaitForHeading('Retry', 'Check the essentials');
     expect(adapter.status).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(onBack).toHaveBeenCalledOnce();
   });
 
-  it('keeps cancellation failures visible with retry and back available', async () => {
+  it.each([
+    { action: 'cancel', phase: 'running', button: 'Cancel safely', recovery: 'Try cancellation again',
+      message: 'Setup cancellation could not be confirmed.' },
+    { action: 'retry', phase: 'failed', button: 'Retry setup', recovery: 'Retry setup',
+      message: 'Local setup could not be started.' },
+  ] as const)('keeps $action failures visible with recovery and back available', async ({ action, phase, button, recovery, message }) => {
     const adapter = guidedAdapter({
-      status: vi.fn(async () => ({ ...idle, phase: 'running' as const })),
-      cancel: vi.fn(async () => { throw new Error('private cancellation failure'); }),
+      status: vi.fn(async () => ({ ...idle, phase })),
+      [action]: vi.fn(async () => { throw new Error(`private ${action} failure`); }),
     });
     const onBack = vi.fn();
     render(<LocalSetupWizard adapter={adapter} onBack={onBack} onComplete={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel safely' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Setup cancellation could not be confirmed.');
-    expect(screen.getByRole('button', { name: 'Try cancellation again' })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: button }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(screen.getByRole('button', { name: recovery })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(onBack).toHaveBeenCalledOnce();
   });
 
-  it('renders a failed recovery retry without hiding recovery controls', async () => {
-    const failed = { ...idle, phase: 'failed' as const, error: 'Docker is unavailable.' };
-    const adapter = guidedAdapter({
-      status: vi.fn(async () => failed),
-      retry: vi.fn(async () => { throw new Error('private retry failure'); }),
-    });
-    render(<LocalSetupWizard adapter={adapter} onBack={vi.fn()} onComplete={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Retry setup' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Local setup could not be started.');
-    expect(screen.getByRole('button', { name: 'Retry setup' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-  });
-
   it('requires the dedicated recovery control before replacing an incompatible running stack', async () => {
     const incompatible: DesktopSetupSnapshot = {
-      ...idle,
-      phase: 'failed',
-      state: {
-        rootDir: '/redacted',
-        steps: [{
-          id: 'start-stack', title: 'Start stack', description: 'Launch services.', optional: false,
-          status: 'failed', detail: 'The retained runtime is incompatible.',
-          nextAction: 'Only this Desktop-managed stack is replaced; data and credentials are retained.',
-          recoveryAction: 'replace-running-stack',
-        }],
-      },
-      resumeAvailable: true,
+      ...idle, phase: 'failed',
+      state: { rootDir: '/redacted', steps: [{
+        id: 'start-stack', title: 'Start stack', description: 'Launch services.', optional: false,
+        status: 'failed', detail: 'The retained runtime is incompatible.',
+        nextAction: 'Only this Desktop-managed stack is replaced; data and credentials are retained.',
+        recoveryAction: 'replace-running-stack',
+      }] }, resumeAvailable: true,
       resume: {
         agents: [], reinitialize: false, github: { mode: 'relay' }, intake: { mode: 'routing_websocket' },
         whitelist: null, repository: null,
@@ -270,10 +321,7 @@ describe('production local setup journey', () => {
     expect(retry).not.toHaveBeenCalled();
     fireEvent.click(replace);
     expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
-    expect(retry).toHaveBeenCalledWith({
-      sessionId: idle.sessionId,
-      recoveryAction: 'replace-running-stack',
-    });
+    expect(retry).toHaveBeenCalledWith({ sessionId: idle.sessionId, recoveryAction: 'replace-running-stack' });
   });
 
   it('offers credential review without replacing ordinary retry for a transient failure', async () => {
@@ -291,8 +339,7 @@ describe('production local setup journey', () => {
     render(<LocalSetupWizard adapter={adapter} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByRole('button', { name: 'Review saved choices' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry setup' }));
-    expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
+    await clickAndWaitForHeading('Retry setup', 'ProPR is ready');
     expect(retry).toHaveBeenCalledWith();
   });
 
@@ -309,24 +356,18 @@ describe('production local setup journey', () => {
     render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => legacy), retry })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByLabelText('Selected configuration')).toHaveTextContent('Demo mode (unsupported)');
-    fireEvent.click(screen.getByRole('button', { name: 'Review saved choices' }));
-    expect(await screen.findByRole('heading', { name: 'Connect GitHub' })).toBeInTheDocument();
+    await clickAndWaitForHeading('Review saved choices', 'Connect GitHub');
     expect(screen.queryByRole('radio', { name: /Demo/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Keep existing configuration' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
     expect(screen.getByRole('alert')).toHaveTextContent('Select ProPR Connect');
 
     fireEvent.click(screen.getByRole('radio', { name: 'ProPR Connect' }));
-    for (const heading of ['GitHub event intake', 'Select coding agents', 'Ready to install']) {
-      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-      await screen.findByRole('heading', { name: heading });
-    }
+    await continueThrough('GitHub event intake', 'Select coding agents', 'Ready to install');
     expect(screen.getByLabelText('Selected configuration')).toHaveTextContent('ProPR Connect');
     expect(screen.getByLabelText('Selected configuration')).toHaveTextContent('WebSocket');
     fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));
-    expect(retry).toHaveBeenCalledWith(expect.objectContaining({
-      github: { mode: 'relay' }, intake: { mode: 'routing_websocket' },
-    }));
+    expect(retry).toHaveBeenCalledWith(expect.objectContaining({ github: { mode: 'relay' }, intake: { mode: 'routing_websocket' } }));
   });
 
   it('shows and confirms corrected WebSocket intake for stale ProPR Connect recovery', async () => {
@@ -347,10 +388,7 @@ describe('production local setup journey', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review saved choices' }));
     expect(await screen.findByText('ProPR Connect uses a persistent WebSocket connection for GitHub events.')).toBeInTheDocument();
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
-    for (const heading of ['Select coding agents', 'Ready to install']) {
-      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-      await screen.findByRole('heading', { name: heading });
-    }
+    await continueThrough('Select coding agents', 'Ready to install');
     fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));
     expect(retry).toHaveBeenCalledWith(expect.objectContaining({ intake: { mode: 'routing_websocket' } }));
   });
@@ -368,19 +406,11 @@ describe('production local setup journey', () => {
     const adapter = guidedAdapter({ status: vi.fn(async () => recoverable), retry });
     render(<LocalSetupWizard adapter={adapter} onBack={vi.fn()} onComplete={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Review saved choices' }));
-    expect(await screen.findByRole('heading', { name: 'Connect GitHub' })).toBeInTheDocument();
+    await clickAndWaitForHeading('Review saved choices', 'Connect GitHub');
     fireEvent.click(screen.getByRole('radio', { name: 'Keep existing configuration' }));
-    for (const heading of ['GitHub event intake', 'Select coding agents', 'Ready to install']) {
-      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-      await screen.findByRole('heading', { name: heading });
-    }
-    fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));
-
-    expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
-    expect(retry).toHaveBeenCalledWith(expect.objectContaining({
-      github: { mode: 'keep' }, intake: { mode: 'routing_websocket' },
-    }));
+    await continueThrough('GitHub event intake', 'Select coding agents', 'Ready to install');
+    await clickAndWaitForHeading(/Install ProPR/i, 'ProPR is ready');
+    expect(retry).toHaveBeenCalledWith(expect.objectContaining({ github: { mode: 'keep' }, intake: { mode: 'routing_websocket' } }));
   });
 
   it.each(['failed', 'cancelled'] as const)('returns a %s reconfigured retry to credential-free recovery', async phase => {
@@ -389,36 +419,23 @@ describe('production local setup journey', () => {
       intake: { mode: 'direct_webhook' as const, reconfigurationRequired: true as const },
       whitelist: null, repository: null, reconfigurationStage: 'intake' as const,
     };
-    const requiresSecret: DesktopSetupSnapshot = {
-      ...idle, phase: 'failed', error: 'Enter the webhook secret again.', resume,
-      resumeAvailable: true, reconfigurationRequired: true,
-    };
-    const terminal: DesktopSetupSnapshot = {
-      ...requiresSecret, phase, error: phase === 'cancelled' ? 'Setup was cancelled safely.' : 'Webhook setup failed.',
-      reconfigurationRequired: false,
-    };
-    const retry = vi.fn()
-      .mockResolvedValueOnce(terminal)
-      .mockResolvedValueOnce(completed);
+    const requiresSecret: DesktopSetupSnapshot = { ...idle, phase: 'failed', resume,
+      error: 'Enter the webhook secret again.', resumeAvailable: true, reconfigurationRequired: true };
+    const terminal: DesktopSetupSnapshot = { ...requiresSecret, phase, reconfigurationRequired: false,
+      error: phase === 'cancelled' ? 'Setup was cancelled safely.' : 'Webhook setup failed.' };
+    const retry = vi.fn().mockResolvedValueOnce(terminal).mockResolvedValueOnce(completed);
     const adapter = guidedAdapter({
       status: vi.fn(async () => requiresSecret), retry,
       acquireWebhookSecret: vi.fn(async () => ({ capability: 'webhook-secret-capability', label: 'Secret entered' as const })),
     });
     render(<LocalSetupWizard adapter={adapter} onBack={vi.fn()} onComplete={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Review saved choices' }));
-    expect(await screen.findByRole('heading', { name: 'GitHub event intake' })).toBeInTheDocument();
+    await clickAndWaitForHeading('Review saved choices', 'GitHub event intake');
     fireEvent.click(screen.getByRole('button', { name: 'Enter webhook secret securely' }));
     await screen.findByText('Secret entered');
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-    await screen.findByRole('heading', { name: 'Select coding agents' });
-    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
-    await screen.findByRole('heading', { name: 'Ready to install' });
-    fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));
-
-    expect(await screen.findByRole('heading', { name: 'Setup needs attention' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry setup' }));
-    expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
+    await continueThrough('Select coding agents', 'Ready to install');
+    await clickAndWaitForHeading(/Install ProPR/i, 'Setup needs attention');
+    await clickAndWaitForHeading('Retry setup', 'ProPR is ready');
     expect(retry).toHaveBeenNthCalledWith(1, expect.objectContaining({
       intake: { mode: 'direct_webhook', secretCapability: 'webhook-secret-capability' },
     }));

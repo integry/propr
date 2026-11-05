@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createGithubAppCommand } from './commands/githubAppCommands.js';
 
 import { Command } from "commander";
 import { config } from "dotenv";
@@ -17,6 +18,8 @@ import {
   createIssueCommand,
   createPlanCommand,
   createTaskCommand,
+  createGoalCommand,
+  createAutomationCommand,
   createRepoCommand,
   createAgentCommand,
   createSettingCommand,
@@ -26,6 +29,7 @@ import {
   createRemoteStatusCommand,
   createQueueCommand,
   createBackendCommand,
+  createStatsCommand,
   createInitCommand,
   createSetupCommand,
   createAgentSkillCommand,
@@ -41,6 +45,7 @@ import {
   createTankCommand,
   createRelayCommand,
   createRuntimeCommand,
+  createHandoffsCommand,
   runChecks,
   printChecks,
   STACK_CONFIG_CHECK_NAME,
@@ -198,7 +203,7 @@ program
 ProPR CLI - AI-Powered GitHub Issue Implementation
 
 Run a local ProPR Docker stack (check / init / start / status / stop) and
-drive the backend (plans, issues, tasks, repos, agents).
+drive the backend (plans, issues, goals, tasks, repos, agents).
 `)
   .addHelpText("after", `
 Quick Start (local stack):
@@ -230,6 +235,9 @@ Examples:
   $ propr issue implement abc123/1 --wait --auto-merge
   $ propr task inspect                 # Active work, including queued tasks
   $ propr task inspect <task-id>       # Current state and full run history
+  $ propr goal create "Add audit logging" --agent codex   # Create and start a goal
+  $ propr goal inspect <goal-id>       # Goal state, progress and pull requests
+  $ propr automation run <agent-id> --wait   # Run a saved agent and print its report
   $ propr remote-status
 
 Command Groups:
@@ -238,9 +246,12 @@ Command Groups:
   Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
+  Goals:          goal [capabilities|create|list|inspect|input|inputs|pause|resume|cancel|model]
+  Automations:    automation [list|show|run|runs|report|approve|reject|cancel]   (Agents: saved automations)
   Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
+  Handoffs:       handoffs [list|inspect|resume|release]   (admin recovery for PR follow-up publications)
   Repositories:   repo [list|add|remove|toggle|index|status]
-  Agents:         agent [list|add|enable|disable|delete|pool]
+  Agents:         agent [list|add|enable|disable|delete|pool]   (coding-agent configurations)
   Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
@@ -404,6 +415,7 @@ program
 
 // Control-plane commands (local Docker stack)
 program.addCommand(createCheckCommand());
+program.addCommand(createGithubAppCommand());
 program.addCommand(createImagesCommand());
 program.addCommand(createStartCommand());
 program.addCommand(createStackStatusCommand());
@@ -415,6 +427,7 @@ program.addCommand(createConnectCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
 program.addCommand(createRuntimeCommand());
+program.addCommand(createHandoffsCommand());
 program.addCommand(createConfigCommand());
 
 // Setup + backend client command groups
@@ -424,6 +437,8 @@ program.addCommand(createAgentSkillCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());
+program.addCommand(createGoalCommand());
+program.addCommand(createAutomationCommand());
 program.addCommand(createRepoCommand());
 program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
@@ -432,6 +447,7 @@ program.addCommand(createTodoCommand());
 program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
+program.addCommand(createStatsCommand());
 
 function isCliEntryPoint(): boolean {
   const invocation = process.argv[1];

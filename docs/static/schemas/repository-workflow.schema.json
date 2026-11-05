@@ -1,0 +1,156 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://docs.propr.dev/schemas/repository-workflow.schema.json",
+  "title": "ProPR repository workflow",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "after_create": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "before_run": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "after_run": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "before_remove": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Per-command timeout, capped at 600000 ms."
+        }
+      }
+    },
+    "instructions": {
+      "allOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        {
+          "pattern": "^(?=[\\s\\S]*\\S)(?!/)(?![\\s\\S]*\\\\)(?![\\s\\S]*(?:^|/)\\.{1,2}(?:/|$))(?![\\s\\S]*//)(?![\\s\\S]*/$)[^\\u0000]+$"
+        }
+      ]
+    },
+    "validation": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+      }
+    },
+    "previews": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "types": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "image",
+              "video"
+            ]
+          }
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_parallel_tasks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Repository-wide execution cap, bounded by instance worker_concurrency."
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Per-run spend cap in USD. A run whose estimated cost reaches it is stopped and its partial work published. 0 means no cap from this file; a per-task maxCostUsd override takes precedence, and the instance default_max_cost_usd applies when unset. A malformed value is ignored with a warning."
+        }
+      }
+    },
+    "auto_merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Policy for when ProPR may arm GitHub auto-merge. Read from the PR's base branch; .propr/** is always protected.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "false never arms auto-merge, even when the auto-merge label is present."
+        },
+        "method": {
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "description": "Merge method; defaults to the repository default (squash unless the repository disallows it)."
+        },
+        "protected_paths": {
+          "type": "array",
+          "maxItems": 200,
+          "description": "Repository-root-anchored globs (*, ?, **, [...]); any changed path that matches keeps auto-merge disarmed. Case-insensitive; a matching directory protects its contents.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$"
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agent container network policy. restricted starts agent containers with no network interface; their only route out is a per-run proxy that allows the agent's provider API, GitHub, npm and PyPI plus the hosts listed here. The instance can enforce restricted mode, in which case mode: open is ignored.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "open",
+            "restricted"
+          ],
+          "description": "open (instance default unless configured otherwise) or restricted."
+        },
+        "allow": {
+          "type": "array",
+          "maxItems": 500,
+          "description": "Extra hosts restricted runs may reach: an exact hostname, *.example.com for its subdomains (not the apex), an IP literal, each optionally with :port (otherwise ports 80 and 443). Only public addresses: a loopback, private or link-local address needs an instance allowlist entry. An instance that enforces restricted mode may ignore these hosts.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\s*(?:(?:\\*\\.)?(?=[A-Za-z0-9.-]{1,253}\\.?(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?\\s*$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+\\.?(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))|\\[(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))\\](?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?)\\s*$"
+          }
+        }
+      }
+    }
+  }
+}

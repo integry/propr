@@ -130,7 +130,7 @@ function assertSafeAgentCredentialDir(path: string, name = "Agent credential pat
     path.includes(":") ||
     /[\u0000-\u001f\u007f-\u009f]/.test(path)
   ) {
-    throw new Error(`${name} must be an absolute, non-root Linux path without ':' or control characters`);
+    throw new Error(`${name} must be an absolute, non-root POSIX path without ':' or control characters`);
   }
 }
 
@@ -213,7 +213,7 @@ export interface SetupPrompts {
   /** Pick which agents to enable. Default: the agents detected on this host. */
   selectAgents?(ctx: { available: string[]; detected: string[] }): Promise<string[]>;
   /** Configure GitHub auth. Default: keep whatever `.env` already has. */
-  configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
+  configureGithubAuth?(ctx: { current: GithubAuthModeResult; rootDir?: string }): Promise<GithubAuthDecision>;
   /**
    * Choose which access-scoped installation to submit for relay enrollment.
    * This is the legacy CLI/TUI hook and is called only when discovery has at
@@ -319,6 +319,12 @@ export interface RelayInstallationChoiceContext {
   enrollmentPermissionError?: string;
   /** Hosted installation page; absent for custom relays. */
   installUrl?: string;
+  /**
+   * Present after "Change GitHub account" did not complete. `username` is
+   * still the previously saved identity, which was not replaced. Selection is
+   * refused until the user explicitly chooses `keep-account` or signs in again.
+   */
+  reauthenticationFailure?: { detail: string };
 }
 
 export type RelayInstallationDecision =
@@ -326,10 +332,14 @@ export type RelayInstallationDecision =
   | { action: "refresh" }
   | { action: "install" }
   | { action: "reauthenticate" }
+  /** Explicitly continue as the previously saved identity after a failed account change. */
+  | { action: "keep-account" }
   | { action: "cancel" };
 
 /** Minimal environment-check contract consumed by the setup state machine. */
 export interface SetupCheckResult {
+  /** Actionable recovery supplied by the host check. */
+  fix?: string;
   name: string;
   status: "ok" | "warn" | "fail";
   detail: string;
@@ -491,6 +501,8 @@ export interface SetupActions extends AgentSetupActions {
   }): Promise<{ relayUrl: string; token: string }>;
   /** Authenticate with GitHub through the host's interactive handoff and store the token. */
   loginWithGithub(params?: { onLog?: (line: string) => void; signal?: AbortSignal; force?: boolean }): Promise<boolean>;
+  /** Fixed safe browser failure and desktop retry copy, when supported by the host. */
+  githubLoginRecovery?(): { detail: string; nextAction: string } | undefined;
   /** Host preference used to select managed browser authentication. */
   getTunnelEnabled?(rootDir: string): boolean | undefined;
 }
@@ -511,12 +523,12 @@ export interface RunSetupOptions {
 }
 
 export type LocalSetupCapability =
-  | { supported: true; kind: "local"; platform: "linux" }
+  | { supported: true; kind: "local"; platform: "linux" | "darwin" }
   | { supported: false; kind: "remote-only"; platform: NodeJS.Platform; reason: string };
 
 /** Desktop-facing capability metadata; the platform-neutral engine does not use it as an execution gate. */
 export function getLocalSetupCapability(platform: NodeJS.Platform = process.platform): LocalSetupCapability {
-  if (platform === "linux") return { supported: true, kind: "local", platform };
+  if (platform === "linux" || platform === "darwin") return { supported: true, kind: "local", platform };
   return {
     supported: false,
     kind: "remote-only",
@@ -668,7 +680,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
       if (!actions.hasGithubToken()) {
         return {
-          note: {
+          note: actions.githubLoginRecovery?.() ?? {
             detail: "relay not enrolled — not logged in to GitHub",
             nextAction: "Run `propr login`, then re-run `propr setup` and accept ProPR Connect.",
           },
@@ -678,6 +690,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
 
     let selectedInstallationId: string | undefined;
     let enrollmentPermissionError: string | undefined;
+    let reauthenticationFailure: string | undefined;
     let failurePhase: "discovery" | "enrollment" = "discovery";
     while (true) try {
       // 2. Discover installations: auto-select the only one, pick among many,
@@ -716,6 +729,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           ...(selectedInstallationId ? { selectedInstallationId } : {}),
           ...(enrollmentPermissionError ? { enrollmentPermissionError } : {}),
           ...(usingHostedRelay ? { installUrl: DEFAULT_PROPR_GITHUB_APP_INSTALL_URL } : {}),
+          ...(reauthenticationFailure ? { reauthenticationFailure: { detail: reauthenticationFailure } } : {}),
         };
         const decision: RelayInstallationDecision = prompts.chooseInstallation
           ? await prompts.chooseInstallation(context)
@@ -737,12 +751,29 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         }
         if (decision.action === "reauthenticate") {
           const authenticated = await actions.loginWithGithub({ onLog: log, signal: options.signal, force: true });
-          if (!authenticated) {
-            enrollmentPermissionError = "GitHub authentication did not complete. Try again or keep the current account.";
-          } else {
-            selectedInstallationId = undefined;
-            enrollmentPermissionError = undefined;
+          selectedInstallationId = undefined;
+          enrollmentPermissionError = undefined;
+          // The previously saved identity is never silently reused: a failed
+          // switch is reported against it and must be explicitly accepted.
+          reauthenticationFailure = authenticated
+            ? undefined
+            : actions.githubLoginRecovery?.()?.detail ?? "GitHub authentication did not complete.";
+          if (!authenticated && !actions.hasGithubToken()) {
+            return {
+              note: actions.githubLoginRecovery?.() ?? {
+                detail: "relay not enrolled — GitHub sign-in did not complete and no saved account remains",
+                nextAction: "Run `propr login`, then re-run `propr setup` and accept ProPR Connect.",
+              },
+            };
           }
+          continue;
+        }
+        if (decision.action === "keep-account") {
+          reauthenticationFailure = undefined;
+          continue;
+        }
+        if (reauthenticationFailure) {
+          enrollmentPermissionError = `Changing GitHub account did not complete, so @${username} is still the saved account. Choose Keep @${username} to continue with it, or Change GitHub account to try again.`;
           continue;
         }
         installationId = decision.installationId;
@@ -899,8 +930,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   if (dockerProblem) {
     settle("check", {
       status: "failed",
-      detail: dockerProblem,
-      nextAction: "Install/start Docker and ensure this user can run `docker info`, then re-run setup.",
+      detail: dockerProblem.detail,
+      nextAction: dockerProblem.fix ?? ((options.platform ?? process.platform) === "darwin"
+        ? "Open Docker Desktop and wait for its engine to start, then retry. If the CLI is missing, install Docker Desktop yourself in Applications. No permissions or access are changed by setup."
+        : "Install/start Docker and ensure this user can run `docker info`, then re-run setup."),
     });
     return finish();
   }
@@ -1093,7 +1126,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   try {
     const currentAuth = actions.detectGithubAuthMode(rootDir);
     let authDecision: GithubAuthDecision | undefined;
-    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth, rootDir });
     if (authDecision?.enrollRelay) {
       const outcome = await enrollRelayForSetup(authDecision.enrollRelay.relayUrl);
       relayNote = outcome.note;
@@ -1168,8 +1201,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     if (!actions.hasGithubToken()) {
       settle("github-auth", {
         status: "failed",
-        detail: `auth mode: ${resolvedAuth.mode}; GitHub user login is required to finish setup`,
-        nextAction: "Run `propr login`, then re-run `propr setup`; the existing stack configuration will be reused.",
+        ...(actions.githubLoginRecovery?.() ?? {
+          detail: `auth mode: ${resolvedAuth.mode}; GitHub user login is required to finish setup`,
+          nextAction: "Run `propr login`, then re-run `propr setup`; the existing stack configuration will be reused.",
+        }),
       });
       return finish();
     }
@@ -1585,10 +1620,10 @@ export function retrySetup(previous: SetupRunResult, options: Omit<RunSetupOptio
  * Keyed off the structured `Docker` check group rather than exact check names,
  * so re-wording a check in checkCommands.ts can't silently let setup continue
  * past a missing/unreachable engine. Within that group only the engine checks
- * ("Docker installed", "Docker daemon") ever report `fail`; the socket check is
+ * ("Docker installed", "Docker daemon", "Docker local endpoint") report `fail`; the socket check is
  * informational and tops out at `warn`, so a `fail` here always means Docker
  * itself cannot run the stack.
  */
-function blockingDockerFailure(outcome: ChecksOutcome): string | undefined {
-  return outcome.results.find((r) => r.group === "Docker" && r.status === "fail")?.detail;
+function blockingDockerFailure(outcome: ChecksOutcome): ChecksOutcome["results"][number] | undefined {
+  return outcome.results.find((r) => r.group === "Docker" && r.status === "fail");
 }

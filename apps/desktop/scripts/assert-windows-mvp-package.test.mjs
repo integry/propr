@@ -1,13 +1,31 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
-import { createPackage, extractFile, listPackage } from '@electron/asar';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createPackage, extractFile, getRawHeader, listPackage, statFile } from '@electron/asar';
 import { canonicalMainBundleEntry } from './assert-windows-mvp-package.mjs';
 
 const fixtures = [];
 after(async () => Promise.all(fixtures.map(path => rm(path, { recursive: true, force: true }))));
+
+// `createPackage` resolves once the archive write stream has been asked to end, not once the
+// bytes have landed on disk. The header is flushed before it resolves, so the entry offsets are
+// trustworthy, but a synchronous read of the payload can still fall past the end of a truncated
+// file and silently return NUL padding. Wait for the bytes the entry actually needs.
+const awaitArchivedEntry = async (archive, entry) => {
+  const { headerSize } = getRawHeader(archive);
+  const { offset, size } = statFile(archive, entry);
+  const required = 8 + headerSize + Number(offset) + size;
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    if ((await stat(archive)).size >= required) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Archive ${archive} never reached ${required} bytes for ${entry}`);
+};
 
 describe('Windows MVP ASAR main entry', () => {
   test('uses the rooted listPackage representation accepted by extractFile', async () => {
@@ -25,6 +43,7 @@ describe('Windows MVP ASAR main entry', () => {
     assert.ok(listedMain?.startsWith('/') || listedMain?.startsWith('\\'));
     const extractionEntry = canonicalMainBundleEntry(entries);
     assert.equal(extractionEntry, listedMain.slice(1));
+    await awaitArchivedEntry(archive, extractionEntry);
     assert.equal(extractFile(archive, extractionEntry).toString('utf8'), 'module.exports = "main fixture";\n');
   });
 

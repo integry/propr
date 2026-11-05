@@ -123,6 +123,12 @@ export function assertRepositoryClonePath(
   }
 }
 
+/** Shared repository subtree for task creation and liveness protection. */
+export function resolveRepositoryWorktreeRoot(rootPath: string, owner: string, repoName: string): string {
+  assertGitHubRepositoryIdentity(owner, repoName);
+  return resolveWithinRoot(rootPath, owner, repoName);
+}
+
 export function resolveRepositoryWorktreePath(
   rootPath: string,
   owner: string,
@@ -137,5 +143,5 @@ export function resolveRepositoryWorktreePath(
       || /[\\/\0\r\n]/.test(worktreeDirName)) {
     throw new Error('Invalid worktree directory name');
   }
-  return resolveWithinRoot(rootPath, owner, repoName, worktreeDirName);
+  return resolveWithinRoot(resolveRepositoryWorktreeRoot(rootPath, owner, repoName), worktreeDirName);
 }

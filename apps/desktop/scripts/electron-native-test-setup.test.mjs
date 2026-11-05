@@ -109,6 +109,59 @@ describe('native Electron test setup', () => {
     }]);
   });
 
+  for (const allowHeadlessLinux of [false, true]) {
+    it(`retries a cold Electron installation before probing (headless: ${allowHeadlessLinux})`, () => {
+      let resolutions = 0;
+      const probes = [];
+      const setup = prepareNativeElectronTest({
+        allowHeadlessLinux,
+        environment: { PROPR_REQUIRE_NATIVE_ELECTRON: '1' },
+        findExecutable: () => allowHeadlessLinux ? undefined : '/tools/xvfb-run',
+        platform: 'linux',
+        probeLaunch: probe => { probes.push(probe); },
+        resolveElectron: () => {
+          resolutions += 1;
+          if (resolutions < 3) throw new Error('Electron failed to install correctly.');
+          return '/electron';
+        },
+      });
+
+      assert.equal(resolutions, 3);
+      assert.equal(setup.electronExecutable, '/electron');
+      assert.deepEqual(probes, [{
+        electronExecutable: '/electron',
+        platform: 'linux',
+        xvfbRun: allowHeadlessLinux ? undefined : '/tools/xvfb-run',
+      }]);
+    });
+  }
+
+  for (const required of [undefined, '1']) {
+    it(`fails after three installation attempts without skipping (required: ${required})`, () => {
+      let resolutions = 0;
+      const failure = new Error('Electron failed to install correctly.');
+      assert.throws(() => prepareNativeElectronTest({
+        environment: { PROPR_REQUIRE_NATIVE_ELECTRON: required },
+        platform: 'darwin',
+        probeLaunch: () => assert.fail('must not probe a missing binary'),
+        resolveElectron: () => { resolutions += 1; throw failure; },
+      }), error => error === failure);
+      assert.equal(resolutions, 3);
+    });
+  }
+
+  it('does not retry unrelated resolution errors', () => {
+    let resolutions = 0;
+    const failure = new Error('Cannot find module electron');
+    assert.throws(() => prepareNativeElectronTest({
+      environment: {},
+      platform: 'darwin',
+      probeLaunch: () => assert.fail('must not probe an unresolved binary'),
+      resolveElectron: () => { resolutions += 1; throw failure; },
+    }), error => error === failure);
+    assert.equal(resolutions, 1);
+  });
+
   it('skips when the resolved Electron binary cannot start on the worker', () => {
     const setup = prepareNativeElectronTest({
       environment: { PATH: '/tools' },

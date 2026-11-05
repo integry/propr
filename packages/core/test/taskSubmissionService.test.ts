@@ -169,10 +169,17 @@ test('a deliberate label retry after terminal work is distinct from delayed init
     let timestamp = '2026-09-22T09:59:00Z';
     let label = 'AI';
     let labels = ['AI', 'implement'];
-    const octokit = async () => ({ request: async () => ({ data: [{ id: eventId, event: 'labeled', created_at: timestamp, label: { name: label }, actor: { id: 123 } }] }) }) as never;
+    // The timeline keeps every earlier label event; the latest is labelled `label`.
+    const earlier: Array<{ id: number; event: string; created_at: string; label: { name: string }; actor: { id: number } }> = [];
+    const octokit = async () => ({ request: async () => ({ data: [...earlier,
+      { id: eventId, event: 'labeled', created_at: timestamp, label: { name: label }, actor: { id: 123 } }] }) }) as never;
+    const relabel = (id: number, at: string) => {
+      earlier.push({ id: eventId, event: 'labeled', created_at: timestamp, label: { name: label }, actor: { id: 123 } });
+      eventId = id; timestamp = at;
+    };
     const read = async () => (await database('task_submissions').first())!;
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
-    eventId = 2; timestamp = '2026-09-22T10:01:00Z';
+    relabel(2, '2026-09-22T10:01:00Z');
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '2' });
     await associateSubmissionTask(database, row.id, 'retry-task');
     assert.equal((await read()).task_id, 'initial-task');
@@ -180,20 +187,42 @@ test('a deliberate label retry after terminal work is distinct from delayed init
     await database('task_history').insert({ task_id: 'retry-task', state: 'processing', timestamp: '2026-09-22T10:01:30Z' });
     await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '2' });
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
-    eventId = 3; timestamp = '2026-09-22T10:02:00Z';
+    relabel(3, '2026-09-22T10:02:00Z');
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
     await database('task_history').insert({ task_id: 'retry-task', state: 'completed', timestamp: '2026-09-22T10:01:30Z' });
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '3' });
     label = 'implement';
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '3' });
+    // The consumed trigger's label is no longer a processing label, but it still orders the later trigger.
     labels = ['replacement']; label = 'replacement';
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '3' });
     await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '3' });
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
-    eventId = 4; label = 'unrelated';
+    relabel(4, timestamp); label = 'unrelated';
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
     label = 'AI';
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
+  } finally { await database.destroy(); }
+});
+
+test('an older unconsumed trigger stays admitted beside a newer one, and a consumed trigger admits only later ones', async () => {
+  const { admittedSubmissionTriggers } = await import('../src/services/taskSubmissionRetry.js');
+  const database = await fixture();
+  try {
+    await database.schema.createTable('task_history', table => { table.increments('history_id'); table.string('task_id'); table.string('state'); table.timestamp('timestamp').defaultTo(database.fn.now()); });
+    const row = await insertTaskSubmission(database, input);
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 17, task_id: 'initial-task', dispatch_complete: true });
+    await database('task_history').insert({ task_id: 'initial-task', state: 'failed', timestamp: '2026-09-22T10:00:00.500Z' });
+    const events = [1, 2, 3].map((id, index) => ({ id, event: 'labeled', label: { name: 'AI' },
+      created_at: ['2026-09-22T09:59:00Z', '2026-09-22T10:01:00Z', '2026-09-22T10:02:00Z'][index] }));
+    const admitted = async () => (await admittedSubmissionTriggers((await database('task_submissions').first())!, events, database)).map(event => event.id);
+    assert.deepEqual(await admitted(), [2, 3], 'both triggers after the failure are admitted, the older one too');
+    await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '2' });
+    assert.deepEqual(await admitted(), [3]);
+    await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '3' });
+    assert.deepEqual(await admitted(), [], 'a run consumes the triggers before the one it recorded');
+    await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '99' });
+    assert.deepEqual(await admitted(), [], 'a history that does not show the consumed trigger admits none of its events');
   } finally { await database.destroy(); }
 });
 
@@ -306,9 +335,13 @@ test('a terminated dispatch owner releases exclusion so concurrent retries resum
   try {
     const row = await insertTaskSubmission(database, input);
     await database('task_submissions').where({ id: row.id }).update({ state: 'issue_created', issue_number: 17 });
-    child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
-      import knex from 'knex';
-      import { resumeTaskSubmission } from './packages/core/src/services/taskSubmissionService.ts';
+    // Run the owner from a file: an --input-type flag would be inherited by the
+    // logger's pino transport worker, which Node then refuses to start, killing
+    // the child before it claims (nightly run 38105782983).
+    const script = path.join(root, 'owner.mjs');
+    await fs.writeFile(script, `
+      import knex from ${JSON.stringify(import.meta.resolve('knex'))};
+      import { resumeTaskSubmission } from ${JSON.stringify(new URL('../src/services/taskSubmissionService.ts', import.meta.url).href)};
       const database = knex({ client: 'better-sqlite3', connection: { filename: process.env.SUBMISSION_TEST_DB }, useNullAsDefault: true,
         pool: { afterCreate: (connection, done) => { connection.pragma('synchronous = OFF'); done(null, connection); } } });
       await resumeTaskSubmission(database, process.env.SUBMISSION_TEST_ID, {
@@ -319,7 +352,9 @@ test('a terminated dispatch owner releases exclusion so concurrent retries resum
           await new Promise(() => { setInterval(() => {}, 1000); });
         },
       });
-    `], { env: { ...process.env, SUBMISSION_TEST_DB: filename, SUBMISSION_TEST_ID: row.id }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    `);
+    child = spawn(process.execPath, ['--import', 'tsx', script], {
+      env: { ...process.env, SUBMISSION_TEST_DB: filename, SUBMISSION_TEST_ID: row.id }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     await once(child, 'message', { signal: AbortSignal.timeout(10_000) });
     const interrupted = await database('task_submissions').first();
     assert.ok(interrupted.dispatch_claim);

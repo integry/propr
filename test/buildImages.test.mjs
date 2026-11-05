@@ -99,6 +99,10 @@ function createFixture(initialDigests = {}) {
   mkdirSync(join(root, 'bin'), { recursive: true });
   copyFileSync(join(REPOSITORY_ROOT, 'scripts', 'build-images.sh'), join(root, 'scripts', 'build-images.sh'));
   chmodSync(join(root, 'scripts', 'build-images.sh'), 0o755);
+  // The build script refuses to run at all unless the bundled Agent Tank version
+  // matches the `ARG AGENT_TANK_CLI_VERSION` pin in Dockerfile.agent, so the
+  // sandbox has to carry the real file rather than a stand-in that could drift.
+  copyFileSync(join(REPOSITORY_ROOT, 'Dockerfile.agent'), join(root, 'Dockerfile.agent'));
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'propr', version: '1.2.3', license: 'Apache-2.0' }));
   writeFileSync(join(root, 'docker', 'launcher', 'manifest.json'), '{}');
   writeFileSync(join(root, 'state.json'), JSON.stringify({ digests: initialDigests }));

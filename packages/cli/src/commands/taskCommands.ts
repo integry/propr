@@ -6,6 +6,7 @@
  */
 
 import { Command } from "commander";
+import { formatTaskAssignmentFilter, parseTaskAssignmentFilter } from "@propr/shared";
 import {
   ACTIVE_TASK_LIFECYCLE_STATES,
   TASK_LIFECYCLE_STATES,
@@ -25,6 +26,7 @@ import {
   TaskSummary,
   getTaskStatus,
   TaskStatus,
+  type TaskPushFailure,
 } from "../api/index.js";
 
 const TASK_LIST_STATUSES = [
@@ -164,6 +166,24 @@ function toInspectedTaskSummary(task: TaskSummary, now = Date.now()): InspectedT
   };
 }
 
+/** Prints the push rejection class, unblock URL and salvage recovery for `task get`. */
+function printPushFailure(pushFailure: TaskPushFailure): void {
+  console.log("");
+  console.log("Push Rejection:");
+  console.log("-".repeat(40));
+  console.log(`Class:        ${pushFailure.diagnosis.classification}`);
+  console.log(`Branch:       ${pushFailure.branchName}`);
+  for (const url of pushFailure.diagnosis.unblockUrls) {
+    console.log(`Unblock URL:  ${url}`);
+  }
+  if (pushFailure.rescueRef) console.log(`Rescue ref:   ${pushFailure.rescueRef}`);
+  if (pushFailure.bundlePath) console.log(`Bundle:       ${pushFailure.bundlePath}`);
+  if (pushFailure.worktreePath) console.log(`Worktree:     ${pushFailure.worktreePath}`);
+  // Printed verbatim: stripping the Markdown backticks would also strip literal backticks
+  // inside a quoted branch name or path and change the command.
+  console.log(`Recovery:     ${pushFailure.recoveryInstruction}`);
+}
+
 function taskInspectionJson(status: TaskStatus, now = Date.now()): Record<string, unknown> {
   const timing = taskTiming(status, now);
   return {
@@ -184,6 +204,7 @@ function taskInspectionJson(status: TaskStatus, now = Date.now()): Record<string
       completed: status.isCompleted,
       failed: status.isFailed,
       failureReason: status.failureReason ?? null,
+      pushFailure: status.pushFailure ?? null,
       pr: status.prNumber
         ? { number: status.prNumber, url: status.prUrl ?? null }
         : null,
@@ -235,7 +256,7 @@ export function selectBodySource(sources: {
  * --stdin. Stdin is read only when --stdin is given explicitly, so commands
  * never block on an inherited-but-silent stdin pipe (cron, CI).
  */
-async function resolveTextInput(
+export async function resolveTextInput(
   positional: string[] | undefined,
   options: { file?: string; stdin?: boolean }
 ): Promise<string | undefined> {
@@ -340,6 +361,16 @@ function displayTaskInspectionTable(tasks: InspectedTaskSummary[]): void {
 /**
  * Displays detailed task information from TaskStatus.
  */
+const BUDGET_SOURCE_LABELS = { override: "task override", workflow: ".propr/workflow.yml", instance_default: "instance default" } as const;
+
+/** Spend beside the run's cap, e.g. "$1.20 of $5.00 cap (24%, .propr/workflow.yml)". */
+export function formatTaskBudget(budget: NonNullable<TaskStatus["budget"]>): string {
+  const spent = `$${budget.spentUsd.toFixed(2)}`;
+  if (budget.capUsd === null) return `${spent} (no spend cap)`;
+  const details = [`${budget.percent ?? 0}%`, ...(budget.source ? [BUDGET_SOURCE_LABELS[budget.source]] : [])].join(", ");
+  return `${spent} of $${budget.capUsd.toFixed(2)} cap (${details})${budget.exceeded ? " - stopped at cap" : ""}`;
+}
+
 function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): void {
   console.log("");
   console.log("=".repeat(60));
@@ -376,6 +407,15 @@ function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): v
     }
   }
 
+  if (status.attemptNumber > 1 || status.replacesTaskId || status.replacedByTaskId) {
+    console.log(`Attempt:      ${status.attemptNumber}`);
+    if (status.replacesTaskId) console.log(`Replaces:     ${status.replacesTaskId}`);
+    if (status.replacedByTaskId) console.log(`Replaced by:  ${status.replacedByTaskId}`);
+  }
+  if (status.budget) {
+    console.log(`Spend:        ${formatTaskBudget(status.budget)}`);
+  }
+
   if (status.prNumber) {
     console.log(`PR Number:    #${status.prNumber}`);
   }
@@ -400,6 +440,10 @@ function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): v
     console.log("Failure Reason:");
     console.log("-".repeat(40));
     console.log(status.failureReason);
+  }
+
+  if (status.isFailed && status.pushFailure) {
+    printPushFailure(status.pushFailure);
   }
 
   if (status.history && status.history.length > 0) {
@@ -533,6 +577,7 @@ Examples:
     )
     .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
     .option("--search <term>", "Search tasks by term")
+    .option("--assignee <assignee>", "Filter by assignee: all, me, unassigned, or comma-separated GitHub logins")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Status Values:
@@ -549,6 +594,7 @@ Examples:
   $ propr task list -p myorg/myrepo           # Filter by project
   $ propr task list -s processing             # Filter by status
   $ propr task list --search "auth" -l 100    # Search with limit
+  $ propr task list --assignee me             # Tasks assigned to you
   $ propr task list --json                    # JSON output
 `)
     .action(
@@ -557,6 +603,7 @@ Examples:
         status: string;
         limit: string;
         search?: string;
+        assignee?: string;
         json?: boolean;
       }) => {
         try {
@@ -565,6 +612,7 @@ Examples:
             repository?: string;
             limit?: number;
             search?: string;
+            assignee?: string;
           } = {};
 
           const status = options.status.toLowerCase();
@@ -588,6 +636,14 @@ Examples:
             listOptions.search = options.search;
           }
 
+          if (options.assignee !== undefined) {
+            const parsed = parseTaskAssignmentFilter(options.assignee);
+            if (!parsed.ok) {
+              throw new Error(`Invalid --assignee: ${parsed.error}`);
+            }
+            listOptions.assignee = formatTaskAssignmentFilter(parsed.filter);
+          }
+
           const result = await listTasks(listOptions);
 
           if (printOutput(result, options.json ?? false)) {
@@ -604,6 +660,9 @@ Examples:
             }
             if (status !== "all") {
               console.log(`Status filter: ${status}`);
+            }
+            if (listOptions.assignee !== undefined) {
+              console.log(`Assignee filter: ${listOptions.assignee}`);
             }
             return;
           }

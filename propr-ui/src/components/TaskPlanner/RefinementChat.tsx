@@ -6,7 +6,6 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import { RefinementProgressBar } from './RefinementProgressBar';
 import { ModelSelector } from './SetupWizardComponents';
 import { useAgentsLoader } from './setupWizardHooks';
-import { getModelDisplayName } from '../../utils/modelDisplay';
 
 interface Message {
   id: string;
@@ -34,14 +33,6 @@ interface RefinementChatProps {
   stableComposerHeight?: number;
   /** Incremented when an external navigation asks to focus the composer. */
   focusComposerRequest?: number;
-}
-
-/** Human label for the plan's default model, shown as the switcher's default option. */
-function defaultModelLabel(defaultModel?: string | null): string | undefined {
-  if (!defaultModel) return undefined;
-  const [maybeAgent, ...rest] = defaultModel.split(':');
-  if (rest.length > 0) return `${maybeAgent} / ${getModelDisplayName(rest.join(':'))}`;
-  return getModelDisplayName(defaultModel);
 }
 
 interface ChatInputFormProps {
@@ -414,16 +405,13 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         onKeyDown={handleKeyDown}
         onStop={handleStop}
         footer={agents.length > 0 ? (
-          <>
-            <span className="text-xs text-gray-500 flex-shrink-0">Refine with</span>
-            <ModelSelector
-              agents={agents}
-              generationModel={selectedModel}
-              onModelChange={setSelectedModel}
-              modelName={defaultModelLabel(defaultModel)}
-              disabled={effectiveIsLoading}
-            />
-          </>
+          <ModelSelector
+            agents={agents}
+            generationModel={selectedModel}
+            onModelChange={setSelectedModel}
+            defaultModel={defaultModel}
+            disabled={effectiveIsLoading}
+          />
         ) : undefined}
       />
     </div>

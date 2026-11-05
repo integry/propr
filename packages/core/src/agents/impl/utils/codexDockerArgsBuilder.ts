@@ -1,6 +1,7 @@
-import path from 'node:path';
+import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import logger from '../../../utils/logger.js';
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig, AgentToolPolicy } from '../../types.js';
+import { codexToolPolicyArgs } from '../../agentToolPolicy.js';
 import {
     assertCodexConfigPathAvailable,
     resolveCodexConfigPath,
@@ -63,7 +64,7 @@ export function resolveCodexStreamConfig(
     };
 }
 
-function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
+export function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
     if (config.transport === 'inherit') return [];
 
     return [
@@ -75,6 +76,10 @@ function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
         '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.supports_standalone_web_search=true`,
         '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.stream_idle_timeout_ms=${config.idleTimeoutMs}`,
         '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.stream_max_retries=${config.maxRetries}`,
+        // Codex 0.163+ refuses to start `exec` when Daybreak (saved by the TUI's
+        // /daybreak toggle in a mounted config.toml) is on for any provider other
+        // than the built-in `openai`. Older CLIs only warn the key is ignored.
+        '--config', 'daybreak=false',
     ];
 }
 
@@ -102,6 +107,7 @@ function buildEnvironmentVariableArgs(
 export interface CodexDockerArgsParams {
     worktreePath: string;
     githubToken: string;
+    gitMountArgs?: string[];
     modelName?: string;
     issueNumber: number;
     jsonOutput?: boolean;
@@ -113,6 +119,8 @@ export interface CodexDockerArgsParams {
     repositoryInspection?: boolean;
     executionMode?: 'task' | 'goal';
     resumeSessionId?: string;
+    /** Per-run web/MCP policy; its tokens must reach the docker process through `extraEnvVars`. */
+    toolPolicy?: AgentToolPolicy;
 }
 
 function resolveTaskType(params: CodexDockerArgsParams): string {
@@ -143,6 +151,7 @@ function buildCodexCliArgs(params: CodexDockerArgsParams, streamConfig: CodexStr
             ]),
         ...buildCodexStreamConfigArgs(streamConfig),
         ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
+        ...(params.toolPolicy ? codexToolPolicyArgs(params.toolPolicy).cliArgs : []),
         '--skip-git-repo-check',
         '--cd', '/home/node/workspace',
         ...(isGoalResume ? [resumeSessionId] : []),
@@ -162,12 +171,13 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const dockerImage = config.dockerImage;
     const configPath = resolveCodexConfigPath(config.configPath);
     assertCodexConfigPathAvailable(configPath);
-    const workerOwnedGoalGit = params.executionMode === 'goal'
-        && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
-    const envVars = buildEnvironmentVariableArgs(
-        [config.envVars, environment],
-        repositoryInspection || workerOwnedGoalGit,
-    );
+    const workerOwnedGit = !agentOwnsGit(params);
+    const envVars = [
+        ...buildEnvironmentVariableArgs([config.envVars, environment], true),
+        ...(params.toolPolicy?.exclusiveMcp ? ['-e', 'PROPR_EXTENSION_EXCLUSIVE_MCP=1'] : []),
+        // Name only: docker copies the value from its own environment.
+        ...Object.keys(params.toolPolicy ? codexToolPolicyArgs(params.toolPolicy).env : {}).flatMap(name => ['-e', name]),
+    ];
     const streamConfig = resolveCodexStreamConfig({
         ...process.env,
         ...config.envVars,
@@ -187,18 +197,14 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(workerOwnedGoalGit
-            ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
-            : []),
-        ...(repositoryInspection ? [] : [
-            '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace || workerOwnedGoalGit ? 'ro' : 'rw'}`,
-        ]),
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace)),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-        ...(repositoryInspection || workerOwnedGoalGit
+        ...(repositoryInspection
             ? []
             : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
+        ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace',
         dockerImage,
         ...buildCodexCliArgs(params, streamConfig),

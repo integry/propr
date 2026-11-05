@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import knex from 'knex';
 import { down, up } from '../packages/core/src/db/migrations/20260902000000_create_goals.js';
 import { down as downHardening, up as upHardening } from '../packages/core/src/db/migrations/20260902010000_harden_native_goals.js';
@@ -122,6 +123,56 @@ test('goal attachment repair migration restores a missing attachments column', a
         await upGoalAttachmentsRepair(database);
         await downGoalAttachmentsRepair(database);
         assert.equal(await database.schema.hasColumn('goals', 'attachments'), true);
+    } finally {
+        await database.destroy();
+    }
+});
+
+// SQLite drops a table's triggers with the table, and Knex rebuilds a table for
+// several alterTable operations. A later migration that rebuilds `goals` or
+// `goal_checkpoints` without recreating these triggers would silently stop the
+// goal event journal, and every goal wait would degrade to a timeout.
+test('the goal event journal triggers survive every later migration and still journal', async () => {
+    const database = knex({
+        client: 'better-sqlite3',
+        connection: { filename: ':memory:' },
+        useNullAsDefault: true,
+    });
+    try {
+        await database.raw('PRAGMA foreign_keys = ON');
+        await database.migrate.latest({ directory: fileURLToPath(new URL('../packages/core/src/db/migrations/', import.meta.url)) });
+        const triggers = await database('sqlite_master').where({ type: 'trigger' }).whereLike('name', 'goal_events_%')
+            .orderBy('name').select('name', 'tbl_name');
+        assert.deepEqual(triggers.map(trigger => ({ ...trigger })), [
+            { name: 'goal_events_checkpoint_insert', tbl_name: 'goal_checkpoints' },
+            { name: 'goal_events_checkpoint_update', tbl_name: 'goal_checkpoints' },
+            { name: 'goal_events_lifecycle_insert', tbl_name: 'goals' },
+            { name: 'goal_events_lifecycle_update', tbl_name: 'goals' },
+        ]);
+
+        // Each trigger still fires against the final schema.
+        const goalId = '11111111-1111-4111-8111-111111111111';
+        await database('goals').insert({
+            goal_id: goalId, owner_id: 'owner-1', owner_login: 'alice', repository: 'acme/repo',
+            objective: 'Ship it', launch_strategy: 'direct', initial_prompt: '/goal Ship it',
+            agent_id: 'agent-1', agent_alias: 'codex', agent_type: 'codex',
+            requested_model: 'gpt-5.6', current_task_id: 'goal-task-1',
+        });
+        const checkpoint = (checkpointId: string, state: string) => ({
+            checkpoint_id: checkpointId, goal_id: goalId, owner_id: 'owner-1', idempotency_key: `key-${checkpointId}`,
+            operation: 'goal.checkpoint', payload_hash: 'hash', kind: 'agent', state, requested_generation: 1,
+        });
+        await database('goal_checkpoints').insert(checkpoint('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'completed'));
+        await database('goal_checkpoints').insert(checkpoint('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'processing'));
+        await database('goal_checkpoints').where({ checkpoint_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }).update({ state: 'completed' });
+        await database('goals').where({ goal_id: goalId }).update({ result_state: 'completed' });
+        const events = await database('goal_events').where({ goal_id: goalId }).orderBy('sequence');
+        assert.deepEqual(events.map(event => event.kind === 'checkpoint' ? `checkpoint:${event.checkpoint_id}` : `${event.previous_state}->${event.state}`), [
+            'null->queued',
+            'checkpoint:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'checkpoint:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            'queued->completed',
+        ]);
     } finally {
         await database.destroy();
     }

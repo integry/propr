@@ -2,13 +2,18 @@ import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
-import { closeConnection } from '@propr/core';
+import { closeConnection, closeEventPublisher } from '@propr/core';
 import { NOTIFICATION_KINDS, parseNotificationPreferencesResponse,
     parsePushSubscription } from '@propr/shared';
 import { createNotificationRoutes, type NotificationRouteService } from
     '../routes/notificationRoutes.js';
 
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 const timestamp = '2026-08-02T10:00:00.000Z';
 const subscription = parsePushSubscription({

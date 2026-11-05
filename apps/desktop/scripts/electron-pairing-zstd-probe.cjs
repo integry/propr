@@ -4,7 +4,24 @@ const { resolve } = require('node:path');
 
 app.disableHardwareAcceleration();
 
+// How long a loopback request may take to produce response headers before this
+// probe calls it a stalled worker rather than a compression result. It only
+// shortens the client's production deadline, which the protocol permits, and it
+// keeps each stalled attempt cheap so the wall-clock budget below buys many
+// retries instead of a handful.
+const STALL_HEADER_DEADLINE_MS = 2_000;
+
+// The test owns the wall-clock budget, because the same number also sizes the
+// launch timeout that would otherwise kill this process mid-report.
+const STALL_BUDGET_FLAG = '--pairing-stall-budget-ms=';
+
 app.whenReady().then(async () => {
+  const budgetArgument = process.argv.find(argument => argument.startsWith(STALL_BUDGET_FLAG));
+  const stallBudgetMs = Number(budgetArgument?.slice(STALL_BUDGET_FLAG.length));
+  if (!Number.isSafeInteger(stallBudgetMs) || stallBudgetMs < 1) {
+    throw new Error('Native zstd pairing stall budget is missing or invalid');
+  }
+
   let endpoint;
   try {
     endpoint = new URL(process.argv.at(-1));
@@ -35,7 +52,9 @@ app.whenReady().then(async () => {
         responseEncoding = response.headers.get('content-encoding');
         responseLength = response.headers.get('content-length');
         return response;
-      }, new URL(path, endpoint), { method: 'POST' });
+      }, new URL(path, endpoint), { method: 'POST' }, {
+        deadlines: { headerMs: STALL_HEADER_DEADLINE_MS },
+      });
       return { kind: 'success', responseEncoding, responseLength, value };
     } catch (error) {
       return {
@@ -47,26 +66,34 @@ app.whenReady().then(async () => {
     }
   };
 
-  // On a CI worker the first request a freshly launched Electron makes can
-  // wait well past the client's fixed 8s header deadline while the default
-  // session's network stack finishes starting: across the full-suite runs it
-  // was always the first path that stalled, in about half of them, and once
-  // for more than 40s. Later requests never did. That start-up cost says
-  // nothing about compression, so the default session must first reach the
-  // loopback server with a plain request under its own, longer budget, and
-  // only then are the pairing requests measured.
-  const readinessBudgetMs = 45_000;
+  // A saturated CI worker does not stall one loopback request — it stalls the
+  // loopback path outright and then recovers: a shared worker ran five straight
+  // requests into the deadline over ~40s and served the sixth immediately. A
+  // freshly launched Electron can also wait more than 40s for the default
+  // session's network stack to start before its first request lands. Neither
+  // is a compression result, so both draw on one shared wall-clock budget: the
+  // default session must first reach the loopback server with a plain request,
+  // and only then are the pairing requests measured, a stalled path being
+  // retried until the same budget is spent. Every stall is reported so the
+  // test can surface it. A counted retry budget cannot express that: the first
+  // path to stall spends it, and the endpoints after it are then reported as
+  // failures of an outage they never got to outlive.
+  //
+  // Only a stall is retried. Every other outcome, decode failures included, is
+  // the result this probe exists to report. Each stalled attempt costs at least
+  // the header deadline above, so the budget also bounds the attempt count.
+  const stallDeadline = Date.now() + stallBudgetMs;
   const readinessAttemptMs = 15_000;
   const awaitReadiness = async () => {
     const started = Date.now();
     const elapsed = () => Date.now() - started;
     let attempts = 0;
     let lastFailure = '';
-    while (elapsed() < readinessBudgetMs) {
+    while (Date.now() < stallDeadline) {
       attempts += 1;
       try {
         const response = await electronFetch(new URL('/ready', endpoint).href, {
-          signal: AbortSignal.timeout(Math.min(readinessAttemptMs, readinessBudgetMs - elapsed())),
+          signal: AbortSignal.timeout(Math.max(1, Math.min(readinessAttemptMs, stallDeadline - Date.now()))),
         });
         await response.arrayBuffer();
         if (response.ok) return { attempts, elapsedMs: elapsed(), ready: true };
@@ -80,19 +107,14 @@ app.whenReady().then(async () => {
     return { attempts, elapsedMs: elapsed(), lastFailure, ready: false };
   };
 
-  // Once the stack is up, a saturated worker can still stall a request past
-  // the header deadline. That is a worker hiccup rather than a compression
-  // result, so one stalled path is retried and every stall is reported so the
-  // test can surface it. Retries stay bounded to keep the run inside the
-  // fixture budget; beyond that the timeout is reported as the outcome.
-  const maximumStallRetries = 1;
   const stalls = [];
   const request = async path => {
-    const attempt = await requestOnce(path);
-    if (attempt.kind !== 'timeout') return attempt;
-    stalls.push(path);
-    if (stalls.length > maximumStallRetries) return attempt;
-    return requestOnce(path);
+    for (;;) {
+      const attempt = await requestOnce(path);
+      if (attempt.kind !== 'timeout') return attempt;
+      stalls.push(path);
+      if (Date.now() >= stallDeadline) return attempt;
+    }
   };
 
   const readiness = await awaitReadiness();

@@ -28,7 +28,7 @@ export interface DemoModeStatus {
 export * from './proprTypes';
 
 import type {
-  TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
+  QueueStats, GeneratingPlansResponse,
   GetTasksOptions, StopExecutionResponse, DeleteTaskResponse, CurrentUser,
   InstanceCatalogResponse
 } from './proprTypes';
@@ -58,7 +58,8 @@ export const getQueueStats = async (): Promise<QueueStats> => {
   return { ...queueStats, active: queueStats.active + generatingCount };
 };
 
-export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; }
+/** With `groupBy: 'task'`, `total`, `limit` and `offset` count tasks and `totalRuns` counts their runs. */
+export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; totalRuns?: number; }
 
 const normalizeGetTasksOptions = (
   statusOrOptions: string | GetTasksOptions = 'all',
@@ -81,6 +82,9 @@ const getTasksRequest = async (
   if (options.search) params.append('search', options.search);
   if (options.forReview) params.append('forReview', 'true');
   if (options.excludeMerged) params.append('excludeMerged', 'true');
+  if (options.groupBy) params.append('groupBy', options.groupBy);
+  if (options.task) params.append('task', options.task);
+  if (options.assignee) params.append('assignee', options.assignee);
   const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     credentials: 'include',
     ...(signal ? { signal } : {}),
@@ -102,13 +106,6 @@ export const getReadinessTaskExistence = (): Promise<GetTasksResponse> =>
 
 export const getTaskHistory = async (taskId: string): Promise<unknown> => {
   const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/history`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getTaskAnalysis = async (taskId: string): Promise<TaskAnalysisResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, { credentials: 'include' });
-  if (response.status === 202) return { analysis: null, message: 'Analysis pending...' };
   await handleApiResponse(response);
   return response.json();
 };
@@ -345,9 +342,11 @@ export * from './agentChatApi';
 export * from './repoIndexingApi';
 export * from './summaryApi';
 export * from './planIssuesApi';
+export * from './planRevisionsApi';
 export * from './repoChatApi';
 export * from './repoImprovementsApi';
 export * from './tasks';
+export * from './taskAssignment';
 export * from './repoTodosApi';
 export * from './userRepoPreferencesApi';
 export * from './revertApi';

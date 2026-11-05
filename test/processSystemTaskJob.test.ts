@@ -20,6 +20,7 @@ after(async () => {
 
 // Track call order to prove auth runs before git operations
 let callOrder: string[] = [];
+let commentCleanupFails = false;
 
 const mockSimpleGit = {
     reset: mock.fn(async () => { callOrder.push('git:reset'); }),
@@ -65,6 +66,7 @@ const mockOctokitInstance = {
         return { data: {} };
     }),
     paginate: mock.fn(async (route: string) => {
+        if (commentCleanupFails && route.includes('/comments')) throw new Error('comment cleanup unavailable');
         if (typeof route === 'string' && route.includes('/commits')) {
             callOrder.push('github:getPRCommits');
             // Return a commit that matches the default test commitHash
@@ -545,5 +547,16 @@ describe('processSystemTaskJob — authorization order guarantee', () => {
         // so the first entry in callOrder should be a GitHub API call (getPR), not a git op
         assert.strictEqual(callOrder[0], 'github:getPR',
             'First external call should be GitHub PR lookup (after auth checks)');
+        const { cleanupWorktree } = await import('@propr/core');
+        assert.equal((cleanupWorktree as ReturnType<typeof mock.fn>).mock.calls.at(-1)!.arguments[3].success, true);
     });
+    test('comment cleanup failure keeps the failed outcome for worktree retention', async () => {
+        commentCleanupFails = true;
+        try {
+            await assert.rejects(processSystemTaskJob(makeJob(makeSignedJobData()) as never), /comment cleanup unavailable/);
+            const { cleanupWorktree } = await import('@propr/core');
+            assert.equal((cleanupWorktree as ReturnType<typeof mock.fn>).mock.calls.at(-1)!.arguments[3].success, false);
+        } finally { commentCleanupFails = false; }
+    });
+
 });

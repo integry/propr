@@ -267,3 +267,53 @@ export async function saveWhitelist(params: SaveWhitelistParams): Promise<SaveWh
   saveViaEnv(users);
   return { target: "env", count: users.length };
 }
+
+// Fixed browser failures are safe across the host boundary; arbitrary provider errors are not.
+const browserSignInMessages = [
+  "GitHub sign-in was cancelled. Retry when ready.",
+  "GitHub browser sign-in is not configured. The desktop distributor must provision PROPR_DESKTOP_GITHUB_CLIENT_ID with a ProPR-owned OAuth app that enables device flow.",
+  "GitHub sign-in timed out. Retry to start a new browser sign-in.",
+  "Invalid GitHub sign-in response. Retry.",
+  "The ProPR GitHub OAuth app must enable device flow. Contact the desktop distributor.",
+  "The ProPR GitHub OAuth client configuration is invalid. Contact the desktop distributor.",
+  "GitHub could not complete sign-in. Check your connection and retry.",
+  "GitHub browser sign-in is unavailable. Check the OAuth app configuration and retry.",
+  "GitHub sign-in expired. Retry to request a new sign-in.",
+  "GitHub sign-in was declined. Retry and approve the intended account.",
+  "GitHub sign-in failed. Retry or check the OAuth app configuration.",
+  "GitHub returned an invalid expiring sign-in. Retry or check the OAuth app configuration.",
+  "Saved GitHub sign-in expired or was revoked. Sign in to GitHub again to continue.",
+  "GitHub sign-in could not be renewed. Check your connection and retry.",
+  "GitHub identity could not be verified. Retry sign-in.",
+  "GitHub account was not confirmed. Retry sign-in and choose the intended account in GitHub.",
+  "GitHub browser sign-in could not complete. Check your browser and connection, then retry."
+] as const;
+
+/** The saved refresh grant is unusable; only a new device authorization can recover. */
+export const GITHUB_SIGN_IN_REVOKED_MESSAGE = "Saved GitHub sign-in expired or was revoked. Sign in to GitHub again to continue.";
+
+/**
+ * A GitHub OAuth App user credential issued by device flow. Non-expiring tokens
+ * carry only `accessToken`. Expiring tokens also carry epoch-millisecond expiry
+ * times and a single-use refresh token that rotates on every refresh. Never
+ * place any field other than the expiry times in logs, IPC, or renderer state.
+ */
+export interface GithubUserCredential {
+  accessToken: string;
+  expiresAt?: number;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: number;
+}
+
+export class GithubBrowserSignInError extends Error {
+  #safeMessage: string;
+  constructor(message: typeof browserSignInMessages[number]) {
+    super(message);
+    this.#safeMessage = browserSignInMessages.includes(message) ? message : "GitHub browser sign-in did not complete. Retry.";
+  }
+  static safeMessage(error: unknown): string {
+    return error instanceof GithubBrowserSignInError
+      ? error.#safeMessage
+      : "GitHub browser sign-in could not complete. Check your browser and connection, then retry.";
+  }
+}

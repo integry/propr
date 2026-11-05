@@ -33,6 +33,8 @@ export async function markSelectedUltrafixFindings(
     selectedReviewComments: SelectedReviewComment[],
 ): Promise<void> {
     if (!job.data.ultrafixMeta || selectedReviewComments.length === 0) return;
+    // Findings only, explicitly. An automatic loop must never take on optional
+    // work: a suggestion is acted on solely because a human named it.
     await markFindingsSelected(redisClient, {
         ...identity,
         workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
@@ -120,6 +122,7 @@ export async function handleUltrafixContinuation(
     params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
+    if ((await params.stateManager.getTaskState(params.taskId))?.state === 'cancelled') return;
     const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
     try {
         const continuationResult = await continueUltrafixLoop({
@@ -129,9 +132,14 @@ export async function handleUltrafixContinuation(
             currentJobId: job.id,
         });
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
-        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult, job.data.ultrafixMeta), correlatedLogger);
     } catch (contErr) {
         correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
+        const state = await loadUltrafixState(redisClient, repoOwner, repoName, pullRequestNumber).catch(() => null);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta({
+            continued: false, reason: (contErr as Error).message, outcome: 'failed', cycleCount: state?.cycleCount,
+            goal: state?.goal, maxCycles: state?.maxCycles,
+        }, job.data.ultrafixMeta), correlatedLogger);
     }
 }
 
@@ -141,5 +149,6 @@ export async function resolveUltrafixHistoryMeta(
     redisClient: Redis,
 ): Promise<Record<string, unknown> | undefined> {
     if (!job.data.ultrafixMeta) return undefined;
-    return buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber));
+    return buildUltrafixHistoryMeta(job.data.ultrafixMeta,
+        await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber), job.data.commandMode);
 }

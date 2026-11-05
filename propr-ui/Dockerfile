@@ -18,6 +18,8 @@ COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/client/package*.json ./packages/client/
 COPY propr-ui/package*.json ./propr-ui/
+# Vendored braces tarball referenced by the root package.json overrides
+COPY vendor ./vendor
 
 RUN npm install
 

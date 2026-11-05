@@ -7,6 +7,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SetupBridge, SetupCancelledError, buildSetupPrompts, type SetupPrompt } from "./SetupApp.js";
 import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
 import { runSetup, type SetupActions, type SetupPrompts } from "../commands/setup/engine.js";
@@ -293,4 +296,114 @@ test("buildSetupPrompts parses a comma-separated whitelist", async () => {
   const result = hooks.configureWhitelist!({ current: ["alice"], demoMode: false });
   bridge.resolve(prompts[0].id, " alice, bob ,, carol ");
   assert.deepEqual(await result, ["alice", "bob", "carol"]);
+});
+
+test("Ink own-App creation invokes the flow for the selected stack", async () => {
+  const bridge = new SetupBridge();
+  const answers = ["app", "create", "https://propr.example.com", "integry"];
+  bridge.subscribe(event => {
+    if (event.type === "prompt") bridge.resolve(event.prompt.id, answers.shift());
+  });
+  let root: string | undefined;
+  const hooks = buildSetupPrompts(bridge, async (options, dependencies) => {
+    root = options.root;
+    assert.equal(options.org, "integry");
+    assert.equal(dependencies?.signal, bridge.abortController.signal);
+    return { envPath: "/stack/.env", keyPath: "/stack/key.pem", backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" }), { keep: true });
+  assert.equal(root, "/selected-stack");
+});
+
+test("Ink own-App creation confirms and forces replacement for a stray credential key", async t => {
+  const root = mkdtempSync(join(tmpdir(), "propr-ink-credentials-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, ".env"), "GH_WEBHOOK_SECRET=stray-secret\n");
+  const bridge = new SetupBridge();
+  const answers = ["app", "create", true, "https://propr.example.com", ""];
+  let sawConfirmation = false;
+  bridge.subscribe(event => {
+    if (event.type !== "prompt") return;
+    if (event.prompt.kind === "confirm") sawConfirmation = true;
+    bridge.resolve(event.prompt.id, answers.shift());
+  });
+  let receivedForce: boolean | undefined;
+  const hooks = buildSetupPrompts(bridge, async options => {
+    receivedForce = options.force;
+    return { envPath: join(root, ".env"), keyPath: join(root, "key.pem"), backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: root }), { keep: true });
+  assert.equal(sawConfirmation, true);
+  assert.equal(receivedForce, true);
+});
+
+for (const mode of ['relay', 'app'] as const) test(`Ink declining ${mode} replacement keeps authentication without creating an App`, async () => {
+  const bridge = new SetupBridge();
+  const answers = ['app', 'create', false];
+  bridge.subscribe(event => {
+    if (event.type === 'prompt') {
+      if (event.prompt.kind === 'confirm') {
+        assert.match(event.prompt.detail!, /timestamped .env backup/);
+        assert.equal(event.prompt.defaultValue, false);
+      }
+      bridge.resolve(event.prompt.id, answers.shift());
+    }
+  });
+  const hooks = buildSetupPrompts(bridge, async () => { throw new Error('must not create'); });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode, warnings: [] } }), { keep: true });
+});
+
+test('Ink paste prompt honors its signal and retires the aborted prompt', async () => {
+  const bridge = new SetupBridge();
+  const controller = new AbortController();
+  const done: number[] = [];
+  bridge.subscribe(event => { if (event.type === 'prompt-done') done.push(event.id); });
+  const prompts = capture(bridge);
+  const pending = bridge.input({ title: 'Paste redirect', mask: true }, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.deepEqual(done, [prompts[0].id]);
+  bridge.resolve(prompts[0].id, 'late answer');
+  const next = bridge.input({ title: 'Next' });
+  bridge.resolve(prompts[1].id, 'answer');
+  assert.equal(await next, 'answer');
+});
+
+test('Ink own-App public URL re-prompts on the default and invalid URL forms', async () => {
+  const bridge = new SetupBridge();
+  const answers = ['app', 'create', 'https://', 'ftp://example.com', 'https://user:secret@example.com', 'https://example.com?q=1', 'https://example.com#fragment', ' https://propr.example.com ', ''];
+  const logs: string[] = [];
+  let urlPrompts = 0;
+  bridge.subscribe(event => {
+    if (event.type === 'log') logs.push(event.line);
+    if (event.type === 'prompt') {
+      if (event.prompt.title === 'Public ProPR URL') urlPrompts++;
+      assert.ok(answers.length > 0);
+      bridge.resolve(event.prompt.id, answers.shift());
+    }
+  });
+  let calls = 0;
+  const hooks = buildSetupPrompts(bridge, async options => {
+    calls++;
+    assert.equal(options.publicUrl, 'https://propr.example.com');
+    return { envPath: '/stack/.env', keyPath: '/stack/key.pem', backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] }, rootDir: '/stack' }), { keep: true });
+  assert.equal(calls, 1);
+  assert.equal(urlPrompts, 6);
+  assert.match(logs.join('\n'), /absolute HTTP\(S\) public URL/);
+  assert.match(logs.join('\n'), /without credentials, query parameters, or a fragment/);
+});
+
+test('Ink cancellation during a repeated public URL prompt stops before creation', async () => {
+  const bridge = new SetupBridge();
+  const answers = ['app', 'create', 'https://'];
+  bridge.subscribe(event => {
+    if (event.type === 'prompt') {
+      if (answers.length) bridge.resolve(event.prompt.id, answers.shift());
+      else bridge.cancel();
+    }
+  });
+  const hooks = buildSetupPrompts(bridge, async () => { assert.fail('must not create'); });
+  await assert.rejects(hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] } }), SetupCancelledError);
 });

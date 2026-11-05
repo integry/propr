@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis';
 import type {
+    TaskTerminalReason,
     TaskState,
     TaskStateData,
     TaskStateExpectation,
@@ -9,6 +10,8 @@ import type {
 import { db } from '../db/connection.js';
 import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
+import { redactSecrets } from './secretRedaction.js';
+import { runCostCapTerminalReason } from '../budget/runCostGuardContext.js';
 
 const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
@@ -58,20 +61,34 @@ export function buildTaskStateMutation(
     return state;
 }
 
+function resolveTerminalReason(taskId: string, newState: TaskState, metadata: UpdateMetadata): TaskTerminalReason | undefined {
+    // Jobs queued before the rename still report the legacy `user_cancelled`.
+    const rawReason = metadata.historyMetadata?.cancellationReason;
+    const cancellationReason = rawReason === 'user_cancelled' ? 'cancelled_by_user' : rawReason;
+    const knownReasons = ['timed_out', 'cost_cap_exceeded', 'stalled', 'degenerate_output', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged', 'skipped_issue_done'];
+    return metadata.terminalReason
+        ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)
+        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined)
+        // A run stopped at its spend cap ends that way whichever job path records the outcome.
+        ?? runCostCapTerminalReason(taskId, newState);
+}
+
 export function buildTaskStateTransition(
     current: TaskStateData,
     newState: TaskState,
     metadata: UpdateMetadata,
 ): TaskStateTransition {
     const previousState = current.state;
-    const reason = metadata.reason ?? `State changed from ${previousState}`;
+    // Failure reasons quote agent output, which the API, MCP, CLI and comments show.
+    const reason = redactSecrets(metadata.reason ?? `State changed from ${previousState}`);
     const state = buildTaskStateMutation(current, (next, timestamp) => {
         next.state = newState;
+        next.terminalReason = resolveTerminalReason(current.taskId, newState, metadata);
         next.attempts = metadata.isRetry ? next.attempts + 1 : next.attempts;
 
         if (metadata.error) {
             next.lastError = {
-                message: metadata.error.message,
+                message: redactSecrets(metadata.error.message),
                 category: metadata.error.category ?? 'unknown',
                 timestamp,
             };
@@ -83,7 +100,7 @@ export function buildTaskStateTransition(
             state: newState,
             timestamp,
             reason,
-            metadata: metadata.historyMetadata ?? {},
+            metadata: { ...metadata.historyMetadata, ...(next.terminalReason ? { terminalReason: next.terminalReason } : {}) },
         });
     });
     return { state, previousState, reason };
@@ -134,6 +151,28 @@ export async function compareAndSetTaskState(
     return updated ? transition : null;
 }
 
+const TERMINAL_STATES = new Set<string>(['completed', 'failed', 'cancelled']);
+const PULL_REQUEST_TASK_TYPES = new Set(['pr-comment', 'review', 'merge_conflict']);
+
+/**
+ * When a PR task finishes, the plan issue linked to that PR stops showing
+ * refinement unless newer follow-up work for the PR is still queued or running.
+ * Best effort: plan status must never block a task's own lifecycle.
+ */
+async function settlePlanRefinementAfterTask(taskId: string, transition: TaskStateTransition): Promise<void> {
+    const { state, previousState } = transition;
+    if (!TERMINAL_STATES.has(state.state) || previousState === state.state) return;
+    const { issueRef } = state;
+    const isPullRequestTask = PULL_REQUEST_TASK_TYPES.has(String(issueRef.type)) || /^pr-comments?-/.test(taskId);
+    if (!isPullRequestTask || typeof issueRef.number !== 'number') return;
+    try {
+        const { settlePlanRefinementForPullRequest } = await import('../services/taskPlanning/planRefinementSettlement.js');
+        await settlePlanRefinementForPullRequest(`${issueRef.repoOwner}/${issueRef.repoName}`, issueRef.number);
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Failed to settle plan refinement after task finished');
+    }
+}
+
 export async function publishTaskStateTransition(
     taskId: string,
     transition: TaskStateTransition,
@@ -164,6 +203,7 @@ export async function publishTaskStateTransition(
             reason,
             metadata: JSON.stringify({
                 ...(metadata.historyMetadata ?? {}),
+                ...(state.terminalReason ? { terminalReason: state.terminalReason } : {}),
                 previousState,
                 attempts: state.attempts,
                 error: metadata.error,
@@ -193,7 +233,7 @@ export async function publishTaskStateTransition(
             issueNumber: state.issueRef.number,
             timestamp: state.updatedAt,
             version: state.version,
-            metadata: { attempts: state.attempts, reason: metadata.reason },
+            metadata: { attempts: state.attempts, reason: metadata.reason, ...(state.terminalReason ? { terminalReason: state.terminalReason } : {}) },
         });
         if (!publication.eventPublished) publication.errors.push('event: publisher returned false');
     } catch (error) {
@@ -204,6 +244,8 @@ export async function publishTaskStateTransition(
             version: state.version,
         }, 'Failed to publish task state update event');
     }
+
+    await settlePlanRefinementAfterTask(taskId, transition);
 
     if (!publication.historyPersisted || !publication.eventPublished) {
         correlatedLogger.error({

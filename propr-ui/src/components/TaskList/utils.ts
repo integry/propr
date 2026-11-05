@@ -1,8 +1,20 @@
+import { formatTaskAssignmentFilter } from '@propr/shared';
 import type { Task, TaskGroup } from './types';
 
 /** Checks if a URL param value should be treated as empty/default and removed */
 export function isDefaultParamValue(value: string | null): boolean {
   return value === null || value === 'all' || value === '' || value === '1';
+}
+
+/**
+ * The `?assignee=` value that selects these people, or `all` for nobody. A
+ * value the URL would drop as a default (a user named `1`) keeps an `@`
+ * prefix, which the API strips, so it survives.
+ */
+export function assigneeParamFor(logins: readonly string[]): string {
+  if (logins.length === 0) return 'all';
+  const value = formatTaskAssignmentFilter({ mode: 'users', logins: [...logins] });
+  return isDefaultParamValue(value) ? `@${value}` : value;
 }
 
 /** Returns the URL value or local value based on whether URL state is used */

@@ -20,7 +20,7 @@ function validateStopRequest(containerId: string, timeoutSeconds: number): strin
     return undefined;
 }
 
-function runDocker(args: string[], timeout: number): Promise<string> {
+export function runDocker(args: string[], timeout: number): Promise<string> {
     return new Promise((resolve, reject) => {
         execFile(
             DOCKER_PATH,

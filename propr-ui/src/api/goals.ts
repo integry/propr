@@ -1,4 +1,4 @@
-import { trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
+import { trustedPreviewMedia, type AttributedUser, type GoalAttention, type PublishedVisualPreview } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface GoalCapability {
@@ -50,6 +50,8 @@ export interface Goal {
   previewMedia?: PublishedVisualPreview[];
   id: string;
   owner: string;
+  /** Who created the goal; null when their profile is not cached. */
+  createdBy?: AttributedUser | null;
   repository: string;
   title: string;
   objective: string;
@@ -68,6 +70,8 @@ export interface Goal {
   resultState: 'completed' | 'failed' | 'cancelled' | null;
   failureReason: string | null;
   pausePending: boolean;
+  /** What the goal needs from its operator; the same projection MCP `get_goal` and the attention listing read. */
+  attention?: GoalAttention;
   control: { requestGeneration: number; acknowledgedGeneration: number; pending: boolean };
   taskId: string;
   sessionId: string | null;
@@ -151,8 +155,12 @@ const multipartMutation = (payload: unknown, files: readonly File[]): RequestIni
 
 export const getGoalCapabilities = async (recheck = false) =>
   request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
-export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
-export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
+// The reads accept a signal so a push-driven caller can cut off a request whose
+// scope has already moved on (a different repository filter, another goal).
+export const listGoals = async (options: { signal?: AbortSignal } = {}) =>
+  request<{ goals: Goal[] }>('/api/goals', { signal: options.signal });
+export const getGoal = async (id: string, options: { signal?: AbortSignal } = {}) =>
+  request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`, { signal: options.signal });
 export const getGoalVisualPreviews = async (id: string) => {
   const response = await request<{ previews?: unknown[]; unavailable?: boolean }>(`/api/goals/${encodeURIComponent(id)}/previews`);
   return { previews: trustedPreviewMedia(response.previews), ...(response.unavailable === true ? { unavailable: true } : {}) };
@@ -170,6 +178,8 @@ export const resumeGoal = async (id: string) => request<{ goal: Goal }>(`/api/go
 export const cancelGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/cancel`, idempotentMutation('POST'));
 export const requestGoalModel = async (id: string, model: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/model`, idempotentMutation('PATCH', { model }));
 export const sendGoalInput = async (id: string, body: { message?: string; canned?: 'done' | 'left' }, files: readonly File[] = []) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/input`, files.length > 0 ? multipartMutation(body, files) : idempotentMutation('POST', body));
+/** Reopens a failed, completed or cancelled goal; the message and attachments are optional. */
+export const continueGoal = async (id: string, body: { message?: string; model?: string } = {}, files: readonly File[] = []) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/continue`, files.length > 0 ? multipartMutation(body, files) : idempotentMutation('POST', body));
 export const getGoalAttachmentUrl = (goalId: string, attachmentId: string) => {
   const attachmentPath = `/api/goals/${encodeURIComponent(goalId)}/attachments/${encodeURIComponent(attachmentId)}`;
   const trimmedBase = API_BASE_URL.trim();

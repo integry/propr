@@ -27,6 +27,7 @@ import {
     runWithinRemainingBudget,
 } from './taskReconciliationBudget.js';
 import { taskAgeMs } from './taskReconciliationTime.js';
+import { finalizeOrphan, type OrphanReplacementHandler } from './orphanReplacement.js';
 
 export const DEFAULT_RECONCILIATION_STALE_MS = 15 * 60 * 1000;
 export const DEFAULT_RECONCILIATION_ORPHAN_GRACE_MS = 60 * 1000;
@@ -49,6 +50,8 @@ export type ReconciliationStateManager = Pick<
 >;
 
 export type TaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
+
+export { ORPHANED_TASK_MESSAGE, type OrphanReplacementHandler } from './orphanReplacement.js';
 
 export interface TaskStateReconciliationSummary {
     scanned: number;
@@ -73,6 +76,8 @@ export interface TaskStateReconciliationOptions {
     inspectContainer?: (taskId: string) => Promise<TaskContainerLiveness>;
     backlog?: PersistedTaskStateCandidate[];
     signal?: AbortSignal;
+    /** Dispatches one replacement attempt for an orphaned task; absent disables replacement. */
+    replacement?: OrphanReplacementHandler;
 }
 
 export interface TaskStateReconciliationResult {
@@ -123,12 +128,13 @@ interface ReconciliationRunContext {
     now: number;
 }
 
+/** Returns whether this run moved the task to the transition's terminal state. */
 async function finalizeCandidate(
     candidate: PersistedTaskStateCandidate,
     transition: PersistedTaskTerminalTransition,
     current: TaskStateData | null,
     context: ReconciliationRunContext,
-): Promise<void> {
+): Promise<boolean> {
     const { options, summary, deadline, signal, now } = context;
     // Candidates can be carried across runs while a reused BullMQ job ID moves
     // to a newer task. Revalidate after the outcome was read so neither the
@@ -142,7 +148,7 @@ async function finalizeCandidate(
         logger.warn({ taskId: candidate.taskId, jobId: candidate.jobId },
             'Skipped stale task whose persisted queue job assignment changed');
         summary.skipped++;
-        return;
+        return false;
     }
     if (current && !TERMINAL_TASK_STATES.has(current.state)) {
         const metadata: UpdateMetadata = {
@@ -164,13 +170,13 @@ async function finalizeCandidate(
         );
         if (!updated) {
             summary.skipped++;
-            return;
+            return false;
         }
         if (updated.publication.historyPersisted) {
             await runWithinRemainingBudget(() => options.store.clearMissing(candidate.taskId), deadline, signal);
             summary.recovered++;
             if (!updated.publication.eventPublished) summary.errors++;
-            return;
+            return true;
         }
     }
 
@@ -186,9 +192,10 @@ async function finalizeCandidate(
     if (persisted.stateChanged) {
         summary.recovered++;
         if (!persisted.eventPublished) summary.errors++;
-    } else {
-        summary.skipped++;
+        return true;
     }
+    summary.skipped++;
+    return false;
 }
 
 async function reconcileQueueJob(
@@ -273,10 +280,12 @@ async function reconcileMissingJob(
         return;
     }
 
-    await finalizeCandidate(candidate, failedTaskTransition(
-        'Task was orphaned after worker restart; no BullMQ job or running task container was found',
-        'orphan_reconciliation',
-    ), current, context);
+    await finalizeOrphan({
+        taskId: candidate.taskId, replacement: options.replacement, deadline, signal,
+        finalize: transition => finalizeCandidate(candidate, transition, current, context),
+        onDeferred: () => { summary.skipped++; },
+        onReplacementError: () => { summary.errors++; },
+    });
 }
 
 async function reconcileCandidate(

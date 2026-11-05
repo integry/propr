@@ -105,8 +105,8 @@ test('routes desktop notification settings into the native controls', async ({ p
   await expect(page.getByRole('heading', { name: 'Desktop notifications' })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'Enable desktop notifications on this device' })).not.toBeChecked();
 
-  await page.getByRole('tab', { name: /Automation/ }).click();
-  await expect(page).toHaveURL(/\/settings\?tab=automation$/);
+  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
+  await expect(page).toHaveURL(/\/settings\?tab=workflow$/);
   await page.evaluate(() => {
     history.pushState({}, '', '/settings?tab=notifications');
     window.dispatchEvent(new PopStateEvent('popstate'));

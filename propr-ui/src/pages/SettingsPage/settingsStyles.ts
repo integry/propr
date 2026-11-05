@@ -28,3 +28,19 @@ export const SETTINGS_CONTROL = 'block w-full rounded border border-slate-300 bg
 
 /** Checkbox sitting at the left of a toggle row, aligned to the label's cap height. */
 export const SETTINGS_CHECKBOX = 'mt-0.5 h-4 w-4 flex-shrink-0 rounded border-slate-300 text-primary-600 focus:ring-primary-500 disabled:cursor-not-allowed';
+
+/**
+ * The width every Settings band shares: page header, rail with its reading
+ * pane and inspector, and the save status bar. It widens on 2xl screens so the
+ * inspector column fills the space that would otherwise sit empty.
+ */
+export const SETTINGS_CONTAINER = 'mx-auto w-full max-w-5xl px-4 2xl:max-w-7xl';
+
+/**
+ * A settings block inside a category: helper text stays with the controls it
+ * belongs to, and a rule closes the block before the next one starts. The
+ * last block in a category goes without it. The final field's own bottom
+ * margin is dropped so the rule sits as close to the helper text above it as
+ * to the header below it.
+ */
+export const SETTINGS_BLOCK = 'mb-8 border-b border-slate-100 pb-8 [&>fieldset>section>:last-child]:mb-0';

@@ -24,9 +24,9 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     namedExports: {
         getDockerRootDir: mock.fn(async () => '/docker/storage'),
         executeDockerCommand: mock.fn(async (_command: string, args: string[]) => {
-            if (args[0] === 'images') {
+            if (args[0] === 'image' && args[1] === 'inspect') {
                 imageChecks += 1;
-                return { exitCode: 0, stdout: '', stderr: '', messageTimestamps: new Map() };
+                return { exitCode: 1, stdout: '', stderr: `Error: No such image: ${args.at(-1)}`, messageTimestamps: new Map() };
             }
             if (args[0] === 'pull') {
                 pulls += 1;

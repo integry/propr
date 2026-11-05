@@ -1,7 +1,10 @@
+import { repositoryStorageLifecycle, protectStorageQueue } from '../storage/lifecycle.js';
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
 import logger from '../utils/logger.js';
+import { resolveMaxStalledCount } from './stallPolicy.js';
+import { stopStalledAttemptContainers } from '../claude/docker/stalledAttemptContainers.js';
 import 'dotenv/config';
 
 // Re-export types for backward compatibility
@@ -11,10 +14,11 @@ export type {
     UnprocessedComment,
     TaskImportJobData,
     GoalJobData,
-    AnalysisJobData,
     SystemTaskJobData,
     IndexingJobData,
     MergeConflictJobData,
+    AgentRunJobData,
+    AgentRunPhase,
     SystemAction,
     AutoResolveContext,
     JobData,
@@ -32,7 +36,6 @@ import type {
     IssueJobData,
     CommentJobData,
     GoalJobData,
-    AnalysisJobData,
     IndexingJobData,
     JobData,
     JobResult,
@@ -62,13 +65,11 @@ const connectionOptions: RedisOptions = {
 // Lazy-initialized Redis connection and queues
 let redisConnection: Redis | null = null;
 let _issueQueue: Queue<IssueJobData | CommentJobData | import('./taskQueue.types.js').GoalJobData> | null = null;
-let _analysisQueue: Queue<AnalysisJobData> | null = null;
 let _indexingQueue: Queue<IndexingJobData> | null = null;
 let isInitialized = false;
 
 export const GITHUB_ISSUE_QUEUE_NAME = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
 export const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
-export const ANALYSIS_QUEUE_NAME = process.env.ANALYSIS_QUEUE_NAME || 'analysis-processor';
 export const INDEXING_QUEUE_NAME = process.env.INDEXING_QUEUE_NAME || 'indexing-processor';
 
 /**
@@ -108,30 +109,9 @@ async function ensureInitialized(): Promise<void> {
         },
     };
 
-    _issueQueue = new Queue<IssueJobData | CommentJobData | GoalJobData>(GITHUB_ISSUE_QUEUE_NAME, issueQueueOptions);
+    _issueQueue = protectStorageQueue(new Queue<IssueJobData | CommentJobData | GoalJobData>(GITHUB_ISSUE_QUEUE_NAME, issueQueueOptions));
     _issueQueue.on('error', (err: Error) => {
         logger.error({ queue: GITHUB_ISSUE_QUEUE_NAME, err }, 'Queue error');
-    });
-
-    const analysisQueueOptions: QueueOptions = {
-        connection: redisConnection,
-        defaultJobOptions: {
-            attempts: 2,
-            backoff: {
-                type: 'exponential',
-                delay: 60000,
-            },
-            removeOnComplete: {
-                age: 24 * 3600,
-                count: 1000,
-            },
-            removeOnFail: true,
-        },
-    };
-
-    _analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, analysisQueueOptions);
-    _analysisQueue.on('error', (err: Error) => {
-        logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
     });
 
     const indexingQueueOptions: QueueOptions = {
@@ -152,7 +132,7 @@ async function ensureInitialized(): Promise<void> {
         },
     };
 
-    _indexingQueue = new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions);
+    _indexingQueue = protectStorageQueue(new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions));
     _indexingQueue.on('error', (err: Error) => {
         logger.error({ queue: INDEXING_QUEUE_NAME, err }, 'Indexing Queue error');
     });
@@ -170,14 +150,6 @@ export async function getIssueQueue(): Promise<Queue<IssueJobData | CommentJobDa
 }
 
 /**
- * Get the analysis queue, initializing if needed.
- */
-export async function getAnalysisQueue(): Promise<Queue<AnalysisJobData>> {
-    await ensureInitialized();
-    return _analysisQueue!;
-}
-
-/**
  * Get the indexing queue, initializing if needed.
  */
 export async function getIndexingQueue(): Promise<Queue<IndexingJobData>> {
@@ -187,22 +159,13 @@ export async function getIndexingQueue(): Promise<Queue<IndexingJobData>> {
 
 // Legacy synchronous exports for backward compatibility
 // These will throw if accessed before initialization
-// Use getIssueQueue(), getAnalysisQueue(), getIndexingQueue() for safe access
+// Use getIssueQueue(), getIndexingQueue() for safe access
 export const issueQueue = new Proxy({} as Queue<IssueJobData | CommentJobData | import('./taskQueue.types.js').GoalJobData>, {
     get(_target, prop) {
         if (!_issueQueue) {
             throw new Error('issueQueue accessed before initialization. Use getIssueQueue() instead or call ensureInitialized() first.');
         }
         return (_issueQueue as unknown as Record<string | symbol, unknown>)[prop];
-    }
-});
-
-export const analysisQueue = new Proxy({} as Queue<AnalysisJobData>, {
-    get(_target, prop) {
-        if (!_analysisQueue) {
-            throw new Error('analysisQueue accessed before initialization. Use getAnalysisQueue() instead or call ensureInitialized() first.');
-        }
-        return (_analysisQueue as unknown as Record<string | symbol, unknown>)[prop];
     }
 });
 
@@ -228,6 +191,40 @@ function createMetricsRedis(): Redis {
 }
 
 /**
+ * A plan issue refines while its PR has queued or running work. A failed
+ * attempt settles it, so the retry BullMQ then delays, and later resumes,
+ * must bring refinement back; and a retry that then succeeds cannot settle it
+ * through its task, which stays failed, so the job's completion does.
+ * Best effort, like the task-side settlement.
+ */
+async function syncPlanRefinementForJobAttempt(job: Job | undefined): Promise<void> {
+    if (!job) return;
+    try {
+        const { syncPlanRefinementForJob } = await import('../services/taskPlanning/planRefinementSettlement.js');
+        await syncPlanRefinementForJob(job.data);
+    } catch (error) {
+        logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to sync plan refinement for job attempt');
+    }
+}
+
+/**
+ * A submission's intake job can fail for good before its processor runs, as
+ * when worktree admission refuses it, so nothing else records that it ended.
+ * Best effort: a submission left queued is still reconciled when it is read.
+ */
+async function finalizeSubmissionIntakeAttempt(job: Job | undefined, err: Error): Promise<void> {
+    if (!job) return;
+    try {
+        const { finalizeSubmissionIntakeFailure, queueSubmissionIntakeEvidence } = await import('../services/taskSubmissionIntake.js');
+        const evidence = queueSubmissionIntakeEvidence(() => getIssueQueue());
+        const outcome = await finalizeSubmissionIntakeFailure(job as unknown as Parameters<typeof finalizeSubmissionIntakeFailure>[0], err, { job: jobId => evidence.job(jobId) });
+        if (outcome === 'recorded') logger.warn({ jobId: job.id, errMessage: err.message }, 'Submission intake failed before any task; recorded it as retryable');
+    } catch (error) {
+        logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to record a submission intake failure');
+    }
+}
+
+/**
  * Create a worker for processing jobs. Initializes Redis connection if needed.
  */
 export async function createWorker<T extends JobData = JobData, R extends JobResult = JobResult>(
@@ -243,11 +240,25 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         connection: redisConnection!,
         concurrency: concurrency,
         autorun: options.autorun ?? true,
+        maxStalledCount: resolveMaxStalledCount(),
     };
 
-    const worker = new Worker<T, R>(queueName, processorFunction, workerOptions);
+    const worker = new Worker<T, R>(queueName, async job => {
+        if ((job?.stalledCounter ?? 0) > 0) {
+            // A redelivered attempt must not run beside the earlier attempt's agent.
+            await stopStalledAttemptContainers({ jobId: job.id, correlationId: (job.data as { correlationId?: string })?.correlationId, jobName: job.name })
+                .catch(error => logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not stop containers of a stalled job attempt'));
+        }
+        return repositoryStorageLifecycle.use(() => processorFunction(job), {
+            filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',
+            reserveBytes: Number(process.env.WORKTREE_ADMISSION_RESERVE_BYTES || 2 * 1024 ** 3),
+            taskBytes: Number(process.env.WORKTREE_TASK_BUDGET_BYTES || 1024 ** 3),
+        });
+    }, workerOptions);
 
     worker.on('completed', async (job: Job<T>, result: R) => {
+        // BullMQ emits this after moving the job out of active work.
+        void syncPlanRefinementForJobAttempt(job as unknown as Job);
         const duration = Date.now() - job.timestamp;
         logger.info({ jobId: job.id, jobName: job.name, result, duration }, 'Job completed successfully');
         try {
@@ -271,7 +282,15 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         }
     });
 
+    worker.on('active', (job: Job<T>) => {
+        // Only an attempt resuming after a failure or stall; first attempts are admitted by their webhook.
+        if (job.attemptsMade > 0 || (job.attemptsStarted ?? 0) > 1) void syncPlanRefinementForJobAttempt(job as unknown as Job);
+    });
+
     worker.on('failed', async (job: Job<T> | undefined, err: Error) => {
+        // BullMQ emits this after moving the job to delayed for its retry, or to failed for good.
+        void syncPlanRefinementForJobAttempt(job as unknown as Job | undefined);
+        if (queueName === GITHUB_ISSUE_QUEUE_NAME) void finalizeSubmissionIntakeAttempt(job as unknown as Job | undefined, err);
         const jobData = job?.data as unknown as IssueJobData | undefined;
         logger.error({
             jobId: job?.id,
@@ -333,9 +352,6 @@ export async function shutdownQueue(): Promise<void> {
         if (_issueQueue) {
             await _issueQueue.close();
         }
-        if (_analysisQueue) {
-            await _analysisQueue.close();
-        }
         if (_indexingQueue) {
             await _indexingQueue.close();
         }
@@ -345,7 +361,6 @@ export async function shutdownQueue(): Promise<void> {
 
         // Reset state
         _issueQueue = null;
-        _analysisQueue = null;
         _indexingQueue = null;
         redisConnection = null;
         isInitialized = false;

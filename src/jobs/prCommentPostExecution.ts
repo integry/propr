@@ -12,13 +12,16 @@ import {
     renderVisualPreviewSection,
     renderVisualPreviewUploadFailureSection,
     resolveAgentTerminationReason,
+    describeAgentTermination,
     sanitizeAgentReport,
     TaskStates,
     VISUAL_PREVIEW_SLOT,
 } from '@propr/core';
+import { agentFailureLine, taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type {
     ClaudeCodeResponse,
     CommentJobData,
+    VisualPreviewSettings,
     UnprocessedComment,
     WorkerStateManager,
     WorktreeInfo,
@@ -27,15 +30,22 @@ import { buildCompletionComment } from './prCompletionComment.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { buildCommitMessage } from './prCommentJobUtils.js';
 import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
+import { selectedReviewFeedbackIds } from './reviewFindingSelector.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import {
     isVisualPreviewUploadAuthenticationError,
     publishPullRequestCommentVisualPreviews,
 } from '../github/visualPreviewAttachments.js';
-import type { PullRequestPublication } from './prPublication.js';
+import type { PullRequestPublication, PublicationSalvage } from './prPublication.js';
+import type { FollowupHandoffRecord } from './followupHandoffStore.js';
+import { normalCompletionHandoffMarkers } from './followupHandoffMarker.js';
+import { markExecutionHandoffCommitted, markExecutionHandoffCommentPublished, markExecutionHandoffPushed } from './prCommentHandoffIntegration.js';
+import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
-import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { buildWorkNotificationRecap, fullNotificationSummary } from './notificationRecap.js';
+import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
+import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -44,6 +54,8 @@ interface PostExecutionState {
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
     startingWorkComment: { data: { id: number; html_url: string } } | null;
+    /** Durable publication handoff; advanced as commit, push and comment complete. */
+    followupHandoff?: FollowupHandoffRecord | null;
 }
 
 interface ReadyPostExecutionState extends PostExecutionState {
@@ -72,6 +84,8 @@ export interface PublicationCompletion {
     unprocessedReviewComments: AIReviewComment[];
     llm?: string | null;
     taskUrl: string;
+    /** The source issue resolved during execution; absent from checkpoints written before it was saved. */
+    linkedIssue?: LinkedIssueReference | null;
     commitResult: Awaited<ReturnType<typeof commitChanges>>;
     changesSummary: string;
     commitMessage: string;
@@ -89,6 +103,10 @@ interface PostExecutionParams {
     redisClient: Redis;
     prProcessingLockKey: string;
     prProcessingLockToken: string;
+    /** The run's effective preview settings, already restricted by its workflow snapshot. */
+    visualPreviewSettings?: VisualPreviewSettings;
+    /** The source issue the pull request closes, for auto-assignment. */
+    linkedIssue?: LinkedIssueReference | null;
 }
 
 interface UndoContextParams {
@@ -102,9 +120,9 @@ interface UndoContextParams {
 
 async function commitAndPush(
     state: ReadyPostExecutionState,
-    context: PostExecutionContext,
+    context: PostExecutionContext & { salvage?: PublicationSalvage; integrateConflicts?: (worktreePath: string) => Promise<{ commitHash?: string } | null> },
     llm: string | null | undefined,
-    completionInputs: Omit<PublicationCompletion, 'commitResult' | 'changesSummary' | 'commitMessage'>
+    completionInputs: Omit<PublicationCompletion, 'commitResult' | 'changesSummary' | 'commitMessage'>,
 ) {
     if (!state.worktreeInfo) throw new Error('Cannot commit PR comment changes without a worktree');
     const changesSummary = sanitizeAgentReport(state.claudeResult.summary || state.claudeResult.finalResult?.result || '');
@@ -112,13 +130,22 @@ async function commitAndPush(
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: context.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
     if (commitResult) {
-        const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage });
+        // Durable phase checkpoints around the push: restart recovery must know a
+        // clean, pushed worktree means completed publication, not missing work.
+        await markExecutionHandoffCommitted(state, commitResult.commitHash);
+        const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage }, { salvage: context.salvage, integrateConflicts: context.integrateConflicts });
         if (pushResult.commitHash) {
             commitResult.commitHash = pushResult.commitHash;
         }
+        await markExecutionHandoffPushed(state, commitResult.commitHash);
     }
 
     return { commitResult, changesSummary, commitMessage };
+}
+
+/** A recovered publication uses the source issue its checkpoint saved; legacy checkpoints saved none. */
+function followUpSourceIssue(params: PostExecutionParams): LinkedIssueReference | null | undefined {
+    return params.recoveredCompletion ? params.recoveredCompletion.linkedIssue : params.linkedIssue;
 }
 
 async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
@@ -196,6 +223,9 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         : '';
     const undoContext = context.publication.continuation || !state.worktreeInfo ? undefined : buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(comment => comment.id) : undefined;
+    // Reported from the records that were actually selected, so a retry that
+    // re-reads the discussion still names exactly the work this run did.
+    const addressedFeedback = selectedReviewFeedbackIds(unprocessedReviewComments);
     const completionBody = await buildCompletionComment(commitResult, state.unprocessedComments, {
         changesSummary,
         commitMessage,
@@ -204,9 +234,13 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         undoContext,
         taskUrl,
         consumedReviewCommentIds,
+        addressedFeedback,
         visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined
     }, state.claudeResult);
-    const prCommentTemplate = [context.publication.status, completionBody].filter(Boolean).join('\n\n');
+    // The handoff marker lets restart recovery recognize this completion if the
+    // worker dies before its durable checkpoint records the comment URL.
+    const prCommentTemplate = [normalCompletionHandoffMarkers(state.followupHandoff), context.publication.status, completionBody]
+        .filter(Boolean).join('\n\n');
     const prCommentBody = appendVisualPreviewSection(prCommentTemplate, visualPreviewSection);
 
     if (visualPreviewEvidence.assets.length === 0) {
@@ -243,15 +277,15 @@ function requirePartialExecutionChanges(
     terminationReason: ReturnType<typeof resolveAgentTerminationReason>,
 ): void {
     if (partial && !commitResult) {
-        throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
+        throw new Error(`${terminationReason ? describeAgentTermination(terminationReason) : 'Agent execution was interrupted.'} No changes were produced to publish.`);
     }
 }
 
-async function preparePostExecutionPreviews(state: ReadyPostExecutionState, repository: string, taskId: string) {
+async function preparePostExecutionPreviews(state: ReadyPostExecutionState, repository: string, taskId: string, settings?: VisualPreviewSettings) {
     if (!state.worktreeInfo) return;
     return prepareVisualPreviewEvidence({
         worktreePath: state.worktreeInfo.worktreePath,
-        settings: await loadRepositoryVisualPreviewSettings(repository),
+        settings: settings ?? await loadRepositoryVisualPreviewSettings(repository),
         taskId,
     });
 }
@@ -268,6 +302,37 @@ function buildPostExecutionRecap(
         noChanges: !commitResult,
         partial,
     });
+}
+
+/**
+ * Findings and suggestions a run addressed, recorded on the work summary so the
+ * task history distinguishes required corrections from optional follow-ups.
+ */
+function buildAddressedFeedbackHistoryMeta(comments: AIReviewComment[]): Record<string, string[]> {
+    const addressed = selectedReviewFeedbackIds(comments);
+    return {
+        ...(addressed.findingIds.length > 0 && { addressedFindingIds: addressed.findingIds }),
+        ...(addressed.suggestionIds.length > 0 && { addressedSuggestionIds: addressed.suggestionIds }),
+    };
+}
+
+/**
+ * A follow-up whose push conflicts with commits pushed meanwhile merges them in
+ * with the conflict agent instead of failing and rerunning the implementation.
+ * Fork heads publish through continuations and keep the salvage path.
+ */
+function conflictIntegrator(params: PostExecutionParams) {
+    const { state, context, stateManager, taskId, redisClient, job } = params;
+    const { worktreeInfo, octokit } = state;
+    if (!worktreeInfo || !octokit || context.publication.target?.isFork !== false) return undefined;
+    // Lazy import: the conflict agent's dependencies load only when a push conflicts.
+    return async (worktreePath: string) => (await import('./pushConflictIntegration.js')).integrateRemoteAndPush({
+        publication: context.publication, worktreeInfo,
+        pullRequestNumber: context.pullRequestNumber, repoOwner: context.repoOwner, repoName: context.repoName,
+        getGithubToken: async () => (await octokit.auth({ type: 'installation' }) as { token: string }).token,
+        stateManager, taskId, correlationId: job.data.correlationId ?? taskId, correlatedLogger: context.correlatedLogger, redisClient,
+        checkpointCommit: commitHash => markExecutionHandoffCommitted(state, commitHash),
+    }, worktreePath);
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
@@ -288,19 +353,23 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     requirePostExecutionState(state);
     const disposition = getPostExecutionDisposition(state.claudeResult);
     const terminationReason = resolveAgentTerminationReason(state.claudeResult);
+    const terminalReason = taskTerminalReasonForAgentTermination(terminationReason);
     const partial = disposition === 'partial';
     if (disposition === 'failed') {
-        throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+        throw new Error(`Agent execution failed: ${state.claudeResult.error ? agentFailureLine(state.claudeResult.error) : 'Unknown error'}`);
     }
 
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
     try {
-        preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId);
-        const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, context, llm, {
+        preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId, params.visualPreviewSettings);
+        const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, {
+            ...context, salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
+            integrateConflicts: conflictIntegrator(params),
+        }, llm, {
             taskId, instructionCommentIds: state.unprocessedComments.map(comment => comment.id),
             jobData: job.data, claudeResult: state.claudeResult, authorsText: state.authorsText,
             unprocessedComments: state.unprocessedComments, startingWorkComment: state.startingWorkComment,
-            unprocessedReviewComments, llm, taskUrl,
+            unprocessedReviewComments, llm, taskUrl, linkedIssue: params.linkedIssue,
         });
         requirePartialExecutionChanges(partial, commitResult, terminationReason);
         if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
@@ -316,6 +385,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             unprocessedReviewComments,
             visualPreviewEvidence: preparedVisualPreview?.evidence
         });
+        await markExecutionHandoffCommentPublished(state, completionComment.data.html_url);
         correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
         if (unprocessedReviewComments.length > 0) {
@@ -330,11 +400,20 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             });
         }
 
+        // Before the terminal update, which would refuse the timeline entry.
+        await autoAssignFollowUpPullRequest({
+            octokit: state.octokit, repoOwner, repoName, pullRequestNumber, continuation: context.publication.continuation,
+            commandMode: job.data.commandMode, commit: commitResult,
+            linkedIssue: followUpSourceIssue(params),
+            taskId, stateManager, redis: redisClient, logger: correlatedLogger,
+        });
+
         const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
             reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
             commitHash: commitResult?.commitHash,
+            ...(terminalReason ? { terminalReason } : {}),
             historyMetadata: {
                 commandMode: job.data.commandMode || 'default',
                 continuation: context.publication.continuation ? {
@@ -342,7 +421,9 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
                 } : undefined,
                 githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
                 notificationRecap: buildPostExecutionRecap(job.data, { commitResult, changesSummary }, partial),
+                notificationSummary: fullNotificationSummary(changesSummary),
                 ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+                ...buildAddressedFeedbackHistoryMeta(unprocessedReviewComments),
                 ...(partial && { incompleteExecution: { reason: terminationReason } }),
                 ...ultrafixHistoryMeta,
             }
@@ -351,10 +432,17 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
         return { commitHash: commitResult?.commitHash, partial };
     } finally {
-        try {
-            await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
-        } catch (cleanupError) {
-            correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
-        }
+        await cleanupPostExecutionPreviews(preparedVisualPreview, correlatedLogger);
+    }
+}
+
+async function cleanupPostExecutionPreviews(
+    preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined,
+    correlatedLogger: PostExecutionParams['context']['correlatedLogger'],
+): Promise<void> {
+    try {
+        await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
+    } catch (cleanupError) {
+        correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
     }
 }

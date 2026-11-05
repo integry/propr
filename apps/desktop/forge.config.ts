@@ -16,7 +16,7 @@ import {
   resolveTrustedUpdateBuildConfig,
 } from './src/release-config';
 import {
-  normalizeDesktopRuntimeManifestMode,
+  normalizePackagedDesktopRuntimeManifestMode,
   readDesktopRuntimeManifest,
 } from './scripts/desktop-runtime-manifest.mjs';
 import { brandMacOSPackage } from './src/macos-branding';
@@ -52,16 +52,14 @@ if (configuredRuntimeManifest) {
     ...(process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1'
       ? { distribution: 'published' as const }
       : {}),
+    ...(process.env.PROPR_DESKTOP_RUNTIME_AGENT_IMAGE !== undefined
+      ? { agentImage: process.env.PROPR_DESKTOP_RUNTIME_AGENT_IMAGE }
+      : {}),
   });
 }
-const linuxSetupResources = process.platform === 'linux'
-  ? {
-      afterCopyExtraResources: [({ buildPath, platform }: { buildPath: string; platform: string }) => {
-        if (platform === 'linux') {
-          normalizeDesktopRuntimeManifestMode(resolve(buildPath, 'resources', 'manifest.json'));
-        }
-      }],
-    }
+const setupResources = ['linux', 'darwin'].includes(process.platform)
+  ? { afterCopyExtraResources: [normalizePackagedDesktopRuntimeManifestMode,
+    ...(process.platform === 'darwin' ? [brandMacOSPackage] : [])] }
   : {};
 
 const desktopPackage = JSON.parse(
@@ -123,15 +121,15 @@ const config: ForgeConfig = {
     asar: { unpack: '**/.vite/native/prebuilds/**' },
     extraResource: [
       desktopTrayIcon,
-      ...(process.platform === 'linux' ? [
-        desktopLinuxIcon,
+      ...(process.platform === 'linux' ? [desktopLinuxIcon] : []),
+      // Both setup hosts resolve these files directly from process.resourcesPath.
+      ...((process.platform === 'linux' || process.platform === 'darwin') ? [
         resolve(connectOrchestrator, 'orchestrator.mjs'),
         desktopRuntimeManifest,
         setupAssets,
       ] : []),
     ],
-    ...linuxSetupResources,
-    ...(process.platform === 'darwin' ? { afterCopyExtraResources: [brandMacOSPackage] } : {}),
+    ...setupResources,
     appBundleId: 'dev.propr.desktop',
     extendInfo: {
       NSMicrophoneUsageDescription: DESKTOP_MICROPHONE_USAGE_DESCRIPTION,

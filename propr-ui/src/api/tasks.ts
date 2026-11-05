@@ -4,6 +4,7 @@
  * Client wrapper for the /api/tasks backend routes.
  * Provides methods to list, get, stop, and delete tasks.
  */
+import type { AttributedUser } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // ============================================================================
@@ -70,6 +71,10 @@ export interface Task {
   processedAt: string | null;
   /** Reason for failure (null if not failed) */
   failedReason: string | null;
+  /** Commit the run pushed (null when it pushed none or predates commit tracking) */
+  commitHash?: string | null;
+  /** Score the run recorded when it completed (a review's `6/10`); null when it was not scored */
+  score?: number | null;
   /** Progress percentage (0-100) */
   progress: number;
   /** Number of processing attempts */
@@ -82,8 +87,8 @@ export interface Task {
   llmProvider: string | null;
   /** Status of associated plan issue */
   planIssueStatus: PlanIssueStatus;
-  /** Implementation critique score (0-100 scale) */
-  critiqueScore: number | null;
+  /** Users assigned to the task's issue or pull request; absent from servers that predate assignment */
+  assignees?: AttributedUser[];
 }
 
 /**
@@ -194,6 +199,8 @@ export interface ListTasksOptions {
   forReview?: boolean;
   /** Exclude tasks where plan_issue_status is 'merged' */
   excludeMerged?: boolean;
+  /** Filter by assignee: `all`, `me`, `unassigned` or comma-separated GitHub logins */
+  assignee?: string;
 }
 
 /**
@@ -272,6 +279,9 @@ export const listTasks = async (options: ListTasksOptions = {}): Promise<ListTas
   }
   if (options.excludeMerged) {
     params.set('excludeMerged', 'true');
+  }
+  if (options.assignee) {
+    params.set('assignee', options.assignee);
   }
 
   const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
@@ -396,30 +406,6 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
     method: 'GET',
     credentials: 'include'
   });
-
-  await handleApiResponse(response);
-  return response.json();
-};
-
-/**
- * Fetches analysis report for a task.
- *
- * @param taskId - The unique identifier of the task
- * @returns Promise resolving to task analysis
- */
-export const getTaskAnalysis = async (taskId: string): Promise<{
-  analysis: unknown | null;
-  message?: string;
-}> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, {
-    method: 'GET',
-    credentials: 'include'
-  });
-
-  // 202 indicates analysis is still pending
-  if (response.status === 202) {
-    return { analysis: null, message: 'Analysis pending...' };
-  }
 
   await handleApiResponse(response);
   return response.json();

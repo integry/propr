@@ -25,7 +25,13 @@ if [ "${PROPR_WORKSPACE_PREPARED:-false}" != "true" ]; then
   npm run test:prepare
 fi
 
-npm exec --workspace propr-ui -- playwright install chromium
+# Bound the browser download so a stalled CDN fails the CI step that runs
+# this script (nightly and labelled docs validation) instead of holding it.
+if command -v timeout >/dev/null 2>&1; then
+  timeout --kill-after=15s 10m npm exec --workspace propr-ui -- playwright install chromium
+else
+  npm exec --workspace propr-ui -- playwright install chromium
+fi
 
 cd "$WORKSPACE/docs"
 npm ci

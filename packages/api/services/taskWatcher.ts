@@ -8,18 +8,29 @@ import os from 'os';
 import fs from 'fs-extra';
 import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
-import { parseAgentStreamOutput } from './agentStreamProjection.js';
 import { withStableLiveEventIds } from './liveEventIds.js';
+import { selectLiveEvents } from './liveEventSelection.js';
+import { projectLiveOutputRead, readLiveOutput, type LiveOutputProjector, type LiveOutputRead, type LiveOutputRedis } from './liveOutputStream.js';
 import { resolveConfigPath } from '@propr/core';
-import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
+import { findAgentConfigForTask, findExecutionStartTimestampForTask, findLatestExecutionStartForTask } from './taskWatcherLookup.js';
+import { completedExecutionDetails } from '../routes/liveDetailsCanonical.js';
+import { isLiveTask } from '../routes/liveDetailsTaskState.js';
+import { findSessionId } from '../routes/liveDetailsRoutes.js';
 
 const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
+
+function canContinueProjection(projector: LiveOutputProjector, read: LiveOutputRead): boolean {
+  return read.epoch !== 'legacy' && read.epoch === projector.epoch
+    && read.start === projector.start && read.from === projector.offset && projector.offset <= read.end;
+}
 
 /** Active task watcher info */
 export interface TaskWatcherInfo {
   watcher: chokidar.FSWatcher | null;
   sessionId: string;
   taskId: string;
+  /** Resolved Claude conversation file; absent for Redis watchers. */
+  conversationPath?: string;
   lastSize: number;
   subscriberCount: number;
   /** Number of events last sent - used to track which events have been broadcast */
@@ -28,8 +39,14 @@ export interface TaskWatcherInfo {
   watchingForCreation: boolean;
   /** Polling interval for Redis-based streaming (Codex) */
   redisPollingInterval?: ReturnType<typeof setInterval>;
-  /** Last content length from Redis (for change detection) */
-  lastRedisLength?: number;
+  /** Redis watchers: projection of the append-only live output read so far. */
+  liveProjector?: LiveOutputProjector;
+  /** Exact metadata-free snapshot last projected; legacy writers may replace any byte. */
+  lastLegacySnapshot?: string;
+  liveReadPromise?: Promise<void>;
+  /** Last broadcast buffered message and snapshot, so unchanged polls send nothing. */
+  lastPendingSignature?: string;
+  lastSnapshotSignature?: string;
 }
 
 /** Dependencies for task watching */
@@ -48,6 +65,8 @@ export class TaskWatcherManager {
   private io: SocketIOServer;
   private taskWatchers: Map<string, TaskWatcherInfo> = new Map();
   private deps: TaskWatcherDeps | null = null;
+  private closing = false;
+  private pendingStarts = new Set<Promise<void>>();
   /** Poll cadence while a file-creation watcher waits for late Redis output. */
   private redisFallbackPollMs = 2000;
 
@@ -66,6 +85,14 @@ export class TaskWatcherManager {
    * Start watching a task's log for changes (file-based for Claude, Redis-based for agents that stream to Redis)
    */
   async startTaskWatcher(taskId: string): Promise<void> {
+    if (this.closing) return;
+    const starting = this.createTaskWatcher(taskId);
+    this.pendingStarts.add(starting);
+    try { await starting; } finally { this.pendingStarts.delete(starting); }
+  }
+
+  private async createTaskWatcher(taskId: string): Promise<void> {
+    if (this.closing) return;
     // Check if already watching
     const existing = this.taskWatchers.get(taskId);
     if (existing) {
@@ -93,7 +120,16 @@ export class TaskWatcherManager {
     // Get agent config to find the correct log path
     const agentConfig = await findAgentConfigForTask(taskId, this.deps?.db);
     const agentType = agentConfig?.type || 'claude';
-    const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
+    let agentRoot: string;
+    try {
+      agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
+    } catch (error) {
+      // An unmapped containerized default has no readable log root; never
+      // substitute the backend account's home directory.
+      console.log(`[TaskWatcher] Agent log root unavailable for task ${taskId} (${(error as Error).message}), using Redis watcher`);
+      await this.startRedisWatcher(taskId);
+      return;
+    }
 
     let conversationPath: string;
     if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe') {
@@ -135,6 +171,7 @@ export class TaskWatcherManager {
         return;
       }
 
+      if (this.closing) return;
       // Watch the directory for the file to be created
       // Use polling to avoid EMFILE errors when directory has many files
       const watcher = chokidar.watch(dirPath, {
@@ -174,6 +211,7 @@ export class TaskWatcherManager {
         watcher,
         sessionId,
         taskId,
+        conversationPath,
         lastSize: 0,
         subscriberCount: 1,
         lastSentEventCount: 0,
@@ -184,6 +222,11 @@ export class TaskWatcherManager {
       console.log(`[TaskWatcher] Started watching directory for Claude log creation for task ${taskId}`);
       return;
     }
+
+    // Read before acquiring a watcher, then recheck shutdown authority.
+    const stats = await fs.stat(conversationPath);
+    if (this.closing) return;
+    const initialSize = stats.size;
 
     // File exists - watch it directly for changes
     // Use polling to avoid EMFILE errors
@@ -198,10 +241,6 @@ export class TaskWatcherManager {
       }
     });
 
-    // Track initial file size
-    const stats = await fs.stat(conversationPath);
-    const initialSize = stats.size;
-
     watcher.on('change', async () => {
       // Debounce and send update
       await this.sendTaskLiveUpdate(taskId);
@@ -215,6 +254,7 @@ export class TaskWatcherManager {
       watcher,
       sessionId,
       taskId,
+      conversationPath,
       lastSize: initialSize,
       subscriberCount: 1,
       lastSentEventCount: 0,
@@ -240,6 +280,7 @@ export class TaskWatcherManager {
       clearInterval(existing.redisPollingInterval);
     }
 
+    if (this.closing) return;
     // Create a new watcher for the file itself
     // Use polling to avoid EMFILE errors
     const watcher = chokidar.watch(conversationPath, {
@@ -266,6 +307,7 @@ export class TaskWatcherManager {
       watcher,
       sessionId,
       taskId,
+      conversationPath,
       lastSize: 0,
       subscriberCount: existing.subscriberCount,
       lastSentEventCount: 0,
@@ -308,25 +350,17 @@ export class TaskWatcherManager {
    */
   async sendTaskLiveUpdate(taskId: string, isInitial = false): Promise<void> {
     const watcherInfo = this.taskWatchers.get(taskId);
-    if (!watcherInfo) return;
+    // Read the file the watcher resolved, never a path rebuilt from backend HOME.
+    const conversationPath = watcherInfo?.conversationPath;
+    if (!watcherInfo || !conversationPath) return;
 
     try {
-      const conversationPath = path.join(
-        os.homedir(),
-        '.claude',
-        'projects',
-        '-home-node-workspace',
-        `${watcherInfo.sessionId}.jsonl`
-      );
-
       const exists = await fs.pathExists(conversationPath);
       if (!exists) {
         return;
       }
 
       const result = await parseConversationFile(conversationPath);
-
-      // Determine which events to send
       const stableEvents = withStableLiveEventIds({
         taskId: this.normalizeTaskId(taskId),
         source: 'conversation',
@@ -335,29 +369,15 @@ export class TaskWatcherManager {
         executionNamespace: watcherInfo.sessionId,
       });
       let eventsToSend = stableEvents;
-
+      let omittedEventCount: number | undefined;
       if (isInitial) {
-        // Initial subscription: send full event history (already limited by parser)
-        console.log(`[TaskWatcher] Initial subscription for task ${taskId}: sending ${result.events.length} events`);
+        ({ events: eventsToSend, omittedEventCount } = selectLiveEvents(stableEvents));
+        console.log(`[TaskWatcher] Initial subscription for task ${taskId}: sending ${eventsToSend.length} of ${stableEvents.length} events`);
       } else {
-        // Incremental update: only send new events since last broadcast
-        const lastSentCount = watcherInfo.lastSentEventCount;
-        const totalCount = result.totalEventCount;
-
-        if (totalCount <= lastSentCount) {
-          // No new events to send (might be metadata-only update like todos)
-          // Still send update for todos/currentTask changes
-          eventsToSend = [];
-        } else {
-          // Calculate new events: we want events from lastSentCount to totalCount
-          // Since result.events might be limited, we need to be careful
-          const newEventCount = totalCount - lastSentCount;
-          eventsToSend = stableEvents.slice(-newEventCount);
-          console.log(`[TaskWatcher] Incremental update for task ${taskId}: sending ${eventsToSend.length} new events (${lastSentCount} -> ${totalCount})`);
-        }
+        // Only events past the last broadcast; the parser returns the whole conversation.
+        eventsToSend = stableEvents.slice(Math.min(watcherInfo.lastSentEventCount, stableEvents.length));
+        if (eventsToSend.length > 0) console.log(`[TaskWatcher] Incremental update for task ${taskId}: sending ${eventsToSend.length} new events`);
       }
-
-      // Update last sent count to current total
       watcherInfo.lastSentEventCount = result.totalEventCount;
 
       const payload: TaskLiveUpdatePayload = {
@@ -367,7 +387,8 @@ export class TaskWatcherManager {
         todos: result.todos,
         currentTask: result.currentTask,
         tokenUsage: result.tokenUsage,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        ...(omittedEventCount !== undefined ? { omittedEventCount } : {}),
       };
 
       // Emit directly to the room
@@ -430,6 +451,7 @@ export class TaskWatcherManager {
    * Start Redis-based watcher for agents that stream output to Redis
    */
   private async startRedisWatcher(taskId: string, subscriberCount = 1): Promise<void> {
+    if (this.closing) return;
     console.log(`[TaskWatcher] Starting Redis watcher for task ${taskId}`);
 
     // Poll Redis every 2 seconds for output changes
@@ -445,8 +467,7 @@ export class TaskWatcherManager {
       subscriberCount,
       lastSentEventCount: 0,
       watchingForCreation: false,
-      redisPollingInterval: interval,
-      lastRedisLength: 0
+      redisPollingInterval: interval
     });
 
     // Send initial update
@@ -457,65 +478,115 @@ export class TaskWatcherManager {
    * Send live update from Redis output
    */
   private async sendRedisLiveUpdate(taskId: string, isInitial = false): Promise<void> {
-    if (!this.deps) return;
-
     const watcherInfo = this.taskWatchers.get(taskId);
-    if (!watcherInfo) return;
+    if (!this.deps || !watcherInfo) return;
 
+    // Serialize polls: an awaited read must not feed bytes already consumed by another poll.
+    const run = (watcherInfo.liveReadPromise ?? Promise.resolve()).then(async () => {
+      if (this.taskWatchers.get(taskId) !== watcherInfo) return;
+      await this.publishRedisLiveUpdate(taskId, watcherInfo, isInitial);
+    });
+    watcherInfo.liveReadPromise = run;
+    await run;
+  }
+
+  private async publishRedisLiveUpdate(taskId: string, watcherInfo: TaskWatcherInfo, isInitial: boolean): Promise<void> {
     try {
-      const output = await this.deps.redisClient.get(`agent:output:${taskId}`);
-      if (!output) return;
-
-      // Check if content changed
-      if (!isInitial && output.length === watcherInfo.lastRedisLength) {
-        return; // No change
-      }
-      watcherInfo.lastRedisLength = output.length;
-
-      // Parse the output with the provider-aware projection (Claude's
-      // stream-json needs its own parser, every other agent uses the Redis one).
-      const executionStartTimestamp = await this.findExecutionStartTimestampForTask(taskId);
-      const result = parseAgentStreamOutput(output, { executionStartTimestamp });
-
-      // Determine which events to send
-      const stableEvents = withStableLiveEventIds({
-        taskId: this.normalizeTaskId(taskId),
-        source: 'redis',
-        events: result.events,
-        totalEventCount: result.totalEventCount,
-        executionNamespace: executionStartTimestamp ?? watcherInfo.sessionId,
-      });
-      let eventsToSend = stableEvents;
-      if (!isInitial) {
-        const lastSentCount = watcherInfo.lastSentEventCount;
-        const totalCount = result.totalEventCount;
-        if (totalCount > lastSentCount) {
-          const newEventCount = totalCount - lastSentCount;
-          eventsToSend = stableEvents.slice(-newEventCount);
-          console.log(`[TaskWatcher] Redis update for task ${taskId}: sending ${eventsToSend.length} new events`);
-        } else {
-          eventsToSend = [];
-        }
-      } else {
-        console.log(`[TaskWatcher] Initial Redis update for task ${taskId}: sending ${result.events.length} events`);
-      }
-
-      watcherInfo.lastSentEventCount = result.totalEventCount;
+      const update = await this.readRedisLiveEvents(taskId, watcherInfo, isInitial);
+      if (!update || this.taskWatchers.get(taskId) !== watcherInfo) return;
+      const { events, omittedEventCount, historyTruncated } = update;
+      const snapshot = update.projector.snapshot();
+      const liveOutputPosition = update.projector.position();
+      const snapshotSignature = JSON.stringify([snapshot.todos, snapshot.currentTask, snapshot.tokenUsage]);
+      if (events.length === 0 && omittedEventCount === undefined && snapshotSignature === watcherInfo.lastSnapshotSignature) return;
+      watcherInfo.lastSnapshotSignature = snapshotSignature;
+      // HTTP serves a finished task's persisted details; its live log must not replace them.
+      if (await this.servesPersistedDetails(taskId) || this.taskWatchers.get(taskId) !== watcherInfo) return;
 
       const payload: TaskLiveUpdatePayload = {
         eventType: TASK_LIVE_UPDATE,
         taskId,
-        events: eventsToSend,
-        todos: result.todos,
-        currentTask: result.currentTask,
-        tokenUsage: result.tokenUsage,
-        timestamp: new Date().toISOString()
+        events,
+        todos: snapshot.todos as TaskLiveUpdatePayload['todos'],
+        currentTask: snapshot.currentTask,
+        tokenUsage: snapshot.tokenUsage,
+        timestamp: new Date().toISOString(),
+        ...(omittedEventCount !== undefined ? { omittedEventCount } : {}),
+        ...(historyTruncated ? { historyTruncated } : {}),
+        ...(liveOutputPosition ? { liveOutputPosition } : {}),
       };
-
       this.io.to(`task:live:${taskId}`).emit(TASK_LIVE_UPDATE, payload);
     } catch (error) {
       console.error(`[TaskWatcher] Error sending Redis live update for task ${taskId}:`, error);
     }
+  }
+
+  /**
+   * Whether live-details reads of this finished task serve its persisted
+   * execution details (see completedExecutionDetails). The task's live log may
+   * then hold a coarser or different execution, so broadcasting it would
+   * replace the complete history clients read. Resolved for every update: a
+   * follow-up can start and finish another execution between polls, so an
+   * earlier answer says nothing about the execution this update belongs to.
+   */
+  private async servesPersistedDetails(taskId: string): Promise<boolean> {
+    if (!this.deps) return false;
+    const { redisClient, db } = this.deps;
+    const normalizedTaskId = this.normalizeTaskId(taskId);
+    if (await isLiveTask(redisClient, db, normalizedTaskId)) return false;
+    // Resolved as live-details reads resolve it, so both serve the same execution.
+    const sessionId = await findSessionId(redisClient, db, normalizedTaskId).catch(() => null);
+    return Boolean(sessionId && await completedExecutionDetails(redisClient, db, normalizedTaskId, sessionId));
+  }
+
+  /**
+   * Events to broadcast from the task's append-only live output. After the
+   * first read only output past the last read is fetched and parsed; a new
+   * execution, or output trimmed past what was read, starts over from the top
+   * and is sent as full state (with `omittedEventCount`, and `historyTruncated`
+   * once output of the execution was discarded). Legacy replacement
+   * writers are compared and projected as complete snapshots on every change.
+   */
+  private async readRedisLiveEvents(
+    taskId: string,
+    watcherInfo: TaskWatcherInfo,
+    isInitial: boolean,
+  ): Promise<{ events: TaskLiveUpdatePayload['events']; omittedEventCount?: number; historyTruncated?: boolean; projector: LiveOutputProjector } | null> {
+    const redis = this.deps!.redisClient as unknown as LiveOutputRedis;
+    const projector = isInitial ? undefined : watcherInfo.liveProjector;
+    const read = await readLiveOutput(redis, taskId, projector?.offset ?? 0);
+    if (this.taskWatchers.get(taskId) !== watcherInfo) return null;
+    if (!read) return null;
+    if (!isInitial && read.epoch === 'legacy' && read.text === watcherInfo.lastLegacySnapshot) return null;
+    if (projector && canContinueProjection(projector, read)) {
+      return this.continueRedisProjection(taskId, watcherInfo, projector, read);
+    }
+    const executionStart = await this.findExecutionStartTimestampForTask(taskId);
+    if (this.taskWatchers.get(taskId) !== watcherInfo) return null;
+    // Incremental reads that need resync may begin after the retained prefix.
+    const fullRead = read.epoch === 'legacy' || read.from === read.base ? read : await readLiveOutput(redis, taskId);
+    if (!fullRead || this.taskWatchers.get(taskId) !== watcherInfo) return null;
+    // Metadata-free output repeats epoch `legacy` in every execution; scope its IDs as HTTP reads do.
+    const legacyExecution = fullRead.epoch === 'legacy' && this.deps
+      ? await findLatestExecutionStartForTask(this.deps, this.normalizeTaskId(taskId))
+      : null;
+    if (this.taskWatchers.get(taskId) !== watcherInfo) return null;
+    const full = projectLiveOutputRead(fullRead, taskId, executionStart, { legacyExecution });
+    watcherInfo.lastLegacySnapshot = fullRead.epoch === 'legacy' ? fullRead.text : undefined;
+    watcherInfo.liveProjector = full.projector;
+    console.log(`[TaskWatcher] Full Redis update for task ${taskId}: sending ${full.events.length} events (${full.omittedEventCount} raw events omitted, earlier output discarded: ${full.truncated})`);
+    return { events: full.events, omittedEventCount: full.omittedEventCount, historyTruncated: full.truncated, projector: full.projector };
+  }
+
+
+  private continueRedisProjection(taskId: string, watcherInfo: TaskWatcherInfo, projector: LiveOutputProjector, read: LiveOutputRead) {
+    const events = projector.feed(read.text, read.from);
+    const pending = projector.pending();
+    const pendingSignature = pending ? `${pending.id}:${String((pending as { content?: unknown }).content ?? '').length}` : '';
+    if (pending && pendingSignature !== watcherInfo.lastPendingSignature) events.push(pending);
+    watcherInfo.lastPendingSignature = pendingSignature;
+    if (events.length > 0) console.log(`[TaskWatcher] Redis update for task ${taskId}: sending ${events.length} new events`);
+    return { events, projector };
   }
 
 
@@ -589,15 +660,16 @@ export class TaskWatcherManager {
    * Close all task watchers
    */
   async closeAll(): Promise<void> {
+    this.closing = true;
+    await Promise.allSettled([...this.pendingStarts]);
+    const errors: unknown[] = [];
     for (const [taskId, watcher] of this.taskWatchers) {
-      if (watcher.watcher) {
-        await watcher.watcher.close();
-      }
-      if (watcher.redisPollingInterval) {
-        clearInterval(watcher.redisPollingInterval);
-      }
-      console.log(`[TaskWatcher] Closed watcher for task ${taskId}`);
+      if (watcher.redisPollingInterval) clearInterval(watcher.redisPollingInterval);
+      try {
+        await watcher.watcher?.close();
+        this.taskWatchers.delete(taskId);
+      } catch (error) { errors.push(error); }
     }
-    this.taskWatchers.clear();
+    if (errors.length) throw new AggregateError(errors, 'Task watcher shutdown failed');
   }
 }

@@ -1,8 +1,9 @@
 import React from 'react';
-import { CheckCircle, XCircle, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
+import { CheckCircle, XCircle, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { getWorkTypeLabel } from './llmLogsUtils';
+import { ListSkeleton } from '../components/ui/Skeleton';
 
 // Status icon component
 export const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
@@ -13,7 +14,7 @@ export const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
 };
 
 export const LlmLogsBlockingState: React.FC<{ error?: string }> = ({ error }) => (
-  <div className="flex flex-col h-full">
+  <div className="flex flex-col h-full bg-white">
     <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
       <h1 className="text-2xl font-bold text-gray-800">LLM Log</h1>
     </div>
@@ -21,9 +22,7 @@ export const LlmLogsBlockingState: React.FC<{ error?: string }> = ({ error }) =>
       {error ? (
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
       ) : (
-        <div role="status" className="flex items-center gap-2 text-gray-500">
-          <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading logs...
-        </div>
+        <ListSkeleton rows={10} layout="table" columns={8} label="Loading logs…" data-testid="llm-logs-skeleton" />
       )}
     </div>
   </div>

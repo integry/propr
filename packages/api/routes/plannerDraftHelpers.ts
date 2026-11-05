@@ -5,7 +5,10 @@
 interface IssueSummary {
   total: number;
   pending: number;
+  /** Issues with an agent queued or working: initial implementation or follow-up refinement. */
   processing: number;
+  /** Issues whose PR is open and waiting for review, with no agent working on it. */
+  in_review: number;
   merged: number;
   closed: number;
 }
@@ -20,7 +23,7 @@ export function buildIssueSummaryMap(
 
   for (const issue of issues) {
     if (!summaryMap[issue.draft_id]) {
-      summaryMap[issue.draft_id] = { total: 0, pending: 0, processing: 0, merged: 0, closed: 0 };
+      summaryMap[issue.draft_id] = { total: 0, pending: 0, processing: 0, in_review: 0, merged: 0, closed: 0 };
     }
     summaryMap[issue.draft_id].total++;
 
@@ -28,11 +31,12 @@ export function buildIssueSummaryMap(
       summaryMap[issue.draft_id].pending++;
     } else if (
       issue.status === 'processing' ||
-      issue.status === 'under_review' ||
       issue.status === 'in_refinement' ||
       issue.status === 'refinement_processing'
     ) {
       summaryMap[issue.draft_id].processing++;
+    } else if (issue.status === 'under_review') {
+      summaryMap[issue.draft_id].in_review++;
     } else if (issue.status === 'merged') {
       summaryMap[issue.draft_id].merged++;
     } else if (issue.status === 'closed') {

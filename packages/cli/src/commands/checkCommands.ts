@@ -6,6 +6,8 @@
  * are present. It is also what bare `propr` runs.
  */
 
+import { localSetupSearchPath } from "../utils/localSetupPlatform.js";
+import { checkGithubApp, githubAppCheckFailure } from "./githubAppApi.js";
 import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
@@ -27,7 +29,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
+import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -82,6 +84,38 @@ function agentDescriptors(): AgentDescriptor[] {
   ];
 }
 
+/**
+ * Claude Code's `.claude.json` (next to HOST_CLAUDE_DIR, or HOST_CLAUDE_JSON).
+ * The launcher mounts it read-only and each agent run works on a private copy;
+ * without it, runs start from a minimal config instead of the host login's.
+ */
+export function claudeConfigCheck(
+  cfg: Pick<OrchestratorConfig, "hostClaudeDir" | "hostClaudeJson" | "hostClaudeJsonExplicit">
+): CheckResult | undefined {
+  const name = "Agent config: claude (.claude.json)";
+  if (cfg.hostClaudeJson && existsSync(cfg.hostClaudeJson)) {
+    return { name, status: "ok", detail: `${cfg.hostClaudeJson} mounted read-only; each Claude run gets a private copy`, group: "Agents" };
+  }
+  if (cfg.hostClaudeJson && cfg.hostClaudeJsonExplicit) {
+    return {
+      name,
+      status: "fail",
+      detail: `HOST_CLAUDE_JSON (${cfg.hostClaudeJson}) not found — the worker cannot start with this mount`,
+      group: "Agents",
+      fix: "Point HOST_CLAUDE_JSON at the .claude.json written by `claude` on this host, or remove it from .env.",
+    };
+  }
+  if (!cfg.hostClaudeDir) return undefined;
+  const expected = cfg.hostClaudeJson ?? `${cfg.hostClaudeDir.replace(/\/+$/, "")}.json`;
+  return {
+    name,
+    status: "warn",
+    detail: `${expected} not found — not mounted; Claude runs start from a minimal config`,
+    group: "Agents",
+    fix: `Run \`claude\` once on this host to create ${expected}, or set HOST_CLAUDE_JSON to its path in .env, then restart ProPR.`,
+  };
+}
+
 export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
@@ -120,6 +154,7 @@ const ANSI = {
 };
 
 export interface RunChecksOptions {
+  signal?: AbortSignal;
   root?: string;
   verify?: boolean;
   agents?: string[];
@@ -207,6 +242,38 @@ export function configurationErrorCheck(error: string): CheckResult {
 }
 
 /** Run all checks and return the structured outcome (no printing). */
+/**
+ * Go template errors from `docker info --format {{.OSType}}` on CLIs whose
+ * info document lacks that field (for example podman-docker). A daemon that is
+ * merely unreachable does not produce a template error.
+ */
+export function isDockerInfoTemplateError(stderr: string | undefined): boolean {
+  const text = (stderr ?? "").trim();
+  if (!text) return false;
+  return /\btemplate\b|can't evaluate field|cannot evaluate field|executing "[^"]*" at <\.OSType>/i.test(text);
+}
+
+/**
+ * Bound a Docker failure to its first meaningful line, without the user's
+ * home path. Docker Desktop embeds the socket under HOME in its connection
+ * errors and diagnostics elsewhere in the project avoid leaking paths.
+ */
+export function summarizeDockerFailure(stderr: string | undefined, home: string = homedir()): string {
+  const line = (stderr ?? "")
+    .split(/\r?\n/)
+    .map(entry => entry.replace(/[\u0000-\u001f\u007f]/g, " ").trim())
+    .find(entry => entry.length > 0);
+  if (!line) return "";
+  let summary = line;
+  if (home && home !== "/") {
+    const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    summary = summary.replace(new RegExp(escaped, "g"), "~");
+  }
+  const limit = 200;
+  if (summary.length > limit) summary = `${summary.slice(0, limit - 1)}…`;
+  return `: ${summary}`;
+}
+
 export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksOutcome> {
   const results: CheckResult[] = [];
   // Record a finalized result and notify any live presenter immediately.
@@ -221,39 +288,78 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   runCliChecks(emit);
 
   // 1. Docker installed
-  const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
+  const orch = await loadOrchestrator();
+  const dockerVersion = await orch.dockerAsync(["--version"], { timeout: 10_000, signal: options.signal });
   if (dockerVersion.status === 0) {
-    emit({ name: "Docker installed", status: "ok", detail: dockerVersion.stdout.trim(), group: "Docker" });
+    emit({ name: "Docker installed", status: "ok", detail: (dockerVersion.stdout ?? "").trim(), group: "Docker" });
   } else {
     emit({
       name: "Docker installed",
       status: "fail",
       detail: "`docker` command not found",
       group: "Docker",
-      fix: "Install Docker: https://docs.docker.com/get-docker/",
+      fix: process.platform === "darwin"
+        ? "Install Docker Desktop in /Applications, then open it and retry. Setup does not install it for you."
+        : "Install Docker: https://docs.docker.com/get-docker/",
     });
   }
 
-  const { orch, cfg, rootDir } = await getHostConfig({ configManager, root: options.root });
-
   // 2. Docker daemon running
-  const daemonUp = orch.dockerAvailable();
+  const daemon = dockerVersion.status === 0
+    ? await orch.dockerAsync(["info", "--format", "{{.OSType}}"], { timeout: 10_000, signal: options.signal })
+    : undefined;
+  let daemonUp = daemon?.status === 0 && daemon.stdout?.trim() === "linux";
+  let engineOsTypeUnreported = false;
+  if (daemon && daemon.status !== 0 && process.platform !== "darwin" && isDockerInfoTemplateError(daemon.stderr)) {
+    // Docker-compatible front-ends such as podman-docker reject the OSType
+    // template but still answer plain `docker info`. Linux previously accepted
+    // them, so keep that behavior; macOS requires Docker Desktop and stays strict.
+    const plain = await orch.dockerAsync(["info"], { timeout: 10_000, signal: options.signal });
+    if (plain.status === 0) {
+      daemonUp = true;
+      engineOsTypeUnreported = true;
+    }
+  }
   emit(
     daemonUp
-      ? { name: "Docker daemon", status: "ok", detail: "daemon is reachable", group: "Docker" }
+      ? {
+          name: "Docker daemon",
+          status: "ok",
+          detail: engineOsTypeUnreported
+            ? "daemon is reachable (this Docker-compatible CLI does not report the engine OS type; Linux containers assumed)"
+            : "daemon is reachable",
+          group: "Docker",
+        }
       : {
           name: "Docker daemon",
           status: "fail",
-          detail: "cannot reach the Docker daemon (`docker info` failed)",
+          detail: daemon?.status === 0
+            ? "Docker must be running Linux containers"
+            : `cannot reach the Docker daemon (docker info failed)${summarizeDockerFailure(daemon?.stderr)}`,
           group: "Docker",
-          fix: "Start Docker (e.g. `sudo systemctl start docker`) and ensure your user can access it.",
-          remediation: { kind: "start-docker" },
+          fix: process.platform === "darwin"
+            ? "Open Docker Desktop, wait for the engine to start, and retry. Check the selected Docker context if it still fails."
+            : "Start Docker (e.g. `sudo systemctl start docker`) and ensure your user can access it.",
+          ...(process.platform === "darwin" ? {} : { remediation: { kind: "start-docker" as const } }),
         }
   );
 
+  if (process.platform === "darwin" && daemonUp) {
+    // Local bind sources cannot be handed to a remote engine. Respect Docker's
+    // context-over-host precedence without reading/copying its credentials.
+    const context = !process.env.DOCKER_CONTEXT && process.env.DOCKER_HOST
+      ? { status: 0, stdout: process.env.DOCKER_HOST }
+      : await orch.dockerAsync(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { timeout: 10_000, signal: options.signal });
+    const local = context.status === 0 && /^unix:\/\/\/[^\0\r\n]+$/.test((context.stdout ?? "").trim());
+    emit({ name: "Docker local endpoint", status: local ? "ok" : "fail", group: "Docker",
+      detail: local ? "local Docker endpoint verified" : "Guided macOS setup requires a local Docker Desktop engine for host bind mounts.",
+      ...(!local ? { fix: "Select the Docker Desktop context yourself, then retry. Setup does not change Docker contexts." } : {}),
+    });
+  }
+
   // 3. Docker socket (informational — only relevant for the default socket setup)
   const socketPath = "/var/run/docker.sock";
-  if (existsSync(socketPath)) {
+  if (process.platform !== "darwin" && existsSync(socketPath)) {
     let accessible = true;
     try {
       accessSync(socketPath, fsConstants.R_OK | fsConstants.W_OK);
@@ -272,6 +378,8 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
           }
     );
   }
+
+  const { cfg, rootDir } = await getHostConfig({ configManager, root: options.root });
 
   // 4. Stack root + .env
   const envPath = join(rootDir, ".env");
@@ -315,7 +423,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const computeImageResult = async (key: string, tag: string): Promise<CheckResult> => {
       // Presence-only for third-party images and when remote checks are skipped.
       if (skipRemoteImageCheck || !isProprPublished(tag)) {
-        if (!imagePresent(orch, tag)) return missingImageResult(key, tag);
+        if (!localImagePresent(orch, tag)) return missingImageResult(key, tag);
         const detail = skipRemoteImageCheck ? `${tag} (local; remote check skipped)` : `${tag} (present)`;
         return { name: `Image ${key}`, status: "ok", detail, group: "Images" };
       }
@@ -403,6 +511,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     }
   }
 
+  const claudeConfig = claudeConfigCheck(cfg);
+  if (claudeConfig) emit(claudeConfig);
+
   // 6b. Agent Tank (optional subscription-usage monitor). Presence only — the
   // actual usage refresh (slow PTY /usage calls) runs in `propr check agents`.
   if (spawnSync("which", ["agent-tank"], { encoding: "utf-8" }).status === 0) {
@@ -413,7 +524,28 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
-  for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
+  const githubAuth = resolveGithubAuthForCheck(fileEnv);
+  const githubAuthChecks = checkGithubAuth(fileEnv, cfg, githubAuth);
+  for (const r of githubAuthChecks) emit(r);
+  if (options.verify && githubAuth.mode === "app") {
+    if (!cfg.hostGhPrivateKey) {
+      emit({
+        name: "GitHub App API",
+        status: "warn",
+        detail: "verification skipped — no host-readable private key path is configured",
+        group: "GitHub",
+        fix: "Set HOST_GH_PRIVATE_KEY to the host path of the App's .pem file; GH_PRIVATE_KEY_PATH is resolved inside the app containers.",
+      });
+    } else if (!githubAuthChecks.some(r => r.status === "fail")) {
+      try {
+        const checks = await checkGithubApp(process.env.GH_APP_ID ?? fileEnv.GH_APP_ID,
+          process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID, readFileSync(cfg.hostGhPrivateKey, "utf8"));
+        for (const r of checks) emit({ ...r, group: "GitHub" });
+      } catch (error) {
+        emit({ ...githubAppCheckFailure(error), group: "GitHub" });
+      }
+    }
+  }
 
   // 7b. Mode-specific GitHub intake prerequisites (the resolved intake mode
   // needs the right credentials before the daemon/API can serve it).
@@ -472,7 +604,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       if (verifiedCliKeys.has(cliKey)) continue;
       verifiedCliKeys.add(cliKey);
       const tag = cfg.images[agent.imageKey];
-      if (!tag || !imagePresent(orch, tag)) {
+      if (!tag || !localImagePresent(orch, tag)) {
         emit({
           name: `Verify: ${agent.type}`,
           status: "warn",
@@ -481,7 +613,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         });
         continue;
       }
-      const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", "-e", `PROPR_AGENT_TYPE=${runtimeType}`, tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
+      const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", "-e", `PROPR_AGENT_TYPE=${runtimeType}`, tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000, env: { ...process.env, PATH: localSetupSearchPath() } });
       if (run.status === 0) {
         emit({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})`, group: "Agents" });
       } else {
@@ -497,11 +629,6 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   const anyFail = results.some((r) => r.status === "fail");
   return { results, cfg, rootDir, anyFail };
-}
-
-function imagePresent(orch: OrchestratorModule, tag: string): boolean {
-  const res = orch.docker(["images", "-q", tag], { capture: true });
-  return res.stdout.trim().length > 0;
 }
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
@@ -523,6 +650,19 @@ function isPlaceholder(value: string | undefined): boolean {
 const RELAY_URL_KEY = "PROPR_GH_RELAY_URL";
 const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 
+function resolveGithubAuthForCheck(env: Record<string, string>): ReturnType<typeof resolveGithubAuthMode> {
+  const val = (key: string): string | undefined => process.env[key] ?? env[key];
+  return resolveGithubAuthMode({
+    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+    ghAuthMode: val("GH_AUTH_MODE"),
+    relayUrl: val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL,
+    relayToken: val(RELAY_TOKEN_KEY),
+    appId: val("GH_APP_ID"),
+    privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
+    installationId: val("GH_INSTALLATION_ID"),
+  });
+}
+
 /**
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
@@ -531,7 +671,11 @@ const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
  * The mode itself comes from @propr/shared's resolveGithubAuthMode — the same
  * function the backend uses — so this check cannot drift from boot behavior.
  */
-function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): CheckResult[] {
+function checkGithubAuth(
+  env: Record<string, string>,
+  cfg: OrchestratorConfig,
+  resolved: ReturnType<typeof resolveGithubAuthMode>,
+): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
@@ -540,15 +684,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   // mode here, so `propr check` cannot drift from boot behavior.
   const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
   const relayToken = val(RELAY_TOKEN_KEY);
-  const { mode, warnings } = resolveGithubAuthMode({
-    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
-    ghAuthMode: val("GH_AUTH_MODE"),
-    relayUrl,
-    relayToken,
-    appId: val("GH_APP_ID"),
-    privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
-    installationId: val("GH_INSTALLATION_ID"),
-  });
+  const { mode, warnings } = resolved;
   for (const warning of warnings) {
     out.push({ name: "GitHub auth", status: "warn", detail: warning, group: "GitHub" });
   }
@@ -679,7 +815,7 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
       relayUrl,
       relayToken: val(RELAY_TOKEN_KEY),
       appId: val("GH_APP_ID"),
-      privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+      privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
       installationId: val("GH_INSTALLATION_ID"),
     }));
   } catch (error) {
@@ -1403,7 +1539,7 @@ export function createCheckCommand(
     .description("Verify the host is ready to run a local ProPR stack")
     .argument("[mode]", "what to check: system (default) | agents | all", "system")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
-    .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
+    .option("--verify", "Also verify GitHub App access and run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to validate (default: configured stack agents)")
     .option("--skip-remote-image-check", "Skip registry image freshness checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")

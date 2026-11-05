@@ -31,7 +31,8 @@ const goal = {
   elapsedMs: 120_000, activeMs: 120_000, pausedMs: 0,
 };
 
-async function fixture(page: Page) {
+async function fixture(page: Page, terminal = false) {
+  const displayedGoal = terminal ? { ...goal, resultState: 'failed', failureReason: 'Provider connection was interrupted', completedAt: timestamp, taskState: 'failed' } : goal;
   let image: Buffer | undefined;
   let showPreviews = false;
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
@@ -40,12 +41,12 @@ async function fixture(page: Page) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     const responses: Record<string, unknown> = {
-      '/api/auth/demo-mode': { demoMode: true },
+      '/api/auth/demo-mode': { demoMode: !terminal },
       '/api/instance/catalog': { agents: [], repositories: [{ name: 'acme/web', enabled: true }] },
-      '/api/goals/capabilities': { agents: [] },
-      '/api/goals': { goals: [goal] },
+      '/api/goals/capabilities': { agents: terminal ? [{ agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true, models: ['gpt-5.6-sol', 'gpt-5.6-luna'], defaultModel: 'gpt-5.6-sol', controls: { modelAtBoundary: true } }] : [] },
+      '/api/goals': { goals: [displayedGoal] },
       '/api/tasks': { tasks: [], total: 0 },
-      [`/api/goals/${goalId}`]: { goal },
+      [`/api/goals/${goalId}`]: { goal: displayedGoal },
       [`/api/goals/${goalId}/previews`]: { previews: showPreviews ? previews : [] },
       '/api/task/goal-task-1/live-details': { events: [], todos: [], currentTask: null },
       '/api/notifications/unread-count': { unreadCount: 0 },
@@ -132,3 +133,15 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await expect(page.getByRole('dialog')).toBeHidden();
   });
 }
+
+test('finished goal selects a model before continuation', async ({ page }) => {
+  await fixture(page, true);
+  await page.goto(`/goals/${goalId}`);
+  const selector = page.getByLabel('Model for next continuation');
+  await expect(selector).toBeVisible();
+  await selector.selectOption('gpt-5.6-luna');
+  await expect(selector.locator('option:checked')).toHaveText(/Luna/);
+  await page.getByLabel('Instructions for the continued goal').fill('Resume the dashboard work and verify the filters.');
+  await selector.scrollIntoViewIfNeeded();
+  await capture(page, 'goal-continue-model');
+});

@@ -179,6 +179,35 @@ export interface MonitoredRepo {
   notificationsEnabled?: boolean;
 
   /**
+   * Repository-wide override of the instance merge-conflict auto-resolve
+   * default. Omitted or null means the repository inherits the instance value.
+   */
+  autoResolveMergeConflicts?: boolean | null;
+
+  /**
+   * Whether the repository's GitHub pull request template is appended to PR
+   * descriptions when it has no .propr/pr-template.md. Omission reads as enabled.
+   */
+  githubPrTemplateFallback?: boolean;
+
+  /**
+   * Whether ProPR pull requests are assigned automatically. Omitted by older
+   * servers; treat omission as disabled.
+   */
+  autoAssignPullRequests?: boolean;
+
+  /**
+   * GitHub login assigned instead of the issue author; null or omitted means
+   * the issue author is assigned.
+   */
+  autoAssignDefaultAssignee?: string | null;
+
+  /**
+   * Whether a GitHub review is requested from the assigned user. Omission reads as disabled.
+   */
+  autoAssignRequestReview?: boolean;
+
+  /**
    * Visual evidence generated for changes with a user-visible result.
    */
   visualPreview?: VisualPreviewSettings;
@@ -242,6 +271,21 @@ export interface AddRepoOptions {
    */
   notificationsEnabled?: boolean;
 
+  /**
+   * Merge-conflict auto-resolve override. Omitted keeps the repository's stored
+   * override; null clears it so the repository inherits the instance default.
+   */
+  autoResolveMergeConflicts?: boolean | null;
+
+  /** Automatic pull request assignment. Omitted keeps the stored repository-wide value (off by default). */
+  autoAssignPullRequests?: boolean;
+
+  /** Login assigned instead of the issue author. Omitted keeps the stored value; null assigns the issue author. */
+  autoAssignDefaultAssignee?: string | null;
+
+  /** Request a GitHub review from the assigned user. Omitted keeps the stored value (off by default). */
+  autoAssignRequestReview?: boolean;
+
   /** Visual preview policy. Defaults to disabled with image capture selected. */
   visualPreview?: VisualPreviewSettings;
 }
@@ -272,6 +316,21 @@ export interface UpdateRepoOptions {
 
   /** Optional repository-wide notification state. */
   notificationsEnabled?: boolean;
+
+  /** Optional repository-wide merge-conflict auto-resolve override; null inherits the instance default. */
+  autoResolveMergeConflicts?: boolean | null;
+
+  /** Optional repository-wide GitHub pull request template fallback state. */
+  githubPrTemplateFallback?: boolean;
+
+  /** Automatic pull request assignment. Omitted keeps the stored repository-wide value (off by default). */
+  autoAssignPullRequests?: boolean;
+
+  /** Login assigned instead of the issue author. Omitted keeps the stored value; null assigns the issue author. */
+  autoAssignDefaultAssignee?: string | null;
+
+  /** Request a GitHub review from the assigned user. Omitted keeps the stored value (off by default). */
+  autoAssignRequestReview?: boolean;
 
   /** Optional visual preview policy update. */
   visualPreview?: Omit<Partial<VisualPreviewSettings>, 'instructions'> & { instructions?: string | null };
@@ -361,6 +420,12 @@ export async function addRepo(
     autoFollowupOnFailedCi: options.autoFollowupOnFailedCi ?? false,
     // Omitted so the server inherits the repository-wide value (enabled for new repositories).
     ...(options.notificationsEnabled !== undefined && { notificationsEnabled: options.notificationsEnabled }),
+    // Omitted keeps the stored repository-wide override; explicit null clears it (inherit the instance default).
+    ...(options.autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts: options.autoResolveMergeConflicts }),
+    // Omitted keeps the stored repository-wide value; the server applies an explicit value to every branch entry.
+    ...(options.autoAssignPullRequests !== undefined && { autoAssignPullRequests: options.autoAssignPullRequests }),
+    ...(options.autoAssignDefaultAssignee !== undefined && { autoAssignDefaultAssignee: options.autoAssignDefaultAssignee }),
+    ...(options.autoAssignRequestReview !== undefined && { autoAssignRequestReview: options.autoAssignRequestReview }),
     visualPreview: options.visualPreview ?? { enabled: false, types: ['image'] },
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,
@@ -425,6 +490,12 @@ export async function updateRepo(
     ...(updates.enabled !== undefined && { enabled: updates.enabled }),
     ...(updates.autoFollowupOnFailedCi !== undefined && { autoFollowupOnFailedCi: updates.autoFollowupOnFailedCi }),
     ...(updates.notificationsEnabled !== undefined && { notificationsEnabled: updates.notificationsEnabled }),
+    // The server applies the change to every branch entry of the repository; null clears it.
+    ...(updates.autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts: updates.autoResolveMergeConflicts }),
+    // Omitted keeps the stored repository-wide value; the server applies an explicit value to every branch entry.
+    ...(updates.autoAssignPullRequests !== undefined && { autoAssignPullRequests: updates.autoAssignPullRequests }),
+    ...(updates.autoAssignDefaultAssignee !== undefined && { autoAssignDefaultAssignee: updates.autoAssignDefaultAssignee }),
+    ...(updates.autoAssignRequestReview !== undefined && { autoAssignRequestReview: updates.autoAssignRequestReview }),
     ...(updates.visualPreview !== undefined && {
       visualPreview: {
         ...((updates.visualPreview.githubAttachmentPlan ?? existingRepo.visualPreview?.githubAttachmentPlan) !== undefined
@@ -438,9 +509,16 @@ export async function updateRepo(
     ...(updates.baseBranch !== undefined && { baseBranch: updates.baseBranch?.trim() || undefined }),
   };
 
-  // Replace in list
-  const updatedRepos = [...currentRepos.repos_to_monitor];
-  updatedRepos[repoIndex] = updatedRepo;
+  // Replace in list. The template fallback is repository-wide, so every branch entry follows it.
+  const updatedRepos = currentRepos.repos_to_monitor.map((repo) =>
+    updates.githubPrTemplateFallback !== undefined && repo.name.toLowerCase() === fullName.toLowerCase()
+      ? { ...repo, githubPrTemplateFallback: updates.githubPrTemplateFallback }
+      : repo
+  );
+  updatedRepos[repoIndex] = {
+    ...updatedRepo,
+    ...(updates.githubPrTemplateFallback !== undefined && { githubPrTemplateFallback: updates.githubPrTemplateFallback }),
+  };
 
   const response = await apiClient.post<RepoConfigResponse>("/api/config/repos", {
     body: { repos_to_monitor: updatedRepos },

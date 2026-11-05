@@ -1,16 +1,30 @@
 import assert from 'node:assert/strict';
-import { after, mock, test } from 'node:test';
-import { executePreparedGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
+import { after, before, mock, test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ensureGoalWorktree, executePreparedGoal, finalizeGoal, processGoalJob, prepareGoalCheckout } from '../src/jobs/processGoalJob.ts';
+import { GoalWorktreeLostError, restoreMissingGoalWorktree } from '../src/jobs/goalContinuation.ts';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 import { assertProviderIdentityMatches } from '../src/jobs/goalAttemptState.ts';
 import { labelCompletedGoalPullRequest } from '../src/jobs/goalPullRequestLabel.ts';
 
+// Goal attempts read the instance network policy, which fails closed without its table.
+before(async () => {
+  const { runMigrations } = await import('../packages/core/src/db/connection.ts');
+  await runMigrations();
+});
+
 after(async () => {
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
   const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
+  const { closeEventPublisher } = await import('../packages/core/src/utils/eventPublisher.ts');
   await closeStateManager();
   await closeConnection();
+  // Goal transitions now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
 });
 
 test('processGoalJob fails provider success without the exact open draft PR', async () => {
@@ -75,7 +89,7 @@ test('whole-session direct goals publish an agent declaration and continue after
     active_turn_id: null, pause_confirmed_at: null, resume_requested: false,
     started_at: new Date().toISOString(), paused_at: null, control_generation: 0, control_ack_generation: 0,
   };
-  const wholeSessionGoal = { ...goal, agent_type: 'antigravity' };
+  const wholeSessionGoal = { ...goal, agent_type: 'opencode' };
   const published: Array<{ kind: string; message?: string; include?: string[]; exclude?: string[] }> = [];
   let continuedAfterCheckpoint = false;
   const dependencies = {
@@ -124,7 +138,7 @@ test('whole-session direct goals record a malformed declaration and continue for
   const goal = {
     goal_id: data.goalId, owner_id: 'owner-1', repository: 'acme/repo', objective: 'Ship it',
     launch_strategy: 'direct', initial_prompt: '/goal Ship it', base_branch: 'main', branch_name: 'goal/ship-it',
-    worktree_path: '/tmp/worktree', agent_id: 'agent-1', agent_alias: 'antigravity', agent_type: 'antigravity',
+    worktree_path: '/tmp/worktree', agent_id: 'agent-1', agent_alias: 'opencode', agent_type: 'opencode',
     requested_model: 'claude-opus', desired_state: 'running', result_state: null,
     current_task_id: data.taskId, session_id: 'session-1', conversation_id: null,
     run_generation: data.generation, run_claim: data.claimId, claimed_at: new Date().toISOString(),
@@ -305,7 +319,7 @@ test('fresh whole-session providers receive the durable context with the first p
   };
   const goal = {
     goal_id: data.goalId, initial_prompt: initialPrompt, session_id: null, conversation_id: null,
-    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'antigravity',
+    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'opencode',
   };
   const prepared = {
     goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' },
@@ -378,3 +392,178 @@ test('resumed providers cannot replace the persisted session or conversation ide
     /instead of persisted conversation/,
   );
 });
+
+
+test('direct completion publishes committed terminal state and final PR before backing task settlement', async () => {
+  const { db, getEventPublisher } = await import('@propr/core');
+  const data: GoalJobData = { goalId: 'goal-publication', taskId: 'goal-task-publication',
+    repoOwner: 'acme', repoName: 'repo', generation: 1, claimId: 'claim-publication' };
+  const goal = { goal_id: data.goalId, owner_id: 'owner', owner_login: 'operator', repository: 'acme/repo',
+    objective: 'Add four lines of Markdown', launch_strategy: 'direct', initial_prompt: 'Add four lines of Markdown',
+    agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'gpt-6-astra',
+    desired_state: 'running', result_state: null, current_task_id: data.taskId,
+    run_generation: 1, run_claim: data.claimId, branch_name: 'goal/four-lines', base_branch: 'main' };
+  await db('goals').insert(goal);
+  const reads: Array<{ result_state: string; final_pr_number: number; completed_at: string }> = [];
+  const publication = mock.method(getEventPublisher(), 'publishGoalUpdate', async () => {
+    // Read at publication, not after the worker returns: reproduces the console's earliest read.
+    reads.push(await db('goals').where({ goal_id: data.goalId }).first());
+    return true;
+  });
+  const load = () => db('goals').where({ goal_id: data.goalId }).first();
+  let settled = false;
+  try {
+    assert.equal(await finalizeGoal({ ...data, claimId: 'obsolete' }, 'completed'), false);
+    assert.equal(reads.length, 0, 'fenced workers must not publish');
+    const outcome = await processGoalJob({ data } as never, {
+      claim: load,
+      withHeartbeat: async (_job: unknown, operation: () => Promise<unknown>) => operation(),
+      prepare: async () => ({ ready: true, value: { goal, agent: {}, githubToken: '',
+        worktree: { worktreePath: '/tmp/test-goal', branchName: goal.branch_name }, pendingInput: null } }),
+      execute: async () => ({ success: true, modelUsed: 'gpt-6-astra', executionTimeMs: 66_000,
+        logs: '', modifiedFiles: ['notes.md'], summary: 'Added the requested four lines.' }),
+      result: {
+        loadGoal: load, fencedGoal: load, acknowledgeInput: async () => {}, recordMetrics: async () => {},
+        handleStopped: async () => null, scheduleFurtherWork: async () => null,
+        publishCheckpoint: async () => {},
+        saveProviderResult: async () => {
+          await db('goals').where({ goal_id: data.goalId }).update({ final_pr_number: 8,
+            final_pr_url: 'https://github.com/acme/repo/pull/8' });
+          return { finalPr: { number: 8, url: 'https://github.com/acme/repo/pull/8' } };
+        },
+        finalizeGoal, updatePullRequestDescription: async () => {}, labelPullRequest: async () => {},
+        stateManager: () => ({ markTaskCompleted: async () => {
+          assert.equal(reads.length, 1);
+          assert.equal((await load()).result_state, 'completed');
+          settled = true;
+          return { state: 'completed' };
+        } }),
+        markTaskReconciled: async () => { assert.equal(settled, true); },
+      },
+    } as never);
+    assert.equal(outcome.status, 'complete');
+    assert.equal(settled, true);
+    assert.equal(reads.length, 1);
+    assert.equal(reads[0].result_state, 'completed');
+    assert.equal(reads[0].final_pr_number, 8);
+    assert.ok(reads[0].completed_at);
+    assert.equal(await finalizeGoal(data, 'completed'), false);
+    assert.equal(reads.length, 1, 'idempotent finalization must not republish');
+  } finally {
+    publication.mock.restore();
+    await db('goals').where({ goal_id: data.goalId }).delete();
+  }
+});
+
+test('a successful provider turn paused at its boundary keeps its checkout for resume', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paused-goal-'));
+  const checkout = path.join(root, 'checkout');
+  try {
+    execFileSync('git', ['init', '--initial-branch=main', root]);
+    execFileSync('git', ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'initial']);
+    execFileSync('git', ['-C', root, 'worktree', 'add', '-b', 'goal/paused', checkout]);
+    const data = { goalId: 'paused-goal', taskId: 'paused-task', generation: 1, claimId: 'claim' };
+    const goal = { goal_id: data.goalId, current_task_id: data.taskId, run_generation: 1, run_claim: 'claim',
+      result_state: null, desired_state: 'paused', worktree_path: checkout, branch_name: 'goal/paused' };
+    const forbidden = async () => { assert.fail('paused goals must not publish or finalize a terminal result'); };
+    const outcome = await processGoalJob({ data } as never, {
+      claim: async () => goal,
+      withHeartbeat: async (_data: unknown, operation: () => Promise<unknown>) => operation(),
+      prepare: async () => ({ ready: true, value: { goal, worktree: { worktreePath: checkout, branchName: 'goal/paused' } } }),
+      execute: async () => ({ success: true, modifiedFiles: [], logs: '' }),
+      result: {
+        loadGoal: async () => goal, fencedGoal: async () => goal,
+        acknowledgeInput: async () => {}, recordMetrics: async () => {},
+        handleStopped: async (_data: unknown, _goal: unknown, latest: typeof goal) => {
+          assert.equal(latest.desired_state, 'paused');
+          return { status: 'paused' };
+        },
+        saveProviderResult: forbidden, finalizeGoal: forbidden,
+      },
+    } as never);
+    assert.deepEqual(outcome, { status: 'paused' });
+    assert.ok((await fs.stat(path.join(checkout, '.git'))).isFile());
+    assert.equal(execFileSync('git', ['-C', checkout, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8' }).trim(), 'goal/paused');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('ensureGoalWorktree rebuilds a pruned checkout instead of failing the attempt', async () => {
+  const data: GoalJobData = { goalId: 'goal-pruned', taskId: 'goal-task-pruned', repoOwner: 'acme', repoName: 'repo', generation: 7, claimId: 'claim-7' };
+  const missing = path.join(os.tmpdir(), `goal-pruned-${Date.now()}`);
+  const goal = { goal_id: data.goalId, repository: 'acme/repo', worktree_path: missing, branch_name: 'goal/ship-it' } as never;
+  const restore = mock.fn(async () => ({ goal: { ...(goal as object), worktree_path: missing }, restored: true }));
+  const worktree = await ensureGoalWorktree(goal, data, 'token', restore as never);
+  assert.deepEqual(worktree, { worktreePath: missing, branchName: 'goal/ship-it', restored: true });
+  assert.equal(restore.mock.callCount(), 1);
+  assert.equal(restore.mock.calls[0].arguments[0], data);
+});
+
+test('ensureGoalWorktree keeps an existing checkout without restoring', async () => {
+  const data: GoalJobData = { goalId: 'goal-kept', taskId: 'goal-task-kept', repoOwner: 'acme', repoName: 'repo', generation: 7, claimId: 'claim-7' };
+  const existing = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-kept-'));
+  try {
+    const restore = mock.fn(async () => { throw new Error('unexpected restore'); });
+    const worktree = await ensureGoalWorktree({ goal_id: data.goalId, repository: 'acme/repo', worktree_path: existing, branch_name: 'goal/ship-it' } as never, data, 'token', restore as never);
+    assert.deepEqual(worktree, { worktreePath: existing, branchName: 'goal/ship-it' });
+    assert.equal(restore.mock.callCount(), 0);
+  } finally {
+    fs.rmSync(existing, { recursive: true, force: true });
+  }
+});
+
+test('ensureGoalWorktree surfaces a lost branch so preparation can fail the goal', async () => {
+  const data: GoalJobData = { goalId: 'goal-lost', taskId: 'goal-task-lost', repoOwner: 'acme', repoName: 'repo', generation: 7, claimId: 'claim-7' };
+  const goal = { goal_id: data.goalId, repository: 'acme/repo', worktree_path: '/missing/goal-lost', branch_name: 'goal/ship-it' } as never;
+  const restore = async () => { throw new GoalWorktreeLostError(goal); };
+  await assert.rejects(ensureGoalWorktree(goal, data, 'token', restore as never), GoalWorktreeLostError);
+});
+
+for (const failure of ['missing but already registered', 'fetch failed: connection reset', 'branch gone', 'takeover']) {
+  test(`checkout preparation settles restoration failure: ${failure}`, async () => {
+    const { db, getStateManager } = await import('@propr/core');
+    const data: GoalJobData = { goalId: `prepare-${failure}`, taskId: `task-${failure}`, repoOwner: 'acme', repoName: 'repo', generation: 3, claimId: 'claim' };
+    await db('goals').insert({ goal_id: data.goalId, owner_id: 'owner', owner_login: 'alice', repository: 'acme/repo',
+      objective: 'Ship it', launch_strategy: 'direct', initial_prompt: 'Ship it', agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'test',
+      current_task_id: data.taskId, desired_state: 'running', run_generation: data.generation, run_claim: data.claimId,
+      claimed_at: db.fn.now(), session_id: 'saved-session', worktree_path: '/missing/preparation', branch_name: 'goal/saved' });
+    const goal = await db('goals').where({ goal_id: data.goalId }).first();
+    const failed = mock.method(getStateManager(), 'markTaskFailed', async () => ({ state: 'failed' }) as never);
+    let rebuilds = 0;
+    try {
+      const result = await processGoalJob({ data } as never, {
+        claim: async () => goal,
+        withHeartbeat: async (_job: unknown, operation: () => Promise<unknown>) => operation(),
+        prepare: () => prepareGoalCheckout(data, goal, 'token', {
+          prepareContinuedGoal: async () => goal,
+          ensureGoalWorktree: (current, job, token) => ensureGoalWorktree(current, job, token, (job, current) => restoreMissingGoalWorktree(job, current, {
+            readPullRequest: async () => null, convertToDraft: async () => {}, cleanupWorktree: async () => {},
+            rebuildWorktree: async () => {
+              rebuilds++;
+              if (failure === 'takeover') await db('goals').where({ goal_id: data.goalId }).update({ run_generation: 4, run_claim: 'replacement' });
+              if (failure === 'branch gone') return null;
+              throw new Error(failure);
+            },
+          })),
+        }),
+        execute: async () => { assert.fail('failed preparation must never launch a provider'); },
+      } as never);
+      const saved = await db('goals').where({ goal_id: data.goalId }).first();
+      assert.equal(result.status, failure === 'takeover' ? 'skipped' : 'failed');
+      assert.equal(saved.result_state, failure === 'takeover' ? null : 'failed');
+      assert.equal(failed.mock.callCount(), failure === 'takeover' ? 0 : 1);
+      assert.equal(saved.worktree_path, goal.worktree_path);
+      assert.equal(saved.branch_name, goal.branch_name);
+      assert.equal(saved.session_id, goal.session_id);
+      if (failure !== 'takeover') assert.ok(saved.task_reconciled_at);
+      else assert.equal(saved.run_claim, 'replacement');
+      assert.equal(rebuilds, failure.startsWith('fetch failed') ? 2 : 1);
+    } finally {
+      failed.mock.restore();
+      await db('goals').where({ goal_id: data.goalId }).delete();
+    }
+  });
+}

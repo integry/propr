@@ -7,18 +7,20 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
+import { isLiveTask } from './liveDetailsTaskState.js';
 import {
-  isConversationResultEmpty,
-  parseClaudeOutputToConversationResult,
-  parseCodexOutputToConversationResult,
-  type ConversationResult
+  isConversationResultEmpty, parseClaudeOutputToConversationResult,
+  parseCodexOutputToConversationResult, type ConversationResult
 } from './liveDetailsCodexParser.js';
-import { parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
+import { isAntigravityStreamAwaitingNarration, parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
-import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
+import { completedExecutionDetails, parseExecutionDetailsFromDb } from './liveDetailsCanonical.js';
 import { detectStoredOutputFormat, hasCodexAppServerNotification, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 import { parseRedisOutput } from '../services/redisOutputParser.js';
-import { parseAgentStreamOutput, type AgentStreamParseOptions } from '../services/agentStreamProjection.js';
+import { type AgentStreamParseOptions } from '../services/agentStreamProjection.js';
+import { projectLiveOutput, type LiveOutputProjectionResult, type LiveOutputRedis } from '../services/liveOutputStream.js';
+import { findLatestExecutionStartForTask } from '../services/taskWatcherLookup.js';
+import { selectLiveEvents } from '../services/liveEventSelection.js';
 import { parseConversationFile } from '../services/conversationParser.js';
 import { withStableLiveEventIds, type LiveEventSource } from '../services/liveEventIds.js';
 
@@ -48,7 +50,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
           send(res, activeRedisResult);
           return;
         }
-        const persistedGoalResult = await parsePersistedGoalOutput(db, taskId);
+        const persistedGoalResult = await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
         if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', taskId, persistedGoalResult)); return; }
         console.log('[live-details] No sessionId found in either SQLite or Redis');
         send(res, { events: [], todos: [], currentTask: null });
@@ -58,6 +60,12 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       const conversationPath = await findClaudeConversationPath(sessionId);
       console.log(`[live-details] Checking Claude conversation path: ${conversationPath ?? 'not found'}`);
       if (!conversationPath) {
+        const canonicalResult = await completedExecutionDetails(redisClient, db, taskId, sessionId);
+        if (canonicalResult) {
+          console.log('[live-details] Task finished, using persisted execution details');
+          send(res, { ...withStableResultEventIds(taskId, 'database', sessionId, canonicalResult), omittedEventCount: 0 });
+          return;
+        }
         console.log('[live-details] Claude conversation file not found, trying active Redis output');
         const activeRedisResult = await parseActiveExecutionOutput(redisClient, db, taskId);
         if (activeRedisResult) {
@@ -78,7 +86,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
             send(res, withStableResultEventIds(taskId, 'stored', sessionId, rawStoredOutput.rawFallback));
             return;
           }
-          const persistedGoalResult = await parsePersistedGoalOutput(db, taskId);
+          const persistedGoalResult = await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
           if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', sessionId, persistedGoalResult)); return; }
           send(res, { events: [], todos: [], currentTask: null });
           return;
@@ -87,17 +95,18 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         return;
       }
       const result = await parseConversationFile(conversationPath);
-      console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
-      send(res, {
-        ...result,
-        events: withStableLiveEventIds({
-          taskId,
-          source: 'conversation',
-          events: result.events,
-          totalEventCount: result.totalEventCount,
-          executionNamespace: sessionId,
-        }),
+      const events = withStableLiveEventIds({
+        taskId,
+        source: 'conversation',
+        events: result.events,
+        totalEventCount: result.totalEventCount,
+        executionNamespace: sessionId,
       });
+      const selected = await isLiveTask(redisClient, db, taskId)
+        ? selectLiveEvents(events)
+        : { events, omittedEventCount: 0 };
+      console.log(`[live-details] Returning: ${selected.events.length} of ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
+      send(res, { ...result, events: selected.events, omittedEventCount: selected.omittedEventCount });
     } catch (error) {
       console.error(`Error in /api/task/:taskId/live-details:`, error);
       res.status(500).json({ error: 'Internal server error' });
@@ -121,15 +130,13 @@ function withStableResultEventIds(
   return {
     ...result,
     events: withStableLiveEventIds({
-      taskId,
-      source,
-      events: result.events,
-      totalEventCount: result.events.length,
-      executionNamespace,
+      taskId, source, events: result.events,
+      totalEventCount: result.events.length, executionNamespace,
     }),
   };
 }
-async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
+/** The session live-details reads resolve for a task: its latest execution state, else its latest persisted execution. */
+export async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
   const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
   if (redisSessionId) return redisSessionId;
   return findSessionIdFromDb(db, taskId);
@@ -225,6 +232,8 @@ export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
   format: StoredOutputFormat;
+  /** An Antigravity stream whose latest invocation has not narrated or finished yet. */
+  awaitingNarration?: boolean;
 }
 function getClaudeProjectDirName(workspacePath: string): string {
   const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
@@ -270,28 +279,28 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
   const output = await fs.readFile(outputPath, 'utf8');
   return parseStoredOutputContent(output);
 }
-async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string, options: AgentStreamParseOptions = {}): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
-  const output = await redisClient.get(`agent:output:${taskId}`);
-  if (!output?.trim()) return null;
+
+async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string, options: AgentStreamParseOptions = {}): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal']; omittedEventCount?: number; historyTruncated?: boolean } & Pick<LiveOutputProjectionResult, 'liveOutputPosition'>) | null> {
   const executionStartTimestamp = await findExecutionStartTimestamp(redisClient, db, taskId);
-  const redisParsed = parseAgentStreamOutput(output, { ...options, executionStartTimestamp });
-  if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
+  const projected = await projectLiveOutput(redisClient as unknown as LiveOutputRedis, taskId, executionStartTimestamp, {
+    selectEvents: false, resolveLegacyExecution: () => findLatestExecutionStartForTask({ redisClient, db }, taskId),
+  });
+  if (!projected) return null;
+  // The position lets a client tell which socket updates received during this request it already contains.
+  const { todos, currentTask, tokenUsage, nativeGoal, liveOutputPosition } = projected;
+  const { events, omittedEventCount } = options.limitEvents !== false && await isLiveTask(redisClient, db, taskId)
+    ? selectLiveEvents(projected.events)
+    : { events: projected.events, omittedEventCount: 0 };
+  if (events.length > 0 || todos.length > 0 || currentTask || tokenUsage) {
     return {
-      events: withStableLiveEventIds({
-        taskId,
-        source: 'redis',
-        events: redisParsed.events,
-        totalEventCount: redisParsed.totalEventCount,
-        executionNamespace: executionStartTimestamp ?? taskId,
-      }) as unknown as Array<Record<string, unknown>>,
-      todos: redisParsed.todos,
-      currentTask: redisParsed.currentTask,
-      tokenUsage: redisParsed.tokenUsage,
-      nativeGoal: redisParsed.nativeGoal,
+      events: events as unknown as Array<Record<string, unknown>>,
+      todos, currentTask, tokenUsage, nativeGoal, omittedEventCount, liveOutputPosition, ...(projected.truncated ? { historyTruncated: true } : {}),
     };
   }
-  const parsedOutput = parseStoredOutputContent(output);
-  const result = projectStoredOutputResult(parsedOutput);
+  // Output that is not a record stream (a stored result document) is projected whole.
+  const output = await redisClient.get(`agent:output:${taskId}`);
+  if (!output?.trim()) return null;
+  const result = projectStoredOutputResult(parseStoredOutputContent(output), await isLiveTask(redisClient, db, taskId));
   return result
     ? withStableResultEventIds(taskId, 'redis', executionStartTimestamp ?? taskId, result)
     : null;
@@ -309,21 +318,24 @@ export async function projectTaskLiveDetails(
   db: Knex,
   taskId: string,
   { sessionId, rethrowReadErrors = false, ...options }: AgentStreamParseOptions & { sessionId?: string | null; rethrowReadErrors?: boolean } = {},
-): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
+): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal']; omittedEventCount?: number }) | null> {
+  // A finished task's persisted transcript outranks whatever its live log last held.
+  const canonical = sessionId ? await completedExecutionDetails(redisClient, db, taskId, sessionId) : null;
+  if (sessionId && canonical) return { ...withStableResultEventIds(taskId, 'database', sessionId, canonical), omittedEventCount: 0 };
   const active = await parseActiveExecutionOutput(redisClient, db, taskId, options);
   if (active) return active;
   try {
     const details = sessionId ? await parseExecutionDetailsFromDb(db, taskId, sessionId) : null;
     if (details) return details;
-    return await parsePersistedGoalOutput(db, taskId);
+    return await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
   } catch (error) {
     if (rethrowReadErrors) throw error;
     return null;
   }
 }
-async function parsePersistedGoalOutput(db: Knex, taskId: string): Promise<ConversationResult | null> {
-  const history = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'desc').limit(20).select('metadata');
-  const records = history.reverse().flatMap(entry => {
+async function parsePersistedGoalOutput(db: Knex, taskId: string, isLive: () => Promise<boolean>): Promise<ConversationResult | null> {
+  const history = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'asc').select('metadata');
+  const records = history.flatMap(entry => {
     try {
       const metadata = typeof entry.metadata === 'string' ? JSON.parse(entry.metadata) : entry.metadata;
       return Array.isArray(metadata?.goalOutputRecords)
@@ -332,10 +344,12 @@ async function parsePersistedGoalOutput(db: Knex, taskId: string): Promise<Conve
   });
   if (records.length === 0) return null;
   const stored = parseStoredOutputContent(records.join('\n'));
-  return projectStoredOutputResult(stored);
+  return projectStoredOutputResult(stored, Boolean(stored.awaitingNarration) && await isLive());
 }
-function projectStoredOutputResult(stored: ParsedStoredOutput): ConversationResult | null {
+/** A live stream still awaiting its first narration shows nothing rather than raw protocol JSON. */
+function projectStoredOutputResult(stored: ParsedStoredOutput, live = false): ConversationResult | null {
   if (stored.parsed) return stored.parsed;
+  if (live && stored.awaitingNarration) return null;
   return stored.rawFallback ? {
     ...stored.rawFallback,
     events: stored.rawFallback.events.map(event => ({ ...event, rawFallback: true })),
@@ -345,6 +359,9 @@ export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
   const format = detectStoredOutputFormat(output);
   const rawFallback = buildRawOutputConversationResult(output);
+  if (format === 'antigravity' && isAntigravityStreamAwaitingNarration(output)) {
+    return { ...parseStoredOutputWithFormat(output, format, rawFallback), awaitingNarration: true };
+  }
   if (format !== 'unknown') return parseStoredOutputWithFormat(output, format, rawFallback);
   for (const fallbackFormat of STORED_OUTPUT_FALLBACK_ORDER) {
     const parsed = parseStoredOutputForFormat(output, fallbackFormat);
@@ -380,27 +397,4 @@ function parseStoredOutputForFormat(output: string, format: StoredOutputFormat):
 function buildRawOutputConversationResult(output: string): ConversationResult | null {
   const trimmed = output.trim();
   return trimmed ? { events: [{ type: 'thought', content: trimmed }], todos: [], currentTask: null, tokenUsage: null } : null;
-}
-async function parseExecutionDetailsFromDb(db: Knex, taskId: string, sessionId: string): Promise<ConversationResult | null> {
-  const execution = await db('llm_executions')
-    .where({ task_id: taskId, session_id: sessionId })
-    .orderBy('start_time', 'desc')
-    .first('execution_id', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens');
-  if (!execution?.execution_id) return null;
-  const details = await db('llm_execution_details')
-    .where({ execution_id: execution.execution_id })
-    .orderBy('sequence_number', 'asc')
-    .select('event_type', 'event_timestamp', 'content', 'is_error', 'tool_name', 'tool_input', 'metadata');
-  if (!details.length) return null;
-  const result = parseExecutionDetailsRows(details as ExecutionDetailRow[]);
-  const hasTokens = (execution.input_tokens ?? 0) || (execution.output_tokens ?? 0) || (execution.cache_creation_input_tokens ?? 0) || (execution.cache_read_input_tokens ?? 0);
-  return {
-    ...result,
-    tokenUsage: hasTokens ? {
-      input_tokens: execution.input_tokens ?? 0,
-      output_tokens: execution.output_tokens ?? 0,
-      cache_creation_input_tokens: execution.cache_creation_input_tokens ?? 0,
-      cache_read_input_tokens: execution.cache_read_input_tokens ?? 0
-    } : null
-  };
 }

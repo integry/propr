@@ -9,6 +9,9 @@ import type { DraftUpdatePayload } from '@propr/shared';
 const draftUpdateListeners = new Set<(payload: DraftUpdatePayload) => void | Promise<void>>();
 const socketState = {
   isConnected: false,
+  onActivityUpdate: vi.fn(() => () => {}),
+  subscribeToActivity: vi.fn(),
+  unsubscribeFromActivity: vi.fn(),
   onDraftUpdate: vi.fn((callback: (payload: DraftUpdatePayload) => void | Promise<void>) => {
     draftUpdateListeners.add(callback);
     return () => {
@@ -292,7 +295,7 @@ describe('PlansPage', () => {
         <Routes><Route path="/plans" element={<PlansPage />} /></Routes>
       </MemoryRouter>
     );
-    expect(screen.getByText('Loading plans...')).toBeInTheDocument();
+    expect(screen.getByText('Loading plans…')).toBeInTheDocument();
     expect(screen.queryByText('empty state')).not.toBeInTheDocument();
 
     await act(async () => {
@@ -335,7 +338,7 @@ describe('PlansPage', () => {
     expect(await screen.findByText('plans table')).toBeInTheDocument();
 
     fireEvent.change(screen.getByDisplayValue('All Statuses'), { target: { value: 'review' } });
-    expect(await screen.findByText('Loading plans...')).toBeInTheDocument();
+    expect(await screen.findByText('Loading plans…')).toBeInTheDocument();
     expect(screen.queryByText('plans table')).not.toBeInTheDocument();
     expect(screen.queryByText('empty state')).not.toBeInTheDocument();
 

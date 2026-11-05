@@ -738,12 +738,16 @@ test("switching from demo to app turns PROPR_DEMO_MODE off on disk", async () =>
 test("both renderers turn demo off when selecting a real auth mode", async () => {
   // With an existing (demo) config the options are: 1) keep, 2) token relay,
   // 3) custom GitHub App.
-  // Custom GitHub App (option 3) → appId, host key path, installation id.
-  const app = await buildSequentialPrompts(scriptedIo(["3", "123", "/k.pem", "42"])).configureGithubAuth!({
+  // Custom GitHub App (option 3) → I already have one (option 2) →
+  // appId, host key path, installation id.
+  const app = await buildSequentialPrompts(scriptedIo(["3", "2", "123", "/k.pem", "42"])).configureGithubAuth!({
     current: { mode: "demo", warnings: [] },
   });
   assert.equal(app.vars?.PROPR_DEMO_MODE, "false");
   assert.equal(app.vars?.GH_AUTH_MODE, "app");
+  assert.equal(app.vars?.GH_APP_ID, "123");
+  assert.equal(app.vars?.HOST_GH_PRIVATE_KEY, "/k.pem");
+  assert.equal(app.vars?.GH_INSTALLATION_ID, "42");
 
   // Token relay (option 2) → relay URL. The relay path hands the engine an
   // `enrollRelay` request (the engine mints the token and writes the relay env,

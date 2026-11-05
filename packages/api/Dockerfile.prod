@@ -8,6 +8,8 @@ WORKDIR /app
 
 # Copy root package files and tsconfig
 COPY package.json package-lock.json tsconfig.json ./
+# Vendored braces tarball referenced by the root package.json overrides
+COPY vendor ./vendor
 
 # Copy all workspace packages
 COPY packages/shared ./packages/shared
@@ -43,6 +45,7 @@ WORKDIR /app
 
 # Copy root package files and install production dependencies with workspaces
 COPY --from=builder /app/package.json /app/package-lock.json ./
+COPY --from=builder /app/vendor ./vendor
 
 # Copy built packages (shared and core)
 COPY --from=builder /app/packages/shared ./packages/shared

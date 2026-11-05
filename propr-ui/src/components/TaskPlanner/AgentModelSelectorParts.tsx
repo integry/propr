@@ -3,6 +3,7 @@ import { ChevronDown, Users, Check } from 'lucide-react';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
+import { formatModelName } from '../../utils/modelDisplay';
 import {
   AgentModelPairWithDisplay,
   getModelDisplayName,
@@ -66,6 +67,7 @@ const SelectedModelsChips: React.FC<SelectedModelsChipsProps> = ({ selectedModel
 );
 
 interface MultiSelectModeProps {
+  inlineDropdown?: boolean;
   compact: boolean;
   disabled: boolean;
   className: string;
@@ -79,6 +81,7 @@ interface MultiSelectModeProps {
 }
 
 export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
+  inlineDropdown = false,
   compact,
   disabled,
   className,
@@ -91,7 +94,7 @@ export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
   onConfirm
 }) => (
   <div className={`flex min-w-0 flex-wrap items-center gap-2 ${className}`}>
-    <div className="relative flex-shrink-0">
+    <div className="relative max-w-full flex-shrink-0">
       <button
         onClick={() => !disabled && setMultiDropdownOpen(!multiDropdownOpen)}
         disabled={disabled}
@@ -114,11 +117,11 @@ export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
 
       {multiDropdownOpen && (
         <>
-          <div
+          {!inlineDropdown && <div
             className="fixed inset-0 z-10"
             onClick={() => setMultiDropdownOpen(false)}
-          />
-          <div className="absolute z-20 mt-1 right-0 w-64 bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col">
+          />}
+          <div className={`${inlineDropdown ? 'relative max-w-full' : 'absolute right-0'} z-20 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col`}>
             <div className="p-2 border-b border-gray-100 flex-shrink-0">
               <button
                 onClick={onBackToSingle}
@@ -182,6 +185,10 @@ interface SingleSelectModeProps {
   onAgentChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onModelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   showMultiOption: boolean;
+  formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
+  agentPlaceholder?: string;
+  agentPlaceholderProvider?: string;
+  agentLabel?: string;
 }
 
 export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
@@ -194,18 +201,23 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
   availableModels,
   onAgentChange,
   onModelChange,
-  showMultiOption
+  showMultiOption,
+  formatAgentLabel = agent => agent.alias,
+  agentPlaceholder = 'Select Agent',
+  agentPlaceholderProvider,
+  agentLabel
 }) => {
   const selectClass = getSelectClass(compact);
-  const agentPadding = selectedAgent ? (compact ? 'pl-6' : 'pl-8') : '';
+  const logoProvider = selectedAgent || agentPlaceholderProvider;
+  const agentPadding = logoProvider ? (compact ? 'pl-6' : 'pl-8') : '';
 
   return (
     <div className={`flex min-w-0 flex-wrap items-center gap-1 sm:gap-2 ${className}`}>
       <div className="relative">
         <div className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none">
-          {selectedAgent && (
+          {logoProvider && (
             <ProviderLogo
-              provider={selectedAgent}
+              provider={logoProvider}
               className={compact ? "w-3 h-3" : "w-4 h-4"}
             />
           )}
@@ -216,11 +228,12 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
           disabled={disabled}
           className={`${selectClass} ${agentPadding} max-w-[120px] sm:max-w-none`}
           title="Select AI agent"
+          aria-label={agentLabel}
         >
-          <option value="">Select Agent</option>
+          <option value="">{agentPlaceholder}</option>
           {enabledAgents.map(agent => (
             <option key={agent.alias} value={agent.alias}>
-              {agent.alias}
+              {formatAgentLabel(agent)}
             </option>
           ))}
           {showMultiOption && (
@@ -244,7 +257,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
             <option value="">Select Model</option>
             {availableModels.map(modelId => (
               <option key={modelId} value={modelId}>
-                {getModelDisplayName(modelId)}
+                {formatModelName(modelId)}
               </option>
             ))}
           </select>

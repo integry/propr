@@ -39,7 +39,36 @@ export interface AgentConfig {
     cliVersionResolved?: string;      // Resolved semver version (populated by backend)
 }
 
+/** Bearer-authenticated MCP server exposed to one run; the token travels only through the container environment. */
+export interface AgentToolPolicyMcpServer {
+    name: string;
+    url: string;
+    /** Container environment variable holding the token. */
+    bearerTokenEnv: string;
+    bearerToken: string;
+}
+
+/**
+ * Per-run tool restrictions enforced with the runtime's native CLI switches
+ * (Claude, Codex); other runtimes apply the web restriction through the prompt only.
+ */
+export interface AgentToolPolicy {
+    /** Profiles replace inherited MCP catalogs rather than merging ambient endpoints. */
+    exclusiveMcp?: boolean;
+    allowWeb: boolean;
+    mcpServers?: AgentToolPolicyMcpServer[];
+    /** Internal operator-resolved stdio descriptors; never customer API input. */
+    localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
+}
+
 export interface AgentTaskOptions {
+    /** Immutable, instance-local extension revision selected by an administrator. */
+    extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+    /** Worker-validated actor; never read from profile input. */
+    extensionActorId?: string;
+    extensionRepositories?: string[];
+    /** Explicit per-run authorization; a profile cannot grant write capabilities. */
+    extensionAllowWrite?: boolean;
     worktreePath: string;
     issueRef: IssueRef;
     issueDetails?: IssueDetails;
@@ -63,6 +92,12 @@ export interface AgentTaskOptions {
     initialControlInputMessage?: string;
     /** Durable ProPR checkpoint feedback to inject at the resumed Codex boundary. */
     initialGoalFeedback?: string;
+    /**
+     * The operator continued a terminal goal. The provider re-arms its native
+     * goal even when it recorded that goal complete, failed or cleared, instead
+     * of reporting the earlier outcome again.
+     */
+    continueTerminalGoal?: boolean;
     /** Durable controls observed only at provider turn boundaries. */
     goalControl?: GoalExecutionControl;
 
@@ -73,17 +108,36 @@ export interface AgentTaskOptions {
     retryReason?: string;
 
     // Callbacks
+    /** Confirmed provider re-arm; releases the durable continuation obligation. */
+    onGoalRearmed?: () => void | Promise<void>;
     onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
     onContainerId?: (containerId: string, containerName: string) => void;
 
-    // GitHub token for container
+    /** Worker credential; adapters replace this with a scoped token before launch. */
     githubToken: string;
+    /** Worker-prepared mounts; never supplied by the agent. */
+    gitMountArgs?: string[];
+    /**
+     * `none` launches without repository clone mounts or repository
+     * credentials (for example an agent run without `repository_read`).
+     */
+    repositoryAccess?: 'none';
 
     // Branch information
     branchName?: string;
 
     // Additional options
     tools?: string;
+    /**
+     * Absent keeps the runtime's default tools. Task execution only: Claude,
+     * Codex and Antigravity reject it in goal mode rather than run unrestricted.
+     */
+    toolPolicy?: AgentToolPolicy;
+    /**
+     * Turn limit for this task when it needs more than the configured default
+     * (for example writing a plan task by task). Agents without a turn limit ignore it.
+     */
+    maxTurns?: number;
     /** Optional per-task reasoning level override. Omitted means use the global setting. */
     reasoningLevel?: ReasoningLevel;
     /** Per-execution environment variables to inject into the agent container. */
@@ -102,6 +156,8 @@ export interface AgentTaskOptions {
 export interface GoalControlInput {
     id: string;
     message: string;
+    /** Durable submission order of the input within its goal. */
+    sequence?: number;
 }
 
 export interface GoalCheckpointRequest {
@@ -135,6 +191,23 @@ export interface GoalControlSnapshot {
     controlGeneration: number;
 }
 
+/**
+ * An explicit, structured provider request for a person: a question or an
+ * approval. Reported only from provider protocol events, never inferred from
+ * narration, silence or slow work.
+ */
+export interface GoalBlockerReport {
+    /** The provider's own identity for this request, stable across repeated events. */
+    requestKey: string;
+    category: 'question' | 'approval';
+    /** Protocol event that carried the request, e.g. `codex_app_server:item/tool/requestUserInput`. */
+    source: string;
+    summary: string;
+    questions?: Array<{ id: string; header: string | null; question: string; options: string[]; confidential: boolean }>;
+    responseActions: Array<'send_input' | 'pause' | 'cancel'>;
+    turnId?: string;
+}
+
 export interface GoalExecutionControl {
     load(): Promise<GoalControlSnapshot>;
     heartbeat(): Promise<void>;
@@ -144,6 +217,14 @@ export interface GoalExecutionControl {
     publishCheckpoint(request: GoalCheckpointRequest, turnId: string): Promise<GoalCheckpointOutcome>;
     rejectCheckpoint(request: GoalCheckpointRejection, turnId: string): Promise<void>;
     appendOutput(records: string[]): Promise<void>;
+    /**
+     * Persist an open provider blocker for this attempt. Repeated reports update the same blocker.
+     * Returns the highest input sequence submitted before the blocker was first opened, captured
+     * atomically with opening it, or null when no blocker is open for the report.
+     */
+    reportBlocker?(report: GoalBlockerReport): Promise<number | null>;
+    /** Close an open provider blocker on authoritative evidence that it no longer waits. */
+    resolveBlocker?(requestKey: string, resolution: string): Promise<void>;
 }
 
 export interface TokenUsage {
@@ -151,6 +232,12 @@ export interface TokenUsage {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    /**
+     * Set when the cache counts above cover only some of the prompts: the known
+     * cached subtotal is kept so pricing applies its discount, but it is not a
+     * measurement of the whole prompt and must stay out of any hit rate.
+     */
+    cache_usage_incomplete?: boolean;
     /** Informational subset of output_tokens; never bill separately. */
     reasoning_output_tokens?: number;
 }
@@ -205,6 +292,8 @@ export interface AnalyzeOptions {
     useConfiguredReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
+    /** Skip quota collection for latency-sensitive probes. */
+    skipUsageTracking?: boolean;
     /**
      * Optional repository workspace exposed to the analysis agent as a read-only
      * bind mount. Omitted analyses continue to use their isolated empty
@@ -220,6 +309,8 @@ export interface AnalyzeOptions {
 }
 
 export interface AgentExecutionResult {
+    /** Container-observed workflow validation report, independent of agent prose. */
+    repositoryValidation?: string;
     success: boolean;
     logs: string;           // Full stderr/stdout logs
     summary?: string;       // Extracted summary of work
@@ -256,7 +347,12 @@ export interface AgentExecutionResult {
     conversationLog?: any[];
 }
 
-export type AgentTerminationReason = 'timeout' | 'max_turns';
+/**
+ * `cost_cap` is set when the run reached its spend cap. `stalled` and
+ * `degenerate_output` are set when the activity watchdog stopped a live run
+ * (no output past its threshold, or a run of whitespace-only deltas).
+ */
+export type AgentTerminationReason = 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
 
 export interface Agent {
     readonly config: AgentConfig;

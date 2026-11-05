@@ -11,7 +11,8 @@ for the existing REST API are not MCP access tokens. See the
 ## Components
 
 - **api**: Express.js backend API with GitHub OAuth authentication
-- **client**: React frontend built with Vite and Tailwind CSS
+- **propr-ui**: React frontend built with Vite and Tailwind CSS
+- **@propr/client**: shared client contracts and transport utilities
 
 ## Setup
 
@@ -63,6 +64,8 @@ To run the API in development mode:
 - **Activity Log**: Track recent system activities
 - **Performance Metrics**: View processing times and throughput
 
+User workflows for [tasks](../../docs/docs/features/launching-work.md), [goals](../../docs/docs/features/goals.md), [notifications](../../docs/docs/features/inbox.md) and [MCP](../../docs/docs/features/mcp.md) are covered in the docs site.
+
 ## API Endpoints
 
 All operational API endpoints are protected by authentication. Compatibility,
@@ -80,7 +83,7 @@ documented pre-authentication exceptions:
 - `DELETE /api/desktop/tokens/:tokenId` - Revoke one of the current user's instance tokens
 - `GET /api/catalog` - Get the sanitized enabled repository/agent catalog needed by member workflows
 - `GET /api/repositories/indexing-status` - Get indexing status projected to enabled catalog repository/branch entries
-- `GET /api/admin/members` - List explicit role assignments (administrator)
+- `GET /api/admin/members` - List directly assigned instance roles (administrator)
 - `POST /api/admin/members/claim` - Store a configured bootstrap administrator by numeric GitHub ID
 - `POST /api/admin/members` - Add a role assignment by GitHub username (administrator)
 - `PATCH /api/admin/members/:githubUserId` - Change an assigned role (administrator)

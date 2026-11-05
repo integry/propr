@@ -10,6 +10,7 @@ import { LiveAgentOutput } from './utils/liveAgentOutput.js';
 
 const MAX_LIVE_OUTPUT_BYTES = MAX_PROVIDER_OUTPUT_BYTES;
 const MAX_SUMMARY_PARTS = 100;
+const MAX_TRACKED_TURNS = 200;
 
 export function boundedCodexJsonlTail(value: string, maximum = MAX_LIVE_OUTPUT_BYTES): string {
     return boundedProviderOutput(value, maximum);
@@ -17,7 +18,8 @@ export function boundedCodexJsonlTail(value: string, maximum = MAX_LIVE_OUTPUT_B
 
 interface RpcError { code?: number; message?: string }
 export interface RpcMessage {
-    id?: number;
+    /** Server-initiated requests may use string ids; client request ids are always numbers. */
+    id?: number | string;
     method?: string;
     result?: Record<string, unknown>;
     error?: RpcError;
@@ -40,9 +42,11 @@ function extractTokenUsage(params: Record<string, unknown>): TokenUsage | undefi
     const total = asRecord(usage.total ?? usage);
     const input = Number(total.inputTokens ?? total.input_tokens ?? 0);
     const output = Number(total.outputTokens ?? total.output_tokens ?? 0);
-    const cached = Number(total.cachedInputTokens ?? total.cache_read_input_tokens ?? 0);
+    // An absent cache count is unknown, not a measured zero; only a reported one is passed on.
+    const reportedCached = total.cachedInputTokens ?? total.cache_read_input_tokens;
+    const cached = Number(reportedCached ?? 0);
     if (!input && !output && !cached) return undefined;
-    return { input_tokens: input, output_tokens: output, cache_read_input_tokens: cached };
+    return { input_tokens: input, output_tokens: output, ...(reportedCached !== undefined && reportedCached !== null && { cache_read_input_tokens: cached }) };
 }
 
 export class AppServerConnection {
@@ -51,12 +55,17 @@ export class AppServerConnection {
     private turnWaiters = new Map<string, (message: RpcMessage) => void>();
     private completedTurns = new Map<string, RpcMessage>();
     private startedTurns: Array<{ threadId: string; turnId: string }> = [];
+    /** Turns that started and have not completed, oldest first. */
+    private runningTurns: Array<{ threadId: string; turnId: string }> = [];
+    private finishedTurnIds: string[] = [];
+    private serverRequests: RpcMessage[] = [];
+    private resolvedServerRequests: Array<number | string> = [];
     private output: LiveAgentOutput;
     private stderr = '';
     private closedError: Error | null = null;
     summaryParts: string[] = [];
     private summarySequence = 0;
-    private summaryRecords: Array<{ sequence: number; text: string }> = [];
+    private summaryRecords: Array<{ sequence: number; text: string; turnId?: string }> = [];
     tokenUsage?: TokenUsage;
     effectiveModel?: string;
 
@@ -65,7 +74,8 @@ export class AppServerConnection {
         taskId: string | undefined,
         persistOutput?: (records: string[]) => Promise<void>,
     ) {
-        this.output = new LiveAgentOutput(taskId, persistOutput, 'codex-app-server');
+        // Output that can no longer be published or persisted fails the session.
+        this.output = new LiveAgentOutput(taskId, persistOutput, 'codex-app-server', { onOverflow: error => this.closePending(error) });
         child.stderr?.on('data', chunk => {
             this.stderr = boundedProviderDiagnostic(this.stderr + chunk.toString());
         });
@@ -87,11 +97,37 @@ export class AppServerConnection {
     agentMessagesAfter(cursor: number): string[] {
         return this.summaryRecords.filter(record => record.sequence > cursor).map(record => record.text);
     }
+    /**
+     * Agent messages of one turn. A turn can run before ProPR starts observing
+     * it (App Server continues an active goal on its own), so a read cursor
+     * alone would miss them. Messages without a turn id fall back to the cursor.
+     */
+    agentMessagesForTurn(turnId: string, cursor: number): string[] {
+        return this.summaryRecords
+            .filter(record => record.turnId === turnId || (record.turnId === undefined && record.sequence > cursor))
+            .map(record => record.text);
+    }
+    /** Whether App Server has reported this turn completed. */
+    isTurnFinished(turnId: string): boolean {
+        return this.finishedTurnIds.includes(turnId);
+    }
+    /** The newest turn of the thread that started and has not completed. */
+    runningTurn(threadId: string): string | null {
+        const running = this.runningTurns.filter(turn => turn.threadId === threadId);
+        return running.length ? running[running.length - 1].turnId : null;
+    }
 
     private onLine(line: string): void {
         this.output.append(`${line}\n`);
         let message: RpcMessage;
         try { message = JSON.parse(line) as RpcMessage; } catch { return; }
+        // A server-initiated request carries a method and an id of the server's
+        // own numbering, which can collide with a pending client request id.
+        if (typeof message.method === 'string' && message.id !== undefined && message.id !== null) {
+            this.serverRequests.push(message);
+            if (this.serverRequests.length > MAX_SUMMARY_PARTS) this.serverRequests.shift();
+            return;
+        }
         if (typeof message.id === 'number' && this.pending.has(message.id)) {
             const pending = this.pending.get(message.id)!;
             clearTimeout(pending.timer);
@@ -108,25 +144,7 @@ export class AppServerConnection {
 
     private observeNotification(message: RpcMessage): void {
         const params = message.params ?? {};
-        if (message.method === 'turn/started') {
-            const turn = asRecord(params.turn);
-            if (typeof params.threadId === 'string' && typeof turn.id === 'string') {
-                this.startedTurns.push({ threadId: params.threadId, turnId: turn.id });
-            }
-        }
-        if (message.method === 'turn/completed') {
-            const turn = asRecord(params.turn);
-            if (typeof turn.model === 'string') this.effectiveModel = turn.model;
-            if (typeof turn.id === 'string') {
-                const waiter = this.turnWaiters.get(turn.id);
-                if (waiter) {
-                    this.turnWaiters.delete(turn.id);
-                    waiter(message);
-                } else {
-                    this.completedTurns.set(turn.id, message);
-                }
-            }
-        }
+        this.observeTurnNotification(message, params);
         if (message.method === 'item/completed') {
             const item = asRecord(params.item);
             if (typeof item.model === 'string') this.effectiveModel = item.model;
@@ -134,12 +152,53 @@ export class AppServerConnection {
                 this.summaryParts.push(item.text);
                 if (this.summaryParts.length > MAX_SUMMARY_PARTS) this.summaryParts.shift();
                 this.summarySequence += 1;
-                this.summaryRecords.push({ sequence: this.summarySequence, text: item.text });
+                this.summaryRecords.push({
+                    sequence: this.summarySequence,
+                    text: item.text,
+                    ...(typeof params.turnId === 'string' ? { turnId: params.turnId } : {}),
+                });
                 if (this.summaryRecords.length > MAX_SUMMARY_PARTS) this.summaryRecords.shift();
             }
         }
+        if (message.method === 'serverRequest/resolved') this.observeResolvedServerRequest(params);
         if (message.method === 'thread/tokenUsage/updated') this.tokenUsage = extractTokenUsage(params) ?? this.tokenUsage;
         if (message.method === 'model/rerouted' && typeof params.toModel === 'string') this.effectiveModel = params.toModel;
+    }
+
+    private observeTurnNotification(message: RpcMessage, params: Record<string, unknown>): void {
+        const turn = asRecord(params.turn);
+        if (message.method === 'turn/started') {
+            if (typeof params.threadId === 'string' && typeof turn.id === 'string') {
+                this.startedTurns.push({ threadId: params.threadId, turnId: turn.id });
+                if (!this.finishedTurnIds.includes(turn.id)) {
+                    this.runningTurns.push({ threadId: params.threadId, turnId: turn.id });
+                }
+            }
+            return;
+        }
+        if (message.method !== 'turn/completed') return;
+        if (typeof turn.model === 'string') this.effectiveModel = turn.model;
+        if (typeof turn.id !== 'string') return;
+        this.markTurnFinished(turn.id);
+        const waiter = this.turnWaiters.get(turn.id);
+        if (waiter) {
+            this.turnWaiters.delete(turn.id);
+            waiter(message);
+        } else {
+            this.completedTurns.set(turn.id, message);
+        }
+    }
+
+    private markTurnFinished(turnId: string): void {
+        this.runningTurns = this.runningTurns.filter(turn => turn.turnId !== turnId);
+        this.finishedTurnIds.push(turnId);
+        if (this.finishedTurnIds.length > MAX_TRACKED_TURNS) this.finishedTurnIds.shift();
+    }
+
+    private observeResolvedServerRequest(params: Record<string, unknown>): void {
+        if (typeof params.requestId !== 'number' && typeof params.requestId !== 'string') return;
+        this.resolvedServerRequests.push(params.requestId);
+        if (this.resolvedServerRequests.length > MAX_SUMMARY_PARTS) this.resolvedServerRequests.shift();
     }
 
     private appendGoalSnapshot(method: string, result: Record<string, unknown>): void {
@@ -177,6 +236,22 @@ export class AppServerConnection {
         });
     }
 
+    /** Server-initiated requests received since the last call, oldest first. */
+    takeServerRequests(): RpcMessage[] {
+        return this.serverRequests.splice(0);
+    }
+
+    /** Ids of server requests the server reported resolved since the last call. */
+    takeResolvedServerRequests(): Array<number | string> {
+        return this.resolvedServerRequests.splice(0);
+    }
+
+    /** Answer a server-initiated request. */
+    respond(id: number | string, result: Record<string, unknown>): void {
+        if (!this.child.stdin?.writable) throw this.closedError ?? new Error('Codex App Server stdin is closed');
+        this.child.stdin.write(`${JSON.stringify({ id, result })}\n`);
+    }
+
     waitForTurn(turnId: string): Promise<RpcMessage> {
         if (this.closedError) return Promise.reject(this.closedError);
         const completed = this.completedTurns.get(turnId);
@@ -198,7 +273,6 @@ export class AppServerConnection {
     }
 
     async close(): Promise<void> {
-        await this.output.close();
         this.child.stdin?.end();
         const force = setTimeout(() => this.child.kill('SIGTERM'), 500);
         await new Promise<void>(resolve => {
@@ -206,5 +280,6 @@ export class AppServerConnection {
             else this.child.once('close', () => resolve());
         });
         clearTimeout(force);
+        await this.output.close();
     }
 }

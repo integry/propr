@@ -162,7 +162,7 @@ export async function inspectAgentRuntimeBaseImage(baseImage: string): Promise<A
     if (!IMAGE_REFERENCE.test(baseImage)) throw new Error(`Invalid agent image reference: ${baseImage}`);
     const result = await executeDockerCommand('docker', [
         'image', 'inspect', baseImage, '--format', '{{.Id}}\t{{json .Config.User}}'
-    ], { timeout: 30000 });
+    ], { timeout: 30000, costCapExempt: true });
     if (result.exitCode !== 0) throw new Error(`Agent image ${baseImage} is not available: ${result.stderr.trim()}`);
     const [id, encodedUser = '""'] = result.stdout.trim().split('\t');
     let user = '';
@@ -184,7 +184,7 @@ fi
 echo apt
 cat /etc/os-release 2>/dev/null || true
 cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true`
-    ], { timeout: 30000 });
+    ], { timeout: 30000, costCapExempt: true });
     if (environment.exitCode !== 0) {
         throw new Error(`Agent image ${baseImage} does not provide the supported package manager (apt)`);
     }
@@ -238,7 +238,7 @@ export function buildAgentRuntimeDockerfile(
 }
 
 async function imageExists(image: string): Promise<boolean> {
-    const result = await executeDockerCommand('docker', ['image', 'inspect', image], { timeout: 30000 });
+    const result = await executeDockerCommand('docker', ['image', 'inspect', image], { timeout: 30000, costCapExempt: true });
     return result.exitCode === 0;
 }
 
@@ -253,7 +253,7 @@ async function cleanupRuntimeImages(
         '--filter', 'label=dev.propr.agent-runtime=true',
         '--filter', `label=dev.propr.agent-runtime.installation=${installationId}`,
         '--format', '{{.Repository}}:{{.Tag}}'
-    ], { timeout: 30000 });
+    ], { timeout: 30000, costCapExempt: true });
     const labelledTags = listed.exitCode === 0
         ? listed.stdout.split('\n').map(value => value.trim()).filter(value => value && !value.endsWith(':<none>'))
         : [];

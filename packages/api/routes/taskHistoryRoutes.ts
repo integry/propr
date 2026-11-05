@@ -1,11 +1,17 @@
+import { fetchUsageMetrics } from './taskHistoryUsage.js';
+import { loadAgentRunsByTask, taskModelIdentity } from './taskModelIdentity.js';
 import type { Response } from 'express';
 import { redactVisualPreviewValue } from '@propr/core';
+import { loadTaskBudget } from './taskBudget.js';
 import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Queue, Job } from 'bullmq';
 import { Knex } from 'knex';
 import { sendSafeJson } from './jsonResponse.js';
 import { previewMediaReader, projectTaskPreviewMedia } from '../services/previewMediaProjection.js';
+import { attemptLineageFields, loadAttemptLineage } from './taskAttemptLineage.js';
+import { automationTaskKind } from './automationTaskKind.js';
+import { followupDestination, loadFollowupDestination, type FollowupTaskRecord } from './followupThread.js';
 
 interface JobData {
     repoOwner?: string; repoName?: string; number?: number;
@@ -19,10 +25,7 @@ interface JobReturnValue {
         sessionId: string; conversationId?: string; executionTime?: number;
         success?: boolean; conversationLog?: unknown[]; model?: string;
     };
-    postProcessing?: {
-        success?: boolean;
-        pr?: { number: number; url: string };
-    };
+    postProcessing?: { success?: boolean; pr?: { number: number; url: string } };
 }
 
 interface TaskHistoryRoutesDeps { redisClient: RedisClientType; taskQueue: Queue; db: Knex; previewReader?: typeof previewMediaReader }
@@ -36,7 +39,8 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
 
       const dbResult = await getHistoryFromDb(db, taskId, previewReader);
       if (dbResult) {
-        sendSafeJson(res, redactVisualPreviewValue({ taskId, ...dbResult }));
+        const budget = await loadTaskBudget(db, redisClient, taskId, dbResult.history);
+        sendSafeJson(res, redactVisualPreviewValue({ taskId, ...dbResult, ...(budget ? { budget } : {}) }));
         return;
       }
       let history: Array<Record<string, unknown>> = [];
@@ -47,7 +51,11 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
         const queueResult = await getHistoryFromQueue(taskQueue, taskId);
         if (queueResult) { if (!taskInfo) taskInfo = queueResult.taskInfo; history = queueResult.history; }
       }
-      sendSafeJson(res, redactVisualPreviewValue({ taskId, history, taskInfo }));
+      // A task read from live state or the queue still follows up through its persisted row.
+      const followupTarget = taskInfo && await loadFollowupDestination(db, taskId);
+      if (taskInfo && followupTarget) taskInfo.followupTarget = followupTarget;
+      const budget = await loadTaskBudget(db, redisClient, taskId, history);
+      sendSafeJson(res, redactVisualPreviewValue({ taskId, history, taskInfo, ...(budget ? { budget } : {}) }));
     } catch (error) {
       console.error('Error in /api/task/:taskId/history:', error);
       res.status(500).json({ error: 'Internal server error' });
@@ -79,30 +87,13 @@ function buildTaskInfoFromDb(
   };
 
   if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
+  const taskKind = automationTaskKind(taskId, task.task_type);
+  if (taskKind) taskInfo.taskKind = taskKind;
   if (commandMode) taskInfo.commandMode = commandMode;
   if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
-  return taskInfo;
-}
-
-async function fetchUsageMetrics(
-  db: Knex,
-  taskId: string
-): Promise<{ usageMetrics: Record<string, unknown> | null; usageMetricRecords: Array<{ agent: string; metricKey: string; metricValue: number }> }> {
-  const llmLog = await db('llm_logs')
-    .where({ draft_id: taskId, execution_type: 'implementation' }).orderBy('start_time', 'desc').first();
-  if (!llmLog) return { usageMetrics: null, usageMetricRecords: [] };
-
-  let usageMetrics: Record<string, unknown> | null = null;
-  if (llmLog.usage_metrics) {
-    try {
-      usageMetrics = typeof llmLog.usage_metrics === 'string' ? JSON.parse(llmLog.usage_metrics) : llmLog.usage_metrics;
-    } catch (e) { console.error('Failed to parse usage_metrics:', e); }
-  }
-  const records = await db('usage_metric_records').where({ llm_log_id: llmLog.log_id });
-  const usageMetricRecords = records.map((r: Record<string, unknown>) => ({
-    agent: r.agent_name as string, metricKey: r.metric_key as string, metricValue: r.metric_value as number
-  }));
-  return { usageMetrics, usageMetricRecords };
+  const followupTarget = followupDestination(task as unknown as FollowupTaskRecord);
+  if (followupTarget) taskInfo.followupTarget = followupTarget;
+  return { ...taskInfo, ...attemptLineageFields(task) };
 }
 
 async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof previewMediaReader): Promise<{
@@ -119,11 +110,14 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
 
     const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
 
-    const [llmExecutions, usage, previewMedia] = await Promise.all([
+    const [llmExecutions, usage, previewMedia, attemptLineage, agentRuns] = await Promise.all([
       db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),
       fetchUsageMetrics(db, taskId),
       projectTaskPreviewMedia(task, historyRecords, previewReader),
+      loadAttemptLineage(db, taskId, task),
+      loadAgentRunsByTask(db, [task]),
     ]);
+    if (attemptLineage) taskInfo.attemptLineage = attemptLineage;
 
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
     const executionsBySessionId = new Map<string, Record<string, unknown>>();
@@ -135,6 +129,7 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
 
+    Object.assign(taskInfo, taskModelIdentity(task, historyRecords, llmExecutions, agentRuns.get(taskId)));
     applyMetadataFlags(taskInfo, history);
 
     return { history, taskInfo, ...usage, ...(previewMedia.length ? { previewMedia } : {}) };
@@ -241,7 +236,9 @@ function findLatestMetadata(
     if (!h.metadata || typeof h.metadata !== 'object') continue;
     const meta = h.metadata as Record<string, unknown>;
     if (commandMode === undefined && 'commandMode' in meta) commandMode = meta.commandMode;
-    if (ultrafixCycle === undefined && meta.ultrafixCycle === true) ultrafixCycle = true;
+    const cycle = meta.ultrafixCycle;
+    if (ultrafixCycle === undefined && (cycle === true
+      || (typeof cycle === 'number' && Number.isSafeInteger(cycle) && cycle > 0))) ultrafixCycle = true;
     if (commandMode !== undefined && ultrafixCycle !== undefined) break;
   }
   return { commandMode, ultrafixCycle };
@@ -258,7 +255,8 @@ function resolveTaskTypeAndIssue(
   ref: Record<string, unknown>
 ): { type: string; issueNumber?: number } {
   const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
-  if (!isPr) return { type: 'issue' };
+  // An automation run's task has no issue; its live state keeps its own type.
+  if (!isPr) return { type: ref.type === 'agent-run' ? 'agent-run' : 'issue' };
   const issueNumber = resolveIssueNumber(ref) ?? undefined;
   return { type: 'pr-comment', issueNumber };
 }
@@ -286,6 +284,9 @@ function buildTaskInfoFromState(
     modelName: ref.modelName, agentAlias: ref.agentAlias
   };
   if (issueNumber) taskInfo.issueNumber = issueNumber;
+  const taskKind = automationTaskKind(taskId, type);
+  if (taskKind) taskInfo.taskKind = taskKind;
+  Object.assign(taskInfo, taskModelIdentity({ task_id: taskId, initial_job_data: ref, model_name: ref.modelName }, historyEntries));
   applyMetadataFlags(taskInfo, historyEntries);
   return taskInfo;
 }
@@ -329,6 +330,7 @@ async function getHistoryFromQueue(
 
     const taskInfo = buildTaskInfoFromJob(job, taskId);
     const history = buildHistoryFromJob(job);
+    if (taskInfo) Object.assign(taskInfo, taskModelIdentity({ task_id: taskId, initial_job_data: job.data, model_name: job.data?.modelName }, history));
 
     return { history, taskInfo };
   } catch (e) {

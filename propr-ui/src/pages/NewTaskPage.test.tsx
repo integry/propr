@@ -9,28 +9,48 @@ import * as planner from '../api/plannerApi';
 vi.mock('../api/taskSubmissions', () => ({ submitTask: vi.fn(), getTaskSubmission: vi.fn(), retryTaskSubmission: vi.fn(), listTaskSnapshots: vi.fn().mockResolvedValue([]), taskSnapshotStorage: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../api/plannerApi', () => ({ createDraft: vi.fn(), uploadAttachment: vi.fn() }));
 vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn().mockResolvedValue({ repositories: [{ name: 'acme/billing', enabled: true }], agents: [{ alias: 'issue-only', enabled: true, supportedModels: ['model-1'], defaultModel: 'model-1' }] }) }));
-vi.mock('../contexts/AuthContext', () => ({ useCurrentUser: () => ({ id: 'alice' }) }));
+vi.mock('../contexts/AuthContext', async importOriginal => ({ ...await importOriginal<typeof import('../contexts/AuthContext')>(), useCurrentUser: () => ({ id: 'alice', permissions: [] }) }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => ({ isDemoMode: false }) }));
 vi.mock('../components/RepositorySelector', () => ({ RepositorySelector: ({ selectedRepo, onRepoChange }: { selectedRepo: string; onRepoChange: (value: string) => void }) => <select aria-label="Repository" value={selectedRepo} onChange={event => onRepoChange(event.target.value)}><option value="" /><option>acme/billing</option></select> }));
+vi.mock('../components/Extensions/ExtensionProfileSelector', () => ({ ExtensionProfileSelector: ({ value, onChange, disabled }: React.ComponentProps<typeof import('../components/Extensions/ExtensionProfileSelector').ExtensionProfileSelector>) => <select aria-label="Agent extension profile" disabled={disabled} value={value?.profileId ?? ''} onChange={e => onChange(e.target.value ? { instanceId: 'instance', profileId: e.target.value, revision: 1 } : null)}><option value="">None</option><option value="docs">Documentation tools</option></select> }));
 function Destination() { const location = useLocation(); return <div data-testid="destination">{location.pathname} {JSON.stringify(location.state)}</div>; }
 const pending = { id: 'submission', state: 'failed' as const, issueNumber: 42, issueUrl: 'https://github.com/acme/billing/issues/42', taskId: null, error: 'Queue unavailable' };
 const renderPage = () => render(<MemoryRouter initialEntries={[{ pathname: '/tasks/new', state: { initialRepository: 'acme/billing', initialPrompt: 'Fix invoice dates', todoIds: ['todo-1'] } }]}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /><Route path="*" element={<Destination />} /></Routes></MemoryRouter>);
 
 beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue(undefined); vi.mocked(submissions.listTaskSnapshots).mockResolvedValue([]); });
 describe('New Task issue launcher', () => {
+  it('opens a modal with collapsed settings and no promotional cards', async () => {
+    renderPage();
+    expect(screen.getByRole('dialog', { name: 'New task' })).toBeInTheDocument();
+    expect(screen.getByText('Advanced Options').closest('details')).not.toHaveAttribute('open');
+    expect(screen.queryByRole('link', { name: /New Plan|New Goal/ })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Prompt')).toHaveFocus());
+  });
+
+  it('protects edited input on dismissal and returns to tasks on cancel', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    renderPage();
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Keep this request' } });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Keep this request');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks');
+    confirm.mockRestore();
+  });
+
   it('retains the issue and request on failure, retries that submission, then opens the ordinary task', async () => {
     vi.mocked(submissions.submitTask).mockResolvedValue(pending);
     vi.mocked(submissions.retryTaskSubmission).mockResolvedValue({ ...pending, state: 'queued', error: null, taskId: 'ordinary-issue-task' });
     renderPage();
     const run = await screen.findByRole('button', { name: 'Run task' });
     await waitFor(() => expect(run).toBeEnabled());
-    expect(screen.getByLabelText('Instruction')).toHaveValue('Fix invoice dates');
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
     fireEvent.click(run);
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open issue #42' })).toHaveAttribute('href', pending.issueUrl);
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View issue #42' })).toHaveAttribute('href', pending.issueUrl);
     const [key, payload] = vi.mocked(submissions.submitTask).mock.calls[0];
     expect(payload).toMatchObject({ repository: 'acme/billing', instruction: 'Fix invoice dates', todoIds: ['todo-1'] });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry submission' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry agent' }));
     expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks/ordinary-issue-task');
     expect(submissions.retryTaskSubmission).toHaveBeenCalledWith(key);
     expect(submissions.submitTask).toHaveBeenCalledTimes(1);
@@ -38,13 +58,76 @@ describe('New Task issue launcher', () => {
     expect(planner.createDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(/What's done|Continue|Pause goal/)).not.toBeInTheDocument();
   });
+  it('reports a recovery storage failure without submitting or losing the request and files', async () => {
+    vi.mocked(submissions.taskSnapshotStorage).mockImplementation(async (_scope, _key, value) => {
+      if (value) throw new Error('Could not save task recovery data in this browser. Error preparing Blob/File data to be stored in object store');
+      return undefined;
+    });
+    renderPage();
+    const file = new File(['Invoice date: 09/22/2026'], 'invoice.txt', { type: 'text/plain' });
+    await act(async () => fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [file] } }));
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Task not submitted: this browser could not save it for safe retry.');
+    expect(alert).toHaveTextContent('Error preparing Blob/File data');
+    expect(submissions.submitTask).not.toHaveBeenCalled();
+    expect(submissions.getTaskSubmission).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(`task-active-submission:${API_BASE_URL}:alice`)).toBeNull();
+    expect(screen.getByLabelText('Prompt')).toBeEnabled();
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
+    expect(screen.getByText('invoice.txt')).toBeInTheDocument();
+    expect(screen.queryByTestId('destination')).not.toBeInTheDocument();
+    vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue(undefined);
+    vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+    fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(vi.mocked(submissions.submitTask).mock.calls[0][2]).toEqual([file]);
+  });
+  it('shows submission progress on the button and a partial failure as one warning', async () => {
+    let resolve!: (value: submissions.TaskSubmission) => void;
+    vi.mocked(submissions.submitTask).mockReturnValue(new Promise(done => { resolve = done; }));
+    renderPage();
+    const run = await screen.findByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    expect(await screen.findByRole('button', { name: 'Submitting…' })).toBeDisabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
+    await act(async () => resolve(pending));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Issue #42 created, but agent failed to queue');
+    expect(alert).toHaveTextContent('Queue unavailable');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Start over opens a new request/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Retry agent' })).toBeEnabled();
+  });
+  it('closes a partial failure without keeping its local retry state', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+    renderPage();
+    const run = await screen.findByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    const close = await screen.findByRole('button', { name: 'Close' });
+    const key = vi.mocked(submissions.submitTask).mock.calls[0][0];
+    fireEvent.click(close);
+    expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks');
+    expect(submissions.taskSnapshotStorage).toHaveBeenCalledWith(`${API_BASE_URL}:alice`, key, null);
+    expect(sessionStorage.getItem(`task-active-submission:${API_BASE_URL}:alice`)).toBeNull();
+    expect(submissions.retryTaskSubmission).not.toHaveBeenCalled();
+  });
   it('recovers the same identity after reload without resubmitting an issue', async () => {
     sessionStorage.setItem(`task-active-submission:${API_BASE_URL}:alice`, 'saved-key');
     vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue({ key: 'saved-key', payload: { repository: 'acme/billing', instruction: 'Saved request' }, files: [] });
     vi.mocked(submissions.getTaskSubmission).mockResolvedValue(pending);
     renderPage();
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
-    expect(screen.getByLabelText('Instruction')).toHaveValue('Saved request');
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Saved request');
     expect(submissions.getTaskSubmission).toHaveBeenCalledWith('saved-key');
     expect(submissions.submitTask).not.toHaveBeenCalled();
   });
@@ -74,21 +157,76 @@ describe('New Task issue launcher', () => {
     fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
     expect(screen.getByRole('button', { name: 'Run task' })).toBeEnabled();
   });
-  it.each(['prepared', 'failed'] as const)('allows a %s submission to be abandoned and a new identity submitted', async state => {
-    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, ...(state === 'prepared' ? { issueNumber: null, issueUrl: null } : {}) });
+  it('shows the instance default agent and its default model preselected without pinning them', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'issue_created', error: null });
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText('Agent')).toHaveValue('issue-only'));
+    expect(screen.getByLabelText('Model')).toHaveValue('model-1');
+    expect(screen.getByText('Advanced Options')).toHaveTextContent('issue-only · Model 1');
+    expect(screen.queryByRole('option', { name: /default/i })).not.toBeInTheDocument();
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(submissions.submitTask).toHaveBeenCalled());
+    const payload = vi.mocked(submissions.submitTask).mock.calls[0][1];
+    expect(payload).not.toHaveProperty('agentAlias');
+    expect(payload).not.toHaveProperty('model');
+  });
+  it('submits the shown fallback model for an agent without a configured default model', async () => {
+    const { getInstanceCatalog } = await import('../api/proprApi');
+    vi.mocked(getInstanceCatalog).mockResolvedValueOnce({ repositories: [{ name: 'acme/billing', enabled: true }], agents: [{ alias: 'issue-only', enabled: true, supportedModels: ['model-1'], defaultModel: 'model-1' }, { alias: 'single', enabled: true, supportedModels: ['model-2'] }] } as Awaited<ReturnType<typeof getInstanceCatalog>>);
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'issue_created', error: null });
+    renderPage();
+    await screen.findByRole('option', { name: 'single' });
+    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'single' } });
+    expect(screen.getByLabelText('Model')).toHaveValue('model-2');
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(submissions.submitTask).toHaveBeenCalled());
+    expect(vi.mocked(submissions.submitTask).mock.calls[0][1]).toMatchObject({ agentAlias: 'single', model: 'model-2' });
+  });
+  it('remembers the last used repository, agent, and model once the issue is created', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'issue_created', error: null });
+    renderPage();
+    await screen.findByRole('option', { name: 'issue-only' });
+    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'model-1' } });
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(`task-routing:${API_BASE_URL}:alice`) || '{}'))
+      .toEqual({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
+  });
+  it('preselects the remembered repository and drops it when no longer available', async () => {
+    localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
+    const { unmount } = render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Model 1' })).toBeInTheDocument());
+    expect(screen.getByLabelText('Repository')).toHaveValue('acme/billing');
+    expect(screen.getByLabelText('Agent')).toHaveValue('issue-only');
+    expect(screen.getByLabelText('Model')).toHaveValue('model-1');
+    unmount();
+    localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/retired' }));
+    render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Fix invoice dates' } });
+    await waitFor(() => expect(screen.getByRole('option', { name: 'issue-only' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Run task' })).toBeDisabled();
+  });
+  it.each(['prepared', 'failed'] as const)('allows a %s submission without an issue to be abandoned and a new identity submitted', async state => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, issueNumber: null, issueUrl: null });
     renderPage();
     const run = await screen.findByRole('button', { name: 'Run task' });
     await waitFor(() => expect(run).toBeEnabled());
     fireEvent.click(run);
     const reset = await screen.findByRole('button', { name: state === 'prepared' ? 'Edit request' : 'Start over' });
     await waitFor(() => expect(reset).toBeEnabled());
-    expect(screen.getByLabelText('Instruction')).toBeDisabled();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
     const oldKey = vi.mocked(submissions.submitTask).mock.calls[0][0];
     fireEvent.click(reset);
-    await waitFor(() => expect(screen.getByLabelText('Instruction')).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText('Prompt')).toBeEnabled());
     expect(submissions.taskSnapshotStorage).toHaveBeenCalledWith(`${API_BASE_URL}:alice`, oldKey, null);
-    expect(screen.getByLabelText('Instruction')).toHaveValue(state === 'prepared' ? 'Fix invoice dates' : '');
-    fireEvent.change(screen.getByLabelText('Instruction'), { target: { value: 'Corrected invoice request' } });
+    expect(screen.getByLabelText('Prompt')).toHaveValue(state === 'prepared' ? 'Fix invoice dates' : '');
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Corrected invoice request' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
     await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(2));
     expect(vi.mocked(submissions.submitTask).mock.calls[1][0]).not.toBe(oldKey);
@@ -110,7 +248,7 @@ describe('New Task issue launcher', () => {
     await waitFor(() => expect(submissions.retryTaskSubmission).toHaveBeenCalledWith(key));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start over' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
-    await waitFor(() => expect(screen.getByLabelText('Instruction')).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText('Prompt')).toBeEnabled());
     expect(submissions.taskSnapshotStorage).not.toHaveBeenCalledWith(`${API_BASE_URL}:alice`, key, null);
   });
 
@@ -133,7 +271,7 @@ describe('New Task issue launcher', () => {
     const original = vi.mocked(submissions.submitTask).mock.calls[0];
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
     expect(await screen.findByRole('region', { name: 'Unresolved submissions' })).toHaveTextContent('Fix invoice dates');
-    fireEvent.change(screen.getByLabelText('Instruction'), { target: { value: 'Another request' } });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Another request' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
     await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start over' })).toBeEnabled());
@@ -144,7 +282,7 @@ describe('New Task issue launcher', () => {
     const reopen = await screen.findAllByRole('button', { name: 'Reopen submission' });
     fireEvent.click(reopen[0]);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Retry submission' })).toBeEnabled());
-    expect(screen.getByLabelText('Instruction')).toHaveValue('Fix invoice dates');
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
     expect(screen.getByText('invoice.txt')).toBeInTheDocument();
     expect(submissions.getTaskSubmission).toHaveBeenLastCalledWith(original[0]);
     vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'queued', taskId: 'recovered-task', error: null });
@@ -155,4 +293,25 @@ describe('New Task issue launcher', () => {
     expect(saved.size).toBe(1);
   });
 
+});
+
+
+it.each([false, true])('persists only the explicit extension write choice (%s)', async choice => {
+  vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+  renderPage();
+  fireEvent.change(screen.getByLabelText('Agent extension profile'), { target: { value: 'docs' } });
+  const grant = screen.getByLabelText('Allow selected MCP write capabilities for this run');
+  expect(grant).not.toBeChecked();
+  if (choice) fireEvent.click(grant);
+  const run = await screen.findByRole('button', { name: 'Run task' }); await waitFor(() => expect(run).toBeEnabled()); fireEvent.click(run);
+  await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(submissions.submitTask).mock.calls[0][1]).toMatchObject({ extensionProfile: { instanceId: 'instance', profileId: 'docs', revision: 1 }, extensionAllowWrite: choice });
+  await waitFor(() => expect(grant).toBeDisabled());
+});
+
+it('clears the write opt-in when selecting a profile again', () => {
+  renderPage(); const select = screen.getByLabelText('Agent extension profile');
+  fireEvent.change(select, { target: { value: 'docs' } }); fireEvent.click(screen.getByLabelText('Allow selected MCP write capabilities for this run'));
+  fireEvent.change(select, { target: { value: '' } }); expect(screen.queryByLabelText('Allow selected MCP write capabilities for this run')).toBeNull();
+  fireEvent.change(select, { target: { value: 'docs' } }); expect(screen.getByLabelText('Allow selected MCP write capabilities for this run')).not.toBeChecked();
 });

@@ -42,6 +42,12 @@ describe('buildSlashCommandsBlock', () => {
         }
     });
 
+    test('/fix row documents selecting all blockers and suggestions', () => {
+        const row = buildSlashCommandsBlock().split('\n').find(line => line.startsWith('| `/fix`'));
+        assert.ok(row?.includes('`/fix all`'));
+        assert.match(row!, /blockers and suggestions/);
+    });
+
     test('/switch description mentions changing model', () => {
         const result = buildSlashCommandsBlock();
         const switchLine = result.split('\n').find(l => l.includes('`/switch`'));

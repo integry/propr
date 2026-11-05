@@ -313,6 +313,28 @@ describe('useAutoDraftCreation', () => {
     expect(mockCreateDraft).toHaveBeenCalledTimes(1);
   });
 
+  it('reuses the committed draft if its in-place acknowledgement throws', async () => {
+    const onDraftCreatedInPlace = vi.fn(() => { throw new Error('Acknowledgement failed'); });
+    const { result } = renderHook(() => useAutoDraftCreation({
+      isNewMode: true,
+      selectedRepo: 'integry/propr',
+      resolvedBaseBranch: 'develop',
+      prompt: 'Test prompt',
+      localFiles: [],
+      onDraftCreatedInPlace,
+      navigate: vi.fn(),
+    }));
+
+    await flushAutoCreate();
+    expect(result.current.autoCreateError).toBe('Acknowledgement failed');
+    await act(async () => {
+      await expect(result.current.ensureDraftCreated()).resolves.toEqual(expect.objectContaining({ draft_id: 'draft-1' }));
+    });
+    await flushAutoCreate();
+    expect(mockCreateDraft).toHaveBeenCalledTimes(1);
+    expect(onDraftCreatedInPlace).toHaveBeenCalledTimes(1);
+  });
+
   it('does not reuse or apply a pending draft creation from a previous selection', async () => {
     const onDraftCreatedInPlace = vi.fn();
     let resolveFirstDraft: (draft: Awaited<ReturnType<typeof createDraft>>) => void = () => {};

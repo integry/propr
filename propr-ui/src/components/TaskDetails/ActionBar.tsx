@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useEffect, useRef, useState, useId } from 'react';
 import { HistoryItem } from './types';
-import { FileText, Terminal, Square, Loader2, Ban, Trash2, MessageSquarePlus } from 'lucide-react';
+import TaskActionSheet from './TaskActionSheet';
+import { getDeleteState, type DeletionProps, type OverflowMenuItem } from './taskActions';
+import { FileText, Terminal, Square, Loader2, Ban, Trash2, MessageSquarePlus, MoreHorizontal } from 'lucide-react';
 
 interface ActionBarProps {
   currentStatus: string;
@@ -13,7 +15,33 @@ interface ActionBarProps {
   onViewLogs: (logsPath: string) => void;
   onDeleteTask?: () => void;
   onFollowUp?: () => void;
+  /**
+   * The task's newest run when the pane shows an earlier one. While it works,
+   * its Stop stays in the header, so the agent can be stopped from any run.
+   */
+  liveRun?: LiveRunControl;
+  /**
+   * The one-line bar the mobile header collapses into: Stop stays out while the
+   * task works, and everything else moves into the overflow menu.
+   */
+  compact?: boolean;
+  /**
+   * The newest run's follow-up commands for its pull request, shown in the
+   * full bar and the expanded mobile summary; the one-line compact bar leaves
+   * them out.
+   */
+  followupCommands?: React.ReactNode;
+  /** Expanded mobile summary: Follow Up stays beside the overflow. */
+  mobileSummary?: boolean;
 }
+
+export interface LiveRunControl {
+  number: number;
+  stopping: boolean;
+  onStop: () => void;
+}
+
+const ACTIVE_STATUSES = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'CLAUDE_EXECUTION_COMPLETED', 'POST_PROCESSING'];
 
 // Cancelled badge component
 const CancelledBadge: React.FC<{ isCancelled: boolean }> = ({ isCancelled }) => {
@@ -34,13 +62,14 @@ const StopExecutionButton: React.FC<{
   isActive: boolean;
   stoppingExecution: boolean;
   onStopExecution: () => void;
-}> = ({ isActive, stoppingExecution, onStopExecution }) => {
+  title?: string;
+}> = ({ isActive, stoppingExecution, onStopExecution, title = 'Stop Execution' }) => {
   if (!isActive) return null;
   return (
     <button
       onClick={onStopExecution}
       disabled={stoppingExecution}
-      title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
+      title={stoppingExecution ? 'Stopping execution...' : title}
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
         stoppingExecution
           ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
@@ -62,30 +91,42 @@ const StopExecutionButton: React.FC<{
   );
 };
 
-// Delete button component
-const DeleteButton: React.FC<{
+/** The task's Stop, and the newest run's when the pane shows an earlier one that is done. */
+const StopButtons: React.FC<{
   isActive: boolean;
-  stopFailed: boolean;
-  deletingTask: boolean;
-  onDeleteTask: () => void;
-}> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
-  // Enable delete if task is not active, or if stop failed
-  const canDelete = !isActive || stopFailed;
-  const isDisabled = !canDelete || deletingTask;
+  stopsLiveRun: boolean;
+  stoppingExecution: boolean;
+  onStopExecution: () => void;
+  liveRun?: LiveRunControl;
+}> = ({ isActive, stopsLiveRun, stoppingExecution, onStopExecution, liveRun }) => (
+  <>
+    <StopExecutionButton
+      isActive={isActive}
+      stoppingExecution={stoppingExecution}
+      onStopExecution={onStopExecution}
+    />
+    {liveRun && (
+      <StopExecutionButton
+        isActive={stopsLiveRun}
+        stoppingExecution={liveRun.stopping}
+        onStopExecution={liveRun.onStop}
+        title={`Stop Run ${liveRun.number}, which is still running`}
+      />
+    )}
+  </>
+);
 
-  const getTitle = () => {
-    if (deletingTask) return 'Deleting...';
-    if (stopFailed) return 'Delete task (stop failed, task may have already stopped)';
-    if (isActive) return 'Stop the task before deleting';
-    return 'Delete task';
-  };
+// Delete button component
+const DeleteButton: React.FC<DeletionProps> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
+  const { isDisabled, title } = getDeleteState(isActive, stopFailed, deletingTask);
 
   return (
     <button
+      role="menuitem"
       onClick={onDeleteTask}
       disabled={isDisabled}
-      title={getTitle()}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+      title={title}
+      className={`flex items-center gap-1.5 w-full px-3 py-2 rounded text-xs font-medium transition-colors ${
         isDisabled
           ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200'
           : 'bg-white hover:bg-red-50 text-red-500 hover:text-red-600 border border-gray-200 hover:border-red-200'
@@ -98,6 +139,103 @@ const DeleteButton: React.FC<{
       )}
       <span>Delete</span>
     </button>
+  );
+};
+
+const TaskOverflowMenu: React.FC<{
+  deletion: DeletionProps;
+}> = ({ deletion }) => {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const menu = menuRef.current;
+    (menu?.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? menu)?.focus();
+    const dismiss = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative ml-1 border-l border-slate-200 pl-2"
+      onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Escape' && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          triggerRef.current?.focus();
+        }
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="More task actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        onClick={() => setOpen(value => !value)}
+        onKeyDown={event => {
+          if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true); }
+        }}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <div id={menuId} ref={menuRef} role="menu" aria-label="More task actions" tabIndex={-1}
+          className="absolute right-0 top-full z-50 mt-1 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
+          <DeleteButton {...deletion} onDeleteTask={() => {
+            setOpen(false);
+            triggerRef.current?.focus();
+            deletion.onDeleteTask();
+          }} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** The collapsed header's actions: Stop while the task works, everything else in the action sheet. */
+const CompactActions: React.FC<{
+  summary?: boolean;
+  followupCommands?: React.ReactNode;
+  stopButtons: React.ReactNode;
+  deletion?: DeletionProps;
+  onFollowUp?: () => void;
+  historyItemWithPaths?: HistoryItem;
+  onViewPrompt: (promptPath: string) => void;
+  onViewLogs: (logsPath: string) => void;
+}> = ({ summary, followupCommands, stopButtons, deletion, onFollowUp, historyItemWithPaths, onViewPrompt, onViewLogs }) => {
+  const { promptPath, logsPath } = historyItemWithPaths ?? {};
+  const items: OverflowMenuItem[] = [];
+  if (onFollowUp && !summary) items.push({ label: 'Follow Up', title: 'Follow Up - Post a follow-up comment', icon: <MessageSquarePlus size={18} />, onSelect: onFollowUp });
+  if (promptPath) items.push({ label: 'Prompt', title: 'View Prompt', icon: <FileText size={18} />, onSelect: () => onViewPrompt(promptPath) });
+  if (logsPath) items.push({ label: 'Logs', title: 'View Logs', icon: <Terminal size={18} />, onSelect: () => onViewLogs(logsPath) });
+  // Stop is a safety control, so it never folds into the sheet.
+  return (
+    // In the expanded summary the actions keep to the right, wrapping rather than overflowing a narrow line.
+    <div className={summary ? 'ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5' : 'flex flex-none items-center gap-1.5'}>
+      {summary && followupCommands}
+      {summary && onFollowUp && (
+        <button onClick={onFollowUp} className="inline-flex min-h-11 items-center gap-1 whitespace-nowrap rounded py-1 text-[11px] leading-4 font-medium text-slate-600" title="Follow Up - Post a follow-up comment">
+          <MessageSquarePlus size={12} /><span>Follow Up</span>
+        </button>
+      )}
+      {stopButtons}
+      {(items.length > 0 || deletion) && <TaskActionSheet items={items} deletion={deletion} />}
+    </div>
   );
 };
 
@@ -114,14 +252,45 @@ const ActionBar: React.FC<ActionBarProps> = ({
   onViewPrompt,
   onViewLogs,
   onDeleteTask,
-  onFollowUp
+  onFollowUp,
+  liveRun,
+  compact,
+  followupCommands,
+  mobileSummary,
 }) => {
-  const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
+  const isActive = ACTIVE_STATUSES.includes(currentStatus);
+  // The run on screen is done, but a newer one is still working: its Stop takes this run's place.
+  const stopsLiveRun = !isActive && Boolean(liveRun);
+  const taskBusy = isActive || stopsLiveRun;
   const isCancelled = currentStatus === 'CANCELLED';
+  const deletion = onDeleteTask && { isActive, stopFailed, deletingTask, onDeleteTask };
+  const stopButtons = (
+    <StopButtons isActive={isActive} stopsLiveRun={stopsLiveRun} stoppingExecution={stoppingExecution} onStopExecution={onStopExecution} liveRun={liveRun} />
+  );
+
+
+  const followUp = taskBusy ? undefined : onFollowUp;
+
+  if (compact || mobileSummary) {
+    return (
+      <CompactActions
+        summary={mobileSummary}
+        followupCommands={followupCommands}
+        stopButtons={stopButtons}
+        deletion={deletion}
+        onFollowUp={followUp}
+        historyItemWithPaths={historyItemWithPaths}
+        onViewPrompt={onViewPrompt}
+        onViewLogs={onViewLogs}
+      />
+    );
+  }
 
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:flex-shrink-0">
+    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:max-w-full sm:flex-shrink-0">
       <CancelledBadge isCancelled={isCancelled} />
+
+      {followupCommands}
 
       {/* View Prompt Button - Ghost style */}
       {historyItemWithPaths?.promptPath && (
@@ -148,9 +317,9 @@ const ActionBar: React.FC<ActionBarProps> = ({
       )}
 
       {/* Follow Up Button - Ghost style */}
-      {onFollowUp && !isActive && (
+      {followUp && (
         <button
-          onClick={onFollowUp}
+          onClick={followUp}
           title="Follow Up - Post a follow-up comment"
           className={ghostButtonClass}
         >
@@ -159,25 +328,14 @@ const ActionBar: React.FC<ActionBarProps> = ({
         </button>
       )}
 
-      {/* Divider before destructive actions */}
-      {(isActive || onDeleteTask) && (
-        <div className="h-4 w-px bg-slate-300 mx-1" />
+      {/* Divider before destructive actions, only when it divides them from something */}
+      {taskBusy && (historyItemWithPaths?.promptPath || historyItemWithPaths?.logsPath) && (
+        <div aria-hidden="true" className="h-4 w-px bg-slate-200 mx-1" />
       )}
 
-      <StopExecutionButton
-        isActive={isActive}
-        stoppingExecution={stoppingExecution}
-        onStopExecution={onStopExecution}
-      />
+      {stopButtons}
 
-      {onDeleteTask && (
-        <DeleteButton
-          isActive={isActive}
-          stopFailed={stopFailed}
-          deletingTask={deletingTask}
-          onDeleteTask={onDeleteTask}
-        />
-      )}
+      {deletion && <TaskOverflowMenu deletion={deletion} />}
     </div>
   );
 };

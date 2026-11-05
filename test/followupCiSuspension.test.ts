@@ -2502,7 +2502,7 @@ describe('follow-up CI suspension lifecycle wiring', () => {
         assert.ok(begin > authorizedFindings, 'suspension must follow instruction filtering and authorization');
         // cleanupJob runs in the job's finally for success, failure and cancellation.
         assert.ok(cleanup.includes('releaseFollowupCiSuspensionsForTask'), 'job cleanup releases the suspension');
-        assert.ok(job.includes('await cleanupJob({ stateManager, lockKey, lockToken, taskId'), 'cleanup receives the owning task');
+        assert.match(job, /await cleanupJob\(\{[^}]*\btaskId\b/, 'cleanup receives the owning task regardless of option order');
     });
 });
 

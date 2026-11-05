@@ -1,3 +1,5 @@
+import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
+import { registerRepositoryCache } from '../storage/registry.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
@@ -17,12 +19,13 @@ import {
     cleanupExistingBranch,
     createWorktreeFromExistingBranch,
 } from './worktreeCreation.js';
-import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
+import { configureGitRemoteAuthentication, configureGitAuthentication, setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
 import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult } from './fetchOperations.js';
 import { createHooklessGit } from './hooklessGit.js';
+import { GitLockRetryOptions, isGitLockContentionError, withGitLockRetry } from './configLock.js';
 import {
     assertGitHubRepositoryUrl,
     assertRepositoryClonePath,
@@ -60,14 +63,29 @@ export interface EnsureRepoClonedOptions {
     repoName: string;
     authToken: string;
     baseBranch?: string;
+    /** Bounded backoff while another process holds a lock in the shared clone. */
+    lockRetry?: GitLockRetryOptions;
 }
 
 export async function ensureRepoCloned(options: EnsureRepoClonedOptions): Promise<string> {
-    return ensureRepoClonedInternal(options);
+    return repositoryStorageLifecycle.use(async () => {
+        const candidate = getRepoPath(options.owner, options.repoName);
+        const wasPresent = await fs.lstat(candidate).then(() => true, error => {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+        });
+        const directory = await ensureRepoClonedInternal(options);
+        // Legacy/user-supplied directories cannot acquire ownership merely by being used.
+        if (!wasPresent) {
+            try { await registerRepositoryCache(directory, options.owner, options.repoName); }
+            catch { logger.warn('Repository cache ownership could not be registered; automatic cleanup will retain it'); }
+        }
+        return directory;
+    });
 }
 
 /**
- * Configure git gc globally to not prune worktree metadata younger than 24 hours.
+ * Disable global age-only worktree metadata pruning.
  * This prevents race conditions where concurrent operations might cause
  * gc to prune metadata for actively running tasks.
  * Uses --global so it applies to all repos including existing ones.
@@ -76,9 +94,9 @@ let gcWorktreePruneConfigured = false;
 async function configureGcWorktreePrune(git: SimpleGit): Promise<void> {
     if (gcWorktreePruneConfigured) return;
     try {
-        await git.raw(['config', '--global', 'gc.worktreePruneExpire', '24.hours.ago']);
+        await git.raw(['config', '--global', 'gc.worktreePruneExpire', 'never']);
         gcWorktreePruneConfigured = true;
-        logger.info('Set global gc.worktreePruneExpire to 24 hours');
+        logger.info('Disabled automatic worktree metadata pruning');
     } catch (configError) {
         logger.warn({ error: (configError as Error).message }, 'Failed to set gc.worktreePruneExpire');
     }
@@ -90,7 +108,7 @@ interface UpdateExistingRepoParams {
 }
 
 async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
-    const { repoUrl, owner, repoName, authToken, baseBranch } = opts;
+    const { repoUrl, owner, repoName, authToken, baseBranch, lockRetry } = opts;
     logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
 
     // Add to safe.directory BEFORE any git operations on this path
@@ -104,18 +122,23 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
         const git: SimpleGit = createHooklessGit(localRepoPath);
         if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
         await configureGcWorktreePrune(git);
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
-        await git.fetch(['origin', '--prune']);
+        await setupAuthenticatedRemote(git, repoUrl, authToken, lockRetry);
+        await withGitLockRetry('fetching origin', () => git.fetch(['origin', '--prune']), lockRetry);
     } catch (gitError) {
-        const errorMessage = (gitError as Error).message;
+        const errorMessage = redactAuthenticatedGitUrl((gitError as Error).message);
+        // Another worker holding a lock in this shared clone says nothing about
+        // its health; removing or re-cloning would destroy that worker's state.
+        if (isGitLockContentionError(gitError)) {
+            const detail = redactAuthenticatedGitUrl(errorMessage);
+            logger.error({ repo: `${owner}/${repoName}`, path: localRepoPath, error: detail }, 'Shared repository is locked by another Git process; leaving it untouched.');
+            throw new Error(`Repository ${owner}/${repoName} could not be prepared because its shared clone stayed locked by another Git process (not corruption; nothing was removed): ${detail}`);
+        }
         if (await hasActiveWorktrees(localRepoPath)) {
             logger.error({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository has issues but has active worktrees - cannot remove and re-clone.');
             throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${errorMessage}`);
         }
-        logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
-        await fs.remove(localRepoPath);
-        await ensureRepoClonedInternal(opts);
-        return;
+        // Authentication/network failures and corrupt state never authorize deletion.
+        throw new Error(`Repository ${owner}/${repoName} could not be refreshed; retained for recovery: ${redactAuthenticatedGitUrl(errorMessage)}`);
     }
 
     const git: SimpleGit = createHooklessGit(localRepoPath);
@@ -141,8 +164,7 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
     logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Cloning repository...');
 
     if (await fs.pathExists(localRepoPath)) {
-        logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists without .git folder - removing before clone');
-        await fs.remove(localRepoPath);
+        throw new Error('Existing repository directory has uncertain ownership; retained for recovery');
     }
     await fs.ensureDir(localRepoPath);
 
@@ -152,14 +174,16 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
     // and git will use the remote's default branch automatically
     if (baseBranch && baseBranch !== 'HEAD') cloneOptions.push(`--branch=${baseBranch}`);
 
-    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
+    const cloneGit = createHooklessGit();
+    configureGitAuthentication(cloneGit, authToken);
     try {
-        await createHooklessGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+        await cloneGit.clone(repoUrl, localRepoPath, cloneOptions);
     } catch (error) {
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
 
     const repoGit: SimpleGit = createHooklessGit(localRepoPath);
+    configureGitAuthentication(repoGit, authToken);
     await configureGcWorktreePrune(repoGit);
 
     // Treat 'HEAD' as unspecified - use default branch detection
@@ -213,6 +237,18 @@ interface CreateWorktreeOptions {
     baseBranch?: string | null;
     octokit?: InstanceType<typeof Octokit> | null;
     modelName?: string | null;
+    /**
+     * Start from this already-resolved commit of `branch` (for example, the commit the
+     * repository workflow policy was read from) instead of the branch's latest head.
+     * Creation fails when the worktree resolves to another branch or the commit is not on
+     * it, so the run never applies policy from one commit to another commit's code.
+     */
+    startRevision?: { branch: string; revision: string } | null;
+    /**
+     * Continue this already-pushed work branch (a replacement attempt) instead of
+     * creating a new one. Falls back to a fresh branch when it no longer exists.
+     */
+    reuseBranch?: string | null;
 }
 
 export interface WorktreeResult {
@@ -222,9 +258,59 @@ export interface WorktreeResult {
 
 export type WorktreeInfo = WorktreeResult;
 
+/**
+ * Hooks, instructions and validation were read from `startRevision`. Starting anywhere
+ * else would apply that policy to code it was not read from, so a base that moved away
+ * from it (force-push, a branch that appeared after the policy fell back to the default
+ * branch) stops preparation; a retry reads the policy again from the current base.
+ */
+async function resolveIssueStartPoint(
+    git: SimpleGit, issueId: number | string, baseBranch: string, startRevision: CreateWorktreeOptions['startRevision'],
+): Promise<string> {
+    const branchHead = `origin/${baseBranch}`;
+    if (!startRevision) return branchHead;
+    const unusable = (reason: string) => new Error(`Cannot start issue ${issueId} from repository workflow revision ${startRevision.revision} `
+        + `(read from '${startRevision.branch}'): ${reason}. The base branch changed after the workflow policy was read.`);
+    if (startRevision.branch !== baseBranch) throw unusable(`the worktree base branch is '${baseBranch}'`);
+    if (!/^[0-9a-f]{40,64}$/i.test(startRevision.revision)) throw unusable('it is not a commit id');
+    // `merge-base --is-ancestor` reports "no" only through its exit code, which
+    // simple-git does not reject without stderr; compare the merge base instead.
+    let onBranch = false;
+    try {
+        const commit = (await git.revparse([`${startRevision.revision}^{commit}`])).trim();
+        onBranch = (await git.raw(['merge-base', commit, branchHead])).trim() === commit;
+    } catch (error) {
+        logger.warn({ baseBranch, startRevision: startRevision.revision, error: (error as Error).message }, 'Requested start revision could not be resolved');
+    }
+    if (!onBranch) throw unusable(`it is not on the fetched '${baseBranch}' branch`);
+    return startRevision.revision;
+}
+
+/**
+ * Fetches a previously pushed work branch so a replacement attempt continues it.
+ * Returns its remote-tracking start point, or null when it cannot be used.
+ */
+async function fetchReusableBranch(git: SimpleGit, branch: string): Promise<string | null> {
+    try {
+        await git.raw(['check-ref-format', '--branch', branch]);
+        await configureGitRemoteAuthentication(git);
+        await git.raw(['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+        await git.revparse([`origin/${branch}^{commit}`]);
+        logger.info({ branch }, 'Continuing the pushed work branch of the replaced attempt');
+        return `origin/${branch}`;
+    } catch (error) {
+        logger.warn({ branch, error: (error as Error).message }, 'Pushed work branch of the replaced attempt is unavailable; starting a fresh branch');
+        return null;
+    }
+}
+
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
+    return repositoryStorageLifecycle.use(() => createWorktreeForIssueInternal(localRepoPath, issueInfo, options));
+}
+
+async function createWorktreeForIssueInternal(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
-    const { baseBranch = null, octokit = null, modelName = null } = options;
+    const { baseBranch = null, octokit = null, modelName = null, startRevision = null, reuseBranch = null } = options;
     assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
 
     const sanitizedTitle = issueTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').substring(0, 25);
@@ -234,7 +320,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
 
     const safeModelName = modelName ? sanitizeGeneratedNameComponent(modelName, 'model') : null;
     const branchModelPrefix = safeModelName ? `${safeModelName}-` : '';
-    const branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+    let branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
     const modelSuffix = safeModelName ? `-${safeModelName}` : '';
     const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
@@ -265,16 +351,17 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
 
         logger.info({ localRepoPath, worktreePath, branchName, baseBranch: resolvedBaseBranch, issueId }, 'Creating Git worktree...');
 
-        // NOTE: Removed `git worktree prune` here - it was causing race conditions
-        // when multiple tasks run concurrently on the same repo. The prune could
-        // delete worktree metadata for actively running tasks. Prune is still
-        // called during cleanup in worktreeOperations.ts after task completion.
+        // Worktree registrations are retained: they can protect detached history,
+        // including checkouts whose directories are temporarily unavailable.
 
-        await cleanupExistingBranch(git, branchName);
+        const reusedStartPoint = reuseBranch ? await fetchReusableBranch(git, reuseBranch) : null;
+        if (reusedStartPoint) branchName = reuseBranch!;
+        if (!reusedStartPoint) await cleanupExistingBranch(git, branchName);
         // Use explicit refspec to ensure remote tracking ref is updated
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations
         try {
+            await configureGitRemoteAuthentication(git);
             await git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']);
             logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch with explicit refspec');
         } catch (fetchError) {
@@ -288,11 +375,13 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             throw fetchError;
         }
 
+        const startPoint = reusedStartPoint ?? await resolveIssueStartPoint(git, issueId, resolvedBaseBranch, startRevision);
+
         await addWorktreeWithoutTracking(
             git,
             worktreePath,
             branchName,
-            { startPoint: `origin/${resolvedBaseBranch}` },
+            { startPoint, resetBranch: Boolean(reusedStartPoint) },
         );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });

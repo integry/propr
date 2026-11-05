@@ -1,10 +1,22 @@
-import type { PublishedVisualPreview } from '@propr/shared';
+import type { LiveOutputPosition, PublishedVisualPreview } from '@propr/shared';
 
 export interface TokenUsage {
   input_tokens?: number | null;
   output_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+}
+
+/** A task's estimated spend against its run spend cap, from the task history API. */
+export interface TaskBudget {
+  spentUsd: number;
+  /** null when the run is uncapped. */
+  capUsd: number | null;
+  /** Spend as a share of the cap; null when uncapped. */
+  percent: number | null;
+  source: 'override' | 'workflow' | 'instance_default' | null;
+  /** The run was stopped at its cap. */
+  exceeded: boolean;
 }
 
 export interface UsageMetricRecord {
@@ -21,7 +33,64 @@ export interface UsageMetrics {
   agent?: string;
 }
 
+export type PushRejectionClass = 'push_protection' | 'ruleset_or_branch_protection' | 'non_fast_forward' | 'auth' | 'network' | 'unknown';
+
+/** Which salvage rung kept the commits of a rejected push (`retry` means the push succeeded). */
+export interface PushSalvageEvent {
+  rung: 'retry' | 'rescue_ref' | 'bundle' | 'worktree' | 'none';
+  classification: PushRejectionClass;
+  summary: string;
+  rescueRef?: string;
+  bundlePath?: string;
+  worktreePath?: string;
+  recoveryInstruction?: string;
+  unblockUrls?: string[];
+}
+
+/** Stored on the FAILED entry of a task whose final push was rejected. */
+export interface PushFailure {
+  diagnosis: { classification: PushRejectionClass; summary: string; unblockUrls: string[]; excerpt?: string };
+  rung: 'rescue_ref' | 'bundle' | 'worktree' | 'none';
+  branchName: string;
+  repository: string;
+  rescueRef?: string;
+  bundlePath?: string;
+  worktreePath?: string;
+  recoveryInstruction: string;
+}
+
+export interface NetworkEgressSummary {
+  mode: 'open' | 'restricted';
+  source?: 'instance' | 'workflow' | 'instance_enforced';
+  note?: string;
+  allow?: string[];
+  restrictedContainers?: number;
+  fallbacks?: Array<{ agentType: string; reason: string }>;
+  refusals?: Array<{ agentType: string; reason: string }>;
+  allowedConnections?: number;
+  deniedConnections: number;
+  deniedHosts: Array<{ host: string; count: number }>;
+  omittedDeniedHosts?: number;
+  omittedDeniedAttempts?: number;
+  /** Allowed connections that could not be reached upstream. */
+  failedConnections?: number;
+  failedHosts?: Array<{ host: string; count: number }>;
+}
+
 export interface HistoryItemMetadata {
+  repositoryWorkflow?: { path: string; baseBranch: string; revision: string; fileRevision: string; maxParallelTasks: number; timeoutMs: number };
+  /** Admission refusals so far for a task waiting on repository workflow capacity. */
+  repositoryWorkflowDeferrals?: number;
+  /** ISO timestamp of the next admission attempt. */
+  repositoryWorkflowRetryAt?: string;
+  terminalReason?: string;
+  /** Timeline event that repeats the current state, e.g. `budget.exceeded` or `replacement.dispatched`. */
+  event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | 'pull_request.auto_assignment' | string;
+  budget?: { capUsd: number; spentUsd: number; priorSpentUsd?: number; percent?: number; source?: 'override' | 'workflow' | 'instance_default' };
+  /** `network.egress`: one run's network mode and every host its egress proxy denied. */
+  networkEgress?: NetworkEgressSummary;
+  pushFailure?: PushFailure;
+  pushSalvage?: PushSalvageEvent;
   model?: string;
   pr?: { url?: string; number?: number };
   pullRequest?: { url?: string; number?: number };
@@ -30,13 +99,17 @@ export interface HistoryItemMetadata {
   tokenUsage?: TokenUsage;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   consumedReviewCommentIds?: number[];
-  ultrafixCycle?: boolean;
+  /** Legacy entries store `true`; current entries store the 1-based cycle number. */
+  ultrafixCycle?: boolean | number;
   ultrafixGoal?: number;
   ultrafixCycleCount?: number;
   ultrafixMaxCycles?: number;
   ultrafixScore?: number;
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
+  ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+  replacementTaskId?: string;
+  attemptNumber?: number;
   syntheticRouting?: {
     virtualAgentAlias?: string;
     virtualModel?: string;
@@ -71,8 +144,35 @@ export interface TaskInfo {
   model?: string;
   llmProvider?: string;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+  /** Set by the API for an automation run's report or action task, which has no issue or pull request. */
+  taskKind?: 'automation-report' | 'automation-action';
+  /** Normalized by the API: `true` whenever any history entry belongs to an ultrafix cycle. */
   ultrafixCycle?: boolean;
   previewMedia?: PublishedVisualPreview[];
+  /** 1-based attempt number within an automatic-replacement lineage. */
+  attemptNumber?: number;
+  replacesTaskId?: string | null;
+  replacedByTaskId?: string | null;
+  /** Every attempt of the lineage, oldest first; present for replaced and replacement tasks. */
+  attemptLineage?: TaskAttempt[];
+  /** Where the API posts a follow-up submitted for this task; absent when it would refuse one. */
+  followupTarget?: FollowupTarget;
+}
+
+/** The GitHub thread the follow-up route resolves for a task ID, as reported by the task history API. */
+export interface FollowupTarget {
+  taskId: string;
+  repository: string;
+  kind: 'pull_request' | 'issue';
+  number: number;
+}
+
+export interface TaskAttempt {
+  taskId: string;
+  attemptNumber: number;
+  replacementCause?: 'infra_lost' | 'provider_transient' | null;
+  state?: string | null;
+  createdAt?: string | null;
 }
 
 export interface PromptData {
@@ -92,7 +192,8 @@ export interface PromptData {
 export interface LogFileInfo {
   name: string;
   path: string;
-  size: number;
+  /** Byte size when the API reports it; execution-backed lists do not, so it is absent rather than zero. */
+  size?: number;
   type: string;
 }
 
@@ -138,22 +239,10 @@ export interface LiveDetails {
   todos: TodoItem[];
   currentTask: string | null;
   tokenUsage?: TokenUsage | null;
-}
-
-export interface AnalysisData {
-  report?: string;
-  analysis?: string;
-  content?: string;
-  error?: string;
-}
-
-export type AnalysisApiData = {
-  [Key in keyof AnalysisData]?: AnalysisData[Key] | null;
-};
-
-export interface ParsedAnalysis {
-  recommendations?: string[];
-  error_analysis?: string;
-  implementation_critique?: string;
-  efficiency_notes?: string;
+  /** Raw terminal events of this execution not held here; readable events are never left out. */
+  omittedEventCount?: number;
+  /** The server discarded earlier output of this execution; neither `events` nor `omittedEventCount` accounts for it. */
+  historyTruncated?: boolean;
+  /** Where in the live output log this state was read (see `LiveOutputPosition`). */
+  liveOutputPosition?: LiveOutputPosition;
 }

@@ -8,7 +8,7 @@ interface StableLiveEventIdOptions<T extends object> {
   executionNamespace: string;
 }
 
-function idSegment(value: unknown): string {
+export function idSegment(value: unknown): string {
   return encodeURIComponent(typeof value === 'string' && value.length > 0 ? value : 'unknown');
 }
 

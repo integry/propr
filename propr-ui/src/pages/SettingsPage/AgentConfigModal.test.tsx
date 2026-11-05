@@ -20,6 +20,25 @@ vi.mock('../../api/proprApi', () => ({
 }));
 
 describe('AgentConfigModal', () => {
+  it('preserves distinct migrated effort labels when editing and saving an Antigravity agent', () => {
+    const onSave = vi.fn();
+    const labels = {
+      'antigravity-gemini-3.8-flash-low': 'quick-work',
+      'antigravity-gemini-3.8-flash-high': 'deep-review',
+      'antigravity-claude-opus-4.6-thinking': 'old-opus',
+    };
+    render(<AgentConfigModal
+      agent={{ id: 'migrated', type: 'antigravity', alias: 'antigravity', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '~/.gemini',
+        supportedModels: ['antigravity-gemini-3.8-flash', 'antigravity-claude-opus-5.5'],
+        defaultModel: 'antigravity-gemini-3.8-flash', modelCustomLabels: labels }}
+      existingAliases={[]} onClose={vi.fn()} onSave={onSave}
+    />);
+    fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'edited-antigravity' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    expect(onSave.mock.calls[0][0].modelCustomLabels).toEqual(labels);
+  });
+
   it('adds a loginable agent with an isolated managed credential path and requests login', () => {
     const onSave = vi.fn();
 
@@ -41,7 +60,7 @@ describe('AgentConfigModal', () => {
 
     const defaultOpenCodeModel = AGENT_MODELS.opencode[0];
     expect(screen.getByText(defaultOpenCodeModel.name)).toBeInTheDocument();
-    expect(screen.getByText(defaultOpenCodeModel.id)).toBeInTheDocument();
+    expect(screen.queryByText(defaultOpenCodeModel.id)).not.toBeInTheDocument();
     expect(screen.getByText(defaultOpenCodeModel.githubLabel)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Agent & Log In' }));
@@ -95,8 +114,8 @@ describe('AgentConfigModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
 
-    expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
-    expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
+    expect(await screen.findByText('Opencode OpenAI GPT-5.5')).toBeInTheDocument();
+    expect(screen.queryByText('opencode-openai/gpt-5.5')).not.toBeInTheDocument();
     expect(screen.getByText('llm-opencode~opencode-openai/gpt-5.5')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'opencode2' } });
@@ -152,8 +171,8 @@ describe('AgentConfigModal', () => {
       />
     );
 
-    expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
-    expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
+    expect(await screen.findByText('Opencode OpenAI GPT-5.5')).toBeInTheDocument();
+    expect(screen.queryByText('opencode-openai/gpt-5.5')).not.toBeInTheDocument();
   });
 
   it('saves a model-specific reasoning level for Codex agents', () => {
@@ -221,3 +240,17 @@ describe('AgentConfigModal', () => {
     })).toHaveDisplayValue('Ultracode (unsupported for Codex) — GitHub: level-ultracode');
   });
 });
+
+ it('offers one Antigravity entry per model with model-specific reasoning choices', () => {
+    render(<AgentConfigModal agent={null} existingAliases={[]} onClose={vi.fn()} onSave={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Antigravity$/ }));
+    const flash = screen.getByLabelText('Reasoning level for Antigravity Gemini 3.8 Flash');
+    expect(flash).toHaveValue('');
+    expect(Array.from(flash.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    const argon = screen.getByLabelText('Reasoning level for Antigravity Gemini 4 Argon');
+    expect(Array.from(argon.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    expect(screen.queryByLabelText('Reasoning level for Antigravity Gemini 3.1 Pro')).not.toBeInTheDocument();
+    const oss = screen.getByLabelText('Reasoning level for Antigravity GPT-OSS 120B');
+    expect(Array.from(oss.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'medium']);
+    expect(screen.queryByText('Antigravity Claude Opus 5.5 High')).not.toBeInTheDocument();
+ });

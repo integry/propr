@@ -1,3 +1,6 @@
+export const SUMMARY_TREE_ROUTE_PATH = '/api/summaries/:owner/:repo/tree/*path';
+export const SUMMARY_PATH_ROUTE_PATH = '/api/summaries/:owner/:repo/summary/*path';
+
 export function trimPathSlashes(value: string): string {
   let start = 0;
   let end = value.length;

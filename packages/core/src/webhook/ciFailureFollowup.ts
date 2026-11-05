@@ -6,6 +6,8 @@ import { getBotUsername, isAutoCiFollowupEnabledForRepository } from '../daemon/
 import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
+import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
+import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
 const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-followup key="[a-f0-9]{64}" -->/gu;
@@ -53,17 +55,18 @@ interface CiFailureOctokit {
     paginate?: (route: string, parameters: Record<string, unknown>) => Promise<unknown[]>;
 }
 
-type DedupeRedis = Pick<Redis, 'set' | 'del'>;
+type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'>;
 
 export interface CiFailureFollowupDependencies {
     isEnabled?: (owner: string, repo: string) => Promise<boolean>;
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
+    loadProprCancelledRuns?: LoadProprCancelledRuns;
 }
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    reason: 'posted' | 'disabled' | 'duplicate';
+    reason: 'posted' | 'disabled' | 'duplicate' | 'cancellation_induced';
     body?: string;
 }
 
@@ -81,7 +84,7 @@ export function isFailingCheckRunConclusion(conclusion: string | null | undefine
 }
 
 export function extractCheckRunFailure(payload: CheckRunEvent): CiFailureEvidence | null {
-    if (payload.action !== 'completed' || !isFailingCheckRunConclusion(payload.check_run.conclusion)) return null;
+    if (!isActedCheckRunAction(payload.action) || !isFailingCheckRunConclusion(payload.check_run.conclusion)) return null;
 
     const output = payload.check_run.output;
     const fallbackExcerpt = joinUsefulText([output.title, output.summary, output.text]);
@@ -102,8 +105,8 @@ export function extractCheckRunFailure(payload: CheckRunEvent): CiFailureEvidenc
 }
 
 export function extractStatusFailure(payload: StatusFailurePayload): CiFailureEvidence | null {
+    if (!isFailureStatusState(payload.state)) return null;
     const state = payload.state.toLowerCase();
-    if (state !== 'failure' && state !== 'error') return null;
 
     const context = payload.context?.trim() || 'Commit status';
     return {
@@ -192,6 +195,16 @@ export async function postCiFailureFollowup(
     const dedupeKey = buildCiFailureDedupeKey(request);
     const redis = dependencies.redisClient ?? getUltrafixStateRedis();
     const redisKey = `ci-failure-followup:${dedupeKey}`;
+    // This read is only a cheap pre-check. Concurrent first deliveries still
+    // need provenance followed by the atomic NX claim below.
+    try {
+        if (await redis.get(redisKey) !== null) return { posted: false, reason: 'duplicate' };
+    } catch (error) {
+        log.warn({ error: (error as Error).message }, 'Could not pre-check failed-CI follow-up claim');
+    }
+    if (await isCancellationInduced(octokit, request, dependencies, log)) {
+        return { posted: false, reason: 'cancellation_induced' };
+    }
     let claimed = false;
 
     try {
@@ -249,6 +262,37 @@ export async function postCiFailureFollowup(
             }
         }
         throw error;
+    }
+}
+
+/**
+ * A failure caused by a deliberate cancellation of its workflow run is not a
+ * code failure. Nothing is claimed for it, so a genuine failure of the same
+ * check on a later attempt of this head still gets its follow-up.
+ */
+async function isCancellationInduced(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    dependencies: CiFailureFollowupDependencies,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<boolean> {
+    if (request.evidence.kind !== 'check_run') return false;
+    try {
+        const provenance = await findCancellationProvenance(octokit, {
+            owner: request.owner,
+            repo: request.repo,
+            prNumber: request.prNumber,
+            checkRunId: request.evidence.checkRunId,
+            url: request.evidence.url,
+            conclusion: request.evidence.state,
+        }, dependencies.loadProprCancelledRuns);
+        if (!provenance) return false;
+        log.info({ ...failureLogContext(request), ...provenance }, 'Failed check run was caused by a deliberate workflow cancellation; no follow-up');
+        return true;
+    } catch (error) {
+        // Unproven cancellation must not hide a genuine failure.
+        log.warn({ error: (error as Error).message }, 'Could not determine whether a failed check run was cancellation-induced; posting follow-up');
+        return false;
     }
 }
 

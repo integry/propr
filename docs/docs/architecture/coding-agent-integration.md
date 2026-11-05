@@ -1,5 +1,8 @@
 ---
 sidebar_position: 5
+sidebar_label: "Coding Agent Integration"
+title: "Coding agent integration: OpenCode, Codex, and more"
+description: "Learn how ProPR integrates coding CLIs through shared Docker execution, credentials, model routing, and runtime contracts."
 ---
 
 # Coding Agent Integration

@@ -170,7 +170,7 @@ export interface GenerateContextPreviewOptions {
   files?: string[];
   worktreePath: string;
   correlationId?: string;
-  /** Model to use for context analysis (e.g., 'haiku', 'claude:claude-haiku-4-5-20251001') */
+  /** Model to use for context analysis (e.g., 'haiku', 'claude:claude-haiku-5-5') */
   contextModel?: string;
   /** Model to use for generation, determining the max context window */
   generationModel?: string;

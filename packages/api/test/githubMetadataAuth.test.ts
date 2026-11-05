@@ -5,6 +5,9 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
 import { up as createGitHubUserGrants } from '../../core/src/db/migrations/20260908000000_create_github_user_grants.js';
 import { up as addGitHubOAuthGrantRevision } from '../../core/src/db/migrations/20260908010000_add_github_oauth_grant_revision.js';
+import { up as createDesktopAuthTables } from '../../core/src/db/migrations/20260829000000_create_desktop_auth.js';
+import { up as addTwoPhaseDesktopPairing } from '../../core/src/db/migrations/20260830000000_add_two_phase_desktop_pairing.js';
+import { DesktopAuthService } from '../desktopAuthService.js';
 import { GitHubUserGrantService } from '../githubUserGrantService.js';
 import {
   GitHubMetadataAuthorizationError,
@@ -108,7 +111,7 @@ test('denies expired and revoked grants with reauthorization guidance', async ()
   await expired.capture({
     ...desktopUser, accessToken: 'gho_expired-secret', tokenExpiresAt: Date.now() - 1, oauthSource: 'github',
   });
-  assert.deepEqual(await expired.resolve(desktopUser.id), { status: 'reauth_required' });
+  assert.deepEqual(await expired.resolve(desktopUser.id), { status: 'reauth_required', reason: 'missing_refresh_token' });
 
   await expired.capture({
     ...desktopUser,
@@ -123,6 +126,40 @@ test('denies expired and revoked grants with reauthorization guidance', async ()
     (async () => Response.json({ error: 'invalid_grant' })) as typeof fetch,
   );
   assert.deepEqual(await revoked.resolve(desktopUser.id, true), { status: 'reauth_required' });
+});
+
+test('re-pairing leaves a revoked grant blocked until fresh OAuth captures the same user', async () => {
+  await createDesktopAuthTables(database);
+  await addTwoPhaseDesktopPairing(database);
+  const grants = new GitHubUserGrantService(database, { SESSION_SECRET: 'test-secret' });
+  await grants.capture({ ...desktopUser, accessToken: 'gho_expired-test-grant', tokenExpiresAt: Date.now() - 1, oauthSource: 'github' });
+  const request = { user: desktopUser, authenticationMethod: 'instance_token' } as Request;
+  const requiresReauth = (error: unknown) => error instanceof GitHubMetadataAuthorizationError && error.code === 'GITHUB_REAUTH_REQUIRED';
+  await assert.rejects(resolveGitHubMetadataToken(request, grants), requiresReauth);
+  const revokedRow = await database('github_user_grants').where({ github_user_id: desktopUser.id }).first();
+  assert.equal(revokedRow.status, 'reauth_required');
+  assert.equal(revokedRow.last_error_code, 'missing_refresh_token');
+
+  const pairingService = new DesktopAuthService({ database, approvalBaseUrl: 'https://app.example.test', publicApiUrl: 'https://instance.example.test' });
+  const binding = { instanceId: 'saved-instance', origin: 'https://instance.example.test', scope: 'desktop-instance' as const, credentialGeneration: 'G'.repeat(22) };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const pairing = await pairingService.startPairing('Desktop recovery', binding);
+    await pairingService.approvePairing(pairing.pairingId, desktopUser);
+    const credential = await pairingService.pollPairing(pairing.pairingId, pairing.deviceSecret);
+    assert.equal(credential.status, 'provisional');
+    if (credential.status !== 'provisional') throw new Error('Expected provisional pairing');
+    await pairingService.activatePairing(pairing.pairingId, { ...binding, deviceSecret: pairing.deviceSecret, activationTicket: credential.activationTicket });
+    assert.equal((await pairingService.validateToken(credential.token))?.user.id, desktopUser.id);
+    assert.deepEqual(await database('github_user_grants').where({ github_user_id: desktopUser.id }).first(), revokedRow);
+    await assert.rejects(resolveGitHubMetadataToken(request, grants), requiresReauth);
+  }
+
+  // The OAuth callback captures the browser's user, never the selected Desktop account.
+  await grants.capture({ ...desktopUser, id: '456', username: 'other-user', accessToken: 'gho_other-test-grant', oauthSource: 'github' });
+  await assert.rejects(resolveGitHubMetadataToken(request, grants), requiresReauth);
+  await grants.capture({ ...desktopUser, accessToken: 'ghu_fresh-test-grant', refreshToken: 'ghr_fresh-test-refresh', tokenExpiresAt: Date.now() + 3_600_000, oauthSource: 'github' });
+  assert.equal(await resolveGitHubMetadataToken(request, grants), 'ghu_fresh-test-grant');
+  assert.equal((await database('github_user_grants').where({ github_user_id: desktopUser.id }).first()).status, 'active');
 });
 
 test('preserves the browser session token path without consulting stored grants', async () => {

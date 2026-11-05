@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -12,12 +13,17 @@ import { up, down } from '../packages/core/src/db/migrations/20260914000000_add_
 import { up as checkpointUp, down as checkpointDown } from '../packages/core/src/db/migrations/20260914010000_add_pr_publication_checkpoint.js';
 
 import { up as completionUp, down as completionDown } from '../packages/core/src/db/migrations/20260914020000_add_pr_publication_completion.js';
+import { up as handoffUp } from '../packages/core/src/db/migrations/20261017000000_add_pr_followup_handoffs.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 await up(database);
 await checkpointUp(database);
 await completionUp(database);
+await handoffUp(database);
 const root = await mkdtemp(path.join(tmpdir(), 'pr-continuation-'));
+// A rejected final push runs the salvage ladder; keep its bundles inside the test root.
+process.env.PUSH_RESCUE_BUNDLE_DIR = path.join(root, 'rescue');
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Test Worker', '-c', 'user.email=worker@example.test', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 // All repositories are disposable fixtures; no workspace Git metadata is modified.
 git(root, 'init', '--bare', 'upstream.git');
@@ -81,7 +87,17 @@ const stateManager = {
 };
 await database.schema.createTable('tasks', table => { table.string('task_id'); table.string('commit_hash'); });
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
+// The spend cap is covered by its own suites; this one keeps the run uncapped.
+await mock.module('../src/jobs/runCostCap.js', { namedExports: {
+    withRunCostCap: async (_target: unknown, operation: (guard: unknown) => Promise<unknown>) => operation({ setWorkflowCap: async () => undefined }),
+    applyWorkflowCostCap: async (workflow: unknown) => workflow,
+    pullRequestRunCostCapTarget: () => ({}),
+} });
 await mock.module('@propr/core', { namedExports: {
+    ...pushSalvageExports,
+    preventWithdrawnJob: async () => null,
+    inspectTaskContainerLivenessForTask: async () => ({ liveness: 'not_found', container: null }),
+    releaseBranchFromSettledWorktree: async () => false,
     db: database, AI_COMMIT_AUTHOR: { name: 'Test Worker', email: 'worker@example.test' },
     logger: { ...log, withCorrelation: () => log },
     getStateManager: () => stateManager,
@@ -92,11 +108,13 @@ await mock.module('@propr/core', { namedExports: {
     ensureGitRepository: async () => { calls.push({ operation: 'ensureGitRepository', args: [] }); }, createLogFiles: noOp, UsageLimitError: class extends Error {},
     recordLLMMetrics: noOp, loadPrimaryProcessingLabels: async () => ['propr'], sanitizeAgentReport,
     loadRepositoryVisualPreviewSettings: noOp,
+    refineWorkflowPreviews, repositoryWorkflowPrompt,
     prepareVisualPreviewEvidence: async () => { calls.push({ operation: 'prepareVisualPreviewEvidence', args: [] }); return { evidence: { assets: [], toolSuggestions: [] } }; },
     cleanupPreparedVisualPreviewEvidence: noOp,
     appendVisualPreviewSection: (body: string) => body,
     renderVisualPreviewSection: () => '', renderVisualPreviewUploadFailureSection: () => '',
     resolveAgentTerminationReason: (result: { success: boolean }) => result.success ? undefined : 'timeout', VISUAL_PREVIEW_SLOT: '',
+    describeAgentTermination: () => 'Agent execution timed out.',
     commitChanges: async (worktree: string, message: string) => {
         git(worktree, 'add', '.');
         git(worktree, 'commit', '-m', message);
@@ -108,7 +126,7 @@ await mock.module('@propr/core', { namedExports: {
         assert.equal(pr, 100);
         return git(repoPath('upstream'), 'rev-parse', 'refs/heads/propr/continuation-pr-42');
     },
-    getCheckRunsStatus: async (_owner: string, _repo: string, sha: string) => {
+    getCheckRunsStatusForRepo: async (_owner: string, _repo: string, sha: string) => {
         events.push(`checks:${sha}`);
         const allPassing = completedCheckHeads.has(sha);
         return { count: 1, allPassing, anyPending: !allPassing, anyFailed: false };
@@ -144,7 +162,10 @@ await mock.module('@propr/core', { namedExports: {
         calls.push({ operation: 'worktree', args: { repo, branchName, worktreePath } });
         return { worktreePath, branchName };
     },
-    cleanupWorktree: async (_repo: string, worktree: string) => { await rm(worktree, { recursive: true, force: true }); },
+    cleanupWorktree: async (_repo: string, worktree: string, _branch: string, options: { success?: boolean } = {}) => {
+        calls.push({ operation: 'cleanup', args: { worktree, options } });
+        await rm(worktree, { recursive: true, force: true });
+    },
     pushBranch: async (worktree: string, branchName: string, options: { repoUrl: string; authToken: string }) => {
         assert.equal(options.authToken, token);
         calls.push({ operation: 'forkPush', args: { worktree, branchName, options } });
@@ -225,6 +246,19 @@ const octokit = {
     },
 };
 const modules: Record<string, Record<string, unknown>> = {
+    // Publication fixtures have no repository workflow policy.
+    repositoryWorkflow: {
+        prepareRepositoryWorkflow: noOp,
+        withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
+        reconcileRepositoryWorkflowAdmission: async (workflow: unknown) => workflow,
+        deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
+        RepositoryWorkflowCapacityError: class extends Error {},
+        resolveRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => prepare(),
+        resolveAttemptRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => ({ workflow: await prepare(), admitted: prepare }),
+        nonRetryableRepositoryWorkflowError: (error: unknown) => error,
+        repositoryWorkflowDeferralData: () => ({}), repositoryWorkflowHistoryMetadata: () => ({}), CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: {},
+        persistRepositoryWorkflowDeferral: noOp,
+    },
     // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
     followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },
     prCommentJobHelpers: {
@@ -242,13 +276,18 @@ const modules: Record<string, Record<string, unknown>> = {
     },
     prPendingComments: {
         restorePendingComments: async (comments: unknown[]) => { restoredComments.push(...comments); },
+        withdrawPendingComments: noOp,
         pickUpPendingCommentsWithClaim: async (comments: unknown[]) => ({ commentsToProcess: [...comments, ...pendingComments], pickedUpComments: pendingComments }),
         applyPendingCommentCommandContext: noOp,
     },
     prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
     prCommentAgentUtils: { generateSummaryTitle: async () => 'Saved subtitle', resolveAndExecuteAgent: async ({ worktreePath, prompt }: { worktreePath: string; prompt: string }) => { events.push('agent'); prompts.push(prompt); await afterAgentExecution?.(); if (produced.length) assert.equal(git(worktreePath, 'rev-parse', 'HEAD'), expectedAgentHead ?? produced[0]); await writeFile(path.join(worktreePath, 'implementation.txt'), `execution ${prompts.length}\n`); return { claudeResult: { success: !partialResult, summary: 'Saved agent summary', sessionId: 'saved-session', model: 'saved-model' }, agentType: 'test' }; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
-    reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }) },
+    reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }), selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }) },
+    // Escalation policy is exercised separately; publication keeps the resolved execution unchanged.
+    ultrafixEscalation: {
+        resolveUltrafixFixExecution: async ({ model, effort }: { model: string | null | undefined; effort?: string }) => ({ model, effort }),
+    },
     ultrafixOrchestrationService: {
         retainOriginalScope: noOp, stopLoop: async () => { events.push('stop'); },
         saveDeferredContinuation: async (_redis: unknown, deferred: typeof deferredReviews[number]) => { deferredReviews.push(deferred); },
@@ -258,16 +297,32 @@ const modules: Record<string, Record<string, unknown>> = {
     prTaskTitleHelpers: Object.fromEntries(['buildDeterministicPrTaskSubtitle', 'buildPrTaskTitle', 'buildPrTaskTitleContext', 'buildPrTaskTitleContextHistoryMetadata', 'getPrTaskWorkflowLabel', 'resolvePrTaskWorkflow'].map(name => [name, noOp])),
     prProcessingLock: {
         acquirePRProcessingLock: async (_redis: unknown, key: string) => { events.push(key); if (heldLocks.has(key)) return false; heldLocks.add(key); return true; },
+        acquireCurrentPRProcessingLock: async (_redis: unknown, { lockKey, onContended }: { lockKey: string; onContended: (key: string) => void }, resolveLockKey: () => Promise<string>) => {
+            const key = await resolveLockKey();
+            events.push(key);
+            if (heldLocks.has(key)) { onContended(key); return null; }
+            heldLocks.add(key);
+            void lockKey;
+            return key;
+        },
+        adoptPRProcessingLock: async () => 'adopted',
         ensurePRProcessingLockToken: async () => 'token', releasePRProcessingLock: async (_redis: unknown, key: string) => { heldLocks.delete(key); },
         startPRProcessingLockHeartbeat: () => noOp,
     },
-    prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: async ({ taskId }: { taskId: string }) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'processing'); }, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }) },
-    prCompletionComment: { buildCompletionComment: async (commit: unknown, comments: unknown, options: unknown, result: unknown) => JSON.stringify({ commit, comments, options, result }) },
+    closedPullRequestHandoffs: { readPullRequestClosure: async () => null, releaseHeldHandoffOfClosedPullRequest: async () => ({ released: false }) },
+    prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: async ({ taskId }: { taskId: string }) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'processing'); }, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }), schedulePRCommentRecovery: async () => undefined, delayPRCommentJobInPlace: async () => false, predecessorWaitDelay: () => 60_000 },
+    prCompletionComment: { buildCompletionComment: async (commit: unknown, comments: unknown, options: unknown, result: unknown) => JSON.stringify({ commit, comments, options, result }), noChangeAnalysisSummary: () => '' },
     reviewCommentGatherer: { markReviewFindingsProcessed: noOp },
+    // Follow-up assignment is covered by test/prAutoAssignmentFollowup.test.ts.
+    prCommentAutoAssignment: { autoAssignFollowUpPullRequest: noOp },
 };
 for (const [name, namedExports] of Object.entries(modules)) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });
 }
+// Continuation PRs keep their default description here; templates are covered by prTemplateDescription.test.ts.
+await mock.module('../src/jobs/pullRequestTemplate.js', { namedExports: {
+    describeContinuationPullRequest: async ({ fallback }: { fallback: string }) => fallback,
+} });
 await mock.module('../src/github/visualPreviewAttachments.js', { namedExports: {
     isVisualPreviewUploadAuthenticationError: () => false, publishPullRequestCommentVisualPreviews: noOp,
 } });
@@ -451,6 +506,9 @@ test('a force push that removes the captured baseline fails before execution and
     forcePushBeforeClone = true;
     await assert.rejects(run(), /retry preparation before implementation/);
     assert.equal(prompts.length, 0);
+    const cleanups = calls.filter(call => call.operation === 'cleanup');
+    assert.ok(cleanups.length > 0);
+    for (const cleanup of cleanups) assert.equal((cleanup.args.options as { success?: boolean }).success, false);
     assert.equal(await findPRContinuation(ref), undefined);
     const worktree = calls.find(c => c.operation === 'worktree')!.args as { worktreePath: string };
     await assert.rejects(import('node:fs/promises').then(fs => fs.access(worktree.worktreePath)), { code: 'ENOENT' });

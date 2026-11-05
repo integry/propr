@@ -5,6 +5,11 @@ const WORD_OVERLAP_THRESHOLD = 0.5;
 export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
 export const DEFAULT_MODEL_MAX_TOKENS = 200000;
 
+/** The token budget a context level allows, the same budget the preview selects files against. */
+export function getContextTokenBudget(contextLevel: number, modelMaxTokens: number = DEFAULT_MODEL_MAX_TOKENS): number {
+  return Math.floor(modelMaxTokens * (contextLevel / 100) * 0.98);
+}
+
 const extractWords = (prompt: string) => (prompt.toLowerCase().match(/\b[\w'-]+\b/g) ?? []);
 
 export function simulateContextLevel(
@@ -17,7 +22,7 @@ export function simulateContextLevel(
     return originalData;
   }
 
-  const targetTokenLimit = Math.floor(modelMaxTokens * (contextLevel / 100) * 0.98);
+  const targetTokenLimit = getContextTokenBudget(contextLevel, modelMaxTokens);
   const targetTiktokenLimit = Math.floor(targetTokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
 
   const contextRepoFiles = originalData.smartSelection.filter(f => f.source === 'context-repo');

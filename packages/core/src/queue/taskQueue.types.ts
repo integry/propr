@@ -4,10 +4,30 @@ import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js'
 import type { SubscriptionUsageMetrics } from '../utils/github/formatSubscriptionUsage.js';
 import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandParser.js';
 import type { ReasoningLevel } from '@propr/shared';
+import type { ResolvedRepositoryWorkflow } from '../workflow/repositoryWorkflow.js';
 
-export interface IssueJobData {
+/** Retained only while the same job waits for repository capacity; cleared on admission. */
+export interface RepositoryWorkflowDeferralData {
+    /** Policy resolved before the first refusal; `null` when the base has no workflow file. */
+    repositoryWorkflow?: ResolvedRepositoryWorkflow | null;
+    /** Base branch the policy was resolved for (`null` when unknown), so a retargeted task reloads it. */
+    repositoryWorkflowBaseBranch?: string | null;
+    repositoryWorkflowDeferrals?: number;
+    /** Epoch milliseconds of the next admission attempt, shared by the delayed job and the task timeline. */
+    repositoryWorkflowRetryAt?: number;
+}
+
+export interface IssueJobData extends RepositoryWorkflowDeferralData {
+    /** Same task waiting for repository capacity, rather than a failed execution retry. */
+    repositoryWorkflowDeferred?: boolean;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
+    /** Authenticated user retrying failed submission-backed work; owns that retry instead of the submitter. */
+    retryRequesterId?: string;
+    /** Issue comment carrying a requested retry's instructions; posted by the app, so exempt from author filtering. */
+    retryCommentId?: number;
+    /** When the trigger write the requested retry's job confirms began; ties that evidence to that write only. */
+    retryPublishedAt?: number;
     repoOwner: string;
     repoName: string;
     number: number;
@@ -22,12 +42,33 @@ export interface IssueJobData {
     /** Per-issue reasoning level override from a level-* label. */
     reasoningLevel?: ReasoningLevel;
     isChildJob?: boolean;
+    /**
+     * The matrix dispatch that enqueued this child, shared by every model and base
+     * of one request so a sibling's completion label does not skip the others.
+     */
+    dispatchId?: string;
+    /** The issue's label names when the dispatch first ran; its retries keep them. */
+    dispatchIssueLabels?: string[];
     issuePayload?: Record<string, unknown>;
     repoPayload?: Record<string, unknown>;
     title?: string;
     subtitle?: string;
     issueNumber?: number;
     isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
+    /** Task this job replaces after an infrastructure-lost or transient provider failure. */
+    replacesTaskId?: string;
+    /** 1-based attempt number within the replacement lineage. */
+    attemptNumber?: number;
+    /** First task of the replacement lineage. */
+    lineageRootTaskId?: string;
+    /** Why this replacement attempt was dispatched. */
+    replacementCause?: 'infra_lost' | 'provider_transient';
+    /** Pushed work branch of the replaced attempt, continued instead of a fresh worktree. */
+    replacementBranch?: string;
+    /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
+    maxCostUsd?: number;
+    /** Task IDs of earlier attempts (replaced runs) whose spend counts toward this run's cap. */
+    costBudgetTaskIds?: string[];
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';
@@ -37,12 +78,16 @@ export interface AutoResolveContext {
     headBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment' | 'sweep';
 }
 
-export interface CommentJobData {
+export interface CommentJobData extends RepositoryWorkflowDeferralData {
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
+    /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
+    maxCostUsd?: number;
+    /** Task IDs of earlier attempts (usage-limit retries) whose spend counts toward this run's cap. */
+    costBudgetTaskIds?: string[];
     pullRequestNumber: number;
     commentId?: number;
     commentBody?: string;
@@ -77,6 +122,10 @@ export interface CommentJobData {
     reasoningLevel?: ReasoningLevel;
     /** Internal lease token persisted across BullMQ redelivery of this same job. */
     prProcessingLockToken?: string;
+    /** Times this job has waited in place for another job's PR processing lock; drives the backoff. */
+    prLockWaitAttempts?: number;
+    /** Times this job has waited in place behind a blocked predecessor follow-up handoff; drives the backoff. */
+    predecessorWaitAttempts?: number;
     /** Legacy original task whose live container a recovery job must wait for. */
     containerCollisionTaskId?: string;
     /** Every preceding task whose live container a recovery job must wait for. */
@@ -100,6 +149,12 @@ export interface UnprocessedComment {
     llmOverride?: string | null;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
+    /**
+     * SHA-256 of the GitHub comment body this run accepted, recorded when the
+     * worker validates the comment. The completion comment binds it so a later
+     * edit cannot inherit this run's completion evidence.
+     */
+    acceptedBodySha256?: string;
 }
 
 export interface TaskImportJobData {
@@ -125,13 +180,6 @@ export interface GoalJobData {
     recovery?: boolean;
     /** Ordinary replies do not by themselves declare the provider-owned goal complete. */
     continuationKind?: 'run' | 'input';
-}
-
-export interface AnalysisJobData {
-    taskId: string;
-    executionId: string;
-    sessionId: string;
-    correlationId: string;
 }
 
 export interface SystemTaskJobData {
@@ -176,12 +224,28 @@ export interface MergeConflictJobData {
     baseBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment' | 'sweep';
+    /** The `/merge` comment that requested this run, so its task can be traced back to it. */
+    commandCommentId?: number;
     correlationId: string;
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
+/** Agent run phase names; each maps to its own job name on the issue queue. */
+export type AgentRunPhase = 'report' | 'action';
+
+/** One phase of an agent run: `processAgentRun` (report) or `processAgentAction` (action). */
+export interface AgentRunJobData {
+    runId: string;
+    definitionId: string;
+    ownerId: string;
+    phase: AgentRunPhase;
+    correlationId: string;
+    /** Action phase only: guidance the approver added, appended to the acting prompt. */
+    operatorNote?: string;
+}
+
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData | AgentRunJobData;
 
 export interface ClaudeOutputResult {
     type?: string;
@@ -211,7 +275,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
-    terminationReason?: 'timeout' | 'max_turns';
+    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

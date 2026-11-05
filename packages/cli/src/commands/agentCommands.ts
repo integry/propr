@@ -21,7 +21,7 @@ import {
 } from "../api/agents.js";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
-import { planAgentLogin, loginableAgents } from "./agentValidation.js";
+import { localImagePresent, planAgentLogin, loginableAgents } from "./agentValidation.js";
 import { ApiError, NetworkError, NotFoundError } from "../api/errors.js";
 import {
   printOutput,
@@ -31,6 +31,7 @@ import {
 } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 import { createAgentPoolCommand } from "./agentPoolCommands.js";
+import { redactAgentConfigsSecrets } from "@propr/shared";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
 
@@ -157,7 +158,8 @@ Examples:
       try {
         const result = await listAgents();
 
-        if (printOutput(result, options.json ?? false)) {
+        // Never print env var values, even from a server that predates redaction.
+        if (printOutput({ ...result, agents: redactAgentConfigsSecrets(result.agents ?? []) }, options.json ?? false)) {
           return;
         }
 
@@ -231,7 +233,7 @@ Examples:
   $ propr agent add my-claude -t claude -m claude-opus-5-5
   $ propr agent add opencode -t opencode -m opencode-big-pickle
   $ propr agent add prod-agent -t claude -m claude-opus-5-5,claude-fable-5-1 -d claude-opus-5-5
-  $ propr agent add test-agent -t antigravity -m antigravity-gemini-3.8-flash-high --disabled
+  $ propr agent add test-agent -t antigravity -m antigravity-gemini-3.8-flash --disabled
   $ propr agent add --file agent-config.json
   $ cat config.json | propr agent add --file -
 `)
@@ -347,7 +349,7 @@ Examples:
           });
 
           if (result.success) {
-            if (printOutput(result, options.json ?? false)) {
+            if (printOutput({ ...result, agents: redactAgentConfigsSecrets(result.agents ?? []) }, options.json ?? false)) {
               return;
             }
 
@@ -529,7 +531,7 @@ Examples:
             process.exit(1);
           }
 
-          if (orch.docker(["images", "-q", plan.image], { capture: true }).stdout.trim().length === 0) {
+          if (!localImagePresent(orch, plan.image)) {
             console.error(`Image ${plan.image} is not present locally. Pull it first: propr images pull`);
             process.exit(1);
           }

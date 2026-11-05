@@ -9,12 +9,31 @@ import { simpleGit, type SimpleGit } from 'simple-git';
  */
 export const DISABLED_GIT_HOOKS_PATH = '/dev/null';
 
+/**
+ * Process-local configuration used by configureGitAuthentication. simple-git
+ * rejects every other guarded variable supplied through `.env()`.
+ */
+export const GIT_AUTHENTICATION_ENVIRONMENT = [
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_KEY_0',
+    'GIT_CONFIG_VALUE_0',
+    'GIT_CONFIG_KEY_1',
+    'GIT_CONFIG_VALUE_1',
+] as const;
+
 export function createHooklessGit(baseDir?: string): SimpleGit {
     return simpleGit({
         ...(baseDir ? { baseDir } : {}),
-        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`],
+        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, 'gc.auto=0', 'gc.worktreePruneExpire=never', 'gc.pruneExpire=never'],
+        allowEnvironment: GIT_AUTHENTICATION_ENVIRONMENT,
         // simple-git treats every hooksPath override as potentially dangerous.
         // This one is a fixed, non-executable sink rather than caller input.
-        unsafe: { allowUnsafeHooksPath: true },
+        unsafe: {
+            allowUnsafeHooksPath: true,
+            // configureGitAuthentication supplies credentials only through
+            // process-local config and clears (rather than runs) helpers.
+            allowUnsafeConfigEnvCount: true,
+            allowUnsafeCredentialHelper: true,
+        },
     });
 }

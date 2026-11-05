@@ -1,14 +1,11 @@
 import type { Express, RequestHandler } from 'express';
-import type {
-  createAdminRoutes,
-  createAdminMcpRoutes,
-  createAgentLoginRoutes,
-  createAgentRuntimeRoutes,
-  createAgentVersionRoutes,
-  createConfigRoutes,
-  createInstanceCatalogRoutes,
-  createVisualPreviewAuthRoutes,
-} from './routes/index.js';
+import type * as routes from './routes/index.js';
+import type { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
+import type { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
+import type { createTaskSubmissionRoutes } from './routes/taskSubmissionRoutes.js';
+import type { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
+import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summaryPathUtils.js';
+import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 import {
   requireAgentTankUsageAccess,
   requireManageAgents,
@@ -16,6 +13,7 @@ import {
   requireManageRuntime,
   requireManageSettings,
 } from './permissionGuards.js';
+import { withDemoViewerBoundary } from './demoViewerRoutes.js';
 import { timeApiRouteHandler } from './apiPerformanceTiming.js';
 
 export type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
@@ -24,17 +22,59 @@ export type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 export type RouteEntry = [RouteMethod, string, ...RequestHandler<never>[]];
 
 interface ManagementRouteDeps {
-  adminRoutes: ReturnType<typeof createAdminRoutes>;
-  adminMcpRoutes: ReturnType<typeof createAdminMcpRoutes>;
-  agentLoginRoutes: ReturnType<typeof createAgentLoginRoutes>;
-  agentRuntimeRoutes: ReturnType<typeof createAgentRuntimeRoutes>;
-  agentVersionRoutes: ReturnType<typeof createAgentVersionRoutes>;
-  configRoutes: ReturnType<typeof createConfigRoutes>;
-  visualPreviewAuthRoutes: ReturnType<typeof createVisualPreviewAuthRoutes>;
+  adminRoutes: ReturnType<typeof routes.createAdminRoutes>;
+  adminMcpRoutes: ReturnType<typeof routes.createAdminMcpRoutes>;
+  agentLoginRoutes: ReturnType<typeof routes.createAgentLoginRoutes>;
+  agentRuntimeRoutes: ReturnType<typeof routes.createAgentRuntimeRoutes>;
+  agentVersionRoutes: ReturnType<typeof routes.createAgentVersionRoutes>;
+  configRoutes: ReturnType<typeof routes.createConfigRoutes>;
+  followupHandoffRoutes: ReturnType<typeof routes.createFollowupHandoffRoutes>;
+  /** Shared operator recovery budget; runs after the admin guard (see createOperatorRequestRateLimiter). */
+  operatorRateLimiter: RequestHandler;
+  visualPreviewAuthRoutes: ReturnType<typeof routes.createVisualPreviewAuthRoutes>;
+}
+
+interface OperationalRouteDeps {
+  activeWorkRoutes: ReturnType<typeof routes.createActiveWorkRoutes>;
+  automationDefinitionRoutes: ReturnType<typeof routes.createAutomationDefinitionRoutes>;
+  dashboardRoutes: ReturnType<typeof routes.createDashboardRoutes>;
+  dockerRoutes: ReturnType<typeof routes.createDockerRoutes>;
+  executionRoutes: ReturnType<typeof routes.createExecutionRoutes>;
+  fileChangesRoutes: ReturnType<typeof routes.createFileChangesRoutes>;
+  githubRoutes: ReturnType<typeof routes.createGitHubRoutes>;
+  goalRoutes: ReturnType<typeof routes.createGoalRoutes>;
+  liveDetailsRoutes: ReturnType<typeof routes.createLiveDetailsRoutes>;
+  llmLogsRoutes: ReturnType<typeof routes.createLlmLogsRoutes>;
+  llmMetricsRoutes: ReturnType<typeof routes.createLLMMetricsRoutes>;
+  notificationRoutes: ReturnType<typeof routes.createNotificationRoutes>;
+  plannerRoutes: ReturnType<typeof routes.createPlannerRoutes>;
+  previewMediaRoutes: ReturnType<typeof createPreviewMediaRoutes>;
+  queueRoutes: ReturnType<typeof routes.createQueueRoutes>;
+  relevanceRoutes: ReturnType<typeof routes.createRelevanceRoutes>;
+  repoChatRoutes: ReturnType<typeof routes.createRepoChatRoutes>;
+  repoImprovementsRoutes: ReturnType<typeof routes.createRepoImprovementsRoutes>;
+  repoTodoRoutes: ReturnType<typeof routes.createRepoTodoRoutes>;
+  repositoryMediaRoutes: ReturnType<typeof createRepositoryMediaRoutes>;
+  reviewScoreRoutes: ReturnType<typeof routes.createReviewScoreRoutes>;
+  statsRoutes: ReturnType<typeof routes.createStatsRoutes>;
+  statusRoutes: ReturnType<typeof routes.createStatusRoutes>;
+  summaryBrowserRoutes: ReturnType<typeof routes.createSummaryBrowserRoutes>;
+  taskAssignmentRoutes: ReturnType<typeof routes.createTaskAssignmentRoutes>;
+  taskHistoryRoutes: ReturnType<typeof routes.createTaskHistoryRoutes>;
+  taskRoutes: ReturnType<typeof routes.createTaskRoutes>;
+  taskSubmissionRoutes: ReturnType<typeof createTaskSubmissionRoutes>;
+  usageTipsRoutes: ReturnType<typeof createUsageTipsRoutes>;
+  userRepoPreferencesRoutes: ReturnType<typeof routes.createUserRepoPreferencesRoutes>;
+  voiceRoutes: ReturnType<typeof routes.createVoiceRoutes>;
+  /** Multipart parsers that must run before their route handlers. */
+  taskSubmissionUpload: RequestHandler;
+  goalAttachmentUpload: RequestHandler;
+  attachmentUpload: RequestHandler;
+  automationDefinitionAttachmentUpload: RequestHandler;
 }
 
 interface MemberCatalogRouteDeps {
-  instanceCatalogRoutes: ReturnType<typeof createInstanceCatalogRoutes>;
+  instanceCatalogRoutes: ReturnType<typeof routes.createInstanceCatalogRoutes>;
 }
 
 export function createManagementRouteEntries({
@@ -44,9 +84,11 @@ export function createManagementRouteEntries({
   agentRuntimeRoutes,
   agentVersionRoutes,
   configRoutes,
+  followupHandoffRoutes,
+  operatorRateLimiter,
   visualPreviewAuthRoutes,
 }: ManagementRouteDeps): RouteEntry[] {
-  return [
+  const entries: RouteEntry[] = [
     ['get', '/api/config/followup-keywords', requireManageSettings, configRoutes.getFollowupKeywords],
     ['post', '/api/config/followup-keywords', requireManageSettings, configRoutes.postFollowupKeywords],
     ['get', '/api/config/followup-ignore-keywords', requireManageSettings, configRoutes.getFollowupIgnoreKeywords],
@@ -75,6 +117,9 @@ export function createManagementRouteEntries({
     ['post', '/api/config/agent-tank', requireManageAgents, configRoutes.postAgentTankSettings],
     ['get', '/api/config/agent-tank/status', requireManageAgents, configRoutes.getAgentTankStatus],
     ['get', '/api/config/agent-tank/usage', requireAgentTankUsageAccess, configRoutes.getAgentTankUsage],
+    // History is read from this installation's own records and daemon; there is
+    // no synthetic demo history, so the demo exception does not extend to it.
+    ['get', '/api/config/agent-tank/history', requireManageAgents, configRoutes.getAgentTankHistory],
     ['post', '/api/config/agent-tank/refresh', requireManageAgents, configRoutes.postAgentTankRefresh],
     ['get', '/api/config/agent-tank/detect', requireManageAgents, configRoutes.getAgentTankDetect],
     ['get', '/api/config/preview-storage', requireManageSettings, visualPreviewAuthRoutes.getManagedStorageStatus],
@@ -90,9 +135,17 @@ export function createManagementRouteEntries({
     ['patch', '/api/admin/members/:githubUserId', requireManageMembers, adminRoutes.updateMemberRole],
     ['delete', '/api/admin/members/:githubUserId', requireManageMembers, adminRoutes.removeMember],
 
+    // The limiter follows the guard so unauthorized callers cannot drain the operator budget.
+    ['get', '/api/admin/followup-handoffs', requireManageRuntime, operatorRateLimiter, followupHandoffRoutes.list],
+    ['get', '/api/admin/followup-handoffs/:owner/:repo/:pr', requireManageRuntime, operatorRateLimiter, followupHandoffRoutes.get],
+    ['post', '/api/admin/followup-handoffs/:owner/:repo/:pr/resume', requireManageRuntime, operatorRateLimiter, followupHandoffRoutes.resume],
+    ['post', '/api/admin/followup-handoffs/:owner/:repo/:pr/release', requireManageRuntime, operatorRateLimiter, followupHandoffRoutes.release],
+
     ['get', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.getSettings],
     ['put', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.putSettings],
     ['post', '/api/admin/mcp/revoke-all', requireManageSettings, adminMcpRoutes.revokeAll],
+    ['get', '/api/admin/mcp/logs', requireManageSettings, adminMcpRoutes.getLogs],
+    ['get', '/api/admin/mcp/logs/stats', requireManageSettings, adminMcpRoutes.getLogStats],
 
     ['get', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.getRuntimePackages],
     ['get', '/api/agent-runtime/packages/search', requireManageRuntime, agentRuntimeRoutes.searchRuntimePackages],
@@ -112,6 +165,242 @@ export function createManagementRouteEntries({
     ['get', '/api/agents/:agentType/images', requireManageAgents, agentVersionRoutes.listImages],
     ['post', '/api/agents/resolve-version', requireManageAgents, agentVersionRoutes.resolveVersionEndpoint],
     ['get', '/api/agents/:agentType/image-tag', requireManageAgents, agentVersionRoutes.getImageTag],
+  ];
+  return entries.map(withDemoViewerBoundary);
+}
+
+/**
+ * Member-facing operational routes. They are registered after the shared API
+ * authentication guard, so every entry requires a session or bearer identity.
+ * The OpenAPI generator enumerates this table, so a route added here appears in
+ * `docs/static/openapi/propr-api.yaml` (documented or `x-undocumented`).
+ */
+export function createOperationalRouteEntries(deps: OperationalRouteDeps): RouteEntry[] {
+  const {
+    activeWorkRoutes,
+    automationDefinitionRoutes,
+    dashboardRoutes,
+    dockerRoutes,
+    executionRoutes,
+    fileChangesRoutes,
+    githubRoutes,
+    goalRoutes,
+    liveDetailsRoutes,
+    llmLogsRoutes,
+    llmMetricsRoutes,
+    notificationRoutes,
+    plannerRoutes,
+    previewMediaRoutes,
+    queueRoutes,
+    relevanceRoutes,
+    repoChatRoutes,
+    repoImprovementsRoutes,
+    repoTodoRoutes,
+    repositoryMediaRoutes,
+    reviewScoreRoutes,
+    statsRoutes,
+    statusRoutes,
+    summaryBrowserRoutes,
+    taskAssignmentRoutes,
+    taskHistoryRoutes,
+    taskRoutes,
+    taskSubmissionRoutes,
+    usageTipsRoutes,
+    userRepoPreferencesRoutes,
+    voiceRoutes,
+    taskSubmissionUpload,
+    goalAttachmentUpload,
+    attachmentUpload,
+    automationDefinitionAttachmentUpload,
+  } = deps;
+  return [
+    ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
+    ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit],
+    ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get],
+    ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
+    ['get', '/api/goals/capabilities', goalRoutes.capabilities],
+    ['get', '/api/goals', goalRoutes.list],
+    ['get', '/api/goals/attention', goalRoutes.attention],
+    ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create],
+    ['get', '/api/goals/:goalId', goalRoutes.get],
+    ['get', '/api/goals/:goalId/detail', goalRoutes.detail],
+    ['get', '/api/goals/:goalId/inputs', goalRoutes.inputs],
+    ['get', '/api/goals/:goalId/wait', goalRoutes.wait],
+    ['get', '/api/goals/:goalId/previews', goalRoutes.previews],
+    ['delete', '/api/goals/:goalId', goalRoutes.remove],
+    ['post', '/api/goals/:goalId/pause', goalRoutes.pause],
+    ['post', '/api/goals/:goalId/resume', goalRoutes.resume],
+    ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel],
+    ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel],
+    ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input],
+    ['post', '/api/goals/:goalId/continue', goalAttachmentUpload, goalRoutes.continueGoal],
+    ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
+    ['get', '/api/automation-definitions', automationDefinitionRoutes.list],
+    // Deprecated compatibility alias.
+    ['get', '/api/agent-definitions', automationDefinitionRoutes.list],
+    ['get', '/api/automation-definitions/contract', automationDefinitionRoutes.contract],
+    // Deprecated compatibility alias.
+    ['get', '/api/agent-definitions/contract', automationDefinitionRoutes.contract],
+    ['post', '/api/automation-definitions', automationDefinitionRoutes.create],
+    // Deprecated compatibility alias.
+    ['post', '/api/agent-definitions', automationDefinitionRoutes.create],
+    ['get', '/api/automation-definitions/:id', automationDefinitionRoutes.get],
+    // Deprecated compatibility alias.
+    ['get', '/api/agent-definitions/:id', automationDefinitionRoutes.get],
+    ['patch', '/api/automation-definitions/:id', automationDefinitionRoutes.update],
+    // Deprecated compatibility alias.
+    ['patch', '/api/agent-definitions/:id', automationDefinitionRoutes.update],
+    ['delete', '/api/automation-definitions/:id', automationDefinitionRoutes.remove],
+    // Deprecated compatibility alias.
+    ['delete', '/api/agent-definitions/:id', automationDefinitionRoutes.remove],
+    ['post', '/api/automation-definitions/:id/attachments', automationDefinitionAttachmentUpload, automationDefinitionRoutes.uploadAttachments],
+    // Deprecated compatibility alias.
+    ['post', '/api/agent-definitions/:id/attachments', automationDefinitionAttachmentUpload, automationDefinitionRoutes.uploadAttachments],
+    ['delete', '/api/automation-definitions/:id/attachments/:attachmentId', automationDefinitionRoutes.deleteAttachment],
+    // Deprecated compatibility alias.
+    ['delete', '/api/agent-definitions/:id/attachments/:attachmentId', automationDefinitionRoutes.deleteAttachment],
+    ['post', '/api/automation-definitions/:id/runs', automationDefinitionRoutes.triggerRun],
+    // Deprecated compatibility alias.
+    ['post', '/api/agent-definitions/:id/runs', automationDefinitionRoutes.triggerRun],
+    ['get', '/api/automation-definitions/:id/capacity', automationDefinitionRoutes.capacity],
+    // Deprecated compatibility alias.
+    ['get', '/api/agent-definitions/:id/capacity', automationDefinitionRoutes.capacity],
+    ['get', '/api/automation-definitions/:id/runs', automationDefinitionRoutes.listRuns],
+    // Deprecated compatibility alias.
+    ['get', '/api/agent-definitions/:id/runs', automationDefinitionRoutes.listRuns],
+    ['get', '/api/automation-runs/:runId', automationDefinitionRoutes.getRun],
+    // Deprecated compatibility alias.
+    ['get', '/api/agent-runs/:runId', automationDefinitionRoutes.getRun],
+    ['post', '/api/automation-runs/:runId/cancel', automationDefinitionRoutes.cancelRun],
+    // Deprecated compatibility alias.
+    ['post', '/api/agent-runs/:runId/cancel', automationDefinitionRoutes.cancelRun],
+    ['post', '/api/automation-runs/:runId/approve', automationDefinitionRoutes.approveRun],
+    // Deprecated compatibility alias.
+    ['post', '/api/agent-runs/:runId/approve', automationDefinitionRoutes.approveRun],
+    ['post', '/api/automation-runs/:runId/reject', automationDefinitionRoutes.rejectRun],
+    // Deprecated compatibility alias.
+    ['post', '/api/agent-runs/:runId/reject', automationDefinitionRoutes.rejectRun],
+    ['get', '/api/status', statusRoutes.getStatus],
+    ['get', '/api/tasks', taskRoutes.getTasks],
+    ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview],
+    ['post', '/api/tasks/revert', taskRoutes.revertChanges],
+    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup],
+    ['get', '/api/tasks/:taskId/followup-runs', taskRoutes.getFollowupRuns],
+    ['post', '/api/tasks/:taskId/review', taskRoutes.postReview],
+    ...createTaskDeleteRouteEntries({ taskRoutes }),
+    ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory],
+    ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
+    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges],
+    ['get', '/api/task/:taskId/assignees', taskAssignmentRoutes.getAssignees],
+    ['put', '/api/task/:taskId/assignees', taskAssignmentRoutes.putAssignees],
+    ['get', '/api/task/:taskId/assignable-users', taskAssignmentRoutes.getAssignableUsers],
+    ['get', '/api/queue/stats', queueRoutes.getQueueStats],
+    ['get', '/api/activity', queueRoutes.getActivity],
+    ['get', '/api/metrics', queueRoutes.getMetrics],
+    ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary],
+    ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId],
+    ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs],
+    ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
+    ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs],
+    ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType],
+    ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
+    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs],
+    ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask],
+    ['post', '/api/task/:taskId/cancel', dockerRoutes.stopTask],
+    ['post', '/api/import-tasks', githubRoutes.importTasks],
+    ['get', '/api/github/repos', githubRoutes.getRepos],
+    ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches],
+    ['get', '/api/github/repos/:owner/:repo/workflows', githubRoutes.getWorkflows],
+    ['get', '/api/planner/drafts', plannerRoutes.listDrafts],
+    ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories],
+    ['post', '/api/planner/drafts', plannerRoutes.createDraft],
+    ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft],
+    ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft],
+    ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft],
+    ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
+    ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent],
+    ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment],
+    ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo],
+    ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
+    ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue],
+    ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue],
+    ['get', '/api/planner/drafts/:id/execution-queue', plannerRoutes.getExecutionQueue],
+    ['post', '/api/planner/drafts/:id/execution-queue', plannerRoutes.queueRemaining],
+    ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
+    ['post', '/api/planner/preview', plannerRoutes.previewContext],
+    ['post', '/api/planner/preview/context', plannerRoutes.downloadContext],
+    ['post', '/api/planner/generate', plannerRoutes.generate],
+    ['post', '/api/planner/abort', plannerRoutes.abortGeneration],
+    ['post', '/api/planner/refine', plannerRoutes.refine],
+    ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement],
+    ['post', '/api/planner/finalize', plannerRoutes.finalize],
+    ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
+    ['get', '/api/planner/drafts/:id/revisions', plannerRoutes.listPlanRevisions],
+    ['get', '/api/planner/drafts/:id/revisions/:revisionId', plannerRoutes.getPlanRevision],
+    ['post', '/api/planner/drafts/:id/revisions/:revisionId/restore', plannerRoutes.restorePlanRevision],
+    ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft],
+    ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository],
+    ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution],
+    ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
+    ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings],
+    ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance],
+    ['get', '/api/stats/tasks', statsRoutes.getTaskStats],
+    ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
+    ['get', '/api/stats/overview', statsRoutes.getOverview],
+    ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount],
+    ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
+    ['get', '/api/stats/review-scores', reviewScoreRoutes.getSummary],
+    ['get', '/api/stats/review-scores.csv', reviewScoreRoutes.getCsv],
+    ['get', '/api/pull-requests/:number/scores', reviewScoreRoutes.getPullRequestScores],
+    ['get', '/api/usage-tips', usageTipsRoutes.get],
+    ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
+    ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative],
+    ['get', '/api/dashboard/narrative/status', dashboardRoutes.getNarrativeStatus],
+    ['get', '/api/dashboard/summary', dashboardRoutes.getSummary],
+    ['get', '/api/dashboard/attention', dashboardRoutes.getAttention],
+    ['get', '/api/dashboard/active', dashboardRoutes.getActive],
+    ['get', '/api/dashboard/outcomes', dashboardRoutes.getOutcomes],
+    ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus],
+    ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
+    ['get', SUMMARY_TREE_ROUTE_PATH, summaryBrowserRoutes.getDirectoryTree],
+    ['get', SUMMARY_PATH_ROUTE_PATH, summaryBrowserRoutes.getPathSummary],
+    ['post', '/api/repos/chat', repoChatRoutes.postChat],
+    ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
+    ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages],
+    ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage],
+    ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages],
+    ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
+    ['get', '/api/voice/capabilities', voiceRoutes.getCapabilities],
+    ['get', '/api/voice/briefing', voiceRoutes.getBriefing],
+    ['get', '/api/repos/media', repositoryMediaRoutes.getMedia],
+    ['get', '/api/preview-media/pulls/:owner/:repo/:number/:assetId', previewMediaRoutes.getPullMedia],
+    ['get', '/api/preview-media/comments/:owner/:repo/:number/:assetId', previewMediaRoutes.getCommentMedia],
+    ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories],
+    ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory],
+    ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory],
+    ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
+    ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories],
+    ['get', '/api/repos/todos', repoTodoRoutes.getTodos],
+    ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo],
+    ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
+    ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo],
+    ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo],
+    ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos],
+    ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
+    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+    ['get', '/api/notifications', notificationRoutes.getNotifications],
+    ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount],
+    ['get', '/api/notifications/config', notificationRoutes.getConfiguration],
+    ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
+    ['get', '/api/notifications/preferences', notificationRoutes.getPreferences],
+    ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences],
+    ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions],
+    ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription],
+    ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription],
+    ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById],
+    ['post', '/api/notifications/dismiss-all', notificationRoutes.dismissAll],
+    ['post', '/api/notifications/:id/read', notificationRoutes.markRead],
+    ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
   ];
 }
 

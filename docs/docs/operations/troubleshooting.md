@@ -1,6 +1,8 @@
 ---
 sidebar_position: 11
-title: Troubleshooting
+sidebar_label: "Troubleshooting"
+title: "Troubleshoot ProPR tasks, agents, Git, and tunnels"
+description: "Find symptom-based checks and recovery steps for failed tasks, Git pushes, stuck queues, missing metrics, and hosted UI tunnels."
 ---
 
 # Troubleshooting
@@ -61,6 +63,8 @@ If you use the hosted UI tunnel, the callback lives on the **proxy host** (`http
 
 After correcting `.env`, restart the stack (`propr start --restart`) so the API picks up the new values.
 
+If Connect sign-in works but GitHub access keeps asking for a new browser sign-in every few hours, the stored grant may not be renewable. Check the API log for `[connect-grant-renewal]` entries. `renewal_unavailable` means the grant was issued before Connect supported renewal: sign in through the instance browser once more to get a renewable grant. `renewal_revoked` or `renewal_expired` means the GitHub authorization behind Connect was removed or its refresh window ended. See [Connect browser sign-in renewal](./github-auth.md#connect-browser-sign-in-renewal).
+
 ## Worker Not Processing Issues
 
 **Symptom:** you add a processing label to an issue and no task ever appears.
@@ -103,7 +107,64 @@ Recovery runs through the PR conversation:
 - `/switch <model-id>` to change the PR's model going forward, or `/use <model-id>` for a one-off task with a different model.
 - `/review` then `/fix`, or `/ultrafix` for an automated review-fix loop (remove the `ultrafix` PR label to stop it).
 - Re-run with a smaller scope — see [Work Splitting](../features/work-splitting.md).
-- Undo a bad commit with `propr task revert owner/repo <pr> <sha> <issue>`, which runs a signed system task (authorized via `SYSTEM_TASK_SECRET`) that resets the branch and force-pushes.
+- Undo a bad commit with `propr task revert owner/repo <pr> <sha> [comment-id]`, which runs a signed system task (authorized via `SYSTEM_TASK_SECRET`) that resets the branch and force-pushes.
+
+## A Task Was Re-Run Automatically, Or Was Not
+
+**Symptom:** a failed task shows "Replacement attempt N started" in its timeline and a new task for the same issue appeared, or a task that was lost with its worker stayed failed.
+
+ProPR replaces an issue task automatically in two cases (see [Reconciliation and automatic replacement runs](../architecture/worker.md#reconciliation-and-automatic-replacement-runs)):
+
+- **The run was lost with its worker** — no queue job and no running task container remained after a worker restart, host reboot or killed container. One replacement is dispatched; a second loss in the same lineage is final.
+- **The run ended with a transient provider error** (5xx, overloaded, connection reset, timeout) — up to `MAX_PROVIDER_REPLACEMENTS` replacements (default 2). Usage limits (429) are not replaced; they re-queue the same task until the limit resets. GitHub and git failures (for example a GitHub 503 while publishing) are never replaced, because the agent run itself succeeded.
+
+Where to look:
+
+- **The task timeline.** `replacement.dispatched`, `replacement.skipped` (with the reason) and `replacement.exhausted` entries explain every decision. The header's attempt chip links each attempt of the lineage.
+- **`propr task get <task-id> --json`** shows `attemptNumber`, `replacesTaskId` and `replacedByTaskId`.
+- **The issue.** The final failure comment lists every attempt with a link to each task.
+
+Common reasons a task was **not** replaced: it was cancelled by a user or withdrawn (`cancelled_*`), stopped by the stall watchdog, run timeout or cost cap, the issue was closed, it is a goal task (goals use their own recovery) or a PR follow-up task, the cap was reached, or earlier attempts used the whole per-run cost cap.
+
+To turn replacement off, set `INFRA_LOST_REPLACEMENT=false` (lost runs) and `MAX_PROVIDER_REPLACEMENTS=0` (provider errors; the **Settings → Workflow & PR Rules → Processing → Provider failure replacements** setting, `propr setting update max_provider_replacements 0`, or MCP `update_execution_settings` overrides the environment). Restart the worker after changing environment variables.
+
+## A Push Was Rejected
+
+**Symptom:** a task failed with `Push of branch … was rejected (<class>)`, and its timeline, `propr task get <task-id>` and the GitHub failure comment show a **Push rejected** section.
+
+ProPR classifies the rejection from git's output and keeps the agent's commits through the [salvage ladder](./maintenance.md#rejected-pushes-and-the-salvage-ladder). Act on the class:
+
+| Class | Meaning | What to do |
+|---|---|---|
+| `push_protection` | GitHub secret scanning push protection found a secret in the commits. | Open the **unblock URL** shown verbatim in the comment to allow the secret if it is a false positive, or remove it from the commits. Then push the recovered commits. |
+| `ruleset_or_branch_protection` | A repository ruleset or branch protection rule (GH013/GH006) refused the update. | Review the rule violations in the remote output; adjust the rule or push the work to another branch and open a PR from it. |
+| `non_fast_forward` | Someone pushed to the branch while the task ran. | Recover the commits, merge or rebase onto the new branch head, and push. Or post a follow-up comment so ProPR redoes the change on the current head. |
+| `auth` | 401/403, an expired installation token, or the GitHub App lacks permission (for example `workflows`) for this ref. | Check the App installation's repository access and permissions, then recover and push. |
+| `network` | Connection reset, DNS or TLS failure before GitHub accepted the push. | Usually transient — recover and push again. |
+| `unknown` | ProPR could not classify the output. | Read the remote output in the comment's details block or the worker logs. |
+
+Recover the commits from the location the failure names:
+
+- **Rescue ref** (`refs/propr/rescue/<taskId>--<timestamp>` on the same repository):
+
+  ```bash
+  git fetch origin refs/propr/rescue/<taskId>--<timestamp>
+  git checkout -B <branch> FETCH_HEAD
+  git push origin <branch>
+  git push origin --delete refs/propr/rescue/<taskId>--<timestamp>   # once recovered
+  ```
+
+- **Bundle** (on the ProPR host, `PUSH_RESCUE_BUNDLE_DIR`, by default `data/rescue/<owner>/<repo>/<taskId>.bundle`). Copy it to a checkout of the repository, then:
+
+  ```bash
+  git fetch /path/to/<taskId>.bundle HEAD
+  git checkout -B <branch> FETCH_HEAD
+  git push origin <branch>
+  ```
+
+- **Retained worktree** (under `GIT_WORKTREES_BASE_PATH`, marked with `.retention-info.json`): push its detached HEAD from the host, for example `git -C <worktree> push origin HEAD:refs/heads/<branch>`, or create a bundle from it (`git -C <worktree> bundle create /tmp/rescue.bundle HEAD`) before its retention ends.
+
+If the failure says the commits could not be preserved, every rung failed (for example the data directory was read-only); the worker logs list each attempt.
 
 ## Jobs Stuck In The Queue
 

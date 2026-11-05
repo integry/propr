@@ -246,7 +246,7 @@ describe('buildCommandMeta', () => {
     test('builds fix meta with no instructions', () => {
         const parsed = parseSlashCommand('/fix')!;
         const meta = buildCommandMeta(parsed);
-        assert.deepStrictEqual(meta, { mode: 'fix', instructions: '' });
+        assert.deepStrictEqual(meta, { mode: 'fix', commandLine: '', bodyInstructions: '', instructions: '' });
     });
 
     test('builds fix meta combining inline args and multiline instructions', () => {
@@ -254,7 +254,34 @@ describe('buildCommandMeta', () => {
         const meta = buildCommandMeta(parsed);
         assert.deepStrictEqual(meta, {
             mode: 'fix',
+            commandLine: 'address linting',
+            bodyInstructions: 'Also fix the types',
             instructions: 'address linting\nAlso fix the types',
+        });
+    });
+
+    // The command-line boundary must survive intake. Joining the two halves
+    // discards it, and a `/fix` with no arguments whose instructions happen to
+    // begin with an identifier would then have that prose read as a selection.
+    test('keeps an empty fix command line distinct from following instruction lines', () => {
+        const parsed = parseSlashCommand('/fix\nS3 is already done; keep the blocker correction localized.')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'fix',
+            commandLine: '',
+            bodyInstructions: 'S3 is already done; keep the blocker correction localized.',
+            instructions: 'S3 is already done; keep the blocker correction localized.',
+        });
+    });
+
+    test('keeps fix selectors on the command line apart from the instruction body', () => {
+        const parsed = parseSlashCommand('/fix F20 S3 keep the API stable\nS5 is out of scope.')!;
+        const meta = buildCommandMeta(parsed);
+        assert.deepStrictEqual(meta, {
+            mode: 'fix',
+            commandLine: 'F20 S3 keep the API stable',
+            bodyInstructions: 'S5 is out of scope.',
+            instructions: 'F20 S3 keep the API stable\nS5 is out of scope.',
         });
     });
 

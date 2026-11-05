@@ -130,6 +130,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     const terminationReason = resolveAgentTerminationReason(result);
     return {
         success: result.success,
+        repositoryValidation: result.repositoryValidation,
         model: result.modelUsed,
         ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
         executionTime: result.executionTimeMs,

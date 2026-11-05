@@ -4,13 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Stage a private draft, or explicitly publish its already-staged bytes as a prerelease
+        description: Stage a private unsigned draft for the protected authenticated signing workflow
         required: true
         type: choice
         default: stage-draft
         options:
           - stage-draft
-          - publish-draft
       source_revision:
         description: Full lowercase commit SHA already reachable from main
         required: true
@@ -23,6 +22,13 @@ on:
         description: Stage only - propr/ui:<source SHA>@sha256:<digest> published multi-arch image
         required: false
         type: string
+      runtime_agent_image:
+        description: Stage only - propr/agent:<source SHA>@sha256:<digest> published linux/amd64 managed-agent image
+        required: false
+        type: string
+
+env:
+  PROPR_DESKTOP_GITHUB_CLIENT_ID: ${{ vars.PROPR_DESKTOP_GITHUB_CLIENT_ID }}
 
 permissions:
   contents: read
@@ -43,6 +49,7 @@ jobs:
       source_date_epoch: ${{ steps.identity.outputs.source_date_epoch }}
       runtime_app_image: ${{ steps.identity.outputs.runtime_app_image }}
       runtime_ui_image: ${{ steps.identity.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.identity.outputs.runtime_agent_image }}
     steps:
       - name: Require dispatch of the reviewed workflow from main
         env:
@@ -53,67 +60,33 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout the exact requested source revision
+      - name: Checkout the reviewed main revision with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
+      # Shared with the macOS preview: binds the frozen source to main and
+      # validates the three digest-pinned runtime images.
       - name: Validate immutable source, version, and preview runtime inputs
         id: identity
         shell: bash
         env:
           OPERATION: ${{ inputs.operation }}
+          DISPATCH_REF: ${{ github.ref }}
           REQUESTED_SHA: ${{ inputs.source_revision }}
           WORKFLOW_SHA: ${{ github.sha }}
           RUNTIME_APP_IMAGE: ${{ inputs.runtime_app_image }}
           RUNTIME_UI_IMAGE: ${{ inputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ inputs.runtime_agent_image }}
         run: |
           set -euo pipefail
-          [[ "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]] || {
-            echo 'source_revision must be a full lowercase 40-character commit SHA.' >&2
-            exit 1
-          }
-          test "$(git rev-parse HEAD)" = "$REQUESTED_SHA"
-          git merge-base --is-ancestor "$REQUESTED_SHA" "$WORKFLOW_SHA" || {
-            echo 'source_revision must already be reachable from the dispatched main revision.' >&2
-            exit 1
-          }
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-            echo 'apps/desktop/package.json must contain a canonical semantic package version.' >&2
-            exit 1
-          }
-          tag="desktop-linux-preview-v${version}-${REQUESTED_SHA:0:12}"
-          if [ "$OPERATION" = stage-draft ]; then
-            app_pattern="propr/app:${REQUESTED_SHA}@sha256:"
-            ui_pattern="propr/ui:${REQUESTED_SHA}@sha256:"
-            [[ "$RUNTIME_APP_IMAGE" =~ ^${app_pattern}[a-f0-9]{64}$ ]] || {
-              echo "runtime_app_image must be a published, digest-pinned propr/app image tagged with $REQUESTED_SHA." >&2
-              exit 1
-            }
-            [[ "$RUNTIME_UI_IMAGE" =~ ^${ui_pattern}[a-f0-9]{64}$ ]] || {
-              echo "runtime_ui_image must be a published, digest-pinned propr/ui image tagged with $REQUESTED_SHA." >&2
-              exit 1
-            }
-          elif [ "$OPERATION" = publish-draft ]; then
-            test -z "$RUNTIME_APP_IMAGE" && test -z "$RUNTIME_UI_IMAGE" || {
-              echo 'runtime image inputs belong only to stage-draft; omit them when publishing an existing draft.' >&2
-              exit 1
-            }
-          else
+          if [ "$OPERATION" != stage-draft ]; then
             echo 'Unsupported preview operation.' >&2
             exit 1
           fi
-          {
-            echo "release_sha=$REQUESTED_SHA"
-            echo "version=$version"
-            echo "tag=$tag"
-            echo "source_date_epoch=$(git show -s --format=%ct HEAD)"
-            echo "runtime_app_image=$RUNTIME_APP_IMAGE"
-            echo "runtime_ui_image=$RUNTIME_UI_IMAGE"
-          } >> "$GITHUB_OUTPUT"
+          node apps/desktop/scripts/desktop-preview-identity.mjs --channel linux >> "$GITHUB_OUTPUT"
 
   runtime-preflight:
     name: Verify published preview runtime manifests
@@ -130,16 +103,18 @@ jobs:
           ref: ${{ needs.identity.outputs.release_sha }}
           persist-credentials: false
 
-      - name: Verify both digest-pinned runtime images contain x64 and arm64
+      - name: Verify app/UI contain x64 and arm64 and the managed agent is source-bound linux/amd64
         env:
           RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
           RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
           RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
         run: |
           node apps/desktop/scripts/desktop-runtime-manifest.mjs verify-release \
             --source-revision "$RELEASE_SHA" \
             --app-image "$RUNTIME_APP_IMAGE" \
-            --ui-image "$RUNTIME_UI_IMAGE"
+            --ui-image "$RUNTIME_UI_IMAGE" \
+            --agent-image "$RUNTIME_AGENT_IMAGE"
 
   package:
     name: Build unsigned Linux preview ${{ matrix.arch }} DEB/RPM
@@ -162,6 +137,8 @@ jobs:
       PROPR_DESKTOP_RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
       RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
       RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+      RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
+      PROPR_DESKTOP_RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
     steps:
       - name: Prove preview packaging has no signing or update credentials
         shell: bash
@@ -212,6 +189,7 @@ jobs:
             --source-revision "$PROPR_DESKTOP_RELEASE_SHA" \
             --app-image "$RUNTIME_APP_IMAGE" \
             --ui-image "$RUNTIME_UI_IMAGE" \
+            --agent-image "$RUNTIME_AGENT_IMAGE" \
             --api-compatibility 2026-06-27 \
             --output "$runtime_manifest"
           echo "PROPR_DESKTOP_RUNTIME_MANIFEST=$runtime_manifest" >> "$GITHUB_ENV"
@@ -231,6 +209,16 @@ jobs:
           rpm -qip "$rpm_package" >/dev/null
           test "$(dpkg-deb --field "$deb" Version)" = "$PROPR_DESKTOP_VERSION"
           test "$(rpm -qp --qf '%{VERSION}' "$rpm_package")" = "$PROPR_DESKTOP_VERSION"
+          packaged_manifest="apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/resources/manifest.json"
+          node --input-type=module -e '
+            import { readDesktopRuntimeManifest } from "./apps/desktop/scripts/desktop-runtime-manifest.mjs";
+            const manifest = readDesktopRuntimeManifest(process.argv[1], {
+              sourceRevision: process.env.PROPR_DESKTOP_RELEASE_SHA,
+              distribution: "published",
+              agentImage: process.env.RUNTIME_AGENT_IMAGE,
+            });
+            if (manifest.images.agent !== process.env.RUNTIME_AGENT_IMAGE) throw new Error("Packaged launcher manifest does not bind the managed agent image");
+          ' "$packaged_manifest"
 
       - name: Launch the packaged application without enabling self-update
         run: |
@@ -295,6 +283,7 @@ jobs:
           RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
           RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
           RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
           SOURCE_DATE_EPOCH: ${{ needs.identity.outputs.source_date_epoch }}
         run: |
           node apps/desktop/scripts/release-artifacts.mjs finalize \
@@ -307,6 +296,7 @@ jobs:
             --source-revision "$RELEASE_SHA" \
             --runtime-app-image "$RUNTIME_APP_IMAGE" \
             --runtime-ui-image "$RUNTIME_UI_IMAGE" \
+            --runtime-agent-image "$RUNTIME_AGENT_IMAGE" \
             --repository "${{ github.repository }}" \
             --workflow-run-id "${{ github.run_id }}" \
             --input desktop-linux-preview-validated \
@@ -356,44 +346,3 @@ jobs:
             --repository "${{ github.repository }}" \
             --directory desktop-linux-preview-final
 
-  publish-draft:
-    name: Explicitly authorize public Linux preview prerelease
-    if: inputs.operation == 'publish-draft'
-    needs: identity
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    environment:
-      name: desktop-linux-preview-publication
-    permissions:
-      contents: write
-    steps:
-      - name: Require the configured protected publication environment
-        env:
-          PUBLICATION_AUTHORIZED: ${{ vars.PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED }}
-        run: |
-          if [ "$PUBLICATION_AUTHORIZED" != 1 ]; then
-            echo 'Configure the protected desktop-linux-preview-publication environment, required reviewers, and PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED=1 before public preview publication.' >&2
-            exit 1
-          fi
-
-      - name: Checkout the reviewed publication helper
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Install native package inspection tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes cpio rpm
-
-      - name: Re-download, hash, inspect, and explicitly publish only the draft bytes
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
-          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
-        run: |
-          node apps/desktop/scripts/linux-preview-release.mjs publish-draft \
-            --version "$RELEASE_VERSION" \
-            --source-revision "$RELEASE_SHA" \
-            --repository "${{ github.repository }}"

@@ -1,15 +1,51 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { AgentTankUsage, AgentValidationRow } from "./agentValidation.js";
 import {
+  claudeConfigCheck,
   configurationErrorCheck,
   createCheckCommand,
+  isDockerInfoTemplateError,
   isLiveRendererFallbackError,
   printAgentTankUsage,
+  summarizeDockerFailure,
   type AgentValidationFlowDependencies,
 } from "./checkCommands.js";
+
+test("Docker daemon failure detail is one bounded line without the home path", () => {
+  const home = "/Users/jane";
+  const stderr = `\nfailed to connect to the docker API at unix://${home}/.docker/run/docker.sock; check if the path is correct and if the daemon is running\nsecond line with ${home}/more\n`;
+  const detail = summarizeDockerFailure(stderr, home);
+  assert.equal(detail, ": failed to connect to the docker API at unix://~/.docker/run/docker.sock; check if the path is correct and if the daemon is running");
+  assert.ok(!detail.includes(home));
+  assert.ok(!detail.includes("second line"));
+  assert.equal(summarizeDockerFailure("", home), "");
+  assert.equal(summarizeDockerFailure(undefined, home), "");
+  assert.equal(summarizeDockerFailure("   \n\t\n", home), "");
+  const long = summarizeDockerFailure(`x${"y".repeat(400)}`, home);
+  assert.equal(long.length, ": ".length + 200);
+  assert.ok(long.endsWith("…"));
+  assert.equal(summarizeDockerFailure("a\u001b[31mb\u001b[0m", "/"), ": a [31mb [0m");
+});
+
+test("Docker info template errors are distinguished from an unreachable daemon", () => {
+  for (const text of [
+    'Error: template: info:1:2: executing "info" at <.OSType>: can\'t evaluate field OSType in type *define.Info',
+    "template: :1:2: executing \"\" at <.OSType>: can't evaluate field OSType in type entities.Info",
+    "Error: cannot evaluate field OSType",
+  ]) assert.equal(isDockerInfoTemplateError(text), true, text);
+  for (const text of [
+    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+    "failed to connect to the docker API at unix:///Users/jane/.docker/run/docker.sock",
+    "permission denied while trying to connect to the Docker daemon socket",
+    "",
+    undefined,
+  ]) assert.equal(isDockerInfoTemplateError(text), false, String(text));
+});
 
 test("propr check presents VAPID validation as a clear failure without key material", () => {
   const detail = "Web Push VAPID configuration is incomplete: set both key variables together, or remove both for automatic setup.";
@@ -145,4 +181,27 @@ test("check agents prints completed rows and exits only for validation failures"
   rows[1].host = { status: "ok", detail: "OpenCode host completed" };
   await createCheckCommand(dependencies).parseAsync(["agents"], { from: "user" });
   assert.deepEqual(exitCodes, [1], "malformed subscription usage must not add an exit failure");
+});
+
+test("propr check reports whether the Claude config file is present and mounted", () => {
+  const home = mkdtempSync(join(tmpdir(), "propr-check-claude-"));
+  const claudeDir = join(home, ".claude");
+  const claudeJson = join(home, ".claude.json");
+
+  assert.equal(claudeConfigCheck({}), undefined, "no row when Claude is not configured");
+
+  const missing = claudeConfigCheck({ hostClaudeDir: claudeDir });
+  assert.equal(missing?.status, "warn");
+  assert.match(missing?.detail ?? "", new RegExp(`${claudeJson} not found — not mounted`));
+  assert.match(missing?.fix ?? "", /HOST_CLAUDE_JSON/);
+
+  writeFileSync(claudeJson, "{}");
+  const mounted = claudeConfigCheck({ hostClaudeDir: claudeDir, hostClaudeJson: claudeJson });
+  assert.equal(mounted?.status, "ok");
+  assert.match(mounted?.detail ?? "", /mounted read-only; each Claude run gets a private copy/);
+  assert.equal(mounted?.group, "Agents");
+
+  const badOverride = claudeConfigCheck({ hostClaudeDir: claudeDir, hostClaudeJson: join(home, "nope.json"), hostClaudeJsonExplicit: true });
+  assert.equal(badOverride?.status, "fail");
+  assert.match(badOverride?.fix ?? "", /HOST_CLAUDE_JSON/);
 });

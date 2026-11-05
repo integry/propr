@@ -5,8 +5,11 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=smoke-local-runtime-cleanup.sh
+source "$SCRIPT_DIR/smoke-local-runtime-cleanup.sh"
 
 SOURCE_REVISION="${1:-$(git rev-parse HEAD)}"
 EXPECTED_COMPATIBILITY="${2:-2026-06-27}"
@@ -20,25 +23,32 @@ LABEL="dev.propr.desktop-runtime-smoke"
 NETWORK="$STACK-network"
 REDIS_CONTAINER="$STACK-redis"
 API_CONTAINER="$STACK-api"
-SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/propr-desktop-runtime-smoke.XXXXXX")"
+SMOKE_TMP_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+SMOKE_ROOT="$(mktemp -d "$SMOKE_TMP_BASE/propr-desktop-runtime-smoke.XXXXXX")"
+SMOKE_ROOT_IDENTITY="$(smoke_root_identity "$SMOKE_ROOT")"
 
 owned_container() {
   [[ "$(docker container inspect --format "{{ index .Config.Labels \"$LABEL\" }}" "$1" 2>/dev/null || true)" == "$STACK" ]]
 }
 
 cleanup() {
+  local status=$? failed=0
+  set +e
   for container in "$API_CONTAINER" "$REDIS_CONTAINER"; do
     if docker container inspect "$container" >/dev/null 2>&1; then
-      if owned_container "$container"; then docker rm -f "$container" >/dev/null; fi
+      if owned_container "$container"; then docker rm -f "$container" >/dev/null || failed=1; fi
     fi
   done
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
     owner="$(docker network inspect --format "{{ index .Labels \"$LABEL\" }}" "$NETWORK")"
-    if [[ "$owner" == "$STACK" ]]; then docker network rm "$NETWORK" >/dev/null; fi
+    if [[ "$owner" == "$STACK" ]]; then docker network rm "$NETWORK" >/dev/null || failed=1; fi
   fi
-  if [[ "$SMOKE_ROOT" == "${TMPDIR:-/tmp}"/propr-desktop-runtime-smoke.* ]]; then
-    rm -rf -- "$SMOKE_ROOT"
+  remove_smoke_root "$SMOKE_ROOT" "$SMOKE_TMP_BASE" "$SMOKE_ROOT_IDENTITY" "$APP_IMAGE" "$LABEL" "$STACK" || failed=1
+  if (( failed )); then
+    echo "Desktop runtime smoke cleanup did not remove every owned resource" >&2
+    (( status )) || status=1
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 

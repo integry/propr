@@ -84,8 +84,8 @@ const fallbackResponses: Record<string, unknown> = {
   '/api/dashboard/attention': { repository: 'all', items: [], counts: { blocked: 0, decisions: 0, total: 0 } },
   '/api/dashboard/outcomes': { repository: 'all', limit: 50, items: [] },
   '/api/stats/dashboard': {
-    period: '7d', repository: 'all', completed: 0, successRate: null, recordedSpend: null,
-    dailyCompleted: [], previous: { completed: 0, successRate: null, recordedSpend: null },
+    period: '7d', repository: 'all', tasks: 0, completed: 0, failed: 0, successRate: null, recordedSpend: null,
+    dailyTasks: [], previous: { tasks: 0, completed: 0, successRate: null, recordedSpend: null },
   },
   '/api/notifications/unread-count': { unreadCount: 0 },
   '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
@@ -118,7 +118,7 @@ const scenarios = [
     },
   },
   {
-    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 100,
+    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 25,
     usefulPath: '/api/tasks',
     usefulBody: { tasks: [task], total: 1 },
   },
@@ -201,7 +201,7 @@ for (const runtime of ['web', 'desktop'] as const) {
     const taskConsumers = {
       list: scenario.listLimit === null
         ? []
-        : taskRequestParams.filter(({ params }) => params.get('limit') === String(scenario.listLimit))
+        : taskRequestParams.filter(({ params }) => params.get('limit') === String(scenario.listLimit) && params.get('groupBy') === 'task')
           .map(({ request }) => request),
       headerReview: taskRequestParams.filter(({ params }) => params.get('limit') === '30'
         && params.get('forReview') === 'true' && params.get('excludeMerged') === 'true')

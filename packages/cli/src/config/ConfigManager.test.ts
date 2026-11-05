@@ -54,6 +54,49 @@ test("getRemoteProfiles returns copied profiles and includes an empty default pr
   }
 });
 
+for (const existingProfile of [false, true]) {
+  for (const genericSetter of [false, true]) {
+    test(`failed token save rolls back ${existingProfile ? "an existing" : "an absent"} profile via ${genericSetter ? "set" : "setGithubToken"}`, async t => {
+      const tempDir = createTempDir();
+      try {
+        const manager = new ConfigManager(tempDir);
+        await manager.init();
+        if (existingProfile) {
+          writeProfileConfig(tempDir);
+          await manager.load();
+          await manager.setRemoteProfile("other", { githubToken: "other-token" });
+        }
+        await manager.setStackRoot("/previous/root");
+        const previous = manager.getAll();
+        const previousDisk = readFileSync(join(tempDir, "config.json"), "utf8");
+        const saveError = new Error("fixture save failure");
+        const failedSave = t.mock.method(manager, "save", async () => { throw saveError; });
+
+        await assert.rejects(
+          genericSetter ? manager.set("githubToken", "rejected-token") : manager.setGithubToken("rejected-token"),
+          error => error === saveError,
+        );
+        assert.deepEqual(manager.getAll(), previous);
+        assert.equal(manager.getGithubToken(), existingProfile ? "stored-token" : undefined);
+        assert.equal(readFileSync(join(tempDir, "config.json"), "utf8"), previousDisk);
+
+        failedSave.mock.restore();
+        await manager.setStackRoot("/next/root");
+        const disk = new ConfigManager(tempDir);
+        await disk.init();
+        assert.deepEqual(disk.getAll(), { ...previous, stackRoot: "/next/root" });
+
+        await manager.setGithubToken("retry-token");
+        await disk.load();
+        assert.equal(manager.getGithubToken(), "retry-token");
+        assert.equal(disk.getGithubToken(), "retry-token");
+      } finally {
+        cleanupTempDir(tempDir);
+      }
+    });
+  }
+}
+
 test("read-only configuration inspection never repairs permissions or writes", async () => {
   if (process.platform === "win32") return;
   const tempDir = createTempDir();
@@ -463,6 +506,146 @@ test("configuration writes refuse symbolic-link destinations", async () => {
 
     await assert.rejects(() => manager.save(), /symbolic-link file/);
     assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), { marker: "unchanged" });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("expiring GitHub credentials round-trip and are replaced as a whole", async () => {
+  const tempDir = createTempDir();
+  try {
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+    await manager.setRemoteUrl("https://remote.example.com");
+    const credential = { accessToken: "ghu_one", expiresAt: 1_000, refreshToken: "ghr_one", refreshTokenExpiresAt: 2_000 };
+    await manager.setGithubCredential(credential);
+
+    const reloaded = new ConfigManager(tempDir);
+    await reloaded.init();
+    assert.deepEqual(reloaded.getGithubCredential(), credential);
+    assert.equal(reloaded.getGithubToken(), "ghu_one");
+
+    // A plain token, a generic set, and a profile patch must not inherit the old refresh grant.
+    await reloaded.setGithubToken("gho_plain");
+    assert.deepEqual(reloaded.getGithubCredential(), { accessToken: "gho_plain" });
+    await reloaded.setGithubCredential(credential);
+    await reloaded.set("githubToken", "gho_generic");
+    assert.deepEqual(reloaded.getGithubCredential(), { accessToken: "gho_generic" });
+    await reloaded.setGithubCredential(credential);
+    await reloaded.setRemoteProfile("default", { githubToken: "gho_patch" });
+    assert.deepEqual(reloaded.getGithubCredential(), { accessToken: "gho_patch" });
+    await reloaded.setGithubCredential(credential);
+    await reloaded.setRemoteProfile("default", {}, ["githubToken"]);
+    assert.equal(reloaded.getGithubCredential(), undefined);
+    assert.deepEqual(reloaded.getRemoteProfiles().default, { remoteUrl: "https://remote.example.com" });
+
+    await reloaded.setGithubCredential(credential);
+    await reloaded.clearGithubToken();
+    assert.equal(reloaded.getGithubCredential(), undefined);
+    assert.deepEqual(JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8")).profiles.default, { remoteUrl: "https://remote.example.com" });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("orphaned or malformed GitHub expiry metadata is ignored on load", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({ profiles: {
+      default: { githubRefreshToken: "ghr_orphan", githubTokenExpiresAt: 5 },
+      other: { githubToken: "ghu_x", githubTokenExpiresAt: "soon", githubRefreshToken: "ghr_x", githubRefreshTokenExpiresAt: -1 },
+    } }));
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+    assert.equal(manager.getGithubCredential(), undefined);
+    assert.deepEqual(manager.getRemoteProfiles().other, { githubToken: "ghu_x", githubRefreshToken: "ghr_x" });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("a failed credential write leaves the previous credential in memory", async t => {
+  const tempDir = createTempDir();
+  try {
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+    await manager.setGithubCredential({ accessToken: "ghu_one", expiresAt: 1_000, refreshToken: "ghr_one" });
+    t.mock.method(manager, "save", async () => { throw new Error("disk full"); });
+    await assert.rejects(manager.setGithubCredential({ accessToken: "ghu_two", expiresAt: 2_000, refreshToken: "ghr_two" }), /disk full/);
+    assert.deepEqual(manager.getGithubCredential(), { accessToken: "ghu_one", expiresAt: 1_000, refreshToken: "ghr_one" });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+/** Pause the first config write until released, then complete it or fail it. */
+function pauseFirstSave(t: { mock: { method: typeof import("node:test").mock.method } }, manager: ConfigManager, fail: boolean) {
+  const save = manager.save.bind(manager);
+  let release!: () => void;
+  let paused!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const reached = new Promise<void>(resolve => { paused = resolve; });
+  let calls = 0;
+  t.mock.method(manager, "save", async () => {
+    if (calls++ === 0) {
+      paused();
+      await gate;
+      if (fail) throw new Error("disk full");
+    }
+    await save();
+  });
+  return { reached, release };
+}
+
+for (const fail of [false, true]) {
+  test(`a sign-in saved while an older credential write is ${fail ? "failing" : "persisting"} wins in memory and on disk`, async t => {
+    const tempDir = createTempDir();
+    try {
+      const manager = new ConfigManager(tempDir);
+      await manager.init();
+      await manager.setRemoteUrl("https://remote.example.com");
+      await manager.setGithubCredential({ accessToken: "ghu_old", expiresAt: 1_000, refreshToken: "ghr_old" });
+      const write = pauseFirstSave(t, manager, fail);
+      const refresh = manager.setGithubCredential(
+        { accessToken: "ghu_a", expiresAt: 2_000, refreshToken: "ghr_a" }, { replacingRefreshToken: "ghr_old" });
+      await write.reached;
+      const signIn = manager.setGithubCredential({ accessToken: "ghu_b", expiresAt: 3_000, refreshToken: "ghr_b" });
+      write.release();
+      if (fail) await assert.rejects(refresh, /disk full/);
+      else assert.equal(await refresh, true);
+      assert.equal(await signIn, true);
+
+      const expected = { accessToken: "ghu_b", expiresAt: 3_000, refreshToken: "ghr_b" };
+      assert.deepEqual(manager.getGithubCredential(), expected);
+      const reloaded = new ConfigManager(tempDir);
+      await reloaded.init();
+      assert.deepEqual(reloaded.getGithubCredential(), expected);
+      assert.equal(reloaded.getRemoteUrl(), "https://remote.example.com");
+      const disk = readFileSync(join(tempDir, "config.json"), "utf8");
+      assert.doesNotMatch(disk, /ghu_old|ghr_old|ghu_a|ghr_a/);
+    } finally {
+      cleanupTempDir(tempDir);
+    }
+  });
+}
+
+test("a refresh compare-and-set queued behind a sign-in does not overwrite it", async t => {
+  const tempDir = createTempDir();
+  try {
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+    await manager.setGithubCredential({ accessToken: "ghu_old", expiresAt: 1_000, refreshToken: "ghr_old" });
+    const write = pauseFirstSave(t, manager, false);
+    const signIn = manager.setGithubCredential({ accessToken: "ghu_b", expiresAt: 3_000, refreshToken: "ghr_b" });
+    await write.reached;
+    const refresh = manager.setGithubCredential(
+      { accessToken: "ghu_a", expiresAt: 2_000, refreshToken: "ghr_a" }, { replacingRefreshToken: "ghr_old" });
+    write.release();
+    assert.equal(await signIn, true);
+    assert.equal(await refresh, false);
+    const reloaded = new ConfigManager(tempDir);
+    await reloaded.init();
+    assert.deepEqual(reloaded.getGithubCredential(), { accessToken: "ghu_b", expiresAt: 3_000, refreshToken: "ghr_b" });
   } finally {
     cleanupTempDir(tempDir);
   }

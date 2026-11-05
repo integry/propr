@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { parseGoalCheckpointDeclaration } from '../../goals.js';
 import type {
     AgentTaskOptions,
@@ -7,6 +6,8 @@ import type {
     GoalControlSnapshot,
 } from '../types.js';
 import { AppServerConnection, asRecord, type RpcMessage } from './codexAppServerConnection.js';
+import { CodexProviderRequests } from './codexAppServerBlockers.js';
+import { steerRunningTurn } from './codexAppServerSteer.js';
 
 export const CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -166,26 +167,26 @@ async function applyNativeGoalStop(
     if (turnId) await connection.request('turn/interrupt', { threadId, turnId }).catch(() => undefined);
 }
 
+/** Returns false while the initial input still waits for a running turn. */
 async function steerInitialGoalInput(
     connection: AppServerConnection,
     threadId: string,
     turnId: string,
     options: AgentTaskOptions,
-): Promise<void> {
-    if (!options.initialControlInputId && !options.initialGoalFeedback) return;
-    await connection.request('turn/steer', {
+): Promise<boolean> {
+    if (!options.initialControlInputId && !options.initialGoalFeedback) return true;
+    const deliveredTurnId = await steerRunningTurn(connection, {
         threadId,
-        clientUserMessageId: options.initialControlInputId ?? randomUUID(),
-        input: [{
-            type: 'text',
-            text: options.initialGoalFeedback ?? options.initialControlInputMessage ?? options.prompt,
-            text_elements: [],
-        }],
-        expectedTurnId: turnId,
+        turnId,
+        text: [options.initialGoalFeedback, options.initialControlInputId
+            ? options.initialControlInputMessage ?? options.prompt : undefined].filter(Boolean).join('\n\n'),
+        ...(options.initialControlInputId ? { clientUserMessageId: options.initialControlInputId } : {}),
     });
+    if (!deliveredTurnId) return false;
     if (options.initialControlInputId) {
-        await options.goalControl!.markInputDelivered(options.initialControlInputId, turnId);
+        await options.goalControl!.markInputDelivered(options.initialControlInputId, deliveredTurnId);
     }
+    return true;
 }
 
 async function processCheckpointBoundary(
@@ -226,13 +227,19 @@ async function observeNativeGoal(
     const control = options.goalControl!;
     const objective = nativeGoalObjective(options);
     let turnId = initialTurnId;
-    let firstTurn = true;
+    const initialInput = { pending: true };
+    // Checkpoint feedback that found no running turn yet; it goes to the next one.
+    let pendingFeedback: string | undefined;
     while (true) {
         connection.discardStartedTurn(turnId);
         await control.setActiveTurn(turnId);
-        if (firstTurn) await steerInitialGoalInput(connection, threadId, turnId, options);
-        firstTurn = false;
-        const completion = await observeActiveTurnWithThread(connection, threadId, turnId, options);
+        if (initialInput.pending) {
+            initialInput.pending = !await steerInitialGoalInput(connection, threadId, turnId, options);
+        }
+        if (pendingFeedback && await steerRunningTurn(connection, { threadId, turnId, text: pendingFeedback })) {
+            pendingFeedback = undefined;
+        }
+        const completion = await observeActiveTurnWithThread(connection, { threadId, turnId, initialInput }, options);
         await control.setActiveTurn(null);
         if (completion.status !== 'completed') return completion;
         const { boundary, completedDuringCheckpoint, checkpointFeedback } = await processCheckpointBoundary(
@@ -245,26 +252,44 @@ async function observeNativeGoal(
             await applyNativeGoalStop(connection, { threadId, desiredState, objective });
             return { status: 'interrupted', error: 'Goal stopped at a provider turn boundary' };
         }
+        if (completedDuringCheckpoint && initialInput.pending && options.initialControlInputId) {
+            return { status: 'failed', error: 'Codex completed before the continuation input could be delivered' };
+        }
         if (completedDuringCheckpoint) return completion;
         const goal = checkpointFeedback
             ? { status: 'active' }
             : nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId }));
-        if (goal.status === 'complete') return completion;
+        if (goal.status === 'complete') {
+            if (initialInput.pending && options.initialControlInputId) {
+                return { status: 'failed', error: 'Codex completed before the continuation input could be delivered' };
+            }
+            return completion;
+        }
         if (goal.status !== 'active') {
             return { status: 'failed', error: `Codex native goal entered ${goal.status} status` };
         }
         const nextTurnId = await waitForNativeGoalTurn(connection, threadId, control, objective);
         if (!nextTurnId) return { status: 'interrupted', error: 'Goal stopped between provider turns' };
         if (checkpointFeedback) {
-            await connection.request('turn/steer', {
-                threadId,
-                clientUserMessageId: randomUUID(),
-                input: [{ type: 'text', text: checkpointFeedback, text_elements: [] }],
-                expectedTurnId: nextTurnId,
-            });
+            pendingFeedback = pendingFeedback ? `${pendingFeedback}\n\n${checkpointFeedback}` : checkpointFeedback;
         }
         turnId = nextTurnId;
     }
+}
+
+/**
+ * Re-arms the native goal of a continued terminal goal. App Server accepts
+ * `active` from any status (complete included), and a cleared goal reads null
+ * and is set again with the same objective.
+ */
+async function rearmContinuedGoal(connection: AppServerConnection, threadId: string, objective: string): Promise<void> {
+    const current = asRecord((await connection.request('thread/goal/get', { threadId })).goal);
+    if (typeof current.objective === 'string' && current.objective !== objective) {
+        throw new Error('Persisted Codex thread belongs to a different native goal objective');
+    }
+    // Setting active also starts an idle native goal; a previous failed steer
+    // can leave the goal active with no running turn.
+    await connection.request('thread/goal/set', { threadId, objective, status: 'active' });
 }
 
 export async function runGoalProtocol(
@@ -274,7 +299,10 @@ export async function runGoalProtocol(
 ): Promise<GoalProtocolResult> {
     const control = options.goalControl!;
     const thread = await openGoalThread(connection, options, model);
-    if (options.resumeSessionId) {
+    if (options.resumeSessionId && options.continueTerminalGoal) {
+        await rearmContinuedGoal(connection, thread.id, nativeGoalObjective(options));
+        await options.onGoalRearmed?.();
+    } else if (options.resumeSessionId) {
         const recoveredGoal = nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId: thread.id }));
         if (recoveredGoal.objective !== nativeGoalObjective(options)) {
             throw new Error('Persisted Codex thread belongs to a different native goal objective');
@@ -326,6 +354,7 @@ export async function runGoalProtocol(
             objective: nativeGoalObjective(options),
             status: 'active',
         });
+        if (options.continueTerminalGoal) await options.onGoalRearmed?.();
     }
     const effectiveModel = thread.model;
     // Applying/resuming an active external goal calls continue_if_idle() in the
@@ -339,20 +368,22 @@ export async function runGoalProtocol(
 
 async function observeActiveTurnWithThread(
     connection: AppServerConnection,
-    threadId: string,
-    turnId: string,
+    turn: { threadId: string; turnId: string; initialInput: { pending: boolean } },
     options: AgentTaskOptions,
 ): Promise<TurnCompletion> {
+    const { threadId, turnId, initialInput } = turn;
     const control = options.goalControl!;
     const objective = nativeGoalObjective(options);
     let completed: RpcMessage | null = null;
     const summaryStart = connection.agentMessageCursor;
     const completion = connection.waitForTurn(turnId).then(message => { completed = message; });
+    const providerRequests = new CodexProviderRequests(connection, control);
     let interrupted = false;
     while (!completed) {
         await Promise.race([completion, new Promise(resolve => setTimeout(resolve, 400))]);
         if (completed) break;
         await control.heartbeat();
+        await providerRequests.sync();
         const snapshot = await control.load();
         if (snapshot.desiredState !== 'running') {
             if (!interrupted) {
@@ -364,16 +395,26 @@ async function observeActiveTurnWithThread(
             continue;
         }
         for (const input of snapshot.pendingInputs) {
-            await connection.request('turn/steer', {
-                threadId,
-                clientUserMessageId: input.id,
-                input: [{ type: 'text', text: input.message, text_elements: [] }],
-                expectedTurnId: turnId,
+            // The turn can end while earlier inputs were delivered; its
+            // questions are gone, so leave the rest for the next turn.
+            if (completed) break;
+            if (initialInput.pending && input.id === options.initialControlInputId) {
+                initialInput.pending = !await steerInitialGoalInput(connection, threadId, turnId, options);
+                if (initialInput.pending) break;
+                continue;
+            }
+            if (await providerRequests.answer(input, turnId)) continue;
+            const deliveredTurnId = await steerRunningTurn(connection, {
+                threadId, turnId, text: input.message, clientUserMessageId: input.id,
             });
-            await control.markInputDelivered(input.id, turnId);
+            // No running turn: the input stays pending for the next one.
+            if (!deliveredTurnId) break;
+            await control.markInputDelivered(input.id, deliveredTurnId);
         }
     }
-    const declaration = parseGoalCheckpointDeclaration(connection.agentMessagesAfter(summaryStart).join('\n'));
+    await providerRequests.sync();
+    await providerRequests.closeTurn();
+    const declaration = parseGoalCheckpointDeclaration(connection.agentMessagesForTurn(turnId, summaryStart).join('\n'));
     const checkpointRejectionRequest: GoalCheckpointRejection | undefined = declaration && 'rejected' in declaration ? {
         kind: 'agent',
         error: declaration.error,

@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess } from '../agents/agentGitAccess.js';
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
@@ -57,6 +58,8 @@ export interface ExecuteClaudeCodeOptions {
 }
 
 export interface ClaudeCodeResponse {
+    /** Container-observed workflow validation report, independent of agent prose. */
+    repositoryValidation?: string;
     success: boolean;
     executionTime: number;
     output: ClaudeOutput | null;
@@ -122,8 +125,9 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         await setWorktreeOwnership(worktreePath, issueRef.number);
         const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
+        const access = await prepareAgentGitAccess({ worktreePath, githubToken, issueRef, prompt });
         const dockerArgs = buildDockerArgs({
-            worktreePath, githubToken, prompt, modelName, issueNumber: issueRef.number,
+            worktreePath, githubToken: access.githubToken, gitMountArgs: access.gitMountArgs, prompt, modelName, issueNumber: issueRef.number,
             CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS,
             systemPrompt: options.systemPrompt, tools: options.tools, agentAlias: 'claude'
         });
@@ -136,7 +140,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
                 onContainerId,
                 worktreePath,
                 stdinData: prompt, // Always pass prompt via stdin
-                preserveOutputOnTimeout: true
+                preserveOutputOnTimeout: true,
+                model: modelName
             })
         );
 
@@ -146,6 +151,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const claudeOutput = parseStreamJsonOutput(result);
         const terminationReason = resolveAgentTerminationReason({
             timedOut: result.timedOut,
+            costCapExceeded: result.costCapExceeded,
+            watchdogTrip: result.watchdogTrip,
             subtype: claudeOutput.finalResult?.subtype,
             error: result.stderr
         });

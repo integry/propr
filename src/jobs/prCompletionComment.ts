@@ -1,9 +1,14 @@
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
+import {
+    type ReviewFeedbackSelection,
+    describeReviewFeedbackSelection,
+    isEmptyReviewFeedbackSelection,
+} from '@propr/shared';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
-import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
-import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
+import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -12,10 +17,18 @@ function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
     return `_Processing comment ID${real.length > 1 ? 's' : ''}: ${real.map(c => String(c.id) + '✓').join(', ')}_`;
 }
 
-/** Comment IDs suffix plus the completed work-evidence marker shared by both completion branches */
-function buildCompletionFooter(comments: UnprocessedComment[]): string {
-    const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(comments).map(comment => comment.id));
-    return buildCommentIdsSuffix(comments) + (completedEvidence ? `\n${completedEvidence}` : '');
+/**
+ * Comment IDs suffix plus the completed work-evidence marker shared by both
+ * completion branches. A fully completed run also binds the accepted comment
+ * bodies, which is what lets a later review treat them as completed requests;
+ * a partial run keeps its completed marker but binds nothing.
+ */
+function buildCompletionFooter(comments: UnprocessedComment[], options: { partial: boolean }): string {
+    const real = filterRealComments(comments);
+    const completedEvidence = buildWorkEvidenceMarker('completed', real.map(comment => comment.id));
+    if (!completedEvidence) return buildCommentIdsSuffix(comments);
+    const acceptedRequests = options.partial ? '' : buildAcceptedRequestMarkers(real);
+    return `${buildCommentIdsSuffix(comments)}\n${completedEvidence}${acceptedRequests ? `\n${acceptedRequests}` : ''}`;
 }
 
 export interface CommentContext {
@@ -26,6 +39,8 @@ export interface CommentContext {
     undoContext?: UndoLinkContext;
     taskUrl?: string;
     consumedReviewCommentIds?: number[];
+    /** Review records this /fix run acted on; absent for non-fix workflows. */
+    addressedFeedback?: ReviewFeedbackSelection;
     visualPreviewSection?: string;
 }
 
@@ -137,25 +152,52 @@ function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: s
         || changesSummary;
 }
 
+/**
+ * The `/fix` scope line for a completion comment. Rendered as its own line
+ * rather than folded into the agent's prose, so it stays greppable and keeps
+ * blocking findings visually separate from the optional suggestions a reader
+ * must not mistake for required work.
+ */
+function buildAddressedFeedbackLine(addressed: ReviewFeedbackSelection | undefined): string {
+    if (!addressed || isEmptyReviewFeedbackSelection(addressed)) return '';
+    return `> Addressed ${describeReviewFeedbackSelection(addressed)}\n\n`;
+}
+
+function buildRepositoryValidationSection(report: string | undefined): string {
+    return report ? `${redactSecrets(report)}\n\n` : '';
+}
+
+function cleanCompletionReport(text: string): string {
+    return sanitizeAgentReport(redactVisualPreviewPaths(text)
+        .replace(/^(PR|Comment by|Model):.*/gm, '')
+        .split('\n')
+        .filter(line => !line.replaceAll('\\', '/').includes(`${VISUAL_PREVIEW_DIRECTORY}/`))
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim());
+}
+
+/**
+ * The analysis a no-change completion reports, cleaned exactly as its comment
+ * renders it. Persisted at the agent-exit checkpoint so restart recovery can
+ * deliver the same answer when the worker dies before the completion comment.
+ */
+export function noChangeAnalysisSummary(claudeResult: Pick<ClaudeCodeResponse, 'summary' | 'finalResult'>): string {
+    return cleanCompletionReport(sanitizeAgentReport(claudeResult.summary || claudeResult.finalResult?.result || ''));
+}
+
 export async function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
     claudeResult: ClaudeCodeResponse
 ): Promise<string> {
-    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, visualPreviewSection } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, addressedFeedback, visualPreviewSection } = commentContext;
+    const addressedLine = buildAddressedFeedbackLine(addressedFeedback);
     const terminationReason = resolveAgentTerminationReason(claudeResult);
     const partial = !claudeResult.success && terminationReason !== undefined;
 
-    const cleanBody = (text: string) => {
-        return sanitizeAgentReport(redactVisualPreviewPaths(text)
-            .replace(/^(PR|Comment by|Model):.*/gm, '')
-            .split('\n')
-            .filter(line => !line.replaceAll('\\', '/').includes(`${VISUAL_PREVIEW_DIRECTORY}/`))
-            .join('\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim());
-    };
+    const cleanBody = cleanCompletionReport;
 
     if (commitResult) {
         let prCommentBody = partial
@@ -173,6 +215,7 @@ export async function buildCompletionComment(
         if (consumedReviewCommentIds && consumedReviewCommentIds.length > 0) {
             prCommentBody += `> Addressed ${consumedReviewCommentIds.length} AI review comment${consumedReviewCommentIds.length > 1 ? 's' : ''} (IDs: ${consumedReviewCommentIds.join(', ')})\n\n`;
         }
+        prCommentBody += addressedLine;
 
         const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary);
         if (contentToShow) {
@@ -189,6 +232,7 @@ export async function buildCompletionComment(
             prCommentBody += `${visualPreviewSection}\n\n`;
         }
 
+        prCommentBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
         prCommentBody += await buildMetricsSection(claudeResult, llm, authorsText, false);
 
         if (undoContext) {
@@ -204,11 +248,13 @@ export async function buildCompletionComment(
         prCommentBody += `\n\n---\n`;
         prCommentBody += buildSlashCommandsBlock();
         prCommentBody += `${buildAttributionLine()}\n`;
-        prCommentBody += buildCompletionFooter(unprocessedComments);
+        prCommentBody += buildCompletionFooter(unprocessedComments, { partial });
 
         return prCommentBody;
     } else {
         let noChangesBody = `ℹ️ **Analyzed the follow-up request** by ${authorsText}\n\n`;
+
+        noChangesBody += addressedLine;
 
         if (changesSummary) {
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
@@ -217,6 +263,7 @@ export async function buildCompletionComment(
         noChangesBody += visualPreviewSection
             ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
             : `No code changes were necessary based on the current state of the branch.\n\n`;
+        noChangesBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
         if (taskUrl) {
@@ -226,7 +273,7 @@ export async function buildCompletionComment(
         noChangesBody += `\n\n---\n`;
         noChangesBody += buildSlashCommandsBlock();
         noChangesBody += `${buildAttributionLine()}\n`;
-        noChangesBody += buildCompletionFooter(unprocessedComments);
+        noChangesBody += buildCompletionFooter(unprocessedComments, { partial });
 
         return noChangesBody;
     }

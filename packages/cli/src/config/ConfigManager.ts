@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { CLIConfig, ConfigKey, ConfigValues, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
+import { CLIConfig, ConfigKey, ConfigValues, DEFAULT_CONFIG, GithubCredential, RemoteProfile } from "./types.js";
 import {
   ensurePrivateDirectory,
   secureExistingPrivateDirectory,
@@ -41,7 +41,21 @@ const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * Config keys whose values live on the active remote profile rather than at
  * the top level of the config file.
  */
-const PROFILE_BACKED_KEYS = ["remoteUrl", "githubToken", "defaultProject"] as const;
+const PROFILE_BACKED_KEYS = [
+  "remoteUrl", "githubToken", "githubTokenExpiresAt", "githubRefreshToken", "githubRefreshTokenExpiresAt", "defaultProject",
+] as const;
+const GITHUB_CREDENTIAL_KEYS = ["githubToken", "githubTokenExpiresAt", "githubRefreshToken", "githubRefreshTokenExpiresAt"] as const;
+const isExpiryTime = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+
+/** Replacing or clearing a token drops expiry and refresh metadata that described the previous token. */
+function dropStaleGithubCredentialMetadata(
+  profile: RemoteProfile, patch: Partial<RemoteProfile>, clear: ReadonlyArray<keyof RemoteProfile> = []
+): void {
+  if (!("githubToken" in patch) && !clear.includes("githubToken")) return;
+  for (const key of GITHUB_CREDENTIAL_KEYS) {
+    if (key !== "githubToken" && (!(key in patch) || clear.includes("githubToken"))) delete profile[key];
+  }
+}
 type ProfileBackedKey = (typeof PROFILE_BACKED_KEYS)[number];
 
 function isProfileBackedKey(key: ConfigKey): key is ProfileBackedKey {
@@ -67,6 +81,10 @@ export class ConfigManager {
   private initialized: boolean = false;
   private readonly warn: (message: string) => void;
   private readonly readOnly: boolean;
+  /** Tail of the profile mutation queue: each mutation and its rollback completes before the next starts. */
+  private profileMutations: Promise<unknown> = Promise.resolve();
+  /** Tail of the file write queue, so the last rename always carries the latest in-memory state. */
+  private fileWrites: Promise<unknown> = Promise.resolve();
 
   /**
    * Creates a new ConfigManager instance.
@@ -189,6 +207,16 @@ export class ConfigManager {
         const profile: RemoteProfile = {};
         if (typeof profileData.remoteUrl === "string") profile.remoteUrl = profileData.remoteUrl;
         if (typeof profileData.githubToken === "string") profile.githubToken = profileData.githubToken;
+        // Expiry metadata is only meaningful beside the token it describes.
+        if (profile.githubToken && isExpiryTime(profileData.githubTokenExpiresAt)) {
+          profile.githubTokenExpiresAt = profileData.githubTokenExpiresAt;
+        }
+        if (profile.githubToken && typeof profileData.githubRefreshToken === "string" && profileData.githubRefreshToken) {
+          profile.githubRefreshToken = profileData.githubRefreshToken;
+          if (isExpiryTime(profileData.githubRefreshTokenExpiresAt)) {
+            profile.githubRefreshTokenExpiresAt = profileData.githubRefreshTokenExpiresAt;
+          }
+        }
         if (typeof profileData.defaultProject === "string") profile.defaultProject = profileData.defaultProject;
         try {
           profiles[this.normalizeProfileName(name)] = profile;
@@ -271,15 +299,38 @@ export class ConfigManager {
     return this.getActiveProfile()[key];
   }
 
-  private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
+  /**
+   * Run profile mutations one at a time. A mutation reads, saves, and on
+   * failure rolls back `profiles` without another mutation interleaving, so an
+   * older write can never restore its snapshot over a later one.
+   */
+  private serializeProfileMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const run = this.profileMutations.then(mutation);
+    this.profileMutations = run.catch(() => undefined);
+    return run;
+  }
+
+  private updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
+    return this.serializeProfileMutation(() => this.applyActiveProfilePatch(patch));
+  }
+
+  private async applyActiveProfilePatch(patch: Partial<RemoteProfile>): Promise<void> {
     const name = this.getActiveProfileName();
-    const profiles = { ...(this.config.profiles ?? {}) };
+    const previousProfiles = this.config.profiles;
+    const profiles = { ...(previousProfiles ?? {}) };
     profiles[name] = {
       ...(profiles[name] ?? {}),
       ...patch,
     };
+    dropStaleGithubCredentialMetadata(profiles[name], patch);
     this.config.profiles = profiles;
-    await this.save();
+    try {
+      await this.save();
+    } catch (error) {
+      // A later config write must not persist a profile update that failed.
+      this.config.profiles = previousProfiles;
+      throw error;
+    }
   }
 
   /**
@@ -289,6 +340,12 @@ export class ConfigManager {
    */
   async save(): Promise<void> {
     if (this.readOnly) throw new Error("Configuration manager is read-only");
+    const write = this.fileWrites.then(() => this.writeConfigFile());
+    this.fileWrites = write.catch(() => undefined);
+    await write;
+  }
+
+  private async writeConfigFile(): Promise<void> {
     await ensurePrivateDirectory(this.configDir);
 
     // Only write non-undefined values
@@ -333,7 +390,7 @@ export class ConfigManager {
    */
   async set<K extends ConfigKey>(key: K, value: ConfigValues[K]): Promise<void> {
     if (isProfileBackedKey(key)) {
-      await this.updateActiveProfile({ [key]: value as string | undefined });
+      await this.updateActiveProfile({ [key]: value } as Partial<RemoteProfile>);
       return;
     }
     (this.config as ConfigValues)[key] = value;
@@ -356,21 +413,101 @@ export class ConfigManager {
    * @returns A promise that resolves when the token is saved.
    */
   async setGithubToken(token: string): Promise<void> {
-    await this.updateActiveProfile({ githubToken: token });
+    // A plain token replaces any expiring credential and its refresh grant.
+    await this.setGithubCredential({ accessToken: token });
   }
 
   /**
-   * Clears the GitHub token.
+   * Gets the stored GitHub credential, including expiry and refresh metadata
+   * for expiring GitHub OAuth tokens.
+   */
+  getGithubCredential(): GithubCredential | undefined {
+    const profile = this.getActiveProfile();
+    if (!profile.githubToken) return undefined;
+    return {
+      accessToken: profile.githubToken,
+      ...(profile.githubTokenExpiresAt !== undefined ? { expiresAt: profile.githubTokenExpiresAt } : {}),
+      ...(profile.githubRefreshToken !== undefined ? { refreshToken: profile.githubRefreshToken } : {}),
+      ...(profile.githubRefreshTokenExpiresAt !== undefined ? { refreshTokenExpiresAt: profile.githubRefreshTokenExpiresAt } : {}),
+    };
+  }
+
+  /**
+   * Atomically replaces the whole GitHub credential. Fields absent from
+   * `credential` are removed so a rotated or replaced credential can never be
+   * combined with a stale refresh token from an earlier sign-in.
+   *
+   * With `replacingRefreshToken`, the write is a compare-and-set: it only
+   * happens when the active credential still carries that refresh token once
+   * every earlier credential mutation has settled, and resolves `false`
+   * otherwise. A refresh uses this so a sign-in confirmed meanwhile always wins.
+   */
+  async setGithubCredential(
+    credential: GithubCredential,
+    options: { replacingRefreshToken?: string } = {},
+  ): Promise<boolean> {
+    if (!credential.accessToken) throw new Error("GitHub credential requires an access token");
+    if (credential.expiresAt !== undefined && !isExpiryTime(credential.expiresAt)) throw new Error("Invalid GitHub token expiry");
+    if (credential.refreshTokenExpiresAt !== undefined && (!credential.refreshToken || !isExpiryTime(credential.refreshTokenExpiresAt))) {
+      throw new Error("Invalid GitHub refresh token expiry");
+    }
+    const expected = options.replacingRefreshToken;
+    return this.replaceActiveProfileCredential({
+      githubToken: credential.accessToken,
+      ...(credential.expiresAt !== undefined ? { githubTokenExpiresAt: credential.expiresAt } : {}),
+      ...(credential.refreshToken ? { githubRefreshToken: credential.refreshToken } : {}),
+      ...(credential.refreshToken && credential.refreshTokenExpiresAt !== undefined
+        ? { githubRefreshTokenExpiresAt: credential.refreshTokenExpiresAt } : {}),
+    }, expected === undefined ? undefined : profile => profile.githubRefreshToken === expected);
+  }
+
+  /**
+   * Resolves the GitHub credential once every queued credential mutation has
+   * settled, so a write still awaiting persistence (which may yet roll back)
+   * is never observed.
+   */
+  getSettledGithubCredential(): Promise<GithubCredential | undefined> {
+    return this.serializeProfileMutation(async () => this.getGithubCredential());
+  }
+
+  /**
+   * Clears the GitHub token together with any expiry and refresh metadata.
+   *
+   * With `expectedAccessToken`, the clear is a compare-and-set like
+   * `setGithubCredential`'s: it only happens when that token is still active
+   * once earlier credential mutations have settled, and resolves `false`
+   * otherwise.
    *
    * @returns A promise that resolves when the token is cleared.
    */
-  async clearGithubToken(): Promise<void> {
-    const name = this.getActiveProfileName();
-    const profiles = { ...(this.config.profiles ?? {}) };
-    profiles[name] = { ...(profiles[name] ?? {}) };
-    delete profiles[name].githubToken;
-    this.config.profiles = profiles;
-    await this.save();
+  async clearGithubToken(options: { expectedAccessToken?: string } = {}): Promise<boolean> {
+    const expected = options.expectedAccessToken;
+    return this.replaceActiveProfileCredential({},
+      expected === undefined ? undefined : profile => profile.githubToken === expected);
+  }
+
+  private replaceActiveProfileCredential(
+    credential: Partial<RemoteProfile>,
+    precondition?: (profile: RemoteProfile) => boolean,
+  ): Promise<boolean> {
+    return this.serializeProfileMutation(async () => {
+      if (precondition && !precondition(this.getActiveProfile())) return false;
+      const name = this.getActiveProfileName();
+      const previousProfiles = this.config.profiles;
+      const profiles = { ...(previousProfiles ?? {}) };
+      const profile: RemoteProfile = { ...(profiles[name] ?? {}) };
+      for (const key of GITHUB_CREDENTIAL_KEYS) delete profile[key];
+      profiles[name] = { ...profile, ...credential };
+      this.config.profiles = profiles;
+      try {
+        await this.save();
+      } catch (error) {
+        // Never leave a partially rotated credential in memory after a failed write.
+        this.config.profiles = previousProfiles;
+        throw error;
+      }
+      return true;
+    });
   }
 
   /**
@@ -441,6 +578,10 @@ export class ConfigManager {
    */
   async useRemoteProfile(name: string): Promise<{ created: boolean }> {
     const trimmed = this.normalizeProfileName(name);
+    return this.serializeProfileMutation(() => this.activateRemoteProfile(trimmed));
+  }
+
+  private async activateRemoteProfile(trimmed: string): Promise<{ created: boolean }> {
     const profiles = { ...(this.config.profiles ?? {}) };
     const created = !profiles[trimmed];
     if (created) {
@@ -458,6 +599,14 @@ export class ConfigManager {
     clear: Array<keyof RemoteProfile> = []
   ): Promise<void> {
     const trimmed = this.normalizeProfileName(name);
+    return this.serializeProfileMutation(() => this.patchRemoteProfile(trimmed, patch, clear));
+  }
+
+  private async patchRemoteProfile(
+    trimmed: string,
+    patch: Partial<RemoteProfile>,
+    clear: Array<keyof RemoteProfile>,
+  ): Promise<void> {
 
     const profiles = { ...(this.config.profiles ?? {}) };
     const nextProfile: RemoteProfile = {
@@ -467,6 +616,7 @@ export class ConfigManager {
     for (const key of clear) {
       delete nextProfile[key];
     }
+    dropStaleGithubCredentialMetadata(nextProfile, patch, clear);
     profiles[trimmed] = nextProfile;
     this.config.profiles = profiles;
 

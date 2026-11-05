@@ -109,7 +109,7 @@ describe('desktop native icon assets', () => {
     assert.equal(forge.match(/icon: desktopLinuxIcon/g)?.length, 2);
     assert.match(
       forge,
-      /extraResource: \[\s*desktopTrayIcon,\s*\.\.\.\(process\.platform === 'linux' \? \[\s*desktopLinuxIcon,/,
+      /extraResource: \[\s*desktopTrayIcon,\s*\.\.\.\(process\.platform === 'linux' \? \[desktopLinuxIcon\] : \[\]\)/,
     );
     assert.doesNotMatch(forge, /pwa-512x512|logo-only-small/);
     assert.match(main, /loadDesktopWindowIcon/);

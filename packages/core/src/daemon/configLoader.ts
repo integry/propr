@@ -1,7 +1,9 @@
+import { isGitHubLogin } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadMonitoredRepos, loadMonitoredReposRaw, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
+import type { RepositoryFilter } from '../webhook/webhookHandler.js';
 
 interface Settings {
     github_user_whitelist?: string[];
@@ -15,6 +17,8 @@ let primaryProcessingLabels: string[] = [];
 let monitoredRepos: string[] = [];
 let GITHUB_USER_WHITELIST: string[] = (process.env.GITHUB_USER_WHITELIST ?? '').split(',').filter(u => u);
 let GITHUB_BOT_USERNAME: string | undefined = process.env.GITHUB_BOT_USERNAME;
+/** False while GITHUB_BOT_USERNAME holds the default used after a failed detection. */
+let botUsernameVerified = !!GITHUB_BOT_USERNAME;
 
 export function getReposFromEnv(environment: NodeJS.ProcessEnv = process.env): string[] {
     const configuredRepos = environment.GITHUB_REPOS_TO_MONITOR;
@@ -26,11 +30,23 @@ export function getRepos(): string[] {
     return monitoredRepos;
 }
 
+const normalizeRepositoryName = (repository: string): string => repository.trim().toLowerCase();
+
 export function isMonitoredRepository(repository: string, repos: readonly string[] = monitoredRepos): boolean {
-    const normalizedRepository = repository.trim().toLowerCase();
+    const normalizedRepository = normalizeRepositoryName(repository);
     return normalizedRepository.length > 0
-        && repos.some(configured => configured.trim().toLowerCase() === normalizedRepository);
+        && repos.some(configured => normalizeRepositoryName(configured) === normalizedRepository);
 }
+
+/**
+ * The webhook repository filter over the live monitored set. It also lists the
+ * names it accepts, normalized exactly as isMonitoredRepository compares them,
+ * so the routing relay's delivery-interest declaration cannot drift from it.
+ */
+export const monitoredRepositoryFilter: RepositoryFilter = Object.assign(
+    (repository: string) => isMonitoredRepository(repository),
+    { monitoredRepositories: () => monitoredRepos.map(normalizeRepositoryName).filter(name => name.length > 0) },
+);
 
 /**
  * Returns whether automatic failed-CI follow-up is enabled for a repository.
@@ -56,6 +72,34 @@ export async function isCancelCiDuringFollowupEnabledForRepository(
     loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
 ): Promise<boolean> {
     return isRepositoryOptionEnabled({ owner, repo, option: 'cancelCiDuringFollowup', description: 'follow-up CI cancellation' }, loadConfiguredRepos);
+}
+
+/**
+ * Check runs that never block automation for a repository (see
+ * RepoToMonitor.nonBlockingChecks). Branch-specific entries share a repository
+ * name, so every entry's list counts. An unreadable configuration yields none:
+ * every check keeps blocking until it can be read.
+ */
+export async function getNonBlockingChecksForRepository(
+    owner: string,
+    repo: string,
+    loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+): Promise<string[]> {
+    const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
+    try {
+        const patterns: string[] = [];
+        for (const candidate of await loadConfiguredRepos()) {
+            if (candidate.name.trim().toLowerCase() !== repository) continue;
+            for (const entry of candidate.nonBlockingChecks ?? []) {
+                const pattern = String(entry ?? '').trim();
+                if (pattern && !patterns.some(existing => existing.toLowerCase() === pattern.toLowerCase())) patterns.push(pattern);
+            }
+        }
+        return patterns;
+    } catch (error) {
+        logger.warn({ repository, error: (error as Error).message }, 'Failed to load non-blocking checks; every check keeps blocking');
+        return [];
+    }
 }
 
 /**
@@ -94,6 +138,53 @@ export async function getCancelCiDuringFollowupWorkflowsForRepository(
         logger.warn({ repository, error: err.message },
             'Failed to load the follow-up CI cancellation workflow selection; cancelling nothing until it can be read');
         return null;
+    }
+}
+
+/** The effective automatic pull request assignment settings for a repository. */
+export interface RepositoryAutoAssignment {
+    enabled: boolean;
+    /** GitHub login assigned instead of the issue author; null assigns the issue author. */
+    defaultAssignee: string | null;
+    requestReview: boolean;
+}
+
+const DISABLED_AUTO_ASSIGNMENT: RepositoryAutoAssignment = { enabled: false, defaultAssignee: null, requestReview: false };
+
+/**
+ * Automatic pull request assignment for a repository. The options are
+ * repository-wide: branch-specific entries share a repository name, a boolean
+ * option is on when any entry opts in, and the first valid default assignee
+ * wins. Missing or malformed options read as disabled, and an unreadable
+ * configuration fails closed so nobody is assigned on a guess.
+ */
+export async function resolveRepositoryAutoAssignment(
+    owner: string,
+    repo: string,
+    loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+): Promise<RepositoryAutoAssignment> {
+    const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
+    if (repository === '/') return { ...DISABLED_AUTO_ASSIGNMENT };
+
+    try {
+        const entries = (await loadConfiguredRepos()).filter(candidate => candidate.name.trim().toLowerCase() === repository);
+        let defaultAssignee: string | null = null;
+        for (const entry of entries) {
+            const login = typeof entry.autoAssignDefaultAssignee === 'string' ? entry.autoAssignDefaultAssignee.trim().replace(/^@/, '') : '';
+            if (login && isGitHubLogin(login)) {
+                defaultAssignee = login;
+                break;
+            }
+        }
+        return {
+            enabled: entries.some(entry => entry.autoAssignPullRequests === true),
+            defaultAssignee,
+            requestReview: entries.some(entry => entry.autoAssignRequestReview === true),
+        };
+    } catch (error) {
+        const err = error as Error;
+        logger.warn({ repository, error: err.message }, 'Failed to load automatic pull request assignment configuration; treating it as disabled');
+        return { ...DISABLED_AUTO_ASSIGNMENT };
     }
 }
 
@@ -159,21 +250,39 @@ export function getBotUsername(): string | undefined {
     return GITHUB_BOT_USERNAME;
 }
 
+async function detectInstallationBotUsername(): Promise<string> {
+    const octokit = await getAuthenticatedOctokit();
+    const { data: installation } = await octokit.request('GET /installation');
+    const appSlug = (installation as { app_slug?: unknown }).app_slug;
+    if (typeof appSlug !== 'string' || !appSlug) throw new Error('GitHub did not report the installation App slug');
+    GITHUB_BOT_USERNAME = `${appSlug}[bot]`;
+    botUsernameVerified = true;
+    logger.info({ botUsername: GITHUB_BOT_USERNAME }, 'Auto-detected bot username');
+    return GITHUB_BOT_USERNAME;
+}
+
 export async function detectBotUsername(): Promise<string> {
     if (GITHUB_BOT_USERNAME) return GITHUB_BOT_USERNAME;
 
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const { data: installation } = await octokit.request('GET /installation');
-        GITHUB_BOT_USERNAME = `${(installation as { app_slug: string }).app_slug}[bot]`;
-        logger.info({ botUsername: GITHUB_BOT_USERNAME }, 'Auto-detected bot username');
-        return GITHUB_BOT_USERNAME;
+        return await detectInstallationBotUsername();
     } catch (error) {
         const err = error as Error;
         logger.warn({ error: err.message }, 'Failed to auto-detect bot username, will use default');
         GITHUB_BOT_USERNAME = 'propr-dev[bot]';
         return GITHUB_BOT_USERNAME;
     }
+}
+
+/**
+ * ProPR's bot login as configured or reported by GitHub, never the default that
+ * `detectBotUsername` falls back to. Decisions about what ProPR owns need the real
+ * identity: when only the fallback is cached, detection is retried, and a failure
+ * throws instead of guessing.
+ */
+export async function detectVerifiedBotUsername(): Promise<string> {
+    if (GITHUB_BOT_USERNAME && botUsernameVerified) return GITHUB_BOT_USERNAME;
+    return detectInstallationBotUsername();
 }
 
 export async function loadReposFromConfig(): Promise<void> {

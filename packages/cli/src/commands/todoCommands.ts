@@ -105,6 +105,10 @@ function displayTodoDetails(todo: RepoTodo): void {
     console.log(`Linked Plan: ${todo.linkedDraftId}`);
   }
 
+  if (todo.linkedIssueRepository && todo.linkedIssueNumber) {
+    console.log(`Linked Issue: ${todo.linkedIssueRepository}#${todo.linkedIssueNumber}`);
+  }
+
   console.log("");
   console.log("=".repeat(60));
 }

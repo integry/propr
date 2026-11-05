@@ -94,15 +94,15 @@ for (const width of [320, 390]) {
     const mobileNavigation = page.getByRole('navigation', { name: 'Primary navigation' });
     await expect(mobileNavigation).toBeVisible();
     await expect(page.locator('header')).toBeHidden();
-    await expect(mobileNavigation.getByRole('link', { name: /Inbox/ })).toBeVisible();
     await expect(mobileNavigation.getByRole('link', { name: 'Dashboard' })).toBeVisible();
-    const newTaskButton = mobileNavigation.getByRole('button', {
-      name: 'New Task unavailable in demo mode',
+    await expect(mobileNavigation.getByRole('link', { name: 'Tasks' })).toBeVisible();
+    const createButton = mobileNavigation.getByRole('button', {
+      name: 'Create unavailable in demo mode',
       exact: true,
     });
-    await expect(newTaskButton).toBeVisible();
-    await expect(newTaskButton).toBeDisabled();
-    await expect(mobileNavigation.getByRole('link', { name: 'Repositories' })).toBeVisible();
+    await expect(createButton).toBeVisible();
+    await expect(createButton).toBeDisabled();
+    await expect(mobileNavigation.getByRole('link', { name: /Inbox/ })).toBeVisible();
     await expect(mobileNavigation.getByRole('button', { name: 'More' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible();
 

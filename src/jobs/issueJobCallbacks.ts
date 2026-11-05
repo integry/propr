@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { WorkerStateManager } from '@propr/core';
-import { TaskStates } from '@propr/core';
+import { TaskStates, getExecutionLogDirectory } from '@propr/core';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
 import type { IssueJobData } from '@propr/core';
@@ -50,7 +50,7 @@ export function createSessionIdCallback(
             }
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const logDir = '/tmp/claude-logs';
+            const logDir = getExecutionLogDirectory();
             await fs.ensureDir(logDir);
 
             const filePrefix = `issue-${issueRef.number}-${timestamp}`;

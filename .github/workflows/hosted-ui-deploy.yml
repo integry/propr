@@ -1,0 +1,167 @@
+name: Hosted UI Deploy
+
+# Builds and deploys app.propr.dev for one published release. The Docker Images
+# release workflow calls this after the GitHub release is published, and
+# maintainers dispatch it from main to (re)deploy an already-published release:
+# re-running a failed job of a tag run reuses that tag's workflow, so a fixed
+# deploy has to come from main's copy of these steps.
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Published release tag, for example v0.9.1'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Published release tag to deploy, for example v0.9.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.release_tag }} to app.propr.dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The Cloudflare token lives only in this protected environment, so no
+    # build, PR or other release job can read it. Its deployment policy allows
+    # the release tags (v*) and main, the ref manual deploys are dispatched from.
+    environment:
+      name: hosted-ui-production
+      url: https://app.propr.dev/
+    concurrency:
+      group: hosted-ui-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DISPATCHED_WORKFLOW: ${{ github.workflow_ref }}
+          DISPATCHED_REF: ${{ github.ref }}
+        run: |
+          # A direct dispatch must run main's copy of this workflow; release
+          # tags carry the workflow as it was when they were cut.
+          case "$DISPATCHED_WORKFLOW" in
+            "$GITHUB_REPOSITORY/.github/workflows/hosted-ui-deploy.yml@"*)
+              if [ "$DISPATCHED_REF" != "refs/heads/main" ]; then
+                echo "Dispatch the hosted UI deploy from main, not $DISPATCHED_REF." >&2
+                exit 1
+              fi
+              ;;
+          esac
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$RELEASE_TAG" =~ $semver ]]; then
+            echo "release_tag '$RELEASE_TAG' must look like v<semver>, for example v0.9.1." >&2
+            exit 1
+          fi
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --silent; then
+            echo "Release tag $RELEASE_TAG does not exist in $GITHUB_REPOSITORY." >&2
+            exit 1
+          fi
+          # Only a published release may reach production: a tag whose release
+          # run failed before publish-github-release has no release, and the
+          # by-tag endpoint does not return drafts. Check draft anyway.
+          if ! release_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')"; then
+            echo "Release tag $RELEASE_TAG has no published GitHub release in $GITHUB_REPOSITORY; publish the release before deploying it." >&2
+            exit 1
+          fi
+          if [ "$release_draft" != "false" ]; then
+            echo "GitHub release $RELEASE_TAG is not published (draft: '$release_draft'); publish it before deploying it." >&2
+            exit 1
+          fi
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # Release artifacts are already public when this runs: a missing
+      # environment secret skips the deploy with a notice instead of failing
+      # the release.
+      - name: Check Cloudflare credentials
+        id: credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          message="CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set in the hosted-ui-production environment; app.propr.dev was not deployed. Add them (docs/docs/operations/hosted-ui-release.md), then run the Hosted UI Deploy workflow from main with this release tag."
+          echo "::notice title=Hosted UI deploy skipped::$message"
+          {
+            echo "### Hosted UI deploy skipped"
+            echo "$message"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout release tag
+        if: steps.credentials.outputs.configured == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.credentials.outputs.configured == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Confirm checkout is the release version
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          checkout_version="$(node -p "require('./package.json').version")"
+          if [ -z "$RELEASE_VERSION" ] || [ "$checkout_version" != "$RELEASE_VERSION" ]; then
+            echo "Checked-out package.json version '$checkout_version' does not match release '$RELEASE_VERSION'." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm ci
+
+      # The UI resolves @propr/shared through its package.json entry
+      # (dist/index.js), which a clean install does not contain.
+      # @propr/client needs no build: the UI aliases its workspace source.
+      - name: Build shared workspace
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm run build -w @propr/shared
+
+      - name: Build hosted UI
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm run build -w propr-ui
+
+      - name: Deploy to Cloudflare Workers
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npx --yes wrangler@4.156.0 deploy --config wrangler.hosted-ui.toml
+
+      - name: Verify app.propr.dev serves the release
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: node scripts/verify-hosted-ui-release.mjs
+
+      - name: Show hosted UI reconciliation guidance
+        if: failure()
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          echo "Hosted UI deployment of $RELEASE_TAG did not finish; the release artifacts are already published. Run the Hosted UI Deploy workflow from main with release_tag $RELEASE_TAG, or run npm run deploy:hosted-ui from a checkout of the tag." >&2
+          {
+            echo "### Hosted UI reconciliation"
+            echo "Run the **Hosted UI Deploy** workflow (\`.github/workflows/hosted-ui-deploy.yml\`) from \`main\` with \`release_tag\` set to \`$RELEASE_TAG\`, or deploy by hand with \`npm run deploy:hosted-ui\` from a clean checkout of the tag. Re-running a job of the release run reuses the tag's copy of the workflow. Re-deploying the same build is idempotent."
+          } >> "$GITHUB_STEP_SUMMARY"

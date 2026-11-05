@@ -42,7 +42,6 @@ function taskSummary(overrides: Record<string, unknown> = {}): Record<string, un
     modelName: "gpt-5.6-sol",
     llmProvider: "codex",
     planIssueStatus: null,
-    critiqueScore: null,
     ...overrides,
   };
 }

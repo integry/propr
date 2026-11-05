@@ -6,13 +6,30 @@ export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName }
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 export const SPECIALIZED_SETTING_NAMES = [
+  'usage_tips_enabled',
   'auto_followup_score_threshold',
   'auto_resolve_merge_conflicts',
+  'dashboard_summary_enabled',
+  'followup_requires_assignment',
   'model_reasoning_level',
   'pr_review_model',
+  'ultrafix_escalation_enabled',
+  'ultrafix_escalation_models',
+  'ultrafix_escalation_patience',
+  'ultrafix_escalation_max_reasoning_levels',
   'ultrafix_rating_goal',
   'ultrafix_max_cycles',
-  'ultrafix_pause_seconds'
+  'ultrafix_pause_seconds',
+  'default_max_cost_usd',
+  'agent_run_usage_pause_percent',
+  'ultrafix_ci_wait_timeout_ms',
+  'agent_stall_timeout_ms',
+  'agent_tool_stall_timeout_ms',
+  'agent_degenerate_output_limit',
+  'agent_network_mode',
+  'agent_network_mode_enforced',
+  'agent_network_allow',
+  'agent_network_ignore_repository_allow'
 ] as const;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;

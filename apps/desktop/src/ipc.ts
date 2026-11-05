@@ -18,8 +18,18 @@ import {
   isSafeExternalUrl,
   isTrustedRendererUrl,
 } from './security';
-import { IPC_CHANNELS, isDesktopPairingOperationId, isDesktopNativeNavigationState } from './shared/contract';
-import type { DesktopAcceptanceJourneyStage, DesktopDeepLinkAcknowledgement, DesktopNativeNavigationState } from './shared/contract';
+import {
+  IPC_CHANNELS,
+  isDesktopApplicationMenuRequest,
+  isDesktopPairingOperationId,
+  isDesktopNativeNavigationState,
+} from './shared/contract';
+import type {
+  DesktopAcceptanceJourneyStage,
+  DesktopApplicationMenuRequest,
+  DesktopDeepLinkAcknowledgement,
+  DesktopNativeNavigationState,
+} from './shared/contract';
 
 export type DesktopAcceptanceOperation = 'PROFILE_SAVE' | 'PAIR' | 'PROBE' | 'ACTIVATE';
 export type DesktopAcceptanceOperationStatus =
@@ -46,10 +56,13 @@ interface RegisterIpcOptions {
   openExternal(url: string): Promise<void>;
   platform?: NodeJS.Platform;
   windowForSender?(event: IpcMainInvokeEvent): DesktopWindowControlTarget | null;
+  /** Linux frameless windows: pop up the main-owned application menu for this sender's window. */
+  showApplicationMenu?(event: IpcMainInvokeEvent, request: DesktopApplicationMenuRequest): void;
   rendererConsumerReady?(event: IpcMainInvokeEvent): boolean;
   hasPendingConnectIntent?(): boolean;
   acknowledgeDeepLink?(event: IpcMainInvokeEvent, acknowledgement: DesktopDeepLinkAcknowledgement): boolean;
-  onRendererActiveProfileChanged?(origin: string | null): void;
+  // null retains CSP through transient deselection; undefined narrows it.
+  onRendererActiveProfileChanged?(origin: string | null | undefined): void;
   onActiveWorkConnectionAvailable?(): void;
   onActiveWorkConnectionUnavailable?(reason: 'disconnected' | 'logged-out' | 'revoked' | 'profile-changed'): void;
   onActiveWorkRefresh?(): void;
@@ -174,7 +187,19 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       }
     });
   };
-  const reconcileRendererActiveProfile = async (): Promise<void> => {
+  const readRendererProfiles = async () => {
+    const generation = rendererActiveProfileReconciliationGeneration;
+    try {
+      return await options.credentials.listProfiles();
+    } catch (error) {
+      if (generation === rendererActiveProfileReconciliationGeneration) {
+        ++rendererActiveProfileReconciliationGeneration;
+        options.onRendererActiveProfileChanged?.(undefined);
+      }
+      throw error;
+    }
+  };
+  const reconcileRendererActiveProfile = async (clearWhenUnselected = false): Promise<void> => {
     if (!options.onRendererActiveProfileChanged) return;
     const generation = ++rendererActiveProfileReconciliationGeneration;
     let current;
@@ -182,14 +207,14 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       current = await options.credentials.listProfiles();
     } catch (error) {
       if (generation === rendererActiveProfileReconciliationGeneration) {
-        options.onRendererActiveProfileChanged(null);
+        options.onRendererActiveProfileChanged(undefined);
       }
       throw error;
     }
     const activeOrigin = current.profiles
       .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl ?? null;
     if (generation === rendererActiveProfileReconciliationGeneration) {
-      options.onRendererActiveProfileChanged(activeOrigin);
+      options.onRendererActiveProfileChanged(activeOrigin ?? (clearWhenUnselected ? undefined : null));
     }
   };
   const reconcileActiveWorkConnection = (): void => {
@@ -238,6 +263,12 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       windowControlTarget(event, args).close();
     });
   }
+  if (options.showApplicationMenu && (options.platform ?? process.platform) === 'linux') {
+    handle(IPC_CHANNELS.applicationMenuPopup, (event, request, ...args) => {
+      if (args.length || !isDesktopApplicationMenuRequest(request)) throw new Error('Invalid application menu request');
+      options.showApplicationMenu!(event, { x: request.x, y: request.y, source: request.source });
+    });
+  }
   handle(IPC_CHANNELS.deepLinkAcknowledgement, (event, acknowledgement, ...args) => {
     if (args.length || !isValidDesktopDeepLinkAcknowledgement(acknowledgement)) {
       throw new Error('Invalid desktop deep-link acknowledgement');
@@ -267,6 +298,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     if (options.onActiveWorkConnectionUnavailable && !options.credentials.hasActiveRendererBinding()) {
       options.onActiveWorkConnectionUnavailable('logged-out');
     }
+    await reconcileRendererActiveProfile(true);
   });
   handle(IPC_CHANNELS.openExternal, async (_event, value: unknown) => {
     if (typeof value !== 'string' || !isSafeExternalUrl(value)) throw new Error('External URL is not allowed');
@@ -297,7 +329,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       options.notifications!.clear(scope);
     });
   }
-  handle(IPC_CHANNELS.profilesList, () => options.credentials.listProfiles());
+  handle(IPC_CHANNELS.profilesList, () => readRendererProfiles());
   handle(IPC_CHANNELS.profilesSave, async (_event, input) => {
     const profile = await options.credentials.saveProfile(
       input,
@@ -315,11 +347,11 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       profileId,
       origin => clearDesktopInstanceCookies(options.desktopSession, [origin]),
     );
-    await reconcileRendererActiveProfile();
+    await reconcileRendererActiveProfile(true);
     reconcileActiveWorkConnection();
   });
   handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
-    const current = await options.credentials.listProfiles();
+    const current = await readRendererProfiles();
     const previous = current.profiles.find(profile => profile.id === current.activeProfileId);
     const next = current.profiles.find(profile => profile.id === profileId);
     if (profileId !== null && !next) throw new Error('Desktop profile does not exist');
@@ -404,10 +436,10 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     pairingApprovalAction('copy', profileId, operationId, args));
   handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
   handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
-    const before = await options.credentials.listProfiles();
+    const before = await readRendererProfiles();
     const activated = await options.credentials.activate(activationTicket);
     try {
-      const after = await options.credentials.listProfiles();
+      const after = await readRendererProfiles();
       const previousOrigin = before.profiles
         .find(profile => profile.id === before.activeProfileId)?.apiBaseUrl;
       const activatedOrigin = after.profiles

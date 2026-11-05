@@ -6,6 +6,13 @@ export function configRevision(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+export function effectiveGithubUserWhitelist(settings: Record<string, unknown>): string[] {
+  const value = Array.isArray(settings.github_user_whitelist)
+    ? settings.github_user_whitelist
+    : (process.env.GITHUB_USER_WHITELIST || '').split(',');
+  return value.filter((entry): entry is string => typeof entry === 'string').map(entry => entry.trim()).filter(Boolean);
+}
+
 /** Must be called while holding the same lock as persistence. */
 export function assertConfigRevision(expected: unknown, current: unknown): void {
   if (expected !== undefined && expected !== configRevision(current)) {

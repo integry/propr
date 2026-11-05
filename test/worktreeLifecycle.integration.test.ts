@@ -1,1333 +1,1007 @@
-import { test, describe, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert';
+import { test, before, beforeEach, after, mock } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'fs-extra';
-import path from 'path';
-import os from 'os';
-import { simpleGit, SimpleGit } from 'simple-git';
+import path from 'node:path';
+import os from 'node:os';
+import knex from 'knex';
+import { simpleGit, type SimpleGit } from 'simple-git';
 
-// ============================================================================
-// Inline implementations of cleanup functions for testing
-// These match the behavior in packages/core/src/git/worktreeOperations.ts
-// without requiring GitHub env vars and other external dependencies
-// ============================================================================
+// Import production entry points only after isolating their fixed storage paths.
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-worktree-lifecycle-'));
+process.env.GIT_CLONES_BASE_PATH = path.join(root, 'clones');
+process.env.GIT_WORKTREES_BASE_PATH = path.join(root, 'worktrees');
+process.env.GIT_CONFIG_GLOBAL = path.join(root, 'gitconfig');
+process.env.PUSH_RESCUE_WORKTREE_RECORD_DIR = path.join(root, 'salvage-records');
+const bin = path.join(root, 'bin');
+await fs.ensureDir(bin);
+await fs.writeFile(path.join(bin, 'docker'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+await fs.writeFile(path.join(bin, 'sudo'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
+const handoffDb = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+await handoffDb.schema.createTable('pr_followup_handoffs', table => {
+    table.string('worktree_path'); table.string('status'); table.string('phase');
+});
+await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: handoffDb } });
+const { cleanupExistingBranch, addWorktreeWithoutTracking, removeStaleWorktreeRegistration,
+    clearMissingWorktreeRegistration, releaseBranchFromSettledWorktree } =
+    await import('../packages/core/src/git/worktreeCreation.js');
+const { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees,
+    createWorktreeForIssue, createWorktreeFromExistingBranch } =
+    await import('../packages/core/src/git/repoManager.js');
 
-interface CleanupOptions {
-    deleteBranch?: boolean;
-    success?: boolean;
-    retentionStrategy?: string;
-    retentionHours?: number;
+let repo: string;
+let git: SimpleGit;
+let worktree: string;
+let repoName: string;
+let initial: string;
+let serial = 0;
+before(async () => fs.ensureDir(process.env.GIT_CLONES_BASE_PATH!));
+beforeEach(async () => {
+    repoName = `repo-${++serial}`;
+    repo = path.join(root, 'clones', 'owner', repoName);
+    worktree = path.join(root, 'worktrees', 'owner', repoName, 'checkout');
+    await fs.ensureDir(repo);
+    git = simpleGit(repo);
+    await git.init(['--initial-branch=main']);
+    await git.addConfig('user.name', 'Test User');
+    await git.addConfig('user.email', 'test@example.com');
+    await fs.writeFile(path.join(repo, '.gitignore'), 'private.env\n');
+    await fs.writeFile(path.join(repo, 'tracked'), 'initial');
+    await git.add('.').commit('initial');
+    initial = (await git.revparse(['HEAD'])).trim();
+});
+after(async () => { await handoffDb.destroy(); await fs.remove(root); });
+
+async function create(branch = 'task') {
+    await fs.ensureDir(path.dirname(worktree));
+    await addWorktreeWithoutTracking(git, worktree, branch, { startPoint: 'main' });
+    return simpleGit(worktree);
+}
+async function privateWork(wt: SimpleGit) {
+    await fs.writeFile(path.join(worktree, 'tracked'), 'unpublished');
+    await wt.add('.').commit('unpublished');
+    await fs.writeFile(path.join(worktree, 'tracked'), 'staged');
+    await wt.add('tracked');
+    await fs.writeFile(path.join(worktree, 'tracked'), 'unstaged');
+    await fs.writeFile(path.join(worktree, 'untracked'), 'untracked data');
+    await fs.writeFile(path.join(worktree, 'private.env'), 'private data');
+    return { head: await wt.revparse(['HEAD']), index: await wt.raw(['show', ':tracked']) };
+}
+async function assertPrivateWork(wt: SimpleGit, expected: Awaited<ReturnType<typeof privateWork>>) {
+    assert.equal(await wt.revparse(['HEAD']), expected.head);
+    assert.equal(await wt.raw(['show', ':tracked']), expected.index);
+    assert.equal(await fs.readFile(path.join(worktree, 'tracked'), 'utf8'), 'unstaged');
+    assert.equal(await fs.readFile(path.join(worktree, 'untracked'), 'utf8'), 'untracked data');
+    assert.equal(await fs.readFile(path.join(worktree, 'private.env'), 'utf8'), 'private data');
+    assert.equal(await git.revparse(['refs/heads/task']), expected.head);
+    assert.match(await git.raw(['worktree', 'list', '--porcelain']), new RegExp(worktree));
 }
 
-interface RetentionInfo {
-    timestamp: string;
-    issueProcessed: boolean;
-    success: boolean;
-    retentionHours: number;
-    scheduledCleanup: string;
+test('missing refs succeed in an unborn repository and a populated repository', async () => {
+    const empty = path.join(root, 'empty');
+    await fs.ensureDir(empty);
+    const emptyGit = simpleGit(empty);
+    await emptyGit.init();
+    await cleanupExistingBranch(emptyGit, 'never-existed');
+    await cleanupExistingBranch(git, 'never-existed');
+    await git.branch(['prefix/child']);
+    await cleanupExistingBranch(git, 'prefix'); // prefix matches are not exact refs
+});
+
+test('existing loose and packed branches are retained at their original commits', async () => {
+    await git.branch(['task']);
+    await assert.rejects(cleanupExistingBranch(git, 'task'), /Existing branch retained/);
+    await git.raw(['pack-refs', '--all']);
+    await assert.rejects(cleanupExistingBranch(git, 'task'), /Existing branch retained/);
+    assert.equal((await git.revparse(['task'])).trim(), initial);
+});
+
+test('reuse creates a missing local branch from the requested start point without tracking', async () => {
+    await addWorktreeWithoutTracking(git, worktree, 'task', { startPoint: 'main', resetBranch: true });
+    assert.equal((await simpleGit(worktree).revparse(['HEAD'])).trim(), initial);
+    assert.equal((await git.raw(['config', '--get', 'branch.task.remote'])).trim(), '');
+});
+
+test('reuse preserves a packed local branch ahead of its requested start point', async () => {
+    const wt = await create();
+    const saved = await privateWork(wt);
+    await cleanupWorktree(repo, worktree, 'task', { deleteBranch: true });
+    await git.raw(['pack-refs', '--all']);
+    const retry = `${worktree}-retry`;
+    await addWorktreeWithoutTracking(git, retry, 'task', { startPoint: 'main', resetBranch: true });
+    assert.equal(await simpleGit(retry).revparse(['HEAD']), saved.head);
+    await assertPrivateWork(wt, saved);
+});
+
+test('an occupied branch and an existing nonempty destination fail without losing private work', async () => {
+    const wt = await create();
+    const saved = await privateWork(wt);
+    await assert.rejects(addWorktreeWithoutTracking(git, `${worktree}-retry`, 'task', {
+        startPoint: 'main', resetBranch: true,
+    }), /already (?:checked out|used by worktree)/);
+    await assert.rejects(addWorktreeWithoutTracking(git, worktree, 'other', { startPoint: 'main' }));
+    await assertPrivateWork(wt, saved);
+});
+
+for (const strategy of ['always_delete', 'keep_on_failure', 'keep_for_hours']) {
+    for (const success of [true, false]) {
+        test(`production cleanup preserves all work with ${strategy}, success=${success}`, async () => {
+            const wt = await create();
+            const saved = await privateWork(wt);
+            await cleanupWorktree(repo, worktree, 'task', {
+                deleteBranch: true, success, retentionStrategy: strategy, retentionHours: 0,
+            });
+            await assertPrivateWork(wt, saved);
+        });
+    }
 }
 
-interface CleanupResult {
-    cleaned: number;
-    retained: number;
+test('expired retention markers cannot authorize deletion', async () => {
+    const wt = await create();
+    const saved = await privateWork(wt);
+    await fs.writeJson(path.join(worktree, '.retention-info.json'), { scheduledCleanup: '2000-01-01T00:00:00Z' });
+    assert.equal((await cleanupExpiredWorktrees(path.join(root, 'worktrees'))).cleaned, 0);
+    await assertPrivateWork(wt, saved);
+});
+
+test('missing checkouts keep their administrative HEAD and registration even when old', async () => {
+    const wt = await create();
+    await wt.checkout(['--detach']);
+    await fs.writeFile(path.join(worktree, 'tracked'), 'detached history');
+    await wt.add('.').commit('detached commit');
+    const head = await wt.revparse(['HEAD']);
+    const admin = (await fs.readFile(path.join(worktree, '.git'), 'utf8')).trim().slice('gitdir: '.length);
+    await fs.move(worktree, `${worktree}-offline`);
+    await fs.utimes(admin, new Date(0), new Date(0));
+    assert.equal(await removeStaleWorktreeRegistration(git, worktree), false);
+    assert.equal((await safePruneWorktrees(repo, 0)).pruned, 0);
+    assert.equal((await fs.readFile(path.join(admin, 'HEAD'), 'utf8')).trim(), head.trim());
+    assert.match(await git.raw(['worktree', 'list', '--porcelain']), new RegExp(worktree));
+});
+
+test('real Git errors abort branch checks and reuse without creating a checkout', async () => {
+    const invalid = path.join(root, 'not-a-repo');
+    await fs.ensureDir(invalid);
+    const invalidGit = simpleGit(invalid);
+    await assert.rejects(cleanupExistingBranch(invalidGit, 'missing'), /not a git repository/);
+    await assert.rejects(addWorktreeWithoutTracking(invalidGit, worktree, 'missing', {
+        startPoint: 'main', resetBranch: true,
+    }), /not a git repository/);
+    // An unreadable ref database must not be interpreted as an absent branch.
+    await fs.writeFile(path.join(repo, '.git', 'packed-refs'), 'invalid packed refs\n');
+    await assert.rejects(cleanupExistingBranch(git, 'missing'), /packed-refs/);
+    await assert.rejects(addWorktreeWithoutTracking(git, worktree, 'missing', {
+        startPoint: 'main', resetBranch: true,
+    }), /packed-refs/);
+    assert.equal(await fs.pathExists(worktree), false);
+});
+
+test('a broken loose branch ref fails closed instead of appearing absent', async () => {
+    await fs.writeFile(path.join(repo, '.git', 'refs', 'heads', 'broken'), 'f'.repeat(40) + '\n');
+    await assert.rejects(cleanupExistingBranch(git, 'broken'), /bad ref/);
+    await assert.rejects(addWorktreeWithoutTracking(git, worktree, 'broken', {
+        startPoint: 'main', resetBranch: true,
+    }), /bad ref/);
+    assert.equal(await fs.pathExists(worktree), false);
+    assert.equal(await fs.readFile(path.join(repo, '.git', 'refs', 'heads', 'broken'), 'utf8'), 'f'.repeat(40) + '\n');
+});
+
+async function remoteBranch(branch: string) {
+    const remote = path.join(root, `remote-${serial}.git`);
+    await simpleGit().raw(['init', '--bare', '--initial-branch=main', remote]);
+    await git.addRemote('origin', remote);
+    await git.push('origin', `main:refs/heads/${branch}`);
+    await git.push('origin', 'main');
+    await git.fetch('origin');
+}
+const issue = () => ({ issueId: 42, issueTitle: 'Fix', owner: 'owner', repoName });
+
+test('repoManager creates a fresh issue branch and falls back when a reuse ref is absent', async () => {
+    await remoteBranch('published');
+    for (const reuseBranch of [undefined, 'never-published']) {
+        const result = await createWorktreeForIssue(repo, issue(), { baseBranch: 'main', reuseBranch });
+        assert.equal((await simpleGit(result.worktreePath).revparse(['HEAD'])).trim(), initial);
+        assert.notEqual(result.branchName, reuseBranch);
+        assert.ok((await fs.stat(path.join(result.worktreePath, '.git'))).isFile());
+    }
+});
+
+for (const entry of ['issue', 'existing'] as const) {
+    test(`repoManager ${entry} path reuses remote-only then locally advanced branches safely`, async () => {
+        await remoteBranch('task');
+        const run = (dir: string) => entry === 'issue'
+            ? createWorktreeForIssue(repo, issue(), { baseBranch: 'main', reuseBranch: 'task' })
+            : createWorktreeFromExistingBranch(repo, 'task', { owner: 'owner', repoName, worktreeDirName: dir });
+        const first = await run('first');
+        worktree = first.worktreePath;
+        const wt = simpleGit(worktree);
+        const saved = await privateWork(wt);
+        await assert.rejects(run('occupied'));
+        await assertPrivateWork(wt, saved);
+        await cleanupWorktree(repo, worktree, 'task', { deleteBranch: true });
+        const retry = await run('retry');
+        assert.equal(await simpleGit(retry.worktreePath).revparse(['HEAD']), saved.head);
+        await assertPrivateWork(wt, saved);
+        if (entry === 'existing') await assert.rejects(run('first'), /Existing worktree retained/);
+        await assertPrivateWork(wt, saved);
+    });
 }
 
-interface PruneResult {
-    pruned: number;
-    skipped: number;
+const { sweepIdleWorktrees, proveWorktreeDisposable, removeWorktreeIfDisposable, interruptedWorktreeRemovals } = await import('../packages/core/src/git/worktreeReclaim.js');
+
+/** A finished task: its commit is on the task branch and only ignored files remain. */
+async function finishedTask(branch = 'task') {
+    const wt = await create(branch);
+    await fs.writeFile(path.join(repo, '.gitignore'), 'private.env\nnode_modules/\n');
+    await fs.writeFile(path.join(worktree, '.gitignore'), 'private.env\nnode_modules/\n');
+    await fs.writeFile(path.join(worktree, 'tracked'), 'published');
+    await wt.add('.').commit('task work');
+    await fs.outputFile(path.join(worktree, 'node_modules', 'dep', 'index.js'), 'module.exports = 1;');
+    return (await wt.revparse(['HEAD'])).trim();
+}
+const registered = async () => (await git.raw(['worktree', 'list', '--porcelain'])).includes(worktree);
+
+for (const success of [true, false]) {
+    test(`cleanup removes a finished worktree whose work is stored in Git (success=${success}) and keeps its branch`, async () => {
+        const head = await finishedTask();
+        await cleanupWorktree(repo, worktree, 'task', { success, retentionStrategy: 'always_delete' });
+        assert.equal(await fs.pathExists(worktree), false);
+        assert.equal(await registered(), false);
+        assert.equal((await git.revparse(['refs/heads/task'])).trim(), head);
+    });
 }
 
-async function createRetentionMarker(worktreePath: string, retentionHours: number): Promise<void> {
-    const retentionInfo: RetentionInfo = {
-        timestamp: new Date().toISOString(),
-        issueProcessed: true,
-        success: false,
-        retentionHours,
-        scheduledCleanup: new Date(Date.now() + retentionHours * 60 * 60 * 1000).toISOString()
+test('cleanup keeps a clean worktree whose detached HEAD no ref contains', async () => {
+    await finishedTask();
+    const wt = simpleGit(worktree);
+    await wt.checkout(['--detach']);
+    await fs.writeFile(path.join(worktree, 'tracked'), 'detached');
+    await wt.add('.').commit('detached only');
+    await cleanupWorktree(repo, worktree, 'task', { success: true });
+    assert.equal(await fs.pathExists(worktree), true);
+    assert.equal(await registered(), true);
+});
+
+test('cleanup keeps finished worktrees with always_keep, and failures with keep_on_failure', async () => {
+    await finishedTask();
+    await cleanupWorktree(repo, worktree, 'task', { success: true, retentionStrategy: 'always_keep' });
+    assert.equal(await fs.pathExists(worktree), true);
+    await cleanupWorktree(repo, worktree, 'task', { success: false, retentionStrategy: 'keep_on_failure' });
+    assert.equal(await fs.pathExists(worktree), true);
+});
+
+test('cleanup keeps a worktree in the middle of a merge', async () => {
+    await finishedTask();
+    const admin = (await fs.readFile(path.join(worktree, '.git'), 'utf8')).trim().slice('gitdir: '.length);
+    await fs.writeFile(path.join(admin, 'MERGE_HEAD'), initial);
+    await cleanupWorktree(repo, worktree, 'task', { success: true });
+    assert.equal(await fs.pathExists(worktree), true);
+});
+
+test('the idle sweep removes only idle, unreferenced, unmounted worktrees whose work is in Git', async () => {
+    const base = path.join(root, 'worktrees');
+    const make = async (name: string, dirty = false) => {
+        worktree = path.join(base, 'owner', repoName, name);
+        await finishedTask(name);
+        if (dirty) await fs.writeFile(path.join(worktree, 'untracked'), 'agent notes');
+        return worktree;
     };
-    await fs.writeJson(path.join(worktreePath, '.retention-info.json'), retentionInfo);
-}
-
-async function cleanupWorktree(
-    localRepoPath: string,
-    worktreePath: string,
-    branchName: string,
-    options: CleanupOptions = {}
-): Promise<void> {
-    const {
-        deleteBranch = false,
-        success = true,
-        retentionStrategy = 'always_delete',
-        retentionHours = 24
-    } = options;
-
-    // keep_on_failure: skip cleanup on failure
-    if (!success && retentionStrategy === 'keep_on_failure') {
-        await createRetentionMarker(worktreePath, retentionHours);
-        return;
-    }
-
-    // keep_for_hours: create marker then proceed with cleanup
-    if (!success && retentionStrategy === 'keep_for_hours') {
-        await createRetentionMarker(worktreePath, retentionHours);
-    }
-
-    const git: SimpleGit = simpleGit(localRepoPath);
-
-    try {
-        await git.raw(['worktree', 'remove', worktreePath, '--force']);
-    } catch {
-        // Fallback to direct fs removal
-        await fs.remove(worktreePath);
-    }
-
-    if (deleteBranch && branchName) {
-        try {
-            await git.deleteLocalBranch(branchName, true);
-        } catch {
-            // Ignore branch deletion errors
-        }
-    }
-}
-
-async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<CleanupResult> {
-    let cleaned = 0;
-    let retained = 0;
-
-    const retentionFile = path.join(itemPath, '.retention-info.json');
-
-    if (await fs.pathExists(retentionFile)) {
-        try {
-            const retentionInfo = await fs.readJson(retentionFile) as RetentionInfo;
-            const scheduledCleanup = new Date(retentionInfo.scheduledCleanup);
-            const now = new Date();
-
-            if (now >= scheduledCleanup) {
-                await fs.remove(itemPath);
-                cleaned++;
-            } else {
-                retained++;
-            }
-        } catch {
-            // If we can't read retention info, retain the worktree
-            retained++;
-        }
-    } else {
-        // No retention marker - recursively check subdirectories
-        const subResult = await processWorktreeDirectory(itemPath);
-        cleaned += subResult.cleaned;
-        retained += subResult.retained;
-    }
-
-    return { cleaned, retained };
-}
-
-async function processWorktreeDirectory(dirPath: string): Promise<CleanupResult> {
-    let cleaned = 0;
-    let retained = 0;
-
-    const items = await fs.readdir(dirPath);
-
-    for (const item of items) {
-        const itemPath = path.join(dirPath, item);
-        const stats = await fs.stat(itemPath);
-
-        if (stats.isDirectory()) {
-            const result = await processWorktreeItem(itemPath, stats);
-            cleaned += result.cleaned;
-            retained += result.retained;
-        }
-    }
-
-    return { cleaned, retained };
-}
-
-async function cleanupExpiredWorktrees(worktreesBasePath: string): Promise<CleanupResult> {
-    let cleaned = 0;
-    let retained = 0;
-
-    if (!await fs.pathExists(worktreesBasePath)) {
-        return { cleaned, retained };
-    }
-
-    const result = await processWorktreeDirectory(worktreesBasePath);
-    cleaned = result.cleaned;
-    retained = result.retained;
-
-    return { cleaned, retained };
-}
-
-/**
- * Safely prunes stale worktree references, but only for entries older than the specified threshold.
- * This prevents accidentally removing metadata for currently running tasks.
- *
- * @param localRepoPath - Path to the main repository
- * @param minAgeHours - Minimum age in hours before a stale entry can be pruned (default: 1 hour)
- */
-async function safePruneWorktrees(localRepoPath: string, minAgeHours: number = 1): Promise<PruneResult> {
-    let pruned = 0;
-    let skipped = 0;
-
-    const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
-    if (!await fs.pathExists(worktreesDir)) {
-        return { pruned: 0, skipped: 0 };
-    }
-
-    const entries = await fs.readdir(worktreesDir);
+    const idle = await make('idle');
+    const referenced = await make('referenced');
+    const mounted = await make('mounted');
+    const dirty = await make('dirty', true);
+    const recent = await make('recent');
     const now = Date.now();
-    const minAgeMs = minAgeHours * 60 * 60 * 1000;
-
-    for (const entry of entries) {
-        const entryPath = path.join(worktreesDir, entry);
-        const gitdirFile = path.join(entryPath, 'gitdir');
-
-        if (!await fs.pathExists(gitdirFile)) {
-            // Entry doesn't have gitdir file, check age before removing
-            const stats = await fs.stat(entryPath);
-            const ageMs = now - stats.mtimeMs;
-
-            if (ageMs > minAgeMs) {
-                await fs.remove(entryPath);
-                pruned++;
-            } else {
-                skipped++;
-            }
-            continue;
-        }
-
-        // Check if the worktree directory still exists
-        const gitdirContent = await fs.readFile(gitdirFile, 'utf8');
-        const worktreePath = gitdirContent.trim();
-
-        if (!await fs.pathExists(worktreePath)) {
-            // Worktree directory doesn't exist, check age before removing metadata
-            const stats = await fs.stat(entryPath);
-            const ageMs = now - stats.mtimeMs;
-
-            if (ageMs > minAgeMs) {
-                await fs.remove(entryPath);
-                pruned++;
-            } else {
-                skipped++;
-            }
+    for (const dir of [idle, referenced, mounted, dirty]) {
+        const admin = (await fs.readFile(path.join(dir, '.git'), 'utf8')).trim().slice('gitdir: '.length);
+        for (const file of [dir, path.join(admin, 'HEAD'), path.join(admin, 'index'), path.join(admin, 'logs', 'HEAD')]) {
+            await fs.utimes(file, new Date(0), new Date(0)).catch(() => undefined);
         }
     }
-
-    return { pruned, skipped };
-}
-
-interface WorktreeInfo {
-    worktreePath: string;
-    branchName: string;
-    dirName: string;
-}
-
-interface IssueInfo {
-    issueId: number;
-    issueTitle: string;
-    owner: string;
-    repoName: string;
-}
-
-describe('Worktree Lifecycle Integration Tests', () => {
-    let tempDir: string;
-    let originalEnv: NodeJS.ProcessEnv;
-    let testRepoPath: string;
-    let worktreesBasePath: string;
-
-    beforeEach(async () => {
-        originalEnv = { ...process.env };
-
-        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-worktree-lifecycle-'));
-
-        worktreesBasePath = path.join(tempDir, 'worktrees');
-        testRepoPath = path.join(tempDir, 'test-repo');
-
-        process.env.GIT_WORKTREES_BASE_PATH = worktreesBasePath;
-        process.env.GIT_CLONES_BASE_PATH = path.join(tempDir, 'clones');
-
-        await fs.ensureDir(worktreesBasePath);
-        await fs.ensureDir(process.env.GIT_CLONES_BASE_PATH);
-
-        // Create a test git repository
-        await fs.ensureDir(testRepoPath);
-        const git = simpleGit(testRepoPath);
-        await git.init();
-        await git.addConfig('user.email', 'test@example.com');
-        await git.addConfig('user.name', 'Test User');
-
-        // Create an initial commit so we have something to branch from
-        const testFilePath = path.join(testRepoPath, 'README.md');
-        await fs.writeFile(testFilePath, '# Test Repository\n');
-        await git.add('.');
-        await git.commit('Initial commit');
+    const result = await sweepIdleWorktrees({
+        worktreesBasePath: base, minIdleHours: 24, now,
+        protectedPaths: async () => [referenced],
+        mountedPaths: async () => [{ source: base, service: true }, path.join(mounted, 'src')],
     });
+    assert.deepEqual(result.removed, [idle]);
+    for (const kept of [referenced, mounted, dirty, recent]) assert.equal(await fs.pathExists(kept), true, kept);
+    assert.equal(await fs.pathExists(idle), false);
+});
 
-    afterEach(async () => {
-        process.env = originalEnv;
+test('the idle sweep removes nothing when liveness cannot be read', async () => {
+    await assert.rejects(sweepIdleWorktrees({
+        worktreesBasePath: path.join(root, 'worktrees'), minIdleHours: 1,
+        protectedPaths: async () => [], mountedPaths: async () => { throw new Error('docker unavailable'); },
+    }), /docker unavailable/);
+});
 
-        if (tempDir) {
-            await fs.remove(tempDir);
+for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+    test(`cleanup and sweep retain tracked modifications hidden by ${flag}`, async () => {
+        const wt = await create();
+        await wt.raw(['update-index', flag, 'tracked']);
+        await fs.writeFile(path.join(worktree, 'tracked'), 'hidden private edits');
+        assert.equal((await wt.raw(['status', '--porcelain'])).trim(), '');
+        assert.deepEqual(await proveWorktreeDisposable(worktree), { disposable: false, reason: 'hidden_index_entries' });
+        await cleanupWorktree(repo, worktree, 'task', { success: true });
+        const result = await sweepIdleWorktrees({ minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+            protectedPaths: async () => [], mountedPaths: async () => [] });
+        assert.ok(!result.removed.includes(worktree));
+        assert.equal(await fs.readFile(path.join(worktree, 'tracked'), 'utf8'), 'hidden private edits');
+        assert.equal(await registered(), true);
+    });
+}
+
+for (const operation of ['cherry-pick', 'revert']) {
+    test(`cleanup retains a manually committed conflict with a pending ${operation} sequence`, async () => {
+        await git.checkoutLocalBranch('source');
+        await fs.writeFile(path.join(repo, 'tracked'), 'source A');
+        await git.add('.').commit('A');
+        const a = (await git.revparse(['HEAD'])).trim();
+        await fs.writeFile(path.join(repo, 'second'), 'source B');
+        await git.add('.').commit('B');
+        const b = (await git.revparse(['HEAD'])).trim();
+        await git.checkout('main');
+        const wt = await create();
+        await fs.writeFile(path.join(worktree, 'tracked'), 'task conflict');
+        await wt.add('.').commit('task conflict');
+        await assert.rejects(wt.raw([operation, a, b]));
+        await fs.writeFile(path.join(worktree, 'tracked'), 'resolved');
+        await wt.add('tracked').commit('manual resolution');
+        const admin = (await wt.revparse(['--absolute-git-dir'])).trim();
+        assert.equal(await fs.pathExists(path.join(admin, operation === 'revert' ? 'REVERT_HEAD' : 'CHERRY_PICK_HEAD')), false);
+        const todo = await fs.readFile(path.join(admin, 'sequencer', 'todo'), 'utf8');
+        assert.equal((await wt.raw(['status', '--porcelain'])).trim(), '');
+        assert.deepEqual(await proveWorktreeDisposable(worktree), { disposable: false, reason: 'operation_in_progress' });
+        await cleanupWorktree(repo, worktree, 'task', { success: true });
+        assert.equal(await fs.readFile(path.join(admin, 'sequencer', 'todo'), 'utf8'), todo);
+    });
+}
+
+test('removal detaches first and records a partial deletion without treating it as retry authority', async () => {
+    await finishedTask();
+    const wt = simpleGit(worktree);
+    const { repositoryStorageLifecycle } = await import('../packages/core/src/storage/lifecycle.js');
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const wrapper = path.join(bin, 'git');
+    // Model a recursive removal which unlinks one tracked file, then fails.
+    // This wrapper affects only the fixture's next worktree remove invocation.
+    await fs.writeFile(wrapper, `#!/bin/sh
+case " $* " in
+  *" worktree remove "*)
+    /bin/rm -- "$PROPR_TEST_REMOVAL_TARGET/tracked"
+    exit 42
+    ;;
+esac
+exec "$PROPR_TEST_REAL_GIT" "$@"
+`, { mode: 0o755 });
+    process.env.PROPR_TEST_REAL_GIT = realGit;
+    process.env.PROPR_TEST_REMOVAL_TARGET = worktree;
+    let checks = 0;
+    try {
+        const outcome = await removeWorktreeIfDisposable(worktree, undefined, async () => {
+            assert.equal(await repositoryStorageLifecycle.busy(), true, 'the read claim covers all awaited checks');
+            if (++checks === 2) assert.equal((await wt.raw(['branch', '--show-current'])).trim(), '', 'branch freed before slow removal');
+            return true;
+        });
+        assert.deepEqual(outcome, { removed: false, reason: 'remove_failed' });
+    } finally {
+        await fs.remove(wrapper);
+        delete process.env.PROPR_TEST_REAL_GIT;
+        delete process.env.PROPR_TEST_REMOVAL_TARGET;
+    }
+    assert.equal(await fs.pathExists(path.join(worktree, 'tracked')), false);
+    assert.ok((await interruptedWorktreeRemovals()).some(record => record.worktreePath === worktree));
+    assert.equal(await repositoryStorageLifecycle.busy(), false, 'claim released only after failure');
+    assert.deepEqual(await removeWorktreeIfDisposable(worktree), { removed: false, reason: 'uncommitted_changes' });
+    assert.equal(await registered(), true, 'a diagnostic cannot authorize forced removal of deleted files');
+});
+
+test('removal rechecks Git state after detaching and does not discard newly hidden edits', async () => {
+    await finishedTask();
+    const wt = simpleGit(worktree);
+    let checks = 0;
+    const outcome = await removeWorktreeIfDisposable(worktree, undefined, async () => {
+        if (++checks === 2) {
+            await wt.raw(['update-index', '--assume-unchanged', 'tracked']);
+            await fs.writeFile(path.join(worktree, 'tracked'), 'hidden after initial proof');
+        }
+        return true;
+    });
+    assert.deepEqual(outcome, { removed: false, reason: 'hidden_index_entries' });
+    assert.equal(await fs.readFile(path.join(worktree, 'tracked'), 'utf8'), 'hidden after initial proof');
+});
+
+test('sweep refreshes task and mount authority before deletion and accepts protected repository roots', async () => {
+    await finishedTask();
+    for (const protection of ['repository', 'new-reference', 'new-mount']) {
+        let reads = 0;
+        const result = await sweepIdleWorktrees({ minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+            protectedPaths: async () => {
+                reads++;
+                return protection === 'repository' ? [path.dirname(worktree)]
+                    : protection === 'new-reference' && reads >= 3 ? [worktree] : [];
+            },
+            mountedPaths: async () => protection === 'new-mount' && reads >= 3 ? [worktree] : [],
+        });
+        assert.ok(!result.removed.includes(worktree));
+        assert.equal(await fs.pathExists(worktree), true);
+    }
+});
+
+test('sweep rejects invalid idle ages before consulting external authority', async () => {
+    for (const minIdleHours of [NaN, Infinity, 0, -1, 0.5, Number.MAX_SAFE_INTEGER]) {
+        const result = await sweepIdleWorktrees({ minIdleHours,
+            protectedPaths: async () => { throw new Error('must not query'); }, mountedPaths: async () => [] });
+        assert.deepEqual(result.removed, []);
+    }
+});
+
+test('sweep reports an unreadable worktree root instead of silently treating it as empty', async () => {
+    await fs.writeFile(path.join(repo, 'not-a-directory'), 'file');
+    await assert.rejects(sweepIdleWorktrees({ worktreesBasePath: path.join(repo, 'not-a-directory'), minIdleHours: 1,
+        protectedPaths: async () => [], mountedPaths: async () => [] }), /Cannot read worktree root/);
+});
+
+test('cleanup warns for unavailable Git state instead of claiming the checkout holds unpublished work', async () => {
+    const { default: logger } = await import('../packages/core/src/utils/logger.js');
+    const warnings: Array<{ reason?: string; message: string }> = [];
+    const warn = mock.method(logger, 'warn', (context: { reason?: string }, message: string) => {
+        warnings.push({ reason: context.reason, message });
+    });
+    try {
+        await cleanupWorktree(repo, worktree, 'task', { success: true });
+        const unavailable = warnings.find(warning => warning.reason === 'not_a_worktree');
+        assert.ok(unavailable);
+        assert.match(unavailable.message, /needs inspection/);
+        assert.doesNotMatch(unavailable.message, /work not stored elsewhere/);
+    } finally { warn.mock.restore(); }
+});
+
+for (const invalid of ['malformed', 'unreadable', 'wrong-path', 'bad-deadline', 'dangling-record']) {
+    test(`cleanup and sweep retain a finished checkout with ${invalid} salvage authority`, async () => {
+        await finishedTask();
+        const { writeSalvageRetentionMarker, readSalvageRetentionRecord } = await import('../packages/core/src/git/pushSalvage.js');
+        await writeSalvageRetentionMarker(worktree, { taskId: 'salvage-task', branchName: 'task' });
+        const saved = await readSalvageRetentionRecord(worktree);
+        assert.ok(saved);
+        // The informational marker is untracked and is not the reason to keep it.
+        await fs.remove(path.join(worktree, '.retention-info.json'));
+        if (invalid === 'dangling-record') {
+            await fs.remove(saved.recordPath);
+            await fs.symlink(path.join(root, 'missing-record-target'), saved.recordPath);
+        } else if (invalid === 'unreadable') {
+            // EISDIR is deterministic even when the test runs as root.
+            await fs.remove(saved.recordPath);
+            await fs.mkdir(saved.recordPath);
+        } else {
+            await fs.writeFile(saved.recordPath, invalid === 'malformed' ? '{' : JSON.stringify({
+                ...saved.record, ...(invalid === 'wrong-path' ? { worktreePath: '/another-checkout' } : { scheduledCleanup: 'invalid' }),
+            }));
+        }
+        assert.deepEqual(await proveWorktreeDisposable(worktree), { disposable: false, reason: 'salvage_retained' });
+        await cleanupWorktree(repo, worktree, 'task');
+        const swept = await sweepIdleWorktrees({ minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+            protectedPaths: async () => [], mountedPaths: async () => [] });
+        assert.ok(!swept.removed.includes(worktree));
+        assert.equal(await fs.pathExists(worktree), true);
+        assert.equal(await registered(), true);
+    });
+}
+
+test('salvage authority is refreshed after the awaited liveness check', async () => {
+    await finishedTask();
+    const outcome = await removeWorktreeIfDisposable(worktree, undefined, async afterDetach => {
+        if (afterDetach) {
+            const { writeSalvageRetentionMarker, readSalvageRetentionRecord } = await import('../packages/core/src/git/pushSalvage.js');
+            await writeSalvageRetentionMarker(worktree, { taskId: 'salvage-task', branchName: 'task' });
+            const saved = await readSalvageRetentionRecord(worktree);
+            await fs.writeFile(saved!.recordPath, '{');
+            await fs.remove(path.join(worktree, '.retention-info.json'));
+        }
+        return true;
+    });
+    assert.deepEqual(outcome, { removed: false, reason: 'salvage_retained' });
+    assert.equal(await fs.pathExists(worktree), true);
+});
+
+for (const late of [false, true]) {
+    test(`ancestor mounts protect idle checkouts (arrives after detach=${late})`, async () => {
+        await finishedTask();
+        let reads = 0;
+        const swept = await sweepIdleWorktrees({ minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+            protectedPaths: async () => [], mountedPaths: async () => {
+                reads++;
+                return !late || reads >= 3 ? [path.dirname(worktree)] : [];
+            } });
+        assert.ok(!swept.removed.includes(worktree));
+        assert.equal(await fs.pathExists(worktree), true);
+    });
+}
+
+test('failed post-detach liveness refresh leaves no interrupted-removal diagnostic', async () => {
+    await finishedTask();
+    const outcome = await removeWorktreeIfDisposable(worktree, undefined, async afterDetach => {
+        if (afterDetach) throw new Error('Docker unavailable');
+        return true;
+    });
+    assert.deepEqual(outcome, { removed: false, reason: 'remove_failed' });
+    assert.equal(await fs.readFile(path.join(worktree, 'tracked'), 'utf8'), 'published');
+    assert.ok(!(await interruptedWorktreeRemovals()).some(record => record.worktreePath === worktree));
+});
+
+for (const mode of ['mounted', 'unavailable', 'late-mounted']) {
+    test(`job-end cleanup retains checkout when Docker is ${mode}`, async () => {
+        await finishedTask();
+        const docker = path.join(bin, 'docker');
+        const count = path.join(root, `docker-count-${serial}`);
+        await fs.writeFile(docker, `#!/bin/sh
+if [ "$1" = ps ]; then
+  ${mode === 'unavailable' ? 'exit 1' : 'echo container'}
+else
+  ${mode === 'late-mounted' ? `if [ -f '${count}' ]; then echo 'null\tnull\t[{"Source":"${path.dirname(worktree)}"}]'; else touch '${count}'; fi` : `echo 'null\tnull\t[{"Source":"${path.dirname(worktree)}"}]'`}
+fi
+`, { mode: 0o755 });
+        try {
+            await cleanupWorktree(repo, worktree, 'task');
+            assert.equal(await fs.pathExists(worktree), true);
+            assert.equal(await registered(), true);
+        } finally { await fs.writeFile(docker, '#!/bin/sh\nexit 0\n', { mode: 0o755 }); }
+    });
+}
+
+test('idle maintenance claims do not advance durable storage last-use', async () => {
+    await finishedTask();
+    const { repositoryStorageLifecycle } = await import('../packages/core/src/storage/lifecycle.js');
+    await repositoryStorageLifecycle.initialize();
+    const clock = path.join(repositoryStorageLifecycle.root, 'last-use');
+    await fs.writeFile(clock, '1000');
+    await fs.writeFile(path.join(worktree, 'untracked'), 'keep');
+    await removeWorktreeIfDisposable(worktree);
+    assert.equal(await fs.readFile(clock, 'utf8'), '1000', 'kept candidates do not record use');
+    await fs.unlink(path.join(worktree, 'untracked'));
+    await removeWorktreeIfDisposable(worktree);
+    assert.equal(await fs.pathExists(worktree), false);
+    assert.equal(await fs.readFile(clock, 'utf8'), '1000', 'successful removal does not record use');
+});
+
+test('sweep uses two fresh liveness snapshots per disposable candidate, with no redundant pre-claim query', async () => {
+    await finishedTask();
+    const base = path.join(root, 'counted-worktrees');
+    const relocated = path.join(base, 'owner', repoName, 'checkout');
+    await fs.ensureDir(path.dirname(relocated));
+    await git.raw(['worktree', 'move', worktree, relocated]);
+    worktree = relocated;
+    let references = 0;
+    let mounts = 0;
+    const swept = await sweepIdleWorktrees({ minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+        worktreesBasePath: base,
+        protectedPaths: async () => { references++; return []; },
+        mountedPaths: async () => { mounts++; return []; },
+    });
+    assert.ok(swept.removed.includes(worktree));
+    assert.equal(references, 3, 'startup authority check plus two fresh candidate snapshots');
+    assert.equal(mounts, 3);
+});
+
+for (const cleanup of [true, false]) {
+    test(`${cleanup ? 'job cleanup' : 'idle sweep'} reclaims under Compose and launcher shared-storage mounts`, async () => {
+        await finishedTask();
+        const docker = path.join(bin, 'docker');
+        const rows = [
+            [['npm', 'run', 'daemon'], { 'com.docker.compose.service': 'daemon' }],
+            [['npm', 'run', 'worker'], { 'com.docker.compose.service': 'worker' }],
+            [['node', 'dist/src/indexing_worker.js'], { 'propr.service': 'indexing-worker' }],
+        ].map(([command, labels]) => [command, labels, [{ Source: root }]].map(value => JSON.stringify(value)).join('\t')).join('\n');
+        await fs.writeFile(docker, `#!/bin/sh
+if [ "$1" = ps ]; then echo services; else
+cat <<'MOUNTS'
+${rows}
+MOUNTS
+fi
+`, { mode: 0o755 });
+        try {
+            if (cleanup) await cleanupWorktree(repo, worktree, 'task');
+            else {
+                const { runningContainerMountSources } = await import('../packages/core/src/git/worktreeMounts.js');
+                const swept = await sweepIdleWorktrees({ minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+                    protectedPaths: async () => [], mountedPaths: () => runningContainerMountSources() });
+                assert.ok(swept.removed.includes(worktree));
+            }
+            assert.equal(await fs.pathExists(worktree), false);
+        } finally { await fs.writeFile(docker, '#!/bin/sh\nexit 0\n', { mode: 0o755 }); }
+    });
+}
+
+test('mount exemptions require service identity and stop at the configured root', async () => {
+    const { mountUsesWorktree } = await import('../packages/core/src/git/worktreeReclaim.js');
+    const base = process.env.GIT_WORKTREES_BASE_PATH!;
+    for (const source of [root, base]) {
+        assert.equal(mountUsesWorktree({ source, service: true }, worktree), false);
+        assert.equal(mountUsesWorktree({ source, service: false }, worktree), true);
+        assert.equal(mountUsesWorktree(source, worktree), true);
+    }
+    for (const source of [path.join(base, 'owner'), path.dirname(worktree), worktree, path.join(worktree, 'src')]) {
+        assert.equal(mountUsesWorktree({ source, service: true }, worktree), true);
+    }
+});
+
+test('sweep warns when all idle candidates are held in use', async () => {
+    const isolated = path.join(root, `warning-${serial}`);
+    const checkout = path.join(isolated, 'owner', 'repo', 'task');
+    await fs.ensureDir(path.dirname(checkout));
+    await git.raw(['worktree', 'add', '--detach', checkout, 'main']);
+    const { default: logger } = await import('../packages/core/src/utils/logger.js');
+    const warnings: string[] = [];
+    const warn = mock.method(logger, 'warn', (_context: unknown, message: string) => { warnings.push(message); });
+    try {
+        const swept = await sweepIdleWorktrees({ worktreesBasePath: isolated, minIdleHours: 1,
+            now: Date.now() + 48 * 3_600_000, protectedPaths: async () => [], mountedPaths: async () => [isolated] });
+        assert.equal(swept.kept, 1);
+        assert.ok(warnings.some(message => message.includes('every idle candidate is in use')));
+    } finally { warn.mock.restore(); }
+});
+
+test('sweep summarizes unavailable Docker authority at warn level', async () => {
+    const { default: logger } = await import('../packages/core/src/utils/logger.js');
+    const warnings: string[] = [];
+    const warn = mock.method(logger, 'warn', (_context: unknown, message: string) => { warnings.push(message); });
+    try {
+        await assert.rejects(sweepIdleWorktrees({ minIdleHours: 1,
+            protectedPaths: async () => [], mountedPaths: async () => { throw new Error('spawn docker ENOENT'); } }), /ENOENT/);
+        assert.ok(warnings.some(message => message.includes('container mount authority failed')));
+    } finally { warn.mock.restore(); }
+});
+
+for (const cleanup of [true, false]) {
+    test(`${cleanup ? 'cleanup' : 'sweep'} protects a task ancestor mount appearing after detach`, async () => {
+        await finishedTask();
+        const isolated = path.join(root, 'worktrees', `late-mount-${serial}`);
+        const moved = path.join(isolated, 'owner', 'repo', 'task');
+        await fs.ensureDir(path.dirname(moved));
+        await git.raw(['worktree', 'move', worktree, moved]);
+        worktree = moved;
+        const docker = path.join(bin, 'docker');
+        const counter = path.join(root, `late-ancestor-${serial}`);
+        const serviceRow = [['npm', 'run', 'worker'], { 'com.docker.compose.service': 'worker' }, [{ Source: root }]]
+            .map(value => JSON.stringify(value)).join('\t');
+        const taskRow = [['node', 'agent.js'], null, [{ Source: root }]].map(value => JSON.stringify(value)).join('\t');
+        await fs.writeFile(docker, `#!/bin/sh
+if [ "$1" = ps ]; then echo containers; else
+  count=0
+  if [ -f '${counter}' ]; then read count < '${counter}'; fi
+  count=$((count + 1))
+  echo "$count" > '${counter}'
+  if [ "$count" -gt ${cleanup ? 1 : 2} ]; then
+    echo '${taskRow}'
+  else
+    echo '${serviceRow}'
+  fi
+fi
+`, { mode: 0o755 });
+        try {
+            if (cleanup) await cleanupWorktree(repo, worktree, 'task');
+            else {
+                const { runningContainerMountSources } = await import('../packages/core/src/git/worktreeMounts.js');
+                await sweepIdleWorktrees({ worktreesBasePath: isolated, minIdleHours: 1, now: Date.now() + 48 * 3_600_000,
+                    protectedPaths: async () => [], mountedPaths: () => runningContainerMountSources() });
+            }
+            assert.equal(await fs.pathExists(worktree), true);
+            assert.equal(await registered(), true);
+        } finally { await fs.writeFile(docker, '#!/bin/sh\nexit 0\n', { mode: 0o755 }); }
+    });
+}
+
+for (const late of [false, true]) {
+    test(`job-end cleanup retains a committed handoff (appears after detach=${late})`, async () => {
+        await finishedTask();
+        let reads = 0;
+        // Add the durable obligation at the same awaited boundary used by Docker.
+        const original = handoffDb.client.query.bind(handoffDb.client);
+        handoffDb.client.query = async (...args: Parameters<typeof original>) => {
+            const query = args[1] as { sql?: string };
+            if (query.sql?.startsWith('select') && ++reads === (late ? 2 : 1)) {
+                await handoffDb('pr_followup_handoffs').connection(args[0]).insert({ worktree_path: worktree, phase: 'committed', status: 'active' });
+            }
+            return original(...args);
+        };
+        try {
+            await cleanupWorktree(repo, worktree, 'task');
+            assert.equal(await fs.pathExists(worktree), true);
+            assert.equal(await registered(), true);
+            assert.equal((await simpleGit(worktree).raw(['branch', '--show-current'])).trim(), '');
+        } finally { handoffDb.client.query = original; }
+        await handoffDb('pr_followup_handoffs').where({ worktree_path: worktree }).update({ status: 'released' });
+        await cleanupWorktree(repo, worktree, 'task');
+        assert.equal(await fs.pathExists(worktree), false, 'only released obligations allow removal');
+    });
+}
+
+test('lifecycle claim failure still detaches a retained job-end worktree', async () => {
+    await finishedTask();
+    const { repositoryStorageLifecycle } = await import('../packages/core/src/storage/lifecycle.js');
+    const failing = mock.method(repositoryStorageLifecycle, 'use', async () => { throw new Error('claim write failed'); });
+    try {
+        await cleanupWorktree(repo, worktree, 'task');
+        assert.equal(await fs.pathExists(worktree), true);
+        assert.equal((await simpleGit(worktree).raw(['branch', '--show-current'])).trim(), '');
+    } finally { failing.mock.restore(); }
+});
+
+test('omitted retention strategy honors always_keep from the environment', async () => {
+    await finishedTask();
+    const previous = process.env.WORKTREE_RETENTION_STRATEGY;
+    process.env.WORKTREE_RETENTION_STRATEGY = 'always_keep';
+    try { await cleanupWorktree(repo, worktree, 'task'); }
+    finally {
+        if (previous === undefined) delete process.env.WORKTREE_RETENTION_STRATEGY;
+        else process.env.WORKTREE_RETENTION_STRATEGY = previous;
+    }
+    assert.equal(await fs.pathExists(worktree), true);
+});
+
+test('proof, removal and fallback detach never execute repository filter drivers', async () => {
+    await finishedTask();
+    const marker = path.join(root, 'filter-ran');
+    await fs.writeFile(path.join(worktree, '.gitattributes'), 'tracked filter=hostile\n');
+    await simpleGit(worktree).add('.gitattributes').commit('attributes');
+    for (const [key, value] of [['clean', `touch ${marker}; cat`], ['smudge', `touch ${marker}; cat`], ['process', `touch ${marker}; exit 1`], ['required', 'true']]) {
+        execFileSync('git', ['-C', repo, 'config', `filter.hostile.${key}`, value]);
+    }
+    await fs.writeFile(path.join(worktree, 'tracked'), 'published');
+    await fs.writeFile(path.join(worktree, 'keep'), 'force fallback');
+    await cleanupWorktree(repo, worktree, 'task');
+    assert.equal(await fs.pathExists(marker), false);
+    assert.equal(await fs.pathExists(worktree), true, 'untracked attributes keep the checkout');
+    await fs.remove(path.join(worktree, 'keep'));
+    assert.deepEqual(await removeWorktreeIfDisposable(worktree), { removed: true });
+    assert.equal(await fs.pathExists(marker), false);
+});
+
+for (const mode of ['refused', 'concurrent']) {
+    test(`removal retires diagnostics when ${mode} leaves no partial tracked checkout`, async () => {
+        await finishedTask();
+        const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+        const wrapper = path.join(bin, 'git');
+        await fs.writeFile(wrapper, `#!/bin/sh
+case " $* " in
+  *" worktree remove "*)
+    ${mode === 'concurrent' ? '"$PROPR_TEST_REAL_GIT" "$@"' : 'echo changed >> "$PROPR_TEST_REMOVAL_TARGET/tracked"'}
+    exit 42
+    ;;
+esac
+exec "$PROPR_TEST_REAL_GIT" "$@"
+`, { mode: 0o755 });
+        process.env.PROPR_TEST_REAL_GIT = realGit;
+        process.env.PROPR_TEST_REMOVAL_TARGET = worktree;
+        try {
+            assert.deepEqual(await removeWorktreeIfDisposable(worktree), { removed: false, reason: 'remove_failed' });
+            assert.ok(!(await interruptedWorktreeRemovals()).some(record => record.worktreePath === worktree));
+            assert.equal(await fs.pathExists(worktree), mode === 'refused');
+        } finally {
+            await fs.remove(wrapper);
+            delete process.env.PROPR_TEST_REAL_GIT;
+            delete process.env.PROPR_TEST_REMOVAL_TARGET;
         }
     });
+}
 
-    function generateWorktreeInfo(issueInfo: IssueInfo, modelName?: string): WorktreeInfo {
-        const { issueId, issueTitle, owner, repoName } = issueInfo;
-
-        const sanitizedTitle = issueTitle
-            .toLowerCase()
-            .replace(/[^a-z0-9_\-]/g, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-|-$/g, '')
-            .substring(0, 25);
-
-        const randomString = Math.random().toString(36).substring(2, 5);
-        const now = new Date();
-        const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-
-        const modelSuffix = modelName ? `-${modelName}` : '';
-        const branchModelPrefix = modelName ? `${modelName}-` : '';
-        const branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
-        const dirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
-        const worktreePath = path.join(worktreesBasePath, owner, repoName, dirName);
-
-        return { worktreePath, branchName, dirName };
+test('storage gate warning delay rejects unsupported Node timer values', async () => {
+    const { worktreeGateWarningDelay } = await import('../packages/core/src/git/worktreeReclaim.js');
+    const previous = process.env.WORKTREE_SWEEP_INTERVAL_MS;
+    try {
+        for (const value of ['2147483648', '-1', 'Infinity', '0', '1.5', '20ms', '']) {
+            process.env.WORKTREE_SWEEP_INTERVAL_MS = value;
+            assert.equal(worktreeGateWarningDelay(), 3_600_000);
+        }
+        process.env.WORKTREE_SWEEP_INTERVAL_MS = '2147483647';
+        assert.equal(worktreeGateWarningDelay(), 2147483647);
+    } finally {
+        if (previous === undefined) delete process.env.WORKTREE_SWEEP_INTERVAL_MS;
+        else process.env.WORKTREE_SWEEP_INTERVAL_MS = previous;
     }
+});
 
-    async function createWorktreeWithGit(git: SimpleGit, worktreeInfo: WorktreeInfo, baseBranch: string): Promise<void> {
-        await fs.ensureDir(path.dirname(worktreeInfo.worktreePath));
-        await git.raw(['worktree', 'add', worktreeInfo.worktreePath, '-b', worktreeInfo.branchName, baseBranch]);
+test('an existing-branch worktree can be rebuilt at its saved path after the checkout was deleted', async () => {
+    await remoteBranch('goal');
+    const first = await createWorktreeFromExistingBranch(repo, 'goal', { owner: 'owner', repoName, worktreeDirName: 'goal-checkout' });
+    // The checkout disappears (manual cleanup) but Git keeps its registration.
+    await fs.remove(first.worktreePath);
+    assert.match(await git.raw(['worktree', 'list', '--porcelain']), /goal-checkout/);
+    const rebuilt = await createWorktreeFromExistingBranch(repo, 'goal', { owner: 'owner', repoName, worktreeDirName: 'goal-checkout' });
+    assert.equal(rebuilt.worktreePath, first.worktreePath);
+    assert.equal((await simpleGit(rebuilt.worktreePath).raw(['branch', '--show-current'])).trim(), 'goal');
+    assert.equal((await simpleGit(rebuilt.worktreePath).revparse(['HEAD'])).trim(), initial);
+});
+
+test('a missing worktree registration whose HEAD no ref contains is kept and the rebuild fails', async () => {
+    await remoteBranch('goal');
+    const first = await createWorktreeFromExistingBranch(repo, 'goal', { owner: 'owner', repoName, worktreeDirName: 'goal-checkout' });
+    const wt = simpleGit(first.worktreePath);
+    await wt.checkout(['--detach']);
+    await fs.writeFile(path.join(first.worktreePath, 'tracked'), 'only here');
+    await wt.add('.').commit('unpublished detached commit');
+    const head = (await wt.revparse(['HEAD'])).trim();
+    const admin = (await fs.readFile(path.join(first.worktreePath, '.git'), 'utf8')).trim().slice('gitdir: '.length);
+    await fs.remove(first.worktreePath);
+    await assert.rejects(createWorktreeFromExistingBranch(repo, 'goal', { owner: 'owner', repoName, worktreeDirName: 'goal-checkout' }),
+        /missing but already registered/);
+    assert.equal((await fs.readFile(path.join(admin, 'HEAD'), 'utf8')).trim(), head);
+});
+
+async function missingGoalCheckout(symlinkedBase = false) {
+    await remoteBranch('goal');
+    const options = { owner: 'owner', repoName, worktreeDirName: 'goal-checkout' };
+    if (symlinkedBase) {
+        const parent = path.join(root, 'worktrees', 'owner', repoName);
+        const realParent = `${parent}-real`;
+        await fs.ensureDir(realParent);
+        await fs.symlink(realParent, parent, 'dir');
     }
+    const first = await createWorktreeFromExistingBranch(repo, 'goal', options);
+    const admin = (await fs.readFile(path.join(first.worktreePath, '.git'), 'utf8')).trim().slice('gitdir: '.length);
+    return { options, checkout: first.worktreePath, admin, wt: simpleGit(first.worktreePath) };
+}
 
-    describe('Worktree Structure Creation', () => {
-        test('creates worktree with proper directory structure', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 123,
-                issueTitle: 'Test Issue',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Verify worktree directory exists
-            const worktreeExists = await fs.pathExists(worktreeInfo.worktreePath);
-            assert(worktreeExists, 'Worktree directory should exist');
-
-            // Verify README.md from parent repo exists in worktree
-            const readmeExists = await fs.pathExists(path.join(worktreeInfo.worktreePath, 'README.md'));
-            assert(readmeExists, 'README.md should exist in worktree');
-        });
-
-        test('.git file exists in worktree (not a directory)', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 456,
-                issueTitle: 'Git File Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            const gitFilePath = path.join(worktreeInfo.worktreePath, '.git');
-
-            // Verify .git exists
-            const gitFileExists = await fs.pathExists(gitFilePath);
-            assert(gitFileExists, '.git file should exist in worktree');
-
-            // Verify .git is a file, not a directory (key worktree characteristic)
-            const stats = await fs.stat(gitFilePath);
-            assert(stats.isFile(), '.git should be a file, not a directory (worktree indicator)');
-        });
-
-        test('.git file contains valid gitdir reference', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 789,
-                issueTitle: 'Gitdir Reference Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            const gitFilePath = path.join(worktreeInfo.worktreePath, '.git');
-            const gitFileContent = await fs.readFile(gitFilePath, 'utf8');
-
-            // Verify .git file contains gitdir reference
-            assert(gitFileContent.startsWith('gitdir:'), '.git file should start with "gitdir:"');
-
-            // Extract and verify the gitdir path exists
-            const match = gitFileContent.match(/gitdir:\s*(.+)/);
-            assert(match, '.git file should contain gitdir path');
-
-            const gitdirPath = match[1].trim();
-            const gitdirExists = await fs.pathExists(gitdirPath);
-            assert(gitdirExists, `gitdir path should exist: ${gitdirPath}`);
-        });
-
-        test('worktree creates unique directories for different issues', async () => {
-            const git = simpleGit(testRepoPath);
-
-            const issue1Info: IssueInfo = {
-                issueId: 100,
-                issueTitle: 'First Issue',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const issue2Info: IssueInfo = {
-                issueId: 200,
-                issueTitle: 'Second Issue',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktree1 = generateWorktreeInfo(issue1Info);
-            const worktree2 = generateWorktreeInfo(issue2Info);
-
-            await createWorktreeWithGit(git, worktree1, 'HEAD');
-            await createWorktreeWithGit(git, worktree2, 'HEAD');
-
-            // Verify both worktrees exist
-            assert(await fs.pathExists(worktree1.worktreePath), 'First worktree should exist');
-            assert(await fs.pathExists(worktree2.worktreePath), 'Second worktree should exist');
-
-            // Verify they are different paths
-            assert.notStrictEqual(
-                worktree1.worktreePath,
-                worktree2.worktreePath,
-                'Worktrees for different issues should have different paths'
-            );
-
-            // Verify both have valid .git files
-            const git1Stats = await fs.stat(path.join(worktree1.worktreePath, '.git'));
-            const git2Stats = await fs.stat(path.join(worktree2.worktreePath, '.git'));
-            assert(git1Stats.isFile(), 'First worktree .git should be a file');
-            assert(git2Stats.isFile(), 'Second worktree .git should be a file');
-        });
-
-        test('worktree includes model suffix when model name provided', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 42,
-                issueTitle: 'Model Suffix Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const opusWorktree = generateWorktreeInfo(issueInfo, 'opus');
-            const sonnetWorktree = generateWorktreeInfo(issueInfo, 'sonnet');
-
-            // Verify model suffix in directory names
-            assert(opusWorktree.dirName.includes('-opus-'), 'Opus worktree dir should include -opus-');
-            assert(sonnetWorktree.dirName.includes('-sonnet-'), 'Sonnet worktree dir should include -sonnet-');
-
-            // Verify model prefix in branch names
-            assert(opusWorktree.branchName.includes('opus-'), 'Opus branch should include opus-');
-            assert(sonnetWorktree.branchName.includes('sonnet-'), 'Sonnet branch should include sonnet-');
-
-            // Create the worktrees to verify they work
-            await createWorktreeWithGit(git, opusWorktree, 'HEAD');
-            await createWorktreeWithGit(git, sonnetWorktree, 'HEAD');
-
-            assert(await fs.pathExists(opusWorktree.worktreePath), 'Opus worktree should exist');
-            assert(await fs.pathExists(sonnetWorktree.worktreePath), 'Sonnet worktree should exist');
-        });
+for (const change of ['added', 'modified', 'deleted', 'corrupt-index', 'locked', 'MERGE_HEAD', 'sequencer']) {
+    test(`missing registration retains ${change} state and the original rebuild error`, async () => {
+        const { options, checkout, admin, wt } = await missingGoalCheckout();
+        if (change === 'added') {
+            await fs.writeFile(path.join(checkout, 'newfile'), 'staged content');
+            await wt.add('newfile');
+        } else if (change === 'modified') {
+            await fs.writeFile(path.join(checkout, 'tracked'), 'staged content');
+            await wt.add('tracked');
+        } else if (change === 'deleted') {
+            await wt.rm('tracked');
+        } else if (change === 'corrupt-index') {
+            await fs.writeFile(path.join(admin, 'index'), 'unreadable index');
+        } else if (change === 'sequencer') {
+            await fs.ensureDir(path.join(admin, change));
+        } else {
+            await fs.writeFile(path.join(admin, change), initial);
+        }
+        const index = await fs.readFile(path.join(admin, 'index'));
+        await fs.remove(checkout);
+        await assert.rejects(createWorktreeFromExistingBranch(repo, 'goal', options),
+            change === 'locked' ? /missing but locked/ : /missing but already registered/);
+        if (change === 'locked') assert.equal(await clearMissingWorktreeRegistration(git, checkout), false);
+        assert.deepEqual(await fs.readFile(path.join(admin, 'index')), index);
+        if (change === 'added' || change === 'modified') {
+            assert.equal(await simpleGit(admin).raw(['show', change === 'added' ? ':newfile' : ':tracked']), 'staged content');
+        }
     });
+}
 
-    describe('Checkout Conflict Handling', () => {
-        test('handles creating worktree when branch already exists locally', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 999,
-                issueTitle: 'Conflict Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
+test('a failed HEAD inspection logs a warning and preserves the original Git diagnosis', async () => {
+    const { options, checkout, admin } = await missingGoalCheckout();
+    await fs.remove(checkout);
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const wrapper = path.join(bin, 'git');
+    await fs.writeFile(wrapper, `#!/bin/sh
+case " $* " in
+  *" rev-list --count "*) echo 'fatal: bad object during inspection' >&2; exit 1 ;;
+esac
+exec '${realGit}' "$@"
+`, { mode: 0o755 });
+    const { default: logger } = await import('../packages/core/src/utils/logger.js');
+    const warnings: string[] = [];
+    const warn = mock.method(logger, 'warn', (_context: unknown, message: string) => { warnings.push(message); });
+    try {
+        await assert.rejects(createWorktreeFromExistingBranch(repo, 'goal', options), /missing but already registered/);
+        assert.ok(warnings.includes('Could not clear the missing worktree registration'));
+        assert.equal(await fs.pathExists(path.join(admin, 'index')), true);
+    } finally {
+        warn.mock.restore();
+        await fs.remove(wrapper);
+    }
+});
 
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
+for (const recovery of ['clear', 'detach']) {
+    test(`${recovery} matches a missing checkout through a symlinked base path`, async () => {
+        const { options, checkout, admin, wt } = await missingGoalCheckout(true);
+        assert.notEqual((await fs.readFile(path.join(admin, 'gitdir'), 'utf8')).trim(), path.join(checkout, '.git'));
+        if (recovery === 'detach') {
+            await fs.writeFile(path.join(checkout, 'newfile'), 'retained staged content');
+            await wt.add('newfile');
+        }
+        await fs.remove(checkout);
+        if (recovery === 'clear') {
+            const rebuilt = await createWorktreeFromExistingBranch(repo, 'goal', options);
+            assert.equal(rebuilt.worktreePath, checkout);
+        } else {
+            assert.equal(await releaseBranchFromSettledWorktree(git, 'goal', checkout), true);
+            assert.equal((await fs.readFile(path.join(admin, 'HEAD'), 'utf8')).trim(), initial);
+            assert.equal(await simpleGit(admin).raw(['show', ':newfile']), 'retained staged content');
+        }
+    });
+}
 
-            // Pre-create the branch to simulate conflict
-            await git.branch([worktreeInfo.branchName]);
+for (const missingHolder of [false, true]) {
+    test(`rebuild recovers both a missing target registration and a branch holder (missing=${missingHolder})`, async () => {
+        const { options, checkout, wt } = await missingGoalCheckout();
+        await wt.checkout(['--detach']);
+        const holder = `${checkout}-holder`;
+        await git.raw(['worktree', 'add', holder, 'goal']);
+        const admin = (await fs.readFile(path.join(holder, '.git'), 'utf8')).trim().slice('gitdir: '.length);
+        await fs.remove(checkout);
+        if (missingHolder) await fs.remove(holder);
+        await createWorktreeFromExistingBranch(repo, 'goal', options);
+        assert.equal((await simpleGit(checkout).raw(['branch', '--show-current'])).trim(), 'goal');
+        assert.equal((await fs.readFile(path.join(admin, 'HEAD'), 'utf8')).trim(), initial);
+    });
+}
 
-            // Try to create worktree - should handle existing branch
-            await fs.ensureDir(path.dirname(worktreeInfo.worktreePath));
-
-            // Using -B flag to force branch recreation (similar to production code)
-            await git.raw(['worktree', 'add', worktreeInfo.worktreePath, '-B', worktreeInfo.branchName, 'HEAD']);
-
-            // Verify worktree was created despite existing branch
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be created');
-            const gitFile = await fs.stat(path.join(worktreeInfo.worktreePath, '.git'));
-            assert(gitFile.isFile(), '.git should be a file');
-        });
-
-        test('handles creating worktree when directory already exists', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 888,
-                issueTitle: 'Dir Exists Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-
-            // Pre-create the directory with some content
-            await fs.ensureDir(worktreeInfo.worktreePath);
-            await fs.writeFile(path.join(worktreeInfo.worktreePath, 'stale-file.txt'), 'stale content');
-
-            // Clean up the existing directory (similar to production flow)
-            await fs.remove(worktreeInfo.worktreePath);
-
-            // Now create the worktree
-            await fs.ensureDir(path.dirname(worktreeInfo.worktreePath));
-            await git.raw(['worktree', 'add', worktreeInfo.worktreePath, '-b', worktreeInfo.branchName, 'HEAD']);
-
-            // Verify worktree was created properly
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should exist');
-            const gitStats = await fs.stat(path.join(worktreeInfo.worktreePath, '.git'));
-            assert(gitStats.isFile(), '.git should be a file');
-
-            // Verify stale content is gone
-            const staleFileExists = await fs.pathExists(path.join(worktreeInfo.worktreePath, 'stale-file.txt'));
-            assert(!staleFileExists, 'Stale file should not exist after cleanup');
-        });
-
-        test('concurrent worktree creation for same issue with different models', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 42,
-                issueTitle: 'Concurrent Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            // Create worktrees for different models concurrently
-            const opusWorktree = generateWorktreeInfo(issueInfo, 'opus');
-            const sonnetWorktree = generateWorktreeInfo(issueInfo, 'sonnet');
-            const haikuWorktree = generateWorktreeInfo(issueInfo, 'haiku');
-
-            // Create parent directories
-            await Promise.all([
-                fs.ensureDir(path.dirname(opusWorktree.worktreePath)),
-                fs.ensureDir(path.dirname(sonnetWorktree.worktreePath)),
-                fs.ensureDir(path.dirname(haikuWorktree.worktreePath))
-            ]);
-
-            // Create worktrees (sequential to avoid git lock issues in test)
-            await git.raw(['worktree', 'add', opusWorktree.worktreePath, '-b', opusWorktree.branchName, 'HEAD']);
-            await git.raw(['worktree', 'add', sonnetWorktree.worktreePath, '-b', sonnetWorktree.branchName, 'HEAD']);
-            await git.raw(['worktree', 'add', haikuWorktree.worktreePath, '-b', haikuWorktree.branchName, 'HEAD']);
-
-            // Verify all worktrees exist
-            const worktrees = [opusWorktree, sonnetWorktree, haikuWorktree];
-            for (const wt of worktrees) {
-                assert(await fs.pathExists(wt.worktreePath), `${wt.branchName} worktree should exist`);
-                const gitStats = await fs.stat(path.join(wt.worktreePath, '.git'));
-                assert(gitStats.isFile(), `${wt.branchName} .git should be a file`);
+for (const late of ['staged', 'locked', 'checkout']) {
+    test(`clear refreshes ${late} evidence after awaited reachability inspection`, async () => {
+        const { checkout, admin } = await missingGoalCheckout();
+        await fs.remove(checkout);
+        const original = git.raw.bind(git);
+        const intercept = mock.method(git, 'raw', async (args: string[]) => {
+            const result = await original(args);
+            if (args[0] === 'rev-list') {
+                if (late === 'staged') {
+                    const blob = (await original(['rev-parse', 'HEAD:tracked'])).trim();
+                    // Stage an existing blob, with a different path from the committed tree.
+                    await simpleGit(admin).raw(['update-index', '--add', '--cacheinfo', `100644,${blob},late-file`]);
+                } else if (late === 'locked') await fs.writeFile(path.join(admin, 'locked'), 'late lock');
+                else await fs.ensureDir(checkout);
             }
-
-            // Verify file isolation - write unique files to each
-            await fs.writeFile(path.join(opusWorktree.worktreePath, 'opus.txt'), 'opus work');
-            await fs.writeFile(path.join(sonnetWorktree.worktreePath, 'sonnet.txt'), 'sonnet work');
-            await fs.writeFile(path.join(haikuWorktree.worktreePath, 'haiku.txt'), 'haiku work');
-
-            // Verify isolation
-            const opusFiles = await fs.readdir(opusWorktree.worktreePath);
-            assert(opusFiles.includes('opus.txt'), 'Opus should have opus.txt');
-            assert(!opusFiles.includes('sonnet.txt'), 'Opus should not have sonnet.txt');
-            assert(!opusFiles.includes('haiku.txt'), 'Opus should not have haiku.txt');
+            return result;
         });
-
-        test('worktree branch points to correct HEAD', async () => {
-            const git = simpleGit(testRepoPath);
-
-            // Get the current HEAD commit
-            const headCommit = await git.revparse(['HEAD']);
-
-            const issueInfo: IssueInfo = {
-                issueId: 777,
-                issueTitle: 'HEAD Check Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Get the worktree's HEAD commit
-            const worktreeGit = simpleGit(worktreeInfo.worktreePath);
-            const worktreeHeadCommit = await worktreeGit.revparse(['HEAD']);
-
-            assert.strictEqual(
-                worktreeHeadCommit.trim(),
-                headCommit.trim(),
-                'Worktree HEAD should match main repo HEAD'
-            );
-        });
+        try {
+            assert.equal(await clearMissingWorktreeRegistration(git, checkout), false);
+            assert.equal(await fs.pathExists(path.join(admin, 'index')), true);
+        } finally { intercept.mock.restore(); }
     });
-
-    describe('Worktree Cleanup', () => {
-        test('worktree can be removed with git worktree remove', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 555,
-                issueTitle: 'Cleanup Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Verify worktree exists
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should exist before cleanup');
-
-            // Remove the worktree using git command
-            await git.raw(['worktree', 'remove', worktreeInfo.worktreePath, '--force']);
-
-            // Verify worktree is removed
-            const stillExists = await fs.pathExists(worktreeInfo.worktreePath);
-            assert(!stillExists, 'Worktree should not exist after cleanup');
-        });
-
-        test('worktree directory can be cleaned via fs.remove', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 666,
-                issueTitle: 'FS Cleanup Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Write some files to the worktree
-            await fs.writeFile(path.join(worktreeInfo.worktreePath, 'work.txt'), 'work content');
-
-            // Remove via fs (simulating fallback cleanup)
-            await fs.remove(worktreeInfo.worktreePath);
-
-            // Verify directory is gone
-            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree directory should be removed');
-        });
-
-        test('associated branch can be deleted after worktree removal', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 444,
-                issueTitle: 'Branch Cleanup Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Verify branch exists
-            const branchesBefore = await git.branch();
-            assert(branchesBefore.all.includes(worktreeInfo.branchName), 'Branch should exist before cleanup');
-
-            // Remove worktree
-            await git.raw(['worktree', 'remove', worktreeInfo.worktreePath, '--force']);
-
-            // Delete the branch
-            await git.branch(['-D', worktreeInfo.branchName]);
-
-            // Verify branch is gone
-            const branchesAfter = await git.branch();
-            assert(!branchesAfter.all.includes(worktreeInfo.branchName), 'Branch should not exist after deletion');
-        });
-
-        test('git worktree list reflects created and removed worktrees', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 333,
-                issueTitle: 'List Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-
-            // Check worktree list before creation
-            const listBefore = await git.raw(['worktree', 'list']);
-            assert(!listBefore.includes(worktreeInfo.worktreePath), 'Worktree should not be in list before creation');
-
-            // Create worktree
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Check worktree list after creation
-            const listAfter = await git.raw(['worktree', 'list']);
-            assert(listAfter.includes(worktreeInfo.worktreePath), 'Worktree should be in list after creation');
-
-            // Remove worktree
-            await git.raw(['worktree', 'remove', worktreeInfo.worktreePath, '--force']);
-
-            // Check worktree list after removal
-            const listFinal = await git.raw(['worktree', 'list']);
-            assert(!listFinal.includes(worktreeInfo.worktreePath), 'Worktree should not be in list after removal');
-        });
-    });
-
-    describe('Edge Cases', () => {
-        test('handles special characters in issue title', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 111,
-                issueTitle: 'Fix: Bug #123 - "quotes" & <brackets>!',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-
-            // Verify sanitization works
-            assert(!worktreeInfo.dirName.includes(':'), 'Dir name should not contain colons');
-            assert(!worktreeInfo.dirName.includes('"'), 'Dir name should not contain quotes');
-            assert(!worktreeInfo.dirName.includes('<'), 'Dir name should not contain angle brackets');
-            assert(!worktreeInfo.dirName.includes('&'), 'Dir name should not contain ampersands');
-
-            // Create the worktree to verify it works
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree with sanitized name should exist');
-
-            const gitStats = await fs.stat(path.join(worktreeInfo.worktreePath, '.git'));
-            assert(gitStats.isFile(), '.git should be a file');
-        });
-
-        test('handles very long issue titles', async () => {
-            const git = simpleGit(testRepoPath);
-            const longTitle = 'This is a very long issue title that exceeds the maximum allowed length and should be truncated properly to avoid file system issues';
-            const issueInfo: IssueInfo = {
-                issueId: 222,
-                issueTitle: longTitle,
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-
-            // Verify title is truncated (max 25 chars after sanitization)
-            const titlePart = worktreeInfo.branchName.split('/')[1].split('-').slice(0, -3).join('-');
-            assert(titlePart.length <= 25, `Sanitized title should be <= 25 chars, got ${titlePart.length}`);
-
-            // Create the worktree
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree with truncated title should exist');
-        });
-
-        test('worktree metadata exists in main repo .git/worktrees', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 1234,
-                issueTitle: 'Metadata Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Check that worktree metadata exists in main repo
-            const worktreesDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataExists = await fs.pathExists(worktreesDir);
-            assert(metadataExists, '.git/worktrees directory should exist');
-
-            // Get entries in worktrees directory
-            const entries = await fs.readdir(worktreesDir);
-            assert(entries.length > 0, 'Should have at least one worktree metadata entry');
-        });
-    });
-
-    describe('Worktree Cleanup with Retention Strategies', () => {
-        test('keep_on_failure strategy creates retention marker when success is false', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 5001,
-                issueTitle: 'Keep On Failure Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Call cleanupWorktree with keep_on_failure strategy and success=false
-            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
-                deleteBranch: false,
-                success: false,
-                retentionStrategy: 'keep_on_failure',
-                retentionHours: 24
-            });
-
-            // Worktree should still exist
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be retained on failure');
-
-            // Retention marker should be created
-            const retentionFile = path.join(worktreeInfo.worktreePath, '.retention-info.json');
-            assert(await fs.pathExists(retentionFile), 'Retention marker should exist');
-
-            // Verify marker contents
-            const retentionInfo = await fs.readJson(retentionFile);
-            assert.strictEqual(retentionInfo.success, false);
-            assert.strictEqual(retentionInfo.retentionHours, 24);
-            assert.strictEqual(retentionInfo.issueProcessed, true);
-            assert(retentionInfo.timestamp, 'Should have timestamp');
-            assert(retentionInfo.scheduledCleanup, 'Should have scheduledCleanup');
-        });
-
-        test('keep_on_failure strategy removes worktree when success is true', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 5002,
-                issueTitle: 'Keep On Failure Success Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Call cleanupWorktree with keep_on_failure strategy but success=true
-            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
-                deleteBranch: false,
-                success: true,
-                retentionStrategy: 'keep_on_failure'
-            });
-
-            // Worktree should be removed since success=true
-            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be removed on success');
-        });
-
-        test('always_delete strategy removes worktree regardless of success', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 5003,
-                issueTitle: 'Always Delete Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Call cleanupWorktree with always_delete strategy and success=false
-            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
-                deleteBranch: false,
-                success: false,
-                retentionStrategy: 'always_delete'
-            });
-
-            // Worktree should be removed even on failure with always_delete
-            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be removed with always_delete strategy');
-        });
-
-        test('keep_for_hours strategy creates marker and then removes worktree', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 5004,
-                issueTitle: 'Keep For Hours Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Call cleanupWorktree with keep_for_hours strategy
-            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
-                deleteBranch: false,
-                success: false,
-                retentionStrategy: 'keep_for_hours',
-                retentionHours: 48
-            });
-
-            // Worktree should be removed immediately (keep_for_hours still removes, just creates marker first)
-            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be removed with keep_for_hours strategy');
-        });
-
-        test('retention marker contains correct scheduled cleanup time', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 5005,
-                issueTitle: 'Scheduled Cleanup Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            const retentionHours = 12;
-            const beforeCall = Date.now();
-
-            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
-                success: false,
-                retentionStrategy: 'keep_on_failure',
-                retentionHours
-            });
-
-            const afterCall = Date.now();
-            const retentionFile = path.join(worktreeInfo.worktreePath, '.retention-info.json');
-            const retentionInfo = await fs.readJson(retentionFile);
-
-            // Verify scheduled cleanup time is approximately retentionHours from now
-            const scheduledCleanup = new Date(retentionInfo.scheduledCleanup).getTime();
-            const expectedMinTime = beforeCall + retentionHours * 60 * 60 * 1000;
-            const expectedMaxTime = afterCall + retentionHours * 60 * 60 * 1000;
-
-            assert(scheduledCleanup >= expectedMinTime, 'Scheduled cleanup should be at least retentionHours from call start');
-            assert(scheduledCleanup <= expectedMaxTime, 'Scheduled cleanup should be at most retentionHours from call end');
-        });
-    });
-
-    describe('Expired Worktree Cleanup', () => {
-        test('cleanupExpiredWorktrees removes worktrees past scheduled cleanup time', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 6001,
-                issueTitle: 'Expired Cleanup Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Create a retention marker with scheduledCleanup in the past
-            const retentionInfo = {
-                timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
-                issueProcessed: true,
-                success: false,
-                retentionHours: 1,
-                scheduledCleanup: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString() // 1 hour ago (expired)
-            };
-            await fs.writeJson(path.join(worktreeInfo.worktreePath, '.retention-info.json'), retentionInfo);
-
-            // Run cleanup
-            const result = await cleanupExpiredWorktrees(worktreesBasePath);
-
-            // Worktree should be cleaned up
-            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Expired worktree should be removed');
-            assert.strictEqual(result.cleaned, 1, 'Should report 1 cleaned worktree');
-        });
-
-        test('cleanupExpiredWorktrees retains worktrees before scheduled cleanup time', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 6002,
-                issueTitle: 'Retained Cleanup Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Create a retention marker with scheduledCleanup in the future
-            const retentionInfo = {
-                timestamp: new Date().toISOString(),
-                issueProcessed: true,
-                success: false,
-                retentionHours: 24,
-                scheduledCleanup: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours from now
-            };
-            await fs.writeJson(path.join(worktreeInfo.worktreePath, '.retention-info.json'), retentionInfo);
-
-            // Run cleanup
-            const result = await cleanupExpiredWorktrees(worktreesBasePath);
-
-            // Worktree should still exist
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Non-expired worktree should be retained');
-            assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
-            assert.strictEqual(result.cleaned, 0, 'Should report 0 cleaned worktrees');
-        });
-
-        test('cleanupExpiredWorktrees handles multiple worktrees with mixed expiration', async () => {
-            const git = simpleGit(testRepoPath);
-
-            // Create an expired worktree
-            const expiredIssue: IssueInfo = {
-                issueId: 6003,
-                issueTitle: 'Expired Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-            const expiredWorktree = generateWorktreeInfo(expiredIssue);
-            await createWorktreeWithGit(git, expiredWorktree, 'HEAD');
-            await fs.writeJson(path.join(expiredWorktree.worktreePath, '.retention-info.json'), {
-                timestamp: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
-                issueProcessed: true,
-                success: false,
-                retentionHours: 24,
-                scheduledCleanup: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() // expired
-            });
-
-            // Create a non-expired worktree
-            const activeIssue: IssueInfo = {
-                issueId: 6004,
-                issueTitle: 'Active Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-            const activeWorktree = generateWorktreeInfo(activeIssue);
-            await createWorktreeWithGit(git, activeWorktree, 'HEAD');
-            await fs.writeJson(path.join(activeWorktree.worktreePath, '.retention-info.json'), {
-                timestamp: new Date().toISOString(),
-                issueProcessed: true,
-                success: false,
-                retentionHours: 48,
-                scheduledCleanup: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString() // not expired
-            });
-
-            // Run cleanup
-            const result = await cleanupExpiredWorktrees(worktreesBasePath);
-
-            // Verify results
-            assert(!await fs.pathExists(expiredWorktree.worktreePath), 'Expired worktree should be removed');
-            assert(await fs.pathExists(activeWorktree.worktreePath), 'Active worktree should be retained');
-            assert.strictEqual(result.cleaned, 1, 'Should report 1 cleaned worktree');
-            assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
-        });
-
-        test('cleanupExpiredWorktrees handles non-existent base path gracefully', async () => {
-            const nonExistentPath = path.join(tempDir, 'non-existent-worktrees');
-
-            // Should not throw
-            const result = await cleanupExpiredWorktrees(nonExistentPath);
-
-            assert.strictEqual(result.cleaned, 0);
-            assert.strictEqual(result.retained, 0);
-        });
-
-        test('cleanupExpiredWorktrees handles corrupted retention info gracefully', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 6005,
-                issueTitle: 'Corrupted Info Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Create a corrupted retention marker (invalid JSON)
-            await fs.writeFile(path.join(worktreeInfo.worktreePath, '.retention-info.json'), 'invalid json content');
-
-            // Run cleanup - should not throw
-            const result = await cleanupExpiredWorktrees(worktreesBasePath);
-
-            // Worktree should be retained since retention info couldn't be read
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree with corrupted info should be retained');
-            assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
-        });
-    });
-
-    describe('Safe Worktree Pruning', () => {
-        test('detects and prunes stale metadata when worktree directory is missing', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 7001,
-                issueTitle: 'Missing Directory Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Verify worktree metadata exists in .git/worktrees
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntriesBefore = await fs.readdir(worktreesMetaDir);
-            assert(metadataEntriesBefore.length > 0, 'Should have worktree metadata');
-
-            // Remove the worktree directory directly (simulating a crash or manual deletion)
-            await fs.remove(worktreeInfo.worktreePath);
-
-            // Verify worktree directory is gone but metadata still exists
-            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree directory should be removed');
-            const metadataStillExists = await fs.pathExists(worktreesMetaDir);
-            assert(metadataStillExists, 'Metadata directory should still exist');
-
-            // Backdate the metadata entry so it's older than minAgeHours
-            const metadataEntries = await fs.readdir(worktreesMetaDir);
-            for (const entry of metadataEntries) {
-                const entryPath = path.join(worktreesMetaDir, entry);
-                // Set mtime to 2 hours ago
-                const pastTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
-                await fs.utimes(entryPath, pastTime, pastTime);
-            }
-
-            // Run safe prune with 1 hour minimum age
-            const result = await safePruneWorktrees(testRepoPath, 1);
-
-            // Stale metadata should be pruned
-            assert.strictEqual(result.pruned, 1, 'Should prune 1 stale entry');
-            assert.strictEqual(result.skipped, 0, 'Should skip 0 entries');
-
-            // Verify metadata is actually removed
-            const metadataEntriesAfter = await fs.readdir(worktreesMetaDir);
-            assert.strictEqual(metadataEntriesAfter.length, 0, 'All stale metadata should be removed');
-        });
-
-        test('skips young stale entries that are below minimum age threshold', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 7002,
-                issueTitle: 'Young Entry Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Remove the worktree directory directly (making metadata stale)
-            await fs.remove(worktreeInfo.worktreePath);
-
-            // Metadata is fresh (just created), so minAgeHours check should skip it
-            // Run safe prune with 1 hour minimum age
-            const result = await safePruneWorktrees(testRepoPath, 1);
-
-            // Young stale entry should be skipped
-            assert.strictEqual(result.pruned, 0, 'Should not prune any entries');
-            assert.strictEqual(result.skipped, 1, 'Should skip 1 young entry');
-
-            // Verify metadata still exists
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntries = await fs.readdir(worktreesMetaDir);
-            assert(metadataEntries.length > 0, 'Metadata should still exist');
-        });
-
-        test('handles non-existent .git/worktrees directory gracefully', async () => {
-            // Create a fresh repo without any worktrees (so .git/worktrees doesn't exist)
-            const freshRepoPath = path.join(tempDir, 'fresh-repo');
-            await fs.ensureDir(freshRepoPath);
-            const freshGit = simpleGit(freshRepoPath);
-            await freshGit.init();
-            await freshGit.addConfig('user.email', 'test@example.com');
-            await freshGit.addConfig('user.name', 'Test User');
-
-            // Verify .git/worktrees doesn't exist
-            const worktreesMetaDir = path.join(freshRepoPath, '.git', 'worktrees');
-            assert(!await fs.pathExists(worktreesMetaDir), '.git/worktrees should not exist');
-
-            // Run safe prune - should not throw
-            const result = await safePruneWorktrees(freshRepoPath, 1);
-
-            assert.strictEqual(result.pruned, 0, 'Should prune 0 entries');
-            assert.strictEqual(result.skipped, 0, 'Should skip 0 entries');
-        });
-
-        test('prunes entries without gitdir file when old enough', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 7003,
-                issueTitle: 'No Gitdir Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Find and corrupt the worktree metadata by removing gitdir file
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntries = await fs.readdir(worktreesMetaDir);
-
-            for (const entry of metadataEntries) {
-                const gitdirPath = path.join(worktreesMetaDir, entry, 'gitdir');
-                if (await fs.pathExists(gitdirPath)) {
-                    await fs.remove(gitdirPath);
-                }
-                // Backdate the entry
-                const entryPath = path.join(worktreesMetaDir, entry);
-                const pastTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
-                await fs.utimes(entryPath, pastTime, pastTime);
-            }
-
-            // Run safe prune
-            const result = await safePruneWorktrees(testRepoPath, 1);
-
-            // Entry without gitdir should be pruned if old enough
-            assert.strictEqual(result.pruned, 1, 'Should prune entry without gitdir');
-            assert.strictEqual(result.skipped, 0, 'Should skip 0 entries');
-        });
-
-        test('skips entries without gitdir file when too young', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 7004,
-                issueTitle: 'Young No Gitdir Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Find and corrupt the worktree metadata by removing gitdir file
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntries = await fs.readdir(worktreesMetaDir);
-
-            for (const entry of metadataEntries) {
-                const gitdirPath = path.join(worktreesMetaDir, entry, 'gitdir');
-                if (await fs.pathExists(gitdirPath)) {
-                    await fs.remove(gitdirPath);
-                }
-                // Don't backdate - keep it fresh
-            }
-
-            // Run safe prune with 1 hour minimum
-            const result = await safePruneWorktrees(testRepoPath, 1);
-
-            // Young entry without gitdir should be skipped
-            assert.strictEqual(result.pruned, 0, 'Should not prune young entry');
-            assert.strictEqual(result.skipped, 1, 'Should skip 1 young entry');
-        });
-
-        test('preserves valid worktree metadata for existing directories', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 7005,
-                issueTitle: 'Valid Worktree Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Verify both worktree directory and metadata exist
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should exist');
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntriesBefore = await fs.readdir(worktreesMetaDir);
-            assert(metadataEntriesBefore.length > 0, 'Should have worktree metadata');
-
-            // Run safe prune - should not affect valid worktrees
-            const result = await safePruneWorktrees(testRepoPath, 0); // Even with 0 hour threshold
-
-            // Nothing should be pruned since worktree directory exists
-            assert.strictEqual(result.pruned, 0, 'Should not prune valid worktrees');
-            assert.strictEqual(result.skipped, 0, 'Should not skip valid worktrees');
-
-            // Verify worktree and metadata still exist
-            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should still exist');
-            const metadataEntriesAfter = await fs.readdir(worktreesMetaDir);
-            assert.strictEqual(metadataEntriesAfter.length, metadataEntriesBefore.length, 'Metadata count should be unchanged');
-        });
-
-        test('handles mixed scenarios with valid, stale-old, and stale-young entries', async () => {
-            const git = simpleGit(testRepoPath);
-
-            // Create worktree 1: valid (directory exists)
-            const issue1: IssueInfo = {
-                issueId: 7006,
-                issueTitle: 'Valid Mixed Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-            const worktree1 = generateWorktreeInfo(issue1);
-            await createWorktreeWithGit(git, worktree1, 'HEAD');
-
-            // Create worktree 2: stale but young (directory deleted, metadata fresh)
-            const issue2: IssueInfo = {
-                issueId: 7007,
-                issueTitle: 'Stale Young Mixed Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-            const worktree2 = generateWorktreeInfo(issue2);
-            await createWorktreeWithGit(git, worktree2, 'HEAD');
-            await fs.remove(worktree2.worktreePath); // Make it stale
-
-            // Create worktree 3: stale and old (directory deleted, metadata old)
-            const issue3: IssueInfo = {
-                issueId: 7008,
-                issueTitle: 'Stale Old Mixed Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-            const worktree3 = generateWorktreeInfo(issue3);
-            await createWorktreeWithGit(git, worktree3, 'HEAD');
-            await fs.remove(worktree3.worktreePath); // Make it stale
-
-            // Find and backdate worktree3's metadata
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntries = await fs.readdir(worktreesMetaDir);
-
-            // The gitdir file contains the path to the worktree's .git file
-            // (e.g., /path/to/worktree/.git), so we compare with worktreePath + '/.git'
-            const worktree3GitPath = path.join(worktree3.worktreePath, '.git');
-
-            for (const entry of metadataEntries) {
-                const gitdirPath = path.join(worktreesMetaDir, entry, 'gitdir');
-                if (await fs.pathExists(gitdirPath)) {
-                    const gitdirContent = await fs.readFile(gitdirPath, 'utf8');
-                    const worktreeGitPath = gitdirContent.trim();
-
-                    // If this points to worktree3's .git path (which is deleted), backdate it
-                    if (worktreeGitPath === worktree3GitPath) {
-                        const entryPath = path.join(worktreesMetaDir, entry);
-                        const pastTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
-                        await fs.utimes(entryPath, pastTime, pastTime);
-                    }
-                }
-            }
-
-            // Run safe prune with 1 hour minimum
-            const result = await safePruneWorktrees(testRepoPath, 1);
-
-            // Should prune only the old stale entry
-            assert.strictEqual(result.pruned, 1, 'Should prune 1 old stale entry');
-            assert.strictEqual(result.skipped, 1, 'Should skip 1 young stale entry');
-
-            // Verify worktree1 still exists and is valid
-            assert(await fs.pathExists(worktree1.worktreePath), 'Valid worktree should still exist');
-        });
-
-        test('respects configurable minimum age threshold', async () => {
-            const git = simpleGit(testRepoPath);
-            const issueInfo: IssueInfo = {
-                issueId: 7009,
-                issueTitle: 'Config Age Test',
-                owner: 'testowner',
-                repoName: 'testrepo'
-            };
-
-            const worktreeInfo = generateWorktreeInfo(issueInfo);
-            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
-
-            // Remove worktree directory to make metadata stale
-            await fs.remove(worktreeInfo.worktreePath);
-
-            // Backdate metadata to 30 minutes ago
-            const worktreesMetaDir = path.join(testRepoPath, '.git', 'worktrees');
-            const metadataEntries = await fs.readdir(worktreesMetaDir);
-            for (const entry of metadataEntries) {
-                const entryPath = path.join(worktreesMetaDir, entry);
-                const halfHourAgo = new Date(Date.now() - 30 * 60 * 1000);
-                await fs.utimes(entryPath, halfHourAgo, halfHourAgo);
-            }
-
-            // Run with 1 hour minimum - should skip (30 min < 1 hour)
-            const result1 = await safePruneWorktrees(testRepoPath, 1);
-            assert.strictEqual(result1.pruned, 0, 'Should not prune with 1 hour threshold');
-            assert.strictEqual(result1.skipped, 1, 'Should skip with 1 hour threshold');
-
-            // Run with 0.25 hour (15 min) minimum - should prune (30 min > 15 min)
-            const result2 = await safePruneWorktrees(testRepoPath, 0.25);
-            assert.strictEqual(result2.pruned, 1, 'Should prune with 15 min threshold');
-            assert.strictEqual(result2.skipped, 0, 'Should not skip with 15 min threshold');
-        });
-    });
+}
+
+/** One pull request run on branch `pr`: a worktree created from it, one local commit, then released. */
+async function failedAttempt(dirName: string, message: string): Promise<string> {
+    const { worktreePath } = await createWorktreeFromExistingBranch(repo, 'pr', { worktreeDirName: dirName, owner: 'owner', repoName });
+    const wt = simpleGit(worktreePath);
+    await fs.writeFile(path.join(worktreePath, 'tracked'), message);
+    await wt.add('.').commit(message);
+    const head = (await wt.revparse(['HEAD'])).trim();
+    await git.raw(['worktree', 'remove', '--force', worktreePath]); // push rejected; attempt cleaned up
+    return head;
+}
+async function pushToRemote(parent: string, message: string, force = false): Promise<string> {
+    const commit = (await git.raw(['commit-tree', `${initial}^{tree}`, '-p', parent, '-m', message])).trim();
+    await git.push('origin', `${commit}:refs/heads/pr`, force ? ['--force'] : []);
+    return commit;
+}
+const headOf = async (dirName: string) => (await simpleGit((await createWorktreeFromExistingBranch(repo, 'pr', { worktreeDirName: dirName, owner: 'owner', repoName })).worktreePath).revparse(['HEAD'])).trim();
+
+test('a local branch left diverged by failed attempts restarts from the rebased PR head and keeps a backup', async () => {
+    await remoteBranch('pr');
+    const stale = await failedAttempt('attempt-1', 'failed attempt');
+    const rebased = await pushToRemote(initial, 'dependabot rebase', true);
+
+    assert.equal(await headOf('attempt-2'), rebased, 'the next run starts from the pull request head');
+    const backups = (await git.raw(['for-each-ref', '--format=%(objectname)', 'refs/propr/superseded/pr/'])).trim();
+    assert.equal(backups, stale, 'the failed attempt\'s commit is kept under a backup ref');
+
+    // S19: a second realignment of the same branch within the same second keeps its own backup.
+    await git.raw(['worktree', 'remove', '--force', path.join(root, 'worktrees', 'owner', repoName, 'attempt-2')]);
+    const staleAgain = await failedAttempt('attempt-3', 'failed again');
+    const rebasedAgain = await pushToRemote(initial, 'dependabot rebase again', true);
+    assert.equal(await headOf('attempt-4'), rebasedAgain);
+    const named = (await git.raw(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/propr/superseded/pr/'])).trim().split('\n');
+    assert.deepEqual(named.map(line => line.split(' ')[1]).sort(), [stale, staleAgain].sort(), 'both superseded tips are kept');
+    for (const line of named) {
+        const [ref, tip] = line.split(' ');
+        assert.match(ref, new RegExp(`^refs/propr/superseded/pr/\\d{8}T\\d{6}Z-${tip.slice(0, 12)}$`), 'the backup name carries the tip it saves');
+    }
+});
+
+test('a local branch behind the PR head is fast-forwarded, and one ahead keeps its unpushed commit', async () => {
+    await remoteBranch('pr');
+    const unpushed = await failedAttempt('attempt-1', 'unpushed work');
+    assert.equal(await headOf('attempt-2'), unpushed, 'ahead: the unpushed commit is kept');
+    await git.raw(['worktree', 'remove', '--force', path.join(root, 'worktrees', 'owner', repoName, 'attempt-2')]);
+
+    const advanced = await pushToRemote(unpushed, 'someone built on it');
+    assert.equal(await headOf('attempt-3'), advanced, 'behind: fast-forwarded to the head');
+    assert.equal((await git.raw(['for-each-ref', 'refs/propr/superseded/'])).trim(), '', 'nothing needed a backup');
 });

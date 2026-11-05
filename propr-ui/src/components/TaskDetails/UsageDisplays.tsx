@@ -1,6 +1,7 @@
 import React from 'react';
 import { Zap } from 'lucide-react';
 import { TokenUsage, UsageMetricRecord } from './types';
+import { METRIC_KEY_LABELS, humanizeMetricKey } from '../../utils/usageMetricLabels';
 
 // Format token count for display (e.g., 1234 -> "1.2k", 1234567 -> "1.2M")
 const formatTokenCount = (count: number | null | undefined): string => {
@@ -39,20 +40,6 @@ export const TokenUsageDisplay: React.FC<{ tokenUsage: TokenUsage | undefined }>
     </>
   );
 };
-
-// Map of raw Agent Tank metric keys to human-readable labels
-const METRIC_KEY_LABELS: Record<string, string> = {
-  session: 'Session', weeklyAll: 'Weekly', weeklySonnet: 'Sonnet',
-  weeklyFable: 'Fable',
-  weeklyOpus: 'Opus', weeklyHaiku: 'Haiku', fiveHour: 'Five Hour',
-  weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly',
-};
-
-function humanizeMetricKey(key: string): string {
-  if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
-  if (/^[A-Z]/.test(key)) return key;
-  return key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
-}
 
 function findMetricRecord(records: UsageMetricRecord[], rawKey: string): UsageMetricRecord | undefined {
   const humanized = METRIC_KEY_LABELS[rawKey] || rawKey;

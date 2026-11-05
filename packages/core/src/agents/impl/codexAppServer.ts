@@ -1,3 +1,5 @@
+import { assertNativeLogAdmission, prepareProviderCapture, attachProviderCapture } from '../../diagnostics/managedLogRuntime.js';
+import { prepareAgentGitAccess } from '../agentGitAccess.js';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -17,6 +19,7 @@ import {
     type GoalProtocolResult,
     type ThreadIdentity,
 } from './codexAppServerGoalProtocol.js';
+import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { buildCodexAppServerDockerArgs } from './utils/codexDockerArgsBuilder.js';
 
 export { CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS, runGoalProtocol } from './codexAppServerGoalProtocol.js';
@@ -76,16 +79,26 @@ export async function executeCodexAppServerGoal(
     const model = cleanModelName(options.model || config.defaultModel);
     const control = options.goalControl;
     if (!control || !options.nativeGoalObjective) throw new Error('Codex native goal execution requires durable goal controls and an objective');
+    const ownership = getExecutionOwnershipContext();
+    const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+    if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
     const dockerArgs = buildCodexAppServerDockerArgs(config, {
         worktreePath: options.worktreePath,
-        githubToken: options.githubToken,
+        githubToken,
+        gitMountArgs,
         issueNumber: options.issueRef.number,
         environment: options.environment,
         taskId: options.taskId,
     });
-    const ownership = getExecutionOwnershipContext();
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
-    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+    assertNativeLogAdmission({ provider: config.type, agent: config.id });
+    const child = await spawnWithNetworkPolicy(args, (runArgs, launched) => {
+        const capture = prepareProviderCapture({ provider: config.type, agent: config.id, configPath: config.configPath, credentials: config.envVars,
+            attribution: { task: options.taskId, attempt: ownership?.attemptGeneration } }, runArgs, launched?.environment, launched?.createArgs ?? args);
+        const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+        attachProviderCapture(spawned, capture);
+        return spawned;
+    });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
     const connection = new AppServerConnection(child, options.taskId, records => control.appendOutput(records));

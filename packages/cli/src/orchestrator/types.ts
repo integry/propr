@@ -39,6 +39,10 @@ export interface OrchestratorConfig {
   /** Secret server-side half of the VAPID pair; never render this value. */
   readonly webPushVapidPrivateKey?: string;
   readonly hostClaudeDir?: string;
+  /** Host `.claude.json` mounted read-only to seed agent containers (HOST_CLAUDE_JSON or the file next to hostClaudeDir). */
+  readonly hostClaudeJson?: string;
+  /** True when hostClaudeJson came from an explicit HOST_CLAUDE_JSON. */
+  readonly hostClaudeJsonExplicit?: boolean;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
   readonly hostOpencodeXdgDir?: string;
@@ -50,6 +54,8 @@ export interface OrchestratorConfig {
   readonly uiTunnelEnabled: boolean;
   readonly uiTunnelToken?: string;
   readonly proprInstanceId?: string;
+  /** Whether envFileLocal may be read as Docker reads it (false for pre-parsed env values). */
+  readonly envFileDockerLiteral: boolean;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
   /** Immediate socket peers whose forwarded client/protocol headers the API trusts. */
@@ -68,6 +74,10 @@ export interface OrchestratorConfig {
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
   readonly images: Record<string, string>;
   readonly manifestPath: string;
+  /** Published digest-pinned managed agent image bound by a Desktop runtime manifest. */
+  readonly managedAgent?: { readonly image: string; readonly sourceRevision: string };
+  /** Pin that replaces the legacy generated AGENT_DOCKER_IMAGE default inside app containers. */
+  readonly agentDockerImageOverride?: string;
 }
 
 /** State of a single service container, derived from `docker ps`. */
@@ -234,5 +244,5 @@ export interface OrchestratorModule {
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
   docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
-  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal }): Promise<DockerCommandResult>;
+  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv }): Promise<DockerCommandResult>;
 }

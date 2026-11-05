@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configManager.js';
 import { validatePrReviewModelValue } from './prReviewModelValidator.js';
+import { MAX_RUN_COST_CAP_USD, parseCostCapUsd } from '../budget/runCostCap.js';
 
 // --- PR Review Model ---
 
@@ -44,6 +45,7 @@ export async function savePrReviewModel(model: string): Promise<boolean> {
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+export const DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 export async function loadUltrafixRatingGoal(): Promise<number> {
     const goal = await getConfig<number>('ultrafix_rating_goal', DEFAULT_ULTRAFIX_RATING_GOAL);
@@ -100,4 +102,79 @@ export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean
     await saveConfig('ultrafix_pause_seconds', seconds);
     logger.info({ ultrafix_pause_seconds: seconds }, 'Successfully saved ultrafix pause seconds');
     return true;
+}
+
+// --- Spend cap ---
+
+/**
+ * Instance-wide per-run spend cap in USD, used when neither the task nor the
+ * repository's workflow file sets one. 0 (the default) means no cap; a
+ * malformed stored value is logged and also means no cap.
+ */
+export async function loadDefaultMaxCostUsd(): Promise<number> {
+    const stored = await getConfig<unknown>('default_max_cost_usd', 0);
+    return parseCostCapUsd(stored, 'default_max_cost_usd') ?? 0;
+}
+
+export async function saveDefaultMaxCostUsd(amount: number): Promise<boolean> {
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0 || amount > MAX_RUN_COST_CAP_USD) {
+        throw new Error(`default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`);
+    }
+    await saveConfig('default_max_cost_usd', amount);
+    logger.info({ default_max_cost_usd: amount }, 'Successfully saved default per-run spend cap');
+    return true;
+}
+
+// --- CI wait timeout ---
+
+/**
+ * How long an Ultrafix review may stay deferred waiting for CI before the loop
+ * stops with "CI did not settle". The ULTRAFIX_CI_WAIT_TIMEOUT_MS environment
+ * variable overrides the stored instance setting.
+ */
+export async function loadUltrafixCiWaitTimeoutMs(): Promise<number> {
+    const fromEnv = process.env.ULTRAFIX_CI_WAIT_TIMEOUT_MS;
+    if (fromEnv !== undefined && fromEnv.trim() !== '') {
+        const parsed = Number(fromEnv);
+        if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+        logger.warn({ ULTRAFIX_CI_WAIT_TIMEOUT_MS: fromEnv }, 'Invalid ULTRAFIX_CI_WAIT_TIMEOUT_MS, ignoring');
+    }
+    const timeout = await getConfig<number>('ultrafix_ci_wait_timeout_ms', DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS);
+    if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout < 1) {
+        logger.warn({ stored_value: timeout }, 'Invalid ultrafix_ci_wait_timeout_ms in DB, using default');
+        return DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS;
+    }
+    return timeout;
+}
+
+export async function saveUltrafixCiWaitTimeoutMs(timeoutMs: number): Promise<boolean> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+        throw new Error('ultrafix_ci_wait_timeout_ms must be a positive safe integer');
+    }
+    await saveConfig('ultrafix_ci_wait_timeout_ms', timeoutMs);
+    logger.info({ ultrafix_ci_wait_timeout_ms: timeoutMs }, 'Successfully saved ultrafix CI wait timeout');
+    return true;
+}
+
+export interface UltrafixEscalationSettings {
+    enabled: boolean;
+    models: string[];
+    patience: number;
+    maxReasoningLevels: number;
+}
+
+/** Instance-wide policy; loops snapshot its ladder and check the master toggle live. */
+export async function loadUltrafixEscalationSettings(): Promise<UltrafixEscalationSettings> {
+    const [enabled, models, patience, levels] = await Promise.all([
+        getConfig<unknown>('ultrafix_escalation_enabled', false),
+        getConfig<unknown>('ultrafix_escalation_models', []),
+        getConfig<unknown>('ultrafix_escalation_patience', 3),
+        getConfig<unknown>('ultrafix_escalation_max_reasoning_levels', 2),
+    ]);
+    return {
+        enabled: enabled === true,
+        models: Array.isArray(models) ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0) : [],
+        patience: typeof patience === 'number' && Number.isSafeInteger(patience) && patience >= 1 ? patience : 3,
+        maxReasoningLevels: typeof levels === 'number' && Number.isSafeInteger(levels) && levels >= 0 ? levels : 2,
+    };
 }

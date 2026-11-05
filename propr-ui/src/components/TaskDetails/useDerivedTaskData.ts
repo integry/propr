@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { HistoryItem, TaskInfo, LiveDetails } from './types';
+import { pickTokenUsage } from './useTaskHeadSummary';
 
 export function useTotalDuration(history: HistoryItem[] | null) {
   return useMemo(() => {
@@ -44,17 +45,6 @@ export function useConsumedReviewCommentIds(history: HistoryItem[] | null) {
 }
 
 export function useTokenUsage(liveDetails: LiveDetails, history: HistoryItem[] | null) {
-  return useMemo(() => {
-    if (liveDetails?.tokenUsage) {
-      return liveDetails.tokenUsage;
-    }
-
-    if (!history || history.length === 0) return undefined;
-
-    const historyWithTokens = history.find(
-      item => item.metadata?.tokenUsage
-    );
-
-    return historyWithTokens?.metadata?.tokenUsage;
-  }, [liveDetails, history]);
+  // A live count of zeros (a run that has not reported yet) must not hide the count its history recorded.
+  return useMemo(() => pickTokenUsage(liveDetails?.tokenUsage, history), [liveDetails, history]);
 }

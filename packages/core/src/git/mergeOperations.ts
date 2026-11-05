@@ -1,3 +1,4 @@
+import { configureGitRemoteAuthentication } from './repoBranching.js';
 import { SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { AI_COMMIT_AUTHOR } from './commitOperations.js';
@@ -61,9 +62,7 @@ export async function mergeBaseIntoBranch(
     const git: SimpleGit = createHooklessGit(worktreePath);
     // A fork worktree keeps its own origin, so the base is fetched from the base
     // repository into a namespace that cannot collide with the fork's branches.
-    const baseRemote = options.baseRepoUrl && options.authToken
-        ? options.baseRepoUrl.replace('https://', `https://x-access-token:${options.authToken}@`)
-        : options.baseRepoUrl ?? 'origin';
+    const baseRemote = options.baseRepoUrl ?? 'origin';
     const baseRef = options.baseRepoUrl
         ? `refs/remotes/propr-base/${baseBranch}`
         : `refs/remotes/origin/${baseBranch}`;
@@ -71,6 +70,7 @@ export async function mergeBaseIntoBranch(
     try {
         // Fetch the latest base branch
         logger.info({ worktreePath, baseBranch, baseRepoUrl: options.baseRepoUrl }, 'Fetching latest base branch for merge');
+        await configureGitRemoteAuthentication(git, options.authToken, baseRemote);
         await git.raw(['fetch', baseRemote, `+refs/heads/${baseBranch}:${baseRef}`, '--prune']);
         const baseCommit = (await git.raw([
             'rev-parse',

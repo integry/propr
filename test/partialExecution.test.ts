@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { Redis } from 'ioredis';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -243,7 +244,24 @@ describe('partial agent execution', () => {
         assert.match(processed.summary || '', /validation remains/);
     });
 
-    test('classifies only execution deadlines and turn limits as publishable interruptions', () => {
+    test('recovers partial output from a Bun crash after Claude started', () => {
+        const stdout = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Implemented the fix; tests are still running.' }] } });
+        const stderr = 'ProPR repo setup hook completed\npanic(main thread): Segmentation fault at address 0x0\noh no: Bun has crashed. This indicates a bug in Bun, not your code.';
+        const response = processDockerResult(executionResult(stdout, { exitCode: 132, stderr }), 'Fix it', 'claude-test', 2_000).response;
+        assert.equal(response.success, false);
+        assert.equal(response.terminationReason, 'runtime_crash');
+        assert.match(response.summary || '', /tests are still running/);
+        assert.equal(getPostExecutionDisposition({ ...partialClaudeResult('timeout'), terminationReason: response.terminationReason }), 'partial');
+        for (const result of [
+            executionResult('', { exitCode: 132, stderr }),
+            executionResult(stdout, { exitCode: 1, stderr: 'Authentication failed' }),
+            executionResult(stdout, { exitCode: 0, stderr }),
+        ]) {
+            assert.equal(processDockerResult(result, 'Fix it', 'claude-test', 2_000).response.terminationReason, undefined);
+        }
+    });
+
+    test('classifies recognized interruptions without accepting unrelated failures', () => {
         assert.strictEqual(resolveAgentTerminationReason({ error: 'Command timed out after 86400000ms' }), 'timeout');
         assert.strictEqual(resolveAgentTerminationReason({ subtype: 'error_max_turns' }), 'max_turns');
         assert.strictEqual(isIncompleteAgentExecution({ success: false, terminationReason: 'timeout' }), true);
@@ -305,4 +323,49 @@ describe('partial agent execution', () => {
         assert.match(commitMessage, /Partial execution:/);
         assert.doesNotMatch(comment, /Applied the requested follow-up changes/);
     });
+});
+
+for (const command of [process.execPath, '/missing-live-output-test-executable']) {
+    test(`final publication failure preserves the process result (${command})`, { timeout: 5000 }, async t => {
+        t.mock.method(Redis.prototype, 'connect', async () => undefined);
+        t.mock.method(Redis.prototype, 'get', async () => null);
+        t.mock.method(Redis.prototype, 'eval', async () => { throw new Error('Redis unavailable'); });
+        const execution = executeDockerCommand(command, ['-e', 'process.stdout.write("final")'], {
+            taskId: 'failed-final-publication', streamToRedis: true,
+        });
+        if (command === process.execPath) assert.equal((await execution).exitCode, 0);
+        else await assert.rejects(execution, /ENOENT/);
+    });
+}
+
+
+test('publication failure does not obscure lost execution authority', async t => {
+    t.mock.method(Redis.prototype, 'connect', async () => undefined);
+    t.mock.method(Redis.prototype, 'get', async () => null);
+    t.mock.method(Redis.prototype, 'eval', async () => { throw new Error('Redis unavailable'); });
+    const superseded = new Error('superseded callback');
+    superseded.name = 'SupersededTaskAttemptError';
+    await assert.rejects(executeDockerCommand(process.execPath, [
+        '-e', 'console.log(JSON.stringify({type:"assistant",session_id:"old-session"}))',
+    ], {
+        taskId: 'superseded-publication', streamToRedis: true,
+        onSessionId: async () => { throw superseded; },
+    }), error => error === superseded);
+});
+
+test('final Redis publication retries a transient failure without failing a successful process', async t => {
+    let attempts = 0;
+    t.mock.method(Redis.prototype, 'connect', async () => undefined);
+    t.mock.method(Redis.prototype, 'get', async () => null);
+    t.mock.method(Redis.prototype, 'quit', async () => 'OK');
+    t.mock.method(Redis.prototype, 'eval', async () => {
+        if (++attempts === 1) throw new Error('temporary outage');
+        return 1;
+    });
+    const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdout.write("final")'], {
+        taskId: 'transient-final-publication', streamToRedis: true,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'final');
+    assert.equal(attempts, 2);
 });

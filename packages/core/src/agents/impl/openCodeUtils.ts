@@ -1,5 +1,6 @@
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
 import fs from 'fs';
-import { isManagedAgentConfigPath } from '@propr/shared';
+import { currentOpenCodeModel, isManagedAgentConfigPath } from '@propr/shared';
 import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
@@ -11,29 +12,15 @@ import {
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from './utils/repositoryScoutMcpServer.js';
 export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from './openCodeModelIds.js';
-export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
+export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, resolveOpenCodeFailureReason } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
-import type { ParsedOpenCodeOutput } from './openCodeParsing.js';
+import { resolveOpenCodeFailureReason, type ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
+import { openCodeEnvVarRejection } from './openCodeEnvForwarding.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
 const CONTAINER_SOURCE_DATA_PATH = '/home/node/.local/share/opencode-source';
 const CONTAINER_RUNTIME_DATA_HOME = '/tmp/propr-opencode-data';
-
-// Hardening for user-configured agent env vars forwarded into the OpenCode
-// container: enforce POSIX-valid names, never forward GitHub credentials or
-// wrapper-managed vars, and reject values that could break the `-e KEY=VALUE`
-// contract (newlines/NUL).
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const BLOCKED_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
-const RESERVED_ENV_NAMES = new Set([
-    'OPENCODE_CONFIG_DIR',
-    'OPENCODE_CONFIG_CONTENT',
-    'PROPR_MANAGED_CREDENTIALS',
-    'XDG_CONFIG_HOME',
-    'XDG_DATA_HOME'
-]);
-const GITHUB_CREDENTIAL_NAME_PATTERN = /^GITHUB_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
@@ -41,6 +28,7 @@ export interface OpenCodeDockerArgsParams {
     config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
     taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; configPath?: string;
     repositoryInspection?: boolean;
+    gitMountArgs?: string[];
     dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
@@ -64,7 +52,7 @@ export function evaluateOpenCodeAnalysis(options: {
         && processResult.exitCode === 0
         && !parsedOutput.error
         && analysisText.length > 0;
-    const errorMsg = parsedOutput.error || processResult.stderr || 'No assistant text returned';
+    const errorMsg = resolveOpenCodeFailureReason(parsedOutput, processResult.stderr) || processResult.stderr || 'No assistant text returned';
     const result: AnalysisResult = success
         ? {
             response: analysisText, modelUsed, executionTimeMs, success: true,
@@ -129,7 +117,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
-        ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro')),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
@@ -137,13 +125,14 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
         '-e', 'PROPR_EPHEMERAL_STATE=1',
-        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars,
+        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars, ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
     appendOpenCodeDataMount(dockerArgs, dataMount);
 
     if (modelName) {
-        const cleanModelName = toOpenCodeExternalModelId(modelName);
+        // A saved selection of a retired free model runs on its current successor.
+        const cleanModelName = toOpenCodeExternalModelId(currentOpenCodeModel(modelName));
         dockerArgs.push('--model', cleanModelName);
         logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: config.alias }, 'Model specified for OpenCode agent');
     }
@@ -212,24 +201,17 @@ function buildEnvVars(config: AgentConfig): string[] {
  * containing newlines/NUL.
  */
 export function shouldForwardEnvVar(key: string, value: string): boolean {
-    if (!ENV_NAME_PATTERN.test(key)) {
-        logger.warn({ envVar: key }, 'Skipping OpenCode env var with invalid name');
-        return false;
-    }
-    if (BLOCKED_ENV_NAMES.has(key) || GITHUB_CREDENTIAL_NAME_PATTERN.test(key)) {
-        logger.warn({ envVar: key }, 'Skipping GitHub credential env var for OpenCode container');
-        return false;
-    }
-    if (RESERVED_ENV_NAMES.has(key)) {
-        logger.warn({ envVar: key }, 'Skipping OpenCode env var managed by ProPR');
-        return false;
-    }
-    if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {
-        logger.warn({ envVar: key }, 'Skipping OpenCode env var with unsupported multiline or NUL value');
-        return false;
-    }
-    return true;
+    const rejection = openCodeEnvVarRejection(key, value);
+    if (rejection) logger.warn({ envVar: key }, REJECTION_MESSAGES[rejection]);
+    return !rejection;
 }
+
+const REJECTION_MESSAGES = {
+    'invalid-name': 'Skipping OpenCode env var with invalid name',
+    'github-credential': 'Skipping GitHub credential env var for OpenCode container',
+    reserved: 'Skipping OpenCode env var managed by ProPR',
+    'unsafe-value': 'Skipping OpenCode env var with unsupported multiline or NUL value',
+} as const;
 
 function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
     const suffix = `-${shortTaskId}`;

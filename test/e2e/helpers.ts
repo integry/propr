@@ -4,15 +4,13 @@
 
 import { execSync } from "node:child_process";
 import { ApiClient } from "../../packages/cli/src/api/client.js";
+import type { ApiResponse, RequestOptions } from "../../packages/cli/src/api/types.js";
+import { abortableSleep, E2E_JOB_DEADLINE, PlanDeadlineError } from "./planGeneration.js";
 import { ConfigManager } from "../../packages/cli/src/config/ConfigManager.js";
 import { listTasks } from "../../packages/cli/src/api/tasks.js";
 import { getTaskStatus, type TaskStatus } from "../../packages/cli/src/api/implement.js";
 import { listLlmLogs } from "../../packages/cli/src/api/logs.js";
 import {
-  createPlan,
-  getPlan,
-  generatePlan,
-  finalizePlan,
   listPlanIssues,
   type PlanIssue,
 } from "../../packages/cli/src/api/plans.js";
@@ -21,8 +19,9 @@ import {
   type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
 import { findUnclaimedModelTask } from "./taskMatching.js";
-import { parseModelTaskTimeoutMs } from "./modelTaskTimeout.js";
+import { parseModelTaskTimeoutMs, MODEL_TASK_DISCOVERY_POLLS, MODEL_TASK_POLL_INTERVAL_MS } from "./modelTaskTimeout.js";
 import { isProviderUsageLimitFailure } from "./providerUsageLimit.js";
+import { isProviderAuthenticationFailure } from "./providerAuthentication.js";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -55,6 +54,58 @@ export const MISSING_ENV = !API_URL || !TOKEN || !REPO;
 export function createTestClient(): ApiClient {
   const configManager = new ConfigManager("/tmp/propr-e2e-config");
   return new ApiClient(configManager, { baseUrl: API_URL!, token: TOKEN! });
+}
+
+// Scoped clients keep implementation requests and polling under the same job
+// deadline. Cleanup uses the original client and retains its independent budget.
+const workSignals = new WeakMap<ApiClient, AbortSignal>();
+
+export async function withE2EWork<T>(
+  client: ApiClient,
+  parentSignal: AbortSignal,
+  work: (client: ApiClient, sleep: (ms: number) => Promise<void>) => Promise<T>,
+  deadline = E2E_JOB_DEADLINE,
+): Promise<T> {
+  const operation = new AbortController();
+  const signal = AbortSignal.any([parentSignal, operation.signal]);
+  const checkpoint = () => {
+    signal.throwIfAborted();
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw new PlanDeadlineError("E2E implementation reached its job deadline.");
+    }
+  };
+  checkpoint();
+  const timer = deadline === undefined ? undefined : setTimeout(
+    () => operation.abort(new PlanDeadlineError("E2E implementation reached its job deadline.")),
+    Math.min(Math.max(0, deadline - Date.now()), 2 ** 31 - 1),
+  );
+  timer?.unref();
+  const scoped = Object.create(client) as ApiClient;
+  scoped.request = async <R>(endpoint: string, options: RequestOptions = {}): Promise<ApiResponse<R>> => {
+    checkpoint();
+    const requestSignal = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
+    requestSignal.throwIfAborted();
+    const response = await client.request<R>(endpoint, {
+      ...options, signal: requestSignal,
+      timeout: Math.max(1, Math.min(options.timeout ?? 30_000, deadline === undefined ? Infinity : deadline - Date.now())),
+    });
+    checkpoint();
+    return response;
+  };
+  workSignals.set(scoped, signal);
+  try {
+    const result = await work(scoped, async ms => {
+      checkpoint();
+      await abortableSleep(ms, signal);
+      checkpoint();
+    });
+    checkpoint();
+    return result;
+  } finally {
+    clearTimeout(timer);
+    // No detached continuation may keep using this scope's mutation authority.
+    operation.abort();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +162,8 @@ export function newModelResult(
 // Utilities
 // ---------------------------------------------------------------------------
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return abortableSleep(ms, signal);
 }
 
 export interface AgentModelPair {
@@ -124,54 +175,11 @@ export interface AgentModelPair {
 // Plan helpers
 // ---------------------------------------------------------------------------
 
-export async function createAndGeneratePlan(
-  repo: string,
-  prompt: string,
-  client: ApiClient,
-  createdPlanIds: string[],
-): Promise<{ planId: string; issues: PlanIssue[] }> {
-  const plan = await createPlan(repo, prompt, {}, client);
-  createdPlanIds.push(plan.draft_id);
-
-  await generatePlan(plan.draft_id, {}, client);
-
-  const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
-  let lastStatus = "draft";
-  let sawGenerating = false;
-
-  for (let i = 0; i < 120; i++) {
-    await sleep(5000);
-    const current = await getPlan(plan.draft_id, client);
-    if (current.status !== lastStatus) {
-      console.log(`    Plan ${plan.draft_id.substring(0, 8)}: ${lastStatus} -> ${current.status}`);
-      lastStatus = current.status;
-    }
-    if (current.status === "generating" || current.status === "refining") sawGenerating = true;
-    if (doneStatuses.has(current.status)) break;
-    if (current.status === "draft" && sawGenerating) break;
-  }
-
-  const currentPlan = await getPlan(plan.draft_id, client);
-  if (!sawGenerating || currentPlan.status === "failed") {
-    return { planId: plan.draft_id, issues: [] };
-  }
-  if (currentPlan.status !== "review") {
-    console.log(`    Plan ${plan.draft_id.substring(0, 8)} not ready to finalize: ${currentPlan.status}`);
-    return { planId: plan.draft_id, issues: [] };
-  }
-
-  await finalizePlan(plan.draft_id, client);
-  const finalizedPlan = await getPlan(plan.draft_id, client);
-  const expectedIssueCount = Array.isArray(finalizedPlan.plan_json) ? finalizedPlan.plan_json.length : 1;
-  const issues = await waitForPlanIssueCondition(
-    plan.draft_id,
-    client,
-    (currentIssues) => currentIssues.length >= Math.max(1, expectedIssueCount),
-    120_000,
-    3_000,
-  );
-  return { planId: plan.draft_id, issues };
-}
+export {
+  createAndGeneratePlan,
+  createPlanWithRetries,
+  isPlannerAuthenticationFailure,
+} from "./planGeneration.js";
 
 // ---------------------------------------------------------------------------
 // Task tracking helpers
@@ -181,13 +189,13 @@ export async function waitForTasks(
   results: ModelTestResult[],
   repo: string,
   client: ApiClient,
-  timeoutPolls = 60,
+  timeoutPolls = MODEL_TASK_DISCOVERY_POLLS,
 ): Promise<void> {
   if (results.length === 0) return;
 
   const claimedTaskIds = new Set(results.map((result) => result.taskId).filter(Boolean) as string[]);
   for (let poll = 0; poll < timeoutPolls; poll++) {
-    await sleep(10_000);
+    await sleep(MODEL_TASK_POLL_INTERVAL_MS, workSignals.get(client));
     const taskList = await listTasks({ repository: repo, limit: 1000 }, client);
 
     let allFound = true;
@@ -231,7 +239,7 @@ export async function pollTasksToCompletion(
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    await sleep(10_000);
+    await sleep(MODEL_TASK_POLL_INTERVAL_MS, workSignals.get(client));
     pollCount++;
 
     for (const r of withTasks) {
@@ -291,8 +299,9 @@ function describeModelTask(result: ModelTestResult): string {
 
 /**
  * Requires every model task to complete. Tasks that failed only because the
- * provider account ran out of credits are reported but tolerated, as long as
- * at least one model completed so the run still validated a live model.
+ * provider account ran out of credits or explicitly rejected an invalidated
+ * OAuth token are reported but tolerated, as long as at least one model
+ * completed so the run still validated a live model.
  */
 export function assertModelTasksSucceeded(results: ModelTestResult[]): void {
   const unsuccessful = results.filter((result) => result.finalState !== "completed");
@@ -300,12 +309,22 @@ export function assertModelTasksSucceeded(results: ModelTestResult[]): void {
 
   const usageLimited = unsuccessful.filter((result) =>
     isProviderUsageLimitFailure(result.finalState, result.failureReason));
-  const unexpected = unsuccessful.filter((result) => !usageLimited.includes(result));
+  const authenticationFailed = unsuccessful.filter((result) =>
+    isProviderAuthenticationFailure(result.finalState, result.failureReason));
+  const unexpected = unsuccessful.filter((result) =>
+    !usageLimited.includes(result) && !authenticationFailed.includes(result));
 
-  if (unexpected.length === 0 && usageLimited.length < results.length) {
-    console.log(
-      `    WARNING: ${usageLimited.length}/${results.length} model task(s) hit provider usage limits: ${usageLimited.map(describeModelTask).join("; ")}`,
-    );
+  if (unexpected.length === 0 && results.some((result) => result.finalState === "completed")) {
+    if (usageLimited.length > 0) {
+      console.log(
+        `    WARNING: ${usageLimited.length}/${results.length} model task(s) hit provider usage limits: ${usageLimited.map(describeModelTask).join("; ")}`,
+      );
+    }
+    if (authenticationFailed.length > 0) {
+      console.log(
+        `    WARNING: ${authenticationFailed.length}/${results.length} model task(s) hit provider authentication failures; reauthenticate the affected provider account: ${authenticationFailed.map(describeModelTask).join("; ")}`,
+      );
+    }
     return;
   }
 
@@ -392,7 +411,7 @@ export async function waitForPlanIssueCondition(
     if (condition(issues)) {
       return issues;
     }
-    await sleep(pollIntervalMs);
+    await sleep(pollIntervalMs, workSignals.get(client));
   }
 
   // Return final state even if condition wasn't met

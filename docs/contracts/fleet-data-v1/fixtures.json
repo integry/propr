@@ -1,0 +1,41 @@
+{
+  "contractPin": "419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655",
+  "testSecret": "PUBLIC-FIXTURE-KEY-NOT-A-PRODUCTION-SECRET",
+  "requests": [
+    {
+      "action": "database.export",
+      "canonical": "{\"assertion\":{\"action\":\"database.export\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"0969ef2bb79237eb61bf5f971f2227e1089a5019785d8e62094f7eebe25466e2\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"ba1bd6e878c98ddad0f657a4a74b3318f4fd8ab71f6caee05e37f4657ccbee65\",\"request\":{\"action\":\"database.export\"}}",
+      "sha256": "2777e8834fbb1e9beae31e47ed24cf7ba54d3621e615f967a684245a617c0ac5"
+    },
+    {
+      "action": "repositories.list",
+      "canonical": "{\"assertion\":{\"action\":\"repositories.list\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000002\",\"operationId\":\"00000000-0000-4000-8000-000000000002\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"75fa2e29faeebda923188a8814b5bbcc03b4f0f212dbaddfbfe22a52b1d5b8a2\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"042198197561eec90c20c47bee960f842635217abc6e0d5b9ac18688cae2d68e\",\"request\":{\"action\":\"repositories.list\"}}",
+      "sha256": "18fa9a240cbd96aea5f184d9e9ce53210d12bbf95faba6dcc86e2b55ea6622a5"
+    },
+    {
+      "action": "repositories.cleanup.preview",
+      "canonical": "{\"assertion\":{\"action\":\"repositories.cleanup.preview\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000003\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"f6b619511b46ccbe61244a6c6227bc76a0479f55eafaa124cb27d599806c38f6\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"cbe7ec36445c82596f735956dec7194936ed7f55cfa0855b2b6aef85a659e76f\",\"request\":{\"action\":\"repositories.cleanup.preview\"}}",
+      "sha256": "ad6f328d409c232d1e8fb4b35a500361888e17f31de38ef8e73cbaae994aad28"
+    },
+    {
+      "action": "repositories.cleanup.execute",
+      "canonical": "{\"assertion\":{\"action\":\"repositories.cleanup.execute\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000004\",\"operationId\":\"00000000-0000-4000-8000-000000000004\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"04519fa65e258ee023ec0fe037ef95460e7d155977010fd2b145a9880dd2c72a\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"dde66143b3127142dd6cab3ac912f1a44f9b304e2c7d6e1a7e1cccee35f52ae6\",\"request\":{\"action\":\"repositories.cleanup.execute\",\"confirmation\":\"00000000-0000-4000-8000-000000000020\",\"previewOperationId\":\"00000000-0000-4000-8000-000000000003\"}}",
+      "sha256": "c5e91fa5dd8131c3f9d3d75b7f3f2aff1dd1738c57b68988248c68a6a9dcebef"
+    },
+    {
+      "action": "operation.status",
+      "canonical": "{\"assertion\":{\"action\":\"operation.status\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000005\",\"operationId\":\"00000000-0000-4000-8000-000000000005\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"70316caee6011581d81bd13f44d7619a8e6da0aa87d1202f10a95109c4e1401a\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"416ea6933e0f6b12c51d32febe9cd546902fe916c0deaab5f7ac647e72a563f8\",\"request\":{\"action\":\"operation.status\",\"targetOperationId\":\"00000000-0000-4000-8000-000000000001\"}}",
+      "sha256": "61ccef97916b8e8194957c6ffd94201f44b00fecee5183b036a83a70a2ff5fe8"
+    },
+    {
+      "action": "operation.cancel",
+      "canonical": "{\"assertion\":{\"action\":\"operation.cancel\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000006\",\"operationId\":\"00000000-0000-4000-8000-000000000006\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"942e233e9793369c2296679529661d08e33d1407bf2c2307e346ae03cb5f46a1\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"7045e179338d0b3a011c64118448da8006a9d4e9ec88fbb9a40e0ccfad444975\",\"request\":{\"action\":\"operation.cancel\",\"targetOperationId\":\"00000000-0000-4000-8000-000000000001\"}}",
+      "sha256": "bf5ed229653ca7c37af30ce92b19111c6add6257b6b598443c67585c7e08f858"
+    },
+    {
+      "action": "artifact.stream",
+      "canonical": "{\"assertion\":{\"action\":\"artifact.stream\",\"contract\":\"propr.fleet-data.v1\",\"contractPin\":\"419b435424c9273bb2b39097277595e323f160a30ed3fb48cbe066e9b5d7c655\",\"expiresAt\":1791892860,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000007\",\"operationId\":\"00000000-0000-4000-8000-000000000007\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1cf38ce5d19fe3bb524230eb18c2245d874c4ddcbe20975b12849f86e6e74549\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"0cf2173b3c5d5ed449d42a834108bf7b58542cbc96e0b1a98d489319b0335b5b\",\"request\":{\"action\":\"artifact.stream\",\"targetOperationId\":\"00000000-0000-4000-8000-000000000001\"}}",
+      "sha256": "2955cfdaeb7ec1c3380e8222dbe213ab7ec54cad40dc62c97fccd5c72da92e79"
+    }
+  ]
+}

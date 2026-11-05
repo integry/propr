@@ -183,7 +183,7 @@ export interface RepoChatPanelProps {
   disabled?: boolean;
   /** Repository name to display in empty state */
   repositoryName?: string;
-  /** Default model to use (agent:model format, e.g., 'claude:claude-haiku-4-5-20251001') */
+  /** Default model to use (agent:model format, e.g., 'claude:claude-haiku-5-5') */
   defaultModel?: string;
   /** Default context level */
   defaultContextLevel?: number;

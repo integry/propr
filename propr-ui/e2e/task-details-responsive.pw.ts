@@ -1,4 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
 const taskId = 'task-responsive-2252';
 const startedAt = Date.parse('2026-09-09T20:00:00.000Z');
@@ -45,7 +47,7 @@ const events = Array.from({ length: 28 }, (_, index) => {
       type: 'thought',
       timestamp,
       content: index === 26
-        ? `## Summary of Changes\n\nAnalysis summary final marker.\n\n${'The completed analysis remains reachable inside its intended pane. '.repeat(40)}`
+        ? `## Summary of Changes\n\nImplementation summary final marker.\n\n${'The implementation summary remains reachable inside its intended pane. '.repeat(40)}`
         : index === 27
           ? 'Implementation log final marker. The narrow workspace still exposes the final implementation reasoning.'
           : `Analysis entry ${index + 1}. ${'Measured responsive behavior remains readable. '.repeat(4)}`,
@@ -88,11 +90,20 @@ const analysis = JSON.stringify({
   error_analysis: 'No section should be clipped by an ancestor with hidden overflow.',
 });
 
-async function stubTaskDetailsApis(page: Page): Promise<void> {
+async function stubTaskDetailsApis(page: Page, selectedIndex = 0, runCount = 50): Promise<void> {
   await page.route('**/api/**', async route => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === '/api/auth/demo-mode') {
       await route.fulfill({ json: { demoMode: true } });
+      return;
+    }
+    if (pathname === '/api/tasks') {
+      await route.fulfill({ json: { tasks: Array.from({ length: runCount }, (_, index) => ({
+        id: index === selectedIndex ? taskId : `responsive-run-${index}`,
+        repository: 'integry/propr-responsive-workspace-fixture', repositoryOwner: 'integry', repositoryName: 'propr-responsive-workspace-fixture',
+        issueNumber: 2252, title: `Followup: Responsive run ${index + 1}`, status: 'completed',
+        createdAt: new Date(startedAt + index * 3600000).toISOString(),
+      })), total: 1 } });
       return;
     }
     if (pathname === `/api/task/${taskId}/history`) {
@@ -100,7 +111,7 @@ async function stubTaskDetailsApis(page: Page): Promise<void> {
         json: {
           history,
           taskInfo: {
-            title: 'Desktop task details with long timeline, analysis, and raw execution output',
+            title: 'Desktop task details with long timeline and raw execution output',
             subtitle: 'Responsive geometry fixture',
             type: 'issue',
             number: 2252,
@@ -128,6 +139,11 @@ async function stubTaskDetailsApis(page: Page): Promise<void> {
     }
     if (pathname === '/api/notifications/preferences') {
       await route.fulfill({ json: { preferences: {}, quietHours: {}, badgeEnabled: false } });
+      return;
+    }
+    // The task's PR is still open, so its follow-ups are offered.
+    if (pathname === '/api/pull-requests/2253/scores') {
+      await route.fulfill({ json: { repository: 'integry/propr-responsive-workspace-fixture', pr_number: 2253, outcome: null, merged_at: null, closed_at: null, scores: [] } });
       return;
     }
     await route.fulfill({
@@ -167,39 +183,50 @@ for (const viewport of [
   test(`keeps long TaskDetails sections reachable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await stubTaskDetailsApis(page);
+    const analysisRequests: string[] = [];
+    page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/analysis')) analysisRequests.push(request.url()); });
     await page.goto(`/tasks/${taskId}`);
 
     const taskDetails = page.getByTestId('task-details');
     const workspace = page.getByTestId('task-workspace-scroll');
     const timeline = page.getByTestId('task-timeline-scroll');
     const output = page.getByTestId('task-output-scroll');
-    const analysisSection = page.getByTestId('task-analysis');
+    const summarySection = page.getByTestId('task-summary');
     await expect(taskDetails).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Follow Up' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Prompt' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Logs' })).toBeVisible();
-
-    if (viewport.width < 1024) {
-      const metrics = await scrollRegionMetrics(workspace);
-      expect(metrics.overflowY).toBe('auto');
-      expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
-      await expectReachableWithin(page.getByText('Timeline final checkpoint'), workspace);
-      await expectReachableWithin(analysisSection.getByText(/Analysis summary final marker/), workspace);
-      await expectReachableWithin(output.getByText(/Implementation log final marker/), workspace);
-      await expect(workspace.getByText('IMPLEMENTATION', { exact: true })).toBeVisible();
-    } else {
-      const timelineMetrics = await scrollRegionMetrics(timeline);
-      const outputMetrics = await scrollRegionMetrics(output);
-      expect(timelineMetrics.overflowY).toBe('auto');
-      expect(timelineMetrics.scrollHeight).toBeGreaterThan(timelineMetrics.clientHeight);
-      expect(outputMetrics.overflowY).toBe('auto');
-      expect(outputMetrics.scrollHeight).toBeGreaterThan(outputMetrics.clientHeight);
-      await expectReachableWithin(page.getByText('Timeline final checkpoint'), timeline);
-      await expectReachableWithin(analysisSection.getByText(/Analysis summary final marker/), output);
-      await expectReachableWithin(output.getByText(/Implementation log final marker/), output);
+    await expect(page.getByTestId('task-analysis')).toHaveCount(0);
+    await expect(page.getByText('Implementation Review Details')).toHaveCount(0);
+    await expect(page.locator('[title^="Score:"]')).toHaveCount(0);
+    expect(analysisRequests).toEqual([]);
+    await expect(page.getByTestId('run-timeline-run')).toHaveCount(50);
+    expect(await workspace.evaluate(node => node.scrollTop)).toBe(0);
+    const selectedHeader = page.locator('button[aria-current="true"]');
+    const heading = workspace.getByTestId('timeline-run-count').locator('..');
+    expect((await selectedHeader.boundingBox())!.y).toBeGreaterThanOrEqual((await heading.boundingBox())!.y + (await heading.boundingBox())!.height);
+    if (process.env.PROPR_CAPTURE_PREVIEWS && viewport.width === 1280) {
+      const directory = path.resolve('../.propr/previews');
+      await mkdir(directory, { recursive: true });
+      await page.screenshot({ animations: 'disabled', path: path.join(directory, 'task-details-without-analysis.png') });
     }
+    // Scoped to the panel: the sidebar owns a 'Logs' navigation group button at
+    // these widths, so an unscoped role query is ambiguous.
+    await expect(taskDetails.getByRole('button', { name: 'Follow Up' })).toBeVisible();
+    await expect(taskDetails.getByRole('button', { name: 'Prompt' })).toBeVisible();
+    await expect(taskDetails.getByRole('button', { name: 'Logs' })).toBeVisible();
 
-    await expect(page.getByRole('button', { name: 'Follow Up' })).toBeVisible();
+    const metrics = await scrollRegionMetrics(workspace);
+    expect(metrics.overflowY).toBe('auto');
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    for (const section of [timeline, output]) {
+      const sectionMetrics = await scrollRegionMetrics(section);
+      expect(sectionMetrics.overflowY).not.toMatch(/auto|scroll/);
+      expect(sectionMetrics.scrollHeight).toBeLessThanOrEqual(sectionMetrics.clientHeight);
+    }
+    await expectReachableWithin(page.getByText('Timeline final checkpoint', { exact: true }).filter({ visible: true }), workspace);
+    await expectReachableWithin(summarySection.getByText(/Implementation summary final marker/), workspace);
+    await expectReachableWithin(output.getByText(/Implementation log final marker/), workspace);
+    await expect(workspace.getByText('EXECUTION TRACE', { exact: true })).toBeVisible();
+
+    await expect(taskDetails.getByRole('button', { name: 'Follow Up' })).toBeVisible();
 
     const executionSection = page.locator('#execution-event-log-section');
     const executionToggle = executionSection.getByRole('button');
@@ -228,3 +255,116 @@ for (const viewport of [
     expect(pageWidth.document).toBeLessThanOrEqual(pageWidth.viewport);
   });
 }
+
+for (const width of [390, 1280]) {
+  for (const selectedIndex of [0, 44, 49]) {
+    test(`initial selection preserves the overview for run ${selectedIndex + 1} visible at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 820 });
+      await stubTaskDetailsApis(page, selectedIndex);
+      await page.goto(`/tasks/${taskId}`);
+      await expect(page.getByTestId('run-timeline-run')).toHaveCount(50);
+      const owner = page.getByTestId(width < 640 ? 'task-details' : 'task-workspace-scroll');
+      expect(await owner.evaluate(node => node.scrollTop)).toBe(0);
+      if (width < 640) await expect(page.getByTestId('task-mobile-compact-bar')).not.toBeVisible();
+      if (process.env.PROPR_CAPTURE_PREVIEWS) {
+        await mkdir('../.propr/previews', { recursive: true });
+        await page.screenshot({ animations: 'disabled', path: `../.propr/previews/task-initial-run-${selectedIndex + 1}-${width}.png` });
+      }
+    });
+  }
+}
+
+for (const runCount of [2, 50]) {
+  test(`desktop keeps a ${runCount}-run timeline reachable beside a long trace`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 820 });
+    await stubTaskDetailsApis(page, 0, runCount);
+    await page.route(`**/api/task/${taskId}/live-details`, route => route.fulfill({ json: { events, todos: [], currentTask: null } }));
+    await page.route(`**/api/task/${taskId}/history`, route => route.fulfill({ json: {
+      history: history.slice(0, 1),
+      taskInfo: { title: 'Pinned timeline beside a long execution trace', type: 'issue', number: 2252,
+        issueNumber: 2252, repoOwner: 'integry', repoName: 'propr-responsive-workspace-fixture' },
+    } }));
+    await page.goto(`/tasks/${taskId}`);
+    const timeline = page.getByTestId('task-timeline-scroll');
+    const owner = page.getByTestId('task-workspace-scroll');
+    await expect(page.getByTestId('run-timeline-run')).toHaveCount(runCount);
+    await expect(timeline).toHaveCSS('position', runCount === 2 ? 'sticky' : 'static');
+    const result = page.getByTestId('task-result-pane');
+    await expect(result).toHaveCSS('border-left-style', 'solid');
+    expect(await result.evaluate(node => parseFloat(getComputedStyle(node).borderLeftWidth))).toBeGreaterThan(0);
+    expect((await result.boundingBox())!.height).toBeGreaterThanOrEqual((await timeline.boundingBox())!.height);
+    const height = (await timeline.boundingBox())!.height;
+    const port = (await owner.boundingBox())!;
+    expect(runCount === 2 ? height < port.height : height > port.height).toBe(true);
+    if (runCount === 2) {
+      await owner.evaluate(node => { node.scrollTop = 500; });
+      await expect.poll(async () => Math.round((await timeline.boundingBox())!.y)).toBe(Math.round(port.y));
+    } else {
+      await page.getByTestId('run-timeline-run').last().scrollIntoViewIfNeeded();
+    }
+    await expect(page.getByTestId('run-timeline-run').last().getByRole('button').first()).toBeInViewport();
+    expect(await timeline.evaluate(node => getComputedStyle(node).overflowY)).not.toMatch(/auto|scroll/);
+    if (process.env.PROPR_CAPTURE_PREVIEWS && runCount === 2) {
+      await mkdir('../.propr/previews', { recursive: true });
+      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/task-sticky-timeline-desktop.png' });
+    }
+    await page.getByTestId('run-timeline-run').first().scrollIntoViewIfNeeded();
+    await expect(page.getByTestId('run-timeline-run').first().getByRole('button').first()).toBeInViewport();
+  });
+}
+
+for (const mode of ['embedded', 'desktop', 'phone'] as const) {
+  test(`${mode} run navigation reveals run 45 after the details scroller remounts`, async ({ page }) => {
+    await page.setViewportSize({ width: mode === 'phone' ? 390 : 1584, height: 820 });
+    await stubTaskDetailsApis(page, 49);
+    await page.route('**/api/task/responsive-run-*/history', route => route.fulfill({ json: {
+      history, taskInfo: { title: 'Selected historical run', type: 'issue', number: 2252,
+        repoOwner: 'integry', repoName: 'propr-responsive-workspace-fixture' },
+    } }));
+    await page.goto(mode === 'embedded' ? `/tasks?task=${taskId}` : `/tasks/${taskId}`);
+    const pane = mode === 'embedded' ? page.getByTestId('task-split-details') : page;
+    await expect(pane.getByTestId('run-timeline-run')).toHaveCount(50);
+    const owner = pane.getByTestId(mode === 'phone' ? 'task-details' : 'task-workspace-scroll');
+    expect(await owner.evaluate(node => node.scrollTop)).toBe(0);
+    for (const index of [44, 43]) {
+      await pane.getByTestId('run-timeline-run').nth(index).getByRole('button').first().click();
+      const selected = pane.locator('[aria-current="true"]');
+      await expect(selected).toContainText(`Run ${index + 1}`);
+      await expect.poll(async () => {
+        const header = await selected.boundingBox();
+        const viewport = await owner.boundingBox();
+        return !!header && !!viewport && header.y >= viewport.y && header.y + header.height <= viewport.y + viewport.height;
+      }).toBe(true);
+      expect(await owner.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+      if (process.env.PROPR_CAPTURE_PREVIEWS && index === 44 && mode === 'embedded') {
+        await mkdir('../.propr/previews', { recursive: true });
+        await page.screenshot({ animations: 'disabled', path: '../.propr/previews/embedded-run-45.png' });
+      }
+    }
+  });
+
+}
+
+test('phone compact steps distinguish hidden details from ordinary labels', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await stubTaskDetailsApis(page, 0, 2);
+  await page.route(`**/api/task/${taskId}/history`, route => route.fulfill({ json: {
+    history: [
+      { state: 'PENDING', timestamp: new Date(startedAt).toISOString() },
+      { state: 'FAILED', timestamp: new Date(startedAt + 60000).toISOString(), metadata: { terminalReason: 'timed_out' } },
+    ],
+    taskInfo: { title: 'Review task changes', type: 'issue', number: 2252,
+      repoOwner: 'integry', repoName: 'propr-responsive-workspace-fixture' },
+  } }));
+  await page.goto(`/tasks/${taskId}`);
+  const steps = page.getByRole('list', { name: 'Run steps' });
+  await expect(steps.getByLabel('Additional step details')).toHaveCount(1);
+  await expect(steps.getByLabel('Additional step details')).toBeVisible();
+  await expect(steps.getByTestId('task-terminal-reason')).toBeHidden();
+  await steps.getByRole('button').filter({ has: page.getByLabel('Additional step details') }).click();
+  await expect(steps.getByTestId('task-terminal-reason')).toBeVisible();
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/compact-step-details.png' });
+  }
+});

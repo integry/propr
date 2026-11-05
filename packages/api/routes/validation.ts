@@ -242,7 +242,7 @@ export function validateRepositoryFilter(repository: unknown): ValidationResult 
  * Validates a log type parameter for execution routes.
  */
 export function validateLogType(type: unknown): ValidationResult {
-  const validTypes = ['stdout', 'stderr', 'conversation', 'full'];
+  const validTypes = ['stdout', 'stderr', 'conversation', 'full', 'output'];
 
   if (!type || typeof type !== 'string') {
     return { valid: false, error: 'Log type is required' };

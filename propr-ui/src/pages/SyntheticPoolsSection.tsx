@@ -1,3 +1,4 @@
+import { formatModelName } from '../utils/modelDisplay';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Github, Layers3, Plus, Trash2, X } from 'lucide-react';
 import {
@@ -219,7 +220,7 @@ const PoolEditor: React.FC<EditorProps> = ({
                 </label>
                 <Toggle label="Enabled" checked={model.enabled} disabled={readOnly} onChange={enabled => updateModel(modelIndex, current => ({ ...current, enabled }))} />
                 <Toggle label="Default" checked={draft.defaultModel === model.id} disabled={readOnly || !model.enabled} onChange={() => setDraft({ ...draft, defaultModel: model.id })} />
-                <button type="button" disabled={readOnly || draft.models.length === 1} onClick={() => setDraft(current => ({ ...current, models: current.models.filter((_, index) => index !== modelIndex) }))} className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30" aria-label={`Delete virtual model ${model.id}`}><Trash2 className="h-4 w-4" /></button>
+                <button type="button" disabled={readOnly || draft.models.length === 1} onClick={() => setDraft(current => ({ ...current, models: current.models.filter((_, index) => index !== modelIndex) }))} className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30" aria-label={`Delete virtual model ${model.displayName || formatModelName(model.id)}`}><Trash2 className="h-4 w-4" /></button>
                 <div className="basis-full">
                   <GitHubLabel agentAlias={draft.alias} modelId={model.id} />
                 </div>
@@ -239,8 +240,8 @@ const PoolEditor: React.FC<EditorProps> = ({
                             members: current.members.map((item, index) => index === memberIndex ? { ...item, directAgentAlias, model: physicalModel } : item),
                           }));
                         }} className={`${inputClass} mt-1`}>
-                          {!physicalOptions.some(option => option.value === selected) && <option value={selected}>{member.directAgentAlias}:{member.model}</option>}
-                          {physicalOptions.map(option => <option key={option.value} value={option.value}>{option.agent.alias} · {option.model}{option.agent.enabled ? '' : ' (agent disabled)'}</option>)}
+                          {!physicalOptions.some(option => option.value === selected) && <option value={selected}>{member.directAgentAlias} · {formatModelName(member.model)}</option>}
+                          {physicalOptions.map(option => <option key={option.value} value={option.value}>{option.agent.alias} · {formatModelName(option.model)}{option.agent.enabled ? '' : ' (agent disabled)'}</option>)}
                         </select>
                         <FieldError message={pathError(`models.${modelIndex}.members.${memberIndex}`) ?? pathError(`models.${modelIndex}.members.${memberIndex}.directAgentAlias`) ?? pathError(`models.${modelIndex}.members.${memberIndex}.model`)} />
                       </label>
@@ -260,7 +261,7 @@ const PoolEditor: React.FC<EditorProps> = ({
                         <FieldError message={pathError(`models.${modelIndex}.members.${memberIndex}.usageLimits.weeklyMaxPercent`)} />
                       </label>
                       <Toggle label="Enabled" checked={member.enabled} disabled={readOnly} onChange={enabled => updateModel(modelIndex, current => ({ ...current, members: current.members.map((item, index) => index === memberIndex ? { ...item, enabled } : item) }))} />
-                      <button type="button" disabled={readOnly || model.members.length === 1} onClick={() => updateModel(modelIndex, current => ({ ...current, members: current.members.filter((_, index) => index !== memberIndex) }))} className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30" aria-label={`Delete member ${member.directAgentAlias} ${member.model}`}><Trash2 className="h-4 w-4" /></button>
+                      <button type="button" disabled={readOnly || model.members.length === 1} onClick={() => updateModel(modelIndex, current => ({ ...current, members: current.members.filter((_, index) => index !== memberIndex) }))} className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30" aria-label={`Delete member ${member.directAgentAlias} ${formatModelName(member.model)}`}><Trash2 className="h-4 w-4" /></button>
                     </div>
                   );
                 })}
@@ -341,7 +342,7 @@ const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
                   <span className="rounded-md bg-slate-100 p-1.5"><Layers3 className="h-4 w-4 text-slate-600" /></span>
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-semibold text-slate-900">{pool.alias}</span>
-                    <span className="block text-xs text-slate-500">{pool.models.length} virtual model{pool.models.length === 1 ? '' : 's'} · default {pool.defaultModel}</span>
+                    <span className="block text-xs text-slate-500">{pool.models.length} virtual model{pool.models.length === 1 ? '' : 's'} · default {pool.models.find(model => model.id === pool.defaultModel)?.displayName || formatModelName(pool.defaultModel || '')}</span>
                   </span>
                 </button>
                 <div className="flex items-center gap-2">
@@ -352,7 +353,7 @@ const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
               <div className="ml-9 mt-2 flex flex-wrap gap-1.5">
                 {pool.models.map(model => (
                   <span key={model.id} className={`inline-flex flex-wrap items-center gap-1 rounded-md border px-2 py-1 text-[10px] ${model.enabled ? 'border-slate-200 bg-white text-slate-600' : 'border-slate-100 bg-slate-50 text-slate-400'}`}>
-                    <span>{model.displayName || model.id} · {model.strategy === 'round_robin' ? 'Round robin' : 'Usage based'} · {model.members.length} members</span>
+                    <span>{model.displayName || formatModelName(model.id)} · {model.strategy === 'round_robin' ? 'Round robin' : 'Usage based'} · {model.members.length} members</span>
                     <GitHubLabel agentAlias={pool.alias} modelId={model.id} className={model.enabled ? '' : 'opacity-60'} />
                   </span>
                 ))}

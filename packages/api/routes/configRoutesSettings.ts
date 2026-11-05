@@ -1,6 +1,7 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { AGENT_NETWORK_SETTING_NAMES, AGENT_WATCHDOG_SETTING_NAMES } from './configSettings.js';
 import type { Knex } from 'knex';
 import {
   REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
@@ -8,6 +9,7 @@ import {
   REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
   isValidLegacyReviewMaxContextTokens,
   isValidReviewContextBudgetPercent,
+  MAX_PROVIDER_REPLACEMENTS_LIMIT,
   normalizeLegacyReviewMaxContextTokens,
   normalizeReviewContextBudgetPercent,
 } from '@propr/shared';
@@ -24,6 +26,51 @@ export function reviewContextBudgetSettingsResponse(settings: Record<string, unk
   return {
     pr_review_max_context_tokens: normalizeLegacyReviewMaxContextTokens(settings.pr_review_max_context_tokens),
     pr_review_context_budget_percent: normalizeReviewContextBudgetPercent(settings.pr_review_context_budget_percent),
+  };
+}
+
+/** Unreadable or non-boolean stored values read as disabled. */
+export async function followupRequiresAssignmentResponse(configStore: typeof configManager): Promise<boolean> {
+  return configManager.parseBooleanSetting(await configStore.getConfig<unknown>(configManager.FOLLOWUP_REQUIRES_ASSIGNMENT_CONFIG_KEY, false)) ?? false;
+}
+
+/**
+ * Watchdog thresholds: the stored override (null when the environment default
+ * applies), the environment default and the value in force for the next run.
+ */
+export async function agentWatchdogSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  const stored = Object.fromEntries(await Promise.all(AGENT_WATCHDOG_SETTING_NAMES.map(async name => [name, await configStore.getConfig<unknown>(name, null)] as const)));
+  const effective = configManager.resolveAgentWatchdogSettings(stored);
+  const defaults = Object.fromEntries(configManager.AGENT_WATCHDOG_SETTING_DEFINITIONS.map(definition => [definition.key, configManager.resolveAgentWatchdogEnvDefault(definition)]));
+  return {
+    ...Object.fromEntries(AGENT_WATCHDOG_SETTING_NAMES.map(name => [name, stored[name] ?? null])),
+    agent_watchdog_defaults: defaults,
+    agent_watchdog_effective: {
+      agent_stall_timeout_ms: effective.stallTimeoutMs,
+      agent_tool_stall_timeout_ms: effective.toolStallTimeoutMs,
+      agent_degenerate_output_limit: effective.degenerateOutputLimit,
+    },
+  };
+}
+
+/**
+ * Agent network policy: the stored override (null when the environment default
+ * applies), the environment default and the policy in force for the next run.
+ */
+export async function agentNetworkSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  const stored = Object.fromEntries(await Promise.all(AGENT_NETWORK_SETTING_NAMES.map(async name => [name, await configStore.getConfig<unknown>(name, null)] as const)));
+  const effective = configManager.resolveInstanceNetworkPolicy(stored);
+  const defaults = configManager.resolveInstanceNetworkPolicyEnvDefault();
+  return {
+    ...Object.fromEntries(AGENT_NETWORK_SETTING_NAMES.map(name => [name, stored[name] ?? null])),
+    agent_network_defaults: {
+      agent_network_mode: defaults.mode, agent_network_mode_enforced: defaults.enforced, agent_network_allow: defaults.allow,
+      agent_network_ignore_repository_allow: defaults.ignoreRepositoryAllow,
+    },
+    agent_network_effective: {
+      agent_network_mode: effective.mode, agent_network_mode_enforced: effective.enforced, agent_network_allow: effective.allow,
+      agent_network_ignore_repository_allow: effective.ignoreRepositoryAllow,
+    },
   };
 }
 
@@ -159,6 +206,12 @@ function isPlainSettingsObject(value: unknown): value is Record<string, unknown>
 }
 
 async function normalizePrReviewContextSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if ('max_provider_replacements' in settings) {
+    const value = settings.max_provider_replacements;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_PROVIDER_REPLACEMENTS_LIMIT) {
+      throw new ConfigRouteError(400, { error: `max_provider_replacements must be an integer from 0 to ${MAX_PROVIDER_REPLACEMENTS_LIMIT}` });
+    }
+  }
   if ('pr_review_context_enabled' in settings && typeof settings.pr_review_context_enabled !== 'boolean') {
     throw new ConfigRouteError(400, { error: 'pr_review_context_enabled must be a boolean' });
   }
@@ -204,22 +257,56 @@ async function saveNormalizedSettingsWithRollback({
   const {
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
+    dashboard_summary_enabled,
+    followup_requires_assignment,
+    usage_tips_enabled,
     model_reasoning_level,
     pr_review_model,
+    ultrafix_escalation_enabled,
+    ultrafix_escalation_models,
+    ultrafix_escalation_patience,
+    ultrafix_escalation_max_reasoning_levels,
     ultrafix_rating_goal,
     ultrafix_max_cycles,
     ultrafix_pause_seconds,
+    default_max_cost_usd,
+    agent_run_usage_pause_percent,
+    ultrafix_ci_wait_timeout_ms,
+    agent_stall_timeout_ms,
+    agent_tool_stall_timeout_ms,
+    agent_degenerate_output_limit,
+    agent_network_mode,
+    agent_network_mode_enforced,
+    agent_network_allow,
+    agent_network_ignore_repository_allow,
     ...otherSettings
   } = settings;
 
   const extracted = await extractSettingSaves({
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
+    dashboard_summary_enabled,
+    followup_requires_assignment,
+    usage_tips_enabled,
     model_reasoning_level,
     pr_review_model,
+    ultrafix_escalation_enabled,
+    ultrafix_escalation_models,
+    ultrafix_escalation_patience,
+    ultrafix_escalation_max_reasoning_levels,
     ultrafix_rating_goal,
     ultrafix_max_cycles,
-    ultrafix_pause_seconds
+    ultrafix_pause_seconds,
+    default_max_cost_usd,
+    agent_run_usage_pause_percent,
+    ultrafix_ci_wait_timeout_ms,
+    agent_stall_timeout_ms,
+    agent_tool_stall_timeout_ms,
+    agent_degenerate_output_limit,
+    agent_network_mode,
+    agent_network_mode_enforced,
+    agent_network_allow,
+    agent_network_ignore_repository_allow
   });
 
   if (extracted.error) {

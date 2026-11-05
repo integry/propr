@@ -75,9 +75,6 @@ function extractTextFromContentBlocks(content: unknown): string | null {
 /** Maximum length for tool result content to prevent huge payloads */
 const MAX_RESULT_LENGTH = 2000;
 
-/** Maximum number of events to include in WebSocket payloads */
-const MAX_EVENTS_FOR_SOCKET = 100;
-
 /** Codex event item structure */
 interface CodexEventItem {
   id?: string;
@@ -181,7 +178,7 @@ export interface ParsedConversation {
   todos: TodoItem[];
   currentTask: string | null;
   tokenUsage: TokenUsageInfo | null;
-  /** Total event count before any limiting - used for incremental updates */
+  /** Number of events in the conversation; readers send the ones past their last count. */
   totalEventCount: number;
 }
 
@@ -389,12 +386,9 @@ function parseCodexConversation(lines: string[]): ParsedConversation {
   const currentTask = inProgressTask ? inProgressTask.content : null;
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
   const totalEventCount = events.length;
-  const limitedEvents = events.length > MAX_EVENTS_FOR_SOCKET
-    ? events.slice(-MAX_EVENTS_FOR_SOCKET)
-    : events;
 
   return {
-    events: limitedEvents,
+    events,
     todos,
     currentTask,
     tokenUsage: hasTokens ? tokenUsage : null,
@@ -458,17 +452,11 @@ export async function parseConversationFile(conversationPath: string): Promise<P
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
     tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
 
-  // Track total event count before limiting (for incremental update tracking)
   const totalEventCount = events.length;
 
-  // Limit events to most recent to prevent huge WebSocket payloads
-  // Keep only the last MAX_EVENTS_FOR_SOCKET events for real-time updates
-  const limitedEvents = events.length > MAX_EVENTS_FOR_SOCKET
-    ? events.slice(-MAX_EVENTS_FOR_SOCKET)
-    : events;
 
   return {
-    events: limitedEvents,
+    events,
     todos,
     currentTask,
     tokenUsage: hasTokens ? tokenUsage : null,

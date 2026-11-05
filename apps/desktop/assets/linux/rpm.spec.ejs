@@ -1,8 +1,8 @@
 %define _binary_payload w<%= compressionLevel %>.xzdio
 
-%if "%{_host_cpu}" != "%{_target_cpu}"
+# Native prebuilds are hash-pinned by the CLI. Even --strip-debug changes their
+# bytes and breaks local setup. Preserve them on native and cross builds alike.
 %global __strip /bin/true
-%endif
 
 Name: <%= name %>
 Version: <%= version %>

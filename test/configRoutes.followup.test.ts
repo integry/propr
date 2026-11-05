@@ -16,6 +16,22 @@ import {
 } from '../packages/api/routes/liveDetailsRoutes.ts';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
 
+/** No stored watchdog or network overrides: the environment defaults (unset here) apply. */
+const DEFAULT_WATCHDOG_SETTINGS_RESPONSE = {
+    agent_stall_timeout_ms: null,
+    agent_tool_stall_timeout_ms: null,
+    agent_degenerate_output_limit: null,
+    agent_watchdog_defaults: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
+    agent_watchdog_effective: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
+    // No stored network overrides: the default open policy applies.
+    agent_network_mode: null,
+    agent_network_mode_enforced: null,
+    agent_network_allow: null,
+    agent_network_ignore_repository_allow: null,
+    agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
+    agent_network_effective: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
+};
+
 after(async () => {
     await configManager.closeConnection();
 });
@@ -25,6 +41,8 @@ describe('config route follow-up helpers', () => {
     let currentAgents: Array<Record<string, unknown>>;
     let currentAutoFollowup = 4;
     let currentAutoResolveMergeConflicts = false;
+    let currentDashboardSummaryEnabled = true;
+    let currentFollowupRequiresAssignment = false;
     let currentPrReviewModel = '';
     let currentUltrafixRatingGoal = 7;
     let currentUltrafixMaxCycles = 5;
@@ -39,6 +57,8 @@ describe('config route follow-up helpers', () => {
                 let stagedAgents = structuredClone(currentAgents);
                 let stagedAutoFollowup = currentAutoFollowup;
                 let stagedAutoResolve = currentAutoResolveMergeConflicts;
+                let stagedDashboardSummary = currentDashboardSummaryEnabled;
+                let stagedFollowupRequiresAssignment = currentFollowupRequiresAssignment;
                 let stagedPrReviewModel = currentPrReviewModel;
                 let stagedUltrafixGoal = currentUltrafixRatingGoal;
                 let stagedUltrafixCycles = currentUltrafixMaxCycles;
@@ -55,6 +75,8 @@ describe('config route follow-up helpers', () => {
                                     else if (row.key === 'agents') stagedAgents = value as Array<Record<string, unknown>>;
                                     else if (row.key === 'auto_followup_score_threshold') stagedAutoFollowup = value as number;
                                     else if (row.key === 'auto_resolve_merge_conflicts') stagedAutoResolve = value as boolean;
+                                    else if (row.key === 'dashboard_summary_enabled') stagedDashboardSummary = value as boolean;
+                                    else if (row.key === 'followup_requires_assignment') stagedFollowupRequiresAssignment = value as boolean;
                                     else if (row.key === 'pr_review_model') stagedPrReviewModel = value as string;
                                     else if (row.key === 'ultrafix_rating_goal') stagedUltrafixGoal = value as number;
                                     else if (row.key === 'ultrafix_max_cycles') stagedUltrafixCycles = value as number;
@@ -69,6 +91,8 @@ describe('config route follow-up helpers', () => {
                             currentAgents = stagedAgents;
                             currentAutoFollowup = stagedAutoFollowup;
                             currentAutoResolveMergeConflicts = stagedAutoResolve;
+                            currentDashboardSummaryEnabled = stagedDashboardSummary;
+                            currentFollowupRequiresAssignment = stagedFollowupRequiresAssignment;
                             currentPrReviewModel = stagedPrReviewModel;
                             currentUltrafixRatingGoal = stagedUltrafixGoal;
                             currentUltrafixMaxCycles = stagedUltrafixCycles;
@@ -97,12 +121,88 @@ describe('config route follow-up helpers', () => {
         ];
         currentAutoFollowup = 4;
         currentAutoResolveMergeConflicts = false;
+        currentDashboardSummaryEnabled = true;
+        currentFollowupRequiresAssignment = false;
         currentPrReviewModel = '';
         currentUltrafixRatingGoal = 7;
         currentUltrafixMaxCycles = 5;
         currentUltrafixPauseSeconds = 60;
         failAutoFollowupSave = false;
         configWriteFailure = null;
+    });
+
+    test('dashboard summary setting persists atomically and rejects non-booleans', async () => {
+        const configStore = {
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
+        };
+        const save = (value: unknown) => saveSettingsWithRollback({
+            settings: { dashboard_summary_enabled: value }, configStore,
+            database: createTestDatabase(), publishConfigUpdate: async () => {},
+        });
+        assert.strictEqual((await save(false)).status, 200);
+        assert.strictEqual(currentDashboardSummaryEnabled, false);
+        assert.strictEqual((await save('true')).status, 400);
+        assert.strictEqual(currentDashboardSummaryEnabled, false);
+        assert.strictEqual((await save(true)).status, 200);
+        assert.strictEqual(currentDashboardSummaryEnabled, true);
+        assert.strictEqual(currentSettings.keep, 'unchanged');
+    });
+
+    test('follow-up requires assignment setting persists atomically and rejects non-booleans', async () => {
+        const configStore = {
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
+        };
+        const save = (value: unknown) => saveSettingsWithRollback({
+            settings: { followup_requires_assignment: value }, configStore,
+            database: createTestDatabase(), publishConfigUpdate: async () => {},
+        });
+        assert.strictEqual((await save(true)).status, 200);
+        assert.strictEqual(currentFollowupRequiresAssignment, true);
+        for (const invalid of ['true', 1, null]) {
+            const result = await save(invalid);
+            assert.strictEqual(result.status, 400);
+            assert.deepStrictEqual(result.body, { error: 'followup_requires_assignment must be a boolean' });
+            assert.strictEqual(currentFollowupRequiresAssignment, true);
+        }
+        assert.strictEqual((await save(false)).status, 200);
+        assert.strictEqual(currentFollowupRequiresAssignment, false);
+        assert.strictEqual(currentSettings.followup_requires_assignment, undefined);
+        assert.strictEqual(currentSettings.keep, 'unchanged');
+    });
+
+    test('getSettings projects follow-up requires assignment as a boolean', async () => {
+        const project = async (stored: unknown) => {
+            const routes = createConfigRoutes({
+                redisClient: {} as never,
+                configStore: {
+                    loadSettings: async () => ({}),
+                    loadModelReasoningLevel: async () => '',
+                    loadAutoFollowupScoreThreshold: async () => 4,
+                    loadAutoResolveMergeConflicts: async () => false,
+                    getConfig: async <T,>(key: string, fallback: T) => (key === 'followup_requires_assignment' && stored !== undefined ? stored as T : fallback),
+                    loadPrReviewModel: async () => '',
+                    loadUltrafixRatingGoal: async () => 7,
+                    loadUltrafixMaxCycles: async () => 5,
+                    loadUltrafixPauseSeconds: async () => 60,
+                    loadDefaultMaxCostUsd: async () => 0,
+                    loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                },
+            });
+            const res = {
+                body: undefined as Record<string, unknown> | undefined,
+                json(payload: Record<string, unknown>) { this.body = payload; return this; },
+                status(_code: number) { return this; },
+            };
+            await routes.getSettings({} as never, res as never);
+            return res.body?.followup_requires_assignment;
+        };
+        assert.strictEqual(await project(undefined), false);
+        assert.strictEqual(await project(true), true);
+        assert.strictEqual(await project('"true"'), true);
+        assert.strictEqual(await project('garbage'), false);
+        assert.strictEqual(await project(null), false);
     });
 
     test('resolveConfigStore preserves the production namespace when no overrides are injected', () => {
@@ -1090,10 +1190,13 @@ describe('config route follow-up helpers', () => {
                 loadModelReasoningLevel: async () => '',
                 loadAutoFollowupScoreThreshold: autoFollowupMock,
                 loadAutoResolveMergeConflicts: autoResolveMock,
+                getConfig: async <T,>(_key: string, fallback: T) => fallback,
                 loadPrReviewModel: prReviewModelMock,
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadDefaultMaxCostUsd: async () => 0,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1116,18 +1219,33 @@ describe('config route follow-up helpers', () => {
             analysis_model_fast: '',
             planner_context_model: '',
             planner_generation_model: '',
+            max_provider_replacements: 2,
             pr_review_prompt: '',
             pr_review_context_enabled: true,
             pr_review_context_model: '',
             pr_review_max_context_tokens: 0,
             pr_review_context_budget_percent: 100,
             auto_followup_score_threshold: 7,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: false,
+            usage_tips_enabled: true,
+            dashboard_summary_enabled: false,
+            followup_requires_assignment: false,
             model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            default_max_cost_usd: 0,
+            agent_run_usage_pause_percent: 90,
+            ultrafix_ci_wait_timeout_ms: 7200000,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
+            ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1164,10 +1282,13 @@ describe('config route follow-up helpers', () => {
                 loadModelReasoningLevel: async () => '',
                 loadAutoFollowupScoreThreshold: autoFollowupMock,
                 loadAutoResolveMergeConflicts: autoResolveMock,
+                getConfig: async <T,>(_key: string, fallback: T) => fallback,
                 loadPrReviewModel: prReviewModelMock,
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadDefaultMaxCostUsd: async () => 0,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1190,18 +1311,33 @@ describe('config route follow-up helpers', () => {
             analysis_model_fast: 'fast-model',
             planner_context_model: 'context-model',
             planner_generation_model: 'generation-model',
+            max_provider_replacements: 2,
             pr_review_prompt: '',
             pr_review_context_enabled: false,
             pr_review_context_model: 'codex:gpt-5.4-mini',
             pr_review_max_context_tokens: 120000,
             pr_review_context_budget_percent: 40,
             auto_followup_score_threshold: 4,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: true,
+            usage_tips_enabled: true,
+            dashboard_summary_enabled: false,
+            followup_requires_assignment: false,
             model_reasoning_level: '',
             pr_review_model: 'review-model',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            default_max_cost_usd: 0,
+            agent_run_usage_pause_percent: 90,
+            ultrafix_ci_wait_timeout_ms: 7200000,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
+            ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1227,10 +1363,14 @@ describe('config route follow-up helpers', () => {
                 loadModelReasoningLevel: async () => '',
                 loadAutoFollowupScoreThreshold: autoFollowupMock,
                 loadAutoResolveMergeConflicts: autoResolveMock,
+                // An explicitly saved opt-in keeps the experimental dashboard summary on.
+                getConfig: async <T,>(key: string, fallback: T) => (key === 'dashboard_summary_enabled' ? true as T : fallback),
                 loadPrReviewModel: prReviewModelMock,
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadDefaultMaxCostUsd: async () => 0,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1256,18 +1396,33 @@ describe('config route follow-up helpers', () => {
             analysis_model_fast: '',
             planner_context_model: '',
             planner_generation_model: '',
+            max_provider_replacements: 2,
             pr_review_prompt: '',
             pr_review_context_enabled: true,
             pr_review_context_model: '',
             pr_review_max_context_tokens: 0,
             pr_review_context_budget_percent: 100,
             auto_followup_score_threshold: 4,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: false,
+            usage_tips_enabled: true,
+            dashboard_summary_enabled: true,
+            followup_requires_assignment: false,
             model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            default_max_cost_usd: 0,
+            agent_run_usage_pause_percent: 90,
+            ultrafix_ci_wait_timeout_ms: 7200000,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
+            ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
             invalid_settings: {
                 auto_followup_score_threshold: 'invalid',
             },
@@ -2926,10 +3081,13 @@ describe('config route follow-up helpers', () => {
                     loadModelReasoningLevel: async () => '',
                     loadAutoFollowupScoreThreshold: loadAutoFollowupScoreThresholdMock,
                     loadAutoResolveMergeConflicts: loadAutoResolveMergeConflictsMock,
+                    getConfig: async <T,>(_key: string, fallback: T) => fallback,
                     loadPrReviewModel: loadPrReviewModelMock,
                     loadUltrafixRatingGoal: loadUltrafixRatingGoalMock,
                     loadUltrafixMaxCycles: loadUltrafixMaxCyclesMock,
                     loadUltrafixPauseSeconds: loadUltrafixPauseSecondsMock,
+                    loadDefaultMaxCostUsd: async () => 0,
+                    loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
                 },
             });
             const res = {
@@ -2952,18 +3110,33 @@ describe('config route follow-up helpers', () => {
                 analysis_model_fast: 'fast-model',
                 planner_context_model: '',
                 planner_generation_model: '',
+                max_provider_replacements: 2,
                 pr_review_prompt: '',
                 pr_review_context_enabled: true,
                 pr_review_context_model: '',
                 pr_review_max_context_tokens: 0,
                 pr_review_context_budget_percent: 100,
                 auto_followup_score_threshold: 4,
+                deprecated_settings: {
+                    auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+                },
                 auto_resolve_merge_conflicts: false,
+                usage_tips_enabled: true,
+                dashboard_summary_enabled: false,
+                followup_requires_assignment: false,
                 model_reasoning_level: '',
                 pr_review_model: 'review-model',
                 ultrafix_rating_goal: 7,
                 ultrafix_max_cycles: 5,
                 ultrafix_pause_seconds: 60,
+                default_max_cost_usd: 0,
+                agent_run_usage_pause_percent: 90,
+                ultrafix_ci_wait_timeout_ms: 7200000,
+                ultrafix_escalation_enabled: false,
+                ultrafix_escalation_models: [],
+                ultrafix_escalation_patience: 3,
+                ultrafix_escalation_max_reasoning_levels: 2,
+                ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
             });
         } finally {
             if (previousPlannerContextModel === undefined) {

@@ -10,16 +10,19 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# Bounded removal of the private root, shared with the desktop and preview smokes.
+# shellcheck source=apps/desktop/scripts/smoke-local-runtime-cleanup.sh disable=SC1091
+source "$REPO_ROOT/apps/desktop/scripts/smoke-local-runtime-cleanup.sh"
+# shellcheck source=scripts/lib/smoke-container-logs.sh disable=SC1091
+source "$REPO_ROOT/scripts/lib/smoke-container-logs.sh"
 
 APP_TAG="${APP_TAG:-propr/app:latest}"
 LAUNCHER_TAG="${LAUNCHER_TAG:-propr/launcher:latest}"
 STARTUP_ATTEMPTS="${SQLITE_STARTUP_ATTEMPTS:-3}"
 TIMEOUT_SECONDS="${SQLITE_STARTUP_TIMEOUT_SECONDS:-45}"
 RUN_ID="sqlite-smoke-${GITHUB_RUN_ID:-local}-$$-$RANDOM"
-ROOT_DIR="$(mktemp -d "/tmp/propr-${RUN_ID}.XXXXXX")"
-OWNER_FILE="$ROOT_DIR/.propr-sqlite-smoke-owner"
 ACTIVE_STACKS=()
-DATABASE_SERVICES=(daemon worker analysis-worker indexing-worker api)
+DATABASE_SERVICES=(daemon worker indexing-worker api)
 
 if [[ ! "$STARTUP_ATTEMPTS" =~ ^[0-9]+$ ]] || (( STARTUP_ATTEMPTS < 2 || STARTUP_ATTEMPTS > 10 )); then
   echo "SQLITE_STARTUP_ATTEMPTS must be an integer from 2 through 10" >&2
@@ -30,7 +33,9 @@ if [[ ! "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || (( TIMEOUT_SECONDS < 10 || TIMEOUT_
   exit 1
 fi
 
-printf '%s\n' "$RUN_ID" > "$OWNER_FILE"
+SMOKE_TMP_BASE="$(cd "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" && pwd -P)"
+ROOT_DIR="$(mktemp -d "$SMOKE_TMP_BASE/propr-sqlite-startup-smoke.XXXXXX")"
+ROOT_IDENTITY="$(smoke_root_identity "$ROOT_DIR")"
 
 cleanup_stack() {
   local stack="$1" launcher="${1}-launcher"
@@ -48,18 +53,21 @@ cleanup_stack() {
   docker network rm "${stack}-net" >/dev/null 2>&1 || true
 }
 
+# The packaged services run as root and leave root-owned 0700 entries (e.g.
+# data/web-push) in the bind-mounted root, so removal goes through the bounded
+# helper.  The smoke's own exit status is preserved; a cleanup failure is
+# reported and turns an otherwise successful run into a failure.
 cleanup() {
-  local stack
+  local status=$? stack
+  set +e
   for stack in "${ACTIVE_STACKS[@]}"; do
     cleanup_stack "$stack"
   done
-  if [[ "$ROOT_DIR" == /tmp/propr-sqlite-smoke-* ]] \
-      && [ -f "$OWNER_FILE" ] \
-      && [ "$(< "$OWNER_FILE")" = "$RUN_ID" ]; then
-    rm -rf -- "$ROOT_DIR"
-  else
-    echo "refusing to remove unowned SQLite smoke directory $ROOT_DIR" >&2
+  if ! remove_smoke_root "$ROOT_DIR" "$SMOKE_TMP_BASE" "$ROOT_IDENTITY" "$APP_TAG" com.propr.sqlite-startup-smoke "$RUN_ID"; then
+    echo "SQLite smoke cleanup did not remove $ROOT_DIR" >&2
+    (( status )) || status=1
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -163,7 +171,6 @@ assert_packaged_topology() {
   local -A commands=(
     [daemon]='["node","dist/src/daemon.js"]'
     [worker]='["node","dist/src/worker.js"]'
-    [analysis-worker]='["node","dist/src/analysis_worker.js"]'
     [indexing-worker]='["node","dist/src/indexing_worker.js"]'
     [api]='["node","dist/packages/api/server.js"]'
   )
@@ -283,7 +290,7 @@ if [ "$(docker inspect --format '{{.State.ExitCode}}' "${failure_stack}-launcher
   echo "migration-failure launcher exited successfully" >&2
   exit 1
 fi
-if ! docker logs "${failure_stack}-launcher" 2>&1 | grep -Fq 'Database migration phase failed'; then
+if ! container_logs_contain "${failure_stack}-launcher" 'Database migration phase failed'; then
   echo "launcher did not report the genuine migration failure" >&2
   docker logs "${failure_stack}-launcher" >&2 || true
   exit 1

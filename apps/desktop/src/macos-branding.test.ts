@@ -65,7 +65,8 @@ it('keeps the shipped productName as the legacy encryption identity', () => {
 
 it('registers branding before packager signing and leaves the final signing hook last', () => {
   const config = readFileSync(new URL('../forge.config.ts', import.meta.url), 'utf8');
-  assert.match(config, /afterCopyExtraResources: \[brandMacOSPackage\]/);
+  assert.match(config, /const setupResources = \['linux', 'darwin'\]\.includes\(process\.platform\)\s*\? \{ afterCopyExtraResources: \[normalizePackagedDesktopRuntimeManifestMode,\s*\.\.\.\(process\.platform === 'darwin' \? \[brandMacOSPackage\] : \[\]\)\] \}\s*: \{\};/);
+  assert.match(config, /packagerConfig: \{[\s\S]*?\.\.\.setupResources,/);
   const packager = readFileSync(new URL('../../../node_modules/@electron/packager/dist/mac.js', import.meta.url), 'utf8');
   const create = packager.slice(packager.indexOf('async create()'));
   assert.ok(create.indexOf('updatePlistFiles()') < create.indexOf('copyExtraResources()'));

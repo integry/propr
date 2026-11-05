@@ -27,6 +27,15 @@
  *   - `ping`: an application-level keepalive. Answered with a `pong` frame.
  *
  * Backend -> relay frames:
+ *   - `hello`: `{ type: 'hello', protocolVersion, capabilities, interest? }` —
+ *     sent on open and repeated as the application heartbeat probe. When the
+ *     shared webhook handler is the dispatcher it advertises
+ *     `delivery_interest.v1` and carries the delivery-interest declaration
+ *     (see routingDeliveryInterest.ts) so the relay can drop deliveries this
+ *     backend would ignore anyway.
+ *   - `interest`: `{ type: 'interest', interest }` — a changed declaration
+ *     (monitored repositories), sent at most once per 5 s and never when
+ *     unchanged. Relays without the capability ignore both additions.
  *   - `ack`: `{ type: 'ack', sequence, deliveryId, status, reason?, billing? }` —
  *     sent only after the local webhook handler returns, so the relay never
  *     advances past an event we have not durably resolved. `status` is ProPR's
@@ -51,7 +60,7 @@
 
 import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
 import logger, { generateCorrelationId } from '../utils/logger.js';
-import { processWebhookEvent } from '../webhook/webhookHandler.js';
+import { getWebhookDeliveryInterest, processWebhookEvent } from '../webhook/webhookHandler.js';
 import {
     resolveRoutingPingIntervalMs,
     resolveRoutingPongTimeoutMs,
@@ -73,7 +82,6 @@ import {
     isSupportedEventType,
     loadWebSocketCtor,
     normalizeDisposition,
-    parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
     validateRoutingUrl,
@@ -88,6 +96,8 @@ import {
     type WebSocketCtor,
 } from './routingWebSocketProtocol.js';
 import { ConnectAccountStatusTracker, parseRoutingFrame } from './routingConnectAccountStatus.js';
+import { DeliveryInterestAnnouncer } from './routingDeliveryInterest.js';
+import { cacheTokenFrame } from './routingTokenFrame.js';
 
 export type {
     DeliveryAckBilling,
@@ -117,6 +127,7 @@ export class RoutingWebSocketIntakeService {
     private readonly fetchImpl?: FetchLike;
     private readonly now: () => number;
     private readonly keepalive: RoutingWebSocketKeepalive;
+    private readonly deliveryInterest: DeliveryInterestAnnouncer;
 
     private socket: MinimalWebSocket | null = null;
     private reconnectTimer: NodeJS.Timeout | null = null;
@@ -175,11 +186,22 @@ export class RoutingWebSocketIntakeService {
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
         this.deliveries = new DeliveryTracker(options.maxDedupeEntries ?? DEFAULT_MAX_DEDUPE_ENTRIES);
         this.installationTokens = new BoundedTokenCache(options.maxTokenEntries ?? DEFAULT_MAX_TOKEN_ENTRIES);
+        // A custom dispatcher is not described by the shared handler's declaration,
+        // so it declares no interest unless the caller supplies one.
+        this.deliveryInterest = new DeliveryInterestAnnouncer({
+            provider: options.deliveryInterest !== undefined ? options.deliveryInterest
+                : options.dispatch ? null : getWebhookDeliveryInterest,
+            protocolVersion: ROUTING_HUB_PROTOCOL_VERSION,
+            debounceMs: options.deliveryInterestDebounceMs,
+            now: () => this.now(),
+            send: (frame, socket) => this.send(frame, socket),
+        });
         this.keepalive = new RoutingWebSocketKeepalive({
             pingIntervalMs: resolveRoutingPingIntervalMs(options.pingIntervalMs),
             pongTimeoutMs: resolveRoutingPongTimeoutMs(options.pongTimeoutMs),
             isCurrentSocket: socket => socket === this.socket,
             onStaleConnection: () => this.markDisconnected(),
+            helloFrame: () => this.deliveryInterest.probeHello(),
         });
     }
 
@@ -261,7 +283,7 @@ export class RoutingWebSocketIntakeService {
             this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.keepalive.start(socket);
-            this.accountStatus.open(socket, ROUTING_HUB_PROTOCOL_VERSION, frame => this.send(frame, socket));
+            this.accountStatus.open(socket, this.deliveryInterest.open(socket), frame => this.send(frame, socket));
             this.notifyStatusChange();
         });
 
@@ -287,6 +309,7 @@ export class RoutingWebSocketIntakeService {
             this.socket = null;
             this.connected = false;
             this.accountStatus.clear();
+            this.deliveryInterest.clear();
             this.notifyStatusChange();
             if (this.stopped) {
                 logger.info('Routing WebSocket closed during shutdown');
@@ -318,7 +341,7 @@ export class RoutingWebSocketIntakeService {
                 await this.trackWork(this.handleEventFrame(frame, socket));
                 return;
             case 'token':
-                this.handleTokenFrame(frame);
+                cacheTokenFrame(frame, this.installationTokens);
                 return;
             case 'error':
                 logger.error(
@@ -351,32 +374,6 @@ export class RoutingWebSocketIntakeService {
         } finally {
             this.inFlightWork.delete(work);
         }
-    }
-
-    /** Cache an installation access token pushed by the relay. */
-    private handleTokenFrame(frame: RoutingFrame): void {
-        const installationId = frame.installationId;
-        // The relay names this field `installationToken`; `token` is accepted as a
-        // legacy alias so either shape populates the cache.
-        const token = frame.installationToken ?? frame.token;
-        if (installationId === undefined || !token) {
-            logger.warn('Discarding token frame missing installationId or token');
-            return;
-        }
-        // A token frame that carries an expiry we cannot parse is treated as
-        // corrupt and dropped: caching it as non-expiring would let a stale
-        // credential live forever and cause repeated pull failures, so we wait for
-        // a well-formed refresh instead of trusting an unbounded token.
-        const expiresAt = parseTokenExpiry(frame.expiresAt);
-        if (frame.expiresAt !== undefined && expiresAt === undefined) {
-            logger.warn(
-                { installationId, expiresAt: frame.expiresAt },
-                'Discarding token frame with unparseable expiry',
-            );
-            return;
-        }
-        this.installationTokens.set(String(installationId), token, expiresAt);
-        logger.debug({ installationId, expiresAt }, 'Cached installation token from routing relay');
     }
 
     private async handleEventFrame(frame: RoutingFrame, socket: MinimalWebSocket): Promise<void> {
@@ -507,6 +504,15 @@ export class RoutingWebSocketIntakeService {
     }
 
     /**
+     * Re-derive the `delivery_interest.v1` declaration (call after the monitored
+     * repositories or handler registration may have changed). A changed
+     * declaration is sent as an `interest` frame, debounced; an unchanged one is not.
+     */
+    refreshDeliveryInterest(): void {
+        this.deliveryInterest.refresh();
+    }
+
+    /**
      * Register a listener invoked whenever {@link getStatus} would return a changed
      * snapshot (connect, disconnect, ACK). The daemon's status publisher uses this
      * to refresh the published Redis snapshot promptly rather than waiting for its
@@ -597,6 +603,7 @@ export class RoutingWebSocketIntakeService {
         this.stopped = true;
         this.connected = false;
         this.accountStatus.clear();
+        this.deliveryInterest.clear();
         // Clear the start guard so a deliberate stop()/start() cycle can reconnect.
         this.started = false;
 
@@ -642,6 +649,7 @@ export class RoutingWebSocketIntakeService {
 
     private markDisconnected(): void {
         this.accountStatus.clear();
+        this.deliveryInterest.clear();
         if (this.connected) {
             this.connected = false;
             this.notifyStatusChange();

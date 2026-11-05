@@ -1,0 +1,23 @@
+{
+  "name": "braces",
+  "description": "Vendored braces 3.0.3 with nesting-depth guards backported from @dieub/braces-depth-guard 3.0.3-pn.3 to remediate GHSA-vfj7-8cjw-p6xm. See README.md for provenance and review notes.",
+  "version": "3.0.4-depthguard.1",
+  "homepage": "https://github.com/micromatch/braces",
+  "author": "Jon Schlinkert (https://github.com/jonschlinkert)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/micromatch/braces.git"
+  },
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "lib"
+  ],
+  "main": "index.js",
+  "engines": {
+    "node": ">=8"
+  },
+  "dependencies": {
+    "fill-range": "^7.1.1"
+  }
+}

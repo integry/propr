@@ -46,5 +46,19 @@ export const navigateToUiPath = (path: string): void => {
   window.location.href = safeUrl.href;
 };
 
+/** Replace the visible route without notifying the router or remounting the editor. */
+export const replaceUiPathInPlace = (path: string): void => {
+  const desktop = isDesktopRuntime();
+  const safeUrl = safeUiUrl(path, desktop
+    ? new URL('https://desktop.propr.invalid')
+    : new URL(window.location.href));
+  if (safeUrl === null) return;
+
+  const route = `${safeUrl.pathname}${safeUrl.search}${safeUrl.hash}`;
+  // Packaged renderer ownership requires the original document pathname. Only
+  // its hash is a UI route; location.hash would also notify HashRouter.
+  window.history.replaceState(window.history.state, '', desktop ? `#${route}` : route);
+};
+
 export const publicAssetUrl = (path: `/${string}`): string =>
   isDesktopRuntime() ? new URL(`.${path}`, window.location.href).href : path;

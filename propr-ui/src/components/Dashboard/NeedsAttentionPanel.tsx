@@ -16,7 +16,7 @@
  * heading, holding the same geometry as four rows would.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { getDashboardAttention, type AttentionItem, type DashboardAttentionResponse } from '../../api/dashboardApi';
 import {
@@ -24,6 +24,8 @@ import {
   RowLink,
   RowTitle,
   SectionError,
+  SectionFooter,
+  SectionFooterButton,
   SectionHeading,
   SectionLink,
   SectionSkeleton,
@@ -41,14 +43,26 @@ import {
 } from './sectionState';
 import { splitWorkTitle, type WorkTitle } from './workTitle';
 
-/** How many items the panel shows before handing off to the full list. */
+/** How many items the panel shows before expanding in place. */
 const VISIBLE_ITEMS = 3;
 
 const REASON_LABELS: Record<AttentionItem['kind'], string> = {
   task_failed: 'Run failed',
   task_action_required: 'Waiting on you',
   plan_review: 'Review requested',
+  goal_blocker: 'Goal waiting on you',
 };
+
+/** A goal blocker names what it is waiting for; the shared projection decided the category. */
+const GOAL_BLOCKER_LABELS: Record<NonNullable<AttentionItem['goalBlocker']>['category'], string> = {
+  question: 'Goal asked a question',
+  approval: 'Goal needs approval',
+  paused: 'Goal paused',
+};
+
+function reasonLabel(item: AttentionItem): string {
+  return item.goalBlocker ? GOAL_BLOCKER_LABELS[item.goalBlocker.category] : REASON_LABELS[item.kind];
+}
 
 /**
  * One word, always.
@@ -71,6 +85,7 @@ function actionLabel(item: AttentionItem): string {
  * accessible-name algorithm, which announces "Openissue #42".
  */
 function actionContext(item: AttentionItem): string {
+  if (item.kind === 'goal_blocker') return 'goal';
   if (item.prNumber) return `pull request #${item.prNumber}`;
   if (item.issueNumber) return `issue #${item.issueNumber}`;
   return 'task';
@@ -78,6 +93,7 @@ function actionContext(item: AttentionItem): string {
 
 /** The review decision lives on GitHub; everything else resolves in a task. */
 function actionHref(item: AttentionItem): string {
+  if (item.kind === 'goal_blocker' && item.goalId) return `/goals/${encodeURIComponent(item.goalId)}`;
   if (item.kind === 'plan_review') {
     if (item.prNumber) return `https://github.com/${item.repository}/pull/${item.prNumber}`;
     if (item.issueNumber) return `https://github.com/${item.repository}/issues/${item.issueNumber}`;
@@ -99,19 +115,21 @@ function actionHref(item: AttentionItem): string {
  * work: `Pull request is awaiting review`.
  *
  * The title is split like every other dashboard title: the task type moves
- * into a badge in front of it, and the entity number and model tag go.
+ * into a badge in front of it, and the entity number and model tag go. Review
+ * decisions omit the badge because their status already names the action.
  */
 function itemTitle(item: AttentionItem): WorkTitle & { title: string } {
   const work = splitWorkTitle(item.title, item.taskType);
-  return { type: work.type, title: work.title || item.detail || 'Untitled work' };
+  return { type: item.kind === 'plan_review' ? null : work.type, title: work.title || item.detail || 'Untitled work' };
 }
 
 const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
   const href = actionHref(item);
   const work = itemTitle(item);
   const external = isExternalHref(href);
+  const stale = Date.now() - Date.parse(item.since) > 14 * 86_400_000;
   return (
-    <li>
+    <li className={stale ? 'bg-slate-50/70' : undefined}>
       {/*
         One schema for a work row, at every width and in every section.
 
@@ -137,7 +155,7 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
             item.category === 'blocked' ? 'text-amber-700' : 'text-slate-700'
           }`}
         >
-          {REASON_LABELS[item.kind]}
+          {reasonLabel(item)}
         </span>
         <time
           dateTime={item.since}
@@ -145,6 +163,7 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
           className="min-w-0 justify-self-end truncate whitespace-nowrap text-gray-500 lg:col-start-1 lg:row-start-3 lg:justify-self-start"
         >
           Waiting {elapsedLabel(item.since)}
+          {stale && <span className="ml-1.5 rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-slate-500">Stale</span>}
         </time>
         <span className="flex min-w-0 items-center gap-1.5 lg:col-start-2 lg:row-start-1">
           <RepositoryLabel repository={item.repository} />
@@ -193,6 +212,8 @@ export const NeedsAttentionPanel: React.FC<DashboardSectionProps> = ({
   repository,
   refreshToken,
 }) => {
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => setShowAll(false), [repository]);
   const load = useCallback(() => getDashboardAttention(repository), [repository]);
   const { data, error, loading, reload } = useDashboardSection<DashboardAttentionResponse>(
     load,
@@ -204,7 +225,8 @@ export const NeedsAttentionPanel: React.FC<DashboardSectionProps> = ({
 
   const items = data?.items ?? [];
   const unavailable = Boolean(error) && items.length === 0;
-  const visible = items.slice(0, VISIBLE_ITEMS);
+  const visible = showAll ? items : items.slice(0, VISIBLE_ITEMS);
+  const overflowCount = items.length - VISIBLE_ITEMS;
 
   /*
     Heading first, always — including while the first read is in flight and
@@ -228,7 +250,7 @@ export const NeedsAttentionPanel: React.FC<DashboardSectionProps> = ({
         )}
       </SectionHeading>
 
-      {loading && <SectionSkeleton rows={2} />}
+      {loading && <SectionSkeleton rows={2} label="Loading items that need attention…" />}
       {!loading && unavailable && (
         <SectionError message="Unable to load what needs attention" onRetry={reload} />
       )}
@@ -239,6 +261,15 @@ export const NeedsAttentionPanel: React.FC<DashboardSectionProps> = ({
             <AttentionRow key={item.id} item={item} />
           ))}
         </ul>
+      )}
+      {!loading && overflowCount > 0 && (
+        <SectionFooter data-testid="needs-attention-footer">
+          <span className="ml-auto">
+            <SectionFooterButton expanded={showAll} onClick={() => setShowAll(value => !value)}>
+              {showAll ? 'Show fewer' : `Show ${overflowCount} more`}
+            </SectionFooterButton>
+          </span>
+        </SectionFooter>
       )}
     </section>
   );

@@ -17,15 +17,24 @@ const MAX_REVIEW_CHECK_RUNS = 50;
 
 type ReviewCheckState = 'failed' | 'pending' | 'passed' | 'neutral';
 
-function classifyCheckRun(checkRun: ReviewCheckRun): ReviewCheckState {
+function isFailed(checkRun: ReviewCheckRun): boolean {
+    return checkRun.status === 'completed' && !!checkRun.conclusion && FAILED_CHECK_CONCLUSIONS.has(checkRun.conclusion);
+}
+
+/** Whether a check run is one the repository marked non-blocking. */
+export type NonBlockingCheck = (name: string | undefined) => boolean;
+const NONE_NON_BLOCKING: NonBlockingCheck = () => false;
+
+/** A failure of a check the repository marked non-blocking reads as neutral: it does not hold the change back. */
+function classifyCheckRun(checkRun: ReviewCheckRun, isNonBlocking: NonBlockingCheck = NONE_NON_BLOCKING): ReviewCheckState {
     if (checkRun.status !== 'completed') return 'pending';
     if (checkRun.conclusion === 'success') return 'passed';
-    if (checkRun.conclusion && FAILED_CHECK_CONCLUSIONS.has(checkRun.conclusion)) return 'failed';
+    if (isFailed(checkRun)) return isNonBlocking(checkRun.name) ? 'neutral' : 'failed';
     return 'neutral';
 }
 
-export function currentHeadChecksHaveFailures(checkRuns: ReviewCheckRun[]): boolean {
-    return checkRuns.some(checkRun => classifyCheckRun(checkRun) === 'failed');
+export function currentHeadChecksHaveFailures(checkRuns: ReviewCheckRun[], isNonBlocking: NonBlockingCheck = NONE_NON_BLOCKING): boolean {
+    return checkRuns.some(checkRun => classifyCheckRun(checkRun, isNonBlocking) === 'failed');
 }
 
 function sanitizeCheckName(name: string | undefined): string {
@@ -33,16 +42,16 @@ function sanitizeCheckName(name: string | undefined): string {
 }
 
 /** Format current-head check runs into a compact, deterministic prompt section. */
-export function formatCurrentHeadCheckSummary(checkRuns: ReviewCheckRun[]): string {
+export function formatCurrentHeadCheckSummary(checkRuns: ReviewCheckRun[], isNonBlocking: NonBlockingCheck = NONE_NON_BLOCKING): string {
     if (checkRuns.length === 0) return 'No check runs were reported for the current head commit.';
 
     const stateOrder: Record<ReviewCheckState, number> = { failed: 0, pending: 1, passed: 2, neutral: 3 };
     const normalizedRuns = checkRuns
         .map(checkRun => ({
             name: sanitizeCheckName(checkRun.name),
-            state: classifyCheckRun(checkRun),
+            state: classifyCheckRun(checkRun, isNonBlocking),
             status: checkRun.status || 'unknown',
-            conclusion: checkRun.conclusion || 'none',
+            conclusion: `${checkRun.conclusion || 'none'}${isFailed(checkRun) && isNonBlocking(checkRun.name) ? ' (non-blocking)' : ''}`,
         }))
         .sort((a, b) => stateOrder[a.state] - stateOrder[b.state] || a.name.localeCompare(b.name));
     const counts: Record<ReviewCheckState, number> = { failed: 0, pending: 0, passed: 0, neutral: 0 };

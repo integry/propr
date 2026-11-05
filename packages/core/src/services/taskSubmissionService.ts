@@ -1,5 +1,6 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { sealExtensionSecrets, unsealExtensionSecrets } from '../extensions/privateSecrets.js';
 import knex, { type Knex } from 'knex';
-import { randomUUID } from 'node:crypto';
 import fs from 'fs-extra';
 import path from 'node:path';
 import { db } from '../db/connection.js';
@@ -17,6 +18,7 @@ export interface TaskSubmission {
   user_id: string;
   submission_key: string;
   payload_hash: string;
+  extension_authorization?: string | null;
   repository: string;
   payload: string;
   attachments: string;
@@ -28,9 +30,13 @@ export interface TaskSubmission {
   dispatch_claim: string | null;
   retry_event_id: string | null;
   dispatch_complete: boolean;
+  /** Set together with completing the payload's to-dos, so replays never reapply it. */
+  todos_linked: boolean;
   error: string | null;
 }
 export interface SubmissionPayload {
+  extensionAllowWrite?: boolean;
+  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   instruction: string;
   agentAlias: string;
   model: string;
@@ -39,6 +45,15 @@ export interface SubmissionPayload {
   trigger: string;
   username: string;
   todoIds?: string[];
+  /** Applies the shared `auto-merge` label so the resulting pull request merges itself. */
+  autoMerge?: boolean;
+  /** Applies the shared `ultrafix` label so the resulting pull request runs the review/fix loop. */
+  runUltrafix?: boolean;
+  /** Bounds only travel with an ultrafix opt-in; null keeps the loop's own defaults. */
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
+  /** Per-task spend cap in USD; beats `.propr/workflow.yml` and the instance default. */
+  maxCostUsd?: number;
 }
 export const submissionMarker = (id: string): string => `<!-- propr-task-submission:${id} -->`;
 export const submissionAssetPath = (file: SubmissionAttachment, issue: string | number): string =>
@@ -48,6 +63,24 @@ export async function findIssueSubmission(issue: IssueJobData, database: Knex = 
   return database<TaskSubmission>('task_submissions').where({
     repository: `${issue.repoOwner}/${issue.repoName}`.toLowerCase(), issue_number: issue.number,
   }).first();
+}
+
+/** Persisted only by authenticated submission handling; issue text/labels cannot create authority. */
+export async function sealSubmissionExtensions(database: Knex, row: TaskSubmission, environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const payload = JSON.parse(row.payload) as SubmissionPayload;
+  if (!payload.extensionProfile) return;
+  const authorization = sealExtensionSecrets({ payloadDigest: createHash('sha256').update(row.payload).digest('hex'), allowWrite: payload.extensionAllowWrite === true ? 'true' : 'false' }, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
+  await database('task_submissions').where({ id: row.id }).whereNull('extension_authorization').update({ extension_authorization: authorization });
+}
+export function submissionExtensionsForRun(row: TaskSubmission | undefined, run: { taskId: string; agentAlias: string; model: string; repository: string; issueNumber: number }, environment: NodeJS.ProcessEnv = process.env) {
+  if (!row) return {};
+  const payload = JSON.parse(row.payload) as SubmissionPayload;
+  if (!payload.extensionProfile) return {};
+  // Retries, replacement tasks and native restores receive no inherited authority.
+  if (row.task_id !== run.taskId || row.latest_task_id !== run.taskId || !['queued', 'issue_created'].includes(row.state) || !row.extension_authorization) return {};
+  const authorization = unsealExtensionSecrets(row.extension_authorization, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
+  if (row.issue_number !== run.issueNumber || row.repository !== run.repository.toLowerCase() || payload.agentAlias !== run.agentAlias || payload.model !== run.model || authorization.payloadDigest !== createHash('sha256').update(row.payload).digest('hex')) throw new Error('Extension submission does not authorize this exact run');
+  return { extensionProfile: payload.extensionProfile, extensionActorId: row.user_id, extensionAllowWrite: authorization.allowWrite === 'true' && payload.extensionAllowWrite === true };
 }
 
 /** The submission owns the initial delivery only; normal task retries keep their own contract. */
@@ -71,7 +104,11 @@ interface SubmissionServices {
 // The OS releases its write lock on process death; a slow live attempt never expires.
 // Keep these files: unlinking a lock file would let callers lock different inodes.
 const memoryDispatchLocks = new WeakMap<Knex, Set<string>>();
-async function acquireDispatchLock(database: Knex, id: string): Promise<(() => Promise<void>) | null> {
+/**
+ * The submission's dispatch lock, or null while another holder has it. A
+ * retry restores a failed submission to queued only while holding it.
+ */
+export async function acquireDispatchLock(database: Knex, id: string): Promise<(() => Promise<void>) | null> {
   const filename = database.client.config.connection?.filename as string | undefined;
   if (!filename || filename === ':memory:') {
     let locks = memoryDispatchLocks.get(database);

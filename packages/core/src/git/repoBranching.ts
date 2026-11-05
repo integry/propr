@@ -2,9 +2,10 @@ import { SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
+import { GitLockContentionError, GitLockRetryOptions, serializeSharedConfigWrite, withGitLockRetry } from './configLock.js';
 
 export { redactAuthenticatedGitUrl };
 
@@ -12,11 +13,69 @@ interface InstallationAuth {
     token: string;
 }
 
-export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string): Promise<void> {
-    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
+// simple-git guards every GIT_* variable and these non-prefixed ones. Any of
+// them in an explicit `.env()` that is not allowed by createHooklessGit fails
+// the command, so none of them may be inherited from the worker process.
+const GUARDED_NON_GIT_ENVIRONMENT = new Set(['editor', 'pager', 'prefix', 'ssh_askpass', 'visual']);
+
+function isGuardedGitEnvironmentKey(key: string): boolean {
+    const normalized = key.toLowerCase().trim();
+    return normalized.startsWith('git_') || GUARDED_NON_GIT_ENVIRONMENT.has(normalized);
+}
+
+/** Keep worker write credentials out of every filesystem visible to agents. */
+export function configureGitAuthentication(git: SimpleGit, authToken: string): void {
+    // Worker git commands are non-interactive and must not inherit pager,
+    // editor, credential, config or SSH overrides from the worker environment.
+    // In particular, npm scripts inject EDITOR even when the shell leaves it unset.
+    const environment = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !isGuardedGitEnvironmentKey(key)),
+    );
+
+    git.env({
+        ...environment,
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'credential.helper',
+        GIT_CONFIG_VALUE_0: '',
+        GIT_CONFIG_KEY_1: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${authToken}`).toString('base64')}`,
+    });
+}
+
+export async function configureGitRemoteAuthentication(git: SimpleGit, token?: string, remoteName = 'origin'): Promise<void> {
+    if (token) { configureGitAuthentication(git, token); return; }
+    const remoteUrl = remoteName.startsWith('https://')
+        ? remoteName : (await git.getConfig(`remote.${remoteName}.url`)).value;
+    // A legacy URL can be scrubbed after getConfig returns. Authenticate it too
+    // so this command never depends on credentials remaining in shared config.
+    if (remoteUrl && /^https:\/\/(?:[^/]+@)?github\.com\//.test(remoteUrl)) {
+        configureGitAuthentication(git, await getGitHubInstallationToken());
+    }
+}
+
+async function originUrlIsCurrent(git: SimpleGit, repoUrl: string): Promise<boolean> {
+    const { values } = await git.getConfig('remote.origin.url');
+    return values.length === 1 && values[0] === repoUrl;
+}
+
+/**
+ * Authenticate this command through its own environment and make sure the
+ * shared clone's origin is the clean repository URL. The shared config is only
+ * written when it differs (for example, a legacy credential-bearing URL that
+ * must be scrubbed), so parallel workers preparing the same clone do not
+ * contend on `.git/config.lock` for a no-op rewrite.
+ */
+export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string, lockRetry?: GitLockRetryOptions): Promise<void> {
+    configureGitAuthentication(git, authToken);
     try {
-        await git.remote(['set-url', 'origin', authenticatedUrl]);
+        if (await originUrlIsCurrent(git, repoUrl)) return;
+        await serializeSharedConfigWrite(git, () => withGitLockRetry('updating remote.origin.url', async () => {
+            // Another worker may have written the same URL while this one waited.
+            if (await originUrlIsCurrent(git, repoUrl)) return;
+            await git.remote(['set-url', 'origin', repoUrl]);
+        }, lockRetry));
     } catch (error) {
+        if (error instanceof GitLockContentionError) throw error;
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
 }
@@ -35,6 +94,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
         const git: SimpleGit = createHooklessGit(worktreePath);
 
         if (repoUrl && currentToken) await setupAuthenticatedRemote(git, repoUrl, currentToken);
+        else await configureGitRemoteAuthentication(git, currentToken);
 
         logger.info({ worktreePath, branchName, baseBranch }, 'Ensuring branch is properly set up and pushed...');
 
@@ -85,7 +145,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
                 try {
                     await pushOperation(currentToken);
                 } catch (error) {
-                    if (tokenRefreshFn && ((error as Error).message.includes('Authentication failed') || (error as Error).message.includes('Invalid username or token'))) {
+                    if (tokenRefreshFn && isAuthenticationError(error)) {
                         logger.info({ correlationId, worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
 
                         try {
@@ -111,7 +171,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
     }
 }
 
-interface PushBranchOptions {
+export interface PushBranchOptions {
     repoUrl?: string;
     authToken?: string;
     remote?: string;
@@ -125,7 +185,7 @@ export interface PushBranchResult {
 
 function isAuthenticationError(error: unknown): boolean {
     const message = (error as Error).message || '';
-    return message.includes('Authentication failed') || message.includes('Invalid username or token');
+    return /Authentication failed|Invalid username or token|could not read (?:Username|Password) for ['"]https:\/\/github\.com(?:\/|['"])/i.test(message);
 }
 
 function isNonFastForwardPushError(error: unknown): boolean {
@@ -150,6 +210,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
 
     const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);
+        else await configureGitRemoteAuthentication(git, token, remote);
 
         try {
             const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
@@ -226,7 +287,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
             logger.info({ worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
             try {
                 const freshOctokit = await getAuthenticatedOctokit();
-                const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string }) => Promise<InstallationAuth> }).auth({ type: "installation" });
+                const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string; refresh: boolean }) => Promise<InstallationAuth> }).auth({ type: "installation", refresh: true });
                 const rebasedResult = await performPushWithRebaseFallback(freshAuth.token);
                 if (rebasedResult) return rebasedResult;
                 logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully after token refresh');

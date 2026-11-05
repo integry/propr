@@ -6,13 +6,23 @@ import { parseStructuredReview } from './reviewOutputParser.js';
 
 type ReviewRenderOptions = NonNullable<Parameters<typeof buildReviewComment>[3]>;
 type ReviewIssueRef = { repoOwner: string; repoName: string; pullRequestNumber: number };
-interface ReservedFindingRenderOptions extends Omit<ReviewRenderOptions, 'firstFindingNumber'> {
+
+/** The two independently numbered kinds of record a review publishes. */
+export type ReviewRecordKind = 'finding' | 'suggestion';
+
+const RECORD_SEQUENCE_KEY_PREFIX: Record<ReviewRecordKind, string> = {
+    finding: 'review-finding-sequence',
+    suggestion: 'review-suggestion-sequence',
+};
+
+interface ReservedRecordRenderOptions extends Omit<ReviewRenderOptions, 'firstFindingNumber' | 'firstSuggestionNumber'> {
     redisClient: Pick<Redis, 'eval'>;
     issueRef: ReviewIssueRef;
     observedNextFindingNumber: number;
+    observedNextSuggestionNumber: number;
 }
 
-const RESERVE_FINDING_RANGE_SCRIPT = `
+const RESERVE_RECORD_RANGE_SCRIPT = `
 local observedHighest = tonumber(ARGV[1])
 local rangeSize = tonumber(ARGV[2])
 local reservedHighest = tonumber(redis.call('get', KEYS[1]))
@@ -21,49 +31,54 @@ if reservedHighest == nil or reservedHighest < observedHighest then
     reservedHighest = observedHighest
 end
 
-local firstFindingNumber = reservedHighest + 1
+local firstRecordNumber = reservedHighest + 1
 redis.call('set', KEYS[1], reservedHighest + rangeSize)
-return firstFindingNumber
+return firstRecordNumber
 `;
 
-export async function reserveActionableFindingRange(
+/**
+ * Reserve a contiguous block of PR-wide identifiers for one record kind. F# and
+ * S# use separate sequences: sharing one would leave gaps in both and make a
+ * suggestion's number depend on how many blockers happened to be found.
+ */
+export async function reserveReviewRecordRange(
     redisClient: Pick<Redis, 'eval'>,
     issueRef: ReviewIssueRef,
-    observedNextFindingNumber: number,
-    findingCount: number,
+    range: { kind: ReviewRecordKind; observedNextNumber: number; recordCount: number },
 ): Promise<number> {
-    if (!Number.isSafeInteger(observedNextFindingNumber) || observedNextFindingNumber < 1) {
-        throw new Error(`Invalid observed finding number: ${observedNextFindingNumber}`);
+    const { kind, observedNextNumber, recordCount } = range;
+    if (!Number.isSafeInteger(observedNextNumber) || observedNextNumber < 1) {
+        throw new Error(`Invalid observed ${kind} number: ${observedNextNumber}`);
     }
-    if (!Number.isSafeInteger(findingCount) || findingCount < 1) {
-        throw new Error(`Invalid finding range size: ${findingCount}`);
+    if (!Number.isSafeInteger(recordCount) || recordCount < 1) {
+        throw new Error(`Invalid ${kind} range size: ${recordCount}`);
     }
 
     const sequenceKey = [
-        'review-finding-sequence',
+        RECORD_SEQUENCE_KEY_PREFIX[kind],
         issueRef.repoOwner.toLowerCase(),
         issueRef.repoName.toLowerCase(),
         issueRef.pullRequestNumber,
     ].join(':');
     const reservedStart = Number(await redisClient.eval(
-        RESERVE_FINDING_RANGE_SCRIPT,
+        RESERVE_RECORD_RANGE_SCRIPT,
         1,
         sequenceKey,
-        observedNextFindingNumber - 1,
-        findingCount,
+        observedNextNumber - 1,
+        recordCount,
     ));
     if (!Number.isSafeInteger(reservedStart) || reservedStart < 1) {
-        throw new Error(`Failed to reserve actionable finding range for ${sequenceKey}`);
+        throw new Error(`Failed to reserve ${kind} range for ${sequenceKey}`);
     }
     return reservedStart;
 }
 
-export async function buildReviewCommentWithReservedFindingRange(
+export async function buildReviewCommentWithReservedRecordRanges(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl: string | undefined,
-    options: ReservedFindingRenderOptions,
-): Promise<{ reviewCommentBody: string; findingCount: number }> {
+    options: ReservedRecordRenderOptions,
+): Promise<{ reviewCommentBody: string; findingCount: number; suggestionCount: number }> {
     if (!analysisResult.success) {
         return {
             reviewCommentBody: buildReviewErrorComment(
@@ -72,34 +87,48 @@ export async function buildReviewCommentWithReservedFindingRange(
                 analysisResult.error || 'Unknown error',
             ),
             findingCount: 0,
+            suggestionCount: 0,
         };
     }
 
-    const { redisClient, issueRef, observedNextFindingNumber, ...renderOptions } = options;
-    const renderComment = (firstFindingNumber: number): string => buildReviewComment(
+    const {
+        redisClient, issueRef, observedNextFindingNumber, observedNextSuggestionNumber, ...renderOptions
+    } = options;
+    const renderComment = (firstFindingNumber: number, firstSuggestionNumber: number): string => buildReviewComment(
         assignment,
         analysisResult,
         taskUrl,
-        { ...renderOptions, firstFindingNumber },
+        { ...renderOptions, firstFindingNumber, firstSuggestionNumber },
     );
-    const provisionalCommentBody = renderComment(observedNextFindingNumber);
-    const findingCount = parseStructuredReview(provisionalCommentBody).actionableFindings.length;
-    if (findingCount === 0) {
-        return { reviewCommentBody: provisionalCommentBody, findingCount };
+    const provisionalCommentBody = renderComment(observedNextFindingNumber, observedNextSuggestionNumber);
+    const provisionalReview = parseStructuredReview(provisionalCommentBody);
+    const findingCount = provisionalReview.actionableFindings.length;
+    const suggestionCount = provisionalReview.suggestions.length;
+    if (findingCount === 0 && suggestionCount === 0) {
+        return { reviewCommentBody: provisionalCommentBody, findingCount, suggestionCount };
     }
 
     // The public-comment maximum is a recovery floor; Redis serializes all
     // reservations made from the same (possibly stale) GitHub snapshot.
-    const reservedStart = await reserveActionableFindingRange(
-        redisClient,
-        issueRef,
-        observedNextFindingNumber,
-        findingCount,
-    );
+    const [reservedFindingStart, reservedSuggestionStart] = await Promise.all([
+        findingCount === 0
+            ? observedNextFindingNumber
+            : reserveReviewRecordRange(redisClient, issueRef, {
+                kind: 'finding', observedNextNumber: observedNextFindingNumber, recordCount: findingCount,
+            }),
+        suggestionCount === 0
+            ? observedNextSuggestionNumber
+            : reserveReviewRecordRange(redisClient, issueRef, {
+                kind: 'suggestion', observedNextNumber: observedNextSuggestionNumber, recordCount: suggestionCount,
+            }),
+    ]);
+    const keepsProvisionalNumbers = reservedFindingStart === observedNextFindingNumber
+        && reservedSuggestionStart === observedNextSuggestionNumber;
     return {
-        reviewCommentBody: reservedStart === observedNextFindingNumber
+        reviewCommentBody: keepsProvisionalNumbers
             ? provisionalCommentBody
-            : renderComment(reservedStart),
+            : renderComment(reservedFindingStart, reservedSuggestionStart),
         findingCount,
+        suggestionCount,
     };
 }

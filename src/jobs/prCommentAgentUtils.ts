@@ -1,3 +1,6 @@
+import { runWithNetworkPolicy } from './networkEgress.js';
+import { runRepositoryWorkflow } from './repositoryWorkflow.js';
+import type { ResolvedRepositoryWorkflow } from '@propr/core';
 import type { Logger } from 'pino';
 import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
@@ -276,6 +279,11 @@ export interface AgentExecutionParams {
     githubToken: string;
     redisClient: Redis;
     reasoningLevel?: ReasoningLevel;
+    repositoryWorkflow?: ResolvedRepositoryWorkflow;
+    /** Only implementation follow-ups participate in repository workflow policy. */
+    applyRepositoryWorkflow?: boolean;
+    /** Extra durable sink for the started container's identity, beyond task state. */
+    onContainerInfo?: (containerId: string, containerName: string) => Promise<void>;
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
@@ -311,19 +319,35 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         reasoningLevel,
     }, 'Executing PR comment task with agent');
 
-    const agentResult = await agent.executeTask({
-        worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        prompt,
-        model: modelToUse,
-        githubToken,
-        branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
-        taskId,
-        prNumber: pullRequestNumber,
-        reasoningLevel,
-    });
+    const execute = async () => {
+        // Only implementation follow-ups own this task; merge helpers may reuse a completed task id.
+        if (params.applyRepositoryWorkflow) {
+            await stateManager.updateTaskState(taskId, 'processing', {
+                reason: 'PR execution routing resolved',
+                historyMetadata: { model: modelToUse, executionRouting: { model: modelToUse, agentAlias } },
+            });
+        }
+        return agent.executeTask({
+            worktreePath,
+            issueRef: { number: pullRequestNumber, repoOwner, repoName },
+            prompt,
+            model: modelToUse,
+            githubToken,
+            branchName,
+            onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
+            onContainerId: async (containerId: string, containerName: string) => {
+                await createContainerIdCallbackForPR(taskId, stateManager)(containerId, containerName);
+                await params.onContainerInfo?.(containerId, containerName);
+            },
+            taskId,
+            prNumber: pullRequestNumber,
+            reasoningLevel,
+        });
+    };
+    const agentResult = await (params.applyRepositoryWorkflow ? runRepositoryWorkflow({
+        workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
+    // Outside the workflow the agent still runs under the run's network policy (and its timeline record).
+    }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
 }

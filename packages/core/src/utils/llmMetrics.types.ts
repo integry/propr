@@ -12,6 +12,12 @@ export interface TokenUsage {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    /**
+     * Set when the cache counts above cover only some of the prompts: the known
+     * cached subtotal is kept so pricing applies its discount, but it is not a
+     * measurement of the whole prompt and must stay out of any hit rate.
+     */
+    cache_usage_incomplete?: boolean;
     /** Informational subset of output_tokens; never bill separately. */
     reasoning_output_tokens?: number;
 }
@@ -68,7 +74,6 @@ export type ExecutionType =
     | 'title-generation'
     | 'summarization'
     | 'context-analysis'
-    | 'task-analysis'
     | 'repo-chat'
     | 'repo-improvements'
     | 'pr-review'
@@ -124,6 +129,8 @@ export interface PersistMetrics {
     numTurns: number;
     costUsd: number;
     tokenUsage?: TokenUsage;
+    /** Whether `tokenUsage`'s cache counts were reported by the agent for every prompt, as opposed to defaulted or partial. */
+    cacheUsageReported?: boolean;
     correlationId?: string;
     executionType?: ExecutionType;
 }
@@ -202,6 +209,8 @@ export interface LLMMetricsSummaryResult {
     modelBreakdown: Record<string, ModelMetrics>;
     dailyMetrics: DailyMetric[];
     recentHighCostAlerts: HighCostAlert[];
+    /** Agent runs stopped by the stall/degenerate-output watchdog, per rule. */
+    watchdogTrips: Record<string, number>;
     lastUpdated: string;
 }
 

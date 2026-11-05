@@ -26,6 +26,20 @@ export interface ReviewCommandMeta {
 
 export interface FixCommandMeta {
     mode: 'fix';
+    /**
+     * Verbatim `/fix` command-line arguments, kept apart from the lines below
+     * the command. `F#`/`S#` selectors may only ever be read from here: the
+     * joined `instructions` below cannot express that boundary, so a `/fix`
+     * whose first instruction line happens to start with `S3` would otherwise
+     * have its prose read as a selection and reverse the requested scope.
+     *
+     * Optional because a job queued by an older deploy carries no such field;
+     * consumers fall back to treating the first instruction line as the command
+     * line, which is what they did before.
+     */
+    commandLine?: string;
+    /** Lines below the command line, verbatim. Instruction prose by construction. */
+    bodyInstructions?: string;
     /** Extra fix instructions from the command line and body */
     instructions: string;
 }
@@ -132,10 +146,16 @@ export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {
                 instructions: parsed.instructions,
             };
         case 'fix': {
-            // For /fix, args on the command line are also instructions
-            const parts = [parsed.args.join(' '), parsed.instructions].filter(Boolean);
+            // For /fix, args on the command line are also instructions, so the
+            // joined form is kept for display and prompting. The two halves are
+            // carried separately as well, because joining them discards the
+            // command-line boundary that decides which text may select records.
+            const commandLine = parsed.args.join(' ');
+            const parts = [commandLine, parsed.instructions].filter(Boolean);
             return {
                 mode: 'fix',
+                commandLine,
+                bodyInstructions: parsed.instructions,
                 instructions: parts.join('\n').trim(),
             };
         }

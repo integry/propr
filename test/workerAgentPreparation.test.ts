@@ -47,7 +47,7 @@ await mock.module('node:timers/promises', {
         setTimeout: async () => new Promise<void>(resolve => { resumePoll = resolve; }),
     },
 });
-const { prepareAgentRegistryAtStartup, processAgentImagePreparationJob } = await import('../src/workerAgentPreparation.js');
+const { prepareAgentRegistryAtStartup, processAgentImagePreparationJob, startAgentImageWatchdog } = await import('../src/workerAgentPreparation.js');
 
 beforeEach(() => {
     ready = false;
@@ -144,4 +144,26 @@ test('failed explicit builds preserve the build error without refreshing readine
     await assert.rejects(processAgentImagePreparationJob(job as never), /explicit build failed/);
     assert.strictEqual(refresh.mock.callCount(), 0);
     assert.strictEqual(ready, false);
+});
+
+test('image watchdog periodically re-checks images and skips overlapping checks', async t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    let finish!: () => void;
+    const ensureInitialized = mock.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const watchdog = startAgentImageWatchdog({ ensureInitialized }, 1_000);
+    try {
+        t.mock.timers.tick(1_000);
+        t.mock.timers.tick(1_000);
+        assert.equal(ensureInitialized.mock.callCount(), 1);
+        finish();
+        await new Promise(resolve => setImmediate(resolve));
+        t.mock.timers.tick(1_000);
+        assert.equal(ensureInitialized.mock.callCount(), 2);
+        finish();
+        await new Promise(resolve => setImmediate(resolve));
+    } finally {
+        watchdog.close();
+    }
+    t.mock.timers.tick(5_000);
+    assert.equal(ensureInitialized.mock.callCount(), 2);
 });

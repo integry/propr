@@ -50,7 +50,8 @@ function validateScopedPath(file: string): string {
     return file;
 }
 
-function isGeneratedRuntimePath(file: string): boolean {
+/** Generated ProPR runtime output that commits never stage, so it is never publishable work. */
+export function isGeneratedRuntimePath(file: string): boolean {
     return GENERATED_PROPR_RUNTIME_PATHS.some(generated => file === generated || file.startsWith(`${generated}/`));
 }
 

@@ -1,6 +1,6 @@
 import { after, test, mock, describe } from 'node:test';
 import assert from 'node:assert';
-import type { CheckRunEvent } from '@octokit/webhooks-types';
+import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 
 // Mock Octokit used by all helper functions
 const mockOctokit = {
@@ -123,19 +123,49 @@ await mock.module('../packages/core/src/services/taskExecutionService.js', {
     }
 });
 
+// Mock the repository auto-merge policy gate (covered by packages/core/test/autoMergeGate.test.ts)
+type PolicyDecision = { arm: boolean; reason: string; method?: 'merge' | 'squash' | 'rebase' };
+const armedDecision: PolicyDecision = { arm: true, reason: 'armed' };
+// Like the real gate, the evaluation reports the PR head it read from GitHub.
+const evaluateCurrentHead = async (input: { owner: string; repo: string; prNumber: number }) => ({
+    decision: armedDecision as PolicyDecision,
+    pullRequest: { headSha: await getCurrentPRHead(input.owner, input.repo, input.prNumber) } as { headSha: string | null } | null,
+});
+const mockEvaluatePullRequestAutoMerge = mock.fn(evaluateCurrentHead);
+// Like the real resolver: the policy's method, else the repository default (squash here).
+const resolveWithPolicyMethod = async (input: { method?: 'merge' | 'squash' | 'rebase' }) => input.method ?? 'squash';
+const mockResolveDirectMergeMethod = mock.fn(resolveWithPolicyMethod);
+await mock.module('../packages/core/src/services/autoMergeGate.js', {
+    namedExports: { evaluatePullRequestAutoMerge: mockEvaluatePullRequestAutoMerge, resolveDirectMergeMethod: mockResolveDirectMergeMethod }
+});
+
 // Import the modules under test
 const {
     mergePR,
     deleteBranch,
     getCurrentPRHead,
     areAllChecksPassing,
+    getCiMergeReadiness,
+    NO_CI_GRACE_MS,
+    getCheckRunsStatus,
+    getCheckRunsStatusForRepo,
     getPRAutoMergeInfo,
     linkedIssueHasAutoMergeLabel,
     getFirstCommitMessage,
+    findPRsForCommitCached,
+    COMMIT_PRS_CACHE_TTL_SECONDS,
+    COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS,
     resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
-const { handleCheckRunEvent, handleStatusEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const {
+    handleCheckRunEvent,
+    handleCheckSuiteEvent,
+    handleStatusEvent,
+    setUltrafixCheckRunHook,
+    shouldAutoMergePR,
+    triggerUltrafixCheckRunHook,
+} = await import('../packages/core/src/webhook/checkRunHandler.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandler.js';
@@ -157,6 +187,10 @@ function resetMocks(): void {
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
     mockUpdatePlanIssueByPR.mock.resetCalls();
     mockTriggerNextPendingIssue.mock.resetCalls();
+    mockEvaluatePullRequestAutoMerge.mock.resetCalls();
+    mockEvaluatePullRequestAutoMerge.mock.mockImplementation(evaluateCurrentHead);
+    mockResolveDirectMergeMethod.mock.resetCalls();
+    mockResolveDirectMergeMethod.mock.mockImplementation(resolveWithPolicyMethod);
     resetUltrafixStateRedisForTests();
 }
 
@@ -257,9 +291,311 @@ function createMockCheckRunPayload(options: {
     } as CheckRunEvent;
 }
 
+// ============= Ultrafix readiness (getCheckRunsStatus + nonBlockingChecks) =============
+
+type FakeCheckRun = { name: string; status: string; conclusion: string | null };
+type FakeStatus = { context: string; state: string };
+
+function mockCheckSignals(checkRuns: FakeCheckRun[], statuses: FakeStatus[] = [], combinedState?: string): void {
+    mockOctokit.request.mock.mockImplementation(async (route: string) => {
+        if (route.includes('/status')) {
+            const state = combinedState
+                ?? (statuses.some(s => s.state === 'failure' || s.state === 'error') ? 'failure'
+                    : statuses.some(s => s.state === 'pending') ? 'pending' : 'success');
+            return { data: { state: statuses.length ? state : 'pending', total_count: statuses.length, statuses } };
+        }
+        return { data: { check_runs: checkRuns } };
+    });
+}
+
+const unsignedPatterns = ['Validate unsigned *', 'Finalize unsigned validation checksums'];
+
+describe('getCheckRunsStatus with nonBlockingChecks (Ultrafix readiness)', () => {
+    test('all passing checks are ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Optional', status: 'completed', conclusion: 'skipped' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, true);
+        assert.deepStrictEqual(status.blockingFailed, []);
+        assert.deepStrictEqual(status.blockingPending, []);
+    });
+
+    test('a failing check matching a non-blocking pattern is ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Validate unsigned darwin-arm64 package', status: 'completed', conclusion: 'failure' },
+            { name: 'Validate unsigned linux-x64 package', status: 'completed', conclusion: 'failure' },
+            { name: 'Finalize unsigned validation checksums', status: 'completed', conclusion: 'failure' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, true);
+        assert.strictEqual(status.anyFailed, false);
+        assert.strictEqual(status.nonBlockingCount, 3);
+        // Without patterns the same head is still not ready (unchanged default semantics).
+        const legacy = await getCheckRunsStatus('owner', 'repo', 'sha123');
+        assert.strictEqual(legacy.allPassing, false);
+        assert.strictEqual(legacy.anyFailed, true);
+    });
+
+    test('a failing check not matching any pattern is not ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Run Full Test Suite', status: 'completed', conclusion: 'failure' },
+            { name: 'Validate unsigned linux-arm64 package', status: 'completed', conclusion: 'failure' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, false);
+        assert.strictEqual(status.anyFailed, true);
+        assert.deepStrictEqual(status.blockingFailed, ['Run Full Test Suite']);
+    });
+
+    test('a pending non-blocking check is ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Validate unsigned darwin-x64 package', status: 'queued', conclusion: null },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, true);
+        assert.strictEqual(status.anyPending, false);
+    });
+
+    test('a pending blocking check is not ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Run Full Test Suite', status: 'in_progress', conclusion: null },
+            { name: 'Validate unsigned darwin-x64 package', status: 'completed', conclusion: 'failure' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, false);
+        assert.strictEqual(status.anyPending, true);
+        assert.strictEqual(status.anyFailed, false);
+        assert.deepStrictEqual(status.blockingPending, ['Run Full Test Suite']);
+    });
+
+    test('legacy commit statuses matching a pattern are excluded; blocking ones still gate', async () => {
+        resetMocks();
+        mockCheckSignals(
+            [{ name: 'Build & Lint Check', status: 'completed', conclusion: 'success' }],
+            [
+                { context: 'ci/legacy-build', state: 'success' },
+                { context: 'Validate unsigned windows package', state: 'failure' },
+            ],
+        );
+        const ready = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(ready.allPassing, true);
+        assert.strictEqual(ready.count, 3);
+        assert.strictEqual(ready.nonBlockingCount, 1);
+        // The combined legacy state is 'failure', so without patterns it still blocks.
+        assert.strictEqual((await getCheckRunsStatus('owner', 'repo', 'sha123')).allPassing, false);
+
+        resetMocks();
+        mockCheckSignals(
+            [{ name: 'Validate unsigned darwin-arm64 package', status: 'completed', conclusion: 'failure' }],
+            [
+                { context: 'ci/legacy-build', state: 'pending' },
+                { context: 'Validate unsigned windows package', state: 'failure' },
+            ],
+        );
+        const pending = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(pending.allPassing, false);
+        assert.deepStrictEqual(pending.blockingPending, ['ci/legacy-build']);
+        assert.deepStrictEqual(pending.blockingFailed, []);
+
+        resetMocks();
+        mockCheckSignals([], [{ context: 'ci/legacy-build', state: 'error' }]);
+        const failed = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(failed.allPassing, false);
+        assert.deepStrictEqual(failed.blockingFailed, ['ci/legacy-build']);
+    });
+
+    test('getCheckRunsStatusForRepo resolves the repository patterns', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Validate unsigned linux-x64 package', status: 'completed', conclusion: 'failure' },
+        ]);
+        const loader = mock.fn(async () => unsignedPatterns);
+        const status = await getCheckRunsStatusForRepo('owner', 'repo', 'sha123', loader);
+        assert.strictEqual(status.allPassing, true);
+        assert.deepStrictEqual(loader.mock.calls[0].arguments, ['owner', 'repo']);
+
+        // A loader failure falls back to treating every check as blocking.
+        const failing = await getCheckRunsStatusForRepo('owner', 'repo', 'sha123', async () => { throw new Error('db down'); });
+        assert.strictEqual(failing.allPassing, false);
+    });
+
+    test('areAllChecksPassing also ignores non-blocking legacy statuses', async () => {
+        resetMocks();
+        mockCheckSignals(
+            [{ name: 'Build & Lint Check', status: 'completed', conclusion: 'success' }],
+            [{ context: 'Finalize unsigned validation checksums', state: 'failure' }],
+        );
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => unsignedPatterns), true);
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => []), false);
+    });
+});
+
+// ============= getCiMergeReadiness Tests =============
+describe('getCiMergeReadiness', () => {
+    const observedAt = Date.parse('2026-10-19T23:46:00Z');
+    function respond(checkRuns: unknown[], statusCount = 0, fail: { checkRuns?: boolean; status?: boolean } = {}): void {
+        mockOctokit.request.mock.mockImplementation(async (route: string) => {
+            if (route.endsWith('/check-runs')) {
+                if (fail.checkRuns) throw new Error('check runs unavailable');
+                return { data: { check_runs: checkRuns } };
+            }
+            if (route.endsWith('/status')) {
+                if (fail.status) throw new Error('statuses unavailable');
+                return { data: { state: statusCount ? 'success' : 'pending', total_count: statusCount, statuses: [] } };
+            }
+            throw new Error(`unexpected ${route}`);
+        });
+    }
+    function observationStore(): { get: (key: string) => Promise<string | null>; set: (key: string, value: string) => Promise<'OK'>; del: (key: string) => Promise<number>; entries: Map<string, string> } {
+        const entries = new Map<string, string>();
+        return {
+            entries,
+            get: async (key: string) => entries.get(key) ?? null,
+            set: async (key: string, value: string) => { entries.set(key, value); return 'OK'; },
+            del: async (key: string) => Number(entries.delete(key)),
+        };
+    }
+    function readiness(sha: string, now: number, observations = observationStore()): ReturnType<typeof getCiMergeReadiness> {
+        return getCiMergeReadiness('owner', 'repo', sha, { prNumber: 7, now, loadNonBlockingChecks: async () => [], observations: observations as never });
+    }
+
+    test('passing checks allow the merge', async () => {
+        resetMocks();
+        respond([{ name: 'build', status: 'completed', conclusion: 'success' }]);
+        assert.deepStrictEqual(await readiness('sha', observedAt), { ready: true, reason: 'checks_passing' });
+    });
+
+    test('pending checks hold the merge', async () => {
+        resetMocks();
+        respond([{ name: 'build', status: 'in_progress', conclusion: null }]);
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10), { ready: false, reason: 'checks_not_passing' });
+    });
+
+    test('a head with no CI at all is mergeable once it was seen without checks for the grace period', async () => {
+        resetMocks();
+        respond([]);
+        const observations = observationStore();
+        assert.deepStrictEqual(await readiness('sha', observedAt, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS - 1, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS, observations), { ready: true, reason: 'no_ci' });
+    });
+
+    test('an old commit newly observed as the head still waits for checks to register', async () => {
+        resetMocks();
+        respond([]);
+        // The commit itself may be days old; only ProPR's observation of the head counts,
+        // so no commit lookup is made at all.
+        assert.deepStrictEqual(await readiness('old-commit', observedAt + 10 * 24 * 60 * 60_000), { ready: false, reason: 'waiting_for_ci' });
+        assert.ok(!mockOctokit.request.mock.calls.some(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/commits/{ref}'));
+    });
+
+    test('a different head restarts the grace period', async () => {
+        resetMocks();
+        respond([]);
+        const observations = observationStore();
+        assert.deepStrictEqual(await readiness('first', observedAt, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('second', observedAt + NO_CI_GRACE_MS, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('second', observedAt + 2 * NO_CI_GRACE_MS - 1, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('second', observedAt + 2 * NO_CI_GRACE_MS, observations), { ready: true, reason: 'no_ci' });
+        // Returning to an earlier head does not reuse its old observation.
+        assert.deepStrictEqual(await readiness('first', observedAt + 3 * NO_CI_GRACE_MS, observations), { ready: false, reason: 'waiting_for_ci' });
+    });
+
+    test('a head with CI in between restarts the grace period for an earlier head', async () => {
+        resetMocks();
+        const observations = observationStore();
+        respond([]);
+        assert.deepStrictEqual(await readiness('first', observedAt, observations), { ready: false, reason: 'waiting_for_ci' });
+        respond([{ name: 'build', status: 'in_progress', conclusion: null }]);
+        assert.deepStrictEqual(await readiness('second', observedAt + NO_CI_GRACE_MS, observations), { ready: false, reason: 'checks_not_passing' });
+        // The branch is reset to the first head after its original grace period passed.
+        respond([]);
+        assert.deepStrictEqual(await readiness('first', observedAt + 2 * NO_CI_GRACE_MS, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('first', observedAt + 3 * NO_CI_GRACE_MS - 1, observations), { ready: false, reason: 'waiting_for_ci' });
+        assert.deepStrictEqual(await readiness('first', observedAt + 3 * NO_CI_GRACE_MS, observations), { ready: true, reason: 'no_ci' });
+    });
+
+    test('an unreadable observation store never allows the merge', async () => {
+        resetMocks();
+        respond([]);
+        const broken = { get: async () => { throw new Error('redis down'); }, set: async () => 'OK' };
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10, broken as never), { ready: false, reason: 'unavailable' });
+    });
+
+    test('an API failure never allows the merge', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => { throw new Error('boom'); });
+        assert.deepStrictEqual(await readiness('sha', observedAt), { ready: false, reason: 'unavailable' });
+    });
+
+    for (const failed of ['checkRuns', 'status'] as const) {
+        test(`a failed ${failed} request with the other endpoint empty is not evidence of no CI`, async () => {
+            resetMocks();
+            respond([], 0, { [failed]: true });
+            const observations = observationStore();
+            assert.deepStrictEqual(await readiness('sha', observedAt, observations), { ready: false, reason: 'unavailable' });
+            assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10, observations), { ready: false, reason: 'unavailable' });
+            // An unreadable endpoint does not start the no-CI grace period either.
+            assert.equal(observations.entries.size, 0);
+        });
+    }
+
+    test('passing check runs do not allow the merge while the status request fails', async () => {
+        resetMocks();
+        respond([{ name: 'build', status: 'completed', conclusion: 'success' }], 0, { status: true });
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10), { ready: false, reason: 'unavailable' });
+    });
+
+    test('passing statuses do not allow the merge while the check-runs request fails', async () => {
+        resetMocks();
+        respond([], 1, { checkRuns: true });
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10), { ready: false, reason: 'unavailable' });
+    });
+});
+
 // ============= areAllChecksPassing Tests =============
 
 describe('areAllChecksPassing', () => {
+    test('a failing check the repository marked non-blocking does not hold automation back', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Run Full Test Suite', status: 'completed', conclusion: 'success' },
+                    { name: 'Validate unsigned darwin-x64 package', status: 'completed', conclusion: 'failure' },
+                    { name: 'Packaged Connect (darwin-arm64)', status: 'in_progress', conclusion: null },
+                ]
+            }
+        }));
+        const nonBlocking = async () => ['Validate unsigned * package', 'packaged connect*'];
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', nonBlocking), true);
+        // Without the setting the same checks still block.
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => []), false);
+    });
+
+    test('a blocking failure still fails when other failures are non-blocking', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Build & Lint Check', status: 'completed', conclusion: 'failure' },
+                    { name: 'Validate unsigned linux-x64 package', status: 'completed', conclusion: 'failure' },
+                ]
+            }
+        }));
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => ['Validate unsigned * package']), false);
+    });
+
     test('returns true when all checks completed with success', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async () => ({
@@ -936,6 +1272,18 @@ describe('mergePR', () => {
         assert.strictEqual(mergeCall.arguments[1].commit_title, 'Custom title');
         assert.strictEqual(mergeCall.arguments[1].commit_message, 'Custom message');
     });
+
+    test('pins the expected head SHA when given', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: { merged: true, sha: 'merge-sha' } }));
+
+        await mergePR({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42, sha: 'evaluated-head' });
+        await mergePR({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42 });
+
+        const calls = mockOctokit.request.mock.calls as unknown as Array<{ arguments: [string, { sha?: string }] }>;
+        assert.strictEqual(calls[0].arguments[1].sha, 'evaluated-head');
+        assert.ok(!('sha' in calls[1].arguments[1]));
+    });
 });
 
 // ============= deleteBranch Tests =============
@@ -1108,13 +1456,20 @@ describe('handleCheckRunEvent', () => {
         assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
     });
 
-    test('skips when no pull requests are associated', async () => {
+    test('skips when no pull requests are associated and no open PR has the commit', async () => {
         resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('/commits/{commit_sha}/pulls')) return { data: [{ number: 9, state: 'closed' }] };
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
 
         const payload = createMockCheckRunPayload({ pullRequests: [] });
         await handleCheckRunEvent(payload, 'test-correlation-id');
 
-        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
+        assert.deepStrictEqual(
+            mockOctokit.request.mock.calls.map(call => call.arguments[0]),
+            ['GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls'],
+        );
     });
 
     test('processes check run with success conclusion', async () => {
@@ -1299,6 +1654,82 @@ describe('handleCheckRunEvent', () => {
             call.arguments[0].includes('merge')
         );
         assert.ok(mergeCall, 'Should merge when SHA matches');
+    });
+
+    test('does not merge when the repository auto-merge policy skips the PR, and uses its merge method otherwise', async () => {
+        const mockMergeablePR = async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
+                        base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] } };
+            if (endpoint.includes('merge')) return { data: { merged: true, sha: 'merge123' } };
+            return { data: {} };
+        };
+        const mergeCalls = () => mockOctokit.request.mock.calls.filter((call: { arguments: [string] }) => call.arguments[0].includes('/merge'));
+
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async () => ({
+            decision: { arm: false, reason: 'skipped_protected_path' }, pullRequest: null,
+        }));
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mockEvaluatePullRequestAutoMerge.mock.callCount(), 1);
+        assert.equal(mergeCalls().length, 0, 'a skipped policy decision leaves the merge to a human');
+
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async () => ({
+            decision: { arm: true, reason: 'armed', method: 'rebase' }, pullRequest: { headSha: 'abc123sha' },
+        }));
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 1);
+        assert.equal((mergeCalls()[0].arguments as unknown as [string, { merge_method: string }])[1].merge_method, 'rebase');
+
+        // A policy without a method merges with the repository-supported method the arming gate would use.
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockResolveDirectMergeMethod.mock.mockImplementation(async () => 'merge');
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.deepEqual(mockResolveDirectMergeMethod.mock.calls[0].arguments[0], { owner: 'test-owner', repo: 'test-repo', method: undefined });
+        assert.equal(mergeCalls().length, 1);
+        assert.equal((mergeCalls()[0].arguments as unknown as [string, { merge_method: string }])[1].merge_method, 'merge');
+    });
+
+    test('merges only the head the auto-merge policy evaluated', async () => {
+        const mockMergeablePR = async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
+                        base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] } };
+            if (endpoint.includes('merge')) return { data: { merged: true, sha: 'merge123' } };
+            return { data: {} };
+        };
+        const mergeCalls = () => mockOctokit.request.mock.calls.filter((call: { arguments: [string] }) => call.arguments[0].includes('/merge'));
+
+        // A protected head pushed during evaluation was what the policy saw: the
+        // decision does not cover the head whose checks passed, so nothing merges.
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async () => ({ decision: armedDecision, pullRequest: { headSha: 'newer-head' } }));
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 0);
+
+        // The REST merge pins the evaluated head so GitHub refuses a replacement head.
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 1);
+        assert.equal((mergeCalls()[0].arguments as unknown as [string, { sha?: string }])[1].sha, 'abc123sha');
     });
 
     test('does not merge after one successful check while GitHub still reports required checks blocked', async () => {
@@ -1911,5 +2342,337 @@ describe('shouldAutoMergePR', () => {
 
         // Verify linkedIssueHasAutoMergeLabel wasn't called (no pulls API call for body)
         // When PR has label, we skip the linked issue check
+    });
+});
+
+// ============= Check intake fallbacks, check_suite, and the Ultrafix hook =============
+
+type HookCall = [string, string, number, string];
+
+function installHookRecorder(): HookCall[] {
+    const calls: HookCall[] = [];
+    setUltrafixCheckRunHook(async (owner, repo, prNumber, headSha) => {
+        calls.push([owner, repo, prNumber, headSha]);
+    });
+    return calls;
+}
+
+function clearHook(): void {
+    setUltrafixCheckRunHook(null as unknown as Parameters<typeof setUltrafixCheckRunHook>[0]);
+}
+
+/** GitHub stub: the commit maps to open PR #77, which is labelled auto-merge, clean, and green. */
+function mockGreenAutoMergePR(headSha: string): void {
+    mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+        if (endpoint.includes('/commits/{commit_sha}/pulls')) {
+            return { data: [{ number: 77, state: 'open' }, { number: 78, state: 'closed' }] };
+        }
+        if (endpoint.includes('merge')) return { data: { merged: true, sha: 'merge123' } };
+        if (endpoint.includes('check-runs')) {
+            return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] } };
+        }
+        if (endpoint.includes('pulls')) {
+            return {
+                data: {
+                    labels: [{ name: 'auto-merge' }],
+                    draft: false,
+                    mergeable: true,
+                    mergeable_state: 'clean',
+                    base: { ref: 'main' },
+                    head: { ref: 'feature', sha: headSha, repo: { owner: { login: 'test-owner' } } },
+                    body: '',
+                },
+            };
+        }
+        return { data: {} };
+    });
+}
+
+function mergeCalls(): string[] {
+    return mockOctokit.request.mock.calls
+        .map(call => call.arguments[0] as string)
+        .filter(endpoint => endpoint.startsWith('PUT') && endpoint.includes('/merge'));
+}
+
+function createMockCheckSuitePayload(options: {
+    action?: string;
+    conclusion?: string | null;
+    headSha?: string;
+    pullRequests?: Array<{ number: number }>;
+}): CheckSuiteEvent {
+    const { action = 'completed', conclusion = 'success', headSha = 'suite-sha', pullRequests = [] } = options;
+    return {
+        action,
+        check_suite: {
+            id: 10,
+            head_sha: headSha,
+            head_branch: 'feature',
+            status: 'completed',
+            conclusion,
+            pull_requests: pullRequests.map(pr => ({ number: pr.number, id: pr.number })),
+        },
+        repository: { full_name: 'test-owner/test-repo' },
+    } as unknown as CheckSuiteEvent;
+}
+
+describe('check intake fallbacks and Ultrafix hook', () => {
+    test('handleCheckRunEvent falls back to findPRsForCommit when pull_requests is empty', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('push-sha');
+        const hookCalls = installHookRecorder();
+        try {
+            await handleCheckRunEvent(createMockCheckRunPayload({ pullRequests: [], headSha: 'push-sha' }), 'cid');
+        } finally {
+            clearHook();
+        }
+
+        const lookup = mockOctokit.request.mock.calls.find(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls'));
+        assert.ok(lookup, 'Should look up PRs for the commit');
+        assert.strictEqual((lookup.arguments[1] as { commit_sha: string }).commit_sha, 'push-sha');
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'push-sha']]);
+        assert.strictEqual(mergeCalls().length, 1, 'Should auto-merge the resolved PR');
+    });
+
+    test('handleCheckRunEvent uses payload PRs without a commit lookup', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('abc123sha');
+        const hookCalls = installHookRecorder();
+        try {
+            await handleCheckRunEvent(createMockCheckRunPayload({ pullRequests: [{ number: 42 }] }), 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.ok(!mockOctokit.request.mock.calls.some(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls')));
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 42, 'abc123sha']]);
+    });
+
+    for (const conclusion of ['success', 'neutral']) {
+        test(`handleCheckSuiteEvent with ${conclusion} triggers auto-merge and the Ultrafix hook`, async () => {
+            resetMocks();
+            mockGreenAutoMergePR('suite-sha');
+            const hookCalls = installHookRecorder();
+            try {
+                await handleCheckSuiteEvent(createMockCheckSuitePayload({ conclusion }), 'cid');
+            } finally {
+                clearHook();
+            }
+
+            assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'suite-sha']]);
+            assert.strictEqual(mergeCalls().length, 1);
+        });
+    }
+
+    test('handleCheckSuiteEvent uses PRs from the suite payload when present', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('suite-sha');
+        const hookCalls = installHookRecorder();
+        try {
+            await handleCheckSuiteEvent(createMockCheckSuitePayload({ pullRequests: [{ number: 5 }] }), 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.ok(!mockOctokit.request.mock.calls.some(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls')));
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 5, 'suite-sha']]);
+    });
+
+    test('handleCheckSuiteEvent ignores failed or incomplete suites', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('suite-sha');
+        const hookCalls = installHookRecorder();
+        try {
+            await handleCheckSuiteEvent(createMockCheckSuitePayload({ conclusion: 'failure' }), 'cid');
+            await handleCheckSuiteEvent(createMockCheckSuitePayload({ action: 'requested', conclusion: null }), 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
+        assert.deepStrictEqual(hookCalls, []);
+    });
+
+    test('handleCheckRunEvent resolves a PR whose head is the default branch', async () => {
+        // e.g. an open `main` -> `release` PR: the run reports head_branch
+        // `main` with an empty pull_requests array.
+        resetMocks();
+        mockGreenAutoMergePR('main-sha');
+        const hookCalls = installHookRecorder();
+        const payload = createMockCheckRunPayload({ pullRequests: [], headSha: 'main-sha' });
+        (payload.check_run as unknown as { check_suite: Record<string, unknown> }).check_suite = { id: 1, head_branch: 'main' };
+        (payload.repository as unknown as Record<string, unknown>).default_branch = 'main';
+        try {
+            await handleCheckRunEvent(payload, 'cid');
+        } finally {
+            clearHook();
+        }
+
+        const lookup = mockOctokit.request.mock.calls.find(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls'));
+        assert.ok(lookup, 'default-branch runs still look up PRs for the commit');
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'main-sha']]);
+    });
+
+    test('handleCheckRunEvent still looks up PRs for runs on other branches', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('push-sha');
+        const hookCalls = installHookRecorder();
+        const payload = createMockCheckRunPayload({ pullRequests: [], headSha: 'push-sha' });
+        (payload.check_run as unknown as { check_suite: Record<string, unknown> }).check_suite = { id: 1, head_branch: 'feature' };
+        (payload.repository as unknown as Record<string, unknown>).default_branch = 'main';
+        try {
+            await handleCheckRunEvent(payload, 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'push-sha']]);
+    });
+
+    test('handleCheckSuiteEvent with skipped wakes the Ultrafix hook like a passing suite', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('suite-sha');
+        const hookCalls = installHookRecorder();
+        try {
+            await handleCheckSuiteEvent(createMockCheckSuitePayload({ conclusion: 'skipped' }), 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'suite-sha']]);
+    });
+
+    test('handleCheckSuiteEvent resolves a PR whose head is the default branch', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('suite-sha');
+        const hookCalls = installHookRecorder();
+        const payload = createMockCheckSuitePayload({});
+        (payload.check_suite as unknown as Record<string, unknown>).head_branch = 'main';
+        (payload.repository as unknown as Record<string, unknown>).default_branch = 'main';
+        try {
+            await handleCheckSuiteEvent(payload, 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.ok(mockOctokit.request.mock.calls.some(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls')));
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'suite-sha']]);
+    });
+
+    test('triggerUltrafixCheckRunHook dispatches to the registered hook', async () => {
+        const hookCalls = installHookRecorder();
+        try {
+            assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }), true);
+        } finally {
+            clearHook();
+        }
+        assert.deepStrictEqual(hookCalls, [['o', 'r', 3, 'sha3']]);
+    });
+
+    test('triggerUltrafixCheckRunHook returns false without a hook and swallows hook errors', async () => {
+        clearHook();
+        assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }), false);
+
+        setUltrafixCheckRunHook(async () => { throw new Error('boom'); });
+        const warn = mock.fn();
+        try {
+            assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }), false);
+            // The caller's correlated logger reports the failure.
+            assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }, { warn } as never), false);
+        } finally {
+            clearHook();
+        }
+        assert.strictEqual(warn.mock.callCount(), 1);
+        assert.match(String(warn.mock.calls[0].arguments[1]), /Ultrafix check hook failed/);
+    });
+});
+
+describe('commit to PR lookup cache', () => {
+    function memoryCache() {
+        const store = new Map<string, string>();
+        const set = mock.fn(async (key: string, value: string, ..._options: Array<string | number>) => { store.set(key, value); return 'OK' as const; });
+        return { store, set, get: async (key: string) => store.get(key) ?? null };
+    }
+    const lookups = () => mockOctokit.request.mock.calls.filter(call =>
+        (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls'));
+
+    test('a burst of check runs for one commit costs one GitHub lookup', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('burst-sha');
+        const cache = memoryCache();
+
+        const burst = await Promise.all([1, 2, 3].map(() =>
+            findPRsForCommitCached('test-owner', 'test-repo', 'burst-sha', cache as never)));
+        const later = await findPRsForCommitCached('test-owner', 'test-repo', 'burst-sha', cache as never);
+
+        for (const prs of [...burst, later]) assert.deepStrictEqual(prs, [{ number: 77 }]);
+        assert.strictEqual(lookups().length, 1);
+        assert.deepStrictEqual(cache.set.mock.calls[0].arguments.slice(2), ['EX', COMMIT_PRS_CACHE_TTL_SECONDS]);
+    });
+
+    test('commits and repositories are cached separately, and empty results are cached too', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: [{ number: 9, state: 'closed' }] }));
+        const cache = memoryCache();
+
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'main-sha', cache as never), []);
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'main-sha', cache as never), []);
+        await findPRsForCommitCached('test-owner', 'other-repo', 'main-sha', cache as never);
+        await findPRsForCommitCached('test-owner', 'test-repo', 'next-sha', cache as never);
+        assert.strictEqual(lookups().length, 3);
+        // A PR may be opened for the commit moments later: "none" expires sooner.
+        assert.deepStrictEqual(cache.set.mock.calls[0].arguments.slice(2), ['EX', COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS]);
+        assert.ok(COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS < COMMIT_PRS_CACHE_TTL_SECONDS);
+    });
+
+    test('repeated empty lookups for one commit are cached for longer each time, up to the positive TTL', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: [] }));
+        const cache = memoryCache();
+
+        for (let i = 0; i < 4; i++) {
+            cache.store.clear(); // the previous entry expired
+            await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
+        }
+        assert.deepStrictEqual(cache.set.mock.calls.map(call => call.arguments[3]), [
+            COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS,
+            COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 2,
+            COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 4,
+            COMMIT_PRS_CACHE_TTL_SECONDS,
+        ]);
+
+        // A PR found for the commit resets the streak.
+        cache.store.clear();
+        mockGreenAutoMergePR('slow-push-sha');
+        await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
+        cache.store.clear();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: [] }));
+        await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
+        assert.strictEqual(cache.set.mock.calls.at(-1)!.arguments[3], COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS);
+    });
+
+    test('a failed lookup is not cached', async () => {
+        resetMocks();
+        const cache = memoryCache();
+        mockOctokit.request.mock.mockImplementation(async () => { throw new Error('502'); });
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'flaky-sha', cache as never), []);
+        assert.strictEqual(cache.store.size, 0);
+
+        mockGreenAutoMergePR('flaky-sha');
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'flaky-sha', cache as never), [{ number: 77 }]);
+    });
+
+    test('an unavailable cache falls back to the plain lookup', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('no-cache-sha');
+        const broken = {
+            get: async () => { throw new Error('redis down'); },
+            set: async () => { throw new Error('redis down'); },
+        };
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'no-cache-sha', broken as never), [{ number: 77 }]);
     });
 });

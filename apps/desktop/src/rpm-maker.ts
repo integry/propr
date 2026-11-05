@@ -13,7 +13,8 @@ type RedhatInstallerInstance = {
     logger: (message: string) => void;
   };
   specPath: string;
-  generateDefaults(): Promise<void>;
+  defaults: { requires?: string[] };
+  generateDefaults(): Promise<unknown>;
   generateOptions(): void;
   generateScripts(): Promise<void>;
   createStagingDir(): Promise<void>;
@@ -36,6 +37,20 @@ const renameRpm = (destination: string) => join(
 const RPM_SPEC_TEMPLATE = fileURLToPath(new URL('../assets/linux/rpm.spec.ejs', import.meta.url));
 
 /**
+ * electron-installer-redhat 3.x maps Electron's DRM dependency to the
+ * Fedora/RHEL package name only. openSUSE ships the same libdrm.so.2 runtime
+ * as `libdrm2` and has no `libdrm` capability, so use the same rich-dependency
+ * alternative style upstream already uses for gbm, notify, nss and xcb.
+ */
+const RPM_REQUIRE_ALTERNATIVES: Readonly<Record<string, string>> = {
+  libdrm: '(libdrm or libdrm2)',
+};
+
+export function portableRpmRequires(requires: readonly string[]): string[] {
+  return requires.map(requirement => RPM_REQUIRE_ALTERNATIVES[requirement] ?? requirement);
+}
+
+/**
  * MakerRpm with a ProPR-owned spec template. electron-installer-redhat 3.x
  * stages chrome-sandbox as 4755, but its plain `cp -r` install step clears the
  * setuid bit before rpmbuild records the payload metadata.
@@ -56,6 +71,14 @@ export class ProprMakerRpm extends MakerRpm {
     const specTemplate = this.specTemplate;
 
     class ProprRedhatInstaller extends redhatInstaller.Installer {
+      override async generateDefaults(): Promise<unknown> {
+        const defaults = await super.generateDefaults();
+        if (this.defaults.requires) {
+          this.defaults.requires = portableRpmRequires(this.defaults.requires);
+        }
+        return defaults;
+      }
+
       override async createSpec(): Promise<void> {
         this.options.logger(`Creating ProPR RPM spec file at ${this.specPath}`);
         await this.createTemplatedFile(specTemplate, this.specPath);

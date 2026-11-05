@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React from 'react';
 import { TaskInfo, HistoryItem, TokenUsage, UsageMetricRecord } from './types';
 import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, MessageSquarePlus } from 'lucide-react';
@@ -32,7 +33,7 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
 };
 
 const getDisplayModelName = (modelId: string): string => {
-  return MODEL_DISPLAY_NAMES[modelId] || modelId;
+  return MODEL_DISPLAY_NAMES[modelId] || formatModelName(modelId);
 };
 
 // Vertical divider component for consistent styling
@@ -322,7 +323,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         {/* Model with distinct style */}
         <span
           className="flex items-center gap-1.5 bg-purple-50 text-purple-700 px-2 py-0.5 rounded text-xs font-medium border border-purple-100 cursor-default"
-          title={modelName}
+          title={getDisplayModelName(modelName)}
         >
           <ProviderLogo provider={modelName} className="w-3.5 h-3.5" />
           {getDisplayModelName(modelName)}

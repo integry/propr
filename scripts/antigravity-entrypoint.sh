@@ -4,8 +4,6 @@
 
 set -e
 
-echo "Skipping firewall setup (would require --privileged Docker flag)" >&2
-
 if [ -z "$GH_TOKEN" ]; then
     echo "Warning: GH_TOKEN environment variable not set" >&2
     echo "GitHub operations may fail" >&2

@@ -3,8 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const backendDockerfiles = [
-  '../Dockerfile',
-  '../Dockerfile.node',
+  '../docker/Dockerfile.node',
   '../packages/api/Dockerfile.prod',
   '../docker/Dockerfile.app.prod',
 ];

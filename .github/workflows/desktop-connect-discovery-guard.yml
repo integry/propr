@@ -8,6 +8,14 @@ name: Packaged Connect Discovery Guard
 on:
   pull_request:
   workflow_dispatch:
+  # Pull requests run this only when they touch the desktop app. The
+  # `desktop-ci` label request and the Tier 3 nightly run call it.
+  workflow_call:
+
+env:
+  # Resolve the public repository variable here for direct runs and reusable
+  # callers (desktop-ci-request and test-nightly); caller env is not inherited.
+  PROPR_DESKTOP_GITHUB_CLIENT_ID: ${{ vars.PROPR_DESKTOP_GITHUB_CLIENT_ID }}
 
 permissions:
   contents: read

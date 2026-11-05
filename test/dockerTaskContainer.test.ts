@@ -1,5 +1,6 @@
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 import {
     addTaskAttemptLabelsToDockerArgs,
     findTaskContainer,
@@ -7,6 +8,8 @@ import {
     inspectTaskContainerLivenessForTask,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
+
+after(closeConnection);
 
 function result(stdout: string, exitCode = 0, stderr = ''): ExecutionResult {
     return { stdout, stderr, exitCode, messageTimestamps: new Map() };

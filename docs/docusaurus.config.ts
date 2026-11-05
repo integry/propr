@@ -6,7 +6,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'ProPR',
-  tagline: 'Plan, implement, review, and refine GitHub pull requests with AI agents — self-hosted',
+  tagline: 'Official ProPR documentation: setup, AI coding workflows, CLI, and API',
   favicon: 'img/logo-mark.png',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -50,6 +50,20 @@ const config: Config = {
     ],
   ],
 
+  // Keep search results for consolidated guides inside the current docs.
+  plugins: [
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        redirects: [
+          {from: '/docs/architecture/opencode-integration', to: '/docs/architecture/coding-agent-integration'},
+          {from: '/docs/features/pr-ultrafix-commands', to: '/docs/features/pr-commands'},
+          {from: ['/docs/operations/llm-metrics', '/docs/operations/system-metrics'], to: '/docs/operations/metrics'},
+        ],
+      },
+    ],
+  ],
+
   themes: [
     [
       '@easyops-cn/docusaurus-search-local',
@@ -63,6 +77,9 @@ const config: Config = {
   ],
 
   themeConfig: {
+    metadata: [
+      {name: 'description', content: 'Official ProPR documentation. Set up your self-hosted instance, run AI coding workflows, and use the CLI and API.'},
+    ],
     // Replace with your project's social card
     image: 'img/social-card.png',
     colorMode: {
@@ -142,7 +159,7 @@ const config: Config = {
             },
             {
               label: 'Discord',
-              href: 'https://discord.gg/wNYzTwZFku',
+              href: 'https://discord.gg/VJxDASAE64',
             },
             {
               label: 'Reddit',

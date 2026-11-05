@@ -10,6 +10,7 @@
 import React, { createContext, useContext } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Check,
   CornerDownRight,
   Eye,
   GitMerge,
@@ -22,6 +23,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { RepositoryIcon } from '../RepositoryIcon';
+import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { isExternalHref } from './sectionState';
 
@@ -87,8 +89,8 @@ export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }
  * No border and no background: boxed next to the repository chip it was a
  * second identical brick, and the eye had nothing to tell the two apart by.
  * Monospace in the row's darkest metadata ink keeps it reading as an
- * identifier, and it underlines under the pointer like the link it sits in.
- * It is not an anchor of its own — the whole row already is one.
+ * identifier. It is not an anchor of its own — the whole row already is one —
+ * so it does not underline under the pointer.
  *
  * The entity type is always spelled out. A bare `#2479` leaves the reader
  * guessing whether it is an issue or a pull request, so the prefix is not
@@ -96,7 +98,7 @@ export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }
  */
 const WorkReferenceText: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <span
-    className="whitespace-nowrap font-mono text-[12px] leading-4 text-slate-800 hover:underline"
+    className="whitespace-nowrap font-mono text-[12px] leading-4 text-slate-800"
     title={title}
   >
     {children}
@@ -243,12 +245,9 @@ export const SectionError: React.FC<{ message: string; onRetry: () => void }> = 
   </div>
 );
 
-export const SectionSkeleton: React.FC<{ rows?: number }> = ({ rows = 3 }) => (
-  <div className="animate-pulse space-y-2 px-3 py-3" data-testid="section-skeleton">
-    {Array.from({ length: rows }, (_, index) => (
-      <div key={index} className="h-10 rounded-sm bg-slate-100" />
-    ))}
-  </div>
+/** A section's first read, drawn under its real heading so the column never jumps. */
+export const SectionSkeleton: React.FC<{ rows?: number; label?: string }> = ({ rows = 3, label = 'Loading…' }) => (
+  <ListSkeleton rows={rows} layout="row" label={label} className="px-3 py-3" data-testid="section-skeleton" />
 );
 
 /**
@@ -312,6 +311,9 @@ export const RowMetaLines: React.FC<{
  */
 const WORK_TYPE_ICONS: Record<string, LucideIcon> = {
   review: Eye,
+  verify: Check,
+  ci: RotateCw,
+  test: RotateCw,
   fix: Wrench,
   ultrafix: Zap,
   implement: Sparkles,
@@ -331,12 +333,15 @@ const WORK_TYPE_ICONS: Record<string, LucideIcon> = {
  * so it cannot be mistaken for the repository chip or the identifier on the
  * line above.
  */
-export const WorkTypeBadge: React.FC<{ type: string }> = ({ type }) => {
-  const Icon = WORK_TYPE_ICONS[type.toLowerCase()];
+export const WorkTypeBadge: React.FC<{ type: string; compact?: boolean }> = ({ type, compact = false }) => {
+  const kind = type.toLowerCase();
+  const Icon = WORK_TYPE_ICONS[kind];
+  const tone = kind === 'review' ? 'text-slate-500'
+    : kind === 'verify' || kind === 'ci' ? 'text-slate-400' : 'text-slate-600';
   return (
     <span
       data-testid="work-type-badge"
-      className="mr-2 inline-flex -translate-y-px items-center gap-1 whitespace-nowrap align-middle text-[10px] font-bold uppercase leading-4 tracking-wider text-slate-600"
+      className={`inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-bold uppercase leading-4 ${compact ? `w-20 shrink-0 font-mono ${tone}` : 'mr-2 -translate-y-px align-middle tracking-wider text-slate-600'}`}
     >
       {Icon && <Icon className="h-3 w-3 flex-none" strokeWidth={2.25} aria-hidden="true" />}
       {type}

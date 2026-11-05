@@ -48,6 +48,12 @@ const CHROME_KEYS = new Set([
   'nativeControlRegion', 'nativeControlRegionStyle', 'overlayRect', 'overlayVisible',
 ]);
 
+// Linux custom chrome; the application menu control leads when the bridge exposes it.
+const CUSTOM_CONTROL_LABEL_SETS = new Set([
+  'Minimize window|Maximize or restore window|Close window',
+  'Application menu|Minimize window|Maximize or restore window|Close window',
+]);
+
 const boundedElementRectangle = (value: unknown): Record<string, number> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const geometry = Object.entries(value);
@@ -77,8 +83,8 @@ const boundedChrome = (value: unknown): Record<string, unknown> | null => {
   if (!Array.isArray(nativeControlLabels)
     || nativeControlLabels.some(label => typeof label !== 'string')) return null;
   const dragRegion = boundedElementRectangle(chrome.dragRegion);
-  const hasCustomControls = nativeControlLabels.length === 3
-    && nativeControlLabels.join('|') === 'Minimize window|Maximize or restore window|Close window';
+  const customControlLabels = nativeControlLabels.join('|');
+  const hasCustomControls = CUSTOM_CONTROL_LABEL_SETS.has(customControlLabels);
   const hasNativeOverlayControls = nativeControlLabels.length === 0;
   if (!hasCustomControls && !hasNativeOverlayControls) return null;
   const nativeControlRegion = chrome.nativeControlRegion === null
@@ -199,6 +205,16 @@ export const formatDesktopLogRecord = (
   ...sanitizeDesktopLogFields(event, fields),
 });
 
+// Diagnostic console output is best-effort: a synchronous stdout/stderr failure (for example
+// ENOSPC or EPIPE from a SyncWriteStream) must not escape into the caller or skip the file sink.
+const writeConsoleBestEffort = (consoleMethod: (line: string) => void, line: string): void => {
+  try {
+    consoleMethod.call(console, line);
+  } catch {
+    // The console sink is unavailable; the independent file sink still receives the record.
+  }
+};
+
 export const createDesktopLogger = (
   logPath: string,
   onWriteFailure?: () => void,
@@ -207,7 +223,7 @@ export const createDesktopLogger = (
   const log = (level: LogLevel, event: string, fields: Record<string, unknown> = {}) => {
     const record = formatDesktopLogRecord(level, event, fields);
     const consoleMethod = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    consoleMethod(record);
+    writeConsoleBestEffort(consoleMethod, record);
     pending = pending
       .then(async () => {
         await mkdir(dirname(logPath), { recursive: true, mode: 0o700 });
@@ -219,7 +235,10 @@ export const createDesktopLogger = (
         } catch {
           // Keep the fixed logger diagnostic available even if the smoke-only sink also fails.
         }
-        console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', code: 'LOG_WRITE_FAILED' }));
+        writeConsoleBestEffort(
+          console.error,
+          JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', code: 'LOG_WRITE_FAILED' }),
+        );
       });
   };
   return { log };

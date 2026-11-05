@@ -1,10 +1,13 @@
 ---
 sidebar_position: 5
+sidebar_label: "Agents and Models"
+title: "Choose coding agents and models for each task"
+description: "Configure supported coding agents, credentials, model labels, and per-phase routing for planning, implementation, and review."
 ---
 
 # Agents and Models
 
-ProPR runs coding work through configurable agents. Each agent is a CLI tool packaged in its own Docker image, with an isolated credential directory mounted into that image. Models are addressed by stable ProPR model IDs that work everywhere a model can be chosen: issue labels, the Web UI, the CLI (`-a`/`-m`), and PR commands (`/switch`, `/use`, `/review <model>`).
+ProPR runs coding work through configurable agents. Each agent is a CLI tool that runs in the unified `propr/agent` Docker image, with an isolated credential directory mounted into its container. Models are addressed by stable ProPR model IDs that work everywhere a model can be chosen: issue labels, the Web UI, the CLI (`-a`/`-m`), and PR commands (`/switch`, `/use`, `/review <model>`).
 
 The canonical catalog lives in `packages/shared/src/modelDefinitions.ts`. The tables below reflect that file; if they ever disagree, the source file wins. Custom model IDs can also be added per agent in the Web UI (**AI Agents**) or with `propr agent add`.
 
@@ -39,6 +42,12 @@ Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<a
 
 To reuse an account that is already authenticated on the host, select **Use existing config** and provide its config path. Launcher deployments also expose that path with the matching `HOST_*` setting. You can authenticate existing paths with a host CLI or `propr agent login <type>`; both CLI and Web login actions run the configured agent image, avoiding host/image CLI version drift. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
 
+## Goal sessions
+
+Codex, Claude and Antigravity run goals on their native goal support. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.
+
+Keep Antigravity's mounted configuration directory across goal attempts, since it holds the goal conversation. See [Goals](./goals.md) for checkpoint, pause/resume, cancellation, and draft PR behavior.
+
 ## Agent Configuration
 
 The Web UI includes an AI Agents page for configuring coding agents. Each agent entry defines:
@@ -56,15 +65,15 @@ The Web UI includes an AI Agents page for configuring coding agents. Each agent 
 
 The model IDs you enable here become the durable names used by labels and slash commands.
 
-For an interactive login, choose direct login while adding the agent or select **Log in** on an existing entry. Open the authorization URL shown in the dialog and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes of inactivity, and are not persisted in task or LLM logs.
+For an interactive login, choose direct login while adding the agent or choose **Log in** from an existing entry's **⋯** actions menu. Open the authorization URL shown in the dialog and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes of inactivity, and are not persisted in task or LLM logs.
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the add-agent modal open for Claude: the new-account/existing-config credential choice, alias, enable toggle, and supported models with one default selected. */}
 
 ## Reasoning Levels
 
-The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use each CLI's default. Each supported model can also set one of its agent runtime's native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An issue or PR `level-*` label has the highest precedence and overrides both.
+The system setting `model_reasoning_level` applies to Claude, Codex, and Antigravity agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use the default effort (Antigravity starts from medium and resolves it against the selected model's supported levels). Each supported model can also set one of its native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An explicit run selection or issue or PR `level-*` label has the highest precedence and overrides both.
 
-Valid values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the Claude and Codex vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode.
+Valid system preference and `level-*` label values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR resolves the requested effort against the selected agent and model's vocabulary. Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode. Antigravity chooses the closest supported level at or below the request, falling back to the model's lowest level when necessary; `auto` starts from medium. For example, `xhigh` or `max` becomes high for Claude 5.5 and Gemini Flash, and GPT-OSS always uses medium. Model configuration offers only the selected model's supported levels; reasoning effort is separate from its base model label.
 
 Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. Saving a global or model-specific reasoning level surfaces a non-blocking warning for enabled agents pinned below those versions. If the mismatch remains, ProPR also fails an affected run before starting the CLI with a version-specific error.
 
@@ -94,13 +103,15 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 
 ## Claude Code Models
 
-Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias.
+Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias. Claude Fable 5.1, Claude Sonnet 5.5, and Claude Haiku 5.5 are the targets of the plain `fable`, `sonnet`, and `haiku` aliases, so labels such as `llm-claude-fable` and `llm-claude-haiku` also select them.
 
 | Model | Label | Context |
 |-------|-------|---------|
 | Claude Opus 5.5 | `llm-claude-opus55` | 1M |
 | Claude Fable 5.1 | `llm-claude-fable51` | 1M |
-| Claude Fable 5 | `llm-claude-fable` | 1M |
+| Claude Sonnet 5.5 | `llm-claude-sonnet55` | 1M |
+| Claude Haiku 5.5 | `llm-claude-haiku55` | 1M |
+| Claude Fable 5 | `llm-claude-fable5` | 1M |
 | Claude Opus 5 | `llm-claude-opus5` | 1M |
 | Claude Sonnet 5 | `llm-claude-sonnet5` | 1M |
 | Claude Opus 4.8 | `llm-claude-opus48` | 1M |
@@ -109,17 +120,21 @@ Claude Opus 5.5 is the default Claude model and the target of the plain `opus` a
 | Claude Sonnet 4.6 | `llm-claude-sonnet46` | 1M |
 | Claude Opus 4.5 | `llm-claude-opus45` | 200K |
 | Claude Sonnet 4.5 | `llm-claude-sonnet45` | 200K |
-| Claude Haiku 4.5 | `llm-claude-haiku` | 200K |
+| Claude Haiku 4.5 | `llm-claude-haiku45` | 200K |
 
-Some models require a minimum agent CLI version (for example, Opus 5.5 requires Claude Code ≥ 2.1.280); ProPR records this in the catalog and the agent image is kept current.
+Some models require a minimum agent CLI version (for example, Haiku 5.5 requires Claude Code ≥ 2.1.293); ProPR records this in the catalog and the agent image is kept current.
 
 ## Codex Models
 
-GPT-6 Astra is the recommended default for complex implementation, research, and security work. GPT-5.6 Terra balances capability, speed, and cost for everyday work; GPT-5.6 Luna is the fastest and lowest-cost GPT-5.6 option. Astra requires Codex CLI >= 0.153.1, while GPT-5.6 models require Codex CLI >= 0.144.0.
+{/* GPT-6.1 Sol capability/cost wording verified 2026-10-01: https://developers.openai.com/api/docs/models/gpt-6.1-sol */}
+GPT-6 Astra is the recommended default for the most demanding implementation, research, and security work. GPT-6.1 Sol offers near-Astra capability at a lower cost, GPT-6 Sol remains available for existing workflows, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6.1 Sol requires Codex CLI >= 0.153.0, while GPT-6 Sol and GPT-6 Luna require Codex CLI >= 0.155.0. The bundled Codex CLI is pinned to 0.166.0.
 
 | Model | Label | Context |
 |-------|-------|---------|
 | GPT-6 Astra | `llm-codex-astra` | 1.05M |
+| GPT-6.1 Sol | `llm-codex-gpt61-sol` | 1.05M |
+| GPT-6 Sol | `llm-codex-gpt6-sol` | 1.05M |
+| GPT-6 Luna | `llm-codex-gpt6-luna` | 1.05M |
 | GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1.05M |
 | GPT-5.6 Terra | `llm-codex-gpt56-terra` | 1.05M |
 | GPT-5.6 Luna | `llm-codex-gpt56-luna` | 1.05M |
@@ -141,14 +156,15 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
-| Gemini 3.8 Flash Low / Medium / High | `llm-antigravity-flash38-low` / `-flash38-medium` / `-flash38-high` |
-| Gemini 3.7 Flash Low / Medium / High | `llm-antigravity-flash37-low` / `-flash37-medium` / `-flash37-high` |
-| Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
-| Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
-| Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
-| Claude Sonnet 4.6 Thinking | `llm-antigravity-sonnet46-thinking` |
-| Claude Opus 4.6 Thinking | `llm-antigravity-opus46-thinking` |
-| GPT-OSS 120B Medium | `llm-antigravity-gpt-oss-120b` |
+| Gemini 3.8 Flash | `llm-antigravity-flash38` |
+| Gemini 4 Argon | `llm-antigravity-argon` |
+| Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
+| Claude Opus 5.5 | `llm-antigravity-opus55` |
+| GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
+
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5, Gemini 4 Argon, and Gemini Flash support low, medium, and high; GPT-OSS always uses medium.
+
+Antigravity CLI 1.4.0 no longer offers Gemini 3.1 Pro and runs Gemini 4 Argon in its place. ProPR does the same: agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, and the old Pro label and `pro` alias select Gemini 4 Argon.
 
 ## OpenCode Models
 
@@ -157,12 +173,15 @@ Built-in free models:
 | Model | Label | Context |
 |-------|-------|---------|
 | Big Pickle | `llm-opencode-big-pickle` | 200K |
-| Ling 3.0 Flash Fin Free | `llm-opencode-ling30-flash-fin-free` | 262K |
-| MiMo V2.5 Free | `llm-opencode-mimo-v25-free` | 200K |
-| Muse Spark 1.2 Contributor Free | `llm-opencode-muse-spark12-free` | 1M |
-| Muse Spark 1.3 Contributor Free | `llm-opencode-muse-spark13-free` | 1M |
-| Nemotron 3 Ultra Free | `llm-opencode-nemotron-3-ultra-free` | 1M |
+| Beam Free | `llm-opencode-beam-free` | 1M |
+| DeepSeek V4.1 Flash Free | `llm-opencode-deepseek-v41-flash-free` | 200K |
+| Flint 40B Free | `llm-opencode-flint-40b-free` | 262K |
+| GLM 5.3 Flash Free | `llm-opencode-glm53-flash-free` | 200K |
+| MiMo V2.6 Flash Free | `llm-opencode-mimo-v26-flash-free` | 200K |
 | Nemotron 3.5 Lightning Free | `llm-opencode-nemotron35-lightning-free` | 262K |
+| Nemotron 3.5 Super VL Free | `llm-opencode-nemotron35-super-vl-free` | 1M |
+
+OpenCode rotates its free models on its servers, and a retired one fails with "Model not found". When ProPR starts, it removes retired free models from OpenCode agents and moves a retired default to the model that replaced it. Saved selections, aliases and labels for a retired model also run on its replacement: Ling 3.0 Flash Fin Free on DeepSeek V4.1 Flash Free, MiMo V2.5 Free on MiMo V2.6 Flash Free, Nemotron 3 Ultra Free on Nemotron 3.5 Super VL Free, and Muse Spark 1.2/1.3 Contributor Free on Big Pickle.
 
 OpenCode can also use any provider/model authenticated through its direct-login dialog or on the host. Run `opencode models` after a host `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 
@@ -173,6 +192,10 @@ For an existing host account, install the CLI, run `opencode auth login`, and us
 | Model | Label | Context |
 |-------|-------|---------|
 | Mistral Medium 3.5 | `llm-vibe-mistral` | 256K |
+| GLM 5.3 | `llm-vibe-glm53` | 1M |
+| GLM 5.2 | `llm-vibe-glm52` | 1M |
+
+Vibe uses CLI 2.25.8. GLM runs through Mistral with the same `MISTRAL_API_KEY` or Vibe credentials; no separate Z.ai account is needed. Select `zai-glm-5-3` (or `zai-glm-5-2`) in **AI Agents**, per-task model controls, or the CLI. Mistral Medium remains the default. Existing agents gain these choices on load; custom/local models, credentials, explicit CLI pins, and supported defaults are preserved. Retired hosted Devstral defaults move to Mistral Medium. Use the default CLI version for the verified GLM integration.
 
 ## Choosing Models per Phase
 
@@ -182,3 +205,8 @@ Planning, implementation, review, and follow-ups can each use a different agent 
 - Planner models are settings keys: `planner_context_model`, `planner_generation_model`, and `analysis_model_fast` (see `propr setting get`).
 - Reviews use the configured `pr_review_model` unless a model is named in the `/review` command.
 - Per-task overrides: issue labels, `propr issue implement -a <agent> -m <model>`, `/switch`, and `/use`.
+
+## Next steps
+
+- [ProPR CLI](/docs/features/propr-cli)
+- [Issue To Pull Request Walkthrough](/docs/tutorials/end-to-end-workflow)

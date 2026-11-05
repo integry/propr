@@ -1,5 +1,8 @@
 ---
 sidebar_position: 1
+sidebar_label: "Architecture Overview"
+title: "How ProPR works: daemon, workers, and agents"
+description: "Trace a GitHub issue through intake, the job queue, isolated agent execution, and pull request delivery."
 ---
 
 # Architecture Overview

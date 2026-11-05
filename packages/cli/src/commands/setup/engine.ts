@@ -37,6 +37,8 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const token = configManager?.getGithubToken()?.trim();
       if (!token) return { status: "missing" };
       if (!/^(?:gho_|ghp_|github_pat_)/.test(token)) return { status: "unsupported" };
+      // An 8-hour OAuth token would silently stop working inside the backend.
+      if (configManager?.getGithubCredential()?.expiresAt !== undefined) return { status: "unsupported" };
 
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { cfg } = await getHostConfig({ configManager, root: rootDir });

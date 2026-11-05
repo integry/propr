@@ -10,16 +10,17 @@ export interface HistoryDerivedData {
 }
 
 export const getHistoryDerivedData = (history: HistoryItem[], taskInfo: TaskInfo | null): HistoryDerivedData => {
-  const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
+  // History is oldest first; after an automatic retry the header opens the latest execution, while the timeline keeps each attempt's own.
+  const historyItemWithPaths = [...history].reverse().find(item => item.promptPath || item.logsPath);
   const currentStatus = history[history.length - 1]?.state?.toUpperCase() || '';
   const routedItem = [...history].reverse().find(item => item.metadata?.syntheticRouting?.virtualModel);
-  const modelItem = history.find(item => item.metadata?.model);
-  // Task-list/header identity stays virtual; physical execution is shown on the
-  // attempt rows in task details.
+  const modelItem = [...history].reverse().find(item => item.metadata?.model);
+  // The API reconciles task identity with persisted executions, including records
+  // without a matching history row. Synthetic identities remain virtual.
   const modelName = formatModelName(
     routedItem?.metadata?.syntheticRouting?.virtualModel
-      || modelItem?.metadata?.model
-      || taskInfo?.modelName,
+      || taskInfo?.modelName
+      || modelItem?.metadata?.model,
   );
   
   const completedStep = [...history].reverse().find(item => {

@@ -1,7 +1,6 @@
 import { Redis } from 'ioredis';
 import logger from './logger.js';
 import { db } from '../db/connection.js';
-import { getAnalysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
@@ -23,14 +22,29 @@ function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): Extr
 interface CumulativeTokenUsage {
     inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number;
     totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
+    /**
+     * Whether every counted prompt carried a cache breakdown; zero cache counts
+     * without one are unknown, not zero, and a breakdown that covers only part
+     * of the prompt tokens is not a measurement of the whole.
+     */
+    cacheReported: boolean;
 }
+const reportsCache = (usage: TokenUsage | undefined): boolean =>
+    typeof usage?.cache_read_input_tokens === 'number' || typeof usage?.cache_creation_input_tokens === 'number';
+/**
+ * A usage whose prompt tokens have no cache breakdown, or whose breakdown the
+ * agent marked as covering only some of them; one such usage makes the run's
+ * breakdown incomplete. Its known cached subtotal still prices as cached.
+ */
+const omitsCache = (usage: TokenUsage | undefined): boolean =>
+    usage?.cache_usage_incomplete === true || (!reportsCache(usage) && (usage?.input_tokens ?? 0) > 0);
 interface GenericConversationStep {
     message?: ConversationStep['message'] | string; timestamp?: string; type?: string; isError?: boolean; metadata?: Record<string, unknown>;
     role?: string; content?: string; tool?: string; params?: unknown; result?: string; usage?: TokenUsage;
     item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
 }
 function calculateTokens(conversationLog: ConversationStep[] | undefined, reportedTokenUsage?: TokenUsage): CumulativeTokenUsage {
-    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0;
+    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0, aggrReported = false, aggrIncomplete = false;
     if (conversationLog && Array.isArray(conversationLog)) {
         const seenIds = new Set<string>(); // Deduplicate by message ID (per Claude docs, same ID = same usage)
         conversationLog.forEach(step => {
@@ -43,6 +57,8 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
                 if (msgId) seenIds.add(msgId);
                 aggrInput += usage.input_tokens ?? 0; aggrOutput += usage.output_tokens ?? 0;
                 aggrCacheCreate += usage.cache_creation_input_tokens ?? 0; aggrCacheRead += usage.cache_read_input_tokens ?? 0;
+                aggrReported ||= reportsCache(usage);
+                aggrIncomplete ||= omitsCache(usage);
             }
         });
     }
@@ -53,7 +69,26 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
     const useAggr = aggrTotal > rptTotal; // Use whichever is higher to avoid undercounting
     const [inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens] = useAggr
         ? [aggrInput, aggrOutput, aggrCacheCreate, aggrCacheRead] : [rptInput, rptOutput, rptCacheCreate, rptCacheRead];
-    return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens };
+    // Pricing always sees the cached subtotal above; the flag only decides whether
+    // the breakdown is persisted as a measurement of the whole prompt.
+    const cacheReported = useAggr ? aggrReported && !aggrIncomplete : reportsCache(reportedTokenUsage) && !omitsCache(reportedTokenUsage);
+    return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens, cacheReported };
+}
+
+/**
+ * The cumulative usage as the execution row stores it (the same shape the PR
+ * comment prints). An agent that reported no cache breakdown, or one covering
+ * only some prompts, persists none: a defaulted zero would read as a measured
+ * 0% cache hit rate, and a partial count as the whole prompt's. The row's cost
+ * was already priced with whatever cached subtotal was known.
+ */
+function toPersistedTokenUsage(tokens: CumulativeTokenUsage): TokenUsage {
+    const usage: TokenUsage = { input_tokens: tokens.totalInputWithCache, output_tokens: tokens.outputTokens };
+    if (tokens.cacheReported) {
+        usage.cache_creation_input_tokens = tokens.cacheCreationTokens;
+        usage.cache_read_input_tokens = tokens.cacheReadTokens;
+    }
+    return usage;
 }
 
 async function calculateCost(model: string, tokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
@@ -203,45 +238,8 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         await db('llm_execution_details').insert(detailsArray);
     }
 }
-/**
- * Whether a recorded execution should trigger a post-execution "task analysis".
- *
- * Only real implementation runs (issue / pr-comments-batch / merge-conflict)
- * produce a commit/diff worth analyzing, and they are recorded with no explicit
- * executionType — so allow undefined/null or 'implementation'. Every other type
- * is excluded by default.
- *
- * This is the anti-recursion guard: the analysis itself runs claude and records
- * its own execution with executionType 'task-analysis'. If that re-enqueued an
- * analysis, it would analyze-the-analysis forever (the analysis-processor loop
- * that wedged production). An allowlist means any future executionType is
- * excluded by default and cannot re-introduce the recursion.
- */
-export function shouldEnqueueExecutionAnalysis(executionType?: string | null): boolean {
-    return executionType == null || executionType === 'implementation';
-}
-
-async function enqueueAnalysisTask(taskId: string, executionId: string, sessionId: string, correlationId?: string): Promise<void> {
-    try {
-        const queue = await getAnalysisQueue();
-        await queue.add('analyzeExecution', {
-            taskId,
-            executionId,
-            sessionId: sessionId || 'unknown',
-            correlationId: correlationId || 'unknown'
-        }, {
-            jobId: `analysis-${executionId}`,
-            removeOnComplete: true,
-            removeOnFail: true,
-            delay: 10000
-        });
-        logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
-    } catch (queueError) {
-        logger.error({ error: (queueError as Error).message, correlationId, taskId }, 'Failed to enqueue task for analysis');
-    }
-}
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<void> {
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, correlationId, executionType } = metrics;
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId } = metrics;
 
     // Check if taskId exists in tasks table (drafts won't exist)
     // Use null for task_id if it doesn't exist (FK allows null now)
@@ -261,32 +259,17 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             prompt_length: null, output_length: null,
             input_tokens: tokenUsage?.input_tokens ?? null,
             output_tokens: tokenUsage?.output_tokens ?? null,
+            // Null cache counts mean the agent reported none, not that it read none;
+            // the flag lets a reported zero stay a measured zero.
             cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
-            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null
+            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null,
+            cache_usage_reported: cacheUsageReported ?? null
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
-
-        // Only enqueue post-execution analysis for real implementation runs — the
-        // only ones that produce a commit/diff worth analyzing. Implementation
-        // executions (issue / pr-comments-batch / merge-conflict) are recorded with
-        // no explicit executionType, so allow undefined or 'implementation'.
-        //
-        // Excluding everything else is CRITICAL, not just cosmetic: the analysis
-        // itself runs claude (executeClaudeAnalysis) which records its own execution
-        // with executionType 'task-analysis'. Under the old `!== 'pr-review'` gate
-        // that re-enqueued another analysis → analyze-the-analysis forever, an
-        // infinite recursion in the analysis-processor queue (execution IDs climbing
-        // every ~80s) that wedged production. Reviews/chat/planning/summaries/titles
-        // produce no commit and shouldn't be analyzed either.
-        if (effectiveTaskId && shouldEnqueueExecutionAnalysis(executionType)) {
-            await enqueueAnalysisTask(effectiveTaskId, executionId, sessionId, correlationId);
-        } else {
-            logger.debug({ correlationId, taskId: effectiveTaskId, executionId, executionType }, 'Skipping analysis queue (non-implementation execution)');
-        }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
@@ -335,14 +318,10 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         logConversationDebug(claudeResult, correlationId, taskId);
         if (claudeResult) {
-            // Build cumulative token usage from conversation log (same as PR comment)
-            const cumulativeTokenUsage: TokenUsage = {
-                input_tokens: cumulativeTokens.totalInputWithCache,
-                output_tokens: cumulativeTokens.outputTokens,
-                cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
-                cache_read_input_tokens: cumulativeTokens.cacheReadTokens
-            };
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage, correlationId, executionType });
+            await persistToDatabase(claudeResult, taskId, {
+                sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd,
+                tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType,
+            });
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');
@@ -402,6 +381,26 @@ async function getHighCostAlerts(metricsRedis: InstanceType<typeof Redis>): Prom
         .filter((a): a is HighCostAlert => a !== null);
 }
 
+export const AGENT_WATCHDOG_METRIC_RULES = ['inactivity', 'tool_inactivity', 'degenerate_output'] as const;
+export const agentWatchdogMetricKey = (rule: string): string => `llm:metrics:watchdog:${rule}`;
+
+/** Counts one watchdog trip per rule; never throws, metrics must not affect the run. */
+export async function recordAgentWatchdogTrip(rule: typeof AGENT_WATCHDOG_METRIC_RULES[number], redis?: Pick<InstanceType<typeof Redis>, 'incr'>): Promise<void> {
+    const metricsRedis = redis ?? new Redis(connectionOptions);
+    try {
+        await metricsRedis.incr(agentWatchdogMetricKey(rule));
+    } catch (error) {
+        logger.warn({ error: (error as Error).message, rule }, 'Failed to record agent watchdog trip metric');
+    } finally {
+        if (!redis) await (metricsRedis as InstanceType<typeof Redis>).quit().catch(() => undefined);
+    }
+}
+
+async function getWatchdogTrips(metricsRedis: InstanceType<typeof Redis>): Promise<Record<string, number>> {
+    const counts = await Promise.all(AGENT_WATCHDOG_METRIC_RULES.map(rule => metricsRedis.get(agentWatchdogMetricKey(rule)).then(v => parseInt(v ?? '0'))));
+    return Object.fromEntries(AGENT_WATCHDOG_METRIC_RULES.map((rule, index) => [rule, counts[index]]));
+}
+
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
     const metricsRedis = new Redis(connectionOptions);
     try {
@@ -409,7 +408,8 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
         const modelBreakdown = await getModelMetrics(metricsRedis);
         const dailyMetrics = await getDailyMetrics(metricsRedis);
         const recentHighCostAlerts = await getHighCostAlerts(metricsRedis);
-        return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, lastUpdated: new Date().toISOString() };
+        const watchdogTrips = await getWatchdogTrips(metricsRedis);
+        return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, watchdogTrips, lastUpdated: new Date().toISOString() };
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack }, 'Failed to retrieve LLM metrics summary');
         throw error;

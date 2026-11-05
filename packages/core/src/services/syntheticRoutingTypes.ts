@@ -7,6 +7,8 @@ export interface SyntheticUsageSnapshot {
   capturedAt: Date;
   sessionPercent?: number;
   weeklyPercent?: number;
+  /** When the session window resets, from the countdown Agent Tank reported at `capturedAt`. */
+  sessionResetsAt?: Date;
 }
 
 export interface SyntheticUsageSnapshotProvider {

@@ -1,41 +1,36 @@
+import { cancelWithdrawnIntent } from '../services/taskIntent.js';
+import { resolveIssueTriggerLabels } from './issueTriggerRestoration.js';
+import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
-import {
-    handlePlanIssueStatusUpdate,
-    handlePlanPRUpdate,
-    handlePlanPRCommentTracking,
-    type CommentEventType
-} from './planIssueTracking.js';
-import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
+import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, handlePlanPRCommentActivity, type CommentEventType } from './planIssueTracking.js';
+import { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge } from './checkRunHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { retryConfigs, withRetry } from '../utils/retryHandler.js';
 import { clearUltrafixStateForLabelRemoval } from '../utils/ultrafixLabelTransition.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
+import { getClosedPullRequestCiRedis, recordClosedPullRequestForCiCancellation } from './closedPullRequestCi.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
-import type {
-    IssuesEvent,
-    IssuesLabeledEvent,
-    IssueCommentEvent,
-    IssueCommentCreatedEvent,
-    IssueCommentDeletedEvent,
-    IssueCommentEditedEvent,
-    PullRequestReviewCommentEvent,
-    PullRequestReviewCommentCreatedEvent,
-    PullRequestReviewCommentDeletedEvent,
-    PullRequestReviewCommentEditedEvent,
-    PullRequestEvent,
-    PullRequestUnlabeledEvent,
-    CheckRunEvent,
-    PushEvent
-} from '@octokit/webhooks-types';
+import { handleAutoMergePolicyPullRequestEvent } from '../services/autoMergeGate.js';
+import type { IssuesEvent, IssueCommentEvent, PullRequestReviewCommentEvent, PullRequestEvent, CheckRunEvent } from '@octokit/webhooks-types';
+import {
+    getRepositoryFullName, isIssuesEvent, isIssuesLabeledEvent, isIssueCommentEvent, isIssueCommentCreatedEvent,
+    isIssueCommentDeletedEvent, isIssueCommentEditedEvent, isPullRequestReviewCommentEvent,
+    isPullRequestReviewCommentCreatedEvent, isPullRequestReviewCommentDeletedEvent,
+    isPullRequestReviewCommentEditedEvent, isPullRequestEvent, isCheckRunEvent, isCheckSuiteEvent, isPushEvent, isStatusEvent,
+} from './webhookPayloadGuards.js';
+import { buildDeliveryInterest, type DeliveryInterest } from '../intake/routingDeliveryInterest.js';
 import type { Redis } from 'ioredis';
-import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { ACCEPTED_NO_SEAT_DISPOSITION, ROUTING_HUB_PROTOCOL_VERSION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
-/** Runtime-accessible list of supported webhook event types — single source of truth. */
-export const SUPPORTED_WEBHOOK_EVENTS = [
-  'issues', 'issue_comment', 'pull_request_review_comment',
-  'pull_request', 'check_run', 'push', 'status',
-] as const;
+import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
+export { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
+
+// Share the merged-PR canceller's delivery budget. The cancellation promise
+// remains observed after timeout so durable recording and container stops finish.
+const configuredCancellationWait = Number.parseInt(process.env.MERGED_PR_CANCELLATION_WAIT_MS ?? '', 10);
+export const INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS = Number.isFinite(configuredCancellationWait) && configuredCancellationWait > 0
+    ? configuredCancellationWait : 8_000;
 
 /** Derived union type — always in sync with the runtime array. */
 export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];
@@ -55,14 +50,21 @@ export interface DetectedIssue {
     // sender (label applier). For polling with a whitelist: the label applier
     // resolved from the issue timeline. For polling without a whitelist: the
     // issue author (informational only). When the actor cannot be determined
-    // the issue is skipped (fail closed) — see resolveLabelApplier in
-    // issueDetection.ts.
+    // the issue is skipped (fail closed) — see readTriggerApplicationEvidence in
+    // triggerApplicationEvidence.ts.
     triggeredBy?: string;
     // Stable GitHub ID for the verified trigger actor. Jobs omit ownership when
     // this cannot be established, so user-scoped queue views fail closed.
     triggeredById?: string;
     // How this issue was detected: 'webhook' (label event) or 'polling'.
     source?: 'webhook' | 'polling';
+    // Set only when the producer saw the trigger applied after any stale
+    // `-cancelled`/`<trigger>-processing` marker. Without it, the issue stays excluded.
+    triggerReapplied?: boolean;
+    // The trigger whose verified application produced this detection. Admission
+    // records it instead of the first configured trigger present, so removing
+    // it withdraws the work it requested.
+    renewedTrigger?: string;
 }
 
 export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void | DeliveryDisposition>;
@@ -71,7 +73,14 @@ export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestRev
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
 export type CheckRunProcessor = (payload: CheckRunEvent, correlationId: string) => Promise<void>;
-export type RepositoryFilter = (repository: string) => boolean | Promise<boolean>;
+/**
+ * Decides which repositories' events are processed. A filter that also lists the
+ * normalized names it accepts lets the routing relay drop other repositories'
+ * deliveries (see getWebhookDeliveryInterest); an opaque filter declares `"*"`.
+ */
+export type RepositoryFilter = ((repository: string) => boolean | Promise<boolean>) & {
+    readonly monitoredRepositories?: () => readonly string[];
+};
 
 let processDetectedIssue: IssueProcessor | null = null;
 let processCommentEvent: CommentProcessor | null = null;
@@ -105,52 +114,12 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     logger.info('Webhook handler initialized');
 }
 
-function getRepositoryFullName(payload: unknown): string | null {
-    if (typeof payload !== 'object' || payload === null || !('repository' in payload)) return null;
-    const repository = (payload as { repository?: unknown }).repository;
-    if (typeof repository !== 'object' || repository === null || !('full_name' in repository)) return null;
-    const fullName = (repository as { full_name?: unknown }).full_name;
-    return typeof fullName === 'string' && fullName.trim() ? fullName.trim() : null;
-}
-
-function isIssuesEvent(payload: unknown): payload is IssuesEvent {
-    return typeof payload === 'object' && payload !== null && 'issue' in payload && 'action' in payload && !('comment' in payload);
-}
-
-const isIssuesLabeledEvent = (payload: IssuesEvent): payload is IssuesLabeledEvent => payload.action === 'labeled';
-
-function isIssueCommentEvent(payload: unknown): payload is IssueCommentEvent {
-    return typeof payload === 'object' && payload !== null && 'issue' in payload && 'comment' in payload && 'action' in payload;
-}
-
-const isIssueCommentCreatedEvent = (payload: IssueCommentEvent): payload is IssueCommentCreatedEvent => payload.action === 'created';
-const isIssueCommentDeletedEvent = (payload: IssueCommentEvent): payload is IssueCommentDeletedEvent => payload.action === 'deleted';
-const isIssueCommentEditedEvent = (payload: IssueCommentEvent): payload is IssueCommentEditedEvent => payload.action === 'edited';
-
-function isPullRequestReviewCommentEvent(payload: unknown): payload is PullRequestReviewCommentEvent {
-    return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'comment' in payload && 'action' in payload;
-}
-
-const isPullRequestReviewCommentCreatedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentCreatedEvent => payload.action === 'created';
-const isPullRequestReviewCommentDeletedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentDeletedEvent => payload.action === 'deleted';
-const isPullRequestReviewCommentEditedEvent = (payload: PullRequestReviewCommentEvent): payload is PullRequestReviewCommentEditedEvent => payload.action === 'edited';
-
-function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
-    return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'action' in payload && !('comment' in payload);
-}
-
-const isPullRequestUnlabeledEvent = (payload: PullRequestEvent): payload is PullRequestUnlabeledEvent => payload.action === 'unlabeled';
-
-function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
-    return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
-}
-
-function isPushEvent(payload: unknown): payload is PushEvent {
-    return typeof payload === 'object' && payload !== null && 'ref' in payload && 'commits' in payload && !('action' in payload);
-}
-
-function isStatusEvent(payload: unknown): payload is StatusEventPayload {
-    return typeof payload === 'object' && payload !== null && 'sha' in payload && 'state' in payload && !('action' in payload) && !('commits' in payload);
+/** The relay delivery-interest declaration matching the handler as currently registered. */
+export function getWebhookDeliveryInterest(): DeliveryInterest {
+    return buildDeliveryInterest({
+        repositories: repositoryFilter?.monitoredRepositories?.() ?? '*',
+        checkRunProcessorRegistered: processCheckRun !== null,
+    }, ROUTING_HUB_PROTOCOL_VERSION);
 }
 
 async function handleIssuesEvent(
@@ -161,9 +130,12 @@ async function handleIssuesEvent(
         throw new Error('Issue processor not initialized');
     }
 
-    if (isIssuesLabeledEvent(payload)) {
+    if (isIssuesLabeledEvent(payload) && payload.issue.state !== 'closed') {
         const [owner, repo] = payload.repository.full_name.split('/');
 
+        const resolved = await resolveIssueTriggerLabels(payload, owner, repo);
+        if ('status' in resolved) return resolved;
+        const { labels, triggerReapplied, renewedTrigger } = resolved;
         const issue: DetectedIssue = {
             id: payload.issue.id,
             number: payload.issue.number,
@@ -171,15 +143,17 @@ async function handleIssuesEvent(
             url: payload.issue.html_url,
             repoOwner: owner,
             repoName: repo,
-            labels: payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [],
+            labels,
             createdAt: payload.issue.created_at,
             updatedAt: payload.issue.updated_at,
             // Fail closed: use only the webhook sender (the label applier).
-            // Do NOT fall back to the issue author — see resolveLabelApplier
-            // doc comment in issueDetection.ts for the threat model.
+            // Do NOT fall back to the issue author — see readTriggerApplicationEvidence
+            // doc comment in triggerApplicationEvidence.ts for the threat model.
             triggeredBy: payload.sender?.login,
             ...(payload.sender?.id === undefined ? {} : { triggeredById: String(payload.sender.id) }),
-            source: 'webhook'
+            source: 'webhook',
+            ...(triggerReapplied ? { triggerReapplied: true } : {}),
+            ...(renewedTrigger ? { renewedTrigger } : {})
         };
 
         return normalizeDisposition(await processDetectedIssue(issue, correlationId));
@@ -188,36 +162,17 @@ async function handleIssuesEvent(
     return { status: 'ignored', reason: 'unsupported_issue_action' };
 }
 
-async function handleUltrafixLabelRemoval(
-    payload: unknown,
-    eventType: WebhookEventType,
-    correlationId: string,
-): Promise<void> {
+async function handleUltrafixLabelRemoval(payload: unknown, eventType: WebhookEventType, correlationId: string): Promise<void> {
+    const event = eventType === 'pull_request' && isPullRequestEvent(payload) ? payload
+        : eventType === 'issues' && isIssuesEvent(payload) && payload.issue.pull_request ? payload : null;
+    if (!event || event.action !== 'unlabeled' || event.label?.name !== 'ultrafix') return;
+    const owner = event.repository.owner.login;
+    const repo = event.repository.name;
+    const prNumber = 'pull_request' in event ? event.pull_request.number : event.issue.number;
     const log = logger.withCorrelation(correlationId);
-
-    if (eventType === 'pull_request' && isPullRequestEvent(payload) && isPullRequestUnlabeledEvent(payload)) {
-        if (payload.label?.name !== 'ultrafix') return;
-        const owner = payload.repository.owner.login;
-        const repo = payload.repository.name;
-        const prNumber = payload.pull_request.number;
-        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
-            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
-        }
-        return;
-    }
-
-    if (eventType === 'issues' && isIssuesEvent(payload)) {
-        const labelName = 'label' in payload ? payload.label?.name : undefined;
-        const isPrIssue = 'pull_request' in payload.issue && !!payload.issue.pull_request;
-        if (payload.action !== 'unlabeled' || labelName !== 'ultrafix' || !isPrIssue) return;
-        const owner = payload.repository.owner.login;
-        const repo = payload.repository.name;
-        const prNumber = payload.issue.number;
-        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
-            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
-        }
+    if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
+        await reevaluatePRAutoMerge(owner, repo, prNumber, { correlationId });
+        log.info({ owner, repo, prNumber }, `Cleared ultrafix loop state after ${eventType === 'pull_request' ? 'PR' : 'issue'} ultrafix label removal`);
     }
 }
 
@@ -384,6 +339,9 @@ async function processStandardWebhookEvent(
                 return ACCEPTED_NO_SEAT_DISPOSITION;
             }
             break;
+        case 'check_suite':
+            if (isCheckSuiteEvent(payload)) return ACCEPTED_NO_SEAT_DISPOSITION;
+            break;
         case 'push':
             if (isPushEvent(payload)) return ACCEPTED_NO_SEAT_DISPOSITION;
             break;
@@ -395,6 +353,51 @@ async function processStandardWebhookEvent(
     }
 
     return { status: 'ignored', reason: 'unsupported_event' };
+}
+
+async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventType): Promise<void> {
+    if (eventType === 'issues' && isIssuesEvent(payload) && !payload.issue.pull_request) {
+        const removedLabel = payload.action === 'unlabeled' ? payload.label?.name : undefined;
+        const triggerRemoved = removedLabel !== undefined && (await loadPrimaryProcessingLabels()).includes(removedLabel);
+        if (payload.action === 'closed' || triggerRemoved) {
+            const [repoOwner, repoName] = payload.repository.full_name.split('/');
+            await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.issue.number, kind: 'issue', triggeringLabel: removedLabel },
+                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis());
+        }
+    }
+    if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {
+        const [repoOwner, repoName] = payload.repository.full_name.split('/');
+        await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.pull_request.number, kind: 'pr' }, 'cancelled_pr_closed', webhookRedisClient ?? getUltrafixStateRedis());
+    }
+}
+
+async function handleCiEvent(payload: unknown, eventType: WebhookEventType, correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>): Promise<void> {
+    try {
+        if (eventType === 'check_run' && isCheckRunEvent(payload)) await handleCheckRunEvent(payload, correlationId);
+        else if (eventType === 'check_suite' && isCheckSuiteEvent(payload)) await handleCheckSuiteEvent(payload, correlationId);
+        else if (eventType === 'status' && isStatusEvent(payload)) await handleStatusEvent(payload, correlationId);
+    } catch (error) {
+        correlatedLogger.warn({ error, event: eventType }, 'CI event handler failed, continuing');
+    }
+}
+
+/**
+ * Neither the daemon nor the API used to register a Redis client with the
+ * handler, so detection must not depend on one being injected (it silently
+ * never ran). Mergeability polling can take tens of seconds, so detection runs
+ * outside the delivery instead of holding the acknowledgement.
+ */
+function startConflictDetection(payload: unknown, eventType: WebhookEventType, correlationId: string, correlatedLogger: ReturnType<typeof logger.withCorrelation>): void {
+    let conflictDetection: Promise<unknown> | null = null;
+    if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        conflictDetection = handlePullRequestConflictDetection(payload, webhookRedisClient ?? getUltrafixStateRedis(), correlationId);
+    } else if (eventType === 'push' && isPushEvent(payload)) {
+        conflictDetection = handlePushConflictDetection(payload, webhookRedisClient ?? getUltrafixStateRedis(), correlationId);
+    }
+    void conflictDetection?.catch(conflictDetectionError => {
+        correlatedLogger.warn({ error: conflictDetectionError }, 'Merge conflict detection failed, continuing');
+    });
 }
 
 export async function processWebhookEvent(
@@ -416,48 +419,41 @@ export async function processWebhookEvent(
         }
     }
 
+    const cancellation = handleIntentWithdrawal(payload, eventType).catch(error => {
+        correlatedLogger.warn({ error }, 'Intent withdrawal failed; continuing webhook handlers, polling will retry cancellation');
+    });
+    let waitTimer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+        cancellation.then(() => false),
+        new Promise<boolean>(resolve => { waitTimer = setTimeout(() => resolve(true), INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS); }),
+    ]);
+    clearTimeout(waitTimer);
+    if (timedOut) {
+        correlatedLogger.warn({ repository, waitMs: INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS },
+            'Intent withdrawal exceeded delivery budget; remaining cancellation work continues in the background');
+    }
+
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
     // Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
-    if (eventType === 'check_run' && isCheckRunEvent(payload)) {
-        try {
-            await handleCheckRunEvent(payload, correlationId);
-        } catch (checkRunError) {
-            correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
-        }
-    }
-
-    // 5b. Handle legacy commit status events for ultrafix loop continuation
-    if (eventType === 'status' && isStatusEvent(payload)) {
-        try {
-            await handleStatusEvent(payload, correlationId);
-        } catch (statusError) {
-            correlatedLogger.warn({ error: statusError }, 'Status event handler failed, continuing');
-        }
-    }
+    // 5. CI events (check_run, check_suite, legacy status) drive auto-merge and Ultrafix continuation
+    await handleCiEvent(payload, eventType, correlationId, correlatedLogger);
 
     // 6. Epic PR handling
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
         await handleEpicPRCreationOnMerge(payload, correlationId, correlatedLogger);
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
+        // A new head (or base) may add protected changes after auto-merge was armed.
+        await handleAutoMergePolicyPullRequestEvent(payload, correlatedLogger);
+        // A closed pull request's validation is as obsolete as one a follow-up replaces.
+        if (payload.action === 'closed') await recordClosedPullRequestForCiCancellation(payload, getClosedPullRequestCiRedis());
     }
 
-    // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work
-    if (webhookRedisClient) {
-        try {
-            if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
-                await handlePullRequestConflictDetection(payload, webhookRedisClient, correlationId);
-            } else if (eventType === 'push' && isPushEvent(payload)) {
-                await handlePushConflictDetection(payload, webhookRedisClient, correlationId);
-            }
-        } catch (conflictDetectionError) {
-            correlatedLogger.warn({ error: conflictDetectionError }, 'Merge conflict detection failed, continuing');
-        }
-    }
+    // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work.
+    startConflictDetection(payload, eventType, correlationId, correlatedLogger);
 
-    // 8. Standard Local Processing
-    return await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
+    // 8. Standard Local Processing; 9. then a plan issue refines only while a PR comment left follow-up work
+    return await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger).finally(() => handlePlanPRCommentActivity(payload, eventType, correlationId));
 }

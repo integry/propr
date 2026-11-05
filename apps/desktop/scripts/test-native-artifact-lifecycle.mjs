@@ -133,8 +133,10 @@ const COMMAND_RESULT_CLASSES = Object.freeze([
 ]);
 
 // Distinguishes a bundle that really is still registered from an absence proof
-// that never got a readable answer out of `lsregister -dump`.
+// that never got a readable answer out of `lsregister -dump`, or one whose
+// re-issued `lsregister -u` kept failing while the bundle stayed listed.
 export const LAUNCH_SERVICES_STALE_REGISTRATION = 'STALE_REGISTRATION';
+export const LAUNCH_SERVICES_UNREGISTER_FAILED = 'UNREGISTER_FAILED';
 
 export class NativeLifecycleCommandFailure extends Error {
   constructor(resultClass) {
@@ -362,6 +364,7 @@ export class NativeLifecycleOperationFailure extends Error {
 const CLEANUP_RESULT_CLASSES = Object.freeze([
   ...COMMAND_RESULT_CLASSES,
   LAUNCH_SERVICES_STALE_REGISTRATION,
+  LAUNCH_SERVICES_UNREGISTER_FAILED,
 ]);
 
 export const describeCleanupFailure = ({ label, error }) => (
@@ -1003,11 +1006,14 @@ const dispatchDirect = async (application, userData, link, env, processGroups, l
   await group.waitForSuccessfulExit(15_000);
 };
 
-export const linuxProtocolDispatch = async ({ application, profile, link, env, processGroups }, {
+export const linuxProtocolDispatch = async ({ application, profile, link, env, processGroups, launchArguments = [] }, {
   runCommand = run,
+  dispatch = dispatchDirect,
 } = {}) => {
   if (!application.desktopFile) {
-    await dispatchDirect(application, profile.userData, link, env, processGroups);
+    // The ZIP second instance starts with the same launch arguments as every
+    // other warm dispatch and as the relocated package Exec line below.
+    await dispatch(application, profile.userData, link, env, processGroups, launchArguments);
     return 'direct-second-instance; ZIP has no OS launcher registration';
   }
   const applications = join(profile.xdgData, 'applications');
@@ -1048,12 +1054,22 @@ const LAUNCH_SERVICES = '/System/Library/Frameworks/CoreServices.framework/Frame
 // window is a deadline rather than a probe count: one -dump costs milliseconds
 // on an idle host and seconds on a loaded CI runner, so counting probes gives
 // the shortest window exactly where LaunchServices is slowest to settle.
-const LAUNCH_SERVICES_ABSENCE_BUDGET_MS = 120_000;
+// The window admits two full-length dumps, so one slow dump can never be the
+// whole proof: a thirty-second flat probe cap used to kill four consecutive
+// darwin-x64 dumps and report the postcondition as COMMAND_DEADLINE.
+const LAUNCH_SERVICES_ABSENCE_BUDGET_MS = 240_000;
 const LAUNCH_SERVICES_ABSENCE_INTERVAL_MS = 1_000;
 // lsregister -dump emits megabytes, so a dump record is never read back through
 // the shared bounded-output helper: that would reduce the probe to whichever
 // records happened to land in the retained OUTPUT_CAP tail.
 const LAUNCH_SERVICES_DUMP_LINE_CAP = 64 * 1024;
+// A dump that is still emitting records is slow, not stuck, so the probe is
+// bounded by silence rather than by total runtime: a loaded Intel runner walks
+// the whole LaunchServices database well past any fixed cap that is short
+// enough to leave room for a retry. The absolute deadline stays as the backstop
+// for a dump that trickles forever.
+const LAUNCH_SERVICES_DUMP_STALL_MS = 30_000;
+const LAUNCH_SERVICES_DUMP_TIMEOUT_MS = 120_000;
 
 export const launchServicesRecordMatchesApplication = (line, applicationRoot) => {
   const record = line.trim();
@@ -1067,7 +1083,7 @@ export const launchServicesRecordMatchesApplication = (line, applicationRoot) =>
 // Streams a command's stdout line by line and stops at the first match. Only one
 // bounded line is ever retained, so an unbounded dump is scanned in full without
 // buffering it and without a truncation window deciding the answer.
-export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matchesLine) =>
+export const scanCommandLinesForMatch = (file, args, { env, timeout, stallTimeout } = {}, matchesLine) =>
   new Promise((resolveScan, reject) => {
     const child = spawn(file, args, { env, shell: false, stdio: ['ignore', 'pipe', 'ignore'] });
     let carry = '';
@@ -1077,13 +1093,25 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(stallTimer);
       if (error) reject(error); else resolveScan(value);
     };
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const expire = () => {
       timedOut = true;
       child.kill('SIGKILL');
-    }, timeout ?? COMMAND_TIMEOUT_MS);
+    };
+    const timer = setTimeout(expire, timeout ?? COMMAND_TIMEOUT_MS);
+    // An optional stall deadline bounds silence instead of runtime: every chunk
+    // restarts it, so a dump that keeps producing records is never killed for
+    // being slow, while one that stops answering still ends as COMMAND_DEADLINE.
+    let stallTimer;
+    const restartStallDeadline = () => {
+      if (stallTimeout === undefined || settled) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(expire, stallTimeout);
+    };
+    restartStallDeadline();
     const consume = line => {
       if (matchesLine(line)) {
         matched = true;
@@ -1099,6 +1127,7 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
     });
     child.stdout.on('data', chunk => {
       if (matched) return;
+      restartStallDeadline();
       carry += chunk;
       let newline = carry.indexOf('\n');
       while (newline >= 0 && !matched) {
@@ -1130,15 +1159,16 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
   });
 
 // Carries why the absence proof ended without ever seeing the bundle gone: a
-// dump that kept listing it, or a dump that never produced a usable answer.
+// dump that kept listing it, a dump that never produced a usable answer, or a
+// bundle that stayed listed while the re-issued removal itself kept failing.
 export class LaunchServicesAbsenceFailure extends Error {
-  constructor(probeFailure) {
+  constructor(probeFailure, { unregisterFailed = false } = {}) {
     const resultClass = probeFailure === undefined
-      ? LAUNCH_SERVICES_STALE_REGISTRATION
+      ? unregisterFailed ? LAUNCH_SERVICES_UNREGISTER_FAILED : LAUNCH_SERVICES_STALE_REGISTRATION
       : probeFailure instanceof NativeLifecycleCommandFailure
         ? probeFailure.resultClass
         : 'COMMAND_FAILED';
-    super(resultClass === LAUNCH_SERVICES_STALE_REGISTRATION
+    super(probeFailure === undefined
       ? `Copied application remained registered with LaunchServices [result:${resultClass}]`
       : `Copied application registration could not be probed [result:${resultClass}]`);
     this.name = 'LaunchServicesAbsenceFailure';
@@ -1188,11 +1218,15 @@ export class LaunchServicesAuthority {
     await this.runCommand(LAUNCH_SERVICES, ['-u', this.applicationRoot], { env: this.environment, timeout: 30_000 });
   }
 
-  async isListed() {
+  async isListed(timeout = this.absenceBudgetMs) {
     const { matched } = await this.scanCommand(
       LAUNCH_SERVICES,
       ['-dump'],
-      { env: this.environment, timeout: 30_000 },
+      {
+        env: this.environment,
+        timeout: Math.min(timeout, LAUNCH_SERVICES_DUMP_TIMEOUT_MS),
+        stallTimeout: LAUNCH_SERVICES_DUMP_STALL_MS,
+      },
       line => launchServicesRecordMatchesApplication(line, this.applicationRoot),
     );
     return matched;
@@ -1206,12 +1240,18 @@ export class LaunchServicesAuthority {
   async assertGone() {
     // The window is a deadline rather than a probe count, and it is only
     // consulted after a probe answered, so it always closes on evidence rather
-    // than on an unprobed timer.
+    // than on an unprobed timer. A failed re-issued removal does not prove the
+    // record stale either, so it also keeps the window running; it is retained
+    // so an exhausted window names why, since the CI log renders only the label.
     const deadline = this.now() + this.absenceBudgetMs;
     let lastProbeFailure;
+    let unregisterFailed = false;
     for (let attempt = 1; attempt <= this.absenceAttempts; attempt += 1) {
       try {
-        if (!await this.isListed()) {
+        // A full database scan can exceed 30 seconds on hosted Intel runners.
+        // Restarting it at that fixed limit never lets it prove absence.
+        // Bound each probe by the remaining proof budget and dump deadline.
+        if (!await this.isListed(Math.max(1, deadline - this.now()))) {
           this.registered = false;
           return;
         }
@@ -1232,10 +1272,12 @@ export class LaunchServicesAuthority {
       try {
         await this.unregister();
       } catch {
-        // Absence is concluded only from a dump, never from a -u exit status.
+        // Absence is concluded only from a dump, never from a -u exit status;
+        // the failure is only recorded so an exhausted window can name it.
+        unregisterFailed = true;
       }
     }
-    throw new LaunchServicesAbsenceFailure(lastProbeFailure);
+    throw new LaunchServicesAbsenceFailure(lastProbeFailure, { unregisterFailed });
   }
 }
 
@@ -1758,6 +1800,7 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
         link: WARM_TUNNEL,
         env: dispatchEnvironment,
         processGroups,
+        launchArguments: launchContext.arguments,
       });
     } else {
       operationStage = 'LS_REGISTER';

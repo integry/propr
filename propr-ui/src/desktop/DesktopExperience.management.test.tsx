@@ -371,7 +371,7 @@ describe('DesktopExperience profile management', () => {
 
     expect(await screen.findByRole('heading', { name: 'Connect to ProPR' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Set up this computer/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/local setup is currently available on Linux/i)).toBeInTheDocument();
+    expect(screen.getByText(/local setup is currently available on Linux and macOS/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Connect to an existing instance/i })).toBeInTheDocument();
   });
 

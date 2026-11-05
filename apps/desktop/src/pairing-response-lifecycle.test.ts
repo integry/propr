@@ -11,8 +11,13 @@ import { registerIpcHandlers } from './ipc';
 import type { LocalLifecycleController } from './lifecycle';
 import type { DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { applyDesktopTestFsyncPolicy } from './profile-store-test-fsync';
 import { IPC_CHANNELS } from './shared/contract';
 import { createDesktopShutdownCoordinator } from './shutdown';
+
+// Honor the shared suite's fsync opt-out so disk contention cannot exhaust
+// service startup deadlines. Direct and native durability runs keep real fsync.
+await applyDesktopTestFsyncPolicy();
 
 type Endpoint = 'start' | 'poll' | 'activate' | 'cancel';
 type BarrierPhase = 'header' | 'body' | 'reader-cancel' | 'body-cancel';

@@ -1,21 +1,19 @@
-import { PreviewThumbnails } from '../PreviewMedia';
 import React from 'react';
-import { ChevronRight } from 'lucide-react';
-import type { Task, TaskGroup } from './types';
-import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask, getParentDisplayTitle, getChildDisplayTitle } from './utils.tsx';
-import { TaskTypeBadge } from './TaskTypeBadge';
-import { ScoreBadge } from './ScoreBadge';
+import { Link } from 'react-router-dom';
+import { ChevronDown, Images } from 'lucide-react';
+import type { Task } from './types';
+import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import { TaskReferenceChips } from './ReferenceChips';
+import { ReferenceChip } from './ReferenceChips';
+import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
-
-interface ParentTaskRowProps {
-  group: TaskGroup;
-  desktopLayout?: boolean;
-  task: Task;
-  onRowClick: (taskId: string) => void;
-  isDuplicateRepo?: boolean;
-}
+import { RunTrack } from './RunTrack';
+import { ScoreBadge } from './ScoreBadge';
+import { AssigneeStack } from '../AssigneeList';
+import {
+  buildTaskRuns, describeRun, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  type TaskRowView, type TaskRunView,
+} from './rowModel';
 
 // Prefer catalog labels (including version punctuation), with a readable fallback
 // for custom models. The logo already identifies the provider.
@@ -29,198 +27,313 @@ const getTaskModelLabel = (model: string, provider: string): string => {
 };
 
 // Keep text selection and nested controls independent of the row click target.
-const openDesktopRow = (event: React.MouseEvent, taskId: string, onRowClick: (id: string) => void) => {
+const openRow = (event: React.MouseEvent, taskId: string, onRowClick: (id: string) => void) => {
   if ((event.target as Element).closest('a, button, input, select, textarea, [role="button"]')) return;
   if (window.getSelection()?.toString()) return;
   onRowClick(taskId);
 };
 
-const TaskTitle: React.FC<{ title: string; taskId: string; desktopLayout: boolean; onRowClick: (id: string) => void }> = ({ title, taskId, desktopLayout, onRowClick }) => desktopLayout ? (
-  <button
-    type="button"
-    className="task-title"
+/** A plain left click: modified and middle clicks keep the link's own behaviour (new tab, new window). */
+const isPlainPrimaryClick = (event: React.MouseEvent) =>
+  event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+
+const taskDuration = (task: Task) => formatDuration(task.processedAt || task.createdAt, task.completedAt);
+
+/**
+ * The one entity chip a row leads with: the pull request, else the issue, else
+ * the task id. A linked issue is named in the chip's tooltip rather than as a
+ * second chip, so the title starts at the same place on every row.
+ */
+export const TaskPrimaryChip: React.FC<{ task: Task; prNumber?: number | null }> = ({ task, prNumber }) => {
+  const issue = task.linkedIssueNumber || task.issueNumber;
+  if (prNumber) {
+    const linked = issue && issue !== prNumber ? ` · Issue #${issue}` : '';
+    return <ReferenceChip title={`Pull request #${prNumber}${linked}`}>PR #{prNumber}</ReferenceChip>;
+  }
+  if (issue) return <ReferenceChip title={`Issue #${issue}`}>Issue #{issue}</ReferenceChip>;
+  return <ReferenceChip title={`Task ${task.id}`}>#{task.id.substring(0, 8)}</ReferenceChip>;
+};
+
+/**
+ * Visual evidence is announced, not drawn: thumbnails in a dense list render as
+ * empty wireframes or black boxes until they load, and they break the row height.
+ */
+export const PreviewCountBadge: React.FC<{
+  count: number;
+  /** `[🖼 2]`: the noun is left to the tooltip and screen readers, so the chip fits beside the entity chip. */
+  compact?: boolean;
+}> = ({ count, compact = false }) => count > 0 ? (
+  <span
+    data-testid="preview-count"
+    className="inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600"
+    title={`${pluralize(count, 'published visual preview')} — open the task to view`}
+  >
+    <Images className="h-3 w-3" aria-hidden="true" />
+    {compact
+      ? <>{count}<span className="sr-only">{count === 1 ? ' preview' : ' previews'}</span></>
+      : pluralize(count, 'preview')}
+  </span>
+) : null;
+
+export const TaskAgent: React.FC<{ task: Task }> = ({ task }) => {
+  const agent = task.llmProvider || '';
+  const model = task.model || task.modelName || '';
+  if (!agent && !model) return <span className="text-xs text-slate-400">Unknown Model</span>;
+  const label = getTaskModelLabel(model, agent);
+  return (
+    <span className="flex min-w-0 items-center gap-1.5 text-xs text-slate-700" title={[agent, model ? getModelDisplayName(model) : ''].filter(Boolean).join(' · ')}>
+      <ProviderLogo provider={agent || model} className="h-3.5 w-3.5 flex-none" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+};
+
+/**
+ * Unless held to one line, long titles wrap to a second line instead of being cut off mid-word. An
+ * unbroken run of characters (a file path, a URL) breaks wherever it has to,
+ * so it wraps inside the title column rather than pressing on the columns
+ * beside it.
+ *
+ * The title is a real link to the task page, so Ctrl/Cmd-click, middle-click
+ * and "open in new tab" work. A plain click is handed to `onRowClick`, which
+ * either opens the task beside the list or navigates to it.
+ */
+export const TaskTitleLink: React.FC<{
+  title: string;
+  tooltip: string;
+  taskId: string;
+  onRowClick: (id: string) => void;
+  /** The task open beside the list: the title stays dark and gains weight instead of looking like a link. */
+  selected?: boolean;
+  /** Hold the title to one line, ending in `…`, where the row is a scanning card rather than a ledger row. */
+  singleLine?: boolean;
+  className?: string;
+}> = ({ title, tooltip, taskId, onRowClick, selected = false, singleLine = false, className = 'min-w-0 flex-1' }) => (
+  <Link
+    to={taskPath(taskId)}
+    aria-current={selected || undefined}
+    className={`task-title block text-left text-sm ${selected ? 'font-semibold' : 'font-medium'} text-slate-900 ${className}`}
+    title={tooltip}
     onClick={event => {
       event.stopPropagation();
+      if (!isPlainPrimaryClick(event)) return;
+      event.preventDefault();
       if (event.detail > 0 && window.getSelection()?.toString()) return;
       onRowClick(taskId);
     }}
   >
-    {title}
-  </button>
-) : <>{title}</>;
+    <span className={singleLine ? 'block truncate' : 'line-clamp-2 [overflow-wrap:anywhere]'}>{title}</span>
+  </Link>
+);
 
 /**
- * Trailing meta locked to a fixed column grid so the status pill, score, and
- * timestamp never shift horizontally between rows (a missing score keeps its slot).
+ * The ledger's REPO cell: the name as plain monospace text. The column is the
+ * container, so a chip around it only stacks identical bubbles down the list;
+ * chips are for entities named inline among other text.
  */
-const TaskMetaCells: React.FC<{ task: Task; isDimmed: boolean }> = ({ task, isDimmed }) => (
-  <>
-    <td className="task-status py-3 px-4 align-top">
-      <div className="task-meta-grid grid grid-cols-[7rem_3.5rem] items-center">
-        <div className="task-meta-status w-28 flex justify-start">{getStatusPill(task.status)}</div>
-        <div className="task-meta-score w-14 flex justify-center">
-          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
-        </div>
-      </div>
-    </td>
-    <td className="task-metadata w-24 py-3 px-4 align-top text-right whitespace-nowrap">
-      <div className="text-sm text-gray-800 tabular-nums" title={new Date(task.createdAt).toLocaleString()}>
-        {formatRelativeTime(task.createdAt)}
-      </div>
-      <div className="text-xs text-slate-400 font-mono">
-        {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
-      </div>
-    </td>
-  </>
+export const TaskRepository: React.FC<{ row: TaskRowView }> = ({ row }) => (
+  <span data-testid="task-repository" title={row.repository} className="block truncate font-mono text-xs text-slate-600 transition-colors hover:text-slate-900">
+    {row.repositoryName}
+  </span>
 );
 
-export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick, isDuplicateRepo = false, desktopLayout = false }) => {
-  const typeInfo = getTaskTypeInfo(task);
-  const isDimmed = shouldDimTask(task);
+/**
+ * The ledger's ASSIGNEES cell: overlapping avatars, capped with a `+N`, so the
+ * cell stays one avatar tall however many people the task is assigned to; an
+ * unassigned task shows the em dash.
+ */
+export const TaskAssignees: React.FC<{ row: TaskRowView }> = ({ row }) => (
+  <span data-testid="task-assignees" className="flex min-w-0 items-center">
+    <AssigneeStack assignees={row.assignees} variant="compact" />
+  </span>
+);
 
+/** The ledger's SCORE cell: the task's newest review score, or a dash when no review scored it. */
+export const TaskScore: React.FC<{ row: TaskRowView }> = ({ row }) => {
+  const score = rowScore(row);
+  return score == null
+    ? <span className="text-xs text-slate-300" aria-label="No score">—</span>
+    : <ScoreBadge score={score} bracketed className="!w-auto !min-w-0 !max-w-none" label="Review score" />;
+};
+
+/** Run statuses worth calling out in the timeline; a finished run says nothing new. */
+const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
+
+/** The chip's look; the toggle form adds only hover and focus states. */
+const RUN_CHIP_CLASSES = 'inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600';
+
+/**
+ * The task's runs as a bounded trend: `[+4] ●──■──■──⟳`, the newest four runs
+ * marked by outcome. The row is the task, so its runs are summarized rather
+ * than listed under it. Where the task opens beside the list, the pane's
+ * timeline moves between them and the track only shows the trend, as it does
+ * on a card, which never opens its runs in place. Where a ledger row's click
+ * leaves the list instead, the track is the one way to reach an earlier run,
+ * so it opens them in place.
+ */
+export const RunCountChip: React.FC<{
+  row: TaskRowView;
+  /** Given, the track is a toggle that opens the runs under the row; omitted, it only shows the trend. */
+  toggle?: {
+    expanded: boolean;
+    runsId: string;
+    onToggle: (groupKey: string, e: React.MouseEvent) => void;
+  };
+}> = ({ row, toggle }) => {
+  const runs = buildTaskRuns(row);
+  const label = pluralize(runs.length, 'run');
+  const description = `${label}: ${runs.slice(-RUN_TRACK_LIMIT).map(describeRun).join(', ')}`;
+  if (!toggle) {
+    return (
+      <span data-testid="run-count" role="img" aria-label={label} title={description} className="inline-flex flex-none items-center">
+        <RunTrack runs={runs} />
+      </span>
+    );
+  }
+  const { expanded, runsId, onToggle } = toggle;
   return (
-    <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white border-b border-slate-100"
-      onClick={event => desktopLayout ? openDesktopRow(event, task.id, onRowClick) : onRowClick(task.id)}
+    <button
+      type="button"
+      data-testid="run-count"
+      aria-label={label}
+      title={description}
+      aria-expanded={expanded}
+      aria-controls={runsId}
+      onClick={event => onToggle(row.key, event)}
+      className={`task-rollup-toggle ${RUN_CHIP_CLASSES} hover:border-slate-300 hover:text-slate-900`}
     >
-      <td className="task-repository py-3 px-6 align-top">
-        {!isDuplicateRepo && <div className="flex flex-col">
-          <span className="text-xs text-gray-400 font-normal">{group.repoOwner}</span>
-          <span className="text-sm font-bold text-gray-800">{group.repoName}</span>
-        </div>}
-      </td>
-      <td className="task-summary py-3 px-4 align-top">
-        <div className="flex flex-col gap-1">
-          {desktopLayout && <div className="task-inline-repository">{group.repoOwner}/{group.repoName}</div>}
-          <div className="task-badges flex flex-wrap items-center gap-1.5">
-            <TaskReferenceChips task={task} prNumber={group.prNumber} />
-            <TaskTypeBadge type={typeInfo.type} label={typeInfo.workflowLabel} />
-          </div>
-          <div className="text-sm text-gray-900 font-medium">
-            <TaskTitle
-              title={getParentDisplayTitle(task)}
-              taskId={task.id}
-              desktopLayout={desktopLayout}
-              onRowClick={onRowClick}
-            />
-          </div>
-          <PreviewThumbnails media={task.previewMedia} />
-          {(() => {
-            // Show agent/model info if available
-            const agent = task.llmProvider || '';
-            const model = task.model || task.modelName || '';
-            if (agent || model) {
-              const displayText = getTaskModelLabel(model, agent);
-              return (
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="task-model inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-gray-100 text-gray-600 border border-gray-200">
-                    <ProviderLogo provider={agent} className="w-3.5 h-3.5" />
-                    <span>{displayText}</span>
-                  </span>
-                </div>
-              );
-            }
-            return null;
-          })()}
-        </div>
-      </td>
-      <TaskMetaCells task={task} isDimmed={isDimmed} />
-      {!desktopLayout && <td className="py-3 px-6 align-top text-right">
-        <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100">
-          <ChevronRight size={16} />
-        </button>
-      </td>}
-    </tr>
+      {/* A fixed box, so the run timeline's rail can start exactly under the caret. */}
+      <span aria-hidden="true" className="task-rollup-caret flex h-3 w-3 flex-none items-center justify-center">
+        <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} strokeWidth={2.5} />
+      </span>
+      <RunTrack runs={runs} />
+    </button>
   );
 };
 
-interface ChildTaskRowProps {
-  desktopLayout?: boolean;
-  task: Task;
-  onRowClick: (taskId: string) => void;
-}
-
-interface ChildTaskRowExtraProps extends ChildTaskRowProps {
-  isLastChild?: boolean;
-}
-
-export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClick, isLastChild = false, desktopLayout = false }) => {
-  const childTypeInfo = getTaskTypeInfo(task);
-  const isDimmed = shouldDimTask(task);
-  // Children show the delta (the specific fix/review/follow-up request), never the parent PR title.
-  const childDisplayTitle = getChildDisplayTitle(task);
-
-  return (
-    <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group border-b border-slate-100"
-      onClick={event => desktopLayout ? openDesktopRow(event, task.id, onRowClick) : onRowClick(task.id)}
-    >
-      <td className="task-repository py-3 px-6 align-top relative">
-         {/* Visual connector line placeholder if we wanted one spanning rows */}
-      </td>
-      <td className="task-summary py-0 px-4 align-top relative">
-        <div className="relative flex flex-col gap-1 pl-6 py-3">
-          {!isLastChild && <div aria-hidden="true" className="absolute left-2 -top-px -bottom-px w-0.5 bg-gray-200" />}
-          <div className="task-thread-anchor task-badges relative flex flex-wrap items-center gap-1.5 ml-4">
-            <TaskReferenceChips task={task} prNumber={task.prNumber} />
-            <TaskTypeBadge type={childTypeInfo.type} label={childTypeInfo.workflowLabel} />
-          </div>
-          <div className="flex items-start gap-2 pl-4">
-            <span className={`text-sm text-gray-600 ${desktopLayout ? 'min-w-0' : 'line-clamp-1'}`}><TaskTitle title={childDisplayTitle} taskId={task.id} desktopLayout={desktopLayout} onRowClick={onRowClick} /></span>
-          </div>
-          <PreviewThumbnails media={task.previewMedia} />
-          {(() => {
-            // Show agent/model info if available
-            const agent = task.llmProvider || '';
-            const model = task.model || task.modelName || '';
-            if (agent || model) {
-              const displayText = getTaskModelLabel(model, agent);
-              return (
-                <div className="flex items-center gap-1 text-xs pl-4">
-                  <span className="task-model inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-gray-100 text-gray-600 border border-gray-200">
-                    <ProviderLogo provider={agent} className="w-3.5 h-3.5" />
-                    <span>{displayText}</span>
-                  </span>
-                </div>
-              );
-            }
-            return null;
-          })()}
-        </div>
-      </td>
-      <TaskMetaCells task={task} isDimmed={isDimmed} />
-      {!desktopLayout && <td className="py-3 px-6 align-top text-right">
-         <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100">
-            <ChevronRight size={16} />
-         </button>
-      </td>}
-    </tr>
-  );
-};
-
-interface CollapseToggleRowProps {
-  desktopLayout?: boolean;
-  groupKey: string;
-  hiddenCount: number;
+/**
+ * The line under a title, held to one line: `[+3] ●──■──■──⟳  REVIEW what the newest
+ * run did · 2 previews`. The type belongs to the newest run, not the task, so
+ * it travels with that run's summary rather than taking room from the title.
+ * A newest run with no summary states its outcome in the same place (why it
+ * failed, the commit it pushed), as the run timeline does, so no line ends on
+ * a bare type. Every row draws it, single run or not, so every row is the
+ * same two lines: `[chip] title` over `[type] what happened`.
+ */
+export const RollupLine: React.FC<{
+  row: TaskRowView;
+  expanded: boolean;
+  runsId: string;
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
+  selectsInPlace?: boolean;
+}> = ({ row, expanded, runsId, onToggle, selectsInPlace = false }) => {
+  const hasRuns = row.earlierRuns.length > 0;
+  const summary = row.detail ?? row.outcome;
+  return (
+    <div className="mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
+      {hasRuns && <RunCountChip row={row} toggle={selectsInPlace ? undefined : { expanded, runsId, onToggle }} />}
+      {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
+      {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
+      <PreviewCountBadge count={row.previewCount} />
+    </div>
+  );
+};
+
+/**
+ * The rolled-up runs of one row as a self-contained timeline hanging off the
+ * toggle's caret: `when · what it did · summary · [ ■ 6 ]`. Each run reads as one cluster.
+ * A review ends on its bracketed score, so the tree tells the review-and-fix
+ * story (a `REVIEW [ ▲ 4 ]`, the fixes it asked for, a `REVIEW [ ■ 6 ]`) as
+ * the task pane's timeline does. A fix scores nothing of its own and shows none.
+ * Runs share the parent's repository and agent, so they borrow none of its cells.
+ */
+export const EarlierRunsList: React.FC<{
+  id: string;
+  runs: TaskRunView[];
+  onRowClick: (taskId: string) => void;
+  selectedTaskId?: string | null;
+}> = ({ id, runs, onRowClick, selectedTaskId }) => (
+  <ul id={id} aria-label="Earlier runs" className="task-earlier-runs">
+    {runs.map(run => {
+      const status = getDisplayStatus(run.task);
+      const created = new Date(run.task.createdAt).toLocaleString();
+      const selected = run.task.id === selectedTaskId;
+      const score = runScore(run);
+      return (
+        <li key={run.task.id}>
+          <button
+            type="button"
+            aria-current={selected || undefined}
+            onClick={() => onRowClick(run.task.id)}
+            className={`${selected ? `${SELECTED_ROW_CLASSES} ` : ''}task-run grid w-full min-w-0 items-center rounded-sm py-0.5 pl-1 text-left text-xs leading-5 text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500`}
+          >
+            <time dateTime={run.task.createdAt} title={`${created} · took ${taskDuration(run.task)}`} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-500">
+              {formatRelativeTime(run.task.createdAt)}
+            </time>
+            <span className="flex min-w-0 items-center gap-2">
+              {/* The slot stays when a run names no action, so every summary starts at the same edge. */}
+              <span className="w-20 flex-none">{run.type && <WorkTypeBadge type={run.type} compact />}</span>
+              <span className={`task-run-summary min-w-0 truncate ${run.summarized ? 'text-slate-700' : 'text-slate-500'}`} title={run.delta}>{run.delta}</span>
+              {!QUIET_RUN_STATUSES.has(status) && <span className="flex-none">{getStatusPill(status, run.type)}</span>}
+              <PreviewCountBadge count={run.previewCount} />
+              {score != null && <span data-testid="run-score" className="ml-auto flex-none"><ScoreBadge score={score} bracketed className="!w-auto !min-w-0 !max-w-none !text-xs" label="Review score" /></span>}
+            </span>
+          </button>
+        </li>
+      );
+    })}
+  </ul>
+);
+
+interface TaskQueueRowProps {
+  row: TaskRowView;
+  prNumber?: number | null;
+  expanded: boolean;
+  onRowClick: (taskId: string) => void;
+  onToggle: (groupKey: string, e: React.MouseEvent) => void;
+  selectedTaskId?: string | null;
+  /** The task opens beside the list, whose timeline reaches its earlier runs. */
+  selectsInPlace?: boolean;
 }
 
-export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, hiddenCount, onToggle, desktopLayout = false }) => (
-  <tr className="bg-gray-50/30 border-b border-slate-100">
-    <td className="task-repository py-3 px-6 align-top relative">
-       {/* Empty cell for repository column alignment */}
-    </td>
-    <td colSpan={desktopLayout ? 3 : 4} className="py-0 px-4 align-top text-xs relative">
-       <div className="pl-6 py-3">
-         <div className="task-thread-anchor relative ml-4">
-         <button
-           onClick={(e) => onToggle(groupKey, e)}
-           className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors"
-         >
-           Show {hiddenCount} older updates...
-         </button>
-         </div>
-       </div>
-    </td>
-  </tr>
-);
+/** One ledger row: TASK / PR · REPO · STATUS · AGENT · ASSIGNEES · DURATION · UPDATED · SCORE. */
+export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expanded, onRowClick, onToggle, selectedTaskId, selectsInPlace = false }) => {
+  const { task } = row;
+  const runsId = `task-runs-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+  const selected = rowContainsTask(row, selectedTaskId);
+  return (
+    <div role="presentation" className="border-b border-slate-200" data-testid="task-row">
+      <div
+        role="row"
+        aria-selected={selected}
+        className={`task-queue-grid task-queue-row pl-8 pr-6 cursor-pointer py-2 transition-colors ${selected ? SELECTED_ROW_CLASSES : 'hover:bg-slate-50'}`}
+        onClick={event => openRow(event, task.id, onRowClick)}
+      >
+        <div role="cell" className="min-w-0">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
+            {/* One line, ending in `…`: a long title never wraps, so every title starts at the chip and every row is two lines. */}
+            <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} singleLine />
+          </div>
+          <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />
+        </div>
+        <div role="cell" className="min-w-0"><TaskRepository row={row} /></div>
+        <div role="cell" className="min-w-0">{getStatusPill(getDisplayStatus(task), row.type)}</div>
+        <div role="cell" className="min-w-0"><TaskAgent task={task} /></div>
+        <div role="cell" className="min-w-0"><TaskAssignees row={row} /></div>
+        <div role="cell" className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-slate-700">{taskDuration(task)}</div>
+        <div role="cell" className="whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
+          <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>
+        </div>
+        <div role="cell" className="justify-items-end"><TaskScore row={row} /></div>
+      </div>
+      {!selectsInPlace && expanded && row.earlierRuns.length > 0 && (
+        <div role="row" className="task-queue-grid pl-8 pr-6 pb-2">
+          <div role="cell" aria-colspan={TASK_RUNS_COLUMN_SPAN} className="task-runs-cell min-w-0">
+            <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} selectedTaskId={selectedTaskId} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

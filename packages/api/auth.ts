@@ -1,3 +1,4 @@
+import { BrowserSessionLifecycle } from './authSession.js';
 /* eslint-disable max-lines -- browser, GitHub bearer, instance-token, Socket.IO, and preview auth share one policy boundary */
 import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
@@ -28,6 +29,7 @@ import {
     buildConnectAuthorizationUrl,
     redeemConnectAuthorizationCode,
     resolveBrowserAuthMode,
+    type BrowserAuthMode,
 } from './connectAuth.js';
 import {
     authenticatedUserResponse,
@@ -37,8 +39,17 @@ import {
 } from './authorization.js';
 import { captureVisualPreviewCredentialFromAdminLogin } from './services/visualPreviewOAuth.js';
 import { githubUserGrantService } from './githubUserGrantService.js';
+import { rememberCreator } from './services/creatorProjection.js';
 import './authTypes.js';
 import { timeApiStage } from './apiPerformanceTiming.js';
+import { createCorsOriginValidator } from './corsValidation.js';
+import { loopbackOAuthStartRedirect } from './authLoopbackOrigin.js';
+
+declare module 'express-session' {
+    interface SessionData {
+        csrfToken?: string;
+    }
+}
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export { getSessionCookieDomain, shouldUseSecureSessionCookie } from './authSession.js';
@@ -47,6 +58,7 @@ export type { GitHubUser } from './authTypes.js';
 export interface SocketAuthMiddlewareBundle {
     /** Express-compatible middleware that must run on the Engine.IO handshake. */
     engineMiddleware: RequestHandler[];
+    close(): Promise<void>;
 }
 
 export interface SocketPrincipal {
@@ -181,94 +193,64 @@ async function completeAuthenticatedSessionWithPreviewCredential(req: Request, r
             console.warn('Could not capture GitHub user grant during login:', (error as Error).message);
         }
     }
+    // The GitHub profile is in hand once per session: cache it so whatever this
+    // user creates renders with their avatar without a GitHub lookup.
+    if (req.user) await rememberCreator(req.user);
     completeAuthenticatedSession(req, res);
 }
 
-export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
-    configureDemoMode(demoModeAtStartup);
-    const browserAuthMode = demoModeAtStartup ? 'disabled' : resolveBrowserAuthMode();
-    const requiredEnvVars = browserAuthMode === 'github'
-        ? ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
-        : browserAuthMode === 'connect'
-            ? ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
-            : ['FRONTEND_URL'];
-    const missingVars = requiredEnvVars.filter(v => !process.env[v]);
-    if (missingVars.length > 0) {
-        throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
-    }
+/** Protect extension management without changing unrelated session routes. */
+export function createSessionCsrfProtection(
+    frontendUrl: string,
+    cookieDomain: string | undefined,
+): RequestHandler {
+    const validateOrigin = createCorsOriginValidator(frontendUrl, cookieDomain);
+    return (req, res, next) => {
+        // Installed after Passport's session middleware and before any bearer
+        // authentication. Explicit credentials without a logged-in session do
+        // not confer ambient browser authority.
+        if (!/^\/api\/instance\/extensions\/v1(?:\/|$)/i.test(req.path) || !req.isAuthenticated()) { next(); return; }
 
-    const sessionSecret = process.env.SESSION_SECRET;
-    if (!demoModeAtStartup) {
-        const sessionSecretError = validateSessionSecret(sessionSecret);
-        if (sessionSecretError) throw new Error(sessionSecretError);
-    }
-    const engineMiddleware: RequestHandler[] = [];
-
-    // Keep OAuth starts and callbacks bounded independently from the general
-    // API quota. Session checks, logout, and auth metadata remain covered by
-    // the general API limiter and must not exhaust the much smaller OAuth
-    // bucket during normal UI use.
-    app.use('/api/auth/github', createAuthRequestRateLimiter());
-
-    if (!demoModeAtStartup) {
-        // Create Redis client for session store
-        // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
-        const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
-        const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-        const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
-        redisClient.on('error', (err) => {
-            console.error('Session Redis Client Error', err);
-        });
-        redisClient.connect().catch(console.error);
-
-        // Use Redis store for sessions to share across subdomains
-        const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
-
-        const cookieDomain = getSessionCookieDomain();
-        const sessionMiddleware = session({
-            store: redisStore,
-            secret: sessionSecret!,
-            resave: false,
-            saveUninitialized: false,
-            rolling: true, // Extend session expiration on each request
-            cookie: {
-                secure: shouldUseSecureSessionCookie(cookieDomain),
-                httpOnly: true,
-                maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-                ...(cookieDomain ? { domain: cookieDomain } : {}),
-                sameSite: 'lax'
-            }
-        });
-        const passportInitializeMiddleware = passport.initialize();
-        const passportSessionMiddleware = passport.session();
-        engineMiddleware.push(
-            sessionMiddleware,
-            passportInitializeMiddleware,
-            passportSessionMiddleware,
-        );
-        app.use(sessionMiddleware);
-        app.use(passportInitializeMiddleware);
-        app.use(passportSessionMiddleware);
-
-        if (browserAuthMode === 'github') {
-            passport.use(createGitHubOAuthStrategy({
-                clientID: process.env.GH_OAUTH_CLIENT_ID!,
-                clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
-                callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
-            }));
+        if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+            req.session.csrfToken ??= randomBytes(32).toString('base64url');
+            res.set('X-CSRF-Token', req.session.csrfToken);
+            res.set('Cache-Control', 'no-store');
+            next();
+            return;
+        }
+        if (req.session.csrfToken && req.get('X-CSRF-Token') === req.session.csrfToken) {
+            next();
+            return;
         }
 
-        passport.serializeUser((user, done) => done(null, user));
-        passport.deserializeUser((obj: Express.User, done) => done(null, obj));
-    }
+        // Browser mutations supply Origin even on same-origin requests. Never
+        // accept a missing Origin merely because the CORS validator permits
+        // native clients: cookie clients without Origin must send the token.
+        const origin = req.get('Origin');
+        if (!origin) { res.status(403).json({ error: 'CSRF validation failed' }); return; }
+        validateOrigin(origin, (error, allowed) => {
+            if (error || !allowed) { res.status(403).json({ error: 'CSRF validation failed' }); return; }
+            next();
+        });
+    };
+}
 
-    // Routes
-    // Accept optional redirect_to parameter for PR preview environments
-    app.get('/api/auth/github', (req: Request, res: Response, next: NextFunction) => {
+/** Start browser OAuth; exported with the callback factory for cookie-jar route tests. */
+export function createOAuthStartHandler(browserAuthMode: BrowserAuthMode, demoModeAtStartup: boolean): RequestHandler {
+    return (req: Request, res: Response, next: NextFunction) => {
         const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
 
         if (demoModeAtStartup) {
             res.redirect(redirectTo || getDefaultRedirectUrl());
+            return;
+        }
+
+        // Create cookie-bound OAuth state only on the origin that receives the callback.
+        const canonicalStart = browserAuthMode === 'disabled'
+            ? null
+            : loopbackOAuthStartRedirect(req, process.env.GH_OAUTH_CALLBACK_URL);
+        if (canonicalStart) {
+            res.redirect(canonicalStart);
             return;
         }
 
@@ -307,7 +289,102 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
             return;
         }
         passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
-    });
+    };
+}
+
+export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
+    configureDemoMode(demoModeAtStartup);
+    const browserAuthMode = demoModeAtStartup ? 'disabled' : resolveBrowserAuthMode();
+    const requiredEnvVars = browserAuthMode === 'github'
+        ? ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
+        : browserAuthMode === 'connect'
+            ? ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
+            : ['FRONTEND_URL'];
+    const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+    if (missingVars.length > 0) {
+        throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+    }
+
+    const sessionSecret = process.env.SESSION_SECRET;
+    if (!demoModeAtStartup) {
+        const sessionSecretError = validateSessionSecret(sessionSecret);
+        if (sessionSecretError) throw new Error(sessionSecretError);
+    }
+    const engineMiddleware: RequestHandler[] = [];
+    let close = async () => {};
+
+    // Keep OAuth starts and callbacks bounded independently from the general
+    // API quota. Session checks, logout, and auth metadata remain covered by
+    // the general API limiter and must not exhaust the much smaller OAuth
+    // bucket during normal UI use.
+    app.use('/api/auth/github', createAuthRequestRateLimiter());
+
+    if (!demoModeAtStartup) {
+        // Create Redis client for session store
+        // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
+        const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
+        const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
+        const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
+        redisClient.on('error', (err) => {
+            console.error('Session Redis Client Error', err);
+        });
+        const connecting = redisClient.connect().catch(error => { console.error(error); });
+        const lifecycle = new BrowserSessionLifecycle();
+        close = () => lifecycle.close(async () => {
+            // Destroy also cancels an in-progress connect/reconnect. Store work is drained.
+            if (redisClient.isOpen) redisClient.destroy();
+            await connecting;
+            if (redisClient.isOpen) throw new Error('Browser session Redis remained open');
+        });
+
+        // Use Redis store for sessions to share across subdomains
+        const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
+        lifecycle.trackStore(redisStore);
+
+        const cookieDomain = getSessionCookieDomain();
+        const sessionMiddleware = session({
+            store: redisStore,
+            secret: sessionSecret!,
+            resave: false,
+            saveUninitialized: false,
+            rolling: true, // Extend session expiration on each request
+            cookie: {
+                secure: shouldUseSecureSessionCookie(cookieDomain),
+                httpOnly: true,
+                maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+                ...(cookieDomain ? { domain: cookieDomain } : {}),
+                sameSite: 'lax'
+            }
+        });
+        const passportInitializeMiddleware = passport.initialize();
+        const passportSessionMiddleware = passport.session();
+        engineMiddleware.push(
+            lifecycle.middleware,
+            sessionMiddleware,
+            passportInitializeMiddleware,
+            passportSessionMiddleware,
+        );
+        app.use(lifecycle.middleware);
+        app.use(sessionMiddleware);
+        app.use(passportInitializeMiddleware);
+        app.use(passportSessionMiddleware);
+        app.use(createSessionCsrfProtection(process.env.FRONTEND_URL!, cookieDomain));
+
+        if (browserAuthMode === 'github') {
+            passport.use(createGitHubOAuthStrategy({
+                clientID: process.env.GH_OAUTH_CLIENT_ID!,
+                clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
+                callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
+            }));
+        }
+
+        passport.serializeUser((user, done) => done(null, user));
+        passport.deserializeUser((obj: Express.User, done) => done(null, obj));
+    }
+
+    // Routes
+    // Accept optional redirect_to parameter for PR preview environments
+    app.get('/api/auth/github', createOAuthStartHandler(browserAuthMode, demoModeAtStartup));
 
     if (demoModeAtStartup) {
         app.get('/api/auth/github/callback', (req: Request, res: Response) => {
@@ -373,7 +450,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         res.json({ demoMode: demoModeAtStartup });
     });
 
-    return { engineMiddleware };
+    return { engineMiddleware, close };
 }
 
 /**

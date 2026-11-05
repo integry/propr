@@ -4,7 +4,9 @@ import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
 import { createWorker, INDEXING_QUEUE_NAME, indexingQueue, runMigrations } from '@propr/core';
 import type { IndexingJobData, JobResult } from '@propr/core';
-import { logger } from '@propr/core';
+import { logger, startEgressProxySweeper } from '@propr/core';
+import { runWithNetworkPolicy } from './jobs/networkEgress.js';
+import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import { indexRepo, updateRepositoryStatus } from '@propr/core';
@@ -56,13 +58,14 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
         // Note: We no longer clear summaries before indexing. If fullReindex is true,
         // indexRepo will process all files but preserve existing summaries as fallback
         // in case of failure. Old summaries for deleted files are cleaned up by indexRepo.
-        await indexRepo(repoPath, {
+        // No task row: the network policy's report is logged rather than put on a timeline.
+        await runWithNetworkPolicy({ correlatedLogger }, () => indexRepo(repoPath, {
             correlationId,
             fullName: repository,
             branch: baseBranch,
             fullReindex,
             ignoreCooldown
-        });
+        }));
 
         const duration = Date.now() - startTime;
         correlatedLogger.info({ repository, duration }, 'Indexing job completed successfully');
@@ -383,19 +386,18 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         }
     }, 5000);
 
-    process.on('SIGINT', async () => {
-        logger.info('Indexing Worker received SIGINT, shutting down gracefully...');
-        clearInterval(scanInterval);
-        await worker.close();
-        process.exit(0);
-    });
-
-    process.on('SIGTERM', async () => {
-        logger.info('Indexing Worker received SIGTERM, shutting down gracefully...');
-        clearInterval(scanInterval);
-        await worker.close();
-        process.exit(0);
-    });
+    // Summarization agents run under the instance network policy, with per-run proxies like the worker's.
+    const egressProxySweeper = startEgressProxySweeper();
+    enforceInstanceNetworkPolicyOutsideRuns();
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        process.on(signal, async () => {
+            logger.info(`Indexing Worker received ${signal}, shutting down gracefully...`);
+            clearInterval(scanInterval);
+            // Proxies close only after running jobs (and their containers) have drained.
+            await worker.close().finally(() => egressProxySweeper.close());
+            process.exit(0);
+        });
+    }
 
     return worker;
 }

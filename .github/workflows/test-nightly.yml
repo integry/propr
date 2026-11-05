@@ -15,15 +15,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  e2e-tests:
-    name: Run E2E Test Suite
+  full-tests:
+    name: Run Full Test Suite
     runs-on: [self-hosted, linux, x64, propr]
     timeout-minutes: 120
     permissions:
       contents: read
-      issues: write
+    outputs:
+      full_tests: ${{ steps.full_tests.outcome }}
 
     steps:
+      # Bound full-suite work independently and leave diagnostic upload headroom.
+      - name: Record full suite deadline
+        run: echo "PROPR_FULL_DEADLINE_SECONDS=$(( $(date +%s) + 110 * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -64,10 +69,16 @@ jobs:
         continue-on-error: true
         env:
           NODE_ENV: test
+          # Redis was started above: its integration suites must run, not skip.
+          PROPR_REQUIRE_REDIS_INTEGRATION: '1'
         run: |
           echo "Running full test suite with Redis..."
-          npm run test:full:prepared 2>&1 | tee test_output.txt
+          remaining=$(( PROPR_FULL_DEADLINE_SECONDS - $(date +%s) ))
+          test "$remaining" -gt 0
+          set +e
+          timeout --signal=TERM --kill-after=60s "${remaining}s" npm run test:full:prepared 2>&1 | tee test_output.txt
           TEST_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
 
           if [ $TEST_EXIT_CODE -eq 0 ]; then
             echo "test_result=success" >> $GITHUB_OUTPUT
@@ -79,15 +90,94 @@ jobs:
 
           exit $TEST_EXIT_CODE
 
+      - name: Sanitize failure diagnostics
+        if: always()
+        env:
+          GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
+          PROPR_E2E_API_URL_TO_REDACT: ${{ secrets.PROPR_E2E_API_URL }}
+          PROPR_E2E_TOKEN_TO_REDACT: ${{ secrets.PROPR_E2E_TOKEN }}
+        run: node scripts/sanitize-ci-output.mjs test_output.txt test_output.sanitized.txt
+
+      - name: Remove raw failure diagnostics
+        if: always()
+        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt"
+
+      - name: Upload sanitized failure diagnostics
+        if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure')
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: nightly-test-output-${{ github.run_id }}-${{ github.run_attempt }}-full
+          path: test_output.sanitized.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Fail Job
+        if: steps.full_tests.outcome == 'failure'
+        run: exit 1
+
+      - name: Stop isolated Redis
+        if: always()
+        run: ./scripts/ci-redis.sh stop
+
+  e2e-tests:
+    name: Run E2E Test Suite
+    needs: [full-tests]
+    if: ${{ success() && needs.full-tests.result == 'success' && needs.full-tests.outputs.full_tests == 'success' }}
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      e2e_config: ${{ steps.e2e_config.outcome }}
+      e2e_tests: ${{ steps.e2e_tests.outcome }}
+
+    steps:
+      # This clock starts in the dedicated live job, after the full suite.
+      # Reserve ten minutes for canonical cleanup and terminal diagnostics.
+      - name: Record E2E deadline
+        run: echo "PROPR_E2E_DEADLINE_EPOCH_MS=$(( ($(date +%s) + 110 * 60) * 1000 ))" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Install Dependencies
+        id: install
+        run: npm ci
+
+      - name: Build workspace packages
+        id: build
+        run: npm run test:prepare
+
       - name: Validate live E2E configuration
         id: e2e_config
-        if: steps.full_tests.outcome == 'success'
         continue-on-error: true
         env:
           PROPR_E2E_API_URL: ${{ secrets.PROPR_E2E_API_URL }}
           PROPR_E2E_TOKEN: ${{ secrets.PROPR_E2E_TOKEN }}
           PROPR_E2E_REPO: ${{ vars.PROPR_E2E_REPO }}
+          PROPR_E2E_MODEL_TASK_TIMEOUT_MS: ${{ vars.PROPR_E2E_MODEL_TASK_TIMEOUT_MS || '1800000' }}
         run: |
+          # Both model polling phases must fit the bounded model suite.
+          node --input-type=module -e '
+            const value = Number(process.env.PROPR_E2E_MODEL_TASK_TIMEOUT_MS);
+            if (!Number.isSafeInteger(value) || value <= 0 || value > 1800000) {
+              console.error("Nightly model-task timeout must be 1..1800000 ms");
+              process.exit(1);
+            }
+          '
           missing=()
           for name in PROPR_E2E_API_URL PROPR_E2E_TOKEN PROPR_E2E_REPO; do
             if [ -z "${!name:-}" ]; then
@@ -101,7 +191,7 @@ jobs:
 
       - name: Run E2E Tests
         id: e2e_tests
-        if: steps.full_tests.outcome == 'success' && steps.e2e_config.outcome == 'success'
+        if: steps.e2e_config.outcome == 'success'
         continue-on-error: true
         env:
           NODE_ENV: test
@@ -114,8 +204,14 @@ jobs:
           PROPR_E2E_MODEL_TASK_TIMEOUT_MS: ${{ vars.PROPR_E2E_MODEL_TASK_TIMEOUT_MS || '1800000' }}
         run: |
           echo "Running E2E test suite..."
-          npm run test:e2e 2>&1 | tee e2e_output.txt
+          # Backstop after the work deadline: allow five minutes for cleanup,
+          # then retain four minutes for diagnostics even after a forced kill.
+          remaining=$(( PROPR_E2E_DEADLINE_EPOCH_MS / 1000 + 5 * 60 - $(date +%s) ))
+          test "$remaining" -gt 0
+          set +e
+          timeout --signal=TERM --kill-after=60s "${remaining}s" npm run test:e2e 2>&1 | tee e2e_output.txt
           E2E_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
 
           if [ $E2E_EXIT_CODE -eq 0 ]; then
             echo "e2e_result=success" >> $GITHUB_OUTPUT
@@ -133,97 +229,224 @@ jobs:
           GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
           PROPR_E2E_API_URL_TO_REDACT: ${{ secrets.PROPR_E2E_API_URL }}
           PROPR_E2E_TOKEN_TO_REDACT: ${{ secrets.PROPR_E2E_TOKEN }}
-        run: |
-          node scripts/sanitize-ci-output.mjs test_output.txt test_output.sanitized.txt
-          node scripts/sanitize-ci-output.mjs e2e_output.txt e2e_output.sanitized.txt
+        run: node scripts/sanitize-ci-output.mjs e2e_output.txt e2e_output.sanitized.txt
 
       - name: Remove raw failure diagnostics
         if: always()
-        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt" "$GITHUB_WORKSPACE/e2e_output.txt"
+        run: rm -f -- "$GITHUB_WORKSPACE/e2e_output.txt"
 
       - name: Upload sanitized failure diagnostics
-        if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
+        if: always() && !cancelled() && (failure() || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: nightly-test-output-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            test_output.sanitized.txt
-            e2e_output.sanitized.txt
+          name: nightly-test-output-${{ github.run_id }}-${{ github.run_attempt }}-live
+          path: e2e_output.sanitized.txt
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Create Failure Issue
-        if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-            const date = new Date().toISOString().split('T')[0];
-
-            const outcomes = {
-              install: '${{ steps.install.outcome }}',
-              build: '${{ steps.build.outcome }}',
-              docs: '${{ steps.docs.outcome }}',
-              redis: '${{ steps.redis.outcome }}',
-              fullTests: '${{ steps.full_tests.outcome }}',
-              e2eConfig: '${{ steps.e2e_config.outcome }}',
-              e2eTests: '${{ steps.e2e_tests.outcome }}',
-            };
-
-            const body = [
-              '## Nightly Test Suite Failure Report',
-              '',
-              `**Date:** ${date}`,
-              `**Dependency install:** ${outcomes.install}`,
-              `**Workspace build:** ${outcomes.build}`,
-              `**Docs validation:** ${outcomes.docs}`,
-              `**Redis startup:** ${outcomes.redis}`,
-              `**Full test suite:** ${outcomes.fullTests}`,
-              `**Live E2E configuration:** ${outcomes.e2eConfig}`,
-              `**Live E2E tests:** ${outcomes.e2eTests}`,
-              '',
-              'Sanitized process output is available in the `nightly-test-output` artifact on the workflow run.',
-              '',
-              `**[View Workflow Run](${runUrl})**`,
-            ].join('\n');
-
-            // Check for existing open issues with the same title pattern
-            const existingIssues = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'nightly-test-failure',
-              per_page: 10,
-            });
-
-            const todayTitle = `Nightly Test Suite Failed - ${date}`;
-            const existingToday = existingIssues.data.find(issue => issue.title === todayTitle);
-
-            if (existingToday) {
-              // Update existing issue with new comment
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existingToday.number,
-                body: `## Re-run Results\n\n${body}`,
-              });
-              console.log(`Updated existing issue #${existingToday.number}`);
-            } else {
-              // Create new issue
-              const issue = await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: todayTitle,
-                body: body,
-                labels: ['nightly-test-failure', 'bug'],
-              });
-              console.log(`Created issue #${issue.data.number}`);
-            }
-
       - name: Fail Job
-        if: steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
+        if: steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
         run: exit 1
 
-      - name: Stop isolated Redis
-        if: always()
-        run: ./scripts/ci-redis.sh stop
+  # Pull requests skip the desktop checks unless they touch the desktop app, so
+  # the nightly run is where every change reaches them.
+  native-electron:
+    name: Nightly Native Electron (hosted)
+    # The self-hosted runner does not provide the native sandbox/session contract.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build workspace packages
+        run: npm run test:prepare
+
+      - name: Run native Electron units without skipping
+        env:
+          NODE_ENV: test
+          PROPR_REQUIRE_NATIVE_ELECTRON: '1'
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(grep -l 'prepareNativeElectronTest(' apps/desktop/scripts/*.test.mjs | grep -v '/electron-native-test-setup\.test\.mjs$')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No native Electron test units were found." >&2
+            exit 1
+          fi
+          printf 'Native Electron unit: %s\n' "${files[@]}"
+          node scripts/run-test-suite.mjs "${files[@]}"
+
+  # Called, never dispatched: the release workflow is not dispatchable. Its
+  # release jobs declare `contents: write` and only run for desktop tags; the
+  # validation jobs stay read-only through its own `contents: read`.
+  desktop-package:
+    name: Nightly desktop package
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-release-guard.yml
+
+  desktop-connect:
+    name: Nightly Packaged Connect
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-connect-discovery-guard.yml
+
+  # One consolidated, verified download of the nightly native installers. It
+  # re-runs the same finalize verification over this run's per-target
+  # artifacts and uploads them with a provenance manifest and run summary. A
+  # failed, cancelled or missing platform withholds the bundle and fails this
+  # job; other check outcomes are recorded and block any readiness claim.
+  # Actions artifact only: no release, tag, registry, feed or signing.
+  desktop-nightly-download:
+    name: Nightly desktop download
+    needs: [full-tests, e2e-tests, native-electron, desktop-package, desktop-connect]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      NEEDS_JSON: ${{ toJSON(needs) }}
+      DESKTOP_VERSION: ${{ needs.desktop-package.outputs.version }}
+      PROPR_E2E_MAX_MODEL_PAIRS: ${{ vars.PROPR_E2E_MAX_MODEL_PAIRS || '8' }}
+
+    steps:
+      - name: Checkout exact nightly source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require native packaging success for the exact source
+        id: gate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node apps/desktop/scripts/nightly-native-bundle.mjs gate
+          test "$DESKTOP_VERSION" = "$(node -p "require('./apps/desktop/package.json').version")"
+
+      - name: Install cross-format inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio p7zip-full rpm unzip
+
+      - name: Download all unsigned native artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-validation-canonical-*-${{ github.run_id }}
+          path: desktop-release-fragments
+
+      - name: Re-verify architecture, matrix completeness, and checksums
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$DESKTOP_VERSION" \
+            --profile macos-linux-v1 \
+            --input desktop-release-fragments \
+            --output desktop-release-final
+          (cd desktop-release-final && sha256sum --check SHA256SUMS)
+
+      - name: Assemble nightly bundle with provenance manifest
+        id: bundle
+        run: |
+          node apps/desktop/scripts/nightly-native-bundle.mjs bundle \
+            --version "$DESKTOP_VERSION" \
+            --input desktop-release-final \
+            --output propr-desktop-nightly
+          (cd propr-desktop-nightly && sha256sum --check SHA256SUMS)
+
+      - name: Upload consolidated nightly native bundle
+        id: upload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ steps.bundle.outputs.artifact_name }}
+          path: propr-desktop-nightly
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish nightly download summary
+        id: summary
+        env:
+          NIGHTLY_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          NIGHTLY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs summary --directory propr-desktop-nightly
+
+      # failure() is also true when an upstream nightly job failed (for example
+      # live E2E on a packaging-only run), so each report also checks this job's
+      # own step outcomes before saying what happened to the download.
+      - name: Report withheld nightly bundle
+        if: failure() && steps.gate.outcome == 'success' && steps.upload.outcome != 'success'
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs withheld
+
+      - name: Report unsummarized nightly bundle
+        if: failure() && steps.upload.outcome == 'success' && steps.summary.outcome == 'failure'
+        env:
+          NIGHTLY_ARTIFACT_NAME: ${{ steps.bundle.outputs.artifact_name }}
+          NIGHTLY_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          NIGHTLY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs unsummarized
+
+  # One "Nightly test health" issue tracks a red nightly on the default branch:
+  # a failure opens it or comments on the open one, the next green run comments
+  # and closes it. Skipped or cancelled jobs without a failure leave it alone.
+  # See scripts/nightly-health-issue.mjs.
+  nightly-health:
+    name: Nightly test health
+    needs: [full-tests, e2e-tests, native-electron, desktop-package, desktop-connect, desktop-nightly-download]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+
+    steps:
+      - name: Checkout health issue script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            scripts/nightly-health-issue.mjs
+            scripts/sanitize-ci-output.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download sanitized failure diagnostics
+        if: contains(needs.*.result, 'failure')
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: nightly-test-output-${{ github.run_id }}-${{ github.run_attempt }}-*
+          merge-multiple: true
+          path: nightly-diagnostics
+
+      - name: Update nightly health issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          NIGHTLY_DIAGNOSTICS_DIR: nightly-diagnostics
+          NIGHTLY_SUITE_JOBS: '{"full-tests":"Run Full Test Suite","e2e-tests":"Run E2E Test Suite"}'
+          NIGHTLY_HEALTH_JOB_NAME: Nightly test health
+          GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
+        with:
+          script: |
+            const { runNightlyHealth } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/nightly-health-issue.mjs`);
+            await runNightlyHealth({ github, context, core });

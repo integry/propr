@@ -118,9 +118,9 @@ describe('desktop trusted release workflow', () => {
       /await extractArtifact\([\s\S]*await verifyDarwinLocalPackage\([\s\S]*await signDarwinPackagedConnectApplication\(/);
   });
 
-  test('keeps pull-request packaging unsigned and completely secretless', () => {
+  test('keeps non-push validation packaging unsigned and completely secretless', () => {
     const validation = `${job('validation-version', 'package')}\n${job('package', 'finalize')}\n${job('finalize', 'preflight')}`;
-    assert.match(validation, /github\.event_name == 'pull_request'/);
+    assert.match(validation, /github\.event_name != 'push'/);
     assert.match(validation, /Prove pull-request validation is secretless/);
     assert.ok(!validation.includes('secrets.'), 'PR jobs must not reference any GitHub secret');
     assert.ok(!validation.includes('PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
@@ -424,7 +424,7 @@ describe('desktop trusted release workflow', () => {
     const validation = job('package', 'finalize');
     assert.match(
       validation,
-      /- name: Package desktop app from clean checkout[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs -- npm run desktop:package\n/,
+      /- name: Package desktop app from clean checkout[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs --attempts 5 --backoff-ms 30000 -- npm run desktop:package\n/,
     );
     assert.match(
       validation,
@@ -481,7 +481,8 @@ describe('desktop trusted release workflow', () => {
     assert.equal(workflow.match(/\*Machine-Setup\.msi/g)?.length, 1);
     assert.equal(workflow.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
     assert.equal(workflow.match(/PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1/g)?.length, 1);
-    assert.match(forgeConfig, /const linuxSetupResources = process\.platform === 'linux'[\s\S]*extraResource:/);
+    assert.match(forgeConfig, /const setupResources = \['linux', 'darwin'\]\.includes\(process\.platform\)/);
+    assert.match(forgeConfig, /extraResource: \[[\s\S]*?\.\.\.\(\(process\.platform === 'linux' \|\| process\.platform === 'darwin'\) \? \[\s*resolve\(connectOrchestrator, 'orchestrator\.mjs'\),\s*desktopRuntimeManifest,\s*setupAssets,\s*\] : \[\]\),\s*\],\s*\.\.\.setupResources,/);
     assert.doesNotMatch(forgeConfig, /windows-authority/);
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
     assert.match(forgeConfig, /wixDirectory: process\.env\.PROPR_DESKTOP_WIX_DIRECTORY/);

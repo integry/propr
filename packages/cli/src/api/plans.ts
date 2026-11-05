@@ -6,6 +6,13 @@
  */
 
 import { ApiClient, createApiClient, ApiResponse } from "./index.js";
+import type { RequestOptions } from "./types.js";
+
+/**
+ * Per-request cancellation and timeout. The signal aborts the in-flight request
+ * and any retry of it.
+ */
+export type PlanRequestOptions = Pick<RequestOptions, "signal" | "timeout">;
 
 /**
  * Plan status values.
@@ -196,6 +203,7 @@ export async function listPlans(
  * @param prompt - The initial prompt describing the plan.
  * @param options - Optional additional options for plan creation.
  * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @param request - Optional cancellation signal and per-attempt timeout.
  * @returns A promise resolving to the created plan.
  *
  * @example
@@ -208,7 +216,8 @@ export async function createPlan(
   project: string,
   prompt: string,
   options: CreatePlanOptions = {},
-  client?: ApiClient
+  client?: ApiClient,
+  request: PlanRequestOptions = {}
 ): Promise<Plan> {
   const apiClient = client ?? (await createApiClient());
 
@@ -220,6 +229,7 @@ export async function createPlan(
 
   const response = await apiClient.post<Plan>("/api/planner/drafts", {
     body,
+    ...request,
   });
 
   return response.data;
@@ -230,6 +240,7 @@ export async function createPlan(
  *
  * @param planId - The unique identifier of the plan (draft_id).
  * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @param request - Optional cancellation signal and per-attempt timeout.
  * @returns A promise resolving to the plan details.
  *
  * @example
@@ -241,11 +252,12 @@ export async function createPlan(
  */
 export async function getPlan(
   planId: string,
-  client?: ApiClient
+  client?: ApiClient,
+  request: PlanRequestOptions = {}
 ): Promise<Plan> {
   const apiClient = client ?? (await createApiClient());
 
-  const response = await apiClient.get<Plan>(`/api/planner/drafts/${encodeURIComponent(planId)}`);
+  const response = await apiClient.get<Plan>(`/api/planner/drafts/${encodeURIComponent(planId)}`, request);
 
   return response.data;
 }
@@ -321,17 +333,19 @@ export interface FinalizePlanResponse {
  *
  * @param draftId - The unique identifier of the plan draft.
  * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @param request - Optional cancellation signal and per-attempt timeout.
  * @returns A promise resolving to the finalization response.
  */
 export async function finalizePlan(
   draftId: string,
-  client?: ApiClient
+  client?: ApiClient,
+  request: PlanRequestOptions = {}
 ): Promise<FinalizePlanResponse> {
   const apiClient = client ?? (await createApiClient());
 
   const response = await apiClient.post<FinalizePlanResponse>(
     "/api/planner/finalize",
-    { body: { draftId } }
+    { body: { draftId }, ...request }
   );
 
   return response.data;
@@ -354,12 +368,14 @@ export interface GeneratePlanOptions {
  * @param draftId - The unique identifier of the plan draft.
  * @param options - Optional generation configuration.
  * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @param request - Optional cancellation signal and per-attempt timeout.
  * @returns A promise resolving to the generation response.
  */
 export async function generatePlan(
   draftId: string,
   options: GeneratePlanOptions = {},
-  client?: ApiClient
+  client?: ApiClient,
+  request: PlanRequestOptions = {}
 ): Promise<{ success: boolean; message?: string }> {
   const apiClient = client ?? (await createApiClient());
 
@@ -367,7 +383,7 @@ export async function generatePlan(
 
   const response = await apiClient.post<{ success: boolean; message?: string }>(
     "/api/planner/generate",
-    { body }
+    { body, ...request }
   );
 
   return response.data;
@@ -395,16 +411,19 @@ export interface PlanIssue {
  *
  * @param planId - The unique identifier of the plan (draft_id).
  * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @param request - Optional cancellation signal and per-attempt timeout.
  * @returns A promise resolving to the list of plan issues.
  */
 export async function listPlanIssues(
   planId: string,
-  client?: ApiClient
+  client?: ApiClient,
+  request: PlanRequestOptions = {}
 ): Promise<PlanIssue[]> {
   const apiClient = client ?? (await createApiClient());
 
   const response = await apiClient.get<PlanIssue[]>(
-    `/api/planner/drafts/${encodeURIComponent(planId)}/issues`
+    `/api/planner/drafts/${encodeURIComponent(planId)}/issues`,
+    request
   );
 
   return response.data;

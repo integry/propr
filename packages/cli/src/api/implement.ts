@@ -49,6 +49,11 @@ export interface ImplementIssueOptions {
    * Whether to auto-merge individual PRs into the Epic PR.
    */
   autoMerge?: boolean;
+
+  /**
+   * Per-task spend cap in USD. Overrides `.propr/workflow.yml` and the instance default.
+   */
+  max_cost_usd?: number;
 }
 
 /**
@@ -107,6 +112,25 @@ export interface TokenUsage {
 /**
  * Metadata for a history entry.
  */
+/**
+ * Why the task's final push was rejected and where ProPR preserved the commits.
+ */
+export interface TaskPushFailure {
+  diagnosis: {
+    classification: "push_protection" | "ruleset_or_branch_protection" | "non_fast_forward" | "auth" | "network" | "unknown";
+    summary: string;
+    unblockUrls: string[];
+    excerpt?: string;
+  };
+  rung: "rescue_ref" | "bundle" | "worktree" | "none";
+  branchName: string;
+  repository: string;
+  rescueRef?: string;
+  bundlePath?: string;
+  worktreePath?: string;
+  recoveryInstruction: string;
+}
+
 export interface TaskHistoryMetadata {
   sessionId?: string;
   conversationId?: string;
@@ -120,6 +144,7 @@ export interface TaskHistoryMetadata {
     number: number;
     url: string;
   };
+  pushFailure?: TaskPushFailure;
   [key: string]: unknown;
 }
 
@@ -216,6 +241,37 @@ export interface TaskInfo {
    * Original issue number (for PR tasks).
    */
   issueNumber?: number;
+
+  /**
+   * 1-based attempt number within an automatic-replacement lineage.
+   */
+  attemptNumber?: number;
+
+  /**
+   * Task this attempt replaced after an infrastructure-lost or transient provider failure.
+   */
+  replacesTaskId?: string | null;
+
+  /**
+   * Replacement attempt dispatched for this task.
+   */
+  replacedByTaskId?: string | null;
+
+  /**
+   * Every attempt of the lineage, oldest first (only for replaced or replacement tasks).
+   */
+  attemptLineage?: TaskAttempt[];
+}
+
+/**
+ * One attempt of an automatic-replacement lineage.
+ */
+export interface TaskAttempt {
+  taskId: string;
+  attemptNumber: number;
+  replacementCause: "infra_lost" | "provider_transient" | null;
+  state: string | null;
+  createdAt?: string | null;
 }
 
 /**
@@ -236,6 +292,27 @@ export interface TaskStatusResponse {
    * Information about the task.
    */
   taskInfo: TaskInfo | null;
+
+  /**
+   * Spend against the run's spend cap, when the task has a cap or recorded spend.
+   */
+  budget?: TaskBudget;
+}
+
+/**
+ * A task's estimated spend against its run spend cap.
+ */
+export interface TaskBudget {
+  /** Estimated USD spent by the task (and earlier attempts it continues). */
+  spentUsd: number;
+  /** The run's spend cap in USD; null when the run is uncapped. */
+  capUsd: number | null;
+  /** Spend as a percentage of the cap; null when uncapped. */
+  percent: number | null;
+  /** Where the cap came from: override, workflow or instance_default. */
+  source: "override" | "workflow" | "instance_default" | null;
+  /** Whether the run was stopped at its cap. */
+  exceeded: boolean;
 }
 
 /**
@@ -273,6 +350,11 @@ export interface TaskStatus {
   failureReason?: string;
 
   /**
+   * Push rejection diagnosis and salvage location, when the final push failed.
+   */
+  pushFailure?: TaskPushFailure;
+
+  /**
    * Full history of state transitions.
    */
   history: TaskHistoryEntry[];
@@ -291,6 +373,26 @@ export interface TaskStatus {
    * PR URL if one was created.
    */
   prUrl?: string;
+
+  /**
+   * Task this attempt replaced, if it is an automatic replacement.
+   */
+  replacesTaskId: string | null;
+
+  /**
+   * Replacement attempt dispatched for this task, if any.
+   */
+  replacedByTaskId: string | null;
+
+  /**
+   * 1-based attempt number within the replacement lineage.
+   */
+  attemptNumber: number;
+
+  /**
+   * Spend against the run's spend cap, when the task has a cap or recorded spend.
+   */
+  budget?: TaskBudget;
 }
 
 /**
@@ -357,6 +459,9 @@ export async function implementIssue(
   if (options.autoMerge !== undefined) {
     body.autoMerge = options.autoMerge;
   }
+  if (options.max_cost_usd !== undefined) {
+    body.max_cost_usd = options.max_cost_usd;
+  }
 
   const endpoint = `/api/planner/drafts/${encodeURIComponent(draftId)}/issues/${encodeURIComponent(String(issueNumber))}/implement`;
 
@@ -415,10 +520,12 @@ export async function getTaskStatus(
  * @returns A parsed TaskStatus with convenience fields.
  */
 function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
-  const { taskId, history, taskInfo } = response;
+  const { taskId, history, taskInfo, budget } = response;
 
-  // Get the latest state from history
-  const latestEntry = history.length > 0 ? history[history.length - 1] : null;
+  // Get the latest state from history. Timeline events (for example replacement
+  // dispatch) repeat the current state, so the reason comes from the last transition.
+  const latestEntry = [...history].reverse().find(entry => !entry.metadata?.event)
+    ?? (history.length > 0 ? history[history.length - 1] : null);
   const currentState = latestEntry?.state?.toLowerCase() || "pending";
 
   // Determine status flags
@@ -431,8 +538,10 @@ function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
 
   // Extract failure reason
   let failureReason: string | undefined;
+  let pushFailure: TaskPushFailure | undefined;
   if (isFailed) {
     failureReason = latestEntry?.reason || latestEntry?.message || latestEntry?.metadata?.error as string | undefined;
+    pushFailure = latestEntry?.metadata?.pushFailure;
   }
 
   // Extract PR information from history
@@ -454,9 +563,14 @@ function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
     isCompleted,
     isFailed,
     failureReason,
+    pushFailure,
     history,
     taskInfo,
     prNumber,
     prUrl,
+    replacesTaskId: taskInfo?.replacesTaskId ?? null,
+    replacedByTaskId: taskInfo?.replacedByTaskId ?? null,
+    attemptNumber: taskInfo?.attemptNumber ?? 1,
+    ...(budget ? { budget } : {}),
   };
 }

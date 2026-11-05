@@ -66,33 +66,17 @@ async function getGitStatusOutput(git: SimpleGit): Promise<string> {
 }
 
 /**
- * Get git diff stat output for uncommitted or committed changes
+ * Get git diff stat output for uncommitted changes
  */
-async function getGitDiffStatOutput(git: SimpleGit, hasUncommittedChanges: boolean): Promise<string> {
-    if (hasUncommittedChanges) {
-        try {
-            return (await git.diff(['--stat', 'HEAD'])).trim();
-        } catch {
-            try {
-                return (await git.diff(['--stat', '--cached'])).trim();
-            } catch {
-                return '';
-            }
-        }
-    }
-
-    // No uncommitted changes, check against tracking branch
+async function getGitDiffStatOutput(git: SimpleGit): Promise<string> {
     try {
-        let trackingBranch: string;
-        try {
-            trackingBranch = (await git.revparse(['--abbrev-ref', '@{upstream}'])).trim();
-        } catch {
-            trackingBranch = 'HEAD~1';
-        }
-
-        return (await git.diff(['--stat', `${trackingBranch}...HEAD`])).trim();
+        return (await git.diff(['--stat', 'HEAD'])).trim();
     } catch {
-        return '';
+        try {
+            return (await git.diff(['--stat', '--cached'])).trim();
+        } catch {
+            return '';
+        }
     }
 }
 
@@ -207,12 +191,32 @@ async function parseStatLine(line: string, statusOutput: string, git: SimpleGit)
 /**
  * Get the current file changes from a git worktree
  * Uses git diff --stat and git diff to get change information
+ * Supply the task's starting commit for a final scan after commit and push.
  */
-export async function getWorktreeChanges(worktreePath: string): Promise<FileChange[]> {
+export async function getWorktreeChanges(worktreePath: string, comparisonRef?: string): Promise<FileChange[]> {
     try {
         const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+        if (comparisonRef) {
+            // Final scans must include committed changes even when unrelated
+            // untracked files remain. Compare the working tree with the task
+            // base to include any remaining tracked edits as well.
+            const base = (await git.raw(['merge-base', comparisonRef, 'HEAD'])).trim();
+            return parseCommitDiffOutput(await git.diff([base]));
+        }
         const statusOutput = await getGitStatusOutput(git);
-        const statOutput = await getGitDiffStatOutput(git, !!statusOutput);
+        if (!statusOutput) {
+            // After post-processing commits the task, HEAD has no working diff.
+            // Read status, counts and patch from the same committed range so the
+            // final cache cannot replace the live patch with empty metadata.
+            let comparisonBranch: string;
+            try {
+                comparisonBranch = (await git.revparse(['--abbrev-ref', '@{upstream}'])).trim();
+            } catch {
+                comparisonBranch = 'HEAD~1';
+            }
+            return parseCommitDiffOutput(await git.diff([`${comparisonBranch}...HEAD`]));
+        }
+        const statOutput = await getGitDiffStatOutput(git);
 
         if (!statOutput) return [];
 
@@ -300,8 +304,8 @@ export async function clearFileChanges(taskId: string): Promise<void> {
  * Update file changes by scanning the worktree and storing results
  * This is the main function to call during task execution
  */
-export async function updateFileChangesFromWorktree(taskId: string, worktreePath: string): Promise<FileChange[]> {
-    const changes = await getWorktreeChanges(worktreePath);
+export async function updateFileChangesFromWorktree(taskId: string, worktreePath: string, comparisonRef?: string): Promise<FileChange[]> {
+    const changes = await getWorktreeChanges(worktreePath, comparisonRef);
     await storeFileChanges(taskId, changes);
     return changes;
 }

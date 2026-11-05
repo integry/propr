@@ -147,22 +147,8 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
         </div>
       )}
 
-      {/* Diff Viewer Overlay */}
       {selectedFile && (
-        <>
-          {/* Semi-transparent backdrop */}
-          <div
-            className="fixed inset-0 bg-black/20 z-40"
-            onClick={() => setSelectedFilePath(null)}
-          />
-          {/* Diff viewer overlay - adjusted for new 30% left pane */}
-          <div className="fixed top-20 left-[calc(30%+2rem)] right-4 bottom-4 z-50 bg-white rounded-lg shadow-2xl border border-gray-200 overflow-hidden">
-            <DiffViewer
-              file={selectedFile}
-              onClose={() => setSelectedFilePath(null)}
-            />
-          </div>
-        </>
+        <DiffViewer file={selectedFile} onClose={() => setSelectedFilePath(null)} />
       )}
     </div>
   );

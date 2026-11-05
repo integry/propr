@@ -220,7 +220,7 @@ describe('useDraft', () => {
     };
     const { result } = renderHook(() => useDraft('draft-1', { initialData: initialDraft as never }));
 
-    act(() => result.current.activateGenerationRun('generation-run-2'));
+    act(() => result.current.activateGenerationRun('generation-run-2', 'draft-1'));
     await waitFor(() => expect(draftUpdateListeners.size).toBeGreaterThan(0));
     await act(async () => {
       await Promise.all([...draftUpdateListeners].map(listener => listener({
@@ -243,6 +243,102 @@ describe('useDraft', () => {
     expect(result.current.draft?.generation_trace?.steps).toEqual([
       { name: 'context', status: 'in_progress' },
     ]);
+  });
+
+  it('activates a fresh run from its acknowledged snapshot while the first fetch is in flight', async () => {
+    const staleFetch = createDeferred<Awaited<ReturnType<typeof getDraft>>>();
+    mockGetDraft.mockImplementationOnce(() => staleFetch.promise);
+    const snapshot = {
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Fresh prompt', status: 'draft', attachments: [], created_at: '2026-10-22T22:00:00Z',
+    };
+    const { result } = renderHook(() => useDraft('draft-1'));
+    expect(result.current.loading).toBe(true);
+
+    act(() => result.current.activateGenerationRun('generation-run-1', 'draft-1', snapshot as never));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.draft?.status).toBe('generating');
+    expect(result.current.draft?.initial_prompt).toBe('Fresh prompt');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-1');
+
+    // The fetch requested before generation started returns the pre-generation draft.
+    await act(async () => staleFetch.resolve({ ...snapshot, status: 'draft' } as never));
+    expect(result.current.draft?.status).toBe('generating');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-1');
+
+    // A resync requested after the acknowledgement is authoritative.
+    mockGetDraft.mockResolvedValueOnce({ ...snapshot, status: 'review', generation_trace: { runId: 'generation-run-1', steps: [] } } as never);
+    await act(async () => result.current.refetch());
+    expect(result.current.draft?.status).toBe('review');
+  });
+
+  it('resyncs a generating router snapshot once when the entry is revisited', async () => {
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'review', attachments: [],
+      created_at: '2026-05-05T00:00:00Z', generation_trace: { runId: 'generation-run-1', steps: [] },
+    });
+    const initialDraft = {
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'generating', attachments: [],
+      created_at: '2026-05-05T00:00:00Z', generation_trace: { runId: 'generation-run-1', steps: [] },
+    };
+    const { result } = renderHook(() => useDraft('draft-1', { initialData: initialDraft as never }));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.draft?.status).toBe('generating');
+
+    await waitFor(() => expect(result.current.draft?.status).toBe('review'));
+    expect(result.current.loading).toBe(false);
+    expect(mockGetDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an acknowledgement whose snapshot belongs to another draft', async () => {
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-05T00:00:00Z',
+    });
+    const { result } = renderHook(() => useDraft('draft-1'));
+    await waitFor(() => expect(result.current.draft?.draft_id).toBe('draft-1'));
+
+    act(() => result.current.activateGenerationRun('generation-run-9', 'draft-1', { draft_id: 'draft-2', status: 'draft' } as never));
+    act(() => result.current.activateGenerationRun('generation-run-9', 'draft-2'));
+    expect(result.current.draft?.draft_id).toBe('draft-1');
+    expect(result.current.draft?.status).toBe('draft');
+    expect(result.current.draft?.generation_trace?.runId).toBeUndefined();
+  });
+
+  it('ignores the acknowledgement for draft A after switching to draft B', async () => {
+    const draftA = {
+      draft_id: 'draft-a', repository: 'integry/propr', initial_prompt: 'Prompt A', status: 'draft', attachments: [], created_at: '2026-10-22T22:00:00Z',
+    };
+    const draftB = {
+      draft_id: 'draft-b', repository: 'integry/propr', initial_prompt: 'Prompt B', status: 'generating', attachments: [],
+      created_at: '2026-10-22T22:00:00Z', generation_trace: { runId: 'generation-run-b', steps: [] },
+    };
+    mockGetDraft.mockResolvedValueOnce(draftA as never);
+    const { result, rerender } = renderHook(({ id }) => useDraft(id), { initialProps: { id: 'draft-a' } });
+    await waitFor(() => expect(result.current.draft?.draft_id).toBe('draft-a'));
+    // The activation callback captured while A's generate request was pending.
+    const activateFromA = result.current.activateGenerationRun;
+
+    const draftBFetch = createDeferred<Awaited<ReturnType<typeof getDraft>>>();
+    mockGetDraft.mockImplementationOnce(() => draftBFetch.promise);
+    rerender({ id: 'draft-b' });
+
+    // A's acknowledgement lands while B's fetch is still in flight, then again after it settles.
+    act(() => activateFromA('generation-run-a', 'draft-a', draftA as never));
+    await act(async () => draftBFetch.resolve(draftB as never));
+    expect(result.current.draft).toMatchObject({ draft_id: 'draft-b', status: 'generating', generation_trace: { runId: 'generation-run-b' } });
+
+    act(() => activateFromA('generation-run-a', 'draft-a', draftA as never));
+    expect(result.current.draft).toMatchObject({ draft_id: 'draft-b', status: 'generating', generation_trace: { runId: 'generation-run-b' } });
+
+    // B's own socket updates are still accepted under B's run ID.
+    await act(async () => {
+      for (const listener of draftUpdateListeners) {
+        await listener({
+          draftId: 'draft-b', runId: 'generation-run-b', draftStatus: 'generating', timestamp: '2026-10-22T22:01:00Z',
+          generationTrace: { runId: 'generation-run-b', steps: [{ name: 'context', status: 'in_progress' }] },
+        } as never);
+      }
+    });
+    expect(result.current.draft?.generation_trace?.steps).toEqual([{ name: 'context', status: 'in_progress' }]);
   });
 
   it('applies terminal draft status from the socket before the follow-up fetch resolves', async () => {

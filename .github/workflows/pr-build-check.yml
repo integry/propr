@@ -38,15 +38,46 @@ jobs:
         id: classify
         uses: ./.github/actions/classify-changes
 
+  # Chooses hosted or rootless runners for this run when
+  # PROPR_ROOTLESS_PR_CHECKS=overflow and is skipped otherwise. Its outcome
+  # never blocks the checks: a skipped or failed route leaves them hosted.
+  # See docs/ci-runners.md.
+  route:
+    name: Select PR check runners
+    if: ${{ vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      overflow: ${{ steps.capacity.outputs.overflow }}
+    steps:
+      - name: Checkout capacity script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: scripts/ci-hosted-capacity.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check hosted runner capacity
+        id: capacity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Hosted jobs this workflow routes; they count against the limit.
+          PROPR_PLANNED_HOSTED_JOBS: '3'
+          PROPR_HOSTED_JOB_LIMIT: ${{ vars.PROPR_HOSTED_JOB_LIMIT }}
+        run: node scripts/ci-hosted-capacity.mjs
+
   cli-node-matrix:
     name: CLI Agent Skill (Node ${{ matrix.node }})
-    needs: classify
+    needs: [classify, route]
     # Only an explicit `false` skips. A failed, cancelled or missing decision
     # leaves the output empty, which runs the job. `!cancelled()` keeps
     # superseded-run cancellation intact.
     if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -199,7 +230,11 @@ jobs:
           NON_ROOT
 
       - name: Install dependencies as non-root
-        run: runuser --user node -- env HOME=/home/node npm ci --ignore-scripts
+        # Retry interrupted registry downloads; permanent install errors still
+        # fail immediately. Keep the installer and retries under the node user.
+        run: >-
+          runuser --user node -- env HOME=/home/node
+          node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts
 
       - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite as non-root
         run: |
@@ -406,8 +441,12 @@ jobs:
 
   validate:
     name: Validate Changes
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # `route` only picks the runner; `!cancelled()` runs validation whether it
+    # succeeded, failed or was skipped.
+    needs: route
+    if: ${{ !cancelled() }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     env:
       ACTIONLINT_IMAGE: rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
     permissions:
@@ -511,13 +550,18 @@ jobs:
               "$ACTIONLINT_IMAGE" \
               --exclude=SC2016 \
               scripts/build-images.sh \
+              scripts/check-image-whiteouts.sh \
               scripts/ci-install-chromium.sh \
               scripts/ci-redis.sh \
               scripts/ci-runner-evidence.sh \
               scripts/ci-rootless-preflight.sh \
+              scripts/smoke-check-app-agent-build-context.sh \
+              scripts/smoke-check-app-sharp.sh \
               scripts/smoke-test-images.sh \
+              scripts/smoke-test-preview-agent-image.sh \
               scripts/smoke-test-preview-runtime-images.sh \
               scripts/smoke-test-sqlite-startup.sh \
+              scripts/verify-agent-tank-image.sh \
               scripts/verify-antigravity-image.sh
           } > >(tee -a build_log.txt) 2>&1
 
@@ -560,7 +604,9 @@ jobs:
           {
             echo
             echo "--- Dependency installation ---"
-            npm ci
+            # Retry interrupted registry downloads (ECONNRESET, timeouts, 5xx);
+            # lockfile and other permanent install errors still fail at once.
+            node apps/desktop/scripts/retry-transient-download.mjs -- npm ci
           } > >(tee -a build_log.txt) 2>&1
 
       - name: Verify release-candidate metadata
@@ -618,6 +664,8 @@ jobs:
         # `!= 'false'` and not `== 'true'`: an empty decision is never read as
         # permission to skip.
         if: steps.filter.outputs.ui != 'false'
+        # A stalled apt mirror otherwise holds the check for an hour.
+        timeout-minutes: 10
         run: ./scripts/ci-install-chromium.sh
 
       - name: Run PWA and Mobile Browser Smoke Test
@@ -630,6 +678,10 @@ jobs:
           # if that output is not present. @propr/client needs no build: the UI
           # vite config aliases it to the workspace source.
           test -f packages/shared/dist/index.js || npm run build -w @propr/shared
+          # Goal lifecycle regressions import the real API socket service,
+          # which requires @propr/core's compiled package entry point. CLI
+          # packaging does not build core, and Run Checks happens later.
+          npm run build -w @propr/core
           npm run test:browser --workspace=propr-ui
 
       - name: Run Checks
@@ -853,6 +905,20 @@ jobs:
                 echo "✅ Docs Build passed" >> ../build_log.txt
               fi
             fi
+
+            # Serve the fresh build with docs/Dockerfile's static-server command and probe
+            # article routes, sitemap, assets and 404s (guards against SPA homepage fallback).
+            if [ $DOCS_FAILED -eq 0 ]; then
+              SERVING_OUTPUT=$(node ../scripts/check-docs-static-serving.mjs build 2>&1) || {
+                echo "❌ Docs Static Serving Check FAILED" >> ../build_log.txt
+                echo "$SERVING_OUTPUT" | tail -50 >> ../build_log.txt
+                DOCS_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $DOCS_FAILED -eq 0 ]; then
+                echo "✅ Docs Static Serving Check passed" >> ../build_log.txt
+              fi
+            fi
             cd ..
           fi
 
@@ -985,6 +1051,47 @@ jobs:
               fi
             fi
 
+          fi
+
+          # --- API REFERENCE ---
+          # The OpenAPI spec is generated from the API route registry, published
+          # by the docs site and consumed by @propr/client, so a change to any
+          # of the three can make the committed spec or client contract stale.
+          if [ "${FILTER_API:-}" != 'false' ] || [ "${FILTER_DOCS:-}" != 'false' ] || [ "${FILTER_UI:-}" != 'false' ]; then
+            echo -e "\n--- API Reference: OpenAPI Spec & Client Contract ---" >> build_log.txt
+            API_REFERENCE_FAILED=0
+
+            if ! build_shared_once; then
+              echo "❌ Shared Package Build FAILED (API reference dependency)" >> build_log.txt
+              echo "$SHARED_OUTPUT" >> build_log.txt
+              API_REFERENCE_FAILED=1
+              EXIT_CODE=1
+            fi
+
+            if [ $API_REFERENCE_FAILED -eq 0 ]; then
+              # Also validates the spec against the OpenAPI 3.1 schema.
+              OPENAPI_OUTPUT=$(npm run gen:openapi:check 2>&1) || {
+                echo "❌ OpenAPI spec is stale or invalid (run npm run gen:openapi)" >> build_log.txt
+                echo "$OPENAPI_OUTPUT" >> build_log.txt
+                API_REFERENCE_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $API_REFERENCE_FAILED -eq 0 ]; then
+                echo "✅ OpenAPI spec is current and valid" >> build_log.txt
+              fi
+            fi
+
+            if [ $API_REFERENCE_FAILED -eq 0 ]; then
+              CONTRACT_OUTPUT=$(npm run check:client-contract 2>&1) || {
+                echo "❌ @propr/client contract check FAILED" >> build_log.txt
+                echo "$CONTRACT_OUTPUT" >> build_log.txt
+                API_REFERENCE_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $API_REFERENCE_FAILED -eq 0 ]; then
+                echo "✅ @propr/client matches the OpenAPI spec" >> build_log.txt
+              fi
+            fi
           fi
 
           exit $EXIT_CODE

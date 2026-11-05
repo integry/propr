@@ -1,6 +1,6 @@
-import { getAuthenticatedOctokit, handleError, getModelShortName } from '@propr/core';
+import { getAuthenticatedOctokit, handleError } from '@propr/core';
 import { logger } from '@propr/core';
-import { generatePRBody } from './github/prFormatters.js';
+import { describeIssuePullRequestForRepository } from './github/prFormatters.js';
 import {
     createPullRequestRobust as createPullRequestRobustOps,
     createPullRequest as createPullRequestOps,
@@ -74,14 +74,14 @@ function handlePrResult(prResult: PRResult, logContext: Record<string, unknown>)
 async function createNewPRForIssue(prContext: PRContext, claudeResult: ClaudeResult): Promise<PRInfo | null> {
     const { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken, modelName } = prContext;
     const hasRobustParams = worktreePath && baseBranch && repoUrl && authToken;
-    const modelShortName = getModelShortName(modelName);
 
     if (hasRobustParams) {
+        const { title: prTitle, body: prBody } = await describeIssuePullRequestForRepository({
+            octokit: await getAuthenticatedOctokit(), owner, repoName, baseBranch, branch: branchName,
+            issueNumber, issueTitle, commitMessage, claudeResult, modelName,
+        });
         const prResult = await createPullRequestRobust({
-            owner, repoName, branchName, baseBranch, issueNumber,
-            // Format: [412 by Claude Opus] Title
-            prTitle: `[${issueNumber} by ${modelShortName}] ${issueTitle}`,
-            prBody: await generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult),
+            owner, repoName, branchName, baseBranch, issueNumber, prTitle, prBody,
             worktreePath, repoUrl, authToken
         });
         return handlePrResult(prResult, { owner, repoName, branchName, issueNumber });

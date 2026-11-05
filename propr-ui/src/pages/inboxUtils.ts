@@ -1,5 +1,5 @@
 import type { Notification } from '@propr/shared';
-import { summaryBrowserPath, summaryHrefWithBranch } from '../utils/summaryBrowser';
+export { notificationHref, notificationPullRequestUrl } from '@propr/shared';
 
 /** System and indexing updates are kept apart from the linear activity feed. */
 export function isSystemNotification(notification: Notification): boolean {
@@ -11,26 +11,142 @@ export interface NotificationReference {
   title: string;
 }
 
-/** The PR or issue a notification is about, labelled like the task context strip chips. */
+/** The PR or issue a notification is about, labelled like the task list reference chips. */
 export function notificationReference(notification: Notification): NotificationReference | null {
   const { target } = notification;
-  if (target.type === 'review' || target.type === 'pull_request') {
-    return { label: `PR${target.prNumber}`, title: `Pull Request #${target.prNumber}` };
-  }
-  if (target.type !== 'task') return null;
-  if (target.prNumber !== undefined) {
-    return { label: `PR${target.prNumber}`, title: `Pull Request #${target.prNumber}` };
-  }
-  return target.issueNumber === undefined
-    ? null
-    : { label: `#${target.issueNumber}`, title: `Issue #${target.issueNumber}` };
+  const prNumber = target.type === 'review' || target.type === 'pull_request' || target.type === 'task'
+    ? target.prNumber
+    : undefined;
+  if (prNumber !== undefined) return { label: `PR #${prNumber}`, title: `Pull request #${prNumber}` };
+  if (target.type !== 'task' || target.issueNumber === undefined) return null;
+  return { label: `Issue #${target.issueNumber}`, title: `Issue #${target.issueNumber}` };
 }
 
-/** Unread indicator colour: failures red, warnings orange, everything else teal. */
-export function notificationIndicatorClass(notification: Notification): string {
-  if (notification.severity === 'error') return 'bg-red-500';
-  if (notification.severity === 'warning') return 'bg-orange-500';
-  return 'bg-teal-500';
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The title shown in the row. Generated titles such as "PR #2498 ready for
+ * review" or "Fix run completed for PR #2498" repeat the reference chip beside
+ * them, so the echo is dropped: "Ready for review", "Fix run completed".
+ */
+export function notificationDisplayTitle(notification: Notification): string {
+  const reference = notificationReference(notification);
+  if (!reference) return notification.title;
+  const label = escapeRegExp(reference.label);
+  const stripped = notification.title
+    .replace(new RegExp(`^${label}\\s+(?:is\\s+)?`, 'i'), '')
+    .replace(new RegExp(`\\s+(?:for|of|on)\\s+${label}$`, 'i'), '')
+    .trim();
+  if (!stripped || stripped === notification.title) return notification.title;
+  return `${stripped.charAt(0).toUpperCase()}${stripped.slice(1)}`;
+}
+
+/**
+ * Splits "integry/propr" into its "integry/" owner prefix and "propr", so narrow
+ * screens can drop the owner without truncating the name.
+ */
+export function repositoryParts(repository: string): { owner: string; name: string } {
+  const slash = repository.indexOf('/');
+  return { owner: repository.slice(0, slash + 1), name: repository.slice(slash + 1) };
+}
+
+export interface ReviewOutcome {
+  /** Lowest score across the review's reviewers, when any reported one. */
+  score: number | null;
+  issueCount: number;
+  reviewerFailed: boolean;
+  /** The finding titles listed after "issues found:", in the reviewer's order. */
+  findings: string[];
+}
+
+/** The "A; B" list after "N issues found:", up to the next " · " part of the recap. */
+function reviewFindingTitles(body: string): string[] {
+  const list = /\bissues? found:\s*(.*?)(?:\s+·\s+|$)/s.exec(body)?.[1] ?? '';
+  return list.split(/;\s*/).map(title => title.trim()).filter(Boolean);
+}
+
+/**
+ * A `path:line` reference a finding leads with, such as
+ * "packages/core/src/auth.ts:118 Clear expiry feedback" or
+ * "`src/a.ts:42`: Guard the empty page". The path needs a directory or a file
+ * extension, so prose such as "Note: …" is not read as a reference.
+ */
+const FINDING_REFERENCE = /^`?((?:[\w@.-]+\/)+[\w@.-]+|[\w@-]+(?:\.[\w-]+)*\.[A-Za-z0-9]+):(\d+(?:[-–]\d+)?)`?(?:\s*[:—–-]\s+|\s+|$)/;
+
+export function notificationFindingReference(text: string): { reference: string; text: string } | null {
+  const match = FINDING_REFERENCE.exec(text.trim());
+  if (!match) return null;
+  return { reference: `${match[1]}:${match[2]}`, text: text.trim().slice(match[0].length).trim() };
+}
+
+/**
+ * Reads the score and finding count from a review recap such as
+ * "Score 6/10 · 2 issues found: …" or "Scores 6/10, 8/10 · 1 issue found".
+ */
+export function notificationReviewOutcome(notification: Notification): ReviewOutcome | null {
+  return notification.kind === 'review' ? reviewRecapOutcome(notification.body) : null;
+}
+
+/** The score and finding count in any text carrying a review recap, such as a review run's summary. */
+export function reviewRecapOutcome(body: string): ReviewOutcome {
+  const scoreText = /\bScores? ((?:\d+(?:\.\d+)?\/10(?:, )?)+)/.exec(body)?.[1] ?? '';
+  const scores = [...scoreText.matchAll(/(\d+(?:\.\d+)?)\/10/g)].map(match => Number(match[1]));
+  const issueCount = Number(/\b(\d+) issues? found\b/.exec(body)?.[1] ?? 0);
+  return {
+    score: scores.length > 0 ? Math.min(...scores) : null,
+    issueCount,
+    reviewerFailed: /\breviewers? failed\b/.test(body),
+    findings: reviewFindingTitles(body),
+  };
+}
+
+export type NotificationStatusShape = 'circle' | 'diamond' | 'square' | 'triangle';
+
+export interface NotificationStatus {
+  shape: NotificationStatusShape;
+  /** Background colour of the status mark. */
+  className: string;
+  label: string;
+}
+
+const STATUS = {
+  failed: { shape: 'triangle', className: 'bg-red-500', label: 'Failed' },
+  attention: { shape: 'square', className: 'bg-amber-500', label: 'Needs attention' },
+  action: { shape: 'circle', className: 'bg-teal-500', label: 'Ready for you' },
+  done: { shape: 'circle', className: 'bg-slate-400', label: 'Completed' },
+} as const satisfies Record<string, NotificationStatus>;
+
+/**
+ * Review marks follow the quality shapes from the design guidelines: 9-10 teal
+ * circle, 7-8 slate diamond, 5-6 amber square, 0-4 red triangle. Any finding
+ * or failed reviewer is at least amber, because a human has to act on it.
+ */
+function reviewStatus(outcome: ReviewOutcome): NotificationStatus {
+  const { score, issueCount, reviewerFailed } = outcome;
+  const scoreLabel = score === null ? 'Review' : `Score ${score}/10`;
+  const issues = issueCount > 0 ? ` · ${issueCount} ${issueCount === 1 ? 'issue' : 'issues'}` : '';
+  const label = `${scoreLabel}${issues}${reviewerFailed ? ' · reviewer failed' : ''}`;
+  if (score !== null && score <= 4) return { ...STATUS.failed, label };
+  if ((score !== null && score <= 6) || issueCount > 0 || reviewerFailed) return { ...STATUS.attention, label };
+  if (score !== null && score <= 8) return { shape: 'diamond', className: 'bg-slate-500', label };
+  return score === null ? { ...STATUS.done, label } : { ...STATUS.action, label };
+}
+
+/**
+ * Status mark for a notification. Colour is kept for what needs a human:
+ * failures red, blockers amber, work waiting on the user teal. Finished runs
+ * (merges, fixes, completed tasks) stay quiet grey.
+ */
+export function notificationStatus(notification: Notification): NotificationStatus {
+  if (notification.severity === 'error') return STATUS.failed;
+  if (notification.severity === 'warning') return STATUS.attention;
+  const review = notificationReviewOutcome(notification);
+  if (review) return reviewStatus(review);
+  if (notification.kind === 'plan') return STATUS.action;
+  if (notification.kind === 'pull_request' && notification.metadata?.completionType === undefined) return STATUS.action;
+  return STATUS.done;
 }
 
 export function notificationKindLabel(notification: Notification): string {
@@ -61,83 +177,6 @@ export function notificationRepository(notification: Notification): string {
     : notification.target.repository;
 }
 
-export function notificationHref(notification: Notification): string {
-  if (notification.action?.type === 'navigate') {
-    return notification.target.type === 'indexing'
-      ? summaryHrefWithBranch(
-        notification.action.href,
-        notification.target.repository,
-        notification.target.branch,
-      )
-      : notification.action.href;
-  }
-  switch (notification.target.type) {
-    case 'plan': return `/studio/${encodeURIComponent(notification.target.draftId)}`;
-    case 'task': return `/tasks/${encodeURIComponent(notification.target.taskId)}`;
-    case 'review': return notification.target.taskId
-      ? `/tasks/${encodeURIComponent(notification.target.taskId)}`
-      : '/tasks';
-    case 'pull_request': {
-      const completedTaskId = notification.metadata?.completedImplementationTaskId;
-      return notificationPullRequestUrl(notification)
-        ?? (typeof completedTaskId === 'string' && completedTaskId
-          ? `/tasks/${encodeURIComponent(completedTaskId)}`
-          : '/repositories');
-    }
-    case 'indexing': {
-      const [owner, repository] = notification.target.repository.split('/');
-      return owner && repository
-        ? summaryBrowserPath(owner, repository, notification.target.branch)
-        : '/repositories';
-    }
-    case 'system_failure': return '/';
-  }
-}
-
-/** Returns a trusted GitHub pull-request URL advertised by the event, if any. */
-function isTrustedGithubUrl(url: URL): boolean {
-  return url.protocol === 'https:'
-    && url.hostname === 'github.com'
-    && url.username === ''
-    && url.password === ''
-    && (url.port === '' || url.port === '443')
-    && url.search === ''
-    && url.hash === '';
-}
-
-function notificationPullRequestIdentity(notification: Notification): {
-  repository: string | null;
-  prNumber: number | undefined;
-} {
-  const repository = notification.target.type === 'system_failure'
-    ? null
-    : notification.target.repository;
-  switch (notification.target.type) {
-    case 'task':
-    case 'review':
-    case 'pull_request': return { repository, prNumber: notification.target.prNumber };
-    default: return { repository, prNumber: undefined };
-  }
-}
-
-export function notificationPullRequestUrl(notification: Notification): string | null {
-  if (notification.action?.type !== 'external_link') return null;
-  try {
-    const url = new URL(notification.action.href);
-    if (!isTrustedGithubUrl(url)) return null;
-    const match = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(url.pathname);
-    if (!match) return null;
-    const { repository, prNumber } = notificationPullRequestIdentity(notification);
-    if (repository !== null && `${match[1]}/${match[2]}`.toLowerCase() !== repository.toLowerCase()) {
-      return null;
-    }
-    if (prNumber !== undefined && Number(match[3]) !== prNumber) return null;
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
 export interface NotificationFollowupCommand {
   taskId: string;
   prNumber: number;
@@ -145,12 +184,26 @@ export interface NotificationFollowupCommand {
 }
 
 /**
+ * A review recap whose reviewers all reported and found nothing, so there is
+ * nothing to /fix. The Inbox reads it from the notification and Tasks from the
+ * review run's summary, so both offer /fix on the same reviews.
+ */
+export function isIssueFreeReviewRecap(body: string): boolean {
+  return !reviewRecapOutcome(body).reviewerFailed && /\b0 issues found\b/.test(body);
+}
+
+const isIssueFreeReview = (notification: Notification): boolean =>
+  notification.kind === 'review' && isIssueFreeReviewRecap(notification.body);
+
+/**
  * The only buttons an Inbox card offers: the common next command after a
- * finished review (/fix) or a finished PR run (/review, /ultrafix).
+ * review with findings (/fix) or a finished PR run (/review, /ultrafix). A
+ * clean review offers nothing; the row still links to the review task.
  */
 export function notificationFollowupCommand(notification: Notification): NotificationFollowupCommand | null {
   if (!notification.actions.includes('follow_up')) return null;
   if (notification.target.type === 'review' && notification.target.taskId) {
+    if (isIssueFreeReview(notification)) return null;
     return {
       taskId: notification.target.taskId,
       prNumber: notification.target.prNumber,

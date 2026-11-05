@@ -6,13 +6,11 @@
  * stays focused on connection lifecycle and dispatch.
  */
 
-import {
-    normalizeWorkEvidenceCommentIds,
-    validateRoutingUrl as validateRoutingUrlPolicy
-} from '@propr/shared';
+import { normalizeWorkEvidenceCommentIds, validateRoutingUrl as validateRoutingUrlPolicy } from '@propr/shared';
 
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
 import type { ConnectAccountStatus } from './routingConnectAccountStatus.js';
+import type { DeliveryInterestServiceOptions } from './routingDeliveryInterest.js';
 import { parseWebhookPayload } from './webhookPayload.js';
 
 export { parseWebhookPayload } from './webhookPayload.js';
@@ -695,7 +693,7 @@ export async function resolveDeliveryPayload(opts: ResolveDeliveryPayloadOptions
  */
 export type RoutingEventDispatch = (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
 
-export interface RoutingWebSocketIntakeServiceOptions {
+export interface RoutingWebSocketIntakeServiceOptions extends DeliveryInterestServiceOptions {
     /**
      * Routing relay origin (scheme + host, no path). Defaults to
      * `process.env.PROPR_ROUTING_URL`, then to the hosted relay

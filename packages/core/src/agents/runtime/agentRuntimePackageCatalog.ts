@@ -88,7 +88,7 @@ async function loadCatalog(environment: PackageEnvironment): Promise<Set<string>
         const result = await executeDockerCommand('docker', [
             'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image,
             '-c', CATALOG_COMMAND
-        ], { timeout: 2 * 60 * 1000 });
+        ], { timeout: 2 * 60 * 1000, costCapExempt: true });
         if (result.exitCode !== 0) {
             throw new Error(
                 `Could not load the ${environment.inspection.osName} package catalog: `
@@ -135,7 +135,7 @@ async function validatePinnedPackage(environment: PackageEnvironment, packageSpe
             'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c',
             'apt-get update -qq && apt-get install --simulate -y --no-install-recommends "$1"',
             'propr-apt-validate', packageSpec
-        ], { timeout: 2 * 60 * 1000 });
+        ], { timeout: 2 * 60 * 1000, costCapExempt: true });
         if (result.exitCode === 0) return null;
         return conciseCommandError(`${result.stderr}\n${result.stdout}`);
     })();
@@ -156,7 +156,7 @@ async function validatePinnedPackageBatch(
         'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c',
         'apt-get update -qq && apt-get install --simulate -y --no-install-recommends "$@"',
         'propr-apt-validate', ...packageSpecs
-    ], { timeout: 2 * 60 * 1000 });
+    ], { timeout: 2 * 60 * 1000, costCapExempt: true });
     if (result.exitCode === 0) {
         return packageSpecs.map(packageSpec => ({
             packageSpec,

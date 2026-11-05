@@ -20,6 +20,9 @@ import {
 const execFileAsync = promisify(execFile);
 const retryScript = fileURLToPath(new URL('./retry-transient-download.mjs', import.meta.url));
 const shasumsUrl = 'https://github.com/electron/electron/releases/download/v44.0.0/SHASUMS256.txt';
+const interruptedFetch = 'TypeError: terminated\n'
+  + 'at Fetch.onAborted (node:internal/deps/undici/undici:11473:53)\n'
+  + '    at TLSSocket.onHttpSocketClose (/node_modules/undici/lib/dispatcher/client-h1.js:1004:10)\n';
 
 const scriptedSpawn = outcomes => {
   const invocations = [];
@@ -85,6 +88,37 @@ describe('transient download retries', () => {
     assert.deepEqual(logs, ['Command failed without a transient download signature; not retrying.']);
   });
 
+  test('recovers from the darwin download failure sequence within the packaging retry budget', async () => {
+    const { exitCode, invocations, delays, mirrored } = await run([
+      { exitCode: 1, stderr: 'TypeError: fetch failed' },
+      { exitCode: 1, stderr: 'TypeError: fetch failed' },
+      { exitCode: 1, stderr: interruptedFetch },
+      { exitCode: 0 },
+    ], { attempts: 5, backoffMs: 30_000 });
+    assert.equal(exitCode, 0);
+    assert.equal(invocations.length, 4);
+    assert.deepEqual(delays, [30_000, 60_000, 90_000]);
+    assert.equal(mirrored[2], interruptedFetch);
+  });
+
+  test('persistent interrupted downloads still fail after the configured budget', async () => {
+    const { exitCode, invocations } = await run(
+      Array.from({ length: 5 }, () => ({ exitCode: 1, stderr: interruptedFetch })),
+      { attempts: 5 },
+    );
+    assert.equal(exitCode, 1);
+    assert.equal(invocations.length, 5);
+  });
+
+  test('does not retry a signalled process even after a transient download error', async () => {
+    const { exitCode, invocations, delays } = await run([
+      { exitCode: null, signal: 'SIGTERM', stderr: interruptedFetch },
+    ]);
+    assert.equal(exitCode, 1);
+    assert.equal(invocations.length, 1);
+    assert.deepEqual(delays, []);
+  });
+
   test('gives up with the last exit code once the bounded attempts are exhausted', async () => {
     const outcome = { exitCode: 1, stderr: 'request to https://artifacts.electronjs.org failed, reason: socket hang up' };
     const { exitCode, invocations, delays, logs } = await run([outcome, outcome, outcome, { exitCode: 0 }]);
@@ -111,6 +145,7 @@ describe('transient download retries', () => {
   test('recognizes the Electron download failures seen in packaging and rejects unrelated output', () => {
     for (const output of [
       'TypeError: fetch failed',
+      interruptedFetch,
       'Packaging for x64 on darwin [FAILED: fetch failed]',
       'read ECONNRESET',
       'connect ETIMEDOUT 140.82.121.4:443',
@@ -125,6 +160,9 @@ describe('transient download retries', () => {
 
     for (const output of [
       'npm error code 1\nnpm error command failed',
+      'TypeError: terminated',
+      'TypeError: terminated\n    at application.shutdown (app.js:10:2)',
+      'Packaging for x64 on darwin [FAILED: terminated]',
       'error TS2345: Argument of type string is not assignable',
       '✖ 1 test failed',
       'Received status code 404 from the server',

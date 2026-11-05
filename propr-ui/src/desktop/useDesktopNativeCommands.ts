@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { DESKTOP_NAVIGATION_EVENT } from './DesktopNativeNavigationObserver';
 import { NativeNavigationHistory } from './nativeNavigationHistory';
 import { navigateToUiPath } from '../config/runtimeMode';
+import { creationActions } from '../components/creationActions';
 import type {
   DesktopNativeCommand,
   DesktopNativeCommandDelivery,
@@ -23,9 +24,23 @@ interface DesktopNativeCommandOptions {
   onReconnect(profile: DesktopProfile): Promise<void>;
 }
 
-const commandPaths: Record<Exclude<DesktopNativeCommand, 'manage-instances' | 'connect-instance' | 'diagnostics' | 'search' | 'toggle-sidebar' | 'quit' | 'back' | 'forward'>, string> = {
-  'new-plan': '/studio/new',
-  'new-task': '/tasks/new',
+/** Commands the renderer's own UI performs, rather than a route change. */
+type DesktopUiCommand = 'search' | 'toggle-sidebar' | 'new-todo';
+const isUiCommand = (command: DesktopNativeCommand): command is DesktopUiCommand =>
+  command === 'search' || command === 'toggle-sidebar' || command === 'new-todo';
+
+const creationPath = (id: typeof creationActions[number]['id']): string =>
+  creationActions.find(action => action.id === id)!.to;
+
+/** Native creation commands, which the mounted UI may refuse (demo mode). */
+const CREATION_COMMANDS = new Set<DesktopNativeCommand>(['new-task', 'new-plan', 'new-goal', 'new-automation', 'new-todo']);
+
+const commandPaths: Record<Exclude<DesktopNativeCommand, 'manage-instances' | 'connect-instance' | 'diagnostics' | DesktopUiCommand | 'quit' | 'back' | 'forward'>, string> = {
+  // The same destinations as the toolbar's creation button, so both open one form.
+  'new-task': creationPath('task'),
+  'new-plan': creationPath('plan'),
+  'new-goal': creationPath('goal'),
+  'new-automation': creationPath('automation'),
   dashboard: '/',
   goals: '/goals',
   repositories: '/repositories',
@@ -57,7 +72,7 @@ const matchesConnectedScope = (
 const readDesktopPath = (): string => window.location.hash.slice(1) || '/';
 
 const navigateNativeCommand = (
-  command: Exclude<DesktopNativeCommand, 'quit' | 'manage-instances' | 'connect-instance' | 'diagnostics' | 'search' | 'toggle-sidebar'>,
+  command: Exclude<DesktopNativeCommand, 'quit' | 'manage-instances' | 'connect-instance' | 'diagnostics' | DesktopUiCommand>,
   history: NativeNavigationHistory,
   onNavigate: DesktopNativeCommandOptions['onNavigate'],
 ): void => {
@@ -153,10 +168,15 @@ export const useDesktopNativeCommands = ({
       setPendingCommand(null);
       return;
     }
-    if (command === 'search' || command === 'toggle-sidebar') {
+    // Creation is offered to the mounted UI first: a cancelled event means the
+    // workspace refuses creation (demo/read-only), so no form opens.
+    const event = new CustomEvent(DESKTOP_UI_COMMAND_EVENT, { detail: command, cancelable: true });
+    if (isUiCommand(command)) {
       onNavigate?.();
-      window.dispatchEvent(new CustomEvent(DESKTOP_UI_COMMAND_EVENT, { detail: command }));
-    } else navigateNativeCommand(command, history.current, onNavigate);
+      window.dispatchEvent(event);
+    } else if (!CREATION_COMMANDS.has(command) || window.dispatchEvent(event)) {
+      navigateNativeCommand(command, history.current, onNavigate);
+    }
     setPendingCommand(null);
   }, [app, canManageInstances, onConnectInstance, onDiagnostics, onChooseInstances, onManageInstances, onNavigate, pendingCommand, state]);
 

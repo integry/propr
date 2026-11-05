@@ -1,0 +1,331 @@
+import { randomUUID } from 'node:crypto';
+import type { Redis } from 'ioredis';
+import logger from '../utils/logger.js';
+
+/**
+ * Epic merge progress updates that could not be completed (epic PR not found
+ * or created, plan unreadable, GitHub request failed, another update held the
+ * epic, or the lease could not be acquired). The last child merge has no
+ * successor to refresh the tracking comment, so the obligation is kept here
+ * and retried by the daemon sweep until an update succeeds or the obligation
+ * is older than {@link EPIC_PROGRESS_RETRY_MAX_AGE_MS}, after which the sweep
+ * drops it and logs the terminal failure as an error.
+ */
+export const EPIC_PROGRESS_RETRY_KEY = 'epic:merge-progress-retry';
+const EPIC_PROGRESS_LOCK_PREFIX = 'epic:merge-progress-lock:';
+const EPIC_PROGRESS_LOCK_TTL_MS = 2 * 60 * 1000;
+const EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS = EPIC_PROGRESS_LOCK_TTL_MS / 4;
+const RETRY_BASE_DELAY_MS = 60 * 1000;
+const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
+/**
+ * A failure lasting this long (measured from the first failed attempt) is no
+ * longer transient; the sweep drops the obligation and logs an error.
+ */
+export const EPIC_PROGRESS_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const COMPARE_AND_DELETE_FIELD = `
+if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then
+    return redis.call('HDEL', KEYS[1], ARGV[1])
+end
+return 0
+`;
+
+// Move the exact legacy snapshot atomically into the target record the
+// caller computed from it and the exact target record it observed (ARGV[4],
+// empty when absent), so a concurrently replaced legacy or target record is
+// left alone for the next sweep.
+const MIGRATE_LEGACY_FIELD = `
+if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then
+    return 0
+end
+if (redis.call('HGET', KEYS[1], ARGV[3]) or '') ~= ARGV[4] then
+    return 0
+end
+redis.call('HSET', KEYS[1], ARGV[3], ARGV[5])
+return redis.call('HDEL', KEYS[1], ARGV[1])
+`;
+
+const COMPARE_AND_DELETE_KEY = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+const COMPARE_AND_EXTEND_KEY = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
+/** The Lua scripts this module evaluates, exported so fakes can match them by identity. */
+export const EPIC_PROGRESS_SCRIPTS = {
+    compareAndDeleteField: COMPARE_AND_DELETE_FIELD,
+    migrateLegacyField: MIGRATE_LEGACY_FIELD,
+    compareAndDeleteKey: COMPARE_AND_DELETE_KEY,
+    compareAndExtendKey: COMPARE_AND_EXTEND_KEY,
+} as const;
+
+export type EpicProgressRetryRedis = Pick<Redis, 'hget' | 'hset' | 'hgetall' | 'set' | 'eval'>;
+
+export interface EpicProgressTarget {
+    owner: string;
+    repo: string;
+    epicBranch: string;
+    /** Null when the epic PR could not be located yet; the retry resolves it. */
+    epicPrNumber: number | null;
+    /** Null for the aggregate epic PR merge. */
+    mergedChildPrNumber: number | null;
+}
+
+export interface EpicProgressRetry extends EpicProgressTarget {
+    attempts: number;
+    firstFailedAt: number;
+    nextAttemptAt: number;
+}
+
+/** 'skipped': the lease was busy or unavailable and no retry could be recorded. */
+export type EpicProgressUpdateOutcome = 'updated' | 'retry_scheduled' | 'skipped';
+
+/** Thrown by {@link EpicProgressLease.assertOwned} once another update may hold the epic. */
+export class EpicProgressLeaseLostError extends Error {
+    constructor() {
+        super('Epic progress lease lost');
+        this.name = 'EpicProgressLeaseLostError';
+    }
+}
+
+export interface EpicProgressLease {
+    /**
+     * Confirms the lease is still held and extends it. Call after reads and
+     * before every comment write, so an update whose lease expired while it
+     * waited on GitHub aborts instead of writing from a stale snapshot.
+     */
+    assertOwned: () => Promise<void>;
+}
+
+export interface EpicProgressUpdateOptions {
+    redis: EpicProgressRetryRedis;
+    /** Performs the update; returns false when it cannot be completed yet (e.g. plan unavailable). */
+    update: (lease: EpicProgressLease) => Promise<boolean>;
+    now?: () => number;
+    log?: ReturnType<typeof logger.withCorrelation>;
+}
+
+function epicProgressBranchField(owner: string, repo: string, epicBranch: string): string {
+    return `${owner.toLowerCase()}/${repo.toLowerCase()}#${epicBranch}`;
+}
+
+/**
+ * Keep each target separate: a child can be redirected to a successor while
+ * the original epic still needs its final-merge confirmation. Unknown targets
+ * must not inherit the PR number of an unrelated obligation on the branch.
+ */
+export function epicProgressRetryField(
+    { owner, repo, epicBranch, epicPrNumber, mergedChildPrNumber }: EpicProgressTarget,
+): string {
+    return JSON.stringify([owner.toLowerCase(), repo.toLowerCase(), epicBranch, epicPrNumber, mergedChildPrNumber]);
+}
+
+function parseRetry(value: string | null | undefined): EpicProgressRetry | null {
+    if (!value) return null;
+    try {
+        const parsed = JSON.parse(value) as Partial<EpicProgressRetry>;
+        if (typeof parsed.owner !== 'string' || typeof parsed.repo !== 'string' || typeof parsed.epicBranch !== 'string'
+            || (typeof parsed.epicPrNumber !== 'number' && parsed.epicPrNumber !== null)
+            || (typeof parsed.mergedChildPrNumber !== 'number' && parsed.mergedChildPrNumber !== null)) return null;
+        return {
+            owner: parsed.owner, repo: parsed.repo, epicBranch: parsed.epicBranch,
+            epicPrNumber: parsed.epicPrNumber, mergedChildPrNumber: parsed.mergedChildPrNumber,
+            attempts: Number(parsed.attempts) || 0,
+            firstFailedAt: Number(parsed.firstFailedAt) || 0,
+            nextAttemptAt: Number(parsed.nextAttemptAt) || 0,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Records (or extends) the retry obligation for this specific target.
+ */
+export async function recordEpicProgressRetry(redis: EpicProgressRetryRedis, target: EpicProgressTarget, now: number = Date.now()): Promise<void> {
+    const field = epicProgressRetryField(target);
+    const previous = parseRetry(await redis.hget(EPIC_PROGRESS_RETRY_KEY, field));
+    const attempts = (previous?.attempts ?? 0) + 1;
+    const retry: EpicProgressRetry = {
+        ...target,
+        attempts,
+        firstFailedAt: previous?.firstFailedAt || now,
+        nextAttemptAt: now + Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** (attempts - 1)),
+    };
+    await redis.hset(EPIC_PROGRESS_RETRY_KEY, field, JSON.stringify(retry));
+}
+
+/**
+ * Runs one epic progress update under a per-epic lease, so a retry and a
+ * webhook never post the completion notice twice. The lease is renewed while
+ * the update runs, and the update must confirm it through
+ * {@link EpicProgressLease.assertOwned} before each comment write; losing it
+ * aborts the update and keeps the obligation. A pending obligation is
+ * released only if it is still the one observed before the update started;
+ * one recorded meanwhile describes a later failure and is kept. Any failure,
+ * including a busy lease or a lease that could not be acquired because Redis
+ * failed, leaves an obligation for the retry sweep; the update never runs
+ * without the lease.
+ */
+export async function runEpicProgressUpdate(
+    target: EpicProgressTarget,
+    { redis, update, now = Date.now, log = logger.withCorrelation('epic-merge-progress') }: EpicProgressUpdateOptions,
+): Promise<EpicProgressUpdateOutcome> {
+    const field = epicProgressRetryField(target);
+    const lockKey = `${EPIC_PROGRESS_LOCK_PREFIX}${epicProgressBranchField(target.owner, target.repo, target.epicBranch)}`;
+    const token = randomUUID();
+    /**
+     * Records a retry for an update that must not run now. 'skipped' means
+     * the retry could not be recorded either, so the obligation is lost until
+     * the next child merge refreshes the epic.
+     */
+    const defer = async (failureMessage: string): Promise<EpicProgressUpdateOutcome> => {
+        try {
+            await recordEpicProgressRetry(redis, target, now());
+            log.info({ ...target }, 'Epic progress update deferred, scheduled a retry');
+            return 'retry_scheduled';
+        } catch (error) {
+            log.error({ ...target, error: (error as Error).message }, failureMessage);
+            return 'skipped';
+        }
+    };
+
+    let pending: string | null = null;
+    let acquired = false;
+    try {
+        pending = await redis.hget(EPIC_PROGRESS_RETRY_KEY, field);
+        acquired = await redis.set(lockKey, token, 'PX', EPIC_PROGRESS_LOCK_TTL_MS, 'NX') === 'OK';
+    } catch (error) {
+        // Without the lease, nothing stops a concurrent delivery from posting
+        // the same comments; defer to a retry rather than write unguarded.
+        log.warn({ ...target, error: (error as Error).message }, 'Epic progress lease unavailable, deferring the update');
+        return await defer('Epic progress lease unavailable and its retry could not be recorded');
+    }
+
+    if (!acquired) {
+        // Another update owns the epic; never fall through into an unguarded update.
+        return await defer('Epic progress update already running and its retry could not be recorded');
+    }
+
+    let lost = false;
+    const extend = async (): Promise<void> => {
+        if (lost) return;
+        if (Number(await redis.eval(COMPARE_AND_EXTEND_KEY, 1, lockKey, token, String(EPIC_PROGRESS_LOCK_TTL_MS))) !== 1) lost = true;
+    };
+    const lease: EpicProgressLease = {
+        assertOwned: async () => {
+            await extend();
+            if (lost) throw new EpicProgressLeaseLostError();
+        },
+    };
+    const heartbeat = setInterval(() => {
+        extend().catch(error => log.warn({ ...target, error: (error as Error).message }, 'Failed to renew Epic PR merge progress lease'));
+    }, EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS);
+    heartbeat.unref?.();
+
+    try {
+        let completed = false;
+        try {
+            completed = await update(lease);
+        } catch (error) {
+            const message = error instanceof EpicProgressLeaseLostError
+                ? 'Lost Epic PR merge progress lease, aborted the update'
+                : 'Failed to update Epic PR merge progress';
+            log.warn({ ...target, error: (error as Error).message }, message);
+        }
+        try {
+            if (!completed) {
+                await recordEpicProgressRetry(redis, target, now());
+                return 'retry_scheduled';
+            }
+            if (pending) await redis.eval(COMPARE_AND_DELETE_FIELD, 1, EPIC_PROGRESS_RETRY_KEY, field, pending);
+        } catch (error) {
+            log.error({ ...target, error: (error as Error).message }, 'Failed to persist Epic PR merge progress retry state');
+        }
+        return completed ? 'updated' : 'retry_scheduled';
+    } finally {
+        clearInterval(heartbeat);
+        try {
+            await redis.eval(COMPARE_AND_DELETE_KEY, 1, lockKey, token);
+        } catch (error) {
+            log.warn({ ...target, error: (error as Error).message }, 'Failed to release Epic PR merge progress lease');
+        }
+    }
+}
+
+export interface EpicProgressRetrySweepOptions {
+    redis: EpicProgressRetryRedis;
+    /** Re-runs the update for one recorded epic. */
+    retry: (target: EpicProgressTarget) => Promise<EpicProgressUpdateOutcome>;
+    now?: () => number;
+    log?: ReturnType<typeof logger.withCorrelation>;
+}
+
+/**
+ * The record a legacy branch-keyed obligation migrates into. An existing
+ * record for the same target keeps its backoff, but inherits the older first
+ * failure and the higher attempt count, so the migration neither resets the
+ * drop window nor forgets attempts already made.
+ */
+function mergeLegacyRetry(legacy: EpicProgressRetry, current: EpicProgressRetry | null): EpicProgressRetry {
+    if (!current) return legacy;
+    const firstFailures = [current.firstFailedAt, legacy.firstFailedAt].filter(Boolean);
+    return {
+        ...current,
+        attempts: Math.max(current.attempts, legacy.attempts),
+        firstFailedAt: firstFailures.length > 0 ? Math.min(...firstFailures) : 0,
+    };
+}
+
+/**
+ * Retries every due epic progress obligation; returns how many were updated.
+ * An obligation whose first failure is older than
+ * {@link EPIC_PROGRESS_RETRY_MAX_AGE_MS} (or that can no longer be parsed) is
+ * dropped with an error log instead of being retried.
+ */
+export async function sweepEpicProgressRetries(
+    { redis, retry, now = Date.now, log = logger.withCorrelation('epic-merge-progress') }: EpicProgressRetrySweepOptions,
+): Promise<number> {
+    let entries = await redis.hgetall(EPIC_PROGRESS_RETRY_KEY);
+    let migrated = false;
+    for (const [field, value] of Object.entries(entries)) {
+        const pending = parseRetry(value);
+        if (pending && field === epicProgressBranchField(pending.owner, pending.repo, pending.epicBranch)) {
+            const targetField = epicProgressRetryField(pending);
+            const current = entries[targetField];
+            const merged = current === undefined ? value : JSON.stringify(mergeLegacyRetry(pending, parseRetry(current)));
+            await redis.eval(MIGRATE_LEGACY_FIELD, 1, EPIC_PROGRESS_RETRY_KEY, field, value, targetField, current ?? '', merged);
+            migrated = true;
+        }
+    }
+    if (migrated) entries = await redis.hgetall(EPIC_PROGRESS_RETRY_KEY);
+    let updated = 0;
+    for (const [field, value] of Object.entries(entries)) {
+        const pending = parseRetry(value);
+        const current = now();
+        if (!pending || current - pending.firstFailedAt > EPIC_PROGRESS_RETRY_MAX_AGE_MS) {
+            log.error({ field, pending }, 'Dropping Epic PR merge progress retry that could not be completed');
+            await redis.eval(COMPARE_AND_DELETE_FIELD, 1, EPIC_PROGRESS_RETRY_KEY, field, value);
+            continue;
+        }
+        if (pending.nextAttemptAt > current) continue;
+        const { owner, repo, epicBranch, epicPrNumber, mergedChildPrNumber } = pending;
+        if (await retry({ owner, repo, epicBranch, epicPrNumber, mergedChildPrNumber }) === 'updated') {
+            // The update normally releases the snapshot it observed itself;
+            // this repeats that release in case it failed after the update
+            // (e.g. the delete call errored), still only for the snapshot
+            // whose own target succeeded.
+            await redis.eval(COMPARE_AND_DELETE_FIELD, 1, EPIC_PROGRESS_RETRY_KEY, field, value);
+            updated++;
+        }
+    }
+    return updated;
+}

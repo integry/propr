@@ -10,7 +10,9 @@ import {
   AgentConfig
 } from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
+import { useAgentHealth } from './SettingsPage/useAgentHealth';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
+import { usePlaygroundSession } from '../components/AgentChat/usePlaygroundSession';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
 import { getAgentTankStatus } from '../api/revertApi';
@@ -35,6 +37,7 @@ const AiAgentsPage: React.FC = () => {
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
   const [agentsWarning, setAgentsWarning] = useState<string | null>(null);
   const agentsReloadRequiredRef = useRef(false);
+  const agentHealth = useAgentHealth(agents, agentsLoading || isDemoMode);
   const [syntheticAgents, setSyntheticAgents] = useState<SyntheticAgentConfig[]>([]);
   const [syntheticLoading, setSyntheticLoading] = useState(true);
   const [syntheticSaving, setSyntheticSaving] = useState(false);
@@ -51,6 +54,10 @@ const AiAgentsPage: React.FC = () => {
   // Mobile tab state: 'config' or 'playground'
   const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
   const [selectedModels, setSelectedModels] = useState<AgentModelSelection[]>([]);
+  // The page owns the Playground conversation: the mobile and desktop panels
+  // and the mobile tabs are views of it, so layout changes keep the draft,
+  // transcript and any pending response.
+  const playgroundSession = usePlaygroundSession();
 
   useEffect(() => {
     const loadAgents = async () => {
@@ -238,6 +245,7 @@ const AiAgentsPage: React.FC = () => {
       </div>
       {configView === 'direct' ? <AgentsListSection
         agents={agents}
+        agentHealth={agentHealth}
         loading={agentsLoading}
         saving={agentsSaving}
         error={agentsError}
@@ -327,13 +335,17 @@ const AiAgentsPage: React.FC = () => {
                   syntheticAgents={syntheticAgents}
                   selectedModels={selectedModels}
                   onSelectedModelsChange={setSelectedModels}
+                  session={playgroundSession}
                   disabled={isDemoMode}
                 />
               )}
             </div>
           </div>
         ) : (
-          <div className="h-full overflow-y-auto bg-white overscroll-contain">
+          <div
+            className="h-full overflow-y-auto bg-white overscroll-contain"
+            data-testid="ai-agents-mobile-configuration-scroll"
+          >
             <div className="px-4 py-4">
               {renderConfiguration('mobile')}
             </div>
@@ -357,6 +369,7 @@ const AiAgentsPage: React.FC = () => {
             syntheticAgents={syntheticAgents}
             selectedModels={selectedModels}
             onSelectedModelsChange={setSelectedModels}
+            session={playgroundSession}
             disabled={isDemoMode}
           />
         )}

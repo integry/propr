@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { SetupActions } from '@propr/local-setup';
+import { assertOwnedLocalSetupRoot } from './connectIdentity.js';
+import type { GithubUserCredential, SetupActions } from '@propr/local-setup';
 import {
   evaluateProprApiCompatibility,
   parseProprDesktopDiscoveryJson,
@@ -248,6 +249,8 @@ export async function createDesktopSetupHost(options: {
   runtimeManifestPath?: string;
   authenticationHandoff: AuthenticationCommandHandoff;
   capturedCommand?: CapturedCommandRunner;
+  githubBrowserLogin?: (options: { signal?: AbortSignal; onLog?: (line: string) => void }) => Promise<string | GithubUserCredential>;
+  refreshGithubCredential?: (refreshToken: string, options: { signal?: AbortSignal }) => Promise<GithubUserCredential>;
 }): Promise<DesktopSetupHost> {
   if (options.resourcesPath) {
     const root = realpathSync(options.resourcesPath);
@@ -262,9 +265,21 @@ export async function createDesktopSetupHost(options: {
   const baseActions = createDefaultActions(config, {
     authenticationHandoff: options.authenticationHandoff,
     capturedCommand: options.capturedCommand,
+    githubBrowserLogin: options.githubBrowserLogin ?? (async () => {
+      throw new Error("GitHub browser sign-in is not configured. Install a desktop build with GitHub browser authentication configured.");
+    }),
+    ...(options.refreshGithubCredential ? { refreshGithubCredential: options.refreshGithubCredential } : {}),
   });
   const actions: SetupActions = {
     ...baseActions,
+    async runChecks(params) {
+      if (process.platform === 'darwin' && params.root) await assertOwnedLocalSetupRoot(params.root);
+      return baseActions.runChecks(params);
+    },
+    async startStack(params) {
+      if (process.platform === 'darwin') await assertOwnedLocalSetupRoot(params.rootDir);
+      return baseActions.startStack(params);
+    },
     async checkBackendHealth(params) {
       const health = await baseActions.checkBackendHealth(params);
       if (!health.healthy) return health;

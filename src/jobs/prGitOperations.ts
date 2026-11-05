@@ -47,7 +47,7 @@ export async function createPullRequestHeadWorktree(
         repoName: target.repoName,
     });
     const discardAndFail = async (message: string) => {
-        await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName);
+        await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { success: false });
         throw new Error(message);
     };
     if (options.requiredHeadSha && !await containsCommit(worktreeInfo.worktreePath, options.requiredHeadSha)) {
@@ -68,6 +68,15 @@ interface PushPullRequestHeadBranchOptions {
     /** Rebasing replays commits individually, which would drop a merge commit, so
      * callers that publish a merge keep the non-fast-forward rejection instead. */
     rebaseOnNonFastForward?: boolean;
+}
+
+/**
+ * The push was rejected because the PR branch moved, and replaying the local
+ * commits onto it conflicted (pushBranch's automatic rebase aborted).
+ */
+export function isRebaseConflictPushError(error: unknown): boolean {
+    const message = (error as Error)?.message ?? '';
+    return message.includes('automatic rebase failed') && message.includes('CONFLICT');
 }
 
 export async function pushPullRequestHeadBranch(options: PushPullRequestHeadBranchOptions) {

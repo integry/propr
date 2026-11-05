@@ -119,6 +119,8 @@ propr init
 cd .propr && npm install <package>
 ```
 
+The generated `.propr/workflow.yml` scaffolds optional, versioned hooks, instructions, validation, previews and concurrency limits. See the [Repository workflow file reference](https://docs.propr.dev/docs/features/repository-workflow).
+
 The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
 ## Agent Runtime Packages
@@ -237,7 +239,7 @@ The issue ID format is `<draft-id>/<issue-number>` or `<draft-id>:<issue-number>
 
 ### Tasks
 
-View and manage implementation tasks.
+View and manage implementation tasks. For a new instruction without an existing issue, use [New Task](../../docs/docs/features/launching-work.md) in the UI or MCP `create_task`; these create an ordinary issue implementation task.
 
 ```bash
 propr task list                          # List all tasks
@@ -302,6 +304,8 @@ propr repo add owner/repo -a "Alias" -b dev  # With alias and branch
 propr repo remove owner/repo                 # Remove a repository
 propr repo toggle owner/repo --enable        # Enable monitoring
 propr repo toggle owner/repo --disable       # Disable monitoring
+propr repo toggle owner/repo --no-notifications # Suppress repository Inbox/push
+propr repo toggle owner/repo --notifications  # Restore repository notifications
 propr repo index owner/repo                  # Trigger full indexing
 propr repo index owner/repo --incremental    # Incremental indexing
 propr repo index owner/repo -b feature       # Index specific branch
@@ -409,7 +413,7 @@ propr setting update worker_concurrency 4            # Update a setting
 propr setting update github_user_whitelist "a,b,c"   # Update whitelist
 ```
 
-**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`, `auto_followup_score_threshold`
+**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`
 
 ---
 
@@ -659,3 +663,11 @@ propr <command> --help          # Command group help
 propr plan --help               # Plan commands
 propr todo category --help      # Category commands
 ```
+
+### Prepare a source-aligned Hosted Fleet preview (internal only)
+
+The prepare-only packaging mode produces an installable `propr-cli` prerelease
+without publishing npm packages, Docker images, tags, or deploying anything.
+Stable `cli:pack` (dry run) and `cli:publish` behavior stays unchanged. See
+[scripts/preview-package.md](scripts/preview-package.md) for the reviewed-input
+format, source trust checks, output evidence, and later fleet handoff.

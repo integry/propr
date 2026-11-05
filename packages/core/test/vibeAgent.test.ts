@@ -146,3 +146,25 @@ test('Vibe prompt files are readable by spawned agent container user', () => {
         delete process.env.VIBE_PROMPT_CACHE_DIR;
     }
 });
+
+test('Vibe diagnostics use mounted authentication and do not claim historical credential context', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-diagnostic-context-'));
+    const previous = process.env.VIBE_CONFIG_PATH;
+    try {
+        fs.writeFileSync(path.join(root, 'credentials.json'), '{"api_key":"opaque-native-canary"}');
+        process.env.VIBE_CONFIG_PATH = root;
+        type ContextAgent = { diagnosticContext(root: string, apiKey: string, token: string): { authenticationRoot: string; nativeCredentialContextComplete: boolean; credentials: Record<string, string> } };
+        const agent = createAgent() as unknown as ContextAgent;
+        const context = agent.diagnosticContext('/fresh/runtime', 'opaque-api-canary', 'opaque-git-canary');
+        assert.equal(context.authenticationRoot, root);
+        assert.equal(context.nativeCredentialContextComplete, false);
+        assert.equal(context.credentials.GITHUB_TOKEN, 'opaque-git-canary');
+        process.env.VIBE_CONFIG_PATH = path.join(root, 'missing');
+        const fresh = agent.diagnosticContext('/fresh/runtime', 'opaque-api-canary', 'opaque-git-canary');
+        assert.equal(fresh.authenticationRoot, '/fresh/runtime');
+        assert.equal(fresh.nativeCredentialContextComplete, true);
+    } finally {
+        if (previous === undefined) delete process.env.VIBE_CONFIG_PATH; else process.env.VIBE_CONFIG_PATH = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

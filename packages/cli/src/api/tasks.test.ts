@@ -113,3 +113,32 @@ test("getTaskStatus uses the task detail/history path for a supplied ID", async 
     options: undefined,
   }]);
 });
+
+test("getTaskStatus exposes the automatic-replacement lineage for task get --json", async () => {
+  const { client } = clientWithCalls({
+    taskId: "attempt-2",
+    history: [
+      { state: "failed", timestamp: "2026-10-06T09:00:00.000Z", reason: "Task failed: 529 Overloaded" },
+      { state: "failed", timestamp: "2026-10-06T09:00:01.000Z", reason: "Replacement attempt 3 dispatched", metadata: { event: "replacement.dispatched" } },
+    ],
+    taskInfo: {
+      repoOwner: "integry", repoName: "propr", number: 2739, type: "issue",
+      attemptNumber: 2, replacesTaskId: "attempt-1", replacedByTaskId: "attempt-3",
+    },
+  });
+
+  const result = await getTaskStatus("attempt-2", client);
+
+  assert.equal(result.replacesTaskId, "attempt-1");
+  assert.equal(result.replacedByTaskId, "attempt-3");
+  assert.equal(result.attemptNumber, 2);
+  assert.equal(result.failureReason, "Task failed: 529 Overloaded", "timeline events do not replace the failure reason");
+  const json = JSON.parse(JSON.stringify(result));
+  assert.deepEqual([json.replacesTaskId, json.replacedByTaskId, json.attemptNumber], ["attempt-1", "attempt-3", 2]);
+});
+
+test("getTaskStatus reports a task outside a lineage as attempt 1", async () => {
+  const { client } = clientWithCalls({ taskId: "task-1", history: [], taskInfo: null });
+  const result = await getTaskStatus("task-1", client);
+  assert.deepEqual([result.replacesTaskId, result.replacedByTaskId, result.attemptNumber], [null, null, 1]);
+});

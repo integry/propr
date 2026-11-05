@@ -4,6 +4,8 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
+import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
+import { isNonBlockingCheck } from './nonBlockingChecks.js';
 
 export interface MergePROptions {
     owner: string;
@@ -12,6 +14,8 @@ export interface MergePROptions {
     mergeMethod?: 'merge' | 'squash' | 'rebase';
     commitTitle?: string;
     commitMessage?: string;
+    /** Head SHA the PR must still have; GitHub refuses the merge otherwise. */
+    sha?: string;
 }
 
 export interface MergePRResult {
@@ -27,7 +31,7 @@ export interface MergePRResult {
  * (e.g., when branch protection rules aren't configured).
  */
 export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
-    const { owner, repoName, prNumber, mergeMethod = 'squash', commitTitle, commitMessage } = options;
+    const { owner, repoName, prNumber, mergeMethod = 'squash', commitTitle, commitMessage, sha } = options;
 
     try {
         const octokit = await getAuthenticatedOctokit();
@@ -40,7 +44,8 @@ export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
             pull_number: prNumber,
             merge_method: mergeMethod,
             ...(commitTitle && { commit_title: commitTitle }),
-            ...(commitMessage && { commit_message: commitMessage })
+            ...(commitMessage && { commit_message: commitMessage }),
+            ...(sha && { sha })
         });
 
         logger.info({
@@ -196,9 +201,21 @@ export async function getCurrentPRHead(owner: string, repoName: string, prNumber
     }
 }
 
+interface CommitStatusContext {
+    context?: string;
+    state?: string;
+}
+
 interface CommitStatusInfo {
     state: string;
     totalCount: number;
+    statuses: CommitStatusContext[];
+}
+
+interface CheckRunRecord {
+    name?: string;
+    status: string;
+    conclusion: string | null;
 }
 
 interface GitHubApiError extends Error {
@@ -215,11 +232,65 @@ async function getCommitStatusInfo(octokit: any, owner: string, repoName: string
     const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
         owner,
         repo: repoName,
-        ref
+        ref,
+        per_page: 100,
     });
+    const statuses = Array.isArray(statusResponse.data.statuses) ? statusResponse.data.statuses as CommitStatusContext[] : [];
     return {
         state: statusResponse.data.state as string,
         totalCount: (statusResponse.data.total_count ?? statusResponse.data.statuses?.length ?? 0) as number,
+        statuses,
+    };
+}
+
+/**
+ * Fetch both CI signal types for a commit: check runs and legacy commit
+ * statuses. Either may be unavailable; only when both fail is this an error.
+ * `complete` is false when one of the two requests failed.
+ */
+async function fetchCheckSignals(
+    owner: string,
+    repoName: string,
+    ref: string,
+): Promise<{ checkRuns: CheckRunRecord[]; commitStatus: CommitStatusInfo; complete: boolean }> {
+    const octokit = await getAuthenticatedOctokit();
+    const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
+        octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+            owner,
+            repo: repoName,
+            ref
+        }),
+        getCommitStatusInfo(octokit, owner, repoName, ref)
+    ]);
+
+    if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
+        throw checkRunsResult.reason;
+    }
+
+    const checkRuns: CheckRunRecord[] = checkRunsResult.status === 'fulfilled'
+        ? (checkRunsResult.value.data.check_runs ?? [])
+        : [];
+    const commitStatus = commitStatusResult.status === 'fulfilled'
+        ? commitStatusResult.value
+        : { state: 'pending', totalCount: 0, statuses: [] };
+
+    if (checkRunsResult.status === 'rejected') {
+        logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
+    }
+
+    if (commitStatusResult.status === 'rejected') {
+        const error = commitStatusResult.reason as Error;
+        const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
+        logger[logMethod](
+            { owner, repoName, ref, error: error.message },
+            'Legacy commit status unavailable, continuing with check-runs only',
+        );
+    }
+
+    return {
+        checkRuns,
+        commitStatus,
+        complete: checkRunsResult.status === 'fulfilled' && commitStatusResult.status === 'fulfilled',
     };
 }
 
@@ -228,65 +299,96 @@ export interface CheckRunsStatus {
     allPassing: boolean;
     anyPending: boolean;
     anyFailed: boolean;
+    /** Names of blocking check runs/status contexts that failed. */
+    blockingFailed?: string[];
+    /** Names of blocking check runs/status contexts that have not finished. */
+    blockingPending?: string[];
+    /** Check runs/status contexts ignored because they match nonBlockingChecks. */
+    nonBlockingCount?: number;
+}
+
+const FAILED_STATUS_STATES = new Set(['failure', 'error']);
+
+function summarizeCommitStatus(commitStatus: CommitStatusInfo, nonBlockingPatterns: readonly string[]): {
+    pending: string[];
+    failed: string[];
+    nonBlocking: number;
+} {
+    if (commitStatus.totalCount === 0) return { pending: [], failed: [], nonBlocking: 0 };
+    const contexts = commitStatus.statuses;
+    const blocking = contexts.filter(status => !isNonBlockingCheck(status.context, nonBlockingPatterns));
+    const nonBlocking = contexts.length - blocking.length;
+    // Only trust per-context states when the response listed every context;
+    // otherwise the combined state is the only complete signal.
+    if (nonBlocking > 0 && contexts.length >= commitStatus.totalCount) {
+        return {
+            pending: blocking.filter(status => status.state === 'pending').map(status => status.context || 'commit status'),
+            failed: blocking.filter(status => FAILED_STATUS_STATES.has(status.state ?? '')).map(status => status.context || 'commit status'),
+            nonBlocking,
+        };
+    }
+    const named = (states: (state: string) => boolean): string[] => {
+        const names = contexts.filter(status => states(status.state ?? '')).map(status => status.context || 'commit status');
+        return names.length > 0 ? names : ['commit status'];
+    };
+    if (commitStatus.state === 'pending') return { pending: named(state => state === 'pending'), failed: [], nonBlocking: 0 };
+    if (FAILED_STATUS_STATES.has(commitStatus.state)) return { pending: [], failed: named(state => FAILED_STATUS_STATES.has(state)), nonBlocking: 0 };
+    return { pending: [], failed: [], nonBlocking: 0 };
+}
+
+/**
+ * Reduce check runs and legacy commit statuses to one readiness summary.
+ * Check runs and status contexts whose names match a non-blocking pattern
+ * neither fail nor hold the result, whether they failed or are still pending.
+ */
+export function summarizeCheckSignals(
+    checkRuns: readonly CheckRunRecord[],
+    commitStatus: CommitStatusInfo,
+    nonBlockingPatterns: readonly string[] = [],
+): CheckRunsStatus {
+    const blockingRuns = checkRuns.filter(run => !isNonBlockingCheck(run.name, nonBlockingPatterns));
+    const runPending = blockingRuns.filter(run => run.status !== 'completed').map(run => run.name || 'check run');
+    const runFailed = blockingRuns.filter(run =>
+        run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
+    ).map(run => run.name || 'check run');
+    const status = summarizeCommitStatus(commitStatus, nonBlockingPatterns);
+
+    const blockingPending = [...runPending, ...status.pending];
+    const blockingFailed = [...runFailed, ...status.failed];
+    const anyPending = blockingPending.length > 0;
+    const anyFailed = blockingFailed.length > 0;
+    return {
+        count: checkRuns.length + commitStatus.totalCount,
+        allPassing: !anyPending && !anyFailed,
+        anyPending,
+        anyFailed,
+        blockingFailed,
+        blockingPending,
+        nonBlockingCount: checkRuns.length - blockingRuns.length + status.nonBlocking,
+    };
 }
 
 /**
  * Gets detailed status of check runs for a commit.
  * Always queries both the check-runs API and the legacy commit status API
  * so repos that publish both signal types are handled correctly.
+ *
+ * Pass the repository's nonBlockingChecks patterns to exclude matching check
+ * runs and status contexts from the result; see getCheckRunsStatusForRepo.
  */
-export async function getCheckRunsStatus(owner: string, repoName: string, ref: string): Promise<CheckRunsStatus> {
+export async function getCheckRunsStatus(
+    owner: string,
+    repoName: string,
+    ref: string,
+    nonBlockingPatterns: readonly string[] = [],
+): Promise<CheckRunsStatus> {
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
-            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-                owner,
-                repo: repoName,
-                ref
-            }),
-            getCommitStatusInfo(octokit, owner, repoName, ref)
-        ]);
-
-        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
-            throw checkRunsResult.reason;
-        }
-
-        const checkRuns = checkRunsResult.status === 'fulfilled'
-            ? checkRunsResult.value.data.check_runs
-            : [];
-        const commitStatus = commitStatusResult.status === 'fulfilled'
-            ? commitStatusResult.value
-            : { state: 'pending', totalCount: 0 };
-
-        if (checkRunsResult.status === 'rejected') {
-            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
-        }
-
-        if (commitStatusResult.status === 'rejected') {
-            const error = commitStatusResult.reason as Error;
-            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
-            logger[logMethod](
-                { owner, repoName, ref, error: error.message },
-                'Legacy commit status unavailable, continuing with check-runs only',
-            );
-        }
-
-        const count = checkRuns.length + commitStatus.totalCount;
-        const crPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
-        const crFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
-            run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
-        );
-
-        const hasStatusContexts = commitStatus.totalCount > 0;
-        const statusPending = hasStatusContexts && commitStatus.state === 'pending';
-        const statusFailed = hasStatusContexts && (commitStatus.state === 'failure' || commitStatus.state === 'error');
-
-        const anyPending = crPending || statusPending;
-        const anyFailed = crFailed || statusFailed;
-        const allPassing = !anyPending && !anyFailed;
-
-        logger.debug({ owner, repoName, ref, count, allPassing, anyPending, anyFailed, commitStatus: commitStatus.state, statusContexts: commitStatus.totalCount }, 'Check runs status');
-        return { count, allPassing, anyPending, anyFailed };
+        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref);
+        const summary = summarizeCheckSignals(checkRuns, commitStatus, nonBlockingPatterns);
+        logger.debug({
+            owner, repoName, ref, ...summary, commitStatus: commitStatus.state, statusContexts: commitStatus.totalCount,
+        }, 'Check runs status');
+        return summary;
     } catch (error) {
         logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to get check runs status');
         return { count: 0, allPassing: false, anyPending: false, anyFailed: false };
@@ -294,69 +396,57 @@ export async function getCheckRunsStatus(owner: string, repoName: string, ref: s
 }
 
 /**
+ * "Is this PR ready" view of getCheckRunsStatus: resolves the repository's
+ * nonBlockingChecks patterns so those checks never gate readiness.
+ */
+export async function getCheckRunsStatusForRepo(
+    owner: string,
+    repoName: string,
+    ref: string,
+    loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
+): Promise<CheckRunsStatus> {
+    let patterns: string[] = [];
+    try {
+        patterns = await loadNonBlockingChecks(owner, repoName);
+    } catch (error) {
+        logger.warn({ owner, repoName, error: (error as Error).message }, 'Failed to load nonBlockingChecks; treating every check as blocking');
+    }
+    return getCheckRunsStatus(owner, repoName, ref, patterns);
+}
+
+/**
  * Checks if all check runs have passed for a PR.
  * Always queries both the check-runs API and the legacy commit status API
  * so repos that publish both signal types are handled correctly.
  */
-export async function areAllChecksPassing(owner: string, repoName: string, ref: string): Promise<boolean> {
+export async function areAllChecksPassing(
+    owner: string,
+    repoName: string,
+    ref: string,
+    loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
+): Promise<boolean> {
     try {
-        const octokit = await getAuthenticatedOctokit();
+        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref);
 
-        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
-            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-                owner,
-                repo: repoName,
-                ref
-            }),
-            getCommitStatusInfo(octokit, owner, repoName, ref)
-        ]);
-
-        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
-            throw checkRunsResult.reason;
-        }
-
-        const checkRuns = checkRunsResult.status === 'fulfilled'
-            ? checkRunsResult.value.data.check_runs
-            : [];
-        const commitStatus = commitStatusResult.status === 'fulfilled'
-            ? commitStatusResult.value
-            : { state: 'pending', totalCount: 0 };
-
-        if (checkRunsResult.status === 'rejected') {
-            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
-        }
-
-        if (commitStatusResult.status === 'rejected') {
-            const error = commitStatusResult.reason as Error;
-            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
-            logger[logMethod](
-                { owner, repoName, ref, error: error.message },
-                'Legacy commit status unavailable, continuing with check-runs only',
-            );
-        }
-
-        const allCheckRunsPass = checkRuns.length === 0 || checkRuns.every(
-            (run: { status: string; conclusion: string | null }) =>
-                run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
-        );
-
-        // Repos with no legacy status contexts report 'pending' — treat as passing.
-        const statusPass = commitStatus.totalCount === 0 ||
-            (commitStatus.state !== 'pending' && commitStatus.state !== 'failure' && commitStatus.state !== 'error');
+        // Checks the repository marked non-blocking never hold automation back,
+        // but they still count as CI signal below.
+        const nonBlockingChecks = await loadNonBlockingChecks(owner, repoName);
+        const summary = summarizeCheckSignals(checkRuns, commitStatus, nonBlockingChecks);
         // Do not treat a commit with no CI signal at all as safe to merge.
         const hasCheckSignal = checkRuns.length > 0 || commitStatus.totalCount > 0;
-        const allPass = hasCheckSignal && allCheckRunsPass && statusPass;
+        const allPass = hasCheckSignal && summary.allPassing;
 
         logger.debug({
             owner,
             repoName,
             ref,
             totalCheckRuns: checkRuns.length,
+            nonBlockingChecks: summary.nonBlockingCount,
             commitStatus: commitStatus.state,
             statusContexts: commitStatus.totalCount,
             hasCheckSignal,
-            allCheckRunsPass,
-            statusPass,
+            blockingFailed: summary.blockingFailed,
+            blockingPending: summary.blockingPending,
             allPass
         }, 'Checked PR status');
 
@@ -372,6 +462,87 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
     }
 }
 
+/** How long a PR head may go without any CI signal before ProPR treats the repository as having no CI for it. */
+export const NO_CI_GRACE_MS = 2 * 60_000;
+
+const HEAD_OBSERVATION_KEY_PREFIX = 'auto-merge:head-observed';
+const HEAD_OBSERVATION_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+export type HeadObservationStore = Pick<Redis, 'get' | 'set' | 'del'>;
+
+function headObservationKey(owner: string, repoName: string, prNumber: number): string {
+    return `${HEAD_OBSERVATION_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
+}
+
+/**
+ * When ProPR first saw `headSha` as the head of the PR without CI signal. The
+ * first call for a head records `now`; a different head starts a new
+ * observation. Concurrent writers can only move the observation later.
+ */
+export async function observePRHead(
+    store: HeadObservationStore,
+    head: { owner: string; repoName: string; prNumber: number; headSha: string },
+    now: number,
+): Promise<number> {
+    const { owner, repoName, prNumber, headSha } = head;
+    const key = headObservationKey(owner, repoName, prNumber);
+    const raw = await store.get(key);
+    if (raw) {
+        const observation = JSON.parse(raw) as { sha?: unknown; observedAt?: unknown };
+        if (observation.sha === headSha && typeof observation.observedAt === 'number' && Number.isFinite(observation.observedAt)) {
+            return observation.observedAt;
+        }
+    }
+    await store.set(key, JSON.stringify({ sha: headSha, observedAt: now }), 'EX', HEAD_OBSERVATION_TTL_SECONDS);
+    return now;
+}
+
+export interface CiMergeReadiness {
+    ready: boolean;
+    reason: 'checks_passing' | 'checks_not_passing' | 'no_ci' | 'waiting_for_ci' | 'unavailable';
+}
+
+/**
+ * Whether CI allows merging `ref`, the current head of the PR: every blocking
+ * check passed, or no CI ran for it at all. No CI counts only when both CI
+ * endpoints answered, and only once ProPR has seen the head without signal for
+ * {@link NO_CI_GRACE_MS}, so checks that have not registered yet after a push
+ * are not mistaken for missing CI. The commit date says nothing about when it
+ * was pushed, so the grace runs from ProPR's own first observation.
+ */
+export async function getCiMergeReadiness(
+    owner: string,
+    repoName: string,
+    ref: string,
+    options: {
+        /** The PR whose current head is `ref`. */
+        prNumber: number;
+        now?: number;
+        loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>;
+        observations?: HeadObservationStore;
+    },
+): Promise<CiMergeReadiness> {
+    const { prNumber, now = Date.now(), loadNonBlockingChecks = getNonBlockingChecksForRepository } = options;
+    try {
+        const { checkRuns, commitStatus, complete } = await fetchCheckSignals(owner, repoName, ref);
+        // An unreadable endpoint may hide pending or failing CI, so neither the
+        // passing signals of the other endpoint nor their absence prove anything.
+        if (!complete) return { ready: false, reason: 'unavailable' };
+        if (checkRuns.length > 0 || commitStatus.totalCount > 0) {
+            // The PR's head now has CI, so any earlier no-CI observation is over:
+            // a later return to that earlier head must wait out a fresh grace period.
+            await (options.observations ?? getUltrafixStateRedis()).del(headObservationKey(owner, repoName, prNumber));
+            const summary = summarizeCheckSignals(checkRuns, commitStatus, await loadNonBlockingChecks(owner, repoName));
+            return summary.allPassing ? { ready: true, reason: 'checks_passing' } : { ready: false, reason: 'checks_not_passing' };
+        }
+        const observedAt = await observePRHead(options.observations ?? getUltrafixStateRedis(), { owner, repoName, prNumber, headSha: ref }, now);
+        return now - observedAt >= NO_CI_GRACE_MS ? { ready: true, reason: 'no_ci' } : { ready: false, reason: 'waiting_for_ci' };
+    } catch (error) {
+        logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to check CI merge readiness');
+        return { ready: false, reason: 'unavailable' };
+    }
+}
+
 export interface PRAutoMergeInfo {
     hasLabel: boolean;
     hasUltrafixLabel?: boolean;
@@ -383,6 +554,8 @@ export interface PRAutoMergeInfo {
     headBranch: string;
     mergeable: boolean | null;
     mergeableState: string;
+    /** GitHub PR state (`open` or `closed`); absent when the PR could not be read. */
+    state?: string;
 }
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
@@ -566,6 +739,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             : 'unknown';
 
         return {
+            state: prResponse.data.state,
             hasLabel,
             hasUltrafixLabel,
             hasActiveUltrafixLoop: ultrafixState?.active ?? false,
@@ -758,18 +932,37 @@ export async function getActiveTasksForPR(
  */
 export async function hasActiveTasksForPR(
     repository: string,
-    prNumber: number
+    prNumber: number,
+    ignoreWorkIds: readonly string[] = [],
 ): Promise<{
     hasActive: boolean;
     activeTasks: Array<{ taskId: string; state: string }>;
     queuedJobs: Array<{ jobId: string; state: string }>;
 }> {
-    const { activeTasks, queuedJobs } = await getActiveTasksForPR(repository, prNumber);
+    const ignored = new Set(ignoreWorkIds);
+    const work = await getActiveTasksForPR(repository, prNumber);
+    const activeTasks = work.activeTasks.filter(task => !ignored.has(task.taskId));
+    const queuedJobs = work.queuedJobs.filter(job => !ignored.has(job.jobId));
     return {
         hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
         activeTasks,
         queuedJobs,
     };
+}
+
+async function requestOpenPRsForCommit(
+    owner: string,
+    repoName: string,
+    commitSha: string
+): Promise<Array<{ number: number }>> {
+    const octokit = await getAuthenticatedOctokit();
+    const { data: pulls } = await octokit.request(
+        'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+        { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
+    );
+    return pulls
+        .filter((pr: { state: string }) => pr.state === 'open')
+        .map((pr: { number: number }) => ({ number: pr.number }));
 }
 
 /**
@@ -782,16 +975,102 @@ export async function findPRsForCommit(
     commitSha: string
 ): Promise<Array<{ number: number }>> {
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const { data: pulls } = await octokit.request(
-            'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
-            { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
-        );
-        return pulls
-            .filter((pr: { state: string }) => pr.state === 'open')
-            .map((pr: { number: number }) => ({ number: pr.number }));
+        return await requestOpenPRsForCommit(owner, repoName, commitSha);
     } catch (error) {
         logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
         return [];
+    }
+}
+
+const COMMIT_PRS_CACHE_KEY_PREFIX = 'propr:commit-open-prs';
+/**
+ * Long enough to absorb the burst of check runs one push produces, short enough
+ * that a PR opened for the commit afterwards is soon seen. A run that misses it
+ * meanwhile is covered by later check events and polling reconciliation.
+ */
+export const COMMIT_PRS_CACHE_TTL_SECONDS = 60;
+/**
+ * "No open PR" is kept much more briefly: a branch pushed and then opened as
+ * a PR seconds later would otherwise have its remaining check runs (and the
+ * suite completion) dropped for a whole minute. Ten seconds still collapses
+ * the burst of a default-branch push, whose commits never have an open PR.
+ */
+export const COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS = 10;
+/**
+ * A commit whose lookups keep coming back empty (a default-branch push whose
+ * jobs finish over several minutes) is cached for longer each time: the TTL
+ * doubles per consecutive empty result in this process, up to the TTL of a
+ * found PR, so the window in which a newly opened PR goes unseen never
+ * exceeds that of a cached positive result.
+ */
+const COMMIT_PRS_EMPTY_STREAK_LIMIT = 1_000;
+const commitPREmptyStreaks = new Map<string, number>();
+const commitPRLookupsInFlight = new Map<string, Promise<Array<{ number: number }>>>();
+
+/** TTL for a lookup result, tracking consecutive empty results for the commit. */
+function commitPRsCacheTtlSeconds(key: string, prs: Array<{ number: number }>): number {
+    if (prs.length > 0) {
+        commitPREmptyStreaks.delete(key);
+        return COMMIT_PRS_CACHE_TTL_SECONDS;
+    }
+    const streak = (commitPREmptyStreaks.get(key) ?? 0) + 1;
+    // Re-insert so the oldest commit is evicted first once the limit is hit.
+    commitPREmptyStreaks.delete(key);
+    commitPREmptyStreaks.set(key, streak);
+    if (commitPREmptyStreaks.size > COMMIT_PRS_EMPTY_STREAK_LIMIT) {
+        commitPREmptyStreaks.delete(commitPREmptyStreaks.keys().next().value!);
+    }
+    return Math.min(COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 2 ** (streak - 1), COMMIT_PRS_CACHE_TTL_SECONDS);
+}
+
+type CommitPRsCache = Pick<Redis, 'get' | 'set'>;
+
+async function readCachedCommitPRs(cache: CommitPRsCache, key: string): Promise<Array<{ number: number }> | null> {
+    try {
+        const raw = await cache.get(key);
+        return raw ? JSON.parse(raw) as Array<{ number: number }> : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * `findPRsForCommit` behind a short-lived Redis cache keyed by repository and
+ * commit, plus in-process sharing of a lookup already in flight. Every job of
+ * a push (e.g. 20–30 check runs on the default branch, which list no PRs) then
+ * costs one GitHub lookup instead of one each. A failed lookup is not cached,
+ * and a cache failure falls back to the plain lookup.
+ */
+export async function findPRsForCommitCached(
+    owner: string,
+    repoName: string,
+    commitSha: string,
+    cache: CommitPRsCache = getUltrafixStateRedis(),
+): Promise<Array<{ number: number }>> {
+    const key = `${COMMIT_PRS_CACHE_KEY_PREFIX}:${owner}:${repoName}:${commitSha}`;
+    const inFlight = commitPRLookupsInFlight.get(key);
+    if (inFlight) return inFlight;
+    const lookup = (async () => {
+        const cached = await readCachedCommitPRs(cache, key);
+        if (cached) return cached;
+        let prs: Array<{ number: number }>;
+        try {
+            prs = await requestOpenPRsForCommit(owner, repoName, commitSha);
+        } catch (error) {
+            logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
+            return [];
+        }
+        try {
+            await cache.set(key, JSON.stringify(prs), 'EX', commitPRsCacheTtlSeconds(key, prs));
+        } catch (error) {
+            logger.debug({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to cache PRs for commit');
+        }
+        return prs;
+    })();
+    commitPRLookupsInFlight.set(key, lookup);
+    try {
+        return await lookup;
+    } finally {
+        commitPRLookupsInFlight.delete(key);
     }
 }

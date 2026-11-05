@@ -17,7 +17,7 @@ const encryption = {
 const confirmationPath = '/api/auth/user?desktop_account_confirmation=1';
 
 for (const delay of [0, 300]) {
-  test(`real credential service pairs and reprobes against Connect fixture (approval delay ${delay}ms)`, async () => {
+  test(`real credential service pairs, rejects unimplemented API reads, and reprobes against Connect fixture (approval delay ${delay}ms)`, async () => {
     const fixture = await createPackagedJourneyFixture({ approvalReadinessDelayMs: delay });
     const directory = await mkdtemp(join(tmpdir(), 'propr-connect-account-test-'));
     const profiles = new ProfileStore(directory, encryption);
@@ -43,6 +43,20 @@ for (const delay of [0, 300]) {
       confirmation.assertComplete();
       assert.deepEqual((await profiles.list()).profiles[0].account, PACKAGED_CONNECT_ACCOUNT);
       assert.equal((await service.probe(profile)).status, 'ready');
+      // The connected renderer reads these before its socket is necessarily ready.
+      // A successful {} is invalid dashboard data and can unmount the entire route,
+      // preventing REACT_CONNECTED even though authentication succeeded.
+      for (const path of [
+        '/api/dashboard/active?repository=all',
+        '/api/dashboard/stats?repository=all&period=7d',
+        '/api/unimplemented-connect-smoke-endpoint',
+      ]) {
+        const response = await fetch(`${fixture.endpoint}${path}`, {
+          headers: { Authorization: `Bearer ${fixture.secrets[2]}` },
+        });
+        assert.equal(response.status, 404, path);
+        assert.deepEqual(await response.json(), { code: 'UNIMPLEMENTED_SMOKE_ENDPOINT' });
+      }
       await service.dispose();
       await profiles.close();
       const reloaded = new ProfileStore(directory, encryption);

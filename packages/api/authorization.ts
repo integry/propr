@@ -1,4 +1,4 @@
-import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
 import {
@@ -9,7 +9,7 @@ import {
     type InstancePermission,
     type InstanceRole
 } from '@propr/shared';
-import { isDemoMode } from './demoMode.js';
+import { DEMO_VIEWER_PERMISSIONS, isDemoMode } from './demoMode.js';
 import type { GitHubUser } from './authTypes.js';
 import { timeApiStage } from './apiPerformanceTiming.js';
 
@@ -63,7 +63,9 @@ export async function resolveInstanceAuthorization(
     database: Knex = db
 ): Promise<InstanceAuthorization> {
     if (isDemoMode()) {
-        return { role: 'member', permissions: [], source: 'demo' };
+        // A read-only viewer of every section. The role stays member so admin-role
+        // surfaces backed by live installation state (instance storage) stay closed.
+        return { role: 'member', permissions: [...DEMO_VIEWER_PERMISSIONS], source: 'demo' };
     }
 
     // Environment administrators do not require a database lookup. Besides
@@ -74,12 +76,28 @@ export async function resolveInstanceAuthorization(
         return { role: 'admin', permissions: [...ADMIN_PERMISSIONS], source: 'bootstrap' };
     }
 
+    return readDurableInstanceAuthorization(user.id, database);
+}
+
+/** Internal exact-ID lookup without bootstrap username or session fallbacks. */
+export async function resolveDurableInstanceAuthorization(
+    githubUserId: string,
+    database: Knex = db
+): Promise<InstanceAuthorization> {
+    if (!/^[1-9][0-9]*$/.test(githubUserId)) return { role: 'member', permissions: [], source: 'implicit' };
+    return readDurableInstanceAuthorization(githubUserId, database);
+}
+
+async function readDurableInstanceAuthorization(
+    githubUserId: string,
+    database: Knex
+): Promise<InstanceAuthorization> {
     // Keep this single primary-key lookup uncached so demotions and removals
     // take effect on the next request.
     const member = await timeApiStage('authorization.role-query', () =>
         database<InstanceMemberRow>('instance_members')
             .select('github_user_id', 'role', 'source')
-            .where({ github_user_id: user.id })
+            .where({ github_user_id: githubUserId })
             .first()
     );
     if (member) {
@@ -103,23 +121,8 @@ export async function resolveAuthorization(req: Request, res: Response, next: Ne
     }
 }
 
-export function hasPermission(req: Request, permission: InstancePermission): boolean {
-    return req.authorization?.permissions.includes(permission) === true;
-}
-
-export function requirePermission(permission: InstancePermission): RequestHandler {
-    return (req, res, next) => {
-        if (hasPermission(req, permission)) {
-            next();
-            return;
-        }
-        res.status(403).json({
-            error: 'Forbidden',
-            code: 'INSUFFICIENT_INSTANCE_PERMISSION',
-            message: `This action requires the ${permission} permission.`
-        });
-    };
-}
+// Permission checks stay importable without the database (route tables, OpenAPI generation).
+export { hasPermission, requirePermission } from './permissionCheck.js';
 
 export type AuthenticatedUserResponse = AuthenticatedInstanceUser;
 

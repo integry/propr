@@ -1,9 +1,18 @@
 import type { NextFunction, Request, Response } from 'express';
-import { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from '@propr/shared';
+import { DEMO_MODE_READ_ONLY_CODE, INSTANCE_PERMISSIONS, parseTruthyEnvValue, type InstanceAuthorizationSource, type InstancePermission } from '@propr/shared';
 import type { RedisClientType } from 'redis';
 import type { GitHubUser } from './authTypes.js';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const VIEWER_METHODS = new Set(['GET', 'HEAD']);
+
+/**
+ * The demo visitor sees every product area a real administrator sees, read-only.
+ * These permissions only unlock reads: hasPermission refuses them for any other
+ * method, demoModeReadOnlyMiddleware rejects writes before routing, and they are
+ * void whenever demo mode is off.
+ */
+export const DEMO_VIEWER_PERMISSIONS: readonly InstancePermission[] = [...INSTANCE_PERMISSIONS];
 let configuredDemoMode: boolean | null = null;
 
 export function isDemoMode(): boolean {
@@ -21,6 +30,16 @@ export function resetConfiguredDemoMode(): void {
 
 function readDemoModeFromEnvironment(): boolean {
   return parseTruthyEnvValue(process.env.PROPR_DEMO_MODE);
+}
+
+/** True only for the synthetic demo identity while this process runs in demo mode. */
+export function isDemoViewer(authorization: { source: InstanceAuthorizationSource } | null | undefined): boolean {
+  return authorization?.source === 'demo' && isDemoMode();
+}
+
+/** The demo viewer reads; any other method falls back to the write barrier. */
+export function isDemoViewerRead(method: string | undefined): boolean {
+  return VIEWER_METHODS.has((method ?? '').toUpperCase());
 }
 
 export function getDemoUser(): GitHubUser {
@@ -130,7 +149,10 @@ export function createDemoRedisClient(): RedisClientType {
     return 'OK';
   };
   const setEx = async (key: string, seconds: number, value: string) => set(key, value, { EX: seconds });
-  const evalScript = async (_script: string, options: { keys: string[]; arguments: string[] }): Promise<number> => {
+  const evalScript = async (_script: string, options: { keys: string[]; arguments: string[] }): Promise<number | string[]> => {
+    // Live agent output is never produced in demo mode: answer the live-output read
+    // as an empty legacy snapshot, which readers treat as "no live output".
+    if (_script.includes("'strlen'") && _script.includes("'getrange'")) return ['0', 'legacy', '0', '', '0', '', '0', '0', '{}'];
     const [key] = options.keys;
     const [lockValue, seconds] = options.arguments;
     if (getString(key) !== lockValue) return 0;

@@ -107,6 +107,8 @@ export function useAutoDraftCreation({
   const creationPromiseRef = useRef<{ selectionKey: string; promise: Promise<PlannerDraft | null> } | null>(null);
   const createdDraftRef = useRef<PlannerDraft | null>(null);
   const lastSelectionKeyRef = useRef(`${selectedRepo}:${resolvedBaseBranch}`);
+  // Local files already sent to the created draft, so a later caller uploads only files added since
+  const uploadedLocalFilesRef = useRef(new WeakSet<File>());
 
   // Reset when the selected repository entry changes, including duplicate owner/repo entries on another branch.
   useEffect(() => {
@@ -114,6 +116,7 @@ export function useAutoDraftCreation({
     if (selectionKey !== lastSelectionKeyRef.current) {
       draftCreatedRef.current = false;
       createdDraftRef.current = null;
+      uploadedLocalFilesRef.current = new WeakSet<File>();
       lastSelectionKeyRef.current = selectionKey;
     }
   }, [selectedRepo, resolvedBaseBranch]);
@@ -154,6 +157,7 @@ export function useAutoDraftCreation({
 
       // Upload any local files
       for (const file of localFiles) {
+        uploadedLocalFilesRef.current.add(file);
         try {
           await uploadAttachment(newDraft.draft_id, file);
         } catch (uploadErr) {
@@ -241,5 +245,18 @@ export function useAutoDraftCreation({
     return createDraftNow(selectedRepo, prompt);
   }, [debouncedCreateDraft, createDraftNow, isNewMode, selectedRepo, resolvedBaseBranch, prompt]);
 
-  return { isAutoCreating, autoCreateError, autoCreateWarning, ensureDraftCreated };
+  // Upload the local files the draft creation did not include (added while it was pending or after it)
+  const uploadPendingLocalFiles = useCallback(async (draftId: string, files: File[]): Promise<void> => {
+    for (const file of files) {
+      if (uploadedLocalFilesRef.current.has(file)) continue;
+      uploadedLocalFilesRef.current.add(file);
+      try {
+        await uploadAttachment(draftId, file);
+      } catch (uploadErr) {
+        console.error('Failed to upload attachment:', uploadErr);
+      }
+    }
+  }, []);
+
+  return { isAutoCreating, autoCreateError, autoCreateWarning, ensureDraftCreated, uploadPendingLocalFiles };
 }

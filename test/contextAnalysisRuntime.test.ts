@@ -205,6 +205,8 @@ describe('context analysis runtime safeguards', () => {
     assert.ok(overrides.includes('model_providers.propr_openai.supports_websockets=true'));
     assert.ok(overrides.includes('model_providers.propr_openai.stream_idle_timeout_ms=1800000'));
     assert.ok(overrides.includes('model_providers.propr_openai.stream_max_retries=5'));
+    // Daybreak only runs on the built-in `openai` provider; Codex 0.163+ exits otherwise.
+    assert.ok(overrides.includes('daybreak=false'));
   });
 
   test('allows WebSocket tuning and per-execution overrides', () => {

@@ -1,4 +1,4 @@
-import { test, describe, after } from 'node:test';
+import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,7 +10,20 @@ const privateKeyPath = join(tmpdir(), 'propr-test-private-key.pem');
 writeFileSync(privateKeyPath, '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n');
 process.env.GH_PRIVATE_KEY_PATH ||= privateKeyPath;
 process.env.DEFAULT_CLAUDE_MODEL ||= 'haiku';
+// Every execution runs under the run's network policy; recorded here instead of read from the settings database.
+const networkPolicyRuns: Array<{ taskId?: string; workflow?: unknown }> = [];
+const realNetworkEgress = await import('../src/jobs/networkEgress.js');
+mock.module('../src/jobs/networkEgress.js', {
+    namedExports: {
+        ...realNetworkEgress,
+        runWithNetworkPolicy: async (options: { taskId?: string; workflow?: unknown }, execute: () => Promise<unknown>) => {
+            networkPolicyRuns.push({ taskId: options.taskId, workflow: options.workflow });
+            return execute();
+        },
+    },
+});
 const { generateSummaryTitle, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
+const { buildCompletionComment } = await import('../src/jobs/prCompletionComment.js');
 const { AgentRegistry } = await import('@propr/core');
 const { db } = await import('@propr/core');
 
@@ -237,7 +250,7 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
             stateManager: stateManager as never,
             correlatedLogger: logger as never,
             githubToken: 'token',
-            redisClient: { set: async () => undefined } as never,
+            redisClient: { set: async () => undefined, eval: async () => 1 } as never,
             reasoningLevel: 'ultracode',
         });
 
@@ -250,4 +263,150 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
             repoName: 'propr',
         });
     });
+});
+
+describe('PR follow-up repository validation reports', () => {
+    for (const repositoryValidation of [
+        '### Repository validation\n\n- npm test: Passed\n- npm run lint: Failed (exit 1)\n- npm run build: Timed out\n- npm run check: Not run (execution ended before validation)',
+        undefined,
+    ]) {
+        test(`preserves ${repositoryValidation ? 'observed validation results' : 'absent validation'} through execution and both completion branches`, async (t) => {
+            const registry = AgentRegistry.getInstance();
+            const agent = {
+                config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+                executeTask: async () => ({
+                    success: true,
+                    modelUsed: 'claude-sonnet-test',
+                    executionTimeMs: 12,
+                    summary: 'Checked the requested follow-up.',
+                    conversationLog: [],
+                    repositoryValidation,
+                }),
+            };
+            t.mock.method(registry, 'ensureInitialized', async () => undefined);
+            t.mock.method(registry, 'getDefaultAgent', () => agent);
+            t.mock.method(registry, 'getAgentByAlias', () => agent);
+
+            const { claudeResult } = await resolveAndExecuteAgent({
+                llm: null,
+                worktreePath: '/tmp/worktree',
+                branchName: 'feature',
+                prompt: 'Fix the PR',
+                pullRequestNumber: 2663,
+                repoOwner: 'integry',
+                repoName: 'propr',
+                taskId: 'task-pr-validation',
+                stateManager: {
+                    updateTaskState: async () => undefined,
+                    updateHistoryMetadata: async () => undefined,
+                    getTaskState: async () => null,
+                } as never,
+                correlatedLogger: logger as never,
+                githubToken: 'token',
+                redisClient: { set: async () => undefined, eval: async () => 1 } as never,
+            });
+
+            assert.strictEqual(claudeResult.repositoryValidation, repositoryValidation);
+            for (const commitResult of [{ commitHash: 'abcdef1234567' }, null]) {
+                const comment = await buildCompletionComment(commitResult, [], {
+                    changesSummary: claudeResult.summary!,
+                    commitMessage: 'Fix requested behavior',
+                    llm: 'claude-sonnet-test',
+                    authorsText: '@example',
+                }, claudeResult);
+                if (repositoryValidation) {
+                    assert.ok(comment.includes(repositoryValidation));
+                    assert.strictEqual(comment.split('### Repository validation').length - 1, 1);
+                } else {
+                    assert.doesNotMatch(comment, /Repository validation/);
+                }
+            }
+        });
+    }
+
+    test('bounds a report for a long accepted command in both completion branches', async () => {
+        const { buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } = await import('@propr/core');
+        const command = ': #' + 'a'.repeat(75_000);
+        for (const status of ['Passed', 'Failed (exit 1)', 'Not run (execution ended before validation)']) {
+            const repositoryValidation = buildRepositoryValidationReport([{ command, status }, { command: 'npm test', status: 'Passed' }]);
+            assert.ok(repositoryValidation.length <= REPOSITORY_VALIDATION_REPORT_MAX_LENGTH);
+            for (const commitResult of [{ commitHash: 'abcdef1234567' }, null]) {
+                const comment = await buildCompletionComment(commitResult, [], {
+                    changesSummary: 'Checked the requested follow-up.',
+                    commitMessage: 'Fix requested behavior',
+                    llm: 'claude-sonnet-test',
+                    authorsText: '@example',
+                }, { success: true, summary: 'Checked the requested follow-up.', repositoryValidation } as never);
+                assert.ok(comment.length < 65_536, `completion comment has ${comment.length} characters`);
+                assert.match(comment, new RegExp(`- \\[1\\] : #a+…: ${status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+                assert.match(comment, /- \[2\] npm test: Passed/);
+            }
+        }
+    });
+});
+
+
+test('out-of-scope executions with terminal task IDs bypass workflow admission and cancellation', async (t) => {
+    const registry = AgentRegistry.getInstance();
+    let executions = 0;
+    const agent = {
+        config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+        executeTask: async () => {
+            executions++;
+            return { success: true, modelUsed: 'test', executionTimeMs: 1, summary: 'done', conversationLog: [] };
+        },
+    };
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getDefaultAgent', () => agent);
+    t.mock.method(registry, 'getAgentByAlias', () => agent);
+    for (const state of ['completed', 'failed', 'cancelled']) {
+        let stateReads = 0;
+        const params = {
+            llm: null, worktreePath: '/tmp/worktree', branchName: 'feature', prompt: 'Resolve conflicts',
+            pullRequestNumber: 2663, repoOwner: 'integry', repoName: 'propr', taskId: `original-${state}`,
+            stateManager: { getTaskState: async () => { stateReads++; return { state }; } } as never,
+            correlatedLogger: logger as never, githubToken: 'token',
+            redisClient: { eval: async () => assert.fail('out-of-scope caller entered repository slot') } as never,
+        };
+        networkPolicyRuns.length = 0;
+        assert.equal((await resolveAndExecuteAgent(params)).claudeResult.success, true);
+        assert.equal(stateReads, 0);
+        assert.deepEqual(networkPolicyRuns, [{ taskId: `original-${state}`, workflow: undefined }], 'outside the workflow the agent still runs under the network policy');
+        await assert.rejects(resolveAndExecuteAgent({ ...params, applyRepositoryWorkflow: true }), /Task ended/);
+    }
+    assert.equal(executions, 3);
+});
+
+test('follow-up persists the resolved route before the agent executes', async t => {
+    const registry = AgentRegistry.getInstance();
+    const events: string[] = [];
+    const agent = {
+        config: { alias: 'codex', type: 'codex', enabled: true, defaultModel: 'gpt-6-astra', supportedModels: ['gpt-6-astra'] },
+        executeTask: async (options: { model: string }) => {
+            assert.equal(options.model, 'gpt-6-astra');
+            events.push('execute');
+            return { success: true, modelUsed: options.model, executionTimeMs: 1, summary: 'done', conversationLog: [] };
+        },
+    };
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getDefaultAgent', () => agent);
+    t.mock.method(registry, 'getAgentByAlias', () => agent);
+    t.mock.method(registry, 'getAllAgents', () => [agent]);
+    // No override uses the runtime selection; PR-inherited labels use the same persistence path.
+    for (const llm of [null, 'codex:gpt-6-astra']) {
+        await resolveAndExecuteAgent({
+            llm, worktreePath: '/tmp/worktree', branchName: 'followup', prompt: 'Fix the PR',
+            pullRequestNumber: 7, repoOwner: 'acme', repoName: 'widget', taskId: 'followup', applyRepositoryWorkflow: true,
+            stateManager: {
+                getTaskState: async () => ({ state: 'processing' }),
+                updateTaskState: async (_id: string, state: string, update: { historyMetadata: unknown }) => {
+                    assert.equal(state, 'processing');
+                    assert.deepEqual(update.historyMetadata, { model: 'gpt-6-astra', executionRouting: { model: 'gpt-6-astra', agentAlias: 'codex' } });
+                    events.push('persist');
+                },
+            } as never,
+            correlatedLogger: logger as never, githubToken: 'token', redisClient: {} as never,
+        });
+    }
+    assert.deepEqual(events, ['persist', 'execute', 'persist', 'execute']);
 });

@@ -33,6 +33,15 @@ const bridgeFixture = () => {
 };
 
 describe('Electron guided local setup adapter', () => {
+  it('offers guided setup on macOS and keeps Windows unsupported', () => {
+    const spy = vi.spyOn(navigator, 'platform', 'get');
+    try {
+      spy.mockReturnValue('MacIntel');
+      expect(createElectronDesktopAdapters(bridgeFixture().bridge).localSetup.supported).toBe(true);
+      spy.mockReturnValue('Win32');
+      expect(createElectronDesktopAdapters(bridgeFixture().bridge).localSetup.supported).toBe(false);
+    } finally { spy.mockRestore(); }
+  });
   it('reports real local setup in the production Linux Electron adapter', () => {
     const adapters = createElectronDesktopAdapters(bridgeFixture().bridge);
 

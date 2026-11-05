@@ -1,8 +1,10 @@
-import type { DraftStatus, DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
+import type { AttributedUser, DraftStatus, DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
 
 export interface GenerationStepData {
   keywords?: string[];
   files?: Array<{ path: string; reason: string; score: number }>;
+  /** Ranked relevance candidates reported when the relevance step completes. */
+  candidates?: Array<{ path: string; reason?: string; score?: number }>;
   includedFiles?: string[];
   tokenCount?: number;
   estimatedDuration?: number;
@@ -43,6 +45,8 @@ export interface PlannerDraft {
   status: DraftStatus;
   attachments: PlannerAttachment[];
   created_at: string;
+  /** Who created the plan; null when their profile is not cached. */
+  created_by?: AttributedUser | null;
   generation_trace?: GenerationTrace;
   context_config?: DraftContextConfig | string;
 }
@@ -224,7 +228,10 @@ export interface FinalizeResponse {
 export interface IssueSummary {
   total: number;
   pending: number;
+  /** Issues with an agent queued or working: initial implementation or follow-up refinement. */
   processing: number;
+  /** Issues whose PR waits for review with no agent working on it. Absent from older servers. */
+  in_review?: number;
   merged: number;
   closed: number;
 }
@@ -240,6 +247,8 @@ export interface DraftListItem {
   issue_summary?: IssueSummary | null;
   paused?: boolean;
   paused_at?: string | null;
+  /** Who created the plan; null when their profile is not cached. */
+  created_by?: AttributedUser | null;
 }
 
 export interface GetDraftsOptions {

@@ -23,15 +23,13 @@ export const isGuidedLocalSetup = (adapter: DesktopLocalSetupAdapter): adapter i
     .every(key => typeof adapter[key as keyof DesktopLocalSetupAdapter] === 'function');
 
 interface SettleConnectCandidateSetupOptions {
-  acceptanceSetupOpen: boolean;
   candidatePending: boolean;
   guidedSetup: DesktopGuidedLocalSetupAdapter | null;
-  onAcceptanceSetupSettled: () => void;
   onFailure: () => void;
   onGuidedSetupSettled: () => void;
 }
 
-export const settleConnectCandidateSetup = async ({ acceptanceSetupOpen, candidatePending, guidedSetup, onAcceptanceSetupSettled, onFailure, onGuidedSetupSettled }: SettleConnectCandidateSetupOptions): Promise<boolean> => {
+export const settleConnectCandidateSetup = async ({ candidatePending, guidedSetup, onFailure, onGuidedSetupSettled }: SettleConnectCandidateSetupOptions): Promise<boolean> => {
   if (!candidatePending) return true;
   if (guidedSetup) {
     try {
@@ -43,7 +41,6 @@ export const settleConnectCandidateSetup = async ({ acceptanceSetupOpen, candida
     }
     onGuidedSetupSettled();
   }
-  if (acceptanceSetupOpen) onAcceptanceSetupSettled();
   return true;
 };
 

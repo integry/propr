@@ -13,6 +13,10 @@ const filterProps = {
   reposLoading: false,
   searchQuery: '',
   setSearchQuery: vi.fn(),
+  assigneeFilter: 'all',
+  setAssigneeFilter: vi.fn(),
+  assigneePeople: [],
+  canFilterToMe: false,
 };
 
 const renderFilters = (filter: string) => render(
@@ -31,9 +35,33 @@ describe('lifecycle status presentation', () => {
     }
   );
 
-  it.each(['waiting', 'pending', 'queued'])('renders the Pending badge for the %s queue state', status => {
+  it.each(['active', 'processing', 'claude_execution', 'post_processing'])(
+    'labels an active review as Review in the %s state', status => {
+      render(<>{getStatusPill(status, 'Review')}</>);
+      expect(screen.getByText('Review')).toBeInTheDocument();
+      expect(screen.queryByText('Implementing')).not.toBeInTheDocument();
+    }
+  );
+
+  it.each(['completed', 'failed', 'cancelled', 'pending'])(
+    'preserves the %s lifecycle for reviews', status => {
+      render(<>{getStatusPill(status, 'Review')}</>);
+      expect(screen.queryByText('Review')).not.toBeInTheDocument();
+    }
+  );
+
+  it.each(['waiting', 'pending', 'queued'])('renders a neutral slate Pending badge for the %s queue state', status => {
     render(<>{getStatusPill(status)}</>);
-    expect(screen.getByText('Pending').className).toContain('bg-purple-50');
+    const pill = screen.getByText('Pending');
+    expect(pill.className).toContain('bg-slate-100');
+    expect(pill.className).toContain('text-slate-600');
+    expect(pill.className).not.toMatch(/purple|violet/);
+  });
+
+  it('keeps purple for Merged alone', () => {
+    render(<>{getStatusPill('merged')}{getStatusPill('queued')}</>);
+    expect(screen.getByText('Merged').className).toContain('bg-violet-50');
+    expect(screen.getByText('Pending').className).not.toBe(screen.getByText('Merged').className);
   });
 
   it.each([
@@ -45,6 +73,6 @@ describe('lifecycle status presentation', () => {
     ['all', 'all'],
   ])('binds the status dropdown to %s as the %s option', (filter, expected) => {
     renderFilters(filter);
-    expect(screen.getByRole('combobox')).toHaveValue(expected);
+    expect(screen.getByRole('combobox', { name: 'Task status' })).toHaveValue(expected);
   });
 });

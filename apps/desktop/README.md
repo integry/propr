@@ -105,8 +105,7 @@ scope and platform-specific scenario expectations are unchanged.
 
 ### Source-built Linux local runtime
 
-The checked-in `0.8.15` launcher manifest describes the already-published general release and is deliberately not
-rewritten to pretend that the desktop-epic backend has been published. To build the current committed epic source under
+The checked-in `0.9.1` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
 commit-scoped local tags, generate its explicit local-only manifest, smoke the discovery/auth capability surface in
 owned ephemeral containers, and package the desktop against that manifest:
 
@@ -121,7 +120,10 @@ PROPR_DESKTOP_RUNTIME_MANIFEST="$PWD/.propr/desktop-runtime/$revision/manifest.j
 `propr-desktop-local/app:<full-commit>` and `propr-desktop-local/ui:<full-commit>`, and marks them `local` in the generated
 manifest. The wizard inspects those exact local images instead of attempting a registry pull. The smoke uses a unique
 labelled network, Redis/API containers, random loopback port, and private temporary data root; its cleanup refuses any
-container or network it does not own. It does not address or replace an existing ProPR stack.
+container or network it does not own. It does not address or replace an existing ProPR stack. With a rootful Docker daemon
+the API container creates root-owned private entries (such as `data/web-push`) in the temporary root; after the host user
+removes what it can, a network-less, capability-dropped container that bind-mounts only that verified root (same owner,
+mode `0700`, recorded inode) empties it. The smoke exits non-zero if any owned container, network or generated data remains.
 
 If the compatibility gate finds an already-running legacy stack under Desktop's private managed root, ordinary Retry
 continues to preserve it. The explicit **Restart with aligned runtime** recovery instead enumerates only containers with
@@ -195,6 +197,10 @@ to the first-release profile.
 
 ## Packaged visual and accessibility acceptance
 
+The acceptance runner also executes a `csp-reload` scenario with production CSP updates enabled (no pinned fixture origins): first activation must reload exactly once, process restart must reconnect, saved-account selection must stay connected without another policy reload, and explicit removal must narrow the document policy. It uses the real packaged preload IPC and credential store. HTTP and browser pairing approval are owned fixtures; it does not provision the local Docker stack or prove live external browser pairing.
+
+To validate a newly installed RPM on a Linux x64 host, run from `apps/desktop` with `PROPR_DESKTOP_ACCEPTANCE_BINARY=/absolute/path/to/installed/propr-desktop npm run acceptance:package`. The host needs a display/Xvfb, a working Secret Service/keyring, the runner's npm dependencies, and its fixed fixture ports available. Use the executable from the newly built PR package. The separate install/upgrade/uninstall test does not exercise this CSP scenario. A runner or unit-test pass is not evidence of an installed-RPM run unless the installed executable was actually targeted.
+
 Linux x64 is the canonical visual runtime. `desktop:acceptance` launches the real packaged executable with a fresh
 private Electron profile and drives it over Chromium's debugging protocol with Playwright. A separately authorized
 acceptance mode supplies deterministic local API, Socket.IO, browser-pairing, ProPR Connect, and local-setup fixtures
@@ -215,6 +221,22 @@ persisted profile/config data, screenshots and metadata, and every decompressed 
 401 diagnostics from the intentional revoked-token request are classified only when they match the exact revoked fixture
 origin and current-user request. Every other renderer console error or page error fails acceptance; the published report
 retains only bounded category counts while the complete raw surface remains subject to secret scanning.
+
+The four setup journeys render the production `LocalSetupWizard`, including its green success indicator and
+`Connect securely` action. Only `proprDesktop.localSetup` responses are replaced, in the preload after main-process
+acceptance attestation, with the credential-free `preload-setup-v1` fixture. It cannot provision services, select
+secrets, or start GitHub operations. Completion enters normal discovery against the owned loopback fixture and
+stops at browser sign-in; it does not pair externally. These presentation fixtures do **not** prove real setup
+cancellation/retry/relaunch: the separate opt-in Linux lifecycle acceptance above remains required.
+
+Artifact schema 7 requires 67 screenshots: the original 60 initial viewports plus seven native 200% action captures
+(Continue, Cancel safely, Back, Review saved choices, Restart with aligned runtime, Retry setup, Connect securely).
+The additional captures use ordinary Tab focus/scroll, require visible unobscured focus, and activate with Enter.
+Each screenshot identifies production presentation, fixture phase, and whether it is an initial viewport or a
+keyboard-reached action. Action evidence also requires the resulting UI and expected bridge operation. Every extra
+capture receives the same byte-identical repeatability, OCR, accessibility, dimensions, zoom, and artifact checks.
+The 880×620 narrow variant is a desktop window; browser phone tests provide separate phone coverage. Rebuild and
+run this evidence on the current candidate; earlier frozen screenshots cannot validate the production wizard.
 
 Linux x64 produces the canonical visual/accessibility runtime evidence. Linux arm64 and macOS x64/arm64 retain native
 package inspection and platform runtime smoke coverage; their acceptance classification is structural/runtime-only.
@@ -283,12 +305,81 @@ capability-scoped file/secret selections; renderer code cannot choose arbitrary 
 
 ## Desktop distributables and releases
 
+Validation logs, follow-up design notes, signing internals, QA checklists and the release-verification
+workflow previously kept in the user guide live in [docs/engineering-notes.md](./docs/engineering-notes.md).
+
 Desktop releases have their own `desktop-v<major>.<minor>.<patch>` tags. They do not use or require the monorepo's
 `v<version>` tag. `PROPR_DESKTOP_VERSION` propagates the tag version into the packaged application, renderer, native
 metadata, Linux packages, the deferred protected machine MSI, artifact names, and release manifest without changing the monorepo
 package versions.
 
+### Nightly native builds
+
+The Tier 3 nightly (`.github/workflows/test-nightly.yml`, 02:00 UTC and manual dispatch) already builds and tests the
+unsigned Linux x64/ARM64 and macOS x64/ARM64 packages through the reusable desktop workflow. Its **Nightly desktop
+download** job turns them into one GitHub Actions artifact, kept for 14 days:
+
+```text
+propr-desktop-nightly-<version>-<first-12-source-SHA>-run<run-id>.<attempt>-<packaging-only|all-checks-passed>
+```
+
+The job waits for every nightly job, downloads this run's `propr-desktop-validation-canonical-*` per-target artifacts,
+and re-runs the same `release-artifacts.mjs finalize` architecture, matrix and checksum verification as the
+reusable workflow. `nightly-native-bundle.mjs` then rechecks the exact ten-installer `macos-linux-v1` matrix against
+`SHA256SUMS`, reads the runtime launcher manifest packaged in both Linux ZIPs, and writes:
+
+- the ten installers and `SHA256SUMS`;
+- `nightly-manifest.json`: the full source SHA, run ID, attempt and URL, version, platform matrix, every filename,
+  size and SHA-256 with its architecture evidence, per-target signing state, Linux runtime binding, and the real
+  outcome of each nightly check;
+- `NIGHTLY.md`: install steps and limitations. The job summary links the artifact and repeats the status.
+
+Status is reported in two parts. The `packaging-only` suffix means packaging passed but something else did not:
+live E2E failed, a check was cancelled, skipped or missing. The bundle stays downloadable, but `status.nightly` is
+`failed` or `incomplete` and `releaseValidationCandidate` is `false`. Only `all-checks-passed` (every check `success`)
+is a release-validation candidate. `promotable` is always `false`. If any required platform fails, is cancelled or is
+missing, or any byte, digest or file set differs, nothing is uploaded and the job fails. The run summary then
+explains why the bundle was withheld. The per-target artifacts stay diagnostics only. The withheld report checks
+this job's upload step, not just `failure()`, which is also true when an upstream nightly job failed. A failed
+live E2E run therefore never hides a bundle that was uploaded. If the upload succeeds but the summary step fails,
+the job fails and the summary links the uploaded artifact. It points to `nightly-manifest.json` for the status
+instead of saying the download is missing.
+
+The nightly packages are unsigned. Linux packages carry no signature. macOS apps have no Developer ID signature
+and are not notarized; the ARM64 app has only the local ad-hoc signature. There is no update feed or signed update
+metadata. Nightly packaging also passes no runtime manifest, so the Linux packages embed the checked-in launcher
+pins (`docker/launcher/manifest.json`, version-tagged `propr/app`, `propr/ui` and `propr/agent`). The manifest
+reports this as `runtime.linux.binding: unbound`. A packaged `desktopRuntime` binding only counts as
+`source-aligned` after it passes the canonical `validateDesktopRuntimeManifest` checks for this source revision.
+Conflicting or malformed bound metadata is reported as `invalid`, with the reason in `bindingError`. Those images are not built from the nightly's source, so a
+nightly install is not a current-source end-to-end runtime. For an exact-source Linux runtime, follow the Linux
+preview channel below. Live E2E runs against a separately deployed backend whose source this run does not attest,
+and it covers only the configured model-pair subset, not every provider.
+
+The job only stages an Actions artifact with `contents: read`. It does not create GitHub Releases, prereleases,
+tags, registry or npm publications, or feed updates. A separate nightly prerelease channel stays disabled until it is
+explicitly approved.
+
+To use a nightly in release validation:
+
+1. Pick an `all-checks-passed` artifact, or a `packaging-only` one only to diagnose packaging. Read its
+   `nightly-manifest.json` and confirm that `source.sha` is the commit you intend to release, and that it is reachable
+   from `main`.
+2. Check the download with `node apps/desktop/scripts/nightly-native-bundle.mjs verify --directory <extracted-dir>`
+   (or `sha256sum --check SHA256SUMS`), then install the matching package for manual QA.
+3. Evidence you can reuse for that exact SHA: the native packaging, architecture inspection, install, deep-link,
+   relaunch and removal lifecycle, packaged Connect discovery, native Electron units, the full test suite and live E2E
+   outcomes recorded in the manifest.
+4. Checks that must still run: the protected `desktop-v*` tag preflight, published runtime binding
+   (`PROPR_DESKTOP_RUNTIME_APP_IMAGE`/`PROPR_DESKTOP_RUNTIME_UI_IMAGE` digests from the same SHA), production
+   signing and notarization, signed install and acceptance, update-metadata signing, and publication. The tag
+   workflow rebuilds every installer from source. Unsigned nightly bytes are never signed in place or promoted into
+   production installers.
+
 ### Independent Linux preview channel
+
+For native RPM signatures, use the separate opt-in [signed RPM preview path](../../docs/docs/operations/linux-rpm-signing.md).
+It preserves the unsigned validation route below and requires an owner-provisioned stable release key.
 
 The recommended first Linux delivery is the manual **Desktop Linux Preview Release** GitHub Actions workflow and GitHub
 Releases. It is independent of the tag-driven production workflow: it runs only on manual dispatch from `main`, uses
@@ -300,33 +391,60 @@ exactly these unsigned packages:
 - `ProPR-Desktop-<version>-linux-arm64.deb`
 - `ProPR-Desktop-<version>-linux-arm64.rpm`
 
-The bundle also contains `linux-preview.json`, `INSTALL.md`, and `SHA256SUMS`. The preview manifest records the full
-source commit, desktop package version, architecture and format of every asset, digest-pinned runtime app/UI image
-references, workflow run, `unsigned-preview` trust state, and manual package-manager upgrade policy. The generated
+The bundle also contains `linux-preview.json`, `INSTALL.md`, and `SHA256SUMS`. The preview manifest (schema 2) records
+the full source commit, desktop package version, architecture and format of every asset, digest-pinned runtime app/UI
+and managed-agent image references, the agent's `linux/amd64`-only platform, workflow run, `unsigned-preview` trust state, and manual package-manager upgrade policy. The generated
 preview identity is `desktop-linux-preview-v<version>-<first-12-source-SHA>`; draft creation refuses an existing tag or
 different asset at that identity. Finalization re-inspects both package architectures and accepts no ZIP, macOS,
 Windows, stable update manifest, signature, or extra file.
 
-Before staging, publish the source revision's multi-architecture runtime images for `linux/amd64` and `linux/arm64` and
-obtain their immutable references:
+Before staging, publish the source revision's multi-architecture app/UI runtime images for `linux/amd64` and
+`linux/arm64`, and its managed agent image for `linux/amd64` only, then obtain their immutable references:
 
 ```text
 propr/app:<40-character-source-SHA>@sha256:<64-character-manifest-digest>
 propr/ui:<40-character-source-SHA>@sha256:<64-character-manifest-digest>
+propr/agent:<40-character-source-SHA>@sha256:<64-character-manifest-digest>
 ```
 
-The workflow verifies both registry manifests and embeds an API-compatible runtime manifest bound to the same source
-revision. Missing images, a mutable tag-only reference, a digest mismatch, or a missing architecture is an actionable
-preflight failure; the build never falls back to the checked-in launcher manifest. Stage the private draft with:
+First-user setup pulls the managed agent from the packaged launcher manifest as soon as the user selects any agent,
+and agent sign-in refuses to start without that image. The checked-in launcher manifest names `propr/agent:<version>`,
+which is not necessarily published, so a new preview must bind an agent built from the same source. The **Preview
+Runtime Images** workflow prepares and publishes it separately from app/UI (see `docs/engineering-notes.md`):
 
 ```sh
 SOURCE_SHA=<full-lowercase-commit-on-main>
+# Credential-free validation: native linux/amd64 agent build, offline smoke, immutable candidate evidence.
+gh workflow run preview-runtime-images.yml --ref main -f operation=prepare-agent -f source_revision="$SOURCE_SHA"
+# After reviewing that run: protected publication of only propr/agent:$SOURCE_SHA (environment approval required).
+gh workflow run preview-runtime-images.yml --ref main -f operation=publish-agent -f source_revision="$SOURCE_SHA"
+# The existing app/UI operations are unchanged.
+gh workflow run preview-runtime-images.yml --ref main -f operation=prepare -f source_revision="$SOURCE_SHA"
+gh workflow run preview-runtime-images.yml --ref main -f operation=publish -f source_revision="$SOURCE_SHA"
+```
+
+The managed agent image is `linux/amd64` only because `Dockerfile.agent` pins amd64 Debian packages. The `arm64`
+DEB/RPM packages and app/UI images remain native, but on an `arm64` host the agent pull fails with no matching manifest
+and agent tasks cannot run; no emulated or relabelled agent image is published. `INSTALL.md` states this limit.
+
+The workflow verifies all three registry manifests (app/UI must contain exactly both architectures; the agent must
+resolve to its digest, contain only `linux/amd64`, and carry the source revision and unified-bundle labels), then
+embeds an API-compatible runtime manifest bound to the same source revision with `images.agent` set to the exact agent
+reference. Missing images, a mutable tag-only reference, a digest or source mismatch, or a wrong architecture is an
+actionable preflight failure; the build never falls back to the checked-in launcher manifest or its version-tagged
+agent. Stage the private draft with:
+
+```sh
 gh workflow run desktop-linux-preview.yml --ref main \
   -f operation=stage-draft \
   -f source_revision="$SOURCE_SHA" \
   -f runtime_app_image="propr/app:$SOURCE_SHA@sha256:<app-manifest-digest>" \
-  -f runtime_ui_image="propr/ui:$SOURCE_SHA@sha256:<ui-manifest-digest>"
+  -f runtime_ui_image="propr/ui:$SOURCE_SHA@sha256:<ui-manifest-digest>" \
+  -f runtime_agent_image="propr/agent:$SOURCE_SHA@sha256:<agent-manifest-digest>"
 ```
+
+Drafts or bundles staged before the managed-agent binding (schema 1, app/UI only) are not evidence for this contract.
+`publish-draft` refuses them, and staging never overwrites an existing draft's assets at the same preview identity.
 
 `stage-draft` has repository `contents: write` only in its final draft-staging job. It creates or safely resumes a
 private GitHub draft, uploads the exact checksum allowlist, downloads every uploaded byte to verify it, and never
@@ -348,9 +466,10 @@ gh workflow run desktop-linux-preview.yml --ref main \
 Publication downloads and hashes the draft again, validates its exact four-package matrix and both native
 architectures, checks the source-bound manifest and canonical instructions, then publishes it as a GitHub prerelease
 with `make_latest=false`. It refuses an existing tag rather than moving or reusing one. GitHub Actions must be allowed
-to create releases with the job-scoped `GITHUB_TOKEN`, both native hosted runner labels must be available, and the two
+to create releases with the job-scoped `GITHUB_TOKEN`, both native hosted runner labels must be available, and the three
 published runtime images plus the protected environment/tag ruleset are the complete external setup for this preview
-channel. Apple Developer credentials, notarization, Ed25519 update keys, macOS runners, and Windows runners are not
+channel. First-user provider authentication and a real agent task through an installed preview have not yet been
+performed with a managed-agent-bound draft; treat both as unproven until someone runs them. Apple Developer credentials, notarization, Ed25519 update keys, macOS runners, and Windows runners are not
 requirements.
 
 Preview DEB/RPM assets do not configure an apt or dnf repository and do not enable Linux self-updates. Users manually
@@ -367,6 +486,57 @@ integration; and tray behavior spans StatusNotifier/XEmbed desktop environments.
 socket/filesystem permissions would need a threat-model review plus installed-package testing on supported desktops.
 Unvalidated classic confinement, broad filesystem/socket access, or portal fallbacks would weaken the current boundary,
 so neither format blocks DEB/RPM delivery and neither is emitted by the preview workflow.
+
+### Independent macOS preview channel
+
+The manual **Desktop macOS Preview Release** workflow (`desktop-macos-preview.yml`) distributes unsigned macOS builds
+without an Apple Developer account. It is independent of the production `desktop-v*` workflow and its
+`desktop-release`/`desktop-release-preflight` environments, reads no secret at all, and never notarizes or Developer ID
+signs anything. It runs only on manual dispatch from `main` and takes the same frozen `source_revision` and three
+digest-pinned runtime image references as the Linux preview. Identity binding (`scripts/desktop-preview-identity.mjs`)
+and the registry preflight (`desktop-runtime-manifest.mjs verify-release`) are shared with the Linux preview; the
+identity step also refuses a source revision that predates the macOS preview tooling.
+
+```sh
+gh workflow run desktop-macos-preview.yml --ref main \
+  -f source_revision="$SOURCE_SHA" \
+  -f runtime_app_image="propr/app:$SOURCE_SHA@sha256:<app-manifest-digest>" \
+  -f runtime_ui_image="propr/ui:$SOURCE_SHA@sha256:<ui-manifest-digest>" \
+  -f runtime_agent_image="propr/agent:$SOURCE_SHA@sha256:<agent-manifest-digest>"
+```
+
+One run performs every stage, and any failure stops before publication:
+
+1. `package` builds `ProPR-Desktop-<version>-macos-{x64,arm64}.{dmg,zip}` on native `macos-15-intel` and `macos-15`
+   runners from the frozen SHA with the runtime manifest bound to the pinned digests. The forge `postPackage` hook
+   applies the local ad-hoc signature to the arm64 bundle. The job then runs the desktop typecheck and tests, the
+   packaged icon, version and runtime-manifest checks, the arm64 signature/tamper test, `desktop:smoke:inspect`, DMG and
+   ZIP inspection, the private-snapshot DMG probe, the `macos-preview-v1` staging, and the native install, deep-link,
+   relaunch and removal lifecycle. It also fails if any signing, notarization or update variable reaches it, or if the
+   app carries a Developer ID signature.
+2. `finalize` re-inspects both fragments (`release-artifacts.mjs finalize --profile macos-preview-v1`) and writes
+   `macos-preview.json`, `INSTALL.md` and `SHA256SUMS` (`macos-preview-release.mjs prepare`). The manifest records the
+   source commit, runtime images, `unsigned-preview` trust, `appleDeveloperId: false`, `notarized: false`, and
+   `selfUpdate: false`.
+3. `attest`, the only job with `id-token: write`, rechecks `SHA256SUMS` without running repository code and creates a
+   GitHub build provenance attestation (`actions/attest-build-provenance`) for all seven assets.
+4. `stage-draft` creates or safely resumes the draft prerelease
+   `desktop-macos-preview-v<version>-<first-12-source-SHA>`, uploads the assets and re-downloads them to verify them.
+5. `publish` waits for the `desktop-macos-preview-publication` environment. It runs `gh attestation verify` on every
+   asset, re-downloads and hashes the draft against the attested bundle, refuses an existing tag, and publishes it as a
+   prerelease with `make_latest=false`.
+
+Create the dedicated `desktop-macos-preview-publication` environment before the first run. It is separate from
+`desktop-linux-preview-publication`, so approving one platform never approves the other. Give it required reviewers,
+restrict deployment to `main`, set environment variable `PROPR_DESKTOP_MACOS_PREVIEW_PUBLICATION_AUTHORIZED=1`, and add
+a tag ruleset for `refs/tags/desktop-macos-preview-v*` that blocks updates and deletion. Store no secrets in it. If
+publication is rejected or fails, the run leaves only a draft; delete it or re-run the failed `publish` job.
+
+The workflow must be dispatched from `main`: the identity job refuses any other ref, and attestation verification
+requires `--source-ref refs/heads/main`. A pull-request branch cannot produce a preview. The workflow contract test
+(`scripts/macos-preview-workflow.test.mjs`) covers these properties. Unsigned macOS builds never self-update: without
+`PROPR_DESKTOP_ENABLE_UPDATES=1` and `PROPR_DESKTOP_CODE_SIGNED=1` the main process embeds no update manifest URL and
+never calls the signed update client (`src/macos-preview-update-policy.test.ts`).
 
 The first production release uses the explicit, fail-closed `macos-linux-v1` profile. It produces exactly 10 native
 artifacts for these four targets: `linux-x64`, `linux-arm64`, `darwin-x64`, and `darwin-arm64`.
@@ -410,7 +580,7 @@ Debian/Ubuntu DEB installation and native removal:
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.8.15
+VERSION=0.9.1
 sudo apt install "./ProPR-Desktop-${VERSION}-linux-${ARCH}.deb"
 propr-desktop
 xdg-open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
@@ -422,7 +592,7 @@ Fedora/RHEL-family RPM installation, followed by the package-manager-independent
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.8.15
+VERSION=0.9.1
 sudo rpm --install "ProPR-Desktop-${VERSION}-linux-${ARCH}.rpm"
 propr-desktop
 sudo rpm --erase propr-desktop
@@ -438,7 +608,7 @@ removing it:
 
 ```sh
 ARCH=arm64 # use x64 on an Intel Mac
-VERSION=0.8.15
+VERSION=0.9.1
 mount_point="$(mktemp -d)"
 hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" \
   "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg"

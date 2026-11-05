@@ -1,0 +1,41 @@
+{
+  "contractPin": "c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5",
+  "testSecret": "PUBLIC-FIXTURE-KEY-NOT-A-PRODUCTION-SECRET",
+  "requests": [
+    {
+      "action": "database.export",
+      "canonical": "{\"assertion\":{\"action\":\"database.export\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"0969ef2bb79237eb61bf5f971f2227e1089a5019785d8e62094f7eebe25466e2\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"17a6bd9f608ece1083c1180a8199250594c3fb8615930a2c74530be874b76e4b\",\"request\":{\"action\":\"database.export\"}}",
+      "sha256": "9ed29caf69684197803569a23d8b66b352d1cb07fbf57c27df7843255a1959ed"
+    },
+    {
+      "action": "repositories.list",
+      "canonical": "{\"assertion\":{\"action\":\"repositories.list\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000002\",\"operationId\":\"00000000-0000-4000-8000-000000000002\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"75fa2e29faeebda923188a8814b5bbcc03b4f0f212dbaddfbfe22a52b1d5b8a2\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"c9e95b6bb500548dd873420e528187733bdc59e014d5d07595c59448299238fd\",\"request\":{\"action\":\"repositories.list\"}}",
+      "sha256": "bb770a9946b864bde5fc614741bd018baca71551116bbd7e87c729707514f6d2"
+    },
+    {
+      "action": "repositories.cleanup.preview",
+      "canonical": "{\"assertion\":{\"action\":\"repositories.cleanup.preview\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000003\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"f6b619511b46ccbe61244a6c6227bc76a0479f55eafaa124cb27d599806c38f6\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"482a962069edc1ce41c3cc48c74c143613c3e8fc77203e4bcf55fb9e17832bf1\",\"request\":{\"action\":\"repositories.cleanup.preview\"}}",
+      "sha256": "f7fa7c95c36fc542e6e39b8033b682d1a55a5aef07d0eeb42bb3455cdf186ee2"
+    },
+    {
+      "action": "repositories.cleanup.execute",
+      "canonical": "{\"assertion\":{\"action\":\"repositories.cleanup.execute\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000004\",\"operationId\":\"00000000-0000-4000-8000-000000000004\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"04519fa65e258ee023ec0fe037ef95460e7d155977010fd2b145a9880dd2c72a\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"c65bd871a56f20caa08b392bdc491580382bc73129d90b286d8abcf1b3c8f741\",\"request\":{\"action\":\"repositories.cleanup.execute\",\"confirmation\":\"00000000-0000-4000-8000-000000000020\",\"previewOperationId\":\"00000000-0000-4000-8000-000000000003\"}}",
+      "sha256": "33d39b1162c3dc408e70ab78629ab74a121576c83140ab13d9d425924253d487"
+    },
+    {
+      "action": "operation.status",
+      "canonical": "{\"assertion\":{\"action\":\"operation.status\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000005\",\"operationId\":\"00000000-0000-4000-8000-000000000005\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"70316caee6011581d81bd13f44d7619a8e6da0aa87d1202f10a95109c4e1401a\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"f8c684bf10d27411c50c761de69cbc0d9bab74dd81f050aab59523f1f1aab11b\",\"request\":{\"action\":\"operation.status\",\"targetOperationId\":\"00000000-0000-4000-8000-000000000001\"}}",
+      "sha256": "4d628a0902e17f8efcf0020c5a73b8618e7a4afb3d017e0b77b5d677aae7c02f"
+    },
+    {
+      "action": "operation.cancel",
+      "canonical": "{\"assertion\":{\"action\":\"operation.cancel\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000006\",\"operationId\":\"00000000-0000-4000-8000-000000000006\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"942e233e9793369c2296679529661d08e33d1407bf2c2307e346ae03cb5f46a1\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"8543ec70bc42341ae944342b10a557ae3fa536a4ccebc4b0c774feeb3449f9dc\",\"request\":{\"action\":\"operation.cancel\",\"targetOperationId\":\"00000000-0000-4000-8000-000000000001\"}}",
+      "sha256": "f339330ac0a339edace06ffdc87b80ab3491e8af5eb1c02b0b9c6c168cc240ea"
+    },
+    {
+      "action": "artifact.stream",
+      "canonical": "{\"assertion\":{\"action\":\"artifact.stream\",\"contract\":\"propr.fleet-data.v2\",\"contractPin\":\"c2c977972021bd08f795aedc1999df0504325b4b34cc3097129bbad81f7bf1b5\",\"expiresAt\":1791892860,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000007\",\"operationId\":\"00000000-0000-4000-8000-000000000007\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1cf38ce5d19fe3bb524230eb18c2245d874c4ddcbe20975b12849f86e6e74549\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_customer_data\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"mac\":\"fd4209e337da33c43e849bcb6310733a75b7a5182ddfc7b230dda5c4f07c952d\",\"request\":{\"action\":\"artifact.stream\",\"targetOperationId\":\"00000000-0000-4000-8000-000000000001\"}}",
+      "sha256": "ea0c0c6e59a5ee67924c479e88591002777aa4950f78575c3ab2383216dc0b07"
+    }
+  ]
+}

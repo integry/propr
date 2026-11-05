@@ -8,7 +8,7 @@ import { createDesktopBridge } from '../../../apps/desktop/src/preload-bridge';
 import { IPC_CHANNELS, isDesktopNativeNavigationState } from '../../../apps/desktop/src/shared/contract';
 import type { DesktopConnectionScope } from '../../../apps/desktop/src/shared/contract';
 import type { ExperienceState } from './desktopExperienceState';
-import { useDesktopNativeCommands } from './useDesktopNativeCommands';
+import { DESKTOP_UI_COMMAND_EVENT, useDesktopNativeCommands } from './useDesktopNativeCommands';
 
 const scopeA = { profileId: 'account-a', transportScope: 'abcdefghijklmnopqrstuv' };
 const scopeB = { profileId: 'account-a', transportScope: 'zyxwvutsrqponmlkjihgfe' };
@@ -91,23 +91,57 @@ describe.each(['darwin', 'linux'] as const)('%s menu to dispatcher to preload to
   it('routes every section and creation shortcut to the real desktop URL', async () => {
     const value = fixture(platform);
     for (const [label, path, shortcut] of [
-      ['Dashboard', '/'], ['Inbox', '/inbox'], ['Plans', '/plans'],
-      ['Goals', '/goals'], ['Tasks', '/tasks'], ['Repositories', '/repositories'],
+      ['Dashboard', '/', 'D'], ['Inbox', '/inbox', 'I'], ['Plans', '/plans', 'P'],
+      ['Goals', '/goals', 'G'], ['Tasks', '/tasks', 'T'], ['Repositories', '/repositories', 'R'],
       ['Settings…', '/settings', ','], ['New Plan', '/studio/new', 'N'],
-      ['New Task…', '/tasks/new'],
+      ['New Task', '/tasks/new', 'Shift+T'], ['New Goal', '/goals?new=1', 'Shift+G'],
+      ['New Automation', '/automations/new', 'Shift+A'],
     ]) {
       expect(value.item(label).accelerator).toBe(shortcut ? `CmdOrCtrl+${shortcut}` : undefined);
       await value.click(label);
       expect(window.location.hash).toBe(`#${path}`);
     }
-    expect(value.restore).toHaveBeenCalledTimes(9);
-    expect(value.onNavigate).toHaveBeenCalledTimes(9);
+    expect(value.restore).toHaveBeenCalledTimes(11);
+    expect(value.onNavigate).toHaveBeenCalledTimes(11);
     await value.click('Connect Instance…');
     expect(value.onConnectInstance).toHaveBeenCalledOnce();
     await value.click('Connection Diagnostics…');
     expect(value.onDiagnostics).toHaveBeenCalledOnce();
     await value.click('Switch Account / Instance…');
     expect(value.onManageInstances).toHaveBeenCalledOnce();
+  });
+
+  it('offers New To-do to the mounted quick add without navigating, and lets the workspace refuse creation', async () => {
+    const value = fixture(platform);
+    expect(value.item('New To-do').accelerator).toBe('CmdOrCtrl+Shift+D');
+    await value.click('Tasks');
+    const received: string[] = [];
+    let refuse = false;
+    const listener = (event: Event) => {
+      received.push((event as CustomEvent).detail);
+      if (refuse) event.preventDefault();
+    };
+    window.addEventListener(DESKTOP_UI_COMMAND_EVENT, listener);
+    try {
+      await value.click('New To-do');
+      expect(received).toEqual(['new-todo']);
+      expect(window.location.hash).toBe('#/tasks');
+      // A demo/read-only workspace cancels the request: no creation form opens.
+      refuse = true;
+      for (const label of ['New Task', 'New Plan', 'New Goal', 'New Automation']) await value.click(label);
+      expect(received).toEqual(['new-todo', 'new-task', 'new-plan', 'new-goal', 'new-automation']);
+      expect(window.location.hash).toBe('#/tasks');
+      // A delivery bound to another account's scope never reaches this UI:
+      // main has switched to account B while the renderer still shows A.
+      refuse = false;
+      act(() => value.switchTo(scopeB));
+      value.rerender({ state: connected(scopeA), blocked: false });
+      for (const label of ['New To-do', 'New Task', 'New Goal']) await value.click(label);
+      expect(received).toHaveLength(5);
+      expect(window.location.hash).toBe('#/tasks');
+    } finally {
+      window.removeEventListener(DESKTOP_UI_COMMAND_EVENT, listener);
+    }
   });
 
   it('routes notification settings to its tab from another route and another settings tab', async () => {
@@ -181,7 +215,7 @@ describe.each(['darwin', 'linux'] as const)('%s menu to dispatcher to preload to
     await value.click('Tasks');
     act(() => value.dispatcher.connectionUnavailable());
     value.rerender({ state: { phase: 'choose' }, blocked: true });
-    for (const label of ['Settings…', 'Tasks', 'New Plan', 'New Task…', 'Search / Go To…', 'Toggle Sidebar', 'Connect Instance…', 'Back', 'Forward', 'Switch Account / Instance…']) {
+    for (const label of ['Settings…', 'Tasks', 'New Task', 'New Plan', 'New Goal', 'New Automation', 'New To-do', 'Search / Go To…', 'Toggle Sidebar', 'Connect Instance…', 'Back', 'Forward', 'Switch Account / Instance…']) {
       expect(value.item(label).enabled).toBe(false);
       await value.click(label);
     }

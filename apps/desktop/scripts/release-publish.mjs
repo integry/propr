@@ -248,7 +248,7 @@ export const publishDesktopRelease = async ({
   }
   const version = tag.startsWith('desktop-v') ? tag.slice('desktop-v'.length) : '';
   if (resolveReleaseProfile(profileName).previewOnly) {
-    throw new Error(`Release profile ${profileName} must use the explicitly authorized Linux preview publication channel`);
+    throw new Error(`Release profile ${profileName} must use its explicitly authorized Linux or macOS preview publication channel`);
   }
   const finalDirectory = resolve(directory);
   const expected = await readFinalAssetSet(finalDirectory, profileName, version, tag);

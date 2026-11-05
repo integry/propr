@@ -1,10 +1,5 @@
 import logger from '../utils/logger.js';
-import {
-    ACCOUNT_STATUS_CAPABILITY,
-    ROUTING_HUB_PROTOCOL_VERSION,
-    type MinimalWebSocket,
-    WS_OPEN,
-} from './routingWebSocketProtocol.js';
+import { type MinimalWebSocket, WS_OPEN } from './routingWebSocketProtocol.js';
 
 const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_PONG_TIMEOUT_MS = 30 * 1000;
@@ -33,6 +28,8 @@ interface RoutingWebSocketKeepaliveOptions {
     pongTimeoutMs: number;
     isCurrentSocket: (socket: MinimalWebSocket) => boolean;
     onStaleConnection: () => void;
+    /** The hello probe; it repeats the connection's negotiated capabilities. */
+    helloFrame: () => Record<string, unknown>;
 }
 
 export class RoutingWebSocketKeepalive {
@@ -40,6 +37,7 @@ export class RoutingWebSocketKeepalive {
     private readonly pongTimeoutMs: number;
     private readonly isCurrentSocket: (socket: MinimalWebSocket) => boolean;
     private readonly onStaleConnection: () => void;
+    private readonly helloFrame: () => Record<string, unknown>;
 
     private pingTimer: NodeJS.Timeout | null = null;
     private heartbeatDeadlineTimer: NodeJS.Timeout | null = null;
@@ -51,6 +49,7 @@ export class RoutingWebSocketKeepalive {
         this.pongTimeoutMs = options.pongTimeoutMs;
         this.isCurrentSocket = options.isCurrentSocket;
         this.onStaleConnection = options.onStaleConnection;
+        this.helloFrame = options.helloFrame;
     }
 
     start(socket: MinimalWebSocket): void {
@@ -90,11 +89,7 @@ export class RoutingWebSocketKeepalive {
                 // hosted relay, Cloudflare's edge) even when the RoutingHub
                 // application no longer sees this socket. The hello probe is
                 // answered by the RoutingHub itself with an application ping.
-                socket.send(JSON.stringify({
-                    type: 'hello',
-                    protocolVersion: ROUTING_HUB_PROTOCOL_VERSION,
-                    capabilities: [ACCOUNT_STATUS_CAPABILITY],
-                }));
+                socket.send(JSON.stringify(this.helloFrame()));
                 this.helloProbeOutstanding = true;
                 socket.ping();
             } catch (error) {

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const memoryStorage = (initial: Record<string, string> = {}) => {
   const values = new Map(Object.entries(initial));
@@ -30,6 +30,12 @@ const LocationProbe = () => {
 };
 
 describe('HostedFlowRouteSync', () => {
+  // Transform the App module graph once so the per-test fresh imports after
+  // vi.resetModules() only re-evaluate cached modules and stay within the test timeout.
+  beforeAll(async () => {
+    await import('./App');
+  }, 60_000);
+
   beforeEach(() => {
     vi.resetModules();
   });

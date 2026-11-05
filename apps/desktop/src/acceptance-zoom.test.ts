@@ -58,6 +58,11 @@ describe('packaged acceptance Electron zoom authorization', () => {
     authorize(admitted, { protocolVersion: 1 });
     assert.deepEqual(admitted.returnValue, { authorized: true, protocolVersion: 1 });
 
+    // A new preload document on the same webContents attests again on reload.
+    const reloaded: any = { sender: trusted, returnValue: undefined };
+    authorize(reloaded, { protocolVersion: 1 });
+    assert.deepEqual(reloaded.returnValue, { authorized: true, protocolVersion: 1 });
+
     const apply = ipcMain.handlers.get(PACKAGED_ACCEPTANCE_ZOOM_APPLY_CHANNEL)!;
     assert.deepEqual(await apply({ sender: trusted }, 1), { authorized: true, requestedFactor: 1 });
     assert.deepEqual(await apply({ sender: trusted }, 2), { authorized: true, requestedFactor: 2 });

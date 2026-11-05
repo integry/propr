@@ -10,6 +10,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
+import { Terminal } from 'lucide-react';
 import { getDashboardActive, type ActiveItem, type DashboardActiveResponse } from '../../api/dashboardApi';
 import {
   RepositoryLabel,
@@ -17,7 +18,7 @@ import {
   RowLink,
   RowMetaLines,
   RowTitle,
-  SectionEmpty,
+  SectionZeroState,
   SectionError,
   SectionFooter,
   SectionFooterButton,
@@ -234,21 +235,27 @@ export const HappeningNowSection: React.FC<DashboardSectionProps> = ({ repositor
   const collapsedLimit = canCollapse ? VISIBLE_ITEMS : orderedRunning.length;
   const overflowCount = canCollapse ? orderedRunning.length - VISIBLE_ITEMS : 0;
 
+  const hasGoals = running.some(item => item.goalId);
+  const hasTasks = running.some(item => !item.goalId);
+
   const heading = (
     <SectionHeading id="happening-now-heading" title="Happening now" count={data?.counts.running ?? null}>
-      <SectionLink to={filteredTasksHref('active', repository)}>View all</SectionLink>
+      {hasTasks && (
+        <SectionLink to={filteredTasksHref('active', repository)}>{hasGoals ? 'View tasks' : 'View all'}</SectionLink>
+      )}
+      {hasGoals && <SectionLink to={`/goals?${new URLSearchParams({ status: 'running', ...(repository !== 'all' ? { repository } : {}) })}`}>View goals</SectionLink>}
     </SectionHeading>
   );
 
   const body = () => {
-    if (loading) return <SectionSkeleton rows={3} />;
+    if (loading) return <SectionSkeleton rows={3} label="Loading running work…" />;
     // "We could not find out" is not the same as "nothing is running", so the
     // failed read keeps its own wording and its own retry.
     if (error && orderedRunning.length === 0) {
       return <SectionError message="Unable to load running work" onRetry={reload} />;
     }
     if (orderedRunning.length === 0) {
-      return <SectionEmpty>No work running</SectionEmpty>;
+      return <SectionZeroState data-testid="happening-now-empty" icon={<Terminal className="h-6 w-6 text-slate-300" aria-hidden="true" />}>No active tasks or goals running</SectionZeroState>;
     }
 
     const visible = showAll ? orderedRunning : orderedRunning.slice(0, collapsedLimit);

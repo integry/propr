@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { pushBranch, redactAuthenticatedGitUrl } from '../packages/core/src/git/repoBranching.js';
+import { configureGitAuthentication, pushBranch, redactAuthenticatedGitUrl } from '../packages/core/src/git/repoBranching.js';
 import { addWorktreeWithoutTracking } from '../packages/core/src/git/worktreeCreation.js';
 import { createHooklessGit } from '../packages/core/src/git/hooklessGit.js';
 
@@ -135,6 +135,39 @@ test('parallel-safe worktree creation and push do not require shared config writ
             .catch(() => '');
         assert.strictEqual(upstream, '');
     } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('process-local authentication ignores inherited Git environment overrides', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-git-auth-env-'));
+    const inherited = {
+        GIT_COMMITTER_NAME: 'Inherited Committer',
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'credential.helper',
+        GIT_CONFIG_VALUE_0: '!inherited-helper',
+        GIT_SSH_COMMAND: 'inherited-ssh',
+        EDITOR: 'inherited-editor',
+    };
+    const previous = Object.fromEntries(Object.keys(inherited).map(key => [key, process.env[key]]));
+    Object.assign(process.env, inherited);
+    try {
+        await git(tempDir, ['init', '--quiet']);
+        await configureUser(tempDir);
+        const repoGit = createHooklessGit(tempDir);
+        configureGitAuthentication(repoGit, 'test-token');
+
+        const header = await repoGit.raw(['config', '--get', 'http.https://github.com/.extraheader']);
+        assert.strictEqual(header.trim(), `AUTHORIZATION: basic ${Buffer.from('x-access-token:test-token').toString('base64')}`);
+        const helpers = await repoGit.raw(['config', '--get-all', 'credential.helper']);
+        assert.strictEqual(helpers.trim(), '');
+        const committer = await repoGit.raw(['var', 'GIT_COMMITTER_IDENT']);
+        assert.match(committer, /^Test User <test@example\.com>/);
+    } finally {
+        for (const [key, value] of Object.entries(previous)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
         await rm(tempDir, { recursive: true, force: true });
     }
 });

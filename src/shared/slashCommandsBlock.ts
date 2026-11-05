@@ -11,7 +11,7 @@ export function buildSlashCommandsBlock(): string {
         '|---------|-------------|---------|',
         '| `/merge` | Merge target branch into this PR and resolve conflicts | `/merge` |',
         '| `/review` | Request an AI code review | `/review` or `/review claude-sonnet` |',
-        '| `/fix` | Implement fixes for issues found by `/review` | `/fix` or `/fix address the null check issue` |',
+        '| `/fix` | Address review blockers, or blockers and suggestions with `/fix all` | `/fix`, `/fix all`, or `/fix F3 S5` |',
         '| `/switch` | Change the AI model for this PR | `/switch claude-opus` |',
         '| `/use` | Override the model for a single follow-up run | `/use claude-sonnet` |',
         '| `/ultrafix` | Loop review→fix cycles until score goal is met | `/ultrafix` or `/ultrafix goal=8 max=10` |',

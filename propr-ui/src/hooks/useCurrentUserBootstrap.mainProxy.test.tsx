@@ -37,6 +37,7 @@ describe('desktop current-user bootstrap main-proxy integration', () => {
   it('correlates one fixed-alias React bootstrap request through apiFetch and main-only bearer custody', async () => {
     (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = {
       setZoomFactor: vi.fn(),
+      setupEvidence: vi.fn(),
     };
     setDesktopConnectionScope({
       bridge: {} as never,

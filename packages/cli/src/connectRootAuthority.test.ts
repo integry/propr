@@ -529,3 +529,13 @@ test("Windows batch results remain bound to descriptor index, kind, identity, an
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('Darwin Library deny-delete ACE preserves authority while mutation grants fail closed', async () => {
+  const { assertSafeDarwinAclOutput } = await import('./connectRootAuthority.js');
+  const everyone = 'group:ABCDEFAB-CDEF-ABCD-EFAB-CDEF0000000C:everyone:12:';
+  assert.doesNotThrow(() => assertSafeDarwinAclOutput(`!#acl 1\n${everyone}deny:delete\n`));
+  assert.doesNotThrow(() => assertSafeDarwinAclOutput(`!#acl 1\n${everyone}deny,inherited:delete,delete_child\n${everyone}allow:read,readattr\n`));
+  for (const permission of ['delete', 'write', 'add_file', 'writesecurity']) {
+    assert.throws(() => assertSafeDarwinAclOutput(`!#acl 1\n${everyone}deny:delete\n${everyone}allow:${permission}\n`), /unexpected write authority/);
+  }
+});

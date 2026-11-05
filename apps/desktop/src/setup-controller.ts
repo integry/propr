@@ -144,8 +144,15 @@ export class DesktopSetupController {
     if (!pending || pending.settled) throw new SetupRequestError('No GitHub installation choice is pending.');
     const decision = this.#parseGithubDecision(input);
     const identity = this.#snapshot.githubIdentity;
-    if (!identity || !['selection-required', 'authorization-failed'].includes(identity.status)) {
+    if (!identity || !['selection-required', 'authorization-failed', 'reauthentication-failed'].includes(identity.status)) {
       throw new SetupRequestError('The GitHub installation choice is no longer active.');
+    }
+    const reauthenticationFailed = identity.status === 'reauthentication-failed';
+    if (decision.action === 'select' && reauthenticationFailed) {
+      throw new SetupRequestError(`Changing GitHub account did not complete. Choose whether to keep @${identity.username} or try again.`);
+    }
+    if (decision.action === 'keep-account' && !reauthenticationFailed) {
+      throw new SetupRequestError('There is no failed GitHub account change to resolve.');
     }
     if (decision.action === 'select') {
       const installation = identity.installations.find(item => item.installationId === decision.installationId);
@@ -161,8 +168,10 @@ export class DesktopSetupController {
       if (decision.action === 'install' && !identity.installAvailable) throw new SetupRequestError('GitHub App installation is unavailable for this relay.');
       if (decision.action === 'reauthenticate' && this.#resume?.github.mode === 'relay') delete this.#resume.github.identity;
       this.#snapshot = { ...this.#snapshot, githubIdentity: { ...identity,
-        status: decision.action === 'refresh' ? 'refreshing' : decision.action === 'install' ? 'installing' : 'reauthenticating',
+        status: decision.action === 'refresh' || decision.action === 'keep-account' ? 'refreshing'
+          : decision.action === 'install' ? 'installing' : 'reauthenticating',
         permissionExplanation: undefined,
+        ...(decision.action === 'reauthenticate' || decision.action === 'keep-account' ? { reauthenticationFailure: undefined } : {}),
       }, ...(this.#resume ? { resume: copyResume(this.#resume) } : {}) };
     }
     this.#publish();
@@ -378,11 +387,14 @@ export class DesktopSetupController {
     const selectedInstallationId = [context.selectedInstallationId, saved]
       .find(value => value && installations.some(item => item.installationId === value));
     const permissionExplanation = context.enrollmentPermissionError?.slice(0, 1_000);
+    const reauthenticationFailure = context.reauthenticationFailure?.detail.slice(0, 1_000);
     this.#snapshot = { ...this.#snapshot, ...(this.#resume ? { resume: copyResume(this.#resume) } : {}), githubIdentity: {
-      status: permissionExplanation ? 'authorization-failed' : 'selection-required',
+      status: reauthenticationFailure ? 'reauthentication-failed' : permissionExplanation ? 'authorization-failed' : 'selection-required',
       username, installations, installAvailable: Boolean(context.installUrl),
-      ...(selectedInstallationId ? { selectedInstallationId } : {}),
+      // Never preselect an installation for an identity the user has not re-confirmed.
+      ...(selectedInstallationId && !reauthenticationFailure ? { selectedInstallationId } : {}),
       ...(permissionExplanation ? { permissionExplanation } : {}),
+      ...(reauthenticationFailure ? { reauthenticationFailure } : {}),
     } };
     this.#publish();
 
@@ -415,10 +427,10 @@ export class DesktopSetupController {
       }
       return { action: 'select', installationId: value.installationId };
     }
-    if (!['refresh', 'install', 'reauthenticate'].includes(String(value.action)) || Object.keys(value).length !== 1) {
+    if (!['refresh', 'install', 'reauthenticate', 'keep-account'].includes(String(value.action)) || Object.keys(value).length !== 1) {
       throw new SetupRequestError('Invalid GitHub installation action.');
     }
-    return { action: value.action as 'refresh' | 'install' | 'reauthenticate' };
+    return { action: value.action as 'refresh' | 'install' | 'reauthenticate' | 'keep-account' };
   }
 
   #settleGithubChoice(): void {

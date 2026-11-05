@@ -1,5 +1,7 @@
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
+export class DesktopPairingUnavailableError extends Error {}
+
 export interface DesktopPairingApproval {
   pairingId: string;
   clientName: string;
@@ -27,6 +29,14 @@ export async function approveDesktopPairing(pairingId: string): Promise<DesktopP
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
-  await handleApiResponse(response);
+  try {
+    await handleApiResponse(response);
+  } catch (error) {
+    if (response.status === 404 || response.status === 410 || response.status === 409) {
+      // This endpoint uses 409 when another client has already consumed the request.
+      throw new DesktopPairingUnavailableError('Pairing request can no longer be approved');
+    }
+    throw error;
+  }
   return response.json() as Promise<DesktopPairingApproval>;
 }

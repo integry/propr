@@ -3,6 +3,8 @@ import assert from 'node:assert';
 
 // Mock simple-git before importing the module under test
 const mockGitInstance = {
+    env: mock.fn(),
+    getConfig: mock.fn(async () => ({ value: '/tmp/local-test-remote' })),
     raw: mock.fn(async () => ''),
     status: mock.fn(async () => ({ conflicted: [] })),
 };
@@ -158,7 +160,7 @@ describe('mergeBaseIntoBranch', () => {
         assert.ok(fetchCall, 'Expected a fetch call');
         assert.deepStrictEqual(fetchCall.arguments[0], [
             'fetch',
-            'https://x-access-token:installation-token@github.com/upstream/project.git',
+            'https://github.com/upstream/project.git',
             '+refs/heads/main:refs/remotes/propr-base/main',
             '--prune',
         ]);

@@ -1,23 +1,58 @@
-import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
+import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
+import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
+  usage_tips_enabled?: unknown;
   auto_followup_score_threshold?: unknown;
   auto_resolve_merge_conflicts?: unknown;
+  dashboard_summary_enabled?: unknown;
+  followup_requires_assignment?: unknown;
   model_reasoning_level?: unknown;
   pr_review_model?: unknown;
+  ultrafix_escalation_enabled?: unknown;
+  ultrafix_escalation_models?: unknown;
+  ultrafix_escalation_patience?: unknown;
+  ultrafix_escalation_max_reasoning_levels?: unknown;
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
+  default_max_cost_usd?: unknown;
+  agent_run_usage_pause_percent?: unknown;
+  ultrafix_ci_wait_timeout_ms?: unknown;
+  agent_stall_timeout_ms?: unknown;
+  agent_tool_stall_timeout_ms?: unknown;
+  agent_degenerate_output_limit?: unknown;
+  agent_network_mode?: unknown;
+  agent_network_mode_enforced?: unknown;
+  agent_network_allow?: unknown;
+  agent_network_ignore_repository_allow?: unknown;
 }
 
 export type SettingSaveName =
+  | 'usage_tips_enabled'
   | 'auto_followup_score_threshold'
   | 'auto_resolve_merge_conflicts'
+  | 'dashboard_summary_enabled'
+  | 'followup_requires_assignment'
   | 'model_reasoning_level'
   | 'pr_review_model'
+  | 'ultrafix_escalation_enabled'
+  | 'ultrafix_escalation_models'
+  | 'ultrafix_escalation_patience'
+  | 'ultrafix_escalation_max_reasoning_levels'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
-  | 'ultrafix_pause_seconds';
+  | 'ultrafix_pause_seconds'
+  | 'default_max_cost_usd'
+  | 'agent_run_usage_pause_percent'
+  | 'ultrafix_ci_wait_timeout_ms'
+  | AgentWatchdogSettingName
+  | AgentNetworkSettingName;
+
+export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
+export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
+export const AGENT_NETWORK_SETTING_NAMES = ['agent_network_mode', 'agent_network_mode_enforced', 'agent_network_allow', 'agent_network_ignore_repository_allow'] as const;
+export type AgentNetworkSettingName = typeof AGENT_NETWORK_SETTING_NAMES[number];
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -31,6 +66,13 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   return value < min || value > max ? null : value;
 }
 
+/** A USD amount from 0 (no cap) up to the cap ceiling; an empty value or null clears the cap. */
+export function validateCostCapUsd(raw: unknown): number | null {
+  if (raw === null || raw === '') return 0;
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\s*\d+(?:\.\d+)?\s*$/.test(raw) ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) && value >= 0 && value <= MAX_RUN_COST_CAP_USD ? value : null;
+}
+
 async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
   if (typeof raw !== 'string') return { error: 'pr_review_model must be a string' };
   const val = raw.trim();
@@ -42,9 +84,29 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   return { value: val };
 }
 
-export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
+interface SettingSavesResult {
+  error?: string;
+  saves: LabeledSaveDescriptor[];
+  normalized: Record<string, unknown>;
+}
+
+function extractUsageTipSettingSaves(fields: SettingFields): SettingSavesResult {
   const saves: LabeledSaveDescriptor[] = [];
   const normalized: Record<string, unknown> = {};
+
+  if (fields.usage_tips_enabled !== undefined) {
+    if (typeof fields.usage_tips_enabled !== 'boolean') return { error: 'usage_tips_enabled must be a boolean', saves: [], normalized };
+    normalized.usage_tips_enabled = fields.usage_tips_enabled;
+    saves.push({ name: 'usage_tips_enabled' });
+  }
+
+  return { saves, normalized };
+}
+
+export async function extractSettingSaves(fields: SettingFields): Promise<SettingSavesResult> {
+  const result = extractUsageTipSettingSaves(fields);
+  if (result.error) return result;
+  const { saves, normalized } = result;
 
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
@@ -53,10 +115,12 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
     saves.push({ name: 'auto_followup_score_threshold' });
   }
 
-  if (fields.auto_resolve_merge_conflicts !== undefined) {
-    if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [], normalized };
-    normalized.auto_resolve_merge_conflicts = fields.auto_resolve_merge_conflicts;
-    saves.push({ name: 'auto_resolve_merge_conflicts' });
+  for (const name of ['auto_resolve_merge_conflicts', 'dashboard_summary_enabled', 'followup_requires_assignment'] as const) {
+    const value = fields[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') return { error: `${name} must be a boolean`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
   }
 
   if (fields.model_reasoning_level !== undefined) {
@@ -94,5 +158,121 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
+  const limitResult = extractRunLimitSettingSaves(fields, result);
+  if (limitResult.error) return limitResult;
+  return extractTrailingSettingSaves(fields, result);
+}
+
+function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  if (fields.default_max_cost_usd !== undefined) {
+    const v = validateCostCapUsd(fields.default_max_cost_usd);
+    if (v === null) return { error: `default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`, saves: [], normalized };
+    normalized.default_max_cost_usd = v;
+    saves.push({ name: 'default_max_cost_usd' });
+  }
+  if (fields.agent_run_usage_pause_percent !== undefined) {
+    const v = validateStrictInt(fields.agent_run_usage_pause_percent, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, AGENT_RUN_USAGE_PAUSE_PERCENT_MAX);
+    if (v === null) return { error: `agent_run_usage_pause_percent must be an integer from ${AGENT_RUN_USAGE_PAUSE_PERCENT_MIN} to ${AGENT_RUN_USAGE_PAUSE_PERCENT_MAX}`, saves: [], normalized };
+    normalized.agent_run_usage_pause_percent = v;
+    saves.push({ name: 'agent_run_usage_pause_percent' });
+  }
+  if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
+    const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
+    if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
+    normalized.ultrafix_ci_wait_timeout_ms = v;
+    saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
+  }
+  return result;
+}
+
+async function extractTrailingSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
+  const watchdog = extractAgentWatchdogSettingSaves(fields, result);
+  if (watchdog.error) return watchdog;
+  const network = extractAgentNetworkSettingSaves(fields, result);
+  if (network.error) return network;
+  return extractEscalationSettingSaves(fields, result);
+}
+
+/** Agent network policy: null uses the environment default (AGENT_NETWORK_MODE and friends). */
+function extractAgentNetworkSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  for (const name of AGENT_NETWORK_SETTING_NAMES) {
+    const raw = fields[name];
+    if (raw === undefined) continue;
+    const error = validateAgentNetworkSetting(name, raw);
+    if (error) return { error: `${error}, or null to use the environment default`, saves: [], normalized };
+    normalized[name] = raw === null ? null
+      : name === 'agent_network_mode' ? String(raw).trim().toLowerCase()
+      : name === 'agent_network_allow' ? [...new Set((raw as string[]).map(entry => entry.trim().toLowerCase()))]
+      : raw;
+    saves.push({ name });
+  }
+  return result;
+}
+
+/** Watchdog overrides: a non-negative integer (0 disables the rule) or null to use the environment default. */
+function extractAgentWatchdogSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  for (const name of AGENT_WATCHDOG_SETTING_NAMES) {
+    const raw = fields[name];
+    if (raw === undefined) continue;
+    const value = raw === null ? null : validateStrictInt(raw, 0, Infinity);
+    if (value === null && raw !== null) return { error: `${name} must be a non-negative integer, or null to use the environment default`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
+  }
+  return result;
+}
+
+async function extractEscalationSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
+  const { saves, normalized } = result;
+  if (fields.ultrafix_escalation_enabled !== undefined) {
+    if (typeof fields.ultrafix_escalation_enabled !== 'boolean') return { error: 'ultrafix_escalation_enabled must be a boolean', saves: [], normalized };
+    normalized.ultrafix_escalation_enabled = fields.ultrafix_escalation_enabled;
+    saves.push({ name: 'ultrafix_escalation_enabled' });
+  }
+  for (const [name, min] of [['ultrafix_escalation_patience', 1], ['ultrafix_escalation_max_reasoning_levels', 0]] as const) {
+    if (fields[name] === undefined) continue;
+    const value = validateStrictInt(fields[name], min, Infinity);
+    if (value === null) return { error: `${name} must be a safe integer >= ${min}`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
+  }
+  if (fields.ultrafix_escalation_models !== undefined) {
+    const models = fields.ultrafix_escalation_models;
+    if (!Array.isArray(models) || models.some(m => typeof m !== 'string' || !m.trim())) return { error: 'ultrafix_escalation_models must be an ordered array of nonempty model names', saves: [], normalized };
+    for (const model of models) {
+      const result = await validatePrReviewModel(model);
+      if (result.error) return { error: result.error.replaceAll('pr_review_model', 'ultrafix_escalation_models'), saves: [], normalized };
+    }
+    normalized.ultrafix_escalation_models = [...new Set(models.map(m => m.trim()))];
+    saves.push({ name: 'ultrafix_escalation_models' });
+  }
+
   return { saves, normalized };
+}
+
+interface IntegerSettingConfig {
+  name: string;
+  value: unknown;
+  defaultValue: number;
+  minimum: number;
+  maximum?: number;
+}
+interface InvalidIntegerSetting {
+  name: string;
+  value: unknown;
+}
+
+function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
+  if (value === undefined || value === null) return null;
+  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
+  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
+}
+export function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
+  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
+  if (parsed !== null) return { value: parsed };
+  if (value === undefined || value === null) return { value: defaultValue };
+  return { value: defaultValue, invalid: { name, value } };
 }

@@ -12,6 +12,7 @@ import { up, down } from '../packages/core/src/db/migrations/20260914000000_add_
 import { up as checkpointUp, down as checkpointDown } from '../packages/core/src/db/migrations/20260914010000_add_pr_publication_checkpoint.js';
 
 import { up as completionUp, down as completionDown } from '../packages/core/src/db/migrations/20260914020000_add_pr_publication_completion.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 await up(database);
@@ -48,6 +49,7 @@ const token = 'ghs_worker_installation_token';
 const repoPath = (owner: string) => path.join(root, owner === 'upstream' ? 'upstream.git' : 'fork.git');
 
 await mock.module('@propr/core', { namedExports: {
+    ...pushSalvageExports,
     db: database,
     logger: { warn: () => undefined },
     getAuthenticatedOctokit: async () => octokit,
@@ -86,6 +88,10 @@ await mock.module('@propr/core', { namedExports: {
     },
 } });
 
+// Continuation PRs keep their default description here; templates are covered by prTemplateDescription.test.ts.
+await mock.module('../src/jobs/pullRequestTemplate.js', { namedExports: {
+    describeContinuationPullRequest: async ({ fallback }: { fallback: string }) => fallback,
+} });
 const { PullRequestPublication } = await import('../src/jobs/prPublication.js');
 const { ensurePRContinuation, announceContinuation, findPRContinuation, continuationStatus, reserveContinuation, continuationBody, MAX_PULL_REQUEST_BODY_LENGTH } = await import('../src/jobs/prContinuation.js');
 await mock.module('../src/jobs/ultrafixOrchestrationService.js', { namedExports: {
@@ -697,3 +703,35 @@ for (const identity of ['both', 'branch only', 'marker only', 'wrong repository'
         assert.equal((await findPRContinuation(ref))!.continuation_pr, identity === 'both' ? 100 : null);
     });
 }
+
+const rebaseConflict = () => new Error('Push was rejected because origin/contribution advanced, and automatic rebase failed.\n\nRebase error:\nCONFLICT (content): Merge conflict in doc.md');
+
+test('a push whose automatic rebase conflicts is integrated before any salvage', async () => {
+    const publication = session();
+    const prepared = await publication.prepare('integrate-conflict');
+    await implement(prepared.worktreeInfo.worktreePath);
+    finalPushError = rebaseConflict();
+    const integrated: string[] = [];
+    const salvageEvents: unknown[] = [];
+    const result = await publication.push(prepared.worktreeInfo.worktreePath, undefined, {
+        salvage: { taskId: 'task-1', onEvent: event => { salvageEvents.push(event); } },
+        integrateConflicts: async worktreePath => { integrated.push(worktreePath); return { commitHash: 'merged-head' }; },
+    });
+    assert.deepEqual(integrated, [prepared.worktreeInfo.worktreePath]);
+    assert.equal(result.commitHash, 'merged-head');
+    assert.deepEqual(salvageEvents, [], 'no rescue ref, bundle or retained worktree');
+});
+
+test('other push failures, and conflicts the integrator cannot resolve, keep the salvage path', async () => {
+    const publication = session();
+    const prepared = await publication.prepare('integrate-refused');
+    await implement(prepared.worktreeInfo.worktreePath);
+    let integrations = 0;
+    const integrateConflicts = async () => { integrations += 1; return null; };
+    finalPushError = new Error('remote: Internal Server Error');
+    await assert.rejects(publication.push(prepared.worktreeInfo.worktreePath, undefined, { integrateConflicts }), /Internal Server Error/);
+    assert.equal(integrations, 0, 'only a rebase conflict is integrated');
+    finalPushError = rebaseConflict();
+    await assert.rejects(publication.push(prepared.worktreeInfo.worktreePath, undefined, { integrateConflicts }), /automatic rebase failed/);
+    assert.equal(integrations, 1);
+});

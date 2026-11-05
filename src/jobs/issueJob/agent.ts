@@ -3,13 +3,15 @@
  */
 
 import {
-  TaskStates, AgentRegistry, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
-  resolveAgentTerminationReason, loadRepositoryVisualPreviewSettings
+  TaskStates, AgentRegistry, findIssueSubmission, submissionExtensionsForRun, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
+  resolveAgentTerminationReason, repositoryWorkflowPrompt
 } from '@propr/core';
 import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import type { ExecutionParams, JobContext } from './types.js';
 import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
+import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
+import { markAgentExecutionFailure } from '../providerReplacement.js';
 import { redisClient } from './config.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
@@ -35,6 +37,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
   const terminationReason = resolveAgentTerminationReason(result);
   return {
     success: result.success,
+    repositoryValidation: result.repositoryValidation,
     model: result.modelUsed,
     ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
     executionTime: result.executionTimeMs,
@@ -59,7 +62,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
 }
 
 export async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, context: JobContext): Promise<ClaudeCodeResponse> {
-  const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments } = executionParams;
+  const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments, visualPreviewSettings } = executionParams;
   const { taskId, agentAlias, modelName, stateManager, correlatedLogger, correlationId } = context;
 
   // Get the agent from registry
@@ -82,7 +85,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     repoOwner: issueRef.repoOwner,
     repoName: issueRef.repoName
   };
-  const visualPreviewSettingsPromise = loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`);
+  const repositoryWorkflow = context.repositoryWorkflow;
 
   // Localize remote images in issue body and comments
   const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
@@ -111,8 +114,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       user: currentIssueData.data.user
     },
     baseBranch: issueRef.baseBranch || null,
-    visualPreviewSettings: await visualPreviewSettingsPromise
+    visualPreviewSettings
   });
+
+  const workflowPrompt = repositoryWorkflowPrompt(repositoryWorkflow);
 
   // Start periodic file changes updates during agent execution
   const FILE_CHANGES_INTERVAL_MS = 2000;
@@ -127,10 +132,16 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   // Execute task via agent abstraction
   let agentResult;
   try {
-    agentResult = await agent.executeTask({
+    const extensionSubmission = await findIssueSubmission(issueRef);
+    const extensions = submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, issueNumber: issueRef.number });
+    agentResult = await runRepositoryWorkflow({
+      workflow: repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
+      redisClient, taskId, stateManager, correlatedLogger,
+    }, () => agent.executeTask({
+      ...extensions,
       worktreePath: worktreeInfo.worktreePath,
       issueRef: agentIssueRef,
-      prompt,
+      prompt: [prompt, workflowPrompt].filter(Boolean).join('\n\n'),
       model: modelName,
       githubToken: githubToken.token,
       branchName: worktreeInfo.branchName,
@@ -138,7 +149,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId
-    });
+    }).catch(error => { throw markAgentExecutionFailure(error); }));
   } finally {
     clearInterval(fileChangesInterval);
   }

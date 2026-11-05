@@ -262,6 +262,7 @@ test('resolves secure defaults and explicit positive-integer overrides', () => {
   assert.deepEqual(defaults.api, { identifier: 'api', limit: 600, windowMs: 60_000 });
   assert.deepEqual(defaults.auth, { identifier: 'auth', limit: 30, windowMs: 900_000 });
   assert.deepEqual(defaults.discovery, { identifier: 'desktop-discovery', limit: 60, windowMs: 60_000 });
+  assert.deepEqual(defaults.operator, { identifier: 'operator-recovery', limit: 30, windowMs: 60_000 });
   assert.deepEqual(defaults.pairingStart, { identifier: 'desktop-pairing-start', limit: 10, windowMs: 900_000 });
   assert.deepEqual(defaults.pairingPoll, { identifier: 'desktop-pairing-poll', limit: 180, windowMs: 900_000 });
   assert.deepEqual(defaults.webhook, { identifier: 'webhook', limit: 300, windowMs: 60_000 });
@@ -269,15 +270,22 @@ test('resolves secure defaults and explicit positive-integer overrides', () => {
   const configured = resolveRequestRateLimitPolicies({
     PROPR_API_RATE_LIMIT_MAX: '42',
     PROPR_AUTH_RATE_LIMIT_WINDOW_MS: '120000',
+    PROPR_OPERATOR_RATE_LIMIT_MAX: '5',
+    PROPR_OPERATOR_RATE_LIMIT_WINDOW_MS: '30000',
   });
   assert.equal(configured.api.limit, 42);
   assert.equal(configured.auth.windowMs, 120_000);
+  assert.deepEqual(configured.operator, { identifier: 'operator-recovery', limit: 5, windowMs: 30_000 });
 });
 
 test('rejects invalid overrides instead of silently disabling protection', () => {
   assert.throws(
     () => resolveRequestRateLimitPolicies({ PROPR_WEBHOOK_RATE_LIMIT_MAX: '0' }),
     /must be a positive integer/,
+  );
+  assert.throws(
+    () => resolveRequestRateLimitPolicies({ PROPR_OPERATOR_RATE_LIMIT_MAX: '0' }),
+    /PROPR_OPERATOR_RATE_LIMIT_MAX must be a positive integer/,
   );
   assert.throws(
     () => resolveRequestRateLimitPolicies({ PROPR_API_RATE_LIMIT_WINDOW_MS: '1.5' }),
@@ -291,4 +299,23 @@ test('rejects invalid overrides instead of silently disabling protection', () =>
     () => resolveRequestRateLimitPolicies({ PROPR_API_RATE_LIMIT_WINDOW_MS: '2147483648' }),
     /must be at most 2147483647/,
   );
+});
+
+
+test('distinct well-formed forged grants share the global IP quota before the handler', async () => {
+  const app = express();
+  app.use('/api', createApiRequestRateLimiter({ PROPR_API_RATE_LIMIT_MAX: '2' }));
+  let lookups = 0;
+  app.post('/api/extensions/mcp/:serverName', (_req, res) => { lookups++; res.sendStatus(401); });
+  app.get('/api/resource', (_req, res) => res.sendStatus(200));
+  const server = await listenTestApp(app);
+  openServers.push(server.close);
+  for (const [index, token] of ['a'.repeat(43), 'b'.repeat(43), 'c'.repeat(43)].entries()) {
+    const response = await fetch(`${server.origin}/api/extensions/mcp/${index === 1 ? 'other' : 'docs'}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, index < 2 ? 401 : 429);
+  }
+  assert.equal(lookups, 2, 'excess requests never reach grant lookup or database writes');
+  assert.equal((await fetch(`${server.origin}/api/resource`)).status, 429);
 });

@@ -17,6 +17,7 @@ const { formatActionableFindings, gatherUnprocessedReviewComments } = await impo
 const {
     formatReviewCommentsSection,
     parseFixFindingSelection,
+    parseFixSelection,
     selectReviewFeedback,
 } = await import('../src/jobs/reviewFindingSelector.js');
 
@@ -193,6 +194,32 @@ describe('multiline review fields', () => {
         assert.ok(section.includes('\n     - **minimumCorrection:** is quoted operator text, not a field.'));
         assert.ok(section.includes('\n  ### F9: indented heading-like text stays inside the field'));
         assert.doesNotMatch(section, /^### F9/m);
+    });
+
+    test('a requested suggestion survives publication and selection beside a blocker', async () => {
+        const published = renderPublicReview(MACHINE_REVIEW, undefined, {
+            firstFindingNumber: 25,
+            changedFilePaths: CHANGED_FILES,
+        });
+        const gathered = await gatherUnprocessedReviewComments([publicComment(published!, 910)], gatherOptions);
+        const suggestionId = gathered[0].suggestions[0].id;
+        // Lower case on input, canonical upper case everywhere afterwards.
+        const selection = parseFixSelection(`f25 ${suggestionId.toLowerCase()}`);
+        assert.deepStrictEqual(selection.findingIds, ['F25']);
+        assert.deepStrictEqual(selection.suggestionIds, [suggestionId]);
+
+        const selected = selectReviewFeedback(gathered, selection);
+        assert.deepStrictEqual(selected[0].actionableFindings.map(finding => finding.id), ['F25']);
+        assert.deepStrictEqual(selected[0].suggestions.map(suggestion => suggestion.id), [suggestionId]);
+
+        const section = formatReviewCommentsSection(selected, selection);
+        assert.match(section, new RegExp(`Address actionable finding F25 and requested suggestion ${suggestionId} only\\.`));
+        assert.match(section, new RegExp(`### ${suggestionId}: .*Add a cancellation audit log`));
+        // The suggestion's multiline reasoning reaches the agent intact.
+        assert.ok(section.includes('An audit trail would make operator overlap easier to diagnose.'));
+        assert.ok(section.includes('It is optional and outside this PR.'));
+        assert.ok(!section.includes('Release the renewed lease'), 'an unselected blocker must stay out of scope');
+        assert.ok(section.includes('non-blocking follow-ups that were explicitly requested'));
     });
 
     test('the issue presentation example parses with its complete evidence', () => {

@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- native goal execution and its fenced result reconciliation share one worker boundary */
 import fs from 'node:fs';
 import type { Job } from 'bullmq';
+import { agentFailureLine } from '@propr/shared';
 import {
     AgentRegistry,
     GOAL_CONTINUE_INPUT,
@@ -20,6 +21,8 @@ import {
     logger,
     loadRepositoryVisualPreviewSettings,
     prepareVisualPreviewEvidence,
+    publishGoalActivity,
+    publishGoalTransition,
     recordLLMMetrics,
     runWithExecutionAbortSignal,
     type AgentExecutionResult,
@@ -30,8 +33,10 @@ import {
     validateGoalArtifacts,
 } from '@propr/core';
 import { createContainerIdCallback } from './issueJobCallbacks.js';
+import { runWithNetworkPolicy } from './networkEgress.js';
 import {
     claimGoalAttempt,
+    closeAttemptBlockers,
     createGoalExecutionControl,
     fencedGoal,
     fencedGoalUpdate,
@@ -40,6 +45,11 @@ import {
     type GoalRow,
 } from './goalAttemptState.js';
 import { enqueueNextGoalAttempt } from './goalAttemptScheduling.js';
+import {
+    continuedGoalBootstrapId,
+    prepareContinuedGoal,
+    restoreMissingGoalWorktree,
+} from './goalContinuation.js';
 import {
     publishDirectGoalCheckpoint,
     rejectDirectGoalCheckpoint,
@@ -62,19 +72,35 @@ function goalNotificationSummary(result: AgentExecutionResult): string | undefin
     return result.summary;
 }
 
-async function ensureGoalWorktree(
+export { GOAL_WORKTREE_RESTORED_NOTICE } from './goalContinuation.js';
+
+export interface GoalWorktree {
+    worktreePath: string;
+    branchName: string;
+    /** The saved checkout was missing and has been rebuilt from the published branch. */
+    restored?: boolean;
+}
+
+export async function ensureGoalWorktree(
     goal: GoalRow,
     job: GoalJobData,
     token: string,
-): Promise<{ worktreePath: string; branchName: string }> {
+    restoreMissing: typeof restoreMissingGoalWorktree = restoreMissingGoalWorktree,
+): Promise<GoalWorktree> {
     if (Boolean(goal.worktree_path) !== Boolean(goal.branch_name)) {
         throw new Error('Saved goal worktree identity is incomplete; exact-session recovery cannot continue');
     }
     if (goal.worktree_path && goal.branch_name) {
-        if (!fs.existsSync(goal.worktree_path) || !fs.statSync(goal.worktree_path).isDirectory()) {
-            throw new Error('Saved goal worktree is missing; exact-session recovery cannot continue');
+        if (fs.existsSync(goal.worktree_path) && fs.statSync(goal.worktree_path).isDirectory()) {
+            return { worktreePath: goal.worktree_path, branchName: goal.branch_name };
         }
-        return { worktreePath: goal.worktree_path, branchName: goal.branch_name };
+        // A pruned checkout is not a lost session: the branch holds every
+        // checkpoint, so rebuild it and resume instead of failing the attempt,
+        // which recovery would otherwise re-run forever.
+        logger.warn({ goalId: goal.goal_id, worktreePath: goal.worktree_path }, 'Saved goal worktree is missing; rebuilding it from the published branch');
+        const { goal: restored } = await restoreMissing(job, goal);
+        if (!restored.worktree_path || !restored.branch_name) throw new Error('Goal worktree restoration left no checkout to resume');
+        return { worktreePath: restored.worktree_path, branchName: restored.branch_name, restored: true };
     }
     const [repoOwner, repoName] = goal.repository.split('/');
     await ensureGitRepository(logger as never);
@@ -145,6 +171,7 @@ async function initializeGoalTask(goal: GoalRow): Promise<void> {
     }
     await stateManager.updateTaskState(goal.current_task_id, TaskStates.PROCESSING, {
         ...(state.state === TaskStates.FAILED ? { isRetry: true } : {}),
+        ...(goal.continue_requested ? { reopenTerminal: true } : {}),
         reason: goal.session_id ? 'Resuming native goal session' : 'Preparing native goal session',
         historyMetadata: { executionMode: 'goal', generation: goal.run_generation },
     });
@@ -178,7 +205,7 @@ async function saveProviderResult(
     return { finalPr: validated.finalPr };
 }
 
-async function finalizeGoal(
+export async function finalizeGoal(
     job: GoalJobData,
     resultState: 'completed' | 'failed',
     failureReason?: string,
@@ -189,13 +216,40 @@ async function finalizeGoal(
         run_claim: job.claimId,
         desired_state: 'running',
     }).whereNull('result_state');
-    return await query.update({
+    const finalized = await query.update({
         result_state: resultState,
         failure_reason: failureReason ?? null,
         active_turn_id: null,
         completed_at: db.fn.now(),
         updated_at: db.fn.now(),
     }) === 1;
+    // The single terminal write for a goal attempt, and fenced: publishing here
+    // announces the completion exactly once, after it is durable, instead of
+    // leaving the Goals console to poll for it.
+    if (finalized) {
+        await publishGoalActivity({
+            goal_id: job.goalId,
+            repository: `${job.repoOwner}/${job.repoName}`,
+            desired_state: 'running',
+            result_state: resultState,
+            current_task_id: job.taskId,
+        });
+    }
+    return finalized;
+}
+
+/**
+ * A goal whose branch, checkout or PR cannot be prepared fails with the reason,
+ * so it can be continued again. Failing here is deliberate: an attempt that
+ * throws out of preparation stays claimed, and recovery would relaunch it.
+ */
+async function failGoalPreparation(data: GoalJobData, goal: GoalRow, reason: string): Promise<{ status: string; goalId?: string; reason?: string }> {
+    logger.warn({ goalId: goal.goal_id, reason }, 'Goal attempt preparation failed');
+    await fencedGoalUpdate(data, { continue_requested: false });
+    if (!await finalizeGoal(data, 'failed', reason)) return { status: 'skipped', reason: 'goal_finalize_fence' };
+    const task = await getStateManager().markTaskFailed(goal.current_task_id, new Error(reason));
+    if (task.state === TaskStates.FAILED) await markGoalTaskReconciled(data, 'failed');
+    return { status: 'failed', goalId: goal.goal_id };
 }
 
 async function markGoalTaskReconciled(job: GoalJobData, resultState: string): Promise<void> {
@@ -247,9 +301,10 @@ interface PreparedGoalAttempt {
     goal: GoalRow;
     agent: Agent;
     githubToken: string;
-    worktree: { worktreePath: string; branchName: string };
+    worktree: GoalWorktree;
     pendingInput: { input_id: string; message: string; kind: string } | null;
     checkpointFeedback?: string;
+    restorationInputIds?: string[];
 }
 
 type GoalPreparation = { ready: true; value: PreparedGoalAttempt }
@@ -280,6 +335,44 @@ async function previousCheckpointFeedback(
     return undefined;
 }
 
+type GoalCheckout = { ready: true; worktree: GoalWorktree }
+    | { ready: false; result: { status: string; reason?: string } };
+
+/** Brings a continued goal up to date and makes sure its checkout exists; unrecoverable checkouts fail the goal instead of the job. */
+export async function prepareGoalCheckout(
+    data: GoalJobData, claimed: GoalRow, token: string,
+    operations = { prepareContinuedGoal, ensureGoalWorktree },
+): Promise<GoalCheckout> {
+    let continued: GoalRow;
+    try {
+        continued = await operations.prepareContinuedGoal(data, claimed);
+    } catch (error) {
+        return { ready: false, result: await failGoalPreparation(data, claimed, `Could not prepare the continued goal: ${(error as Error).message}`) };
+    }
+    try {
+        return { ready: true, worktree: await operations.ensureGoalWorktree(continued, data, token) };
+    } catch (error) {
+        return { ready: false, result: await failGoalPreparation(data, continued, `Could not restore the goal checkout: ${(error as Error).message}`) };
+    }
+}
+
+/** Restoration inputs take priority and stay pending until their transport acknowledges delivery. */
+export async function prepareGoalAttemptInputs(goal: GoalRow): Promise<Pick<PreparedGoalAttempt, 'pendingInput' | 'restorationInputIds'>> {
+    const notices = await db('goal_inputs').where({ goal_id: goal.goal_id, owner_id: goal.owner_id, state: 'pending', kind: 'restoration' })
+        .orderBy('sequence', 'asc') as Array<{ input_id: string; message: string; kind: string }>;
+    if (!notices.length) return { pendingInput: await firstPendingGoalInput(goal) };
+    // Native transports acknowledge each input only after its message was accepted.
+    // Leave user input in the FIFO queue, with its own acknowledgement identity.
+    if (hasNativeGoalControl(goal.agent_type)) return { pendingInput: notices[0] };
+    const userInput = await db('goal_inputs').where({ goal_id: goal.goal_id, owner_id: goal.owner_id, state: 'pending' })
+        .whereNot({ kind: 'restoration' }).orderBy('sequence', 'asc').first('input_id', 'message', 'kind');
+    const pendingInput = userInput ?? notices[0];
+    return {
+        pendingInput: { ...pendingInput, message: [...notices.map(notice => notice.message), userInput?.message].filter(Boolean).join('\n\n') },
+        restorationInputIds: notices.filter(notice => notice.input_id !== pendingInput.input_id).map(notice => notice.input_id),
+    };
+}
+
 async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): Promise<GoalPreparation> {
     await initializeGoalTask(claimed);
 
@@ -292,7 +385,9 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
 
     const octokit = await getAuthenticatedOctokit();
     const githubToken = await octokit.auth({ type: 'installation' }) as { token: string };
-    const worktree = await ensureGoalWorktree(claimed, data, githubToken.token);
+    const checkout = await prepareGoalCheckout(data, claimed, githubToken.token);
+    if (!checkout.ready) return checkout;
+    const { worktree } = checkout;
     let boundaryGoal = await fencedGoal(data);
     if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
     if (boundaryGoal.desired_state === 'paused') {
@@ -303,19 +398,24 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
     }
     if (boundaryGoal.desired_state !== 'running') return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
     if (boundaryGoal.launch_strategy === 'direct' && !boundaryGoal.final_pr_url) {
-        await publishDirectGoalCheckpoint(data, { kind: 'bootstrap' });
+        // The goal's fixed bootstrap key may already hold the PR a continued
+        // goal lost, so its new draft PR is published under a fresh checkpoint.
+        await publishDirectGoalCheckpoint(data, {
+            kind: 'bootstrap',
+            ...(boundaryGoal.continue_requested ? { checkpointId: await continuedGoalBootstrapId(boundaryGoal) } : {}),
+        });
         boundaryGoal = await fencedGoal(data);
         if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_bootstrap_fence' } };
     }
-    const pendingInput = await firstPendingGoalInput(boundaryGoal);
+    const { pendingInput, restorationInputIds } = await prepareGoalAttemptInputs(boundaryGoal);
     const checkpointFeedback = await previousCheckpointFeedback(boundaryGoal, pendingInput);
     return {
         ready: true,
-        value: { goal: boundaryGoal, agent, githubToken: githubToken.token, worktree, pendingInput, checkpointFeedback },
+        value: { goal: boundaryGoal, agent, githubToken: githubToken.token, worktree, pendingInput, checkpointFeedback, restorationInputIds },
     };
 }
 
-export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
     const { goal, agent, githubToken, worktree, pendingInput, checkpointFeedback } = prepared;
     const freshSession = !goal.session_id;
     // Native goal providers (Codex, Claude) steer the durable delivery context
@@ -337,7 +437,8 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
     const executionController = new AbortController();
     return runWithExecutionAbortSignal(
         executionController.signal,
-        () => agent.executeTask({
+        // Goals follow the instance network policy; the repository workflow file is not read for goals.
+        () => runWithNetworkPolicy({ taskId: goal.current_task_id, correlatedLogger: logger }, () => agent.executeTask({
             worktreePath: worktree.worktreePath,
             issueRef: { number: 0, repoOwner: data.repoOwner, repoName: data.repoName },
             prompt,
@@ -352,14 +453,20 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
             initialControlInputId: liveControl ? pendingInput?.input_id : undefined,
             initialControlInputMessage: liveControl ? pendingInput?.message : undefined,
             initialGoalFeedback: liveControl ? checkpointFeedback : undefined,
+            continueTerminalGoal: Boolean(goal.continue_requested),
             goalControl: control,
             environment: buildGoalPolicyEnvironment(goal.launch_strategy),
+            onGoalRearmed: async () => {
+                if (goal.continue_requested && !await fencedGoalUpdate(data, { continue_requested: false })) {
+                    throw new Error('Continued goal re-arm lost its attempt claim');
+                }
+            },
             onSessionId: async (sessionId, conversationId) => {
                 await saveSessionAndTaskState({
                     job: data, goal, sessionId, conversationId,
                     acknowledgeControls: !pendingInput,
                 });
-                if (pendingInput && !liveControl && (!freshSession || initialContextInput)) {
+                if (pendingInput && pendingInput.kind !== 'restoration' && !liveControl && (!freshSession || initialContextInput)) {
                     await control.markInputDelivered(pendingInput.input_id, `session:${sessionId}`);
                 }
                 if (freshSession && !liveControl) {
@@ -385,14 +492,34 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
             onContainerId: createContainerIdCallback(
                 goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
             ),
-        }),
+        })),
         goalAttemptLabel(data.generation, data.claimId),
     );
 }
 
-async function acknowledgeWholeSessionInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
+export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+    try {
+        return await runPreparedGoal(data, prepared);
+    } finally {
+        // The provider process is gone, so no question or approval it raised is still waiting.
+        await closeAttemptBlockers(data).catch(error => logger.warn(
+            { goalId: data.goalId, error: (error as Error).message }, 'Could not close goal attempt blockers'));
+    }
+}
+
+export async function acknowledgeWholeSessionInput(
+    data: GoalJobData, prepared: PreparedGoalAttempt, result: AgentExecutionResult,
+): Promise<void> {
     const { pendingInput, goal } = prepared;
     if (!pendingInput || hasNativeGoalControl(goal.agent_type) || !goal.session_id) return;
+    // A saved/resumed session ID alone does not prove that the prompt was sent.
+    // Keep restoration obligations on startup/transport failure; native providers
+    // instead acknowledge each message through goalControl.markInputDelivered.
+    const deliveredIds = [
+        ...(pendingInput.kind !== 'restoration' || result.success ? [pendingInput.input_id] : []),
+        ...(result.success ? prepared.restorationInputIds ?? [] : []),
+    ];
+    if (!deliveredIds.length) return;
     await db.transaction(async trx => {
         const owned = await trx('goals').where({
             goal_id: data.goalId,
@@ -401,27 +528,29 @@ async function acknowledgeWholeSessionInput(data: GoalJobData, prepared: Prepare
             run_claim: data.claimId,
         }).whereNull('result_state').forUpdate().first('owner_id');
         if (!owned) throw new Error('Goal input acknowledgement was fenced');
-        const changed = await trx('goal_inputs').where({
-            input_id: pendingInput.input_id,
-            goal_id: goal.goal_id,
-            owner_id: owned.owner_id,
-            state: 'pending',
-        }).update({
-            state: 'delivered',
-            delivered_generation: data.generation,
-            delivered_claim: data.claimId,
-            delivered_at: trx.fn.now(),
-        });
-        if (changed !== 1) {
-            const delivered = await trx('goal_inputs').where({
-                input_id: pendingInput.input_id,
+        for (const inputId of deliveredIds) {
+            const changed = await trx('goal_inputs').where({
+                input_id: inputId,
                 goal_id: goal.goal_id,
                 owner_id: owned.owner_id,
+                state: 'pending',
+            }).update({
                 state: 'delivered',
                 delivered_generation: data.generation,
                 delivered_claim: data.claimId,
-            }).first('input_id');
-            if (!delivered) throw new Error('Goal input was already delivered or superseded');
+                delivered_at: trx.fn.now(),
+            });
+            if (changed !== 1) {
+                const delivered = await trx('goal_inputs').where({
+                    input_id: inputId,
+                    goal_id: goal.goal_id,
+                    owner_id: owned.owner_id,
+                    state: 'delivered',
+                    delivered_generation: data.generation,
+                    delivered_claim: data.claimId,
+                }).first('input_id');
+                if (!delivered) throw new Error('Goal input was already delivered or superseded');
+            }
         }
         await trx('goals').where({
             goal_id: data.goalId,
@@ -457,12 +586,22 @@ async function handleStoppedGoal(
     if (latest.desired_state === 'cancelled') {
         const task = await getStateManager().markTaskCancelled(goal.current_task_id, 'user');
         if (task.state !== TaskStates.CANCELLED) throw new Error('Goal cancellation could not reconcile its backing task');
-        await fencedGoalUpdate(data, {
+        const cancelled = await fencedGoalUpdate(data, {
             result_state: 'cancelled',
             active_turn_id: null,
             completed_at: db.fn.now(),
             task_reconciled_at: db.fn.now(),
         });
+        // Normally silent: whoever requested the cancellation already announced
+        // it, and finalizing it changes nothing a consumer can act on. Routed
+        // through the transition rule anyway so a goal that somehow reaches this
+        // write without having been announced is still reported once.
+        if (cancelled) {
+            await publishGoalTransition({
+                previous: latest,
+                next: { ...latest, result_state: 'cancelled' },
+            });
+        }
         return { status: 'cancelled' };
     }
     if (latest.desired_state !== 'paused') return null;
@@ -476,24 +615,32 @@ async function handleStoppedGoal(
     return { status: 'paused' };
 }
 
-async function scheduleFurtherWork(
+// eslint-disable-next-line max-params -- inject enqueue to verify retry decisions without queue side effects
+export async function scheduleFurtherWork(
     data: GoalJobData,
     latest: GoalRow,
     result: AgentExecutionResult,
     checkpointPublished = false,
+    enqueue: typeof enqueueNextGoalAttempt = enqueueNextGoalAttempt,
 ): Promise<{ status: string } | null> {
-    if (await firstPendingGoalInput(latest)) {
-        await enqueueNextGoalAttempt(latest, data);
+    const recoverable = !result.success && isRecoverableInterruption(result)
+        && Boolean(latest.session_id) && Boolean(latest.worktree_path);
+    // An undelivered restoration warning must survive failure, but cannot by
+    // itself turn a permanent execution error into another attempt forever.
+    const pending = result.success || recoverable
+        ? await firstPendingGoalInput(latest)
+        : await db('goal_inputs').where({ goal_id: latest.goal_id, owner_id: latest.owner_id, state: 'pending' })
+            .whereNot({ kind: 'restoration' }).first('input_id');
+    if (pending) {
+        await enqueue(latest, data);
         return { status: 'continuing' };
     }
     if (checkpointPublished) {
-        await enqueueNextGoalAttempt(latest, data);
+        await enqueue(latest, data);
         return { status: 'continuing' };
     }
-    const recoverable = !result.success && isRecoverableInterruption(result)
-        && Boolean(latest.session_id) && Boolean(latest.worktree_path);
     if (!recoverable) return null;
-    await enqueueNextGoalAttempt(latest, data, true);
+    await enqueue(latest, data, true);
     return { status: 'recovering' };
 }
 
@@ -512,7 +659,7 @@ async function handleGoalResult(
         || postExecution.result_state === 'cancelled') {
         return { status: postExecution?.result_state === 'cancelled' ? 'cancelled' : 'skipped', reason: 'goal_post_execution_fence' };
     }
-    await operations.acknowledgeInput(data, prepared);
+    await operations.acknowledgeInput(data, prepared, result);
     await operations.recordMetrics(goal, data, result);
     const boundary = await operations.fencedGoal(data);
     const declaration = result.success && goal.launch_strategy === 'direct' && !hasNativeGoalControl(goal.agent_type)
@@ -556,7 +703,7 @@ async function handleGoalResult(
     const missingFinalPr = result.success && !artifacts.finalPr;
     const failure = missingFinalPr
         ? 'Provider completed without the required open draft PR for the saved goal branch and expected base'
-        : result.error || 'Native goal execution failed';
+        : (result.error && agentFailureLine(result.error)) || 'Native goal execution failed';
     const resultState = result.success && !missingFinalPr ? 'completed' : 'failed';
     const completed = await operations.finalizeGoal(data, resultState, resultState === 'failed' ? failure : undefined);
     if (!completed) return { status: 'skipped', reason: 'goal_finalize_fence' };

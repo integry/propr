@@ -15,6 +15,7 @@ export {
 export {
     GOAL_LAUNCH_STRATEGIES,
     GOAL_CONTINUE_INPUT,
+    buildGoalContinuationMessage,
     NATIVE_GOAL_COMMAND_PREFIX,
     CODEX_GOAL_OBJECTIVE_MAX_LENGTH,
     CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH,
@@ -49,6 +50,7 @@ export {
     normalizeGoalTitle,
 } from './goals/goalTitle.js';
 export type {
+    GoalBlockerReport,
     GoalCheckpointOutcome,
     GoalCheckpointRejection,
     GoalCheckpointRequest,
@@ -63,3 +65,23 @@ export {
     type GoalArtifact,
     type GoalArtifactStats,
 } from './goals/goalArtifacts.js';
+export {
+    goalActivityState,
+    publishGoalActivity,
+    publishGoalTransition,
+    type GoalLifecycleSnapshot,
+    type GoalUpdatePublisher,
+} from './goals/goalActivityEvents.js';
+export {
+    codexServerRequestBlocker,
+    codexUserInputResponse,
+    type CodexServerRequestBlocker,
+} from './agents/impl/codexAppServerBlockers.js';
+export {
+    closeGoalBlockers,
+    recordGoalBlocker,
+    resolveGoalBlocker,
+    type GoalBlockerAttempt,
+    type GoalBlockerOwner,
+    type GoalBlockerResolution,
+} from './goals/goalBlockerStore.js';

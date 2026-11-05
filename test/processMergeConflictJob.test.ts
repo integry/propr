@@ -1,6 +1,7 @@
 import { test, mock, describe, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { sanitizeAgentReport } from '../packages/core/src/agents/agentReportSanitizer.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 // --- Mock Setup ---
 
@@ -25,7 +26,7 @@ const mockOctokit = {
 };
 
 const mockStateManager = {
-    createTaskState: mock.fn(async () => {}),
+    createTaskStateIfAbsent: mock.fn(async () => {}),
     updateTaskState: mock.fn(async () => {}),
     getTaskState: mock.fn(async () => null),
     updateHistoryMetadata: mock.fn(async () => {}),
@@ -42,6 +43,11 @@ const mockRedisClient = {
     get: mock.fn(async (key: string) => mockRedisStore.get(key) ?? null),
     del: mock.fn(async (key: string) => { mockRedisStore.delete(key); }),
     setex: mock.fn(async (key: string, _ttl: number, value: string) => { mockRedisStore.set(key, value); }),
+    eval: mock.fn(async (_script: string, _count: number, key: string, token: string, ttl?: number) => {
+        if (mockRedisStore.get(key) !== token) return 0;
+        if (ttl === undefined) await mockRedisClient.del(key);
+        return 1;
+    }),
     on: mock.fn(),
     quit: mock.fn(async () => {}),
 };
@@ -185,9 +191,49 @@ const mockRegistry = {
     getAllAgents: mock.fn(() => [mockAgent, mockConfiguredAgent]),
 };
 
+// Mirrors packages/core/src/git/conflictResolution.ts on top of the git mocks above;
+// the real contract is covered against real repositories in
+// packages/core/test/conflictResolution.test.ts.
+async function fakePerformConflictResolution(options: {
+    worktreePath: string;
+    baseBranch: string;
+    branchName: string;
+    merge?: Record<string, unknown>;
+    onMerged?: (context: Record<string, unknown>) => Promise<void>;
+    resolveConflicts: (context: Record<string, unknown>) => Promise<unknown>;
+    commitMessage: string | ((context: Record<string, unknown>) => string);
+    author?: unknown;
+    push: (context: Record<string, unknown>) => Promise<{ commitHash?: string } | void>;
+}) {
+    const merge = await mockMergeBaseIntoBranch(options.worktreePath, options.baseBranch, options.merge ?? {}) as typeof mockMergeResult;
+    if (merge.outcome === 'failed') throw new Error(`Merge failed: ${merge.error}`);
+    if (!merge.baseCommit) throw new Error(`Merge did not identify the fetched base commit for ${options.baseBranch}`);
+    const conflictedFiles = merge.conflictedFiles ?? [];
+    const context = { worktreePath: options.worktreePath, conflictedFiles, baseCommit: merge.baseCommit, previousHeadSha: 'head-sha-123' };
+    await options.onMerged?.(context);
+    const resolverResult = await options.resolveConflicts(context);
+    await mockStageChanges('.');
+    const message = typeof options.commitMessage === 'function'
+        ? options.commitMessage({ conflictedFiles, wasCleanMerge: conflictedFiles.length === 0, resolverResult })
+        : options.commitMessage;
+    const commit = await mockCommitChanges(options.worktreePath, message, options.author) as { commitHash?: string } | null;
+    await mockAssertCommitIsAncestor(options.worktreePath, merge.baseCommit);
+    const headSha = commit?.commitHash ?? 'head-sha-123';
+    const pushed = await options.push({ worktreePath: options.worktreePath, branchName: options.branchName, headSha });
+    return {
+        status: conflictedFiles.length > 0 ? 'resolved' : 'clean',
+        previousHeadSha: 'head-sha-123',
+        headSha: (pushed && pushed.commitHash) || headSha,
+        baseCommit: merge.baseCommit,
+        conflictedFiles,
+        resolverResult,
+    };
+}
+
 // Mock @propr/core
 await mock.module('@propr/core', {
     namedExports: {
+        ...pushSalvageExports,
         logger: {
             info: mock.fn(),
             warn: mock.fn(),
@@ -208,6 +254,7 @@ await mock.module('@propr/core', {
         pushBranch: mockPushBranch,
         assertCommitIsAncestor: mockAssertCommitIsAncestor,
         mergeBaseIntoBranch: mockMergeBaseIntoBranch,
+        performConflictResolution: fakePerformConflictResolution,
         ensureGitRepository: mockEnsureGitRepository,
         createLogFiles: mock.fn(async () => {}),
         UsageLimitError: class UsageLimitError extends Error { name = 'UsageLimitError'; },
@@ -217,6 +264,7 @@ await mock.module('@propr/core', {
         recordLLMMetrics: mock.fn(async () => {}),
         issueQueue: { add: mockQueueAdd },
         getDefaultModel: mock.fn(() => 'claude-sonnet-4-20250514'),
+        getModelName: mock.fn((model: string) => model),
         NoDefaultModelConfiguredError: class NoDefaultModelConfiguredError extends Error { name = 'NoDefaultModelConfiguredError'; },
         loadSettings: mock.fn(async () => mockSettings),
         loadSummarizationSettings: mock.fn(async () => ({ agent_alias: '' })),
@@ -229,6 +277,14 @@ await mock.module('@propr/core', {
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
         AI_COMMIT_AUTHOR: { name: 'ProPR AI', email: 'ai@propr.dev' },
     }
+});
+
+// Merge jobs are outside repository workflow policy and must never acquire slots.
+await mock.module('../src/jobs/repositoryWorkflow.js', {
+    namedExports: {
+        runRepositoryWorkflow: async () => assert.fail('merge job entered repository workflow execution'),
+        withRepositoryWorkflowAdmission: async () => assert.fail('merge job entered repository workflow admission'),
+    },
 });
 
 // Mock helpers
@@ -343,8 +399,31 @@ class MockPullRequestPublication {
     }
 }
 
+const ciSuspensionEvents: string[] = [];
+const mockSuspendValidation = mock.fn(async (_params: unknown, _deps: unknown) => {
+    ciSuspensionEvents.push('suspend');
+    return { suspended: true, reason: 'suspended', cancelledRunIds: [] };
+});
+const mockReleaseSuspensions = mock.fn(async (_params: unknown, _deps: unknown) => {
+    ciSuspensionEvents.push('release');
+    return [];
+});
+await mock.module('../src/jobs/followupCiSuspension.js', {
+    namedExports: {
+        suspendObsoleteValidationForImplementation: mockSuspendValidation,
+        releaseFollowupCiSuspensionsForTask: mockReleaseSuspensions,
+    },
+});
+
 await mock.module('../src/jobs/prPublication.js', {
     namedExports: { PullRequestPublication: MockPullRequestPublication },
+});
+
+// The real module imports network-policy exports that the @propr/core mock above omits.
+await mock.module('../src/jobs/networkEgress.js', {
+    namedExports: {
+        runWithNetworkPolicy: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
+    },
 });
 
 // Import the module under test
@@ -354,6 +433,7 @@ function createMockJob(overrides: Partial<{
     pullRequestNumber: number;
     headBranch: string;
     baseBranch: string;
+    commandCommentId: number;
 }> = {}) {
     return {
         id: 'test-job-123',
@@ -369,6 +449,7 @@ function createMockJob(overrides: Partial<{
             triggerSource: 'push' as const,
             correlationId: 'test-corr-123',
             systemGenerated: true as const,
+            ...(overrides.commandCommentId === undefined ? {} : { commandCommentId: overrides.commandCommentId }),
         },
     } as never;
 }
@@ -376,7 +457,7 @@ function createMockJob(overrides: Partial<{
 function resetAllMocks() {
     mockOctokit.request.mock.resetCalls();
     mockOctokit.auth.mock.resetCalls();
-    mockStateManager.createTaskState.mock.resetCalls();
+    mockStateManager.createTaskStateIfAbsent.mock.resetCalls();
     mockStateManager.updateTaskState.mock.resetCalls();
     mockMergeBaseIntoBranch.mock.resetCalls();
     mockCommitChanges.mock.resetCalls();
@@ -398,6 +479,9 @@ function resetAllMocks() {
     };
     mockRedisStore.clear();
     mockSettings = {};
+    mockSuspendValidation.mock.resetCalls();
+    mockReleaseSuspensions.mock.resetCalls();
+    ciSuspensionEvents.length = 0;
 }
 
 describe('processMergeConflictJob', () => {
@@ -409,6 +493,15 @@ describe('processMergeConflictJob', () => {
         mockStateManager.getTaskState.mock.mockImplementation(async () => null);
         mockOctokit.request.mock.mockImplementation(async (route: string) => defaultOctokitRequest(route));
     });
+
+    for (const state of ['completed', 'failed', 'cancelled']) {
+        test(`merge execution stays outside workflow admission with a ${state} task record`, async () => {
+            mockStateManager.getTaskState.mock.mockImplementation(async () => ({ state }) as never);
+            const result = await processMergeConflictJob(createMockJob());
+            assert.equal(result.status, 'complete');
+            assert.equal(mockAgent.executeTask.mock.callCount(), 1);
+        });
+    }
 
     test('clean merge: commits and pushes after agent verification', async () => {
         const job = createMockJob();
@@ -446,6 +539,35 @@ describe('processMergeConflictJob', () => {
             (c: { arguments: [string, string] }) => c.arguments[1] === 'completed'
         );
         assert.ok(completedCalls.length >= 1, 'Expected task state to be set to COMPLETED');
+    });
+
+    test('suspends obsolete PR validation once the destination is prepared, and releases it after the merge', async () => {
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => { ciSuspensionEvents.push('merge'); return mockMergeResult; });
+        mockRedisClient.del.mock.mockImplementation(async (key: string) => { ciSuspensionEvents.push('unlock'); mockRedisStore.delete(key); });
+        try {
+            const result = await processMergeConflictJob(createMockJob());
+
+            assert.strictEqual(result.status, 'complete');
+            assert.strictEqual(mockSuspendValidation.mock.callCount(), 1);
+            const [params] = mockSuspendValidation.mock.calls[0].arguments as [Record<string, unknown>];
+            assert.deepStrictEqual(params.ref, { repoOwner: 'test-owner', repoName: 'test-repo', pullRequestNumber: 42 });
+            assert.strictEqual(params.taskId, 'test-job-123');
+            assert.strictEqual(mockReleaseSuspensions.mock.callCount(), 1);
+            assert.deepStrictEqual(mockReleaseSuspensions.mock.calls[0].arguments[0], { taskId: 'test-job-123' });
+            // The release restores CI before the PR lock lets the next job cancel it again.
+            assert.deepStrictEqual(ciSuspensionEvents, ['suspend', 'merge', 'release', 'unlock']);
+        } finally {
+            mockRedisClient.del.mock.mockImplementation(async (key: string) => { mockRedisStore.delete(key); });
+        }
+    });
+
+    test('releases the CI suspension when the merge fails', async () => {
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => { throw new Error('merge exploded'); });
+
+        await assert.rejects(() => processMergeConflictJob(createMockJob()), /merge exploded/);
+
+        assert.strictEqual(mockSuspendValidation.mock.callCount(), 1);
+        assert.strictEqual(mockReleaseSuspensions.mock.callCount(), 1);
     });
 
     test('conflict merge: invokes agent and pushes resolved conflicts', async () => {
@@ -555,9 +677,14 @@ describe('processMergeConflictJob', () => {
 
         await processMergeConflictJob(createMockJob());
 
-        const createCall = mockStateManager.createTaskState.mock.calls[0];
+        const createCall = mockStateManager.createTaskStateIfAbsent.mock.calls[0];
         assert.strictEqual(createCall.arguments[1].modelName, 'gpt-5.5');
         assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 1);
+    });
+
+    test('records the /merge command comment on the initial task state', async () => {
+        await processMergeConflictJob(createMockJob({ commandCommentId: 9001 }));
+        assert.strictEqual(mockStateManager.createTaskStateIfAbsent.mock.calls[0].arguments[1].commandCommentId, 9001);
     });
 
     test('failed merge: reports error and sets FAILED state', async () => {
@@ -658,9 +785,26 @@ describe('processMergeConflictJob', () => {
         assert.ok(body.includes('system-triggered'));
     });
 
-    test('cleans up worktree and releases lock in finally block', async () => {
+    test('renews the PR lock through slow worktree cleanup and releases it afterwards', async t => {
+        t.mock.timers.enable({ apis: ['setInterval'] });
         const job = createMockJob();
-        await processMergeConflictJob(job);
+        let lockHeldDuringCleanup: boolean | undefined;
+        mockCleanupWorktree.mock.mockImplementation(async () => {
+            lockHeldDuringCleanup = mockRedisStore.has('lock:pr:test-owner:test-repo:42');
+            const before = mockRedisClient.eval.mock.callCount();
+            t.mock.timers.tick(30_000);
+            await Promise.resolve();
+            assert.equal(mockRedisClient.eval.mock.callCount(), before + 1, 'renewal stays active during deletion');
+            assert.equal(mockRedisClient.eval.mock.calls.at(-1)!.arguments[4], 3600);
+        });
+        try {
+            await processMergeConflictJob(job);
+        } finally {
+            mockCleanupWorktree.mock.mockImplementation(async () => {});
+        }
+
+        // The worktree holds the PR branch; the next job may only get the lock once it is gone.
+        assert.strictEqual(lockHeldDuringCleanup, true);
 
         // Lock should be released
         assert.ok(!mockRedisStore.has('lock:pr:test-owner:test-repo:42'));

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   readCompleteEnvironmentGroup,
@@ -31,6 +35,71 @@ const isLinuxMaker = (maker: unknown): maker is LinuxMaker => {
 };
 
 describe('desktop release configuration', () => {
+  test('ships the external setup-host resources on both Linux and macOS', () => {
+    for (const platform of ['linux', 'darwin', 'win32']) {
+      // Evaluate the real Forge configuration for each native build host in an
+      // isolated process, including Darwin when this regression runs on Linux.
+      const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+        // Load the bundler's native dependencies for the actual test host first.
+        await import('@electron-forge/plugin-vite');
+        Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
+        const { default: config } = await import(${JSON.stringify(new URL('../forge.config.ts', import.meta.url).href)});
+        console.log(JSON.stringify(config.packagerConfig.extraResource));
+      `], { encoding: 'utf8', cwd: new URL('../', import.meta.url) });
+      const resources = (JSON.parse(output) as string[]).map(path => basename(path));
+      for (const resource of ['orchestrator.mjs', 'manifest.json', 'assets']) {
+        assert.equal(resources.includes(resource), platform !== 'win32', `${platform}: ${resource}`);
+      }
+      assert.equal(resources.includes('propr-desktop.png'), platform === 'linux');
+      assert.ok(resources.includes('propr-tray.png'));
+    }
+  });
+
+  test('normalizes the packaged manifest mode through the packager\'s real afterCopyExtraResources invocation', async () => {
+    // Drive the hook exactly as @electron/packager does (one options object with
+    // buildPath), so a packager upgrade that changes the hook convention fails here.
+    const packagerEntry = createRequire(import.meta.url).resolve('@electron/packager');
+    const { runHooks } = await import(join(dirname(packagerEntry), 'hooks.js')) as {
+      runHooks(hooks: unknown, opts: Record<string, unknown>): Promise<void>;
+    };
+    const { normalizePackagedDesktopRuntimeManifestMode } = await import('../scripts/desktop-runtime-manifest.mjs');
+    for (const platform of ['linux', 'darwin', 'win32']) {
+      // Evaluate the real Forge configuration in an isolated process so this
+      // test neither depends on nor disturbs the in-process module cache.
+      const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+        await import('@electron-forge/plugin-vite');
+        Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
+        const { default: config } = await import(${JSON.stringify(new URL('../forge.config.ts', import.meta.url).href)});
+        console.log(JSON.stringify((config.packagerConfig.afterCopyExtraResources ?? []).map(hook => [hook.name, hook.length])));
+      `], { encoding: 'utf8', cwd: new URL('../', import.meta.url) });
+      const hooks = JSON.parse(output) as Array<[string, number]>;
+      assert.deepEqual(hooks[0], platform === 'win32' ? undefined : ['normalizePackagedDesktopRuntimeManifestMode', 1], platform);
+    }
+    const root = mkdtempSync(join(tmpdir(), 'propr-manifest-hook-'));
+    try {
+      for (const platform of ['linux', 'darwin'] as const) {
+        const buildPath = join(root, platform);
+        const manifest = join(buildPath, ...(platform === 'darwin' ? ['propr-desktop.app', 'Contents', 'Resources'] : ['resources']), 'manifest.json');
+        mkdirSync(dirname(manifest), { recursive: true });
+        writeFileSync(manifest, '{}');
+        chmodSync(manifest, 0o775);
+        await runHooks([normalizePackagedDesktopRuntimeManifestMode], {
+          buildPath, electronVersion: '0.0.0', platform, arch: process.arch, packageJson: {},
+        });
+        assert.equal(statSync(manifest).mode & 0o777, 0o644, platform);
+      }
+      // The assertion above is sensitive to the call convention: the legacy
+      // positional form (buildPath, electronVersion, platform, arch) leaves the
+      // manifest untouched, so a packager that reverted to it would fail here.
+      const positional = join(root, 'positional', 'resources', 'manifest.json');
+      mkdirSync(dirname(positional), { recursive: true });
+      writeFileSync(positional, '{}');
+      chmodSync(positional, 0o775);
+      (normalizePackagedDesktopRuntimeManifestMode as unknown as (...args: unknown[]) => void)(join(root, 'positional'), '0.0.0', 'linux', 'x64');
+      assert.equal(statSync(positional).mode & 0o777, 0o775);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('selects configured Linux makers and keeps their executables aligned', async () => {
     const previousDeb = process.env.PROPR_DESKTOP_ENABLE_DEB;
     const previousRpm = process.env.PROPR_DESKTOP_ENABLE_RPM;

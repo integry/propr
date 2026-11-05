@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { SetupActions } from '@propr/local-setup';
 import { DesktopSetupController } from './setup-controller';
 import type { DesktopSetupRequest } from './shared/contract';
@@ -54,12 +56,23 @@ const waitForSnapshot = async (
   controller: DesktopSetupController,
   predicate: (snapshot: Awaited<ReturnType<DesktopSetupController['status']>>) => boolean,
 ) => {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const snapshot = await controller.status();
+  const timeoutMs = 10_000;
+  const deadline = performance.now() + timeoutMs;
+  let snapshot;
+  while (true) {
+    snapshot = await controller.status();
     if (predicate(snapshot)) return snapshot;
-    await new Promise(resolve => setImmediate(resolve));
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) break;
+    // Account discovery includes filesystem I/O; event-loop turns are not a time budget.
+    await delay(Math.min(25, remainingMs));
   }
-  throw new Error('Timed out waiting for setup snapshot');
+  throw new Error(`Timed out waiting for setup snapshot after ${timeoutMs}ms; last state: ${JSON.stringify({
+    phase: snapshot.phase,
+    githubIdentityStatus: snapshot.githubIdentity?.status,
+    steps: snapshot.state?.steps.map(step => ({ id: step.id, status: step.status })),
+    error: snapshot.error,
+  })}`);
 };
 
 const relayActions = (rootDir: string, overrides: Partial<SetupActions> = {}): SetupActions => {
@@ -247,6 +260,46 @@ describe('desktop local setup controller', () => {
     } finally { await controller.shutdown(); rmSync(appData, { recursive: true, force: true }); }
   });
 
+  it('distinguishes a failed account change from the saved identity and requires explicit keep before enrollment', async () => {
+    const appData = realpathSync.native(mkdtempSync(join(tmpdir(), 'propr-setup-controller-')));
+    chmodSync(appData, 0o700);
+    const rootDir = join(appData, 'local-runtime');
+    const enrolled: string[] = [];
+    const controller = new DesktopSetupController({
+      actions: relayActions(rootDir, {
+        loginWithGithub: async () => false,
+        githubLoginRecovery: () => ({ detail: 'GitHub sign-in was declined. Retry and approve the intended account.', nextAction: 'Retry' }),
+        fetchRelayInstallations: async () => ({ username: 'integry', installations: [{ installation_id: 100, account_login: 'integry', account_type: 'User' }] }),
+        enrollRelay: async ({ installationId }) => { enrolled.push(installationId); return { relayUrl: 'https://relay.example.test', token: 'fixture-token' }; },
+      }),
+      platform: 'linux', appDataDir: appData, defaultRootDir: rootDir,
+      statePath: join(appData, 'setup', 'state.json'), sessionId: request.sessionId,
+      selectPrivateKey: async () => null, promptWebhookSecret: async () => null,
+      resolveApiBaseUrl: async () => 'http://localhost:4000', emit: () => undefined,
+    });
+    try {
+      const running = controller.start(relayRequest);
+      await waitForSnapshot(controller, value => value.githubIdentity?.status === 'selection-required');
+      await assert.rejects(controller.resolveGithubInstallation({ action: 'keep-account' }), /no failed GitHub account change/);
+      const switching = await controller.resolveGithubInstallation({ action: 'reauthenticate' });
+      assert.equal(switching.githubIdentity?.status, 'reauthenticating');
+      const failed = await waitForSnapshot(controller, value => value.githubIdentity?.status === 'reauthentication-failed');
+      assert.equal(failed.githubIdentity?.username, 'integry');
+      assert.equal(failed.githubIdentity?.selectedInstallationId, undefined);
+      assert.match(failed.githubIdentity?.reauthenticationFailure ?? '', /declined/);
+      await assert.rejects(controller.resolveGithubInstallation({ action: 'select', installationId: '100' }), /keep @integry or try again/);
+      assert.deepEqual(enrolled, []);
+      const kept = await controller.resolveGithubInstallation({ action: 'keep-account' });
+      assert.equal(kept.githubIdentity?.reauthenticationFailure, undefined);
+      await waitForSnapshot(controller, value => value.githubIdentity?.status === 'selection-required');
+      await controller.resolveGithubInstallation({ action: 'select', installationId: '100' });
+      await waitForSnapshot(controller, value => enrolled.length === 1 || value.phase !== 'running');
+      assert.deepEqual(enrolled, ['100']);
+      await controller.cancel();
+      await running;
+    } finally { await controller.shutdown(); rmSync(appData, { recursive: true, force: true }); }
+  });
+
   it('cancels admitted engine work and allows a fresh retry without touching a real stack', async () => {
     const appData = realpathSync.native(mkdtempSync(join(tmpdir(), 'propr-setup-controller-')));
     chmodSync(appData, 0o700);
@@ -287,7 +340,7 @@ describe('desktop local setup controller', () => {
     }
   });
 
-  it('reports remote-only capability and rejects setup outside Linux', async () => {
+  it('reports remote-only capability and rejects setup on Windows', async () => {
     const appData = realpathSync.native(mkdtempSync(join(tmpdir(), 'propr-setup-controller-')));
     const controller = new DesktopSetupController({
       actions: {} as SetupActions, platform: 'win32', appDataDir: appData,
@@ -516,4 +569,104 @@ describe('desktop local setup controller', () => {
       assert.equal(restored.reconfigurationRequired, false);
     } finally { await controller.shutdown(); rmSync(appData, { recursive: true, force: true }); }
   });
+});
+
+// Real browser -> desktop host -> isolated ConfigManager -> relay API -> controller.
+// Only native UI, network responses, and unrelated Docker/backend I/O are fixtures.
+for (const outcome of ['approved', 'approved-waiting', 'approved-expiring', 'unconfirmed', 'declined', 'expired', 'transport', 'browser-launch', 'persistence'] as const) it(`browser host handoff through persistence and enrollment: ${outcome}`, async t => {
+  const { createDesktopSetupHost } = await import('../../../packages/cli/src/desktopLocalSetup');
+  const { ConfigManager } = await import('../../../packages/cli/src/config/index');
+  const { createGithubBrowserLogin } = await import('./github-browser-auth');
+  const { createGithubCodePresenter } = await import('./github-code-presenter');
+  const appData = realpathSync.native(mkdtempSync(join(tmpdir(), 'propr-browser-handoff-')));
+  chmodSync(appData, 0o700);
+  const rootDir = join(appData, 'local-runtime'); mkdirSync(rootDir, { mode: 0o700 });
+  const configDir = join(appData, 'cli');
+  const config = new ConfigManager(configDir); await config.init(); await config.setStackRoot(rootDir);
+  const deviceSecret = 'fixture_device_secret'; const userCode = 'TEST-CODE';
+  const accessToken = 'fixture_browser_token'; const relayToken = 'fixture_relay_secret';
+  const refreshToken = 'fixture_refresh_secret';
+  const approved = outcome === 'approved' || outcome === 'approved-waiting' || outcome === 'approved-expiring';
+  let activeOutcome: string = approved ? 'approved' : outcome;
+  let nativeDialogs = 0;
+  let dialogOpen = false; let confirmed = false; let relayCalls = 0;
+  if (outcome === 'persistence') t.mock.method(ConfigManager.prototype, 'save', async () => { throw new Error(`${accessToken} private filesystem error`); });
+  const snapshots: unknown[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.ok(confirmed, 'relay requests require account confirmation');
+    const disk = new ConfigManager(configDir); await disk.init();
+    assert.equal(disk.getGithubToken(), accessToken, 'token must be persisted before relay calls');
+    assert.equal(new Headers(options?.headers).get('authorization'), `Bearer ${accessToken}`);
+    relayCalls++;
+    if (String(url).endsWith('/auth/me')) return Response.json({ username: 'fixture-user', installations: [{ installation_id: 100, account_login: 'acme', account_type: 'Organization' }] });
+    assert.ok(String(url).endsWith('/relay-tokens'));
+    assert.equal(JSON.parse(String(options?.body)).installation_id, '100');
+    return Response.json({ token: relayToken });
+  };
+  try {
+    const host = await createDesktopSetupHost({ configDir, authenticationHandoff: async () => { throw new Error('terminal handoff must not run'); },
+      githubBrowserLogin: createGithubBrowserLogin({ clientId: 'fixture-client', sleep: async () => undefined,
+        presentCode: createGithubCodePresenter({ isShuttingDown: () => false, copy: () => assert.fail('no copy action'), openExternal: async url => { if (activeOutcome === 'browser-launch') throw new Error(`${accessToken} ${deviceSecret} private OS details`); assert.equal(outcome, 'approved-waiting'); assert.equal(url, 'https://github.com/login/device'); },
+          showDialog: options => {
+            nativeDialogs++;
+            if ((outcome === 'approved-waiting' || activeOutcome === 'browser-launch') && nativeDialogs === 1) return Promise.resolve({ response: 0 });
+            if (outcome === 'approved-waiting') assert.equal(options.title, 'Waiting for GitHub');
+            dialogOpen = true;
+            return new Promise(resolve => options.signal!.addEventListener('abort', () => { dialogOpen = false; resolve({ response: 2 }); }, { once: true }));
+          },
+        }),
+        confirmIdentity: async () => {
+          assert.equal(dialogOpen, false);
+          const disk = new ConfigManager(configDir); await disk.init();
+          assert.equal(disk.getGithubToken(), undefined, 'confirmation precedes persistence');
+          confirmed = activeOutcome === 'approved' || activeOutcome === 'persistence'; return confirmed;
+        },
+        fetch: async url => {
+          if (String(url).endsWith('/device/code')) return Response.json({ device_code: deviceSecret, user_code: userCode, verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 });
+          if (String(url).endsWith('/access_token')) {
+            assert.equal(dialogOpen, true, 'polling starts before any initial-dialog action');
+            if (activeOutcome === 'transport') throw new Error(`${accessToken} ${deviceSecret} ${userCode}`);
+            return Response.json(activeOutcome === 'declined' ? { error: 'access_denied' } : activeOutcome === 'expired' ? { error: 'expired_token' } : { access_token: accessToken, token_type: 'bearer', ...(outcome === 'approved-expiring' ? { expires_in: 28800, refresh_token: refreshToken, refresh_token_expires_in: 15897600 } : {}) });
+          }
+          return Response.json({ id: 123, login: 'fixture-user' });
+        },
+      }),
+    });
+    const actions = relayActions(rootDir, Object.fromEntries(['hasGithubToken', 'loginWithGithub', 'githubLoginRecovery', 'fetchRelayInstallations', 'enrollRelay'].map(key => [key, host.actions[key as keyof SetupActions]])));
+    const controller = new DesktopSetupController({ actions, platform: 'linux', appDataDir: appData, defaultRootDir: rootDir, statePath: join(appData, 'setup', 'state.json'), sessionId: request.sessionId,
+      selectPrivateKey: async () => null, promptWebhookSecret: async () => null, resolveApiBaseUrl: async () => 'http://localhost:4000', emit: snapshot => snapshots.push(snapshot),
+    });
+    const pending = controller.start(relayRequest);
+    if (approved) {
+      await waitForSnapshot(controller, snapshot => snapshot.githubIdentity?.status === 'selection-required');
+      assert.equal(relayCalls, 1, 'discovery alone must not enroll');
+      await controller.resolveGithubInstallation({ action: 'select', installationId: '100' });
+    }
+    const result = await pending;
+    assert.equal(dialogOpen, false);
+    const disk = new ConfigManager(configDir); await disk.init();
+    if (approved) {
+      assert.equal(result.phase, 'completed'); assert.equal(disk.getGithubToken(), accessToken); assert.equal(relayCalls, 3);
+      assert.equal(disk.getGithubCredential()?.refreshToken, outcome === 'approved-expiring' ? refreshToken : undefined);
+      assert.equal(disk.getGithubCredential()?.expiresAt !== undefined, outcome === 'approved-expiring');
+    } else {
+      assert.equal(result.phase, 'failed'); assert.equal(disk.getGithubToken(), undefined); assert.equal(relayCalls, 0);
+      const failed = result.state?.steps.find(step => step.id === 'github-auth');
+      assert.match(failed?.nextAction ?? '', /Retry setup.*browser/);
+      assert.doesNotMatch(failed?.nextAction ?? '', /propr login|propr setup/);
+      assert.match(failed?.detail ?? '', { unconfirmed: /account was not confirmed/, declined: /declined/, expired: /expired/, transport: /browser sign-in could not complete/, 'browser-launch': /browser sign-in could not complete/, persistence: /could not save sign-in/ }[outcome]);
+    }
+    if (!approved) {
+      t.mock.restoreAll();
+      activeOutcome = 'approved';
+      const retry = controller.retry();
+      await waitForSnapshot(controller, snapshot => snapshot.githubIdentity?.status === 'selection-required');
+      await controller.resolveGithubInstallation({ action: 'select', installationId: '100' });
+      assert.equal((await retry).phase, 'completed', 'desktop retry completes browser sign-in and enrollment');
+      assert.equal(relayCalls, 3);
+    }
+    const publicData = JSON.stringify(snapshots);
+    for (const secret of [accessToken, refreshToken, deviceSecret, userCode, relayToken]) assert.ok(!publicData.includes(secret), 'public snapshots and logs must exclude secrets');
+  } finally { globalThis.fetch = originalFetch; rmSync(appData, { recursive: true, force: true }); }
 });

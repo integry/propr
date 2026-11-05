@@ -1,0 +1,387 @@
+name: Desktop Linux Authenticated Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Sign an existing unsigned bundle into a distinct draft, publish the signed draft, or verify the stored signing key only
+        required: true
+        type: choice
+        default: sign-draft
+        options: [sign-draft, publish-draft, verify-key]
+      source_revision:
+        description: Frozen full source SHA of the unsigned preview (do not refresh implicitly); verify-key - main-reachable SHA recorded as identity metadata only
+        required: true
+        type: string
+      unsigned_run_id:
+        description: Sign only - successful Desktop Linux Preview Release stage-draft run ID
+        required: false
+        type: string
+
+      signing_run_id:
+        description: Publish only - successful signing run whose exact installed RPM acceptance evidence is required
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-linux-signed-preview-${{ inputs.source_revision }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      unsigned_artifact: ${{ steps.identity.outputs.unsigned_artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate frozen source and trusted unsigned workflow provenance
+        id: identity
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          OPERATION: ${{ inputs.operation }}
+          SIGNING_RUN_ID: ${{ inputs.signing_run_id }}
+          UNSIGNED_RUN_ID: ${{ inputs.unsigned_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE_REVISION" HEAD
+          git show "$SOURCE_REVISION:apps/desktop/package.json" > "$RUNNER_TEMP/frozen-desktop-package.json"
+          version="$(node -p 'require(process.env.RUNNER_TEMP + "/frozen-desktop-package.json").version')"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          if [ "$OPERATION" = sign-draft ]; then
+            test -z "$SIGNING_RUN_ID"
+            [[ "$UNSIGNED_RUN_ID" =~ ^[0-9]+$ ]]
+            gh api "repos/$REPOSITORY/actions/runs/$UNSIGNED_RUN_ID" > "$RUNNER_TEMP/unsigned-run.json"
+            node --input-type=module - <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const run = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/unsigned-run.json`));
+          if (String(run.id) !== process.env.UNSIGNED_RUN_ID || run.event !== 'workflow_dispatch'
+            || run.path !== '.github/workflows/desktop-linux-preview.yml'
+            || run.head_branch !== 'main' || run.conclusion !== 'success'
+            || run.repository.full_name !== process.env.REPOSITORY) {
+            throw new Error('Expected a successful main-dispatched unsigned preview workflow in this repository');
+          }
+          NODE
+          elif [ "$OPERATION" = verify-key ]; then
+            # Credential check only: no unsigned bundle, signing run or candidate input.
+            test -z "$UNSIGNED_RUN_ID"
+            test -z "$SIGNING_RUN_ID"
+          else
+            test "$OPERATION" = publish-draft
+            test -z "$UNSIGNED_RUN_ID"
+            [[ "$SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "unsigned_artifact=propr-desktop-linux-preview-final-desktop-linux-preview-v${version}-${SOURCE_REVISION:0:12}-${UNSIGNED_RUN_ID}" >> "$GITHUB_OUTPUT"
+
+  verify-helpers:
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
+      - name: Exercise disposable keys, native fixtures, and signed publication rejection
+        env:
+          PROPR_REQUIRE_RPM_TESTS: '1'
+        run: |
+          node --test apps/desktop/scripts/rpm-signing.test.mjs \
+            apps/desktop/scripts/linux-preview-release.test.mjs \
+            apps/desktop/scripts/linux-preview-workflow.test.mjs \
+            apps/desktop/scripts/signed-rpm-acceptance-evidence.test.mjs \
+            apps/desktop/scripts/packaged-browser-approval.test.mjs \
+            apps/desktop/scripts/signing-key-verification.test.mjs
+
+  sign:
+    if: inputs.operation == 'sign-draft'
+    needs: [identity, verify-helpers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: desktop-linux-rpm-signing
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require owner-provisioned signing authority
+        env:
+          AUTHORIZED: ${{ vars.PROPR_DESKTOP_RPM_SIGNING_AUTHORIZED }}
+        run: test "$AUTHORIZED" = 1
+      - name: Checkout reviewed signing code only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout frozen source pins as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: frozen-source
+          persist-credentials: false
+      - name: Install Linux signing and package inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
+      - name: Download only the exact finalized unsigned bundle
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.unsigned_run_id }}
+          name: ${{ needs.identity.outputs.unsigned_artifact }}
+          path: unsigned-preview
+      - name: Bind bundle to original workflow run
+        env:
+          UNSIGNED_RUN_ID: ${{ inputs.unsigned_run_id }}
+        run: |
+          node --input-type=module - <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const manifest = JSON.parse(readFileSync('unsigned-preview/linux-preview.json'));
+          if (manifest.workflowRunId !== process.env.UNSIGNED_RUN_ID) throw new Error('Original preview run mismatch');
+          NODE
+      - name: Authenticate both DEB and RPM architectures and APT metadata
+        env:
+          PROPR_DESKTOP_RPM_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}
+          PROPR_DESKTOP_RPM_PASSPHRASE: ${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          node apps/desktop/scripts/linux-preview-release.mjs sign-bundle --signed-linux \
+            --version "$VERSION" --source-revision "$SOURCE_REVISION" \
+            --repository "${{ github.repository }}" --source-directory frozen-source \
+            --input unsigned-preview --output signed-preview
+          (cd signed-preview && sha256sum --check SHA256SUMS)
+      - name: Upload only final signed bytes
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-linux-signed-${{ github.run_id }}
+          path: signed-preview
+          if-no-files-found: error
+          retention-days: 90
+
+  installed-rpm-acceptance:
+    if: inputs.operation == 'sign-draft'
+    needs: [identity, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+      - name: Install locked workspace dependencies for the acceptance runner
+        # Host imports require sharp; Electron and browser installation stays in the disposable container.
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm gnupg
+      - name: Download exact signing-run artifact, never rebuild the RPM
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-linux-signed-${{ github.run_id }}
+          path: signed-preview
+      - name: Install signed x64 RPM in disposable openSUSE and approve in fixture browser
+        env:
+          PROPR_DESKTOP_REAL_LINUX_PACKAGE_ACCEPTANCE: '1'
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          node apps/desktop/scripts/run-signed-installed-rpm-acceptance.mjs \
+            --rpm "signed-preview/ProPR-Desktop-$VERSION-linux-x64.rpm" \
+            --source-revision "$SOURCE_REVISION" --signing-run-id "${{ github.run_id }}" \
+            --output signed-rpm-acceptance
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-installed-signed-rpm-${{ github.run_id }}
+          path: signed-rpm-acceptance/signed-rpm-acceptance.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain bounded visual and accessibility evidence separately
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-installed-signed-rpm-visual-${{ github.run_id }}
+          path: |
+            signed-rpm-acceptance/desktop-acceptance-artifacts
+            signed-rpm-acceptance/pairing-evidence
+          if-no-files-found: error
+          retention-days: 90
+
+  stage-draft:
+    if: inputs.operation == 'sign-draft'
+    needs: [identity, sign, installed-rpm-acceptance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: frozen-source
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-linux-signed-${{ github.run_id }}
+          path: signed-preview
+      - name: Reverify signed bundle and stage or resume exact draft bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          node apps/desktop/scripts/linux-preview-release.mjs stage-draft --signed-linux \
+            --version "$VERSION" --source-revision "$SOURCE_REVISION" \
+            --repository "${{ github.repository }}" --source-directory frozen-source \
+            --directory signed-preview
+
+  publish-draft:
+    if: inputs.operation == 'publish-draft'
+    needs: [identity, verify-helpers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: desktop-linux-preview-publication
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Require explicit protected preview publication authority
+        env:
+          AUTHORIZED: ${{ vars.PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED }}
+        run: test "$AUTHORIZED" = 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: frozen-source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
+      - name: Download required acceptance from the exact successful signing run
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.signing_run_id }}
+          name: propr-desktop-installed-signed-rpm-${{ inputs.signing_run_id }}
+          path: signed-rpm-acceptance
+      - name: Download exact draft bytes and reverify signatures and payload before publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          node apps/desktop/scripts/linux-preview-release.mjs publish-draft --signed-linux \
+            --version "$VERSION" --source-revision "$SOURCE_REVISION" \
+            --repository "${{ github.repository }}" --source-directory frozen-source \
+            --signing-run-id "${{ inputs.signing_run_id }}" \
+            --acceptance-evidence signed-rpm-acceptance/signed-rpm-acceptance.json
+
+  # Proves the stored key pair signs for the pinned identity. It never downloads,
+  # builds, signs, installs or publishes a package, release, image or candidate.
+  verify-key:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'verify-key'
+    needs: [identity, verify-helpers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: desktop-linux-rpm-signing
+    permissions:
+      contents: read
+    steps:
+      - name: Require owner-provisioned signing authority
+        env:
+          AUTHORIZED: ${{ vars.PROPR_DESKTOP_RPM_SIGNING_AUTHORIZED }}
+        run: test "$AUTHORIZED" = 1
+      - name: Checkout reviewed control code only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind checkout to the reviewed control revision
+        env:
+          CONTROL_REVISION: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$CONTROL_REVISION"
+      - name: Install GnuPG only
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gnupg
+      - name: Sign and independently verify a fixed nonsecret challenge with the stored key pair
+        env:
+          PROPR_DESKTOP_RPM_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}
+          PROPR_DESKTOP_RPM_PASSPHRASE: ${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          CONTROL_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          node apps/desktop/scripts/signing-key-verification.mjs verify-key \
+            --repository "$REPOSITORY" --workflow-run-id "$WORKFLOW_RUN_ID" \
+            --control-revision "$CONTROL_REVISION" --source-revision "$SOURCE_REVISION" \
+            --output signing-key-verification/signing-key-verification.json
+      - name: Publish the public receipt to the run summary
+        run: |
+          {
+            echo '### Linux signing-key verification receipt'
+            echo '```json'
+            cat signing-key-verification/signing-key-verification.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain only the public receipt
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-linux-signing-key-verification-${{ github.run_id }}
+          path: signing-key-verification/signing-key-verification.json
+          if-no-files-found: error
+          retention-days: 90

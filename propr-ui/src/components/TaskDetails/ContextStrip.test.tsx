@@ -1,0 +1,154 @@
+import { render, screen, within } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import ContextStrip, { ConsumptionGroup } from './ContextStrip';
+import type { TaskInfo } from './types';
+
+const props = {
+  taskInfo: { repoOwner: 'integry', repoName: 'propr', type: 'issue', number: 2658 },
+  modelName: 'gpt-6-astra',
+  duration: 632_000,
+  prInfo: { number: 2661, url: 'https://github.com/integry/propr/pull/2661' },
+  commitInfo: { shortHash: '5c7cd9e', url: 'https://github.com/integry/propr/commit/5c7cd9e' },
+};
+
+describe('Task details telemetry', () => {
+  it('separates Git, runtime, and consumption and labels input/output including cached input', () => {
+    render(<ContextStrip {...props}
+      tokenUsage={{ input_tokens: 100_000, cache_read_input_tokens: 3_000_000, cache_creation_input_tokens: 800_000, output_tokens: 30_000 }}
+      usageMetricRecords={[{ agent: 'codex', metricKey: 'weekly', metricValue: 1 }]} />);
+    const git = within(screen.getByRole('group', { name: 'Git context' }));
+    expect(git.getByRole('link', { name: 'integry/propr' })).toBeInTheDocument();
+    expect(git.getByRole('link', { name: /PR #2661/ })).toBeInTheDocument();
+    expect(git.getByRole('link', { name: '5c7cd9e' })).toBeInTheDocument();
+    const runtime = screen.getByRole('group', { name: 'Execution runtime' });
+    expect(runtime).toHaveTextContent('GPT-6 Astra');
+    expect(runtime).toHaveTextContent('10m 32s');
+    const consumption = within(screen.getByRole('group', { name: 'Consumption' }));
+    expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('↑3.9M↓30k(1.0% quota)');
+    expect(consumption.getByLabelText('3.9M input tokens')).toBeInTheDocument();
+    expect(consumption.getByText('1.0% quota')).toHaveClass('text-slate-500');
+    // Chips and clusters are set apart by space and a hairline rule, never dots.
+    expect(document.body).not.toHaveTextContent(/[·•]/);
+    expect(runtime).not.toHaveTextContent('5c7cd9e');
+  });
+
+  it('labels session and weekly quotas individually and warns on a task consuming more than 25%', () => {
+    render(<ContextStrip {...props} usageMetricRecords={[
+      { agent: 'claude', metricKey: 'Session', metricValue: 26 },
+      { agent: 'claude', metricKey: 'Weekly', metricValue: 5.1 },
+    ]} />);
+    expect(screen.getByText('26.0% session')).toHaveClass('text-amber-600', 'font-medium');
+    expect(screen.getByText('5.1% weekly')).toHaveClass('text-slate-500');
+  });
+
+  it('keeps zero tokens and reported zero quota visible', () => {
+    render(<ContextStrip {...props} tokenUsage={{ input_tokens: 0, output_tokens: null }}
+      usageMetricRecords={[{ agent: 'codex', metricKey: 'Weekly', metricValue: 0 }]} />);
+    expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('↑0↓0(0.0% quota)');
+    expect(screen.getByTitle('Usage consumed: Weekly: 0.0%')).toBeInTheDocument();
+  });
+
+  it('includes all-zero session and weekly records in the tooltip', () => {
+    render(<ContextStrip {...props} usageMetricRecords={[
+      { agent: 'codex', metricKey: 'session', metricValue: 0 },
+      { agent: 'codex', metricKey: 'weeklyAll', metricValue: 0 },
+    ]} />);
+    expect(screen.getByTitle('Usage consumed: Session: 0.0% | Weekly: 0.0%')).toHaveTextContent('(0.0% session, 0.0% weekly)');
+  });
+
+  it.each([
+    ['Gemini · Weekly Limit Remaining', 'Gemini · Weekly Limit'],
+    ['fiveHour', 'Five Hour'],
+    ['weeklySonnet', 'Sonnet'],
+    ['customWindow', 'Custom Window'],
+  ])('shows reported %s quota in desktop and mobile consumption', (metricKey, label) => {
+    const records = [
+      { agent: 'gemini', metricKey, metricValue: 12 },
+      { agent: 'claude', metricKey: 'daily', metricValue: 0 },
+    ];
+    const { rerender } = render(<ContextStrip {...props} usageMetricRecords={records} />);
+    const check = () => {
+      expect(screen.queryByText('(no quota data)')).not.toBeInTheDocument();
+      expect(screen.getByTitle(`${label}: 12.0% | Daily: 0.0%`)).toHaveTextContent(`(12.0% ${label})`);
+    };
+    check();
+    rerender(<ConsumptionGroup usageMetricRecords={records} />);
+    check();
+    rerender(<ConsumptionGroup usageMetricRecords={[{ ...records[0], metricValue: 0 }]} />);
+    expect(screen.getByTitle(`${label}: 0.0%`)).toHaveTextContent(`(0.0% ${label})`);
+    rerender(<ConsumptionGroup usageMetricRecords={[]} />);
+    expect(screen.getByTitle('Quota usage has not been reported')).toBeInTheDocument();
+  });
+
+  it('keeps a consumption slot before any usage is reported', () => {
+    render(<ContextStrip {...props} />);
+    expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('↑0↓0(no quota data)');
+  });
+
+  it('shows the run spend beside its cap and marks a run stopped at the cap', () => {
+    const { rerender } = render(<ContextStrip {...props}
+      budget={{ spentUsd: 1.2, capUsd: 5, percent: 24, source: 'workflow', exceeded: false }} />);
+    const consumption = screen.getByRole('group', { name: 'Consumption' });
+    expect(consumption).toHaveTextContent('$1.20 / $5.00 (24%)');
+    expect(within(consumption).getByLabelText('Spend $1.20 of $5.00 cap, 24%')).toHaveAttribute('title', expect.stringContaining('.propr/workflow.yml'));
+
+    rerender(<ContextStrip {...props} budget={{ spentUsd: 5.3, capUsd: 5, percent: 106, source: 'override', exceeded: true }} />);
+    const capped = within(screen.getByRole('group', { name: 'Consumption' })).getByLabelText(/stopped at cap/);
+    expect(capped).toHaveTextContent('$5.30 / $5.00 (106%)capped');
+    expect(capped).toHaveClass('text-red-700');
+
+    rerender(<ContextStrip {...props} budget={{ spentUsd: 0.75, capUsd: null, percent: null, source: null, exceeded: false }} />);
+    expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('$0.75');
+  });
+});
+
+describe('Task details attempt lineage', () => {
+  it('shows the attempt and links every other attempt of an automatic-replacement lineage', () => {
+    render(<ContextStrip {...props} taskInfo={{
+      ...props.taskInfo, attemptNumber: 2, replacesTaskId: 'attempt-1', replacedByTaskId: 'attempt-3',
+      attemptLineage: [
+        { taskId: 'attempt-1', attemptNumber: 1, replacementCause: null, state: 'failed' },
+        { taskId: 'attempt-2', attemptNumber: 2, replacementCause: 'infra_lost', state: 'failed' },
+        { taskId: 'attempt-3', attemptNumber: 3, replacementCause: 'provider_transient', state: 'processing' },
+      ],
+    }} />);
+    const lineage = within(screen.getByRole('group', { name: 'Attempt lineage' }));
+    expect(lineage.getByText('Attempt 2 of 3')).toBeInTheDocument();
+    expect(lineage.getByRole('link', { name: '#1' })).toHaveAttribute('href', '/tasks/attempt-1');
+    expect(lineage.getByRole('link', { name: '#3' })).toHaveAttribute('href', '/tasks/attempt-3');
+    expect(lineage.queryByRole('link', { name: '#2' })).toBeNull();
+  });
+
+  it('links the neighbouring attempts when the full lineage is unavailable', () => {
+    render(<ContextStrip {...props} taskInfo={{ ...props.taskInfo, attemptNumber: 2, replacesTaskId: 'attempt-1', replacedByTaskId: null }} />);
+    const lineage = within(screen.getByRole('group', { name: 'Attempt lineage' }));
+    expect(lineage.getByRole('link', { name: 'replaces previous' })).toHaveAttribute('href', '/tasks/attempt-1');
+  });
+
+  it('shows nothing for a task outside a lineage', () => {
+    render(<ContextStrip {...props} taskInfo={{ ...props.taskInfo, attemptNumber: 1, replacesTaskId: null, replacedByTaskId: null }} />);
+    expect(screen.queryByRole('group', { name: 'Attempt lineage' })).toBeNull();
+  });
+});
+
+describe('Task details repository identity', () => {
+  it('gives the repository its own part, owner above name', () => {
+    render(<ContextStrip {...props} part="repository" />);
+    expect(screen.getByRole('link', { name: 'integry/propr' })).toHaveAttribute('href', 'https://github.com/integry/propr');
+  });
+
+  it.each([
+    ['no repository', { type: 'agent-run', number: 0, taskKind: 'automation-report' }],
+    ['an owner only', { type: 'issue', number: 2658, repoOwner: 'integry' }],
+    ['a name only', { type: 'issue', number: 2658, repoName: 'propr' }],
+  ] as [string, TaskInfo][])('omits the repository for a task with %s', (_, taskInfo) => {
+    const { container, unmount } = render(<ContextStrip {...props} taskInfo={taskInfo} part="repository" />);
+    expect(container).toBeEmptyDOMElement();
+    unmount();
+    render(<ContextStrip {...props} taskInfo={taskInfo} />);
+    expect(screen.queryByTestId('task-repository')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /undefined/ })).not.toBeInTheDocument();
+    // The rest of the Git context stays.
+    expect(within(screen.getByRole('group', { name: 'Git context' })).getByRole('link', { name: /PR #2661/ })).toBeVisible();
+  });
+});

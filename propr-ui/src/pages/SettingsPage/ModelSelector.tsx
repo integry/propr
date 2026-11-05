@@ -34,7 +34,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   onReasoningLevelChange
 }) => {
   const models = buildSelectableModels(agentType, [...availableModelIds, ...supportedModels, ...(defaultModel ? [defaultModel] : [])]);
-  const supportedReasoningLevels = getReasoningLevelsForAgentType(agentType);
 
   return <div>
     <div className="flex justify-between items-center mb-1.5">
@@ -58,6 +57,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         const isSupported = supportedModels.includes(model.id);
         const isDefault = defaultModel === model.id;
         const modelCustomLabel = modelCustomLabels?.[model.id] || '';
+        const supportedReasoningLevels = getReasoningLevelsForAgentType(agentType, model.id);
         const modelReasoningLevel = modelReasoningLevels?.[model.id] || '';
         const reasoningLevelOptions = buildReasoningLevelSelectOptions(modelReasoningLevel, supportedReasoningLevels);
         const githubLabel = getModelGithubLabel(agentType, agentAlias, model);
@@ -89,7 +89,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
                     </span>
                   )}
                 </div>
-                <code className="text-xs text-gray-500">{model.id}</code>
                 <div className="text-xs text-blue-600 mt-0.5">
                   alias: {model.shortAlias}
                 </div>

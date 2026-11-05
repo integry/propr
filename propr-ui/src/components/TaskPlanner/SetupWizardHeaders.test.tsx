@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { EditModeHeader, NewModeHeader } from './SetupWizardHeaders';
+import { EditModeHeader, NewModeHeader, ScopeError } from './SetupWizardHeaders';
 
 const duplicateRepos = [
   { name: 'integry/propr', enabled: true, baseBranch: 'main' },
@@ -47,8 +47,12 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    const trigger = screen.getByRole('button', { name: /propr \(develop\)/i });
-    expect(trigger).toBeInTheDocument();
+    // One scope pill on a phone ("propr/develop"); from md up the suffix hides and the branch chip beside it shows the branch.
+    const trigger = screen.getByRole('button', { name: /^propr\/develop$/i });
+    expect(trigger).toHaveAttribute('title', 'integry/propr (develop)');
+    expect(screen.getByTestId('scope-pill-branch')).toHaveClass('md:hidden');
+    expect(screen.getByTestId('branch-chip')).toHaveTextContent('develop');
+    expect(screen.getByTestId('branch-chip').parentElement).toHaveClass('hidden', 'md:inline-flex');
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
@@ -78,11 +82,11 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    expect(screen.getByRole('button', { name: /propr$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^propr\/main$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /propr \(main\)/i })).not.toBeInTheDocument();
   });
 
-  it('shows branch lookup failures in new mode', () => {
+  it('marks the branch unverified in new mode when its lookup failed', () => {
     render(
       <NewModeHeader
         reposLoading={false}
@@ -96,7 +100,59 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    expect(screen.getByText('GitHub unavailable')).toBeInTheDocument();
-    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.getByText('branch (unverified)')).toBeInTheDocument();
+  });
+
+  it('renders the lookup error as its own wrapping line, and nothing without one', () => {
+    const message = 'GitHub authorization is required. Sign in with the same GitHub account in your instance’s browser login, then retry your original action in Desktop.';
+    const { rerender } = render(<ScopeError message={message} />);
+    const error = screen.getByTestId('scope-error');
+    expect(error).toHaveTextContent(message);
+    expect(error).toHaveClass('[overflow-wrap:anywhere]');
+    expect(error).not.toHaveClass('flex-shrink-0', 'truncate');
+    rerender(<ScopeError message={null} />);
+    expect(screen.queryByTestId('scope-error')).not.toBeInTheDocument();
+  });
+
+  it('shows a neutral verifying chip, not a warning, before the branch lookup resolves', () => {
+    render(
+      <NewModeHeader
+        reposLoading={false}
+        selectedRepo="integry/propr"
+        selectedBaseBranch="main"
+        repos={duplicateRepos}
+        onRepoChange={vi.fn()}
+        baseBranch=""
+        isLoadingBranches={false}
+      />
+    );
+
+    const chip = screen.getByTestId('branch-chip');
+    expect(chip).toHaveTextContent('main');
+    expect(chip).not.toHaveTextContent('unverified');
+    expect(chip).toHaveAttribute('data-status', 'verifying');
+    expect(chip).not.toHaveClass('bg-amber-50');
+    expect(screen.queryByLabelText('Branch status unavailable')).not.toBeInTheDocument();
+  });
+
+  it('keeps the configured branch name visible with a warning when its lookup failed', () => {
+    render(
+      <EditModeHeader
+        repository="integry/propr"
+        isRepoLoading={false}
+        baseBranch=""
+        selectedBaseBranch="main"
+        branchError={null}
+        repoError="GitHub unavailable"
+        repos={duplicateRepos}
+        onRepoChange={vi.fn()}
+        reposLoading={false}
+      />
+    );
+
+    const chip = screen.getByTestId('branch-chip');
+    expect(chip).toHaveTextContent('main (unverified)');
+    expect(chip.getAttribute('title')).toContain('Plans can only be generated against a verified branch.');
+    expect(screen.getByLabelText('Branch status unavailable')).toBeInTheDocument();
   });
 });

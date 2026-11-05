@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
 
 /**
- * The spot in the global toolbar, immediately left of search, where a page can
+ * The spot in the global toolbar, immediately right of search, where a page can
  * mount its scope control (the Dashboard's repository filter). The layout owns
  * the element; a page portals into it. `null` outside the layout, and until
  * the toolbar has mounted.

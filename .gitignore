@@ -34,6 +34,7 @@ src/**/*.d.ts
 
 # E2E test reports (generated per run)
 test/reports/
+/test-results/
 
 # Promotional videos — lives in its own private repo (git@github.com:integry/propr-videos.git)
 apps/release-site-videos/
@@ -44,3 +45,9 @@ dist-publish/
 # Electron Forge build and package output
 apps/desktop/.vite/
 apps/desktop/out/
+
+# Generated when producing the MCP-readable documentation bundle.
+docs/docs-manifest.json
+
+# Runtime scratch storage for uploaded attachments (multer uploadDir).
+temp_uploads/

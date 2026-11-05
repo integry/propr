@@ -2,6 +2,9 @@ import { normalizeGitHubAttachmentPlanOverride } from '@propr/shared';
 import { randomUUID } from 'crypto';
 import type { RepoToMonitor, VisualPreviewSettings, VisualPreviewType } from '@propr/core';
 import { normalizeOptionalBranchName } from './branchNameValidation.js';
+import { normalizeContextRepositories } from './configRepoContext.js';
+import { normalizeRepoAutoAssign, preserveRepoAutoAssign, withDefaultRepoAutoAssign } from './configRepoAutoAssign.js';
+import { isValidAutoResolveMergeConflicts, normalizeStoredAutoResolveMergeConflicts, preserveRepoAutoResolveMergeConflicts, withAutoResolveMergeConflicts } from './configRepoAutoResolve.js';
 
 const MAX_VISUAL_PREVIEW_INSTRUCTIONS_LENGTH = 4000;
 
@@ -72,10 +75,12 @@ export function withDefaultRepoAutoFollowup(repo: RepoToMonitor): RepoToMonitor 
 
 export function withDefaultRepoOptions(repo: RepoToMonitor): RepoToMonitor {
   return {
-    ...withDefaultRepoAutoFollowup(repo),
+    ...withAutoResolveMergeConflicts(withDefaultRepoAutoAssign(withDefaultRepoAutoFollowup(repo)), normalizeStoredAutoResolveMergeConflicts(repo.autoResolveMergeConflicts)),
     cancelCiDuringFollowup: repo.cancelCiDuringFollowup === true,
     cancelCiDuringFollowupWorkflows: normalizeStoredWorkflowSelection(repo.cancelCiDuringFollowupWorkflows),
+    nonBlockingChecks: normalizeStoredWorkflowSelection(repo.nonBlockingChecks),
     notificationsEnabled: repo.notificationsEnabled !== false,
+    githubPrTemplateFallback: repo.githubPrTemplateFallback !== false,
     visualPreview: normalizeStoredVisualPreviewSettings(repo.visualPreview)
   };
 }
@@ -114,6 +119,20 @@ export function preserveRepoCancelCiWorkflows(
     if (incomingRepo.cancelCiDuringFollowupWorkflows !== undefined) return repo;
     const previousRepo = previousRepos.find(candidate => candidate.id === repo.id);
     return { ...repo, cancelCiDuringFollowupWorkflows: normalizeStoredWorkflowSelection(previousRepo?.cancelCiDuringFollowupWorkflows) };
+  });
+}
+
+/** A client that does not know the field must never drop the operator's non-blocking checks. */
+export function preserveRepoNonBlockingChecks(
+  previousRepos: RepoToMonitor[],
+  normalizedRepos: RepoToMonitor[],
+  incomingRepos: unknown[]
+): RepoToMonitor[] {
+  return normalizedRepos.map((repo, index) => {
+    const incomingRepo = incomingRepos[index] as Partial<RepoToMonitor>;
+    if (incomingRepo.nonBlockingChecks !== undefined) return repo;
+    const previousRepo = previousRepos.find(candidate => candidate.id === repo.id);
+    return { ...repo, nonBlockingChecks: normalizeStoredWorkflowSelection(previousRepo?.nonBlockingChecks) };
   });
 }
 
@@ -324,8 +343,27 @@ function normalizeWorkflowSelection(value: unknown, repoName: string): Validatio
   return success(selection);
 }
 
+/** Check run name patterns that never block automation (`*` matches any text). */
+function normalizeNonBlockingChecks(value: unknown, repoName: string): ValidationResult<string[]> {
+  if (value === undefined || value === null) return success([]);
+  if (!Array.isArray(value)) return failure(`Invalid nonBlockingChecks format for ${repoName}: must be an array of check run names`);
+  if (value.length > MAX_CANCEL_CI_WORKFLOWS) return failure(`Invalid nonBlockingChecks format for ${repoName}: at most ${MAX_CANCEL_CI_WORKFLOWS} checks`);
+  const checks: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') return failure(`Invalid nonBlockingChecks format for ${repoName}: every check must be a string`);
+    const check = entry.trim();
+    if (!check) continue;
+    if (check.length > MAX_CANCEL_CI_WORKFLOW_LENGTH) {
+      return failure(`Invalid nonBlockingChecks format for ${repoName}: a check must be ${MAX_CANCEL_CI_WORKFLOW_LENGTH} characters or fewer`);
+    }
+    if (/^\*+$/.test(check)) return failure(`Invalid nonBlockingChecks format for ${repoName}: a pattern must name a check, not match every check`);
+    if (!checks.some(existing => existing.toLowerCase() === check.toLowerCase())) checks.push(check);
+  }
+  return success(checks);
+}
+
 /** Optional booleans that are rejected when present with a non-boolean value. */
-const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled'] as const;
+const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled', 'githubPrTemplateFallback', 'autoAssignPullRequests', 'autoAssignRequestReview'] as const;
 
 function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: string): ValidationResult<undefined> {
   for (const field of OPTIONAL_BOOLEAN_FIELDS) {
@@ -333,6 +371,7 @@ function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: s
       return failure(`Invalid ${field} format for ${repoName}: must be a boolean`);
     }
   }
+  if (!isValidAutoResolveMergeConflicts(candidate.autoResolveMergeConflicts)) return failure(`Invalid autoResolveMergeConflicts format for ${repoName}: must be a boolean or null`);
   return success(undefined);
 }
 
@@ -357,21 +396,47 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!booleans.ok) return booleans;
   const cancelCiWorkflows = normalizeWorkflowSelection(candidate.cancelCiDuringFollowupWorkflows, name);
   if (!cancelCiWorkflows.ok) return cancelCiWorkflows;
+  const nonBlockingChecks = normalizeNonBlockingChecks(candidate.nonBlockingChecks, name);
+  if (!nonBlockingChecks.ok) return nonBlockingChecks;
+  const context = normalizeContextRepositories(candidate.contextRepositories);
+  if (!context.ok) return context;
   const visualPreview = normalizeVisualPreview(candidate.visualPreview, name);
   if (!visualPreview.ok) return visualPreview;
+  const autoAssign = normalizeRepoAutoAssign(candidate, name);
+  if (!autoAssign.ok) return autoAssign;
 
-  return success({
+  return success(withAutoResolveMergeConflicts({
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
+    contextRepositories: context.value,
     autoFollowupOnFailedCi: candidate.autoFollowupOnFailedCi ?? false,
     cancelCiDuringFollowup: candidate.cancelCiDuringFollowup ?? false,
     cancelCiDuringFollowupWorkflows: cancelCiWorkflows.value,
+    nonBlockingChecks: nonBlockingChecks.value,
     notificationsEnabled: candidate.notificationsEnabled !== false,
+    githubPrTemplateFallback: candidate.githubPrTemplateFallback !== false,
     visualPreview: visualPreview.value,
+    ...autoAssign.value,
     alias: alias.value,
     baseBranch: baseBranch.value,
     defaultBranch: defaultBranch.value
+  }, normalizeStoredAutoResolveMergeConflicts(candidate.autoResolveMergeConflicts)));
+}
+
+/**
+ * Clients that do not know the GitHub pull request template fallback must not
+ * switch it back on: keep the stored repository-wide value (enabled by default).
+ */
+export function preserveRepoGitHubPrTemplateFallback(
+  previousRepos: RepoToMonitor[],
+  normalizedRepos: RepoToMonitor[],
+  incomingRepos: unknown[]
+): RepoToMonitor[] {
+  return normalizedRepos.map((repo, index) => {
+    if ((incomingRepos[index] as Partial<RepoToMonitor>).githubPrTemplateFallback !== undefined) return repo;
+    const disabled = previousRepos.some(candidate => repositoryKeyOf(candidate.name) === repositoryKeyOf(repo.name) && candidate.githubPrTemplateFallback === false);
+    return { ...repo, githubPrTemplateFallback: !disabled };
   });
 }
 
@@ -385,9 +450,25 @@ export function preserveRepoSettings(
   normalizedRepos: RepoToMonitor[],
   incomingRepos: unknown[]
 ): RepoToMonitor[] {
-  let repos = preserveRepoAutoFollowup(previousRepos, normalizedRepos, incomingRepos);
+  const withContext = normalizedRepos.map((repo, index): RepoToMonitor => {
+    if ((incomingRepos[index] as Partial<RepoToMonitor>).contextRepositories !== undefined) return repo;
+    const previous = previousRepos.find(candidate => candidate.id === repo.id);
+    const matches = previousRepos.filter(candidate => repositoryKeyOf(candidate.name) === repositoryKeyOf(repo.name));
+    // Older clients may regenerate IDs or collapse branch entries. Preserve the
+    // effective repository policy, including restrictions on removed branches.
+    const settings = (matches.length ? matches : previous ? [previous] : []).map(entry => entry.contextRepositories);
+    const lists = settings.filter((setting): setting is string[] => Array.isArray(setting));
+    const contextRepositories = settings.includes('none') ? 'none'
+      : lists.length ? lists.map(list => [...new Set(list.map(repositoryKeyOf))])
+        .reduce((left, right) => left.filter(name => right.includes(name)))
+      : settings.includes('all') ? 'all' : undefined;
+    return { ...repo, contextRepositories };
+  });
+  let repos = preserveRepoAutoFollowup(previousRepos, withContext, incomingRepos);
   repos = preserveRepoCancelCiDuringFollowup(previousRepos, repos, incomingRepos);
   repos = preserveRepoCancelCiWorkflows(previousRepos, repos, incomingRepos);
-  repos = preserveRepoNotifications(previousRepos, repos, incomingRepos);
+  repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);
+  repos = preserveRepoAutoResolveMergeConflicts(previousRepos, preserveRepoNotifications(previousRepos, repos, incomingRepos), incomingRepos);
+  repos = preserveRepoAutoAssign(previousRepos, preserveRepoGitHubPrTemplateFallback(previousRepos, repos, incomingRepos), incomingRepos);
   return preserveRepoVisualPreview(previousRepos, repos, incomingRepos);
 }

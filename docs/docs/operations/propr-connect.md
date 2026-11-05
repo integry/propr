@@ -1,3 +1,8 @@
+---
+sidebar_label: "ProPR Connect"
+title: "ProPR Connect: GitHub relay and hosted UI bridge"
+description: "Understand Connect event routing, relay tokens, managed tunnels, and which data remains on your self-hosted ProPR instance."
+---
 # ProPR Connect
 
 ProPR Connect is the hosted bridge between GitHub and self-hosted ProPR.
@@ -72,7 +77,7 @@ Use this mode when you want the simplest self-hosted setup: no GitHub App privat
 
 ## Delivery Decisions And Acknowledgements
 
-ProPR Connect forwards every eligible-looking GitHub delivery to your local instance and lets your instance make the authoritative decision. ProPR Connect does not consult or expose a user/repository whitelist; your self-hosted ProPR remains the only source of truth for repo and user policy.
+ProPR Connect forwards every eligible-looking GitHub delivery to your local instance, except those your instance has declared it never acts on (see [Delivery Interest](#delivery-interest)), and lets your instance make the authoritative decision. ProPR Connect does not consult or expose a user/repository whitelist; your self-hosted ProPR remains the only source of truth for repo and user policy.
 
 When your instance finishes resolving a delivery, it acknowledges it over the routing connection with an explicit status:
 
@@ -85,6 +90,7 @@ The acknowledgement may also carry a machine-readable `reason` (such as `unsuppo
 ```json
 {
   "type": "ack",
+  "sequence": 42,
   "deliveryId": "…",
   "status": "ignored",
   "reason": "user_not_allowed",
@@ -96,9 +102,28 @@ A delivery is redelivered only when no acknowledgement is sent at all (for examp
 
 This contract keeps policy local, adds no preflight latency or new request path, and avoids exposing a queryable whitelist surface.
 
+### Delivery Interest
+
+To spare the relay from storing and forwarding deliveries your instance would discard anyway, the daemon declares its *delivery interest* (capability `delivery_interest.v1`). The declaration rides on the routing `hello` and is resent as an `interest` frame when it changes, for example after you add or remove a monitored repository. A changed declaration is sent at most once every 5 seconds, and an unchanged one is never resent as an `interest` frame. The periodic heartbeat `hello` repeats the current declaration and counts toward the 5-second spacing. A newly added repository can therefore take up to about 5 seconds (plus the config reload) before the relay forwards its deliveries.
+
+The declaration only describes deliveries the local handlers already ignore on every code path, and it is built from the same checks those handlers use:
+
+| Event | Declared filter | Why the dropped deliveries never led to work |
+| --- | --- | --- |
+| All events | repositories: your monitored repositories, lowercased | The webhook handler ignores any other repository (`repository_not_monitored`) before anything else runs. |
+| `check_run` | action `completed` | Auto-merge, Ultrafix wake-up and failed-CI follow-up only read completed runs. The filter is left out when a custom check-run processor is registered. |
+| `check_suite` | action `completed`; conclusion `success`, `neutral` or `skipped` | Only a green, completed suite drives auto-merge and Ultrafix. |
+| `status` | state `success`, `failure` or `error` | `pending` statuses are ignored. |
+| `push` | ref under `refs/heads/`, not deleted | Only branch updates can conflict an open pull request. |
+| `issues`, `issue_comment`, `pull_request`, `pull_request_review_comment` | none | Many actions matter (intent withdrawal, Ultrafix label removal, plan tracking, merged-PR handling, notifications). |
+
+Event types ProPR does not support are left out. Your instance already acknowledges them as `ignored: unsupported_event` without doing anything.
+
+The repository list falls back to `"*"` (no repository filtering) when more than 1,000 repositories are monitored or the frame would exceed 48 KiB. The declaration also exposes the names of your monitored repositories to the relay. The relay already sees each delivery's repository, and user allow lists are never sent. Older relays ignore the extra field and frame and keep forwarding everything. The relay may also run the filter in shadow mode, where it only counts what it would drop. Deliveries the relay drops never reach your instance, so they don't update the routing status's last delivery ID or last ACK time.
+
 ### Seats And Limits
 
-A seat is a distinct developer whose GitHub activity starts ProPR work through the installation in a billing cycle — dashboard browsing costs nothing. `github-actions[bot]` and the ProPR bot are seat-exempt; other bot accounts consume a seat like any developer if you whitelist them to trigger work. The free Community tier includes 3 seats. When the limit is reached, developers already seated this cycle keep working; a *new* developer's triggers are acknowledged as `blocked` with `limit_reached`, a soft-block comment is posted on the originating issue or PR, and the delivery appears in the history — add Plus seats from the Connect dashboard to unblock them.
+A seat is a distinct developer whose GitHub activity starts ProPR work through the installation in a billing cycle — dashboard browsing costs nothing. Automation bots never consume a seat: `github-actions[bot]`, `github-advanced-security[bot]`, `copilot-pull-request-reviewer[bot]`, `dependabot[bot]`, `renovate[bot]`, and the ProPR bot. Other bot accounts consume a seat like any developer if you whitelist them to trigger work. The free Community tier includes 3 seats. When the limit is reached, developers already seated this cycle keep working; a *new* developer's triggers are acknowledged as `blocked` with `limit_reached`, a soft-block comment is posted on the originating issue or PR, and the delivery appears in the history — add Plus seats from the Connect dashboard to unblock them.
 
 ## Hosted UI Tunnel Flow
 
@@ -168,7 +193,7 @@ Managed originals require a live Connect routing connection, validated Plus
 `account_status` for the configured installation, and storage enabled by the
 server. The administrator-only `GET /api/config/preview-storage` endpoint returns
 an allowlisted status projection; it exposes no upload grants or credentials.
-The UI presents this under **Settings → Integrations → Visual preview uploads**.
+The UI presents this under **Settings → Integrations & MCP → Visual preview uploads**.
 
 - **Quota:** Connect reports effective `quotaBytes`, `usedBytes`, `reservedBytes`,
   and `maxObjectBytes`. V1 defaults are **25 GiB installation quota** and
@@ -212,9 +237,6 @@ source to Git. Temporary staged evidence is cleaned up after publication.
 Run `npm run test:visual-previews` from the repository root. This builds the shared
 packages and runs deterministic mocked Connect/GitHub coverage, API/settings
 checks, publication and log-redaction checks, and runtime-directory regression
-tests. It requires no live Connect storage credentials. The same command runs on
-pull requests in CI; the normal full test suite also discovers these tests.
-
-Keep the epic integration PR targeting `2280-epic-create-a-j2x` open for maintainer
-review. Validation must not merge the epic into `main`; only maintainers explicitly
-authorize that release step. The release test job has read-only repository access.
+tests. It requires no live Connect storage credentials. CI does not run this
+command separately: the full test suite that runs on every pull request
+discovers the same tests.

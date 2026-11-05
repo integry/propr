@@ -1,4 +1,6 @@
-import { assertConfigRevision } from './configRevision.js';
+import { getIntegerSettingOrDefault } from './configSettings.js';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, parseMaxProviderReplacements, parseUsageTipsSettings } from '@propr/shared';
+import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
@@ -8,19 +10,13 @@ import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
 import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
-import { reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
+import { agentNetworkSettingsResponse, agentWatchdogSettingsResponse, followupRequiresAssignmentResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
 import { normalizeRepoConfig, preserveRepoSettings } from './configRepoValidation.js';
 import { loadReposWithAttachmentCapacity } from './configRoutesRepos.js';
-
-interface ConfigRoutesDeps {
-  redisClient: RedisClientType;
-  configStore?: Partial<typeof configManager>;
-  database?: Pick<Knex, 'transaction'>;
-  agentPreparationDeps?: Partial<AgentPreparationDeps>;
-}
+interface ConfigRoutesDeps { redisClient: RedisClientType; configStore?: Partial<typeof configManager>; database?: Pick<Knex, 'transaction'>; agentPreparationDeps?: Partial<AgentPreparationDeps>; }
 interface JsonPostHandlerConfig<T> {
   lockKey: string;
   pickValue: (body: Record<string, unknown>) => unknown;
@@ -37,31 +33,8 @@ const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+const DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
-interface IntegerSettingConfig {
-  name: string;
-  value: unknown;
-  defaultValue: number;
-  minimum: number;
-  maximum?: number;
-}
-interface InvalidIntegerSetting {
-  name: string;
-  value: unknown;
-}
-
-function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
-  if (value === undefined || value === null) return null;
-  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
-  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
-}
-function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
-  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
-  if (parsed !== null) return { value: parsed };
-  if (value === undefined || value === null) return { value: defaultValue };
-  return { value: defaultValue, invalid: { name, value } };
-}
-
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) return `${fieldName} must be an array of strings`;
   return value;
@@ -140,15 +113,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     database,
     preparationDeps: deps.agentPreparationDeps,
   });
-  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
-    {
-      redisClient,
-      configStore,
-      publishConfigUpdate,
-      logActivityHelper,
-      refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
-    },
-  );
+  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes({
+    redisClient,
+    configStore,
+    publishConfigUpdate,
+    logActivityHelper,
+    refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
+  });
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -249,7 +220,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, modelReasoningLevel, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
+      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, modelReasoningLevel, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds, defaultMaxCostUsd] = await Promise.all([
         configStore.loadSettings(),
         configStore.loadAutoFollowupScoreThreshold(),
         configStore.loadAutoResolveMergeConflicts(),
@@ -257,7 +228,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         configStore.loadPrReviewModel(),
         configStore.loadUltrafixRatingGoal(),
         configStore.loadUltrafixMaxCycles(),
-        configStore.loadUltrafixPauseSeconds()
+        configStore.loadUltrafixPauseSeconds(),
+        configStore.loadDefaultMaxCostUsd()
       ]);
       const settings = loadedSettings as Record<string, unknown>;
       const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || '', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
@@ -266,7 +238,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       const ultrafixGoal = getIntegerSettingOrDefault({ name: 'ultrafix_rating_goal', value: ultrafixRatingGoal, defaultValue: DEFAULT_ULTRAFIX_RATING_GOAL, minimum: 1, maximum: 10 });
       const ultrafixCycles = getIntegerSettingOrDefault({ name: 'ultrafix_max_cycles', value: ultrafixMaxCycles, defaultValue: DEFAULT_ULTRAFIX_MAX_CYCLES, minimum: 1 });
       const ultrafixPause = getIntegerSettingOrDefault({ name: 'ultrafix_pause_seconds', value: ultrafixPauseSeconds, defaultValue: DEFAULT_ULTRAFIX_PAUSE_SECONDS, minimum: 0 });
-      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause]) {
+      const ultrafixCiWait = getIntegerSettingOrDefault({ name: 'ultrafix_ci_wait_timeout_ms', value: await configStore.getConfig('ultrafix_ci_wait_timeout_ms', DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS), defaultValue: DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS, minimum: 1 });
+      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause, ultrafixCiWait]) {
         if (entry.invalid) {
           invalidIntegerSettings[entry.invalid.name] = entry.invalid.value;
         }
@@ -278,17 +251,37 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
+        max_provider_replacements: parseMaxProviderReplacements(settings.max_provider_replacements)
+          ?? parseMaxProviderReplacements(process.env.MAX_PROVIDER_REPLACEMENTS) ?? DEFAULT_MAX_PROVIDER_REPLACEMENTS,
         pr_review_prompt: typeof settings.pr_review_prompt === 'string' ? settings.pr_review_prompt : '',
         pr_review_context_enabled: typeof settings.pr_review_context_enabled === 'boolean' ? settings.pr_review_context_enabled : true,
         pr_review_context_model: typeof settings.pr_review_context_model === 'string' ? settings.pr_review_context_model : '',
         ...reviewContextBudgetSettingsResponse(settings),
         auto_followup_score_threshold: autoFollowup.value,
+        deprecated_settings: {
+          auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.'
+        },
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
+        usage_tips_enabled: parseUsageTipsSettings({ usage_tips_enabled: await configStore.getConfig('usage_tips_enabled', true) }).enabled,
+        // Experimental and opt-in: only an explicitly saved true turns it on.
+        dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', false)) === true,
+        followup_requires_assignment: await followupRequiresAssignmentResponse(configStore),
         model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,
+        ...await configStore.loadUltrafixEscalationSettings().then(escalation => ({
+          ultrafix_escalation_enabled: escalation.enabled,
+          ultrafix_escalation_models: escalation.models,
+          ultrafix_escalation_patience: escalation.patience,
+          ultrafix_escalation_max_reasoning_levels: escalation.maxReasoningLevels,
+        })),
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,
+        default_max_cost_usd: defaultMaxCostUsd,
+        agent_run_usage_pause_percent: await configManager.loadUsagePauseThreshold({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }),
+        ultrafix_ci_wait_timeout_ms: ultrafixCiWait.value,
+        ...await agentWatchdogSettingsResponse(configStore),
+        ...await agentNetworkSettingsResponse(configStore),
         ...(Object.keys(invalidIntegerSettings).length > 0 ? { invalid_settings: invalidIntegerSettings } : {})
       });
     } catch (error) {
@@ -328,6 +321,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      if (bodyValidation.value.expectedRevision !== undefined && 'github_user_whitelist' in settingsValidation.value) assertConfigRevision(bodyValidation.value.expectedRevision, effectiveGithubUserWhitelist(await configStore.loadSettings() as Record<string, unknown>));
       await validateDefaultAgentSetting(settingsValidation.value, configStore);
       return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
     });
@@ -415,6 +409,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     triggerIndexing: indexingRoutes.triggerIndexing, triggerReindexAll: indexingRoutes.triggerReindexAll, stopIndexing: indexingRoutes.stopIndexing,
     getAgentTankSettings: agentTankRoutes.getAgentTankSettings, postAgentTankSettings: agentTankRoutes.postAgentTankSettings,
     getAgentTankStatus: agentTankRoutes.getAgentTankStatus, getAgentTankUsage: agentTankRoutes.getAgentTankUsage,
+    getAgentTankHistory: agentTankRoutes.getAgentTankHistory,
     postAgentTankRefresh: agentTankRoutes.postAgentTankRefresh, getAgentTankDetect: agentTankRoutes.getAgentTankDetect
   };
 }

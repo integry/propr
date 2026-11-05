@@ -1,22 +1,29 @@
 // CI trigger: 2026-02-01
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { useListSearchParams } from '../components/TaskList/hooks';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
-import { Filter, LoaderCircle, Search, X } from 'lucide-react';
+import { Filter } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
+import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
+import { useIsMobile } from '../hooks/useIsMobile';
+import { ListSearchInput } from '../components/ListSearchInput';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
-import type { DraftUpdatePayload } from '@propr/shared';
+import type { ActivityUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
+import { matchesInterest } from '../hooks/useLiveResource';
 
 const DEFAULT_PAGE_SIZE = 50;
 
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { onDraftUpdate, isConnected } = useSocket();
+  const isMobile = useIsMobile();
+  const [searchParams, setSearchParams] = useListSearchParams();
+  const { onDraftUpdate, onActivityUpdate, subscribeToActivity, unsubscribeFromActivity, isConnected } = useSocket();
 
   // Derive state from URL parameters
   const repoFilter = searchParams.get('repository') || 'all';
@@ -31,7 +38,6 @@ const PlansPage: React.FC = () => {
 
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [error, setError] = useState<{ scope: string; message: string } | null>(null);
 
@@ -42,6 +48,7 @@ const PlansPage: React.FC = () => {
   // All repositories for filter dropdown (fetched once without filters)
   const [allRepositories, setAllRepositories] = useState<{ repo: string; count: number }[]>([]);
   const [totalAllDrafts, setTotalAllDrafts] = useState(0);
+  const allRepositoryNames = useMemo(() => allRepositories.map(entry => entry.repo), [allRepositories]);
   const liveDraftStatusesRef = useRef<Map<string, string>>(new Map());
   const draftsRequestId = useRef(0);
   const repositoriesRequestId = useRef(0);
@@ -58,7 +65,7 @@ const PlansPage: React.FC = () => {
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
   // Build repo options for the shared RepositorySelector
-  const repoFilterOptions: RepoOption[] = useMemo(() => {
+  const repoFilterOptions = useDecoratedRepoOptions(useMemo<RepoOption[]>(() => {
     const allOption: RepoOption = {
       name: 'all',
       enabled: true,
@@ -73,7 +80,7 @@ const PlansPage: React.FC = () => {
         count,
       }));
     return [allOption, ...repoOptions];
-  }, [allRepositories, totalAllDrafts]);
+  }, [allRepositories, totalAllDrafts]));
 
   // Fetch all repositories for the filter dropdown
   const loadAllRepositories = useCallback(async () => {
@@ -97,11 +104,7 @@ const PlansPage: React.FC = () => {
     showLoading = true
   ) => {
     const requestId = ++draftsRequestId.current;
-    if (showLoading) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
+    if (showLoading) setLoading(true);
     setError(current => current?.scope === queryScope ? null : current);
     try {
       const data = await getDrafts({
@@ -112,6 +115,9 @@ const PlansPage: React.FC = () => {
         status: status === 'all' ? undefined : status
       });
       if (requestId !== draftsRequestId.current) return;
+      // Record statuses with the response, not in a post-commit effect, so a
+      // draft update arriving before effects flush still sees them.
+      for (const draft of data.drafts) liveDraftStatusesRef.current.set(draft.draft_id, draft.status);
       setDrafts(data.drafts);
       setTotalDrafts(data.total);
       setHasMore(data.hasMore);
@@ -123,14 +129,9 @@ const PlansPage: React.FC = () => {
     } finally {
       if (requestId === draftsRequestId.current) {
         setLoading(false);
-        setRefreshing(false);
       }
     }
   }, [queryScope]);
-
-  useEffect(() => {
-    for (const draft of drafts) liveDraftStatusesRef.current.set(draft.draft_id, draft.status);
-  }, [drafts]);
 
   const refreshLiveDrafts = useCallback(async () => {
     await Promise.all([
@@ -217,6 +218,29 @@ const PlansPage: React.FC = () => {
     };
   }, [isConnected, onDraftUpdate, handleDraftUpdate]);
 
+  // A plan issue changing state (refinement settling, a PR merging) changes a
+  // listed plan's counts without changing the plan's own status, so no draft
+  // update arrives; it is published as plan activity in the issue's repository.
+  const handlePlanActivity = useCallback((payload: ActivityUpdatePayload) => {
+    if (!matchesInterest(payload, { domains: ['plan'], repository: repoFilter })) return;
+    if (payload.repository != null && !drafts.some(draft => draft.repository === payload.repository)) return;
+    scheduleLiveRefresh();
+  }, [drafts, repoFilter, scheduleLiveRefresh]);
+  const handlePlanActivityRef = useRef(handlePlanActivity);
+  handlePlanActivityRef.current = handlePlanActivity;
+
+  // Join the activity room once per connection; the handler ref keeps a page
+  // or filter change from leaving and rejoining it.
+  useEffect(() => {
+    if (!isConnected) return;
+    const unsubscribe = onActivityUpdate(payload => handlePlanActivityRef.current(payload));
+    subscribeToActivity();
+    return () => {
+      unsubscribe();
+      unsubscribeFromActivity();
+    };
+  }, [isConnected, onActivityUpdate, subscribeToActivity, unsubscribeFromActivity]);
+
   // Helper to update URL params
   const updateSearchParams = useCallback((updates: Record<string, string | null>) => {
     setSearchParams(prev => {
@@ -289,31 +313,27 @@ const PlansPage: React.FC = () => {
   const visibleDrafts = hasCurrentScopeData ? drafts : [];
   const currentError = error?.scope === queryScope ? error.message : null;
 
-  if (!hasCurrentScopeData && !currentError) {
-    return (
-      <div className="flex h-full w-full min-w-0 flex-col bg-white">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
-        </div>
+  // A scope still loading, or failing with nothing to show, replaces only the
+  // body. The header stays mounted so the search field being typed into (and
+  // its phone keyboard) survives each debounced reload.
+  const renderBlockingBody = () => {
+    if (!hasCurrentScopeData && !currentError) {
+      return (
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
-          <div role="status" className="flex items-center gap-2 text-gray-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading plans...</div>
+          <ListSkeleton rows={8} layout="table" columns={4} label="Loading plans…" data-testid="plans-skeleton" />
         </div>
-      </div>
-    );
-  }
-
-  if (currentError && visibleDrafts.length === 0) {
-    return (
-      <div className="flex h-full w-full min-w-0 flex-col bg-white">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
-        </div>
+      );
+    }
+    if (currentError && visibleDrafts.length === 0) {
+      return (
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{currentError}</div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
+    return null;
+  };
+  const blockingBody = renderBlockingBody();
 
   const renderContent = () => {
     if (visibleDrafts.length === 0
@@ -354,6 +374,7 @@ const PlansPage: React.FC = () => {
     return (
       <PlansTable
         drafts={visibleDrafts}
+        repositories={allRepositoryNames}
         abortingId={abortingId}
         onDelete={handleDelete}
         onAbort={handleAbort}
@@ -368,26 +389,16 @@ const PlansPage: React.FC = () => {
         <div className="flex items-center justify-between gap-2 sm:gap-4">
           <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
           <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
-            {/* Search input - hidden on mobile, shown on desktop */}
-            <div className="relative hidden sm:block">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
+            {!isMobile && (
+              <ListSearchInput
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search plans..."
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                onChange={setSearchQuery}
+                onClear={handleSearchClear}
+                label="Search plans"
+                className="hidden sm:block"
+                inputClassName="w-64"
               />
-              {searchQuery && (
-                <button
-                  onClick={handleSearchClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  title="Clear search"
-                >
-                  <X size={16} />
-                </button>
-              )}
-            </div>
+            )}
             {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2 min-w-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
@@ -418,14 +429,26 @@ const PlansPage: React.FC = () => {
             </div>
           </div>
         </div>
+        {/* A phone has no room for search beside the filters, so it takes its own row. */}
+        {isMobile && (
+          <ListSearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            onClear={handleSearchClear}
+            label="Search plans"
+            className="mt-2 sm:hidden"
+            touch
+          />
+        )}
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
-        {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
-        {(loading || refreshing) && <div role="status" className="px-4 pt-3 text-xs text-slate-500 sm:px-6">Refreshing plans…</div>}
-        {renderContent()}
-      </div>
+      {blockingBody ?? (
+        <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
+          {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
+          {renderContent()}
+        </div>
+      )}
 
       {/* Anchored Footer */}
       {visibleDrafts.length > 0 && totalPages > 1 && (

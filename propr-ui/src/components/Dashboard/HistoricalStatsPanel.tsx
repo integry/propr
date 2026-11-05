@@ -1,6 +1,11 @@
 /**
  * Historical stats: three numbers and one small chart.
  *
+ * The panel is a summary of the Analytics page for the same period, and it
+ * reads the same aggregation over the same rolling window: its task count,
+ * success rate, spend and daily curve are the page's totals band and activity
+ * chart, never a second pipeline that drifts from them.
+ *
  * Every metric is nullable, and a metric the instance cannot report renders as
  * unavailable rather than as zero — an instance that records no cost has not
  * spent $0, and a period where nothing finished has no success rate.
@@ -108,21 +113,31 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
         </div>
       </SectionHeading>
 
-      {loading && <SectionSkeleton rows={2} />}
+      {loading && <SectionSkeleton rows={2} label="Loading historical stats…" />}
       {!loading && error && !data && <SectionError message="Unable to load historical stats" onRetry={reload} />}
       {data && (
         <div className="px-3 py-3">
           <div className="grid grid-cols-3 gap-x-4">
-            <Metric
-              testId="stat-completed"
-              label="Completed"
-              hint="Runs that finished successfully in the period"
-              value={formatCount(data.completed)}
-            />
+            {/* A server that predates the shared aggregation reports completions only. */}
+            {data.tasks === undefined ? (
+              <Metric
+                testId="stat-completed"
+                label="Completed"
+                hint="Runs that finished successfully in the period"
+                value={formatCount(data.completed)}
+              />
+            ) : (
+              <Metric
+                testId="stat-tasks"
+                label="Tasks"
+                hint="Tasks created in the period, as the Analytics page counts them"
+                value={formatCount(data.tasks)}
+              />
+            )}
             <Metric
               testId="stat-success-rate"
               label="Success"
-              hint="Share of finished runs that succeeded"
+              hint="Share of finished tasks that succeeded"
               value={formatRate(data.successRate)}
             />
             <Metric
@@ -132,9 +147,11 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
               value={formatSpend(data.recordedSpend)}
             />
           </div>
-          <DailyCompletionsChart data={data.dailyCompleted} />
+          {data.dailyTasks
+            ? <DailyCompletionsChart data={data.dailyTasks} unit="tasks" />
+            : <DailyCompletionsChart data={data.dailyCompleted ?? []} />}
           <div className="mt-2 text-right text-xs">
-            <Link to="/analytics" className="font-medium text-gray-500 transition-colors hover:text-gray-800">
+            <Link to={`/analytics?period=${period}`} className="font-medium text-gray-500 transition-colors hover:text-gray-800">
               Full analytics
             </Link>
           </div>

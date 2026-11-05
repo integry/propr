@@ -1,5 +1,8 @@
 ---
 sidebar_position: 1
+sidebar_label: "Introduction"
+title: "Official documentation and getting started"
+description: "Set up ProPR, sign in to your instance, and find guides for AI coding agents, GitHub pull requests, the CLI, and API."
 ---
 
 # Introduction
@@ -9,6 +12,20 @@ Welcome to ProPR, an AI engineering platform for planning, building, reviewing, 
 ## What is ProPR?
 
 ProPR connects to your GitHub repositories and keeps the pull request as the center of the workflow. It combines a Web UI dashboard, Planner Studio, a CLI, and multi-agent workers so you can move from an idea or GitHub issue to a reviewed pull request without stitching together separate tools.
+
+## Sign in, use the app, or find a reference
+
+To sign in to ProPR, open your own self-hosted instance's Web UI
+(`http://localhost:5173` by default on a local install, or the address you configured)
+and sign in with GitHub. If the UI is stopped, run `propr ui on` from your stack
+directory to start it. See the [local setup guide](./tutorials/setup-local.md)
+for the instance address and the [Web UI guide](./features/web-ui.md) for the app's screens.
+If you use the optional relay, the [ProPR Connect dashboard](./operations/connect-dashboard.md)
+manages seats, relay tokens, and tunnels; repositories, agents, and tasks live in
+your instance's UI.
+
+- [ProPR CLI reference](./features/propr-cli.md): install, authenticate, control your stack, and manage work from the terminal.
+- [ProPR API reference](./operations/api-reference.md): HTTP endpoints, authentication, an interactive reference, and the OpenAPI specification.
 
 ## First 15 Minutes
 
@@ -37,7 +54,7 @@ End-to-end usage remains fully supported — it is simply one of the ways to use
 - **Web UI Dashboard**: Configure GitHub repositories, labels, agents, and defaults, then track task activity, queue health, repository status, usage, and live run details from the browser
 - **Planner Studio**: Build draft plans, attach extra context, generate structured implementation steps, refine them, and run approved work
 - **Multi-Agent Support**: Run Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe agents, choose different models per task, and use the right agent for review or implementation
-- **Label-Based Model Routing**: Route any issue to a specific agent and model with `llm-*` labels such as `llm-claude-opus5`, `llm-codex-gpt55`, or `llm-antigravity-pro-high`; several model labels on one issue produce a separate run, branch, and PR per model
+- **Label-Based Model Routing**: Route any issue to a specific agent and model with `llm-*` labels such as `llm-claude-opus5`, `llm-codex-gpt55`, or `llm-antigravity-argon`; several model labels on one issue produce a separate run, branch, and PR per model
 - **CLI**: Use the `propr` command (`propr-cli`) as the local stack control plane (`propr init stack`, `propr check`, `propr start`) and to manage plans, implement issues, inspect tasks, and configure repositories and agents from the terminal
 - **GitHub PR Automation**: Use slash commands like `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` for follow-up work on pull requests after the main setup is already handled in the UI
 - **End-to-End GitHub Flow**: Detect labeled issues through the configured event intake mode (routing WebSocket by default, or optionally polling or a direct webhook), create isolated worktrees and branches, implement changes, and open linked pull requests automatically

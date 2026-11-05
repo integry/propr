@@ -9,6 +9,8 @@ import {
   findSyntheticReferencesToDirectAgent,
   validateSyntheticAgentReferences,
   validateExecutableSyntheticDefault,
+  redactAgentConfigsSecrets,
+  restoreRedactedAgentEnvVars,
   type SyntheticAgentConfig,
 } from '@propr/shared';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
@@ -258,12 +260,15 @@ export async function applyAgentsUpdate({
       body: buildAgentPreparationError(preparedAgents.error, preparedAgents.code),
     };
   }
-  const processedAgents = preparedAgents.processedAgents;
-  if (!processedAgents) {
+  if (!preparedAgents.processedAgents) {
     return { status: 500, body: { error: 'Failed to prepare agent configuration update' } };
   }
 
   const previousAgents = await configStore.loadAgents();
+  // Clients only ever see redacted env values; resolve unchanged markers under the lock.
+  const restored = restoreRedactedAgentEnvVars(preparedAgents.processedAgents, previousAgents);
+  if (restored.error !== undefined) return { status: 400, body: { error: restored.error } };
+  const processedAgents = restored.agents;
   const syntheticAgents = await loadSyntheticAgents(configStore);
   const integrityError = validateDirectAgentUpdateIntegrity(previousAgents, processedAgents, syntheticAgents);
   if (integrityError) return integrityError;
@@ -333,7 +338,7 @@ export async function applyAgentsUpdate({
     status: 200,
     body: {
       success: true,
-      agents: processedAgents,
+      agents: redactAgentConfigsSecrets(processedAgents),
       ...(warnings.length > 0 ? { warnings } : {})
     }
   };
@@ -354,7 +359,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
   const effectiveApplyFn = applyAgentsUpdateFn ?? applyAgentsUpdate;
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
-      res.json({ agents: await configStore.loadAgents() });
+      res.json({ agents: redactAgentConfigsSecrets(await configStore.loadAgents()) });
     } catch (error) {
       console.error('Error in /api/config/agents GET:', error);
       res.status(500).json({ error: 'Failed to load agents configuration' });
@@ -397,7 +402,10 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(500).json({ error: 'Unexpected response from agent configuration update' });
       return;
     }
-    res.status(result.status).json(result.body);
+    const body = Array.isArray(result.body.agents)
+      ? { ...result.body, agents: redactAgentConfigsSecrets(result.body.agents) }
+      : result.body;
+    res.status(result.status).json(body);
   }
   return { getAgents, postAgents };
 }

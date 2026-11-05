@@ -4,6 +4,7 @@ import React, { Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
+import { SocketBootstrap } from './contexts/SocketBootstrap'
 import { SocketProvider } from './contexts/SocketProvider'
 import { useDemoMode } from './contexts/DemoModeContext'
 import { DemoModeProvider } from './contexts/DemoModeProvider'
@@ -20,16 +21,20 @@ import {
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
+import { LegacyAgentsRedirect } from './components/LegacyAgentsRedirect'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 import { BrowserPushProvider } from './hooks/useBrowserPush'
 import { NotificationCenterProvider } from './contexts/NotificationCenterContext'
 import { SystemStatusProvider } from './contexts/SystemStatusContext'
 import { currentUiPathname, isDesktopRuntime, publicAssetUrl } from './config/runtimeMode'
 import { DesktopPresentationBoundary } from './desktop/DesktopPresentationBoundary'
+import { AppViewport } from './components/AppViewport'
+import { appViewportHeight } from './components/appViewportHeight'
 import { useCurrentUserBootstrap } from './hooks/useCurrentUserBootstrap'
 import { DesktopTaskNotificationAdapter } from './desktop/DesktopTaskNotificationAdapter'
 import {
   AccessManagementPage,
+  AgentsPage,
   AiAgentsPage,
   AnalyticsPage,
   Dashboard,
@@ -38,6 +43,7 @@ import {
   InboxPage,
   LlmLogsPage,
   LoginPage,
+  McpLogsPage,
   PlansPage,
   PlanStudioPage,
   RepositoriesPage,
@@ -53,7 +59,7 @@ const Router = isDesktopRuntime() ? HashRouter : BrowserRouter;
 type CompatibilityState = { status: 'checking' } | { status: 'ready' } | { status: 'blocked'; title: string; message: string };
 
 const LoadingSpinner: React.FC = () => (
-  <div className="flex h-screen w-full items-center justify-center bg-gray-50">
+  <div className={`flex ${appViewportHeight()} w-full items-center justify-center bg-gray-50`}>
     <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
   </div>
 );
@@ -148,6 +154,7 @@ export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname
 );
 
 const AppContent: React.FC = () => {
+  const [socketConnected, setSocketConnected] = useState(false);
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   const {
     currentUser,
@@ -155,7 +162,7 @@ const AppContent: React.FC = () => {
     currentUserLoading,
     isInitialLoading,
     refreshCurrentUser,
-  } = useCurrentUserBootstrap({ isDemoMode });
+  } = useCurrentUserBootstrap({ isDemoMode, socketConnected });
 
   useEffect(() => {
     preloadInitialRouteChunk(currentUiPathname());
@@ -165,9 +172,7 @@ const AppContent: React.FC = () => {
   // socket until the active desktop scope has an authenticated REST user.
   const content = isDemoModeLoading || isInitialLoading ? <LoadingSpinner /> : (
       <ToastProvider>
-        <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
-          <DemoModeBanner />
-          <div className="min-h-0 flex-1">
+        <AppViewport banner={<DemoModeBanner />} offset={isDemoMode}>
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <DesktopTaskNotificationAdapter />
               <BrowserPushProvider>
@@ -209,7 +214,7 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                    <Route path="/tasks/new" element={<Layout><NewTaskPage /></Layout>} />
+                    <Route path="/tasks/new" element={<Layout><TasksPage /><NewTaskPage /></Layout>} />
                     <Route
                       path="/tasks/:taskId"
                       element={
@@ -218,8 +223,11 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                    <Route path="/goals" element={<Layout><GoalsPage /></Layout>} />
-                    <Route path="/goals/:goalId" element={<Layout><GoalsPage /></Layout>} />
+                    <Route path="/goals/:goalId?" element={<Layout><GoalsPage /></Layout>} />
+                    <Route path="/automations/:definitionId?" element={<Layout><AgentsPage /></Layout>} />
+                    <Route path="/automations/new" element={<Layout><AgentsPage isNew /></Layout>} />
+                    <Route path="/automations/:definitionId/runs/:runId?" element={<Layout><AgentsPage section="runs" /></Layout>} />
+                    <Route path="/agents/*" element={<LegacyAgentsRedirect />} />
                     <Route
                       path="/studio/new"
                       element={
@@ -289,6 +297,16 @@ const AppContent: React.FC = () => {
                       }
                     />
                     <Route
+                      path="/mcp-logs"
+                      element={
+                        <Layout>
+                          <PermissionRequired permission="instance.manage_settings">
+                            <McpLogsPage />
+                          </PermissionRequired>
+                        </Layout>
+                      }
+                    />
+                    <Route
                       path="*"
                       element={
                         <Layout>
@@ -305,8 +323,7 @@ const AppContent: React.FC = () => {
                 </NotificationCenterProvider>
               </BrowserPushProvider>
             </AuthProvider>
-          </div>
-        </div>
+        </AppViewport>
       </ToastProvider>
   );
 
@@ -318,10 +335,15 @@ const AppContent: React.FC = () => {
   };
   return (
     <SocketProvider
+      onConnectionChange={setSocketConnected}
+      onAuthenticationError={refreshCurrentUser}
       disabled={Object.values(disableReasons).some(Boolean)}
       disableReasons={disableReasons}
     >
-      {content}
+      <SocketBootstrap disabled={Object.values(disableReasons).some(Boolean)}
+        identity={currentUser?.id ?? 'anonymous'} fallback={<LoadingSpinner />}>
+        {content}
+      </SocketBootstrap>
     </SocketProvider>
   );
 };

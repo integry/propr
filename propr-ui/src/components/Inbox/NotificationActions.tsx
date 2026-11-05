@@ -1,72 +1,50 @@
-import React, { useRef, useState } from 'react';
+import React from 'react';
 import type { Notification } from '@propr/shared';
-import { Loader2, Terminal } from 'lucide-react';
-import { postTaskFollowup } from '../../api/proprApi';
-import { notificationFollowupCommand } from '../../pages/inboxUtils';
-import { useToast } from '../ui/useToast';
+import { notificationRunFollowup } from '../TaskDetails/runFollowup';
+import type { TaskRunEntry } from '../TaskList/rowModel';
+import FollowupCommands from './FollowupCommands';
 
 interface NotificationActionsProps {
   notification: Notification;
+  /** The runs of the notification's task, oldest first; null until they are read. */
+  runs: readonly TaskRunEntry[] | null;
+  /** Reads the task's runs again, refreshing `runs`; null when the task is not found. */
+  readRuns: () => Promise<readonly TaskRunEntry[] | null>;
   mutationsEnabled: boolean;
   onCommandSent: () => Promise<void>;
   className?: string;
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
+/**
+ * A notification's follow-up commands, for the run it reports on, shown only
+ * while that run is its task's newest: the same rule the run follows in Tasks.
+ * The runs may lag work started elsewhere, so a command is sent only once a
+ * fresh read confirms the run still offers it.
+ */
 export const NotificationActions: React.FC<NotificationActionsProps> = ({
   notification,
+  runs,
+  readRuns,
   mutationsEnabled,
   onCommandSent,
-  className = '',
+  className,
 }) => {
-  const { addToast } = useToast();
-  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
-  const pendingRef = useRef(false);
-  const followup = notificationFollowupCommand(notification);
-
+  const followup = notificationRunFollowup(notification, runs);
   if (!mutationsEnabled || !followup) return null;
-
-  const send = async (command: string) => {
-    if (pendingRef.current) return;
-    pendingRef.current = true;
-    setPendingCommand(command);
-    try {
-      await postTaskFollowup(followup.taskId, command, 'pull_request');
-    } catch (error) {
-      addToast({
-        type: 'error',
-        message: `Couldn't send ${command} to PR #${followup.prNumber}. ${errorMessage(error, 'Please try again.')}`,
-      });
-      pendingRef.current = false;
-      setPendingCommand(null);
-      return;
-    }
-    addToast({ type: 'success', message: `Sent ${command} to PR #${followup.prNumber}.` });
-    // The command is the follow-up this card asked for, so the card is done.
-    await onCommandSent();
+  const revalidate = async (command: string) => {
+    const fresh = notificationRunFollowup(notification, await readRuns());
+    return fresh?.taskId === followup.taskId && fresh.commands.includes(command);
   };
-
   return (
-    <div className={`flex min-w-0 flex-wrap items-center gap-2 ${className}`} aria-label={`Actions for ${notification.title}`}>
-      {followup.commands.map(command => (
-        <button
-          key={command}
-          type="button"
-          disabled={pendingCommand !== null}
-          onClick={() => void send(command)}
-          className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 font-mono text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50"
-          aria-label={`Send ${command} to PR #${followup.prNumber}`}
-        >
-          {pendingCommand === command
-            ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-            : <Terminal className="h-3.5 w-3.5" aria-hidden="true" />}
-          {command}
-        </button>
-      ))}
-    </div>
+    <FollowupCommands
+      taskId={followup.taskId}
+      prNumber={followup.prNumber}
+      commands={followup.commands}
+      label={`Actions for ${notification.title}`}
+      revalidate={revalidate}
+      onCommandSent={onCommandSent}
+      className={className}
+    />
   );
 };
 

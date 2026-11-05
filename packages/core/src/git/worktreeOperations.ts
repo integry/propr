@@ -1,11 +1,13 @@
+import { generatedPayloadStorage } from '../storage/generatedPayloads.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
-import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 import { redactAuthenticatedGitUrl } from './repoBranching.js';
+import { isSalvageRetainedWorktree } from './pushSalvage.js';
+import { detachRetainedWorktree, mountUsesWorktree, removeWorktreeIfDisposable, worktreeRemovalDisabled } from './worktreeReclaim.js';
+import { runningContainerMountSources } from './worktreeMounts.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -19,14 +21,6 @@ interface CleanupOptions {
 interface CleanupResult {
     cleaned: number;
     retained: number;
-}
-
-interface RetentionInfo {
-    timestamp: string;
-    issueProcessed: boolean;
-    success: boolean;
-    retentionHours: number;
-    scheduledCleanup: string;
 }
 
 export async function cleanupWorktree(localRepoPath: string, worktreePath: string, branchName: string, options: CleanupOptions = {}): Promise<void> {
@@ -46,222 +40,85 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         retentionHours
     }, 'Cleaning up Git worktree...');
 
-    if (!success && retentionStrategy === 'keep_on_failure') {
-        logger.info({ worktreePath, branchName, retentionStrategy }, 'Keeping worktree due to failure and retention strategy');
-        await createRetentionMarker(worktreePath, retentionHours);
+    // Producer records are outside customer checkouts. Failed/salvage runs remain protected.
+    await generatedPayloadStorage().complete(worktreePath, success && !await isSalvageRetainedWorktree(worktreePath)).catch(error => {
+        logger.warn({ worktreePath, error: (error as Error).message }, 'Generated payload completion unavailable; retaining payloads');
+    });
+
+    // The push salvage ladder kept this worktree because it holds the only copy of
+    // commits a rejected push could not deliver; it overrides the retention strategy.
+    // Only the worker's record outside the checkout counts, never a repository file.
+    if (await isSalvageRetainedWorktree(worktreePath)) {
+        logger.warn({ worktreePath, branchName }, 'Keeping worktree retained by push salvage');
         return;
     }
 
-    if (!success && retentionStrategy === 'keep_for_hours') {
-        logger.info({ worktreePath, retentionHours }, `Scheduling worktree cleanup in ${retentionHours} hours`);
-        await createRetentionMarker(worktreePath, retentionHours);
-    }
-
-    const git: SimpleGit = createHooklessGit(localRepoPath);
-
-    try {
-        await git.raw(['worktree', 'remove', worktreePath, '--force']);
-        logger.info({ worktreePath }, 'Worktree removed successfully');
-    } catch (error) {
-        if ((error as Error).message && (error as Error).message.includes('.git\' is not a .git file')) {
-            logger.info({ worktreePath }, 'Directory is not a valid worktree, will remove directly');
-        } else {
-            logger.warn({ worktreePath, error: (error as Error).message }, 'Failed to remove worktree with git command');
-        }
-
+    if (!success && (retentionStrategy === 'keep_on_failure' || retentionStrategy === 'keep_for_hours')) {
+        logger.info({ worktreePath, branchName, retentionStrategy }, 'Keeping worktree due to failure and retention strategy');
+        // Preserve staged/untracked work while freeing the PR branch for a retry.
+        // Never force this checkout: if detaching fails, keep the only copy anyway.
         try {
-            await fs.remove(worktreePath);
-            logger.info({ worktreePath }, 'Worktree directory removed directly');
-        } catch (fsError) {
-            logger.error({ worktreePath, error: (fsError as Error).message }, 'Failed to remove worktree directory');
+            await detachRetainedWorktree(worktreePath);
+        } catch (error) {
+            logger.warn({ worktreePath, error: (error as Error).message }, 'Failed to detach retained worktree');
         }
+        return;
     }
 
-    if (deleteBranch && branchName) {
+    // A finished worktree whose work is all stored in Git (clean status, HEAD
+    // contained in a branch, remote ref or tag) is removed: each one carries its
+    // own node_modules and build output, and keeping them all fills the disk.
+    // Anything else is kept. Branches are never deleted here.
+    if (!worktreeRemovalDisabled(retentionStrategy)) {
         try {
-            await git.deleteLocalBranch(branchName, true);
-            logger.info({ branchName }, 'Local branch deleted');
-        } catch (branchError) {
-            logger.warn({ branchName, error: (branchError as Error).message }, 'Failed to delete local branch');
-        }
-    }
-
-    // NOTE: Removed `git worktree prune` here - it was causing race conditions by
-    // deleting worktree metadata for other running tasks. Stale worktree references
-    // will be cleaned up by the periodic cleanupExpiredWorktrees job instead.
-}
-
-async function createRetentionMarker(worktreePath: string, retentionHours: number): Promise<void> {
-    try {
-        const retentionInfo: RetentionInfo = {
-            timestamp: new Date().toISOString(),
-            issueProcessed: true,
-            success: false,
-            retentionHours,
-            scheduledCleanup: new Date(Date.now() + retentionHours * 60 * 60 * 1000).toISOString()
-        };
-        await fs.writeJson(path.join(worktreePath, '.retention-info.json'), retentionInfo);
-        logger.info({ worktreePath }, 'Created retention marker file');
-    } catch (markerError) {
-        logger.warn({ worktreePath, error: (markerError as Error).message }, 'Failed to create retention marker file');
-    }
-}
-
-export async function cleanupExpiredWorktrees(worktreesBasePath: string = WORKTREES_BASE_PATH): Promise<CleanupResult> {
-    logger.info({ worktreesBasePath }, 'Starting cleanup of expired worktrees...');
-
-    let cleaned = 0;
-    let retained = 0;
-
-    try {
-        if (!await fs.pathExists(worktreesBasePath)) {
-            logger.info({ worktreesBasePath }, 'Worktrees base path does not exist, nothing to clean');
-            return { cleaned, retained };
-        }
-
-        const result = await processWorktreeDirectory(worktreesBasePath);
-        cleaned = result.cleaned;
-        retained = result.retained;
-
-        logger.info({ worktreesBasePath, cleaned, retained }, 'Expired worktrees cleanup completed');
-
-    } catch (error) {
-        handleError(error, 'Failed to cleanup expired worktrees');
-        throw error;
-    }
-
-    return { cleaned, retained };
-}
-
-async function processWorktreeDirectory(dirPath: string): Promise<CleanupResult> {
-    let cleaned = 0;
-    let retained = 0;
-
-    const items = await fs.readdir(dirPath);
-
-    for (const item of items) {
-        const itemPath = path.join(dirPath, item);
-        const stats = await fs.stat(itemPath);
-
-        if (stats.isDirectory()) {
-            const result = await processWorktreeItem(itemPath, stats);
-            cleaned += result.cleaned;
-            retained += result.retained;
-        }
-    }
-
-    return { cleaned, retained };
-}
-
-async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<CleanupResult> {
-    let cleaned = 0;
-    let retained = 0;
-
-    const retentionFile = path.join(itemPath, '.retention-info.json');
-
-    if (await fs.pathExists(retentionFile)) {
-        try {
-            const retentionInfo = await fs.readJson(retentionFile) as RetentionInfo;
-            const scheduledCleanup = new Date(retentionInfo.scheduledCleanup);
-            const now = new Date();
-
-            if (now >= scheduledCleanup) {
-                logger.info({ worktreePath: itemPath, scheduledCleanup: retentionInfo.scheduledCleanup }, 'Cleaning up expired worktree');
-                await fs.remove(itemPath);
-                cleaned++;
-            } else {
-                logger.debug({ worktreePath: itemPath, scheduledCleanup: retentionInfo.scheduledCleanup }, 'Retaining worktree until scheduled cleanup time');
-                retained++;
+            const outcome = await removeWorktreeIfDisposable(worktreePath, undefined, async () => {
+                try {
+                    if ((await runningContainerMountSources()).some(mount => mountUsesWorktree(mount, worktreePath))) return false;
+                    // Read after Docker's awaited boundary, on both sides of detach.
+                    const { db } = await import('../db/connection.js');
+                    return !await db('pr_followup_handoffs').whereNot('status', 'released')
+                        .where('worktree_path', worktreePath).first('worktree_path');
+                } catch (error) {
+                    logger.warn({ worktreePath, error: (error as Error).message }, 'Worktree liveness authority unavailable; keeping worktree');
+                    return false;
+                }
+            });
+            if (outcome.removed) {
+                logger.info({ worktreePath, branchName }, 'Removed finished worktree; its work is stored in Git');
+                return;
             }
-        } catch (retentionError) {
-            logger.warn({ worktreePath: itemPath, error: (retentionError as Error).message }, 'Failed to read retention info, skipping cleanup');
-            retained++;
-        }
-    } else {
-        const ageHours = (Date.now() - stats.mtime.getTime()) / (1000 * 60 * 60);
-        const maxAgeHours = parseInt(process.env.WORKTREE_MAX_AGE_HOURS || '72', 10);
-
-        if (ageHours > maxAgeHours) {
-            logger.info({ worktreePath: itemPath, ageHours: Math.round(ageHours), maxAgeHours }, 'Cleaning up old worktree (fallback cleanup)');
-            await fs.remove(itemPath);
-            cleaned++;
-        } else {
-            const subResult = await processWorktreeDirectory(itemPath);
-            cleaned += subResult.cleaned;
-            retained += subResult.retained;
+            const uncertain = ['remove_failed', 'unknown_git_state', 'not_a_worktree'].includes(outcome.reason);
+            logger[uncertain ? 'warn' : 'info']({ worktreePath, branchName, reason: outcome.reason },
+                uncertain ? 'Worktree cleanup needs inspection; checkout or Git state is unavailable' : 'Keeping worktree due to retention or Git safety checks');
+        } catch (error) {
+            logger.warn({ worktreePath, error: (error as Error).message }, 'Worktree removal claim failed; retaining checkout and releasing branch');
         }
     }
 
-    return { cleaned, retained };
+    try {
+        // Release the branch for a subsequent task without discarding the retained checkout.
+        await detachRetainedWorktree(worktreePath);
+    } catch {
+        // Unknown Git state remains intact, including its branch registration.
+    }
 }
 
 /**
- * Safely prunes stale worktree references, but only for entries older than the specified threshold.
- * This prevents accidentally removing metadata for currently running tasks.
- *
- * @param localRepoPath - Path to the main repository
- * @param minAgeHours - Minimum age in hours before a stale entry can be pruned (default: 1 hour)
+ * @deprecated Use sweepIdleWorktrees with durable-reference and container liveness
+ * providers (the daemon's sweepWorktrees supplies these). This compatibility
+ * export performs no removal: age alone cannot establish disposability.
  */
-export async function safePruneWorktrees(localRepoPath: string, minAgeHours: number = 1): Promise<{ pruned: number; skipped: number }> {
-    let pruned = 0;
-    let skipped = 0;
+export async function cleanupExpiredWorktrees(worktreesBasePath: string = WORKTREES_BASE_PATH): Promise<CleanupResult> {
+    const exists = await fs.pathExists(worktreesBasePath);
+    return { cleaned: 0, retained: exists ? 1 : 0 };
+}
 
-    try {
-        const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
-        if (!await fs.pathExists(worktreesDir)) {
-            return { pruned: 0, skipped: 0 };
-        }
-
-        const entries = await fs.readdir(worktreesDir);
-        const now = Date.now();
-        const minAgeMs = minAgeHours * 60 * 60 * 1000;
-
-        for (const entry of entries) {
-            const entryPath = path.join(worktreesDir, entry);
-            const gitdirFile = path.join(entryPath, 'gitdir');
-
-            if (!await fs.pathExists(gitdirFile)) {
-                // Entry doesn't have gitdir file, check age before removing
-                const stats = await fs.stat(entryPath);
-                const ageMs = now - stats.mtimeMs;
-
-                if (ageMs > minAgeMs) {
-                    logger.info({ entry, ageHours: Math.round(ageMs / (60 * 60 * 1000)) }, 'Removing stale worktree entry (no gitdir file)');
-                    await fs.remove(entryPath);
-                    pruned++;
-                } else {
-                    logger.debug({ entry, ageHours: Math.round(ageMs / (60 * 60 * 1000)), minAgeHours }, 'Skipping recent worktree entry');
-                    skipped++;
-                }
-                continue;
-            }
-
-            // Check if the worktree directory still exists
-            const gitdirContent = await fs.readFile(gitdirFile, 'utf8');
-            const worktreePath = gitdirContent.trim();
-
-            if (!await fs.pathExists(worktreePath)) {
-                // Worktree directory doesn't exist, check age before removing metadata
-                const stats = await fs.stat(entryPath);
-                const ageMs = now - stats.mtimeMs;
-
-                if (ageMs > minAgeMs) {
-                    logger.info({ entry, worktreePath, ageHours: Math.round(ageMs / (60 * 60 * 1000)) }, 'Removing stale worktree metadata (worktree directory missing)');
-                    await fs.remove(entryPath);
-                    pruned++;
-                } else {
-                    logger.debug({ entry, ageHours: Math.round(ageMs / (60 * 60 * 1000)), minAgeHours }, 'Skipping recent stale worktree entry');
-                    skipped++;
-                }
-            }
-        }
-
-        logger.info({ localRepoPath, pruned, skipped, minAgeHours }, 'Safe worktree prune completed');
-    } catch (error) {
-        logger.warn({ localRepoPath, error: (error as Error).message }, 'Failed to safely prune worktrees');
-    }
-
-    return { pruned, skipped };
+/** Missing directories may still have unique detached commits in their administrative refs. */
+export async function safePruneWorktrees(localRepoPath: string, _minAgeHours: number = 1): Promise<{ pruned: number; skipped: number }> {
+    // Retain caller compatibility; age cannot authorize pruning protected worktrees.
+    void _minAgeHours;
+    const exists = await fs.pathExists(path.join(localRepoPath, '.git', 'worktrees'));
+    return { pruned: 0, skipped: exists ? 1 : 0 };
 }
 
 export async function setupWorktreePermissions(worktreePath: string, branchName: string, issueId: number | string | null): Promise<void> {
@@ -290,6 +147,34 @@ export async function addToSafeDirectories(git: SimpleGit, worktreePath: string,
         logger.debug({ worktreePath, localRepoPath, branchName, issueId }, 'Added worktree and main repo to Git safe directories');
     } catch (safeConfigError) {
         logger.warn({ worktreePath, branchName, issueId, error: (safeConfigError as Error).message }, 'Failed to add directories to Git safe directories');
+    }
+}
+
+/**
+ * Trusts every clone and worktree ProPR manages, once per process start.
+ * Worktrees are chowned for the agent containers, so Git in the worker sees
+ * them as owned by another user. The per-path entries added on creation live
+ * in the container's global config and vanish on restart, which made recovery
+ * of an older worktree fail with "dubious ownership". `<base>/*` (Git 2.46+)
+ * trusts only paths under ProPR's own folders, at any depth: per-repository
+ * worktree roots (`<base>/<owner>/<repo>/...`) always resolve under the
+ * configured base, so they are covered too.
+ */
+export async function trustManagedGitDirectories(git: SimpleGit): Promise<void> {
+    const clonesBase = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
+    const wanted = [`${path.resolve(WORKTREES_BASE_PATH)}/*`, `${path.resolve(clonesBase)}/*`];
+    try {
+        const version = (await git.raw(['--version'])).trim();
+        const parsed = /git version (\d+)\.(\d+)/.exec(version);
+        if (!parsed || Number(parsed[1]) < 2 || (Number(parsed[1]) === 2 && Number(parsed[2]) < 46)) {
+            logger.warn({ version }, 'Managed safe.directory wildcards require Git 2.46 or newer; upgrade Git to trust existing worktrees after restart (per-path creation entries still apply)');
+        }
+        const existing = new Set((await git.raw(['config', '--global', '--get-all', 'safe.directory']).catch(() => '')).split('\n').map(line => line.trim()));
+        for (const entry of wanted) {
+            if (!existing.has(entry)) await git.raw(['config', '--global', '--add', 'safe.directory', entry]);
+        }
+    } catch (error) {
+        logger.warn({ error: (error as Error).message }, 'Could not trust ProPR clone and worktree folders; Git may reject worktrees after a restart');
     }
 }
 

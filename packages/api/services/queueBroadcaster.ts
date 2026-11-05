@@ -1,7 +1,8 @@
+import { ACTIVITY_ROOM } from './activitySocketRooms.js';
 import { Server as SocketIOServer } from 'socket.io';
 import { Queue, QueueEvents } from 'bullmq';
 import {
-  QUEUE_STATS_UPDATE,
+  QUEUE_STATS_UPDATE, ACTIVITY_UPDATE,
   type QueueStatsUpdatePayload,
   type QueueStatsData
 } from '@propr/shared';
@@ -73,7 +74,7 @@ export class QueueBroadcaster {
     // Broadcast queue stats every 5 seconds to ensure UI stays updated
     this.queueStatsInterval = setInterval(async () => {
       const room = this.io.sockets.adapter.rooms.get('queue:stats');
-      if (room && room.size > 0) {
+      if ((room && room.size > 0) || this.io.sockets.adapter.rooms.get(ACTIVITY_ROOM)?.size) {
         await this.broadcastQueueStats();
       }
     }, 5000);
@@ -84,7 +85,7 @@ export class QueueBroadcaster {
   /**
    * Broadcast current queue statistics to subscribed clients
    */
-  async broadcastQueueStats(force = false): Promise<void> {
+  async broadcastQueueStats(force = false, recipientId?: string): Promise<void> {
     try {
       const [waiting, activeJobs, completed, failed, delayed] = await Promise.all([
         this.queue.getWaitingCount(),
@@ -111,16 +112,24 @@ export class QueueBroadcaster {
       // the authoritative queue snapshot has not changed. A new subscriber can
       // force one snapshot so it never waits for the next transition.
       const fingerprint = JSON.stringify(stats);
-      if (!force && fingerprint === this.lastBroadcastFingerprint) return;
+      const changed = fingerprint !== this.lastBroadcastFingerprint;
+      const initial = force && (!changed || this.lastBroadcastFingerprint === null);
+      if (!force && !changed) return;
       this.lastBroadcastFingerprint = fingerprint;
 
       const payload: QueueStatsUpdatePayload = {
         eventType: QUEUE_STATS_UPDATE,
         stats,
+        ...(initial ? { initial: true } : {}),
         timestamp: new Date().toISOString()
       };
 
-      this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
+      this.io.to(initial && recipientId ? recipientId : 'queue:stats').emit(QUEUE_STATS_UPDATE, payload);
+      // Joining a room must not look like a queue transition to every dashboard.
+      if (initial) return;
+      this.io.to(ACTIVITY_ROOM).emit(ACTIVITY_UPDATE, { eventType: ACTIVITY_UPDATE,
+        domain: 'queue', change: 'progressed', entityId: 'queue', repository: null, terminal: false,
+        occurredAt: payload.timestamp });
     } catch (error) {
       console.error('[QueueBroadcaster] Failed to broadcast queue stats:', error);
     }

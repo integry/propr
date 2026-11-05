@@ -1,5 +1,8 @@
 ---
 sidebar_position: 1
+sidebar_label: "Setup"
+title: "Set up ProPR: local, server, or source install"
+description: "Choose an installation path and use the guided propr setup wizard to verify your host, connect GitHub, and start ProPR."
 ---
 
 # Setup
@@ -22,7 +25,7 @@ Keep the terminal interactive and complete GitHub and provider authorization you
 | Area | Requirement |
 | --- | --- |
 | Host platform | Linux on `amd64` is native and recommended for production. On Apple Silicon macOS, the CLI and launcher work through Docker Desktop running the published Linux `amd64` agent and launcher images under emulation; native `arm64` images are not yet available. |
-| Docker | A maintained Docker Engine release, with the CLI installed and the daemon reachable by the ProPR user. On Linux, that user must be able to run `docker info` and read/write `/var/run/docker.sock` without an interactive `sudo` prompt. On Apple Silicon, Docker Desktop must be running Linux containers and provide the default Docker socket to the CLI and launcher. Linux containers, user-defined bridge networks, bind mounts, named volumes, restart policies, `--init`, and container resource limits must be available. `propr check` verifies the CLI, daemon, socket, and image access before startup. |
+| Docker | A maintained Docker Engine release, with the CLI installed and the daemon reachable by the ProPR user. On Linux, that user must be able to run `docker info` and read/write `/var/run/docker.sock` without an interactive `sudo` prompt. On Apple Silicon, Docker Desktop must be running Linux containers and provide the default Docker socket to the CLI and launcher. Linux containers, user-defined bridge networks, bind mounts, named volumes, restart policies, `--init`, and container resource limits must be available. `propr check` verifies the CLI, daemon, socket, and image access before startup. The daemon check asks the engine for its OS type; on Linux, a Docker-compatible CLI such as `podman-docker` that cannot answer that query is still accepted when plain `docker info` succeeds, with Linux containers assumed. macOS accepts only Docker Desktop. |
 | Node.js | Node.js 22+ and npm are required for the public CLI path. The `propr/launcher` container runs the same stack orchestrator without host Node.js. |
 | Capacity | Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation. Use 8 GB RAM or more for normal use, concurrent work, or large repositories, and allow extra disk for image updates, clones, worktrees, and logs. On a 4 GB host, start with `WORKER_CONCURRENCY=1`. The automatically selected agent CPU ceiling will not exceed detected host capacity. |
 | Network and accounts | Outbound HTTPS and WebSocket access to Docker Hub, npm (for the CLI path), GitHub, the selected model providers, and ProPR Connect when using the shared App or managed tunnel. The default WebSocket intake path needs no inbound public port. The guided Connect default uses the GitHub CLI (`gh`) for browser login; alternatively authenticate first with `propr login <token>`. GitHub repository access and at least one coding-agent provider account are required. |
@@ -48,7 +51,7 @@ Access to `/var/run/docker.sock` is root-equivalent control of the host. Limit i
 - A host that meets the [system requirements](#system-requirements)
 - Node.js 22+ for the CLI path (the `propr/launcher:latest` container alternative needs no Node.js)
 - GitHub access for the backend. By default `propr setup` enrolls the shared, hosted ProPR GitHub App through ProPR Connect; accepting the defaults handles login through the GitHub CLI (`gh`) and installation when needed. You can instead run `propr login <token>` first. Running your own GitHub App is the advanced alternative. See [GitHub Authentication](../operations/github-auth.md).
-- A provider account for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — reuse host credentials, run `propr agent login <agent>`, or add the agent and log in directly from the Web UI
+- A provider account for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — reuse host credentials, run `propr agent login <agent>`, or add the agent and log in directly from the Web UI (Mistral Vibe has no interactive login; it uses `~/.vibe` or `MISTRAL_API_KEY`)
 - Disk space for data, logs, and repository workspaces
 
 ## Give this to your coding agent
@@ -117,3 +120,8 @@ Once ProPR is running, configure it through either control surface — the Web U
 5. Run a small test issue or Planner Studio draft (or `propr plan create "..." --wait`).
 
 For day-to-day use, see [Daily Use](./usage.md). Before exposing ProPR beyond your own machine, harden the host and deployment: see [Secure VPS Deployment](./setup-vps.md) and [Advanced VPS Hardening](./setup-vps-hardening.md).
+
+## Next steps
+
+- [Issue To Pull Request Walkthrough](/docs/tutorials/end-to-end-workflow)
+- [ProPR CLI](/docs/features/propr-cli)

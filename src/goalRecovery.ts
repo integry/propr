@@ -2,13 +2,16 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import type { GoalJobData } from '@propr/core';
 import {
+    closeGoalBlockers,
     db,
+    getEventPublisher,
     executeDockerCommand,
     getIssueQueue,
     getStateManager,
     goalAttemptLabel,
     goalJobId,
     goalTitleFallback,
+    publishGoalTransition,
     TaskStates,
     logger,
 } from '@propr/core';
@@ -105,6 +108,17 @@ async function enqueue(options: {
     }, { jobId: goalJobId(goal.goal_id, generation), attempts: 1 });
 }
 
+/** Blockers are already fenced out by the projection; a failed close must not stall recovery. */
+async function supersedeBlockers(
+    database: Knex,
+    goalId: string,
+    scope: Parameters<typeof closeGoalBlockers>[2],
+    resolution: Parameters<typeof closeGoalBlockers>[3],
+): Promise<void> {
+    await closeGoalBlockers(database, goalId, scope, resolution).catch(error => logger.warn(
+        { goalId, error: (error as Error).message }, 'Could not close goal blockers during recovery'));
+}
+
 async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): Promise<boolean> {
     const changed = await database('goals').where({
         goal_id: goal.goal_id,
@@ -117,6 +131,12 @@ async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): P
         completed_at: database.fn.now(),
         updated_at: database.fn.now(),
     });
+    // Recovery is the only writer that knows this attempt is unrecoverable, so
+    // it owns announcing the failure a console would otherwise poll to find.
+    if (changed === 1) {
+        await supersedeBlockers(database, goal.goal_id, {}, 'goal_terminal');
+        await publishGoalTransition({ previous: goal, next: { ...goal, result_state: 'failed' } });
+    }
     return changed === 1;
 }
 
@@ -149,6 +169,14 @@ async function recoverClaimedAttempt(
         updated_at: database.fn.now(),
     });
     if (changed !== 1) return false;
+    // The recovered attempt replaces the lost session; its blockers cannot be answered any more.
+    await supersedeBlockers(database, goal.goal_id, { exceptClaim: claimId }, 'superseded_by_attempt');
+    // A paused goal that recovery resumes is a state change no other writer
+    // reports: the operator asked for it, but only this sweep knows it landed.
+    await publishGoalTransition({
+        previous: goal,
+        next: { ...goal, desired_state: 'running', claimed_at: null },
+    });
     await enqueue({ queue, goal, generation, claimId, recovery: true });
     return true;
 }
@@ -282,6 +310,12 @@ async function recoverGoal(options: {
             updated_at: database.fn.now(),
         });
         if (cancelled !== 1) return 'unchanged';
+        // Silent when the cancellation was already announced at the request;
+        // reported here when this sweep is the first to observe it.
+        await publishGoalTransition({
+            previous: goal,
+            next: { ...goal, result_state: 'cancelled' },
+        });
         await reconcileTask({ ...goal, result_state: 'cancelled' });
         await database('goals').where({ goal_id: goal.goal_id, result_state: 'cancelled' })
             .whereNull('task_reconciled_at').update({ task_reconciled_at: database.fn.now(), updated_at: database.fn.now() });
@@ -311,6 +345,7 @@ async function recoverGoal(options: {
             updated_at: database.fn.now(),
         });
         if (confirmed !== 1) return 'unchanged';
+        void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
         return goal.resume_requested
             ? await recoverClaimedAttempt(database, queue, { ...goal, pause_confirmed_at: new Date().toISOString() }) ? 'recovered' : 'unchanged'
             : 'recovered';

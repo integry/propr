@@ -62,7 +62,7 @@ export async function persistGenerationCompletion(options: GenerationCompletionO
     status: 'generating',
     generation_trace: expectedTrace,
   });
-  return Number(await query.update(updates)) === 1;
+  return Number(await query.update({ ...updates, plan_cause: 'generation' })) === 1;
 }
 
 function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: number): number | undefined {

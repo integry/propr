@@ -1,4 +1,4 @@
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import {
@@ -117,6 +117,8 @@ export async function schedulePRCommentRecovery(
 
     const recoveryData = { ...job.data };
     delete recoveryData.prProcessingLockToken;
+    delete recoveryData.prLockWaitAttempts;
+    delete recoveryData.predecessorWaitAttempts;
     const recoveryJob = await issueQueue.add(job.name, {
         ...recoveryData,
         ...(params.containerCollisionTaskId
@@ -176,12 +178,72 @@ export async function evaluatePRCommentCancellation(
     return { preexistingState, result: { status: 'cancelled', reason: 'task_already_cancelled' } };
 }
 
-/** Resolve cancellation ownership before replacing a lock-contending job. */
+const PR_LOCK_WAIT_BASE_DELAY_MS = 10_000;
+const PR_LOCK_WAIT_MAX_DELAY_MS = 120_000;
+
+/** Backoff while another job holds the PR: 10s, 20s, 40s, 80s, then every 2 minutes. */
+export function prLockWaitDelay(attempt: number): number {
+    return Math.min(PR_LOCK_WAIT_BASE_DELAY_MS * 2 ** Math.max(0, attempt), PR_LOCK_WAIT_MAX_DELAY_MS);
+}
+
+const PREDECESSOR_WAIT_BASE_DELAY_MS = 60_000;
+const PREDECESSOR_WAIT_MAX_DELAY_MS = 15 * 60_000;
+
+/**
+ * Backoff behind a blocked predecessor handoff: 1, 2, 4, 8 minutes, then every
+ * 15 minutes. An operator hold can stand for days, so a fixed one-minute retry
+ * would spin the worker for as long as nobody settles it.
+ */
+export function predecessorWaitDelay(attempt: number): number {
+    return Math.min(PREDECESSOR_WAIT_BASE_DELAY_MS * 2 ** Math.max(0, attempt), PREDECESSOR_WAIT_MAX_DELAY_MS);
+}
+
+type WaitAttemptsField = 'prLockWaitAttempts' | 'predecessorWaitAttempts';
+
+/**
+ * Delays this same job — and so the same task — instead of queueing a
+ * replacement. Claimed comments go back to the pending list first, exactly as
+ * for a replacement job, so newer comments are batched with them on the next
+ * attempt. Returns false when the job is not held by a worker and cannot be
+ * delayed; the caller then falls back to a replacement job. The caller throws
+ * DelayedError after releasing anything it holds.
+ */
+export async function delayPRCommentJobInPlace(
+    params: Pick<ScheduleRecoveryParams, 'job' | 'taskId' | 'redisClient' | 'pickedUpComments' | 'correlatedLogger'>,
+    options: { attemptsField: WaitAttemptsField; delayFor: (attempt: number) => number; reason: string; message: string },
+): Promise<boolean> {
+    const { job, taskId, redisClient, pickedUpComments, correlatedLogger } = params;
+    if (!job.token || typeof job.moveToDelayed !== 'function') return false;
+    await restorePendingComments(pickedUpComments, {
+        repoOwner: job.data.repoOwner,
+        repoName: job.data.repoName,
+        pullRequestNumber: job.data.pullRequestNumber,
+        redisClient,
+    });
+    const attempt = job.data[options.attemptsField] ?? 0;
+    const delay = options.delayFor(attempt);
+    await job.updateData({ ...job.data, [options.attemptsField]: attempt + 1 });
+    await job.moveToDelayed(Date.now() + delay, job.token);
+    correlatedLogger.info({ taskId, delay, attempt: attempt + 1, reason: options.reason, restoredCommentCount: pickedUpComments.length }, options.message);
+    return true;
+}
+
+/**
+ * Resolve cancellation ownership, then wait for the PR lock. A job running under
+ * a worker waits in place — the same job, and so the same task, is delayed — so a
+ * follow-up queued behind an hour-long run stays one pending task instead of
+ * leaving a cancelled task behind every retry.
+ */
 export async function handlePRCommentLockContention(
     params: CancellationRecoveryParams,
 ): Promise<{ status: string; reason: string; replacementTaskId?: string }> {
     const cancellationDecision = await evaluatePRCommentCancellation(params);
     if (cancellationDecision.result) return cancellationDecision.result;
+    const waited = await delayPRCommentJobInPlace(params, {
+        attemptsField: 'prLockWaitAttempts', delayFor: prLockWaitDelay, reason: 'pr_locked_by_other_job',
+        message: 'PR is locked by another job; waiting in place for the lock',
+    });
+    if (waited) throw new DelayedError();
     const replacementTaskId = await schedulePRCommentRecovery({
         ...params,
         delay: 10000,
@@ -264,7 +326,7 @@ export async function createPRCommentTaskStateIfMissing(params: {
     if (params.preexistingState) return;
     const { job, taskId, stateManager, modelName, correlatedLogger } = params;
     try {
-        await stateManager.createTaskState(taskId, {
+        await stateManager.createTaskStateIfAbsent(taskId, {
             number: job.data.pullRequestNumber,
             pullRequestNumber: job.data.pullRequestNumber,
             repoOwner: job.data.repoOwner,

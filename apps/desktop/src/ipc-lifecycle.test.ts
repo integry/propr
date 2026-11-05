@@ -8,7 +8,7 @@ import { registerIpcHandlers } from './ipc';
 import type { LocalLifecycleController } from './lifecycle';
 import type { DesktopLogger } from './logger';
 import type { ProfileStore } from './profile-store';
-import { rendererContentSecurityPolicy } from './security';
+import { rendererContentSecurityPolicy, rendererPolicyOriginsForSelection } from './security';
 import { IPC_CHANNELS, type DesktopDeepLinkDelivery } from './shared/contract';
 import { createDesktopShutdownCoordinator } from './shutdown';
 
@@ -76,6 +76,7 @@ describe('desktop IPC shutdown gate', () => {
       credentials: {
         logout: async (value: unknown) => { assert.deepEqual(value, scope); order.push('logout'); entered.resolve(); await completed.promise; },
         hasActiveRendererBinding: () => false,
+        listProfiles: async () => ({ profiles: [], activeProfileId: null }),
       } as unknown as DesktopCredentialService,
       notifications: {
         activeScope: () => notificationScope,
@@ -88,6 +89,7 @@ describe('desktop IPC shutdown gate', () => {
       devServerUrl: undefined,
       packagedRendererUrl: 'propr-renderer://app/index.html',
       openExternal: async () => undefined,
+      onRendererActiveProfileChanged: origin => { assert.equal(origin, undefined); order.push('narrow-policy'); },
       onActiveWorkConnectionUnavailable: reason => { assert.equal(reason, 'logged-out'); order.push('stop-native-work'); },
     });
     const handler = handlers.get(IPC_CHANNELS.authLogout)!;
@@ -101,7 +103,7 @@ describe('desktop IPC shutdown gate', () => {
     assert.deepEqual(order, ['logout']);
     completed.resolve();
     await pending;
-    assert.deepEqual(order, ['logout', 'clear-notifications', 'stop-native-work']);
+    assert.deepEqual(order, ['logout', 'clear-notifications', 'stop-native-work', 'narrow-policy']);
     registered.dispose();
   });
 
@@ -154,6 +156,69 @@ describe('desktop IPC shutdown gate', () => {
       /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.deepEqual(calls, { close: 1, maximize: 1, minimize: 1, unmaximize: 1 });
+  });
+
+  it('pops up the Linux application menu only for the owning sender with a validated anchor', async () => {
+    const register = (platform: NodeJS.Platform) => {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      const acceptedSender = {};
+      const requests: unknown[] = [];
+      registerIpcHandlers({
+        app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+        ipcMain: {
+          handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+          removeHandler: (channel: string) => { handlers.delete(channel); },
+        } as unknown as IpcMain,
+        profiles: {} as ProfileStore,
+        credentials: {} as DesktopCredentialService,
+        connectDiscovery,
+        lifecycle: {} as LocalLifecycleController,
+        logger: { log: () => undefined } as unknown as DesktopLogger,
+        desktopSession: {} as Session,
+        devServerUrl: undefined,
+        packagedRendererUrl: 'propr-renderer://app/index.html',
+        openExternal: async () => undefined,
+        platform,
+        showApplicationMenu: (event, request) => {
+          if (event.sender !== acceptedSender) throw new Error('stale window');
+          requests.push(request);
+        },
+      });
+      const event = {
+        sender: acceptedSender,
+        senderFrame: { url: 'propr-renderer://app/index.html' },
+      } as unknown as IpcMainInvokeEvent;
+      return { handlers, event, requests };
+    };
+    for (const platform of ['darwin', 'win32'] as const) {
+      assert.equal(register(platform).handlers.has(IPC_CHANNELS.applicationMenuPopup), false);
+    }
+    const { handlers, event, requests } = register('linux');
+    const popup = handlers.get(IPC_CHANNELS.applicationMenuPopup)!;
+    await Promise.resolve(popup(event, { x: 760, y: 44, source: 'keyboard' }));
+    assert.deepEqual(requests, [{ x: 760, y: 44, source: 'keyboard' }]);
+    for (const args of [
+      [],
+      [{ x: 760, y: 44 }],
+      [{ x: -1, y: 44, source: 'mouse' }],
+      [{ x: Number.NaN, y: 44, source: 'mouse' }],
+      [{ x: 1e9, y: 44, source: 'mouse' }],
+      [{ x: 760, y: 44, source: 'touch' }],
+      [{ x: 760, y: 44, source: 'mouse', template: [{ label: 'Injected' }] }],
+      [{ x: 760, y: 44, source: 'mouse' }, 'unexpected'],
+      ['https://example.test'],
+    ]) {
+      await assert.rejects(Promise.resolve(popup(event, ...args)), /Desktop operation failed \[IPC_OPERATION_FAILED\]/);
+    }
+    await assert.rejects(
+      Promise.resolve(popup({ ...event, sender: {} }, { x: 760, y: 44, source: 'mouse' })),
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
+    );
+    await assert.rejects(
+      Promise.resolve(popup({ ...event, senderFrame: { url: 'https://example.test/' } }, { x: 760, y: 44, source: 'mouse' })),
+      /Untrusted desktop IPC sender/,
+    );
+    assert.equal(requests.length, 1);
   });
 
   it('clears old and new origin storage through the real save IPC before a same-ID URL commit', async () => {
@@ -229,7 +294,7 @@ describe('desktop IPC shutdown gate', () => {
       },
       listProfiles: async () => { throw new Error('post-save profile read failed'); },
     } as unknown as DesktopCredentialService;
-    const reconciledOrigins: Array<string | null> = [];
+    const reconciledOrigins: Array<string | null | undefined> = [];
     registerIpcHandlers({
       app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
       ipcMain: {
@@ -259,8 +324,27 @@ describe('desktop IPC shutdown gate', () => {
     );
 
     assert.equal(saveCommitted, true);
-    assert.deepEqual(reconciledOrigins, [null]);
+    assert.deepEqual(reconciledOrigins, [undefined]);
   });
+
+  for (const channel of [IPC_CHANNELS.profilesList, IPC_CHANNELS.profilesSetActive, IPC_CHANNELS.connectionActivate]) {
+    it(`narrows the production policy when the initial ${channel} profile read fails`, async () => {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      let origins: readonly string[] = ['http://localhost:4000'];
+      registerIpcHandlers({
+        app: {} as App,
+        ipcMain: { handle: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler), removeHandler: (name: string) => handlers.delete(name) } as unknown as IpcMain,
+        profiles: {} as ProfileStore,
+        credentials: { listProfiles: async () => { throw new Error('unreadable'); } } as unknown as DesktopCredentialService,
+        connectDiscovery, lifecycle: {} as LocalLifecycleController,
+        logger: { log() {} } as unknown as DesktopLogger, desktopSession: {} as Session,
+        devServerUrl: undefined, packagedRendererUrl: 'propr-renderer://app/index.html', openExternal: async () => undefined,
+        onRendererActiveProfileChanged: origin => { origins = rendererPolicyOriginsForSelection(origins, origin); },
+      });
+      await assert.rejects(Promise.resolve(handlers.get(channel)!({ senderFrame: { url: 'propr-renderer://app/index.html' } }, null)), /IPC_OPERATION_FAILED/);
+      assert.deepEqual(origins, []);
+    });
+  }
 
   for (const staleReadOutcome of ['resolve', 'reject'] as const) {
     it(`does not publish a stale reconciliation when its profile read ${staleReadOutcome}s`, async () => {
@@ -296,7 +380,7 @@ describe('desktop IPC shutdown gate', () => {
           return { profiles: [currentProfile], activeProfileId: currentProfile.id };
         },
       } as unknown as DesktopCredentialService;
-      const reconciledOrigins: Array<string | null> = [];
+      const reconciledOrigins: Array<string | null | undefined> = [];
       registerIpcHandlers({
         app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
         ipcMain: {
@@ -481,47 +565,61 @@ describe('desktop IPC shutdown gate', () => {
     assert.equal(reconciledOrigin, profiles[1].apiBaseUrl);
   });
 
-  it('clears the renderer policy after removing the active profile', async () => {
-    const handlers = new Map<string, (...args: any[]) => unknown>();
-    let removed = false;
-    const credentials = {
-      removeProfile: async (
-        _profileId: string,
-        beforeCommit: (origin: string) => Promise<void>,
-      ) => {
-        await beforeCommit('http://localhost:4000');
-        removed = true;
-        return 'http://localhost:4000';
-      },
-      listProfiles: async () => ({ profiles: [], activeProfileId: null }),
-    } as unknown as DesktopCredentialService;
-    let reconciledOrigin: string | null | undefined;
-    registerIpcHandlers({
-      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
-      ipcMain: {
-        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
-        removeHandler: (channel: string) => { handlers.delete(channel); },
-      } as unknown as IpcMain,
-      profiles: {} as ProfileStore,
-      credentials,
-      connectDiscovery,
-      lifecycle: {} as LocalLifecycleController,
-      logger: { log: () => undefined } as unknown as DesktopLogger,
-      desktopSession: { clearStorageData: async () => undefined } as unknown as Session,
-      devServerUrl: undefined,
-      packagedRendererUrl: 'propr-renderer://app/index.html',
-      openExternal: async () => undefined,
-      onRendererActiveProfileChanged: origin => { reconciledOrigin = origin; },
+  for (const outcome of ['removed', 'other-active', 'failed'] as const) {
+    it(`reconciles removal policy only from committed current state: ${outcome}`, async () => {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      let removed = false;
+      const credentials = {
+        removeProfile: async (
+          _profileId: string,
+          beforeCommit: (origin: string) => Promise<void>,
+        ) => {
+          if (outcome === 'failed') throw new Error('removal commit failed');
+          await beforeCommit('http://localhost:4000');
+          removed = true;
+          return 'http://localhost:4000';
+        },
+        listProfiles: async () => ({
+          profiles: [{ id: 'profile-b', apiBaseUrl: 'http://127.0.0.1:4100' }],
+          activeProfileId: outcome === 'other-active' ? 'profile-b' : null,
+        }),
+      } as unknown as DesktopCredentialService;
+      let reconciledOrigin: string | null | undefined;
+      let origins: readonly string[] = ['http://localhost:4000'];
+      registerIpcHandlers({
+        app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+        ipcMain: {
+          handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+          removeHandler: (channel: string) => { handlers.delete(channel); },
+        } as unknown as IpcMain,
+        profiles: {} as ProfileStore,
+        credentials,
+        connectDiscovery,
+        lifecycle: {} as LocalLifecycleController,
+        logger: { log: () => undefined } as unknown as DesktopLogger,
+        desktopSession: { clearStorageData: async () => undefined } as unknown as Session,
+        devServerUrl: undefined,
+        packagedRendererUrl: 'propr-renderer://app/index.html',
+        openExternal: async () => undefined,
+        onRendererActiveProfileChanged: origin => { reconciledOrigin = origin; origins = rendererPolicyOriginsForSelection(origins, origin); },
+      });
+      const event = {
+        senderFrame: { url: 'propr-renderer://app/index.html' },
+      } as unknown as IpcMainInvokeEvent;
+
+      const removal = Promise.resolve(handlers.get(IPC_CHANNELS.profilesRemove)!(event, 'profile-a'));
+      if (outcome === 'failed') {
+        await assert.rejects(removal, /IPC_OPERATION_FAILED/);
+        assert.equal(removed, false);
+        assert.deepEqual(origins, ['http://localhost:4000']);
+      } else {
+        await removal;
+        assert.equal(removed, true);
+        assert.equal(reconciledOrigin, outcome === 'other-active' ? 'http://127.0.0.1:4100' : undefined);
+        assert.deepEqual(origins, outcome === 'other-active' ? ['http://127.0.0.1:4100'] : []);
+      }
     });
-    const event = {
-      senderFrame: { url: 'propr-renderer://app/index.html' },
-    } as unknown as IpcMainInvokeEvent;
-
-    await Promise.resolve(handlers.get(IPC_CHANNELS.profilesRemove)!(event, 'profile-a'));
-
-    assert.equal(removed, true);
-    assert.equal(reconciledOrigin, null);
-  });
+  }
 
   it('removes cleartext renderer sources after discarding the active loopback connection', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
@@ -685,7 +783,7 @@ describe('desktop IPC shutdown gate', () => {
         await finishActivationCleanup.promise;
       },
     } as unknown as Session;
-    const reconciledOrigins: Array<string | null> = [];
+    const reconciledOrigins: Array<string | null | undefined> = [];
     registerIpcHandlers({
       app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
       ipcMain: {

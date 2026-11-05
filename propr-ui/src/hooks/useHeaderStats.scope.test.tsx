@@ -33,6 +33,8 @@ vi.mock('../contexts/useSocket', () => ({
       return () => socketState.draftCallbacks.delete(callback);
     },
     onQueueStatsUpdate: () => () => undefined,
+    onActivityUpdate: () => () => undefined,
+    onUsageUpdate: () => () => undefined,
   }),
 }));
 

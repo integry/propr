@@ -90,6 +90,8 @@ interface AttachmentUploaderProps {
   onUpload: (file: File) => Promise<void>;
   onRemove: (attachmentId: string) => Promise<void>;
   compact?: boolean;
+  /** Compact only: a borderless row for docking inside an already-bordered field. */
+  docked?: boolean;
 }
 
 export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
@@ -98,7 +100,8 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
   isUploading,
   onUpload,
   onRemove,
-  compact = false
+  compact = false,
+  docked = false
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -148,11 +151,15 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
         )}
 
         <div
-          className={`flex items-center gap-2 p-2 rounded-lg border-2 border-dashed transition-colors ${
-            isDragging
-              ? 'border-indigo-400 bg-indigo-50'
-              : 'border-gray-200 hover:border-gray-300 bg-gray-50'
-          }`}
+          className={
+            docked
+              ? `flex items-center gap-2 rounded px-1 py-1 transition-colors ${isDragging ? 'bg-teal-50 ring-1 ring-teal-300' : ''}`
+              : `flex items-center gap-2 p-2 rounded-lg border-2 border-dashed transition-colors ${
+                  isDragging
+                    ? 'border-indigo-400 bg-indigo-50'
+                    : 'border-gray-200 hover:border-gray-300 bg-gray-50'
+                }`
+          }
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}

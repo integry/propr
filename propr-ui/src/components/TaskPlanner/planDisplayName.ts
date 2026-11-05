@@ -33,3 +33,56 @@ export function getDraftDisplayName(draft: DraftDisplayNameSource | null | undef
   if (isStalePromptDerivedName(name, prompt)) return promptTitle || name;
   return name;
 }
+
+// "<plan name> (n/m): " — the plan name is a short prefix without its own colon or parentheses.
+const STEP_COUNTER_PREFIX = /^([^:()]{0,80}?)\(\s*(\d+)\s*\/\s*(\d+)\s*\)\s*[:\-–—]\s*/;
+
+/**
+ * Generated step titles often repeat the plan name with a counter
+ * ("Agents v1 (3/17): Agent run store"). The outline already shows the
+ * step number, so only the distinguishing part of the title is kept. Only a
+ * leading plan-name prefix with a valid counter is removed, so a title that
+ * merely contains "(n/m):" after its own subject keeps its text.
+ */
+export const getOutlineTitle = (title: string): string => {
+  const match = title.match(STEP_COUNTER_PREFIX);
+  if (!match) return title.trim();
+  const [prefix, , step, total] = match;
+  if (Number(step) < 1 || Number(step) > Number(total)) return title.trim();
+  return title.slice(prefix.length).trim() || title.trim();
+};
+
+const TAB_LABEL_MAX_WORDS = 3;
+const TAB_LABEL_ABBREVIATIONS: Array<[RegExp, string]> = [
+  [/\bdatabase\b/gi, 'DB'],
+  [/\brepository\b/gi, 'Repo'],
+  [/\brepositories\b/gi, 'Repos'],
+  [/\bconfiguration\b/gi, 'Config'],
+  [/\bdocumentation\b/gi, 'Docs'],
+  [/\band\b/gi, '&'],
+];
+// Leading verbs say what to do, not which feature the step is about.
+const TAB_LABEL_LEADING_VERB = /^(?:add|implement|create|build|expose|introduce|update|support|make|wire|extend)\s+/i;
+// The subject ends where its qualifiers start: "X for Y", "X with Y", "X: Y", "X, Y", "X (Y)".
+const TAB_LABEL_QUALIFIER = /\s+(?:for|with|to|from|in|on|of|via|using|that|so|across|into|per)\s+|\s*[:,;(—–]\s*|\s+-\s+/i;
+
+const capitalize = (word: string): string => (word === '&' || /[A-Z]/.test(word.slice(1)) ? word : word.charAt(0).toUpperCase() + word.slice(1));
+
+/**
+ * Short feature label for the step tabs ("Shared contracts for agent definitions,
+ * runs, …" → "Shared Contracts"). Tabs are an index, so they show only the
+ * step's subject; the full title stays in the specification and the tooltip.
+ */
+export const getTabLabel = (title: string): string => {
+  const outlineTitle = getOutlineTitle(title);
+  const subject = outlineTitle.replace(TAB_LABEL_LEADING_VERB, '').split(TAB_LABEL_QUALIFIER)[0].trim() || outlineTitle;
+  const abbreviated = TAB_LABEL_ABBREVIATIONS.reduce((text, [pattern, short]) => text.replace(pattern, short), subject);
+  let words = abbreviated.split(/\s+/).filter(Boolean);
+  if (words.filter(word => word !== '&').length > TAB_LABEL_MAX_WORDS) {
+    // "DB migration & definition store" keeps its first half rather than stopping mid-phrase.
+    const joinIndex = words.indexOf('&');
+    words = joinIndex > 0 && joinIndex <= TAB_LABEL_MAX_WORDS ? words.slice(0, joinIndex) : words.slice(0, TAB_LABEL_MAX_WORDS);
+  }
+  if (words[words.length - 1] === '&') words = words.slice(0, -1);
+  return words.map(capitalize).join(' ') || outlineTitle;
+};

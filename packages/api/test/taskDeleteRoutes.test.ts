@@ -53,6 +53,10 @@ async function createDatabase(): Promise<Knex> {
   await database.schema.createTable('llm_execution_details', table => {
     table.text('execution_id').notNullable();
   });
+  await database.schema.createTable('task_assignees', table => {
+    table.text('task_id').notNullable();
+    table.text('github_user_id').notNullable();
+  });
 
   return database;
 }
@@ -75,6 +79,7 @@ async function seedCompletedTask(database: Knex, taskId: string): Promise<void> 
   });
   await database('llm_executions').insert({ execution_id: `${taskId}-execution`, task_id: taskId });
   await database('llm_execution_details').insert({ execution_id: `${taskId}-execution` });
+  await database('task_assignees').insert({ task_id: taskId, github_user_id: '583231' });
 }
 
 async function createDeleteApp(database: Knex, authenticated: boolean): Promise<express.Express> {
@@ -190,6 +195,7 @@ test('both task delete paths use the shared handler behavior', async () => {
     assert.equal(await database('llm_executions').count<{ count: number }>({ count: '*' }).first().then(row => row?.count), 0);
     assert.equal(await database('llm_execution_details').count<{ count: number }>({ count: '*' }).first().then(row => row?.count), 0);
     assert.equal(await database('tasks').count<{ count: number }>({ count: '*' }).first().then(row => row?.count), 0);
+    assert.equal(await database('task_assignees').count<{ count: number }>({ count: '*' }).first().then(row => row?.count), 0);
   } finally {
     await database.destroy();
   }

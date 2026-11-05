@@ -116,6 +116,10 @@ export interface RefinePlanResult {
   summary: string;
   /** The model actually used to refine, so callers/UI can display it. */
   model: string;
+  /** True when edit-style model output was applied to the existing plan. */
+  merged?: boolean;
+  /** Number of edit operations applied when merged is true. */
+  operations?: number;
 }
 
 export interface RefinePlanEstimation {

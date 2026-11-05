@@ -19,11 +19,16 @@ import {
   createGetContextStatsHandler,
   createGetIssuesHandler,
   createImplementIssueHandler,
+  createGetExecutionQueueHandler,
+  createQueueRemainingHandler,
   createUpdateIssueHandler,
   validatePreviewInput,
   recoverStaleRefinement,
   withAuthCheck,
   createValidateContextRepositoryHandler,
+  createListPlanRevisionsHandler,
+  createGetPlanRevisionHandler,
+  createRestorePlanRevisionHandler,
 } from './plannerHelpers/index.js';
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
@@ -38,9 +43,10 @@ import {
   type DraftExecutionConfig
 } from './plannerExecutionSettings.js';
 export { buildUpdatedExecutionConfig, mergeExecutionContextConfig } from './plannerExecutionSettings.js';
-import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
+import { linkTodosToDraft, pauseDraft, resumeDraft, reconcilePlanIssueRefinement } from '@propr/core';
 import { isDemoMode } from '../demoMode.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { attachCreator, projectCreator, rememberCreator } from '../services/creatorProjection.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -67,7 +73,7 @@ const upload = multer({
 export const attachmentUpload = upload.single('file');
 export const goalAttachmentUpload = upload.array('files', 10);
 
-interface PlannerRoutesDeps { db: Knex; }
+interface PlannerRoutesDeps { db: Knex; enqueueEpics?: boolean; }
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
@@ -133,18 +139,22 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       }
 
       let drafts = await timeApiStage('sql.drafts.list', () => query
-        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
+        .select('draft_id', 'user_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
         .orderBy('updated_at', 'desc'));
 
       if (searchWords.length > 0) { const exactPhrase = search!.trim().toLowerCase(); const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase); sortDraftsByScore(scoredDrafts); drafts = removeSearchScore(scoredDrafts); }
 
-      const paginatedDrafts = drafts.slice(offset, offset + limit);
+      const attributedDrafts = await attachCreator(drafts.slice(offset, offset + limit) as Array<Record<string, unknown> & { draft_id: string; user_id: string }>, 'user_id', 'created_by');
+      // `user_id` is read only to resolve `created_by`; the list does not expose the raw id.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const paginatedDrafts = attributedDrafts.map(({ user_id: _userId, ...draft }) => draft);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
         const issues = await timeApiStage('sql.drafts.issue-status', () =>
-          db!('plan_issues').whereIn('draft_id', draftIds).select('draft_id', 'status')
+          db!('plan_issues').whereIn('draft_id', draftIds).select('id', 'draft_id', 'repository', 'pr_number', 'status')
         );
-        const issueSummaries = buildIssueSummaryMap(issues);
+        // Counts must not claim refinement whose follow-up work already ended.
+        const issueSummaries = buildIssueSummaryMap(await reconcilePlanIssueRefinement(issues));
         attachIssueSummaries(paginatedDrafts as Array<Record<string, unknown> & { draft_id: string }>, issueSummaries);
       }
 
@@ -182,6 +192,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       if (Array.isArray(todoIds) && todoIds.length > 0) await linkTodosToDraft(todoIds, draftId, req.user!.id);
 
+      await rememberCreator(req.user);
       const draft = await db!('task_drafts').where({ draft_id: draftId }).first();
       res.status(201).json(draft);
     } catch (error) {
@@ -207,6 +218,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const parsedDraft = parseDraftJsonFields(draft) as Record<string, unknown> & { task_title?: string };
       parsedDraft.task_title = draft.name;
+      parsedDraft.created_by = await projectCreator(draft.user_id);
 
       res.json(parsedDraft);
     } catch (error) {
@@ -228,7 +240,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const { plan_json, context_config, status, name, chat_history, initial_prompt } = req.body;
       const updateData: Record<string, unknown> = { updated_at: db!.fn.now() };
-      if (plan_json !== undefined) updateData.plan_json = JSON.stringify(plan_json);
+      if (plan_json !== undefined) {
+        const serializedPlan = JSON.stringify(plan_json);
+        updateData.plan_json = serializedPlan;
+        updateData.plan_cause = db!.raw(
+          'CASE WHEN ?? = ? THEN ?? ELSE ? END',
+          ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']
+        );
+      }
       if (context_config !== undefined) updateData.context_config = JSON.stringify(context_config);
       if (status !== undefined) updateData.status = status;
       if (name !== undefined) updateData.name = name;
@@ -289,11 +308,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   const getAttachmentContent = withAuthCheck(db, createGetAttachmentContentHandler({ verifyOwnership: ownershipVerifier }));
+  const listPlanRevisions = withAuthCheck(db, createListPlanRevisionsHandler({ db, verifyOwnership: ownershipVerifier }));
+  const getPlanRevision = withAuthCheck(db, createGetPlanRevisionHandler({ db, verifyOwnership: ownershipVerifier }));
+  const restorePlanRevision = withAuthCheck(db, createRestorePlanRevisionHandler({ db, verifyOwnership: ownershipVerifier }));
   const getRepositoryInfo = withAuthCheck(db, createGetRepositoryInfoHandler({ verifyOwnership: ownershipVerifier }));
   const downloadContext = withAuthCheck(db, createDownloadContextHandler({ verifyOwnership: ownershipVerifier }));
   const getIssues = withAuthCheck(db, createGetIssuesHandler({ verifyOwnership: ownershipVerifier }));
-  const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }, { enqueueEpics: deps.enqueueEpics }));
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const getExecutionQueue = withAuthCheck(db, createGetExecutionQueueHandler({ verifyOwnership: ownershipVerifier }));
+  const queueRemaining = withAuthCheck(db, createQueueRemainingHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
   const generate = createGenerateHandler(db);
@@ -353,8 +377,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     listRepositories, listDrafts, createDraft, getDraft, updateDraft, deleteDraft,
     uploadAttachment, deleteAttachment, getAttachmentContent, getRepositoryInfo,
     getContextStats, previewContext, downloadContext, generate, refine, finalize,
-    resetDraftToSetup, getIssues, implementIssue, updateIssue,
+    resetDraftToSetup, getIssues, implementIssue, updateIssue, getExecutionQueue, queueRemaining,
     validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
     pauseDraftExecution, resumeDraftExecution, updateExecutionSettings,
+    listPlanRevisions, getPlanRevision, restorePlanRevision,
   };
 }

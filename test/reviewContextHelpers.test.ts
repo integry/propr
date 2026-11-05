@@ -8,6 +8,8 @@ await mock.module('@propr/core', {
         getDetailedUsageStats: mock.fn(),
         getModelPricing: mock.fn(),
         getOpenRouterId: mock.fn(),
+        getNonBlockingChecksForRepository: mock.fn(async () => []),
+        isNonBlockingCheck: mock.fn(() => false),
     },
 });
 await mock.module('../src/jobs/prCommentJobHelpers.js', {

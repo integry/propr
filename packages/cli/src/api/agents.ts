@@ -65,7 +65,8 @@ export interface AgentConfig {
   defaultModel?: string;
 
   /**
-   * Environment variables to inject into container.
+   * Environment variables to inject into container. API responses return each
+   * value as the `[REDACTED]` marker; sending the marker back keeps the stored value.
    */
   envVars?: Record<string, string>;
 

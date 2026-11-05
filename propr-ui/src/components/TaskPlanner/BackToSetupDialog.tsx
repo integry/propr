@@ -68,7 +68,8 @@ export const BackToSetupDialog: React.FC<BackToSetupDialogProps> = ({ isOpen, on
                     Return to Setup?
                   </h3>
                   <p className="text-sm text-gray-600 mb-4">
-                    Going back to setup will discard all refinements you've made to the generated plan.
+                    Going back to setup will clear the generated plan and its refinements. The current plan
+                    stays in plan history, so it can be restored after the plan is generated again.
                     Your configuration settings (prompt, branch, granularity, attachments) will be preserved.
                   </p>
                   <p className="text-sm text-gray-600">

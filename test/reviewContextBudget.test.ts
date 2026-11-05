@@ -93,11 +93,14 @@ describe('review input capacity resolution', () => {
         assert.equal(opus55.contextWindow, 1000000);
         assert.equal(opus55.safeInputTokens, 1000000 - REVIEW_OUTPUT_TOKEN_RESERVE - opus55.runtimeOverheadReserve);
         assert.equal(opus55.tokenizerProfile, 'anthropic-calibrated');
+        assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-sonnet-5-5' }).contextWindow, 1000000);
+        assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-haiku-5-5' }).contextWindow, 1000000);
 
         // The ProPR catalog lists 1M for Opus 4.6, but the runtime only grants it with the [1m] suffix.
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-opus-4-6' }).contextWindow, 200000);
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-opus-4-6[1m]' }).contextWindow, 1000000);
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-haiku-4-5-20251001' }).source, 'runtime-verified');
+        assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-haiku-4-5-20251001' }).contextWindow, 200000);
         assert.equal(resolveReviewInputCapacity({
             agentType: 'claude', model: 'claude-opus-5-5', runtimeEnv: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
         }).contextWindow, 200000);
@@ -129,7 +132,7 @@ describe('review input capacity resolution', () => {
     });
 
     test('applies a larger runtime reserve to catalog windows of unverified runtimes', () => {
-        const gemini = resolveReviewInputCapacity({ agentType: 'antigravity', model: 'antigravity-gemini-3.8-flash-high' });
+        const gemini = resolveReviewInputCapacity({ agentType: 'antigravity', model: 'antigravity-gemini-3.8-flash' });
         assert.equal(gemini.source, 'catalog');
         assert.equal(gemini.contextWindow, 1000000);
         assert.equal(gemini.runtimeOverheadReserve, 100000);

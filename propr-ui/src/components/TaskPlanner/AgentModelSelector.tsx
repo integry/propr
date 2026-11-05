@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React, { useMemo, useState, useEffect } from 'react';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { AgentModelPair } from '../../api/planIssuesApi';
@@ -23,6 +24,16 @@ interface AgentModelSelectorProps {
   onMultiConfirm?: () => void;
   /** Automatically open the multi-select dropdown when switching to multi mode */
   autoOpenMultiDropdown?: boolean;
+  /** Keep multi-model choices in the layout of an enclosing scrollable dialog. */
+  inlineMultiDropdown?: boolean;
+  /** Label for an agent option; defaults to its alias. */
+  formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
+  /** Text of the empty agent option; defaults to "Select Agent". */
+  agentPlaceholder?: string;
+  /** Provider whose logo the empty agent option shows, when it stands for a known agent. */
+  agentPlaceholderProvider?: string;
+  /** Accessible name of the agent select, matching the field label it sits under. */
+  agentLabel?: string;
 }
 
 export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
@@ -39,7 +50,12 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   selectedModels = [],
   onMultiModelChange,
   onMultiConfirm,
-  autoOpenMultiDropdown = false
+  autoOpenMultiDropdown = false,
+  inlineMultiDropdown = false,
+  formatAgentLabel,
+  agentPlaceholder,
+  agentPlaceholderProvider,
+  agentLabel
 }) => {
   const [multiDropdownOpen, setMultiDropdownOpen] = useState(autoOpenMultiDropdown && isMulti);
 
@@ -69,7 +85,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
         pairs.push({
           agent_alias: agent.alias,
           model_name: modelId,
-          displayName: `${agent.alias} / ${modelInfo?.name || modelId}`
+          displayName: `${agent.alias} / ${modelInfo?.name || formatModelName(modelId)}`
         });
       });
     });
@@ -135,6 +151,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   if (isMulti) {
     return (
       <MultiSelectMode
+        inlineDropdown={inlineMultiDropdown}
         compact={compact}
         disabled={disabled}
         className={className}
@@ -161,6 +178,10 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
       onAgentChange={handleAgentChange}
       onModelChange={handleModelChange}
       showMultiOption={!!onMultiToggle && enabledAgents.length > 0}
+      formatAgentLabel={formatAgentLabel}
+      agentPlaceholder={agentPlaceholder}
+      agentPlaceholderProvider={agentPlaceholderProvider}
+      agentLabel={agentLabel}
     />
   );
 };

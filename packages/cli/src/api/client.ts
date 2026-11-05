@@ -19,6 +19,7 @@ import {
   ApiError,
   createApiError,
   NetworkError,
+  RequestCancelledError,
   TimeoutError,
   UnauthorizedError,
 } from "./errors.js";
@@ -37,8 +38,18 @@ const DEFAULT_TIMEOUT = 30000;
 const GET_REQUEST_ATTEMPTS = 3;
 const GET_RETRY_BASE_DELAY_MS = 250;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Resolves after `ms`, or as soon as `signal` aborts so a cancelled request never sits in a retry delay. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -124,6 +135,8 @@ export class ApiClient {
       headers: customHeaders = {},
       params,
       timeout = this.defaultTimeout,
+      signal,
+      retry = true,
     } = options;
 
     // Build the full URL
@@ -152,13 +165,16 @@ export class ApiClient {
       fetchOptions.body = JSON.stringify(body);
     }
 
-    const maxAttempts = method === "GET" ? GET_REQUEST_ATTEMPTS : 1;
+    const maxAttempts = method === "GET" && retry ? GET_REQUEST_ATTEMPTS : 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (signal?.aborted) throw new RequestCancelledError();
       // Each retry receives its own timeout window and abort signal.
       const controller = new AbortController();
       fetchOptions.signal = controller.signal;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const cancel = () => controller.abort();
+      signal?.addEventListener("abort", cancel);
 
       try {
         const response = await fetch(url, fetchOptions);
@@ -192,6 +208,7 @@ export class ApiClient {
         };
       } catch (error) {
         clearTimeout(timeoutId);
+        if (signal?.aborted) throw new RequestCancelledError();
 
         // Re-throw API errors as-is. HTTP responses are not transport failures.
         if (error instanceof ApiError) {
@@ -205,7 +222,7 @@ export class ApiClient {
             : null;
 
         if (retryableError && attempt < maxAttempts) {
-          await sleep(GET_RETRY_BASE_DELAY_MS * attempt);
+          await sleep(GET_RETRY_BASE_DELAY_MS * attempt, signal);
           continue;
         }
 
@@ -215,6 +232,8 @@ export class ApiClient {
         throw new NetworkError(
           `Unexpected error: ${error instanceof Error ? error.message : String(error)}`
         );
+      } finally {
+        signal?.removeEventListener("abort", cancel);
       }
     }
 

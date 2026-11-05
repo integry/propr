@@ -66,6 +66,26 @@ describe('desktop window chrome styles', () => {
     expect(dividerRule).toContain('border-left: 1px solid #e2e8f0');
   });
 
+  it('widens the Linux control group and its reserved inset together for the application menu', () => {
+    expect(ruleFor('.desktop-window-controls')).toContain('width: 8.625rem');
+    expect(ruleFor('.desktop-platform-linux')).toContain('--desktop-window-controls-end-inset: 8.625rem');
+    const menuGroup = ruleFor('.desktop-window-controls:has(.desktop-application-menu-button)');
+    expect(menuGroup).toContain('width: 11.5rem');
+    expect(menuGroup).toContain('grid-template-columns: repeat(4, 1fr)');
+    expect(ruleFor('.desktop-platform-linux.desktop-has-application-menu')).toContain('--desktop-window-controls-end-inset: 11.5rem');
+  });
+
+  it('keeps the frame-inset chrome containers unscrollable and control hit targets full height', () => {
+    expect(ruleFor('html[data-desktop-window="linux"] #root')).toContain('overflow: clip');
+    expect(ruleFor('.desktop-app,\n.desktop-app > .desktop-shell,\n.desktop-app .desktop-shell-content')).toContain('overflow: clip');
+    expect(ruleFor('.desktop-window-controls')).toContain('border-bottom: 0 solid');
+    const divider = ruleFor('.desktop-window-controls::after');
+    expect(divider).toContain('bottom: 0');
+    expect(divider).toContain('border-bottom: 1px solid');
+    expect(divider).toContain('border-bottom-color: inherit');
+    expect(divider).toContain('pointer-events: none');
+  });
+
   it('uses subtle eight-pixel scrollbars throughout the desktop surface', () => {
     expect(desktopStyles).toMatch(/::-webkit-scrollbar[^}]+width: 8px;/s);
     expect(desktopStyles).toMatch(/::-webkit-scrollbar-track[^}]+background: transparent;/s);
@@ -74,5 +94,13 @@ describe('desktop window chrome styles', () => {
 
   it('keeps Linux window controls above application modal backdrops', () => {
     expect(zIndexFor('.desktop-window-controls')).toBeGreaterThan(zIndexFor('.desktop-modal-backdrop'));
+  });
+
+  it('opens app dialogs below the titlebar and inside the restored Linux frame', () => {
+    expect(ruleFor('html:has(.desktop-app) .app-modal-layer')).toContain('top: max(var(--desktop-titlebar-height), env(titlebar-area-height, 0px))');
+    expect(ruleFor('html:has(.desktop-app.desktop-platform-linux)')).toContain('--desktop-titlebar-height: 44px');
+    const portaled = ruleFor('html[data-desktop-window="linux"] body > .app-modal-layer');
+    expect(portaled).toContain('bottom: var(--desktop-frame-inset)');
+    expect(portaled).toContain('left: var(--desktop-frame-inset)');
   });
 });

@@ -12,6 +12,7 @@ import { isProprProxyUrl } from '@propr/shared';
 import { publicAssetUrl } from '../config/runtimeMode';
 import { useDesktop } from '../desktop/DesktopContext';
 import { useRefreshCurrentUser } from '../contexts/AuthContext';
+import { loginErrorMessage } from './loginErrors';
 
 // For OAuth, use main API to avoid registering multiple callback URLs
 // Falls back to API_BASE_URL for main site
@@ -169,6 +170,9 @@ const LoginPage: React.FC = () => {
   const refreshCurrentUser = useRefreshCurrentUser();
   const loggedOut = searchParams.get('logged_out') === 'true';
   const isOAuthCompletion = searchParams.get('oauth_complete') === 'true';
+  // A failed sign-in must stay visible even when an older session would still
+  // authenticate, otherwise a renewal failure looks like success.
+  const authError = loginErrorMessage(searchParams.get('error'));
   const hostedOAuthFlowRef = useRef<HostedOAuthFlow | null>(null);
   const nextHostedOAuthFlowIdRef = useRef(0);
 
@@ -181,7 +185,7 @@ const LoginPage: React.FC = () => {
   // Start in the "recovering" state (showing a spinner instead of the OAuth
   // button) unless we already know recovery should be skipped. This avoids a
   // flash of the login button before the session check resolves.
-  const [isRecovering, setIsRecovering] = useState(!loggedOut && !isOAuthCompletion);
+  const [isRecovering, setIsRecovering] = useState(!loggedOut && !isOAuthCompletion && !authError);
   const [isHostedOAuthPolling, setIsHostedOAuthPolling] = useState(false);
   const [isDesktopAuthenticating, setIsDesktopAuthenticating] = useState(false);
   const [hostedOAuthError, setHostedOAuthError] = useState<string | null>(null);
@@ -213,7 +217,7 @@ const LoginPage: React.FC = () => {
 
     // Skip automatic session recovery in demo mode or right after an explicit
     // logout, since silently logging the user back in would be surprising.
-    if (isDemoMode || loggedOut || isOAuthCompletion) {
+    if (isDemoMode || loggedOut || isOAuthCompletion || authError) {
       setIsRecovering(false);
       return;
     }
@@ -236,7 +240,7 @@ const LoginPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isDemoMode, isDemoModeLoading, isOAuthCompletion, loggedOut, navigate, returnPathWithActiveFlow]);
+  }, [authError, isDemoMode, isDemoModeLoading, isOAuthCompletion, loggedOut, navigate, returnPathWithActiveFlow]);
 
   useEffect(() => () => {
     stopHostedOAuthFlow(true);
@@ -384,6 +388,12 @@ const LoginPage: React.FC = () => {
       <div className="flex flex-1 items-center justify-center p-4 sm:p-0">
         <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full text-center">
           <img src={publicAssetUrl('/media/logo-and-name.png')} alt="ProPR" className="h-12 w-auto mx-auto mb-4" />
+
+          {authError && (
+            <div role="alert" className="mb-6 p-3 bg-red-50 text-red-700 rounded-md text-sm">
+              {authError}
+            </div>
+          )}
 
           {loggedOut && (
             <div className="mb-6 p-3 bg-green-50 text-green-700 rounded-md">

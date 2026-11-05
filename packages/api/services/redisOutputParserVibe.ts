@@ -27,6 +27,8 @@ interface VibeParseState {
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
+  /** Live projection only: `events.length` wherever a record skipped an event emitted by an earlier record. */
+  skippedSlots?: number[];
 }
 
 const MAX_CONTENT_LENGTH = 2000;
@@ -87,7 +89,10 @@ function pushEvent(state: VibeParseState, event: ConversationEvent): void {
     result: event.result,
     isError: event.isError
   });
-  if (state.seenEventFingerprints.has(fingerprint)) return;
+  if (state.seenEventFingerprints.has(fingerprint)) {
+    state.skippedSlots?.push(state.events.length);
+    return;
+  }
   state.seenEventFingerprints.add(fingerprint);
   state.events.push(event);
 }

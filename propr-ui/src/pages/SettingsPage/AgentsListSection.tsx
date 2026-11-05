@@ -4,6 +4,7 @@ import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import AgentCard from './AgentCard';
 import AgentLoginModal from './AgentLoginModal';
+import { useAgentHealth } from './useAgentHealth';
 
 // --- Icons ---
 
@@ -34,6 +35,7 @@ interface AgentsListSectionProps {
   onAddClick?: () => void;
   onSelectModel?: (agentId: string, modelId: string) => void;
   readOnly?: boolean;
+  agentHealth?: ReturnType<typeof useAgentHealth>;
 }
 
 const AgentsListSection: React.FC<AgentsListSectionProps> = ({
@@ -48,11 +50,15 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   onCloseAddModal,
   onAddClick,
   onSelectModel,
-  readOnly = false
+  readOnly = false,
+  agentHealth,
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
   const [loginAgent, setLoginAgent] = useState<AgentConfig | null>(null);
+
+  const localHealth = useAgentHealth(agents, loading || readOnly || Boolean(agentHealth));
+  const { health, recheck } = agentHealth ?? localHealth;
 
   // Handle external trigger for add modal from header button
   React.useEffect(() => {
@@ -130,6 +136,8 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
             <AgentCard
               key={agent.id}
               agent={agent}
+              health={health(agent)}
+              onRecheck={() => recheck(agent.id)}
               onLogin={() => setLoginAgent(agent)}
               onEdit={() => handleEditAgent(agent)}
               onDelete={() => handleDeleteAgent(agent)}
@@ -184,7 +192,10 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
         <AgentLoginModal
           key={loginAgent.id}
           agent={loginAgent}
-          onClose={() => setLoginAgent(null)}
+          onClose={() => {
+            recheck(loginAgent.id);
+            setLoginAgent(null);
+          }}
         />
       )}
     </div>

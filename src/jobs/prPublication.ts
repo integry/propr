@@ -1,5 +1,6 @@
-import { cleanupWorktree, createHooklessGit, getAuthenticatedOctokit, logger } from '@propr/core';
-import { createPullRequestHeadWorktree, pushPullRequestHeadBranch } from './prGitOperations.js';
+import { cleanupWorktree, createHooklessGit, createWorktreePushSalvageOperations, getAuthenticatedOctokit, getRepoUrl, logger, salvageFailedPush } from '@propr/core';
+import type { PushSalvageEvent } from '@propr/core';
+import { createPullRequestHeadWorktree, isRebaseConflictPushError, pushPullRequestHeadBranch } from './prGitOperations.js';
 import type { PublicationCompletion } from './prCommentPostExecution.js';
 import { resolvePullRequestGitTarget } from './prGitTarget.js';
 import {
@@ -11,6 +12,12 @@ import { checkPullRequestHeadWritable, createPublicationBundle, restorePublicati
 
 /** Runs before a saved checkpoint is pushed; reject to keep it unpublished. */
 export type PublishGuard = () => Promise<void>;
+
+/** Identifies the task whose commits a failed final push must not lose. */
+export interface PublicationSalvage {
+    taskId: string;
+    onEvent?: (event: PushSalvageEvent) => Promise<void>;
+}
 
 /** One publication session spans preflight, agent execution and the final push.
  * Discussion/comment identity stays with the request; only the mutable Git target changes.
@@ -147,7 +154,7 @@ export class PullRequestPublication {
         const { token } = await this.octokit.auth({ type: 'installation' }) as { token: string };
         let prepared: Awaited<ReturnType<typeof createPullRequestHeadWorktree>> | undefined;
         const discard = async () => {
-            if (prepared) await cleanupWorktree(prepared.localRepoPath, prepared.worktreeInfo.worktreePath, prepared.worktreeInfo.branchName);
+            if (prepared) await cleanupWorktree(prepared.localRepoPath, prepared.worktreeInfo.worktreePath, prepared.worktreeInfo.branchName, { success: false });
             prepared = undefined;
         };
         try {
@@ -205,10 +212,66 @@ export class PullRequestPublication {
         await savePublicationCheckpoint(this.continuation!, bundle, completion ? JSON.stringify(completion) : undefined);
     }
 
+    /** With `salvage`, a failed final push runs the salvage ladder (credential refresh,
+     * rescue ref, bundle, retained worktree) and rethrows a PushFailedError. */
     async push(
         worktreePath: string,
         completion?: PublicationCompletion,
-        options: { rebaseOnNonFastForward?: boolean } = {},
+        options: {
+            rebaseOnNonFastForward?: boolean;
+            salvage?: PublicationSalvage;
+            /** Merges a moved branch whose rebase conflicted and pushes; null falls back to salvage. */
+            integrateConflicts?: (worktreePath: string) => Promise<{ commitHash?: string } | null>;
+        } = {},
+    ) {
+        try {
+            return await this.pushOnce(worktreePath, completion, options);
+        } catch (error) {
+            const integrated = await this.tryIntegrateConflicts(worktreePath, error, options.integrateConflicts);
+            if (integrated) return integrated;
+            if (!options.salvage) throw error;
+            const target = this.target;
+            return salvageFailedPush({
+                taskId: options.salvage.taskId,
+                repoOwner: target.repoOwner,
+                repoName: target.repoName,
+                branchName: target.branchName,
+                worktreePath,
+                error,
+                onEvent: options.salvage.onEvent,
+                operations: createWorktreePushSalvageOperations({
+                    worktreePath,
+                    taskId: options.salvage.taskId,
+                    branchName: target.branchName,
+                    repoUrl: getRepoUrl({ repoOwner: target.repoOwner, repoName: target.repoName }),
+                    refreshToken: async () => (await this.octokit.auth({ type: 'installation', refresh: true }) as { token: string }).token,
+                    // pushOnce reads the installation token again and gets the refreshed one.
+                    retryPush: () => this.pushOnce(worktreePath, completion, options),
+                }),
+            });
+        }
+    }
+
+    /** Only for a direct (non-continuation) push whose automatic rebase hit conflicts. */
+    private async tryIntegrateConflicts(
+        worktreePath: string,
+        error: unknown,
+        integrate: ((worktreePath: string) => Promise<{ commitHash?: string } | null>) | undefined,
+    ) {
+        if (!integrate || this.continuation || !isRebaseConflictPushError(error)) return null;
+        try {
+            const result = await integrate(worktreePath);
+            return result ? { rebased: false, commitHash: result.commitHash } : null;
+        } catch (integrationError) {
+            logger.warn({ worktreePath, error: (integrationError as Error).message }, 'Integrating the moved PR branch failed; falling back to push salvage');
+            return null;
+        }
+    }
+
+    private async pushOnce(
+        worktreePath: string,
+        completion: PublicationCompletion | undefined,
+        options: { rebaseOnNonFastForward?: boolean },
     ) {
         // An adopted continuation already has committed work in the worktree; a rejected
         // token refresh must not lose it once the worktree is cleaned up.

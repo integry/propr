@@ -73,7 +73,7 @@ describe('fork PR git operations', () => {
             /does not contain the pull request head abc123/,
         );
 
-        assert.ok(calls.some(call => call.operation === 'cleanupWorktree'), 'Expected the rejected worktree to be discarded');
+        assert.deepEqual(calls.find(call => call.operation === 'cleanupWorktree')?.arguments[3], { success: false });
     });
 
     test('clones and creates the worktree from the PR head repository', async () => {

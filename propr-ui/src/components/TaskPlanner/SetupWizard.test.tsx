@@ -13,9 +13,7 @@ const previewTrace = {
     { name: 'context', status: 'in_progress' },
   ],
 };
-const generationTrace = {
-  steps: [...previewTrace.steps, { name: 'llm', status: 'pending' }],
-};
+const generationTrace = { steps: [...previewTrace.steps, { name: 'llm', status: 'pending' }] };
 let lastLeftPaneProps: Record<string, unknown> | undefined;
 let mockGenerationPollingState: {
   isGenerating: boolean;
@@ -45,11 +43,7 @@ const setGeneratingState = (trace = generationTrace) => {
   mockGenerationPollingState = { isGenerating: true, generationTrace: trace, generationError: null };
 };
 const setViewportWidth = (width: number) => {
-  Object.defineProperty(window, 'innerWidth', {
-    configurable: true,
-    writable: true,
-    value: width,
-  });
+  Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width });
   window.dispatchEvent(new Event('resize'));
 };
 vi.mock('react-router-dom', async () => {
@@ -65,6 +59,7 @@ vi.mock('../../api/proprApi', () => ({
   createDraft: vi.fn(),
   updateDraft: vi.fn(),
   getRepoBranches: vi.fn(),
+  getInstanceCatalog: vi.fn(() => new Promise(() => {})), // the default model never resolves; the preview supplies the window
 }));
 vi.mock('../../hooks/usePlannerSettings', () => ({
   getPlannerSettings: () => ({
@@ -116,6 +111,7 @@ vi.mock('./SetupWizardLeftPane', () => ({
     return (
       <div data-testid="setup-wizard-left-pane">
         {props.isGenerating ? <div data-testid="generation-progress">generation progress</div> : null}
+        {props.composerFooter as import('react').ReactNode}
       </div>
     );
   },
@@ -384,14 +380,15 @@ describe('SetupWizard', () => {
     };
     renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
     const leftPane = within(screen.getByTestId('setup-wizard-left-pane'));
-    const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
+    // Phones fold the context pane into rows of the settings group under the prompt.
+    expect(screen.queryByTestId('setup-wizard-right-pane')).not.toBeInTheDocument();
+    const costRow = within(screen.getByTestId('setup-cost-row'));
     expect(leftPane.getByTestId('generation-progress')).toBeInTheDocument();
-    expect(rightPane.queryByTestId('generation-progress')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
-    expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
-    expect(rightPane.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
-    expect(rightPane.queryByText('$1.234')).not.toBeInTheDocument();
-    expect(rightPane.getByText('Cost after context analysis')).toBeInTheDocument();
+    expect(costRow.queryByText('Analyzing context...')).not.toBeInTheDocument();
+    expect(costRow.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
+    expect(costRow.queryByText('$1.234')).not.toBeInTheDocument();
+    expect(costRow.getByText('Cost after context analysis')).toBeInTheDocument();
   });
 
   it('preserves right-pane preview progress on desktop while generating', () => {
@@ -403,11 +400,10 @@ describe('SetupWizard', () => {
     expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
   });
 
-  it.each([320, 390])('keeps setup actions, including context export, reachable at %ipx', width => {
+  it.each([320, 390])('keeps the generate action reachable at %ipx', width => {
     setViewportWidth(width);
     renderSetupWizard({ context_config: {} });
 
     expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Export Context' })).toBeInTheDocument();
   });
 });

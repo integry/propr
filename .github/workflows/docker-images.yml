@@ -32,7 +32,9 @@ jobs:
   validate-release:
     name: Validate Release
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The unsharded full server and UI suites alone exceed an hour on a hosted
+    # runner (945 units); 60 minutes cancelled the v0.9.0 release mid-suite.
+    timeout-minutes: 150
     permissions:
       contents: read
     outputs:
@@ -105,6 +107,8 @@ jobs:
       - name: Run full server and UI suites
         env:
           NODE_ENV: test
+          # Redis was started above: its integration suites must run, not skip.
+          PROPR_REQUIRE_REDIS_INTEGRATION: '1'
         run: npm run test:full:prepared
 
       - name: Stop isolated Redis
@@ -278,6 +282,15 @@ jobs:
           AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
         run: ./scripts/verify-antigravity-image.sh
 
+      # Bundled Agent Tank mode runs the CLI inside this image, so the release
+      # has to prove it returns real usage - not just that the binary is there.
+      # Antigravity is the provider this runner is authenticated for.
+      - name: Verify authenticated bundled Agent Tank usage from packaged agent image
+        env:
+          AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
+          AGENT_TANK_PROVIDERS: agy
+        run: ./scripts/verify-agent-tank-image.sh
+
       - name: Validate serialized SQLite startup with packaged images
         env:
           APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
@@ -408,6 +421,20 @@ jobs:
               --generate-notes \
               --title "ProPR $RELEASE_TAG"
           fi
+
+  deploy-hosted-ui:
+    name: Deploy hosted UI (app.propr.dev)
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [validate-release, publish-github-release]
+    # The build, deploy and verification steps live in the reusable workflow
+    # so this release job and a manual re-deploy from main cannot drift. Its
+    # job runs in the protected hosted-ui-production environment, the only
+    # place the Cloudflare credentials can be read; nothing is passed from here.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/hosted-ui-deploy.yml
+    with:
+      release_tag: ${{ needs.validate-release.outputs.release_tag }}
 
   promote-latest:
     name: Promote latest images on Docker Hub

@@ -158,4 +158,25 @@ describe('usePlanRefinement', () => {
     });
     expect(result.current.refinementProgress.isRefining).toBe(false);
   });
+  it('shows a restored plan without saving it again and drops a pending edit', async () => {
+    const { result } = renderHook(() => usePlanRefinement('draft-1', initialPlan));
+
+    act(() => { result.current.updateTask('task-1', { title: 'Unsaved edit' }); });
+    act(() => { result.current.loadPlan(refinedPlan); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(result.current.plan[0].title).toBe('Refined task');
+    expect(mockUpdateDraft).not.toHaveBeenCalled();
+    expect(result.current.canUndo).toBe(true);
+  });
+
+  it('flushes a pending edit on request', async () => {
+    const { result } = renderHook(() => usePlanRefinement('draft-1', initialPlan));
+
+    act(() => { result.current.updateTask('task-1', { title: 'Edited' }); });
+    await act(async () => { await result.current.flushPendingSave(); });
+
+    expect(mockUpdateDraft).toHaveBeenCalledTimes(1);
+    expect(mockUpdateDraft.mock.calls[0][1].plan_json?.[0].title).toBe('Edited');
+  });
 });

@@ -1,53 +1,28 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  getSettings,
-  updateSettings,
-  getFollowupKeywords,
-  updateFollowupKeywords,
-  getFollowupIgnoreKeywords,
-  updateFollowupIgnoreKeywords,
-  getPrLabel,
-  updatePrLabel,
-  getPrimaryProcessingLabels,
-  updatePrimaryProcessingLabels,
-  getAgents,
-  getInstanceCatalog,
-  getSummarizationSettings,
-  updateSummarizationSettings,
+  getSettings, updateSettings,
+  getFollowupKeywords, updateFollowupKeywords,
+  getFollowupIgnoreKeywords, updateFollowupIgnoreKeywords,
+  getPrLabel, updatePrLabel,
+  getPrimaryProcessingLabels, updatePrimaryProcessingLabels,
+  getAgents, getInstanceCatalog,
+  getSummarizationSettings, updateSummarizationSettings,
   triggerReindexAll,
-  AgentConfig,
-  SummarizationSettings
+  AgentConfig, SummarizationSettings
 } from '../../api/proprApi';
-import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
-import {
-  getAgentTankSettings,
-  updateAgentTankSettings,
-  getAgentTankStatus
-} from '../../api/revertApi';
-import { Settings } from './types';
-import { parseLoadedData } from './parseLoadedData';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
+import { getAgentTankSettings } from '../../api/revertApi';
+import { Settings, type AgentNetworkSettingName, type AgentNetworkValues, type AgentWatchdogSettingName } from './types';
+import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
+import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
-import type { TriggerReindexAllResponse } from '../../api/proprApi';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
+import { buildReindexAllSkipMessage } from './reindexAllSkipMessage';
 
 // Debounce delay for prompt changes (in milliseconds)
 const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
-
-function buildReindexAllSkipMessage(result: TriggerReindexAllResponse): string {
-  const skippedCooldown = result.repositoriesSkippedCooldown ?? 0;
-  const skippedAlreadyQueued = result.repositoriesSkippedAlreadyQueued ?? 0;
-  const failedClone = result.repositoriesFailedClone ?? 0;
-  const skipped = [
-    skippedCooldown > 0 ? `${skippedCooldown} in cooldown` : '',
-    skippedAlreadyQueued > 0 ? `${skippedAlreadyQueued} already queued` : '',
-    failedClone > 0 ? `${failedClone} failed clone` : ''
-  ].filter(Boolean).join(', ');
-  return skipped
-    ? `No repositories were queued for reindexing (${skipped}).`
-    : 'No repositories were queued for reindexing.';
-}
 
 export function useSettingsState() {
   const [loading, setLoading] = useState(true);
@@ -64,12 +39,14 @@ export function useSettingsState() {
 
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
+    max_provider_replacements: DEFAULT_MAX_PROVIDER_REPLACEMENTS,
     analysis_model_fast: '',
     planner_context_model: '',
     planner_generation_model: '',
     default_agent_alias: '',
-    auto_followup_score_threshold: 4,
-    auto_resolve_merge_conflicts: false,
+    auto_resolve_merge_conflicts: false, followup_requires_assignment: false,
+    dashboard_summary_enabled: false,
+    usage_tips_enabled: true,
     model_reasoning_level: '',
     pr_review_model: '',
     pr_review_prompt: '',
@@ -77,9 +54,18 @@ export function useSettingsState() {
     pr_review_context_model: '',
     pr_review_max_context_tokens: 0,
     pr_review_context_budget_percent: DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
+    ultrafix_escalation_enabled: false,
+    ultrafix_escalation_models: [],
+    ultrafix_escalation_patience: 3,
+    ultrafix_escalation_max_reasoning_levels: 2,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
-    ultrafix_pause_seconds: 60
+    ultrafix_pause_seconds: 60,
+    default_max_cost_usd: '',
+    agent_stall_timeout_ms: null,
+    agent_tool_stall_timeout_ms: null,
+    agent_degenerate_output_limit: null,
+    agent_network_mode: null, agent_network_mode_enforced: null, agent_network_allow: null, agent_network_ignore_repository_allow: null
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -90,12 +76,19 @@ export function useSettingsState() {
     fallback_agent_alias: ''
   });
   const [isReindexing, setIsReindexing] = useState(false);
-  const [agentTankSettings, setAgentTankSettings] = useState<{ enabled: boolean; url: string }>({
-    enabled: false,
-    url: 'http://0.0.0.0:3456'
-  });
-  const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
-  const [agentTankCheckingStatus, setAgentTankCheckingStatus] = useState(false);
+  // Reported rather than logged: a refused mode change must not leave the UI
+  // showing the mode that was clicked as though it had been saved.
+  const reportAgentTankError = useCallback((message: string | null) => {
+    setGlobalError(message);
+    if (message) setSaveStatus('error');
+  }, []);
+  const {
+    settings: agentTankSettings,
+    available: agentTankAvailable,
+    checkingStatus: agentTankCheckingStatus,
+    adopt: adoptAgentTankSettings,
+    change: handleAgentTankChange,
+  } = useAgentTankSettings(reportAgentTankError);
 
   const beginSave = useCallback((): boolean => {
     if (configurationReloadRequiredRef.current) {
@@ -149,12 +142,14 @@ export function useSettingsState() {
       }
       const result = await updateSettings({
         worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
+        max_provider_replacements: settingsToSave.max_provider_replacements,
         analysis_model_fast: settingsToSave.analysis_model_fast,
         planner_context_model: settingsToSave.planner_context_model,
         planner_generation_model: settingsToSave.planner_generation_model,
         default_agent_alias: settingsToSave.default_agent_alias,
-        auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
         auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
+        followup_requires_assignment: settingsToSave.followup_requires_assignment,
+        usage_tips_enabled: settingsToSave.usage_tips_enabled ?? true,
         model_reasoning_level: settingsToSave.model_reasoning_level,
         pr_review_model: settingsToSave.pr_review_model,
         pr_review_prompt: settingsToSave.pr_review_prompt,
@@ -162,9 +157,14 @@ export function useSettingsState() {
         pr_review_context_model: settingsToSave.pr_review_context_model,
         pr_review_max_context_tokens: settingsToSave.pr_review_max_context_tokens,
         pr_review_context_budget_percent: settingsToSave.pr_review_context_budget_percent,
+        ultrafix_escalation_enabled: settingsToSave.ultrafix_escalation_enabled,
+        ultrafix_escalation_models: settingsToSave.ultrafix_escalation_models.filter(Boolean),
+        ultrafix_escalation_patience: settingsToSave.ultrafix_escalation_patience,
+        ultrafix_escalation_max_reasoning_levels: settingsToSave.ultrafix_escalation_max_reasoning_levels,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
-        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
+        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds,
+        ...runLimitSettingsToSave(settingsToSave)
       });
       completeSave(result.warnings);
     } catch (err) {
@@ -180,6 +180,15 @@ export function useSettingsState() {
     } catch (err) {
       failSave(await reconcileSaveFailure(err), 'Failed to save whitelist');
     }
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
+
+  // The experimental dashboard summary is opt-in, so only its own toggle
+  // writes it; other settings saves never persist an implicit value.
+  const handleDashboardSummaryChange = useCallback(async (enabled: boolean) => {
+    setSettings(previous => ({ ...previous, dashboard_summary_enabled: enabled }));
+    if (!beginSave()) return;
+    try { completeSave((await updateSettings({ dashboard_summary_enabled: enabled })).warnings); }
+    catch (err) { failSave(await reconcileSaveFailure(err), 'Failed to save dashboard AI summaries'); }
   }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const savePrLabelOnly = useCallback(async (prLabelToSave: string) => {
@@ -241,7 +250,7 @@ export function useSettingsState() {
     try {
       const agentTankSettingsRequest = requireCompleteConfiguration
         ? getAgentTankSettings()
-        : getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }));
+        : getAgentTankSettings().catch(() => ({ mode: 'disabled', enabled: false, url: 'http://0.0.0.0:3456' }));
       const [results, catalog] = await Promise.all([
         Promise.all([
           getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
@@ -262,21 +271,14 @@ export function useSettingsState() {
       setAgents(parsed.agents);
       setCatalogAgents(catalog.agents);
       setSummarizationSettings(parsed.summarizationSettings);
-      setAgentTankSettings(parsed.agentTankSettings);
-      if (parsed.agentTankSettings.enabled) {
-        setAgentTankCheckingStatus(true);
-        getAgentTankStatus()
-          .then(status => setAgentTankAvailable(status.available))
-          .catch(() => setAgentTankAvailable(false))
-          .finally(() => setAgentTankCheckingStatus(false));
-      }
+      adoptAgentTankSettings(parsed.agentTankSettings);
     } catch (err) {
       setGlobalError((err as Error).message || 'Failed to load settings');
       throw err;
     } finally {
       setLoading(false);
     }
-  }, [setIgnoreKeywords, setKeywords, setPrimaryLabels, setWhitelist]);
+  }, [adoptAgentTankSettings, setIgnoreKeywords, setKeywords, setPrimaryLabels, setWhitelist]);
   reloadConfigurationRef.current = () => loadData(true);
 
   // Load all configuration once, and reuse the same authoritative refresh
@@ -296,8 +298,22 @@ export function useSettingsState() {
     saveSettingsOnly(settings);
   }, [settings, saveSettingsOnly]);
 
-  const handleModelSelectionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newSettings = { ...settings, [e.target.name]: e.target.value };
+  const handleModelSelectionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
+    const value = e.target instanceof HTMLInputElement && e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    const newSettings = { ...settings, [e.target.name]: value };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
+  const handleEscalationModelsChange = useCallback((models: string[]) => {
+    const newSettings = { ...settings, ultrafix_escalation_models: models };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
+  // Saves one agent run override (watchdog or network) immediately.
+  const handleAgentRunSettingChange = useCallback((name: AgentWatchdogSettingName | AgentNetworkSettingName, value: number | null | AgentNetworkValues[AgentNetworkSettingName]) => {
+    const newSettings = { ...settings, [name]: value };
     setSettings(newSettings);
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
@@ -381,25 +397,6 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
-  const handleAgentTankChange = useCallback((newSettings: { enabled: boolean; url: string }) => {
-    setAgentTankSettings(newSettings);
-    setAgentTankAvailable(null);
-    updateAgentTankSettings(newSettings).catch(err => {
-      console.error('Failed to save Agent Tank settings:', err);
-    });
-    if (newSettings.enabled) {
-      setAgentTankCheckingStatus(true);
-      setTimeout(() => {
-        getAgentTankStatus()
-          .then(status => setAgentTankAvailable(status.available))
-          .catch(() => setAgentTankAvailable(false))
-          .finally(() => setAgentTankCheckingStatus(false));
-      }, 500);
-    } else {
-      setAgentTankCheckingStatus(false);
-    }
-  }, []);
-
   const handleReindexAll = useCallback(async (ignoreCooldown = false) => {
     setIsReindexing(true);
     setGlobalError(null);
@@ -429,12 +426,12 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleReviewContextEnabledChange,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentRunSettingChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,
-    savePrLabelOnly,
+    handleDashboardSummaryChange, savePrLabelOnly,
     ...lists,
   };
 }

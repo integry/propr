@@ -1,14 +1,8 @@
 # Core / Connect MCP contract: propr-connect-mcp/1
 
-[Core PR #2291](https://github.com/integry/propr/pull/2291) coordinates
-[the epic #2279](https://github.com/integry/propr/issues/2279),
-[routing PR #180](https://github.com/integry/propr-routing/pull/180), and
-[site PR #90](https://github.com/integry/propr-site/pull/90).
-The shared wire contract is the **merged routing contract at
-[1fcf82fd1a843fbdf199d79b8f92843dc74a89e0](https://github.com/integry/propr-routing/blob/1fcf82fd1a843fbdf199d79b8f92843dc74a89e0/docs/mcp-connect-contract.md)**.
-Its `src/mcpCommon.ts`, `src/mcpGateway.ts`, `src/mcpOAuth.ts`, and
-`test/fixtures/mcpInstance.ts` were inspected. This document replaces core's
-incompatible proposed introspection contract. No deployment or merge is implied.
+This is the instance side of the wire contract shared with the separately
+maintained ProPR Connect routing service. The hosted gateway at
+`https://mcp.propr.dev` is live.
 
 ## Identities and endpoints
 
@@ -23,20 +17,23 @@ incompatible proposed introspection contract. No deployment or merge is implied.
 | Credential handoff creation | `POST /v1/mcp/credentials` |
 | Credential redemption | `POST /v1/auth/instance-grants/redeem` |
 
-Core explicitly opts in with `MCP_CONNECT_TRUST=true`. Its stable
-`MCP_INSTANCE_ID` is a UUID or a 16–100 character identifier, independent of
-hostnames and the existing `PROPR_INSTANCE_ID` tunnel routing identifier.
+Core opts in with `MCP_CONNECT_TRUST=true`, which hosted UI tunnel mode
+implies. Its stable `MCP_INSTANCE_ID` is a UUID or a 16–100 character
+identifier. In hosted UI tunnel mode it defaults to `PROPR_INSTANCE_ID`, the
+tunnel id Connect has on record; an explicit value stays independent of it.
 The installation is a positive JSON integer. The P-256 instance private key
 and registration receipt live encrypted in `mcp_records`, protected by the
-existing `MCP_ENCRYPTION_KEY`. Requests never create or rotate that key.
+existing `MCP_ENCRYPTION_KEY` (in tunnel mode, a persisted key generated once
+on first start). Requests never create or rotate that key.
 
-The [operator registration command](mcp.md#connect-instance-registration)
+The [operator registration command](mcp.md#advanced-explicit-connect-settings)
 reuses `GH_INSTALLATION_ID`, `PROPR_GH_RELAY_TOKEN`, enabled tunnel
 configuration, and the registry UUID written by `propr tunnel setup` to
 `PROPR_INSTANCE_ID` (or explicit `MCP_CONNECT_TUNNEL_ID`). Registration checks
 the current tunnel belongs to the relay credential's installation. A local
 receipt pins issuer, installation, instance, tunnel, key thumbprint and contract.
-Changed configuration fails closed until the operator registers it explicitly.
+Changed configuration fails closed until it is registered again: automatically
+on startup in hosted UI tunnel mode, otherwise by the operator command.
 Registration retries reuse the persisted key. Restoring a different instance ID
 never silently overwrites the identity.
 
@@ -178,22 +175,15 @@ Malformed array entries/preferences fail validation. An omitted legacy CIMD meth
 
 ## Executable cross-repository evidence
 
-Run `MCP_ROUTING_REPOSITORY=/path/to/propr-routing npm run test:mcp:connect`.
+With an authorized checkout of the routing service, run
+`MCP_ROUTING_REPOSITORY=/path/to/routing-checkout npm run test:mcp:connect`.
 Optionally set `MCP_ROUTING_REVISION` to a full lowercase commit SHA to test a
-private routing candidate; the merged SHA above remains the manual default.
+routing candidate; otherwise the runner uses its pinned default revision.
 The runner verifies and archives that exact Git commit into a temporary directory, installs
 its lockfile, bundles its **actual Worker entry point** and runs core's actual
 HTTP/auth/tool implementation. It reports both source identities and SDK
-versions. No routing source or policy is rewritten. See
-[mcp-coverage.md](mcp-coverage.md#connect-integration-follow-up-evidence) for exact
-commands, results, isolation and remaining gates.
+versions. No routing source or policy is rewritten.
 
-Core required CI runs self-contained core MCP tests. Real paired CI belongs in
-the private routing repository, delegated separately as routing issue #186.
-It must supply its candidate SHA and an authorized checkout and pin the public
-core candidate. Root requires passing paired evidence for both exact commits
-before merge. Never copy or publish private routing source/archives into core.
-See [the CI division and refresh procedure](mcp-coverage.md#full-chat-follow-up-verification-and-required-ci).
-Site PR #90 still needs final capability reconciliation.
-Core PR #2291 and the larger full-chat epic remain open for root's independent
-coverage review. No new companion task, PR, deployment or merge was started.
+Core required CI runs self-contained core MCP tests; paired gateway coverage
+runs with the routing service, not in core CI. Never copy or publish routing
+source/archives into core. See [Verification in CI](mcp-coverage.md#verification-in-ci).

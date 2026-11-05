@@ -3,9 +3,9 @@ import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import type { TaskSubmission } from './taskSubmissionService.js';
+import { triggerLabelEvents, type TriggerLabelEvent } from './issueRetryRequest.js';
 
 export interface SubmissionRetry { eventId: string }
-interface LabelEvent { id?: number; event: string; created_at?: string; label?: { name: string }; actor?: { id: number } }
 
 function timestampMillis(value: unknown): number {
   if (value instanceof Date) return value.getTime();
@@ -15,24 +15,74 @@ function timestampMillis(value: unknown): number {
   return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp) ? timestamp : `${timestamp}Z`);
 }
 
-async function latestProcessingLabelEvent(
+async function processingLabelEvents(
   submission: TaskSubmission,
   triggers: Set<string>,
   getOctokit: typeof getAuthenticatedOctokit,
-): Promise<LabelEvent | undefined> {
-  const [owner, repo] = submission.repository.split('/');
-  const octokit = await getOctokit();
-  let event: LabelEvent | undefined;
-  for (let page = 1; ; page++) {
-    const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
-      owner, repo, issue_number: submission.issue_number!, per_page: 100, page,
-    });
-    for (const item of data as LabelEvent[]) {
-      if (item.event === 'labeled' && item.label && triggers.has(item.label.name)) event = item;
-    }
-    if (data.length < 100) break;
-  }
-  return event;
+  retained: Array<string | null | undefined> = [],
+): Promise<TriggerLabelEvent[]> {
+  const [repoOwner, repoName] = submission.repository.split('/');
+  return triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers, [submission.retry_event_id, ...retained]);
+}
+
+async function terminalMillis(submission: TaskSubmission, database: Knex): Promise<number | null> {
+  const taskId = submission.latest_task_id || submission.task_id;
+  if (!taskId) return null;
+  const latest = await database('task_history').where({ task_id: taskId }).orderBy('history_id', 'desc').first('state', 'timestamp');
+  if (!latest || !['completed', 'failed', 'cancelled'].includes(String(latest.state).toLowerCase())) return null;
+  const terminalTime = timestampMillis(latest.timestamp);
+  return Number.isFinite(terminalTime) ? terminalTime : null;
+}
+
+/**
+ * The earliest time a new trigger event is admitted as a retry of the
+ * submission's terminal work, or null while none can be. GitHub truncates
+ * event times to seconds, so without a consumed retry identity an event in
+ * the terminal second is indistinguishable from the initial trigger.
+ */
+export async function submissionRetryAdmissibleAt(submission: TaskSubmission, database: Knex = db): Promise<number | null> {
+  if (!submission.dispatch_complete) return 0;
+  const terminalTime = await terminalMillis(submission, database);
+  if (terminalTime === null) return null;
+  const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
+  return submission.retry_event_id ? terminalSecond : terminalSecond + 1000;
+}
+
+/**
+ * The trigger events, oldest first, the submission admits as a fresh run:
+ * any before its initial dispatch, and afterwards those after the latest
+ * consumed trigger that a retry of its terminal work admits. A history that
+ * does not show the consumed trigger admits none: it may predate it, as a
+ * stale read does, so none of its events is known to come after it.
+ */
+export async function admittedSubmissionTriggers(submission: TaskSubmission, events: TriggerLabelEvent[], database: Knex = db): Promise<TriggerLabelEvent[]> {
+  if (!submission.dispatch_complete) return events;
+  const terminalTime = await terminalMillis(submission, database);
+  if (terminalTime === null) return [];
+  const consumed = submission.retry_event_id ? events.findIndex(event => String(event.id) === submission.retry_event_id) : -1;
+  if (submission.retry_event_id && consumed === -1) return [];
+  const unconsumed = events.slice(consumed + 1);
+  // GitHub truncates event times to seconds. Within the terminal second,
+  // a different consumed identity distinguishes a relabel from redelivery.
+  const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
+  return unconsumed.filter(event => {
+    const eventTime = timestampMillis(event.created_at);
+    return event.id && String(event.id) !== submission.retry_event_id && Number.isFinite(eventTime) && eventTime >= terminalSecond
+      && (eventTime > terminalTime || Boolean(submission.retry_event_id));
+  });
+}
+
+/**
+ * The trigger events of the submission's issue, oldest first, read afresh, with its consumed trigger and the
+ * triggers `retained` names, such as an accepted run's receipt, however they are labelled now.
+ */
+export async function submissionTriggerEvents(
+  submission: TaskSubmission,
+  getOctokit = getAuthenticatedOctokit,
+  processingLabels = loadPrimaryProcessingLabels,
+  retained: Array<string | null | undefined> = [],
+): Promise<TriggerLabelEvent[]> {
+  return processingLabelEvents(submission, new Set(await processingLabels()), getOctokit, retained);
 }
 
 /** Capture the initial trigger, or recognize a fresh trigger after terminal work. */
@@ -42,24 +92,8 @@ export async function resolveTaskSubmissionRetry(
   getOctokit = getAuthenticatedOctokit,
   processingLabels = loadPrimaryProcessingLabels,
 ): Promise<SubmissionRetry | null> {
-  if (!submission.dispatch_complete) {
-    const event = await latestProcessingLabelEvent(submission, new Set(await processingLabels()), getOctokit);
-    return event?.id ? { eventId: String(event.id) } : null;
-  }
-  const taskId = submission.latest_task_id || submission.task_id;
-  if (!taskId) return null;
-  const latest = await database('task_history').where({ task_id: taskId }).orderBy('history_id', 'desc').first('state', 'timestamp');
-  if (!latest || !['completed', 'failed', 'cancelled'].includes(String(latest.state).toLowerCase())) return null;
-  const terminalTime = timestampMillis(latest.timestamp);
-  if (!Number.isFinite(terminalTime)) return null;
-  const triggers = new Set(await processingLabels());
-  const event = await latestProcessingLabelEvent(submission, triggers, getOctokit);
-  const eventTime = timestampMillis(event?.created_at);
-  // GitHub truncates event times to seconds. Within the terminal second,
-  // a different consumed identity distinguishes a relabel from redelivery.
-  const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
-  if (!event?.id || String(event.id) === submission.retry_event_id
-    || !Number.isFinite(eventTime) || eventTime < terminalSecond
-    || (eventTime <= terminalTime && !submission.retry_event_id)) return null;
-  return { eventId: String(event.id) };
+  const events = await processingLabelEvents(submission, new Set(await processingLabels()), getOctokit);
+  const latest = events.at(-1);
+  if (!submission.dispatch_complete) return latest?.id ? { eventId: String(latest.id) } : null;
+  return latest && (await admittedSubmissionTriggers(submission, events, database)).at(-1) === latest ? { eventId: String(latest.id) } : null;
 }

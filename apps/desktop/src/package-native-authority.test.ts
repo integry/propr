@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -16,6 +17,10 @@ import {
   copyPackagedNativeAuthority,
   PACKAGED_NATIVE_AUTHORITY_MODE,
 } from './package-native-authority';
+
+// Use the same ASAR implementation as Forge's packager, including its glob semantics.
+const packagerRequire = createRequire(createRequire(import.meta.url).resolve('@electron/packager'));
+const { createPackageWithOptions, statFile } = await import(packagerRequire.resolve('@electron/asar'));
 
 const digest = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
 
@@ -69,6 +74,36 @@ describe('packaged native authority permissions', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  for (const arch of ['arm64', 'x64']) {
+    test(`unpacks both Darwin ${arch} authority artifacts with the production ASAR options`, async () => {
+      const { default: config } = await import('../forge.config');
+      const options = config.packagerConfig?.asar;
+      assert.ok(options && typeof options === 'object');
+      const root = mkdtempSync(join(tmpdir(), 'propr-darwin-asar-'));
+      try {
+        const sourceRoot = join(root, 'source');
+        const resourcesPath = join(root, 'app');
+        const artifacts = ['directory-operations.node', 'connect-authority-broker'];
+        for (const name of artifacts) {
+          const source = join(sourceRoot, `darwin-${arch}`, name);
+          mkdirSync(dirname(source), { recursive: true });
+          writeFileSync(source, `darwin-${arch}:${name}`);
+        }
+        copyPackagedNativeAuthority({ platform: 'darwin', arch, resourcesPath, sourceRoot });
+        const archive = join(root, 'app.asar');
+        await createPackageWithOptions(resourcesPath, archive, options);
+        for (const name of artifacts) {
+          const relative = `.vite/native/prebuilds/darwin-${arch}/${name}`;
+          const entry = statFile(archive, relative);
+          assert.ok('unpacked' in entry && entry.unpacked, relative);
+          assert.equal(digest(join(`${archive}.unpacked`, relative)), digest(join(sourceRoot, `darwin-${arch}`, name)));
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 
   test('does not add native authority artifacts to Windows packages', () => {
     const root = mkdtempSync(join(tmpdir(), 'propr-native-package-windows-'));

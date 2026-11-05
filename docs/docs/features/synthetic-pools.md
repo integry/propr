@@ -1,5 +1,7 @@
 ---
-title: Synthetic Pools
+sidebar_label: "Synthetic Pools"
+title: "Pool agent accounts for capacity and failover"
+description: "Create virtual agent pools to rotate accounts, balance capacity, and retry eligible calls without changing task routing."
 ---
 
 # Synthetic Pools
@@ -52,7 +54,7 @@ Every later failover applies the same context requirement. A smaller-context fal
 
 ## Usage data and degraded pools
 
-A capped member requires fresh Agent Tank data whose name exactly matches the direct-agent alias. Missing, refreshing, stale, provider-wide-only, or differently named data makes that capped member ineligible. The default freshness window is five minutes and can be changed with `SYNTHETIC_USAGE_FRESHNESS_MS`.
+A capped member requires fresh Agent Tank data whose name exactly matches the direct-agent alias. Missing, refreshing, stale, provider-wide-only, or differently named data makes that capped member ineligible. The default freshness window is five minutes and can be changed with `SYNTHETIC_USAGE_FRESHNESS_MS`. In bundled Agent Tank mode, ProPR inspects only the first enabled account of each provider, so a capped member backed by a second account of the same provider (for example `codex-account-b`) has no alias-specific data and stays ineligible; use [external mode](../operations/agent-tank.md#external-mode) when every capped account must be measured, or leave that member uncapped.
 
 Uncapped pools do not require Agent Tank. If no member of a synthetic model is currently eligible, the pool reports **Degraded**. This does not mark its unrelated direct agents unhealthy; direct-agent health remains independent.
 
@@ -77,7 +79,7 @@ propr agent pool delete balanced-pool --json
 
 `pool list --json` emits `{ "synthetic_agents": [...] }`. That file can be passed unchanged to `pool apply`; `apply` also accepts the array itself. Full-document replacement keeps nested multi-model configuration unambiguous and makes review, backup, and automation straightforward. Backend validation messages, including nested field paths, are printed without being rewritten.
 
-An abbreviated two-tier document looks like this (IDs must be UUIDs):
+An abbreviated two-tier document looks like this (synthetic agent and member IDs must be UUIDs; model IDs use lowercase letters, numbers and hyphens):
 
 ```json
 {
@@ -112,3 +114,8 @@ An abbreviated two-tier document looks like this (IDs must be UUIDs):
   }]
 }
 ```
+
+## Next steps
+
+- [Agent Tank Usage Tracking](/docs/operations/agent-tank)
+- [Observability And Control](/docs/features/observability)

@@ -1,0 +1,160 @@
+name: Preview CLI Bundle
+
+# Prepare-only: turns one reviewed source revision plus the three separately
+# published digest-pinned preview runtime images into the source-aligned CLI
+# preview bundle (packages/cli/scripts/preview-package.md) and retains it as a
+# run-specific Actions artifact. Nothing is published: no npm package, release,
+# tag, image, site or deployment, and no credential or environment is used.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full lowercase 40-character source commit SHA reachable from this main commit
+        required: true
+        type: string
+      app_image:
+        description: propr/app:<source_revision>@sha256:<64 lowercase hex> from Preview Runtime Images publish
+        required: true
+        type: string
+      ui_image:
+        description: propr/ui:<source_revision>@sha256:<64 lowercase hex> from Preview Runtime Images publish
+        required: true
+        type: string
+      agent_image:
+        description: propr/agent:<source_revision>@sha256:<64 lowercase hex> from Preview Runtime Images publish-agent
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare the source-aligned preview CLI bundle on linux/amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse anything but a manual main dispatch before checkout
+        env:
+          DISPATCH_EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+          TRUSTED_MAIN: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$DISPATCH_EVENT" != workflow_dispatch ] || [ "$DISPATCH_REF" != refs/heads/main ]; then
+            echo 'Preview CLI preparation must be a manual workflow_dispatch from refs/heads/main.' >&2
+            exit 1
+          fi
+          if ! [[ "$TRUSTED_MAIN" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'The workflow run commit must be a full lowercase 40-character SHA.' >&2
+            exit 1
+          fi
+
+      - name: Checkout the trusted main workflow commit with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: integry/propr
+          ref: ${{ github.sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js 22 for the preview-package contract
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          architecture: x64
+          package-manager-cache: false
+
+      - name: Verify native linux/amd64 and Node 22
+        run: node -e 'if(process.platform!=="linux"||process.arch!=="x64"||process.versions.node.split(".")[0]!=="22") throw new Error(`Expected linux/x64 Node 22, got ${process.platform}/${process.arch} ${process.version}`)'
+
+      - name: Validate dispatch, exact inputs and ancestry; write the preview input
+        id: trust
+        env:
+          DISPATCH_EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+          TRUSTED_MAIN: ${{ github.sha }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          APP_IMAGE: ${{ inputs.app_image }}
+          UI_IMAGE: ${{ inputs.ui_image }}
+          AGENT_IMAGE: ${{ inputs.agent_image }}
+        run: |
+          set -euo pipefail
+          node trusted/scripts/preview-cli-workflow.mjs trust \
+            --event "$DISPATCH_EVENT" \
+            --ref "$DISPATCH_REF" \
+            --repository "$DISPATCH_REPOSITORY" \
+            --trusted-main "$TRUSTED_MAIN" \
+            --source-revision "$SOURCE_REVISION" \
+            --app-image "$APP_IMAGE" \
+            --ui-image "$UI_IMAGE" \
+            --agent-image "$AGENT_IMAGE" \
+            --root trusted \
+            --output "$RUNNER_TEMP/propr-cli-preview-input.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout the exact validated source with no persisted credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: integry/propr
+          ref: ${{ steps.trust.outputs.source_revision }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a clean canonical source checkout and pin origin/main to the trusted commit
+        env:
+          SOURCE_REVISION: ${{ steps.trust.outputs.source_revision }}
+          TRUSTED_MAIN: ${{ steps.trust.outputs.trusted_main }}
+        run: |
+          set -euo pipefail
+          node trusted/scripts/preview-cli-workflow.mjs source-ready \
+            --root source \
+            --source-revision "$SOURCE_REVISION" \
+            --trusted-main "$TRUSTED_MAIN"
+
+      - name: Install the pinned registry inspection client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Install the pinned workspace build dependencies without lifecycle scripts
+        working-directory: source
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify runtime images, build, pack and smoke the preview CLI
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          node packages/cli/scripts/build-publish.mjs --preview-input "$RUNNER_TEMP/propr-cli-preview-input.json" --trusted-main "$GITHUB_SHA"
+
+      - name: Verify the single completed preview directory
+        id: verify
+        env:
+          TRUSTED_MAIN: ${{ steps.trust.outputs.trusted_main }}
+        run: |
+          set -euo pipefail
+          node trusted/scripts/preview-cli-workflow.mjs verify-output \
+            --root source \
+            --input "$RUNNER_TEMP/propr-cli-preview-input.json" \
+            --trusted-main "$TRUSTED_MAIN" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$RUNNER_TEMP/propr-cli-preview-summary.md"
+
+      - name: Retain the completed bundle as a run-specific artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-cli-preview-${{ steps.trust.outputs.source_revision }}-${{ github.run_id }}
+          path: ${{ steps.verify.outputs.artifact_path }}/
+          if-no-files-found: error
+          retention-days: 60
+          overwrite: false
+
+      - name: Summarize the prepared bundle for the operator
+        run: cat "$RUNNER_TEMP/propr-cli-preview-summary.md" >> "$GITHUB_STEP_SUMMARY"

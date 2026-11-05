@@ -5,16 +5,20 @@ import path from 'path';
 import { promisify } from 'util';
 import {
   getAgentRegistry,
+  agentDockerImageExists,
+  enqueueAgentImagePreparation,
   loadAgents,
   resolveConfigPath,
   toProprOpenCodeExternalModelId,
   toProprOpenCodeModelId,
   type Agent,
+  type AgentConfig,
   type AgentRegistry,
   SyntheticAgent,
 } from '@propr/core';
 import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
-import { requireManageAgents } from '../permissionGuards.js';
+import { refuseDemoViewer, requireManageAgents } from '../permissionGuards.js';
+import { createAgentHealthCheck } from '../services/agentHealthCheck.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -93,7 +97,9 @@ async function discoverOpenCodeModels(agentId?: string): Promise<string[]> {
   const configuredPath = managedCredentials
     ? savedAgent!.configPath
     : process.env.OPENCODE_CONFIG_PATH || savedAgent?.configPath || AGENT_DEFAULTS.opencode.configPath;
-  const configPath = managedCredentials
+  // Managed paths and the exact provider default share the execution
+  // resolver, so discovery binds the same host store the agent runs with.
+  const configPath = managedCredentials || configuredPath === AGENT_DEFAULTS.opencode.configPath
     ? resolveConfigPath(configuredPath)
     : resolveHostPath(configuredPath);
   const dataPath = inferOpenCodeDataPath(configPath, managedCredentials);
@@ -209,10 +215,55 @@ async function executeChatQuery(
   }
 }
 
+export async function resolveHealthCheckImage(
+  config: AgentConfig,
+  registry = getAgentRegistry(),
+  imageAvailable = hasLocalDockerImage,
+): Promise<{ image?: string; error?: string }> {
+  // Inspect-only discovery must not join a pending worker build.
+  if (!registry.isImageRecoveryPending()) await registry.inspectAgentImageAvailability();
+  const image = registry.getAgentById(config.id)?.config.dockerImage;
+  if (image && await imageAvailable(image)) {
+    // Keep an available retained image serving while checking for a pruned base.
+    void registry.ensureInitialized().catch(() => {});
+    return { image };
+  }
+  const status = registry.getOperationalStatus().unifiedAgentImage;
+  if (image || status.status === 'unavailable' || registry.isImageRecoveryPending()) {
+    void registry.recoverImagesAndRefresh().catch(() => {});
+    return {
+      error: status.status === 'unavailable' && status.operatorActionRequired
+        ? `Agent image cannot be prepared: ${status.error}`
+        : `Agent image is being prepared by the worker. Check again in a few minutes.${status.status === 'unavailable' ? ` (${status.error})` : ''}`,
+    };
+  }
+  return { error: 'Agent is not registered yet. Check again shortly.' };
+}
+
 export function createAgentRoutes() {
   const router = Router();
+  const checkAgentHealth = createAgentHealthCheck({
+    loadAgents,
+    imageExists: agentDockerImageExists,
+    prepareImage: enqueueAgentImagePreparation,
+    createAgent: config => getAgentRegistry().createAgentFromConfig(config),
+    resolveExecutionImage: resolveHealthCheckImage,
+  });
 
-  router.get('/opencode/models', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
+  router.post('/:agentId/health', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
+    try {
+      const result = await checkAgentHealth(String(req.params.agentId), req.query.fresh === 'true');
+      if (!result) {
+        res.status(404).json({ error: 'Agent not found' });
+        return;
+      }
+      res.json(result);
+    } catch {
+      res.status(500).json({ error: 'Could not check agent health' });
+    }
+  });
+
+  router.get('/opencode/models', requireManageAgents, refuseDemoViewer, async (req: Request, res: Response): Promise<void> => {
     try {
       const agentId = typeof req.query.agentId === 'string' ? req.query.agentId : undefined;
       const models = await discoverOpenCodeModels(agentId);

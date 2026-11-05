@@ -1,13 +1,17 @@
+import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
-import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { resolveOpenCodeFailureReason } from './openCodeParsing.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, evaluateOpenCodeAnalysis, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
@@ -51,8 +55,12 @@ export class OpenCodeAgent implements Agent {
         this.timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
+    // eslint-disable-next-line complexity -- runtime admission, execution and cleanup share one task lifecycle
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
+        if (options.extensionProfile) throw new Error('Extension profiles require Claude or Codex task execution');
+        const { worktreePath, issueRef, prompt: rawCustomPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
+        // No native web switch: the restriction is best effort through the prompt.
+        const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -73,11 +81,12 @@ export class OpenCodeAgent implements Agent {
             });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, {
+                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
@@ -86,16 +95,17 @@ export class OpenCodeAgent implements Agent {
                     stdinData: prompt,
                     taskId,
                     streamToRedis: true,
-                    preserveOutputOnTimeout: true
+                    preserveOutputOnTimeout: true,
+                    model: effectiveModel
                 })
             );
 
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
             const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
-            const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
+            const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {
                 success,
                 executionTimeMs: executionTime,
@@ -132,7 +142,7 @@ export class OpenCodeAgent implements Agent {
             logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during OpenCode agent execution');
             const persistedPrompt = prompt ?? customPrompt ?? '';
             const response = buildFailedExecutionResult(err, executionTime, effectiveModel, persistedPrompt);
-            await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason });
+            await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason, metadata });
             return response;
         }
     }
@@ -152,10 +162,11 @@ export class OpenCodeAgent implements Agent {
         const analysisDataPath = this.resolveAnalysisDataPath();
 
         try {
-            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands === true, configPath: analysisConfigPath, dataPath: analysisDataPath });
+            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path), modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands === true, configPath: analysisConfigPath, dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: resolveAnalysisTimeout(timeoutMs), stdinData: analysisPrompt, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, timeout: resolveAnalysisTimeout(timeoutMs), stdinData: analysisPrompt, taskId, model: effectiveModel === 'unknown' ? undefined : effectiveModel }),
+                { alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking }
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
@@ -185,8 +196,7 @@ export class OpenCodeAgent implements Agent {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
-            return !!result.stdout.trim();
+            return await agentDockerImageExists(this.config.dockerImage, 10000);
         } catch (error) {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'OpenCode health check failed');
             return false;
@@ -213,7 +223,7 @@ export class OpenCodeAgent implements Agent {
         const { response, executionTime, modelUsed, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata } = opts;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         await persistLlmLog(createLlmLogFromAgentExecution({
-            executionType: 'implementation',
+            ...resolveTaskLogAttribution(metadata, buildTaskWorkRef(taskId, issueRef.number, repository, prNumber), { isRetry, retryReason }),
             modelUsed,
             executionTimeMs: executionTime,
             success: response.success,
@@ -223,9 +233,7 @@ export class OpenCodeAgent implements Agent {
             draftId: taskId,
             repository,
             agentAlias: this.config.alias,
-            metadata: { ...metadata, isRetry, retryReason },
             ...formatUsageMetrics(usageMetrics),
-            workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),
         }));
     }
 

@@ -17,8 +17,6 @@ import { useDesktopDeepLinks } from './useDesktopDeepLinks';
 import { useConnectCandidatePresentation } from './useConnectCandidatePresentation';
 import { useDesktopNativeCommands } from './useDesktopNativeCommands';
 import { DesktopConnectionDiagnostics } from './DesktopConnectionDiagnostics';
-import { PackagedAcceptanceLocalSetup } from './PackagedAcceptanceLocalSetup';
-import { packagedAcceptanceSetupSurface, type PackagedAcceptanceSetupSurface } from './packagedAcceptanceLocalSetupSurface';
 import './desktop.css';
 
 interface DesktopExperienceProps {
@@ -35,7 +33,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [acceptanceSetup, setAcceptanceSetup] = useState<PackagedAcceptanceSetupSurface | null>(null);
   const [localSetupOpen, setLocalSetupOpen] = useState(false);
   const connectionAttempt = useRef(0);
   const { recordPresentation: connectCandidatePresented, waitForPresentation } = useConnectCandidatePresentation();
@@ -102,7 +99,9 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         // Drop the old renderer scope immediately; persist no selection before probing.
         // Reload during a failed or interrupted switch must not restore the old account.
         adapters.connection.deactivate?.();
-        await enqueueProfileMutation(() => adapters.profiles.setActiveId(null));
+        await enqueueProfileMutation(() => adapters.connection.fenceSelection
+          ? adapters.connection.fenceSelection(profile.id)
+          : adapters.profiles.setActiveId(null));
         if (!isCurrentAttempt()) return;
         activeProfileId.current = null;
       }
@@ -189,7 +188,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   useDesktopNativeCommands({
     app: adapters.app,
     state,
-    instanceChooserBlocked: localSetupOpen || Boolean(acceptanceSetup),
+    instanceChooserBlocked: localSetupOpen,
     onManageInstances: () => { setEditing(null); openManager(); },
     onConnectInstance: () => {
       openEditor('new');
@@ -256,7 +255,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     }
   };
 
-  const settleSetupBeforeConnectCandidate = () => settleConnectCandidateSetup({ acceptanceSetupOpen: Boolean(acceptanceSetup), candidatePending: hasPendingConnectCandidate(), guidedSetup: localSetupOpen && isGuidedLocalSetup(adapters.localSetup) ? adapters.localSetup : null, onAcceptanceSetupSettled: () => setAcceptanceSetup(null), onFailure: () => setOperationError('Local setup could not be cancelled safely. Try Connect again or return to setup.'), onGuidedSetupSettled: () => setLocalSetupOpen(false) });
+  const settleSetupBeforeConnectCandidate = () => settleConnectCandidateSetup({ candidatePending: hasPendingConnectCandidate(), guidedSetup: localSetupOpen && isGuidedLocalSetup(adapters.localSetup) ? adapters.localSetup : null, onFailure: () => setOperationError('Local setup could not be cancelled safely. Try Connect again or return to setup.'), onGuidedSetupSettled: () => setLocalSetupOpen(false) });
 
   const saveProfile = async (profile: DesktopProfile, shouldConnect = true) => {
     cancelDiscovery();
@@ -282,11 +281,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const setupLocal = async () => {
     cancelDiscovery();
-    const acceptanceSurface = packagedAcceptanceSetupSurface();
-    if (acceptanceSurface) {
-      setAcceptanceSetup(acceptanceSurface);
-      return;
-    }
     if (isGuidedLocalSetup(adapters.localSetup)) {
       setOperationError(null);
       setLocalSetupOpen(true);
@@ -403,7 +397,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     const setupLayer = (surface: React.ReactNode) => <DesktopSetupLayer editor={profileEditor} suspended={Boolean(profileEditor && hasPendingConnectCandidate())}>{surface}</DesktopSetupLayer>;
 
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
-    if (acceptanceSetup) return setupLayer(<PackagedAcceptanceLocalSetup initial={acceptanceSetup} onBack={() => setAcceptanceSetup(null)} />);
     if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} onReenter={() => undefined} onRediscover={() => undefined} />;
     if (state.phase === 'authenticating') return <AuthenticationPanel profile={state.profile} progress={state.progress} onCancel={() => cancelAuthentication(state)} onChoose={choose} onReopen={adapters.authentication.reopenApproval ? () => adapters.authentication.reopenApproval!(state.profile.id) : undefined} onCopy={adapters.authentication.copyApproval ? () => adapters.authentication.copyApproval!(state.profile.id) : undefined} />;
     if (state.phase === 'recovery-review') return <ManagedRecoveryReview profile={state.profile} onCancel={() => { cancelDiscovery(); setState({ phase: 'blocked', profile: state.profile, result: { status: 'offline', message: managedRecoveryMessage } }); }} onConfirm={() => void connect(state.candidate)} />;
@@ -412,12 +405,13 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     }} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} onReenter={() => reenterManagedEndpoint(state.profile)} onRediscover={() => void rediscoverManagedEndpoint(state.profile)} />;
     if (localSetupOpen && isGuidedLocalSetup(adapters.localSetup)) return setupLayer(<LocalSetupWizard adapter={adapters.localSetup} onBack={() => setLocalSetupOpen(false)} onComplete={profile => { setLocalSetupOpen(false); void saveProfile(profile); }} />);
     if (profileEditor) return profileEditor;
-    return <InstanceChooser onAddAccount={addAccount} profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.platform === 'linux' && adapters.localSetup.supported} networkDiscoverySupported={adapters.discovery.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
+    return <InstanceChooser onAddAccount={addAccount} profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.localSetup.supported} networkDiscoverySupported={adapters.discovery.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };
 
+  const applicationMenuClass = adapters.platform === 'linux' && adapters.app.showApplicationMenu ? ' desktop-has-application-menu' : '';
   const diagnostics = diagnosticsOpen ? <DesktopConnectionDiagnostics state={state} platform={adapters.platform} onClose={() => setDiagnosticsOpen(false)} /> : null;
 
-  if (state.phase !== 'connected') return <>{diagnostics}<div className={`desktop-entry desktop-platform-${adapters.platform}`}><div className="desktop-entry-drag-region" aria-hidden="true" />{adapters.platform === 'linux' && <DesktopWindowControls actions={adapters.app} />}{deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}{content()}</div></>;
+  if (state.phase !== 'connected') return <>{diagnostics}<div className={`desktop-entry desktop-platform-${adapters.platform}${applicationMenuClass}`}><div className="desktop-entry-drag-region" aria-hidden="true" />{adapters.platform === 'linux' && <DesktopWindowControls actions={adapters.app} />}{deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}{content()}</div></>;
 
   return (
     <>{diagnostics}<DesktopConnectedExperience

@@ -8,7 +8,7 @@ import TurndownService from 'turndown';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DOCS_ROOT = path.join(__dirname, '../library_docs');
+const DOCS_ROOT = path.join(__dirname, '../docs/library');
 const OCTOKIT_TOKEN = process.env.GITHUB_TOKEN;
 
 // Track statistics

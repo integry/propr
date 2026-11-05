@@ -1,5 +1,8 @@
 ---
 sidebar_position: 8
+sidebar_label: "Planner Studio Walkthrough"
+title: "Planner Studio: turn an idea into GitHub issues"
+description: "Follow Define & Context, Review Plan, and Execution to turn a request into reviewed issues ready for agent implementation."
 ---
 
 # Planner Studio Walkthrough
@@ -51,7 +54,7 @@ Review the generated plan like a proposal:
 
 Planning is the best point to keep work reviewable. When the plan is ready, finalize it with the **Create N GitHub Issues** button; ProPR creates one GitHub issue per plan item.
 
-{/* SCREENSHOT PLACEHOLDER (P1 — one capture also serves features/planning.md; interim: the site's ui-plan-detail.png): Capture the Review Plan step showing a generated plan with several issues in the editor, the refinement chat panel, and the "Create N GitHub Issues" button. */}
+![Planner Studio review stage with implementation tasks and the refinement conversation](/img/screenshots/0.9.0/plan.png)
 
 ## Step 3: Execution
 
@@ -61,7 +64,7 @@ Configure how the created issues run:
 - With two or more issues, enable the **multi-model comparison** toggle to run an issue with several models (one branch and PR per model), and use **Apply to All** to copy the selection to every issue.
 - PR options:
   - **Auto-merge if checks pass** — merge each PR automatically once CI is green.
-  - **Epic PR** (two or more issues) — combine the issues' results into a single epic pull request.
+  - **Epic PR** (two or more issues) — combine the issues' results into a single epic pull request. The issues run one after another in plan order through a durable queue: the next issue starts only after the previous one finishes.
   - **Run ultrafix after PR** — start a review-fix loop on each PR, with a goal score and maximum cycle count.
 
 Start execution, watch the task records in the Web UI, and review the created pull requests. For larger changes, run one planned issue first and review the result before launching the rest.
@@ -73,11 +76,11 @@ Start execution, watch the task records in the Web UI, and review the created pu
 The same flow is available from the `propr` CLI:
 
 ```bash
-propr plan create
+propr plan create "<request>"
 propr plan generate <plan-id>
 propr plan finalize <plan-id>
 propr plan abort <plan-id>
-propr issue implement <issue> --epic --auto-merge
+propr issue implement <plan-id>/<issue-number> --epic --auto-merge
 ```
 
 See [ProPR CLI](../features/propr-cli.md) for the full command reference.
@@ -89,8 +92,12 @@ See [ProPR CLI](../features/propr-cli.md) for the full command reference.
 - Split the work (higher granularity) if the plan is too broad.
 - Add better context — more attachments, a wider context level, or additional context repositories — if the plan is generic.
 
-Related pages:
+## Recover an earlier plan
 
-- [Planning Before Execution](../features/planning.md)
-- [Work Splitting](../features/work-splitting.md)
-- [Repository Knowledge](../features/repository-knowledge.md)
+Use **Plan history** in the review editor to preview and restore an earlier snapshot. Restoring preserves the version it replaces. See [revision history and refinement](../features/planning.md#revision-history-and-refinement) before finalizing the plan.
+
+## Next steps
+
+- [Repository Knowledge](/docs/features/repository-knowledge)
+- [PR Comment Commands](/docs/features/pr-commands)
+- [Work Splitting](/docs/features/work-splitting)

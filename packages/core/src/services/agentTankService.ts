@@ -1,5 +1,36 @@
+import { getEventPublisher } from '../utils/eventPublisher.js';
 import logger from '../utils/logger.js';
 import { loadAgentTankSettings } from '../config/configManager.js';
+import { observeAgentTankUsage } from './agentTankUsageEvents.js';
+import {
+    getBundledStatusForAlias,
+    getBundledStatusesForDelta,
+    refreshBundledStatuses,
+    scheduleBundledRefresh,
+} from './agentTankBundledRunner.js';
+import {
+    normalizeAgentTankAgents,
+    normalizeAgentTankStatus,
+    parseAgentTankStatus,
+    parseAgentTankStatusMap,
+    toAgentTankAgent,
+    type AgentStatusResponse,
+} from './agentTankTypes.js';
+
+// The provider-key vocabulary and the status shape live in `agentTankTypes.ts`
+// so the bundled runner can share them without importing this router back.
+export {
+    hasAgentTankStatuses,
+    hasUsableAgentTankStatuses,
+    isUsableAgentTankStatus,
+    normalizeAgentTankAgents,
+    normalizeAgentTankStatus,
+    parseAgentTankStatus,
+    parseAgentTankStatusMap,
+    toAgentTankAgent,
+    toProprAgent,
+} from './agentTankTypes.js';
+export type { AgentStatusResponse, AgentTankUsageWindow } from './agentTankTypes.js';
 
 // Refresh can take 15-20 seconds when CLI agent needs cold start
 const DEFAULT_TIMEOUT_MS = 25000;
@@ -17,60 +48,13 @@ async function getAgentTankBaseUrl(): Promise<string> {
     }
 }
 
-const AGENT_TANK_AGENT_ALIASES: Record<string, string> = {
-    antigravity: 'agy',
-};
-
-const PROPR_AGENT_ALIASES: Record<string, string> = Object.fromEntries(
-    Object.entries(AGENT_TANK_AGENT_ALIASES).map(([proprAgent, tankAgent]) => [tankAgent, proprAgent])
-);
-
-/**
- * Translate ProPR agent aliases to Agent Tank provider keys.
- *
- * ProPR exposes Google's agent as "antigravity", while Agent Tank tracks the
- * same provider under the CLI key "agy".
- */
-export function toAgentTankAgent(agent: string): string {
-    return AGENT_TANK_AGENT_ALIASES[agent] || agent;
-}
-
-/** Translate Agent Tank provider keys back to ProPR agent aliases. */
-export function toProprAgent(agent: string): string {
-    return PROPR_AGENT_ALIASES[agent] || agent;
-}
-
-/**
- * Response shape from GET /status/:agent
- *
- * Example call:
- *   const status = await getStatus('claude');
- *   // GET http://0.0.0.0:3456/status/claude
- *   // => { "name": "claude", "usage": { "session": { "percent": 42, ... }, ... }, ... }
- */
-export interface AgentStatusResponse {
-    name: string;
-    usage: Record<string, unknown>;
-    metadata?: Record<string, unknown>;
-    lastUpdated?: string;
-    error?: string | null;
-    isRefreshing?: boolean;
-}
-
-/** Normalize a single Agent Tank status object to ProPR-facing agent names. */
-export function normalizeAgentTankStatus(status: AgentStatusResponse): AgentStatusResponse {
-    return { ...status, name: toProprAgent(status.name) };
-}
-
-/** Normalize a GET /status response map to ProPR-facing agent keys and names. */
-export function normalizeAgentTankAgents(agents: Record<string, AgentStatusResponse>): Record<string, AgentStatusResponse> {
-    return Object.fromEntries(
-        Object.entries(agents).map(([agent, status]) => {
-            const proprAgent = toProprAgent(agent);
-            return [proprAgent, { ...status, name: toProprAgent(status.name || agent) }];
-        })
-    );
-}
+export {
+    agentTankUsageFingerprint,
+    observeAgentTankUsage,
+    observeAgentTankUsageSnapshot,
+    resetAgentTankUsageTracking,
+    type UsageUpdatePublisher
+} from './agentTankUsageEvents.js';
 
 /**
  * Trigger a refresh for the given agent on Agent Tank.
@@ -83,7 +67,22 @@ export function normalizeAgentTankAgents(agents: Record<string, AgentStatusRespo
  *   await refreshAgent('claude');
  *   const status = await getStatus('claude');
  */
-export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<void> {
+export async function refreshAgent(
+    agent: string,
+    timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    phase?: 'pre-call' | 'post-call',
+): Promise<void> {
+    const settings = await loadAgentTankSettings();
+    if (settings.mode === 'disabled') return;
+    if (settings.mode === 'bundled') {
+        if (phase) {
+            const statuses = await refreshBundledStatuses({ phase });
+            if (!statuses) throw new Error('Bundled Agent Tank refresh failed or timed out');
+        } else {
+            scheduleBundledRefresh();
+        }
+        return;
+    }
     const baseUrl = await getAgentTankBaseUrl();
     const tankAgent = toAgentTankAgent(agent);
     const url = `${baseUrl}/refresh/${encodeURIComponent(tankAgent)}`;
@@ -97,6 +96,7 @@ export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TI
         if (!response.ok) {
             throw new Error(`Agent Tank refresh returned HTTP ${response.status}: ${response.statusText}`);
         }
+        await getEventPublisher().publishUsageUpdate();
     } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
             throw new Error(`Agent Tank refresh timed out after ${timeoutMs}ms`);
@@ -114,7 +114,29 @@ export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TI
  *   await refreshAgent('claude');
  *   const status = await getStatus('claude');
  */
-export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<AgentStatusResponse> {
+export async function getStatus(
+    agent: string,
+    timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    // Account identity for bundled per-call probes; external endpoints remain provider-based.
+    alias?: string,
+): Promise<AgentStatusResponse> {
+    const settings = await loadAgentTankSettings();
+    if (settings.mode === 'disabled') {
+        throw new Error('Agent Tank is disabled');
+    }
+    if (settings.mode === 'bundled') {
+        // Cache-only: bounded by the delta freshness window so a stale snapshot
+        // cannot be subtracted to produce a misleading per-call usage delta.
+        // Per-call readers supply the executing alias. Provider-wide consumers
+        // may still read the aggregate cache without claiming account identity.
+        const status = alias !== undefined
+            ? getBundledStatusForAlias(alias)
+            : getBundledStatusesForDelta()?.[toAgentTankAgent(agent)];
+        if (!status) {
+            throw new Error(`No fresh bundled Agent Tank snapshot for ${agent}`);
+        }
+        return normalizeAgentTankStatus(status);
+    }
     const baseUrl = await getAgentTankBaseUrl();
     const tankAgent = toAgentTankAgent(agent);
     const url = `${baseUrl}/status/${encodeURIComponent(tankAgent)}`;
@@ -128,13 +150,105 @@ export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEO
         if (!response.ok) {
             throw new Error(`Agent Tank returned HTTP ${response.status}: ${response.statusText}`);
         }
-        const data = (await response.json()) as AgentStatusResponse;
-        return normalizeAgentTankStatus(data);
+        // `/status/:id` answers one canonical provider object from 0.10 on,
+        // and the bare legacy payload before that.
+        const data = parseAgentTankStatus(await response.json(), tankAgent);
+        if (!data) throw new Error('Agent Tank returned an unreadable status document');
+        const normalized = normalizeAgentTankStatus(data);
+        // Published here rather than on a timer: this is the only component that
+        // reads the external service, so it is the only one that can tell a
+        // changed snapshot from an unchanged poll.
+        await observeAgentTankUsage(normalized);
+        return normalized;
     } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
             throw new Error(`Agent Tank request timed out after ${timeoutMs}ms`);
         }
         throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Fetch usage for one configured agent *alias*, for decisions that are specific
+ * to that account rather than to the provider as a whole (synthetic-agent
+ * capacity routing).
+ *
+ * Bundled mode inspects one account per provider, so its snapshot can only
+ * answer for the alias whose credentials produced it; every other alias of the
+ * same provider is reported as unavailable instead of being handed a stranger's
+ * numbers. The answer is renamed to the requested alias, because the bundled
+ * snapshot carries the provider key rather than the account's name. External
+ * mode keeps the daemon's own per-name answer.
+ *
+ * @example
+ *   const status = await getStatusForAlias('claude-secondary');
+ */
+export async function getStatusForAlias(
+    alias: string,
+    timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<AgentStatusResponse> {
+    const settings = await loadAgentTankSettings();
+    if (settings.mode === 'disabled') {
+        throw new Error('Agent Tank is disabled');
+    }
+    if (settings.mode === 'bundled') {
+        const status = getBundledStatusForAlias(alias);
+        if (!status) {
+            throw new Error(`No fresh bundled Agent Tank snapshot for alias ${alias}`);
+        }
+        // The bundled snapshot is named after the provider key its generated id
+        // was pinned to, never after the account it describes. Provenance has
+        // just proven this snapshot came from `alias`'s credentials, so answer
+        // under that name: alias-specific consumers match the response name
+        // against the alias they asked for, and a custom alias would otherwise
+        // be rejected as somebody else's data. The copy keeps the cached
+        // snapshot untouched.
+        return { ...normalizeAgentTankStatus(status), name: alias };
+    }
+    return getStatus(alias, timeoutMs);
+}
+
+/**
+ * Transport-agnostic "give me every provider's usage" used by the sidebar and
+ * the MCP usage tool. Returns `undefined` when tracking is disabled or no data
+ * is available, so callers can hide the UI rather than render an error.
+ */
+export async function getAllStatuses(
+    options: { refresh?: boolean } = {}
+): Promise<Record<string, AgentStatusResponse> | undefined> {
+    const agents = await readAllStatuses(options);
+    // Every aggregate read - the sidebar, the usage watcher, the MCP tool - is
+    // also a history sample, which is the only history bundled mode has. The
+    // recorder is loaded lazily so the database stays out of this module's
+    // static graph: per-call usage tracking imports this router in processes
+    // (and tests) that never open the database.
+    if (agents) {
+        const { recordAgentTankUsageHistory } = await import('./agentTankUsageHistory.js');
+        await recordAgentTankUsageHistory(agents);
+    }
+    return agents;
+}
+
+async function readAllStatuses(
+    options: { refresh?: boolean }
+): Promise<Record<string, AgentStatusResponse> | undefined> {
+    const settings = await loadAgentTankSettings();
+    if (settings.mode === 'disabled') return undefined;
+    if (settings.mode === 'bundled') {
+        const agents = await refreshBundledStatuses({ force: options.refresh === true });
+        return agents ? normalizeAgentTankAgents(agents) : undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    try {
+        const response = await fetch(`${settings.url}/status`, { signal: controller.signal });
+        if (!response.ok) return undefined;
+        return normalizeAgentTankAgents(parseAgentTankStatusMap(await response.json()));
+    } catch {
+        return undefined;
     } finally {
         clearTimeout(timer);
     }

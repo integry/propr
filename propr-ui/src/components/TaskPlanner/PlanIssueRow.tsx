@@ -11,6 +11,8 @@ import {
   IssueMetadata
 } from './PlanIssueRowComponents';
 import { getContainerClassName, getTitleClassName } from './planIssueRowUtils';
+import { getOutlineTitle } from './planDisplayName';
+import type { PlanIssueDefaultSelection } from './planIssueDefaultSelection';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
@@ -19,9 +21,13 @@ interface PlanIssueRowProps {
   onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
+  /** Plan default agent/model (the toolbar selection); the override popover can reset to it. */
+  defaultSelection?: PlanIssueDefaultSelection | null;
   implementing?: boolean;
   disableImplementation?: boolean;
   isFirstPending?: boolean;
+  /** Pending, but owned by the execution queue: it starts once the issue ahead of it finishes. */
+  isQueued?: boolean;
   onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
   /** Inherited multi-mode state from parent (e.g., applied from global selection) */
   inheritedIsMulti?: boolean;
@@ -47,9 +53,11 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onImplement,
   onAgentChange,
   onModelChange,
+  defaultSelection,
   implementing = false,
   disableImplementation = false,
   isFirstPending = true,
+  isQueued = false,
   onImplementWithWarning,
   inheritedIsMulti,
   inheritedSelectedModels,
@@ -72,7 +80,6 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 
   const isPending = issue.status === 'pending';
   const isMerged = issue.status === 'merged';
-  const isProcessing = issue.status === 'processing' || issue.status === 'refinement_processing';
 
   const issueUrl = `https://github.com/${issue.repository}/issues/${issue.issue_number}`;
 
@@ -114,38 +121,40 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden`}
+      className={`${getContainerClassName(isMerged)} overflow-hidden`}
+      data-testid="plan-execution-row"
     >
       {/* High-Density Collapsed Row - Status, Title, and Actions */}
       <div
-        className={`px-3 sm:px-4 py-2 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
+        className={`px-4 py-2 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
         onClick={handleRowClick}
       >
         {/* Mobile: Stack layout, Desktop: Single line */}
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
           {/* Top row (mobile) / Left side (desktop): Issue Number + Status Badge + Title */}
-          <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="flex items-center gap-3 flex-1 min-w-0">
             <a
               href={issueUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="font-mono text-xs px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded-sm text-gray-700 hover:bg-gray-200 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
+              className="w-16 font-mono text-xs text-slate-600 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
               #{issue.issue_number}
               <ExternalLink size={10} className="opacity-50" />
             </a>
-            <StatusBadge status={issue.status} />
+            <span className="w-24 flex-shrink-0"><StatusBadge status={issue.status} queued={isQueued} /></span>
             {issueTitle && (
-              <span className={`text-sm ${getTitleClassName(isMerged)} truncate`}>
-                {issueTitle}
+              // The plan name and step counter ("Agents v1 (6/17):") repeat on every row, so rows lead with the step itself.
+              <span className={`text-sm ${getTitleClassName(isMerged)} truncate`} title={issueTitle}>
+                {getOutlineTitle(issueTitle)}
               </span>
             )}
           </div>
 
           {/* Bottom row (mobile) / Right side (desktop): Metadata + Actions */}
-          <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 lg:w-auto lg:flex-1 lg:justify-end lg:gap-3">
-            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
+          <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 lg:w-auto lg:flex-none lg:justify-end lg:gap-3">
+            <IssueMetadata issue={issue} />
             <RowActions
               isPending={isPending}
               hasExpandableContent={hasExpandableContent}
@@ -159,6 +168,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               issue={issue}
               onAgentChange={onAgentChange}
               onModelChange={onModelChange}
+              defaultSelection={defaultSelection}
               disableImplementation={disableImplementation}
               implementButtonPressed={implementButtonPressed}
               showImplementButton={showImplementButton}

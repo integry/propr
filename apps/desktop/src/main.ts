@@ -1,9 +1,14 @@
+import { authorizeLiveGithubSmoke } from './live-github-smoke';
+import { resolveGithubClientId } from './github-client-config';
+import { createGithubCodePresenter } from './github-code-presenter';
+import { openAllowedExternalUrl as openExternalWithPolicy } from './external-url';
+declare const __PROPR_DESKTOP_GITHUB_CLIENT_ID__: string | undefined;
 import { randomBytes } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, safeStorage, screen, session, shell, systemPreferences, Tray } from 'electron';
-import type { Rectangle } from 'electron';
+import type { MessageBoxOptions, Rectangle } from 'electron';
 import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_TRANSPORT_SCOPE_HEADER,
@@ -16,12 +21,13 @@ import {
 } from '@propr/cli/desktop-discovery';
 import { createDesktopSetupHost } from '@propr/cli/desktop-local-setup';
 import type { SetupActions } from '@propr/local-setup';
+import { createGithubBrowserLogin, createGithubTokenRefresher } from './github-browser-auth';
 import { launchDesktopAuthentication } from './authentication-handoff';
 import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { requestDesktopMicrophoneConsent } from './microphone-consent';
 import { configureMacOSBranding } from './macos-branding';
 import { applicationAboutDetails, showApplicationAbout } from './application-about';
-import { configureApplicationMenu } from './application-menu';
+import { configureApplicationMenu, createApplicationMenuPopup } from './application-menu';
 import {
   authorizePackagedAcceptanceTest,
   packagedAcceptancePairingTiming,
@@ -75,11 +81,11 @@ import {
   createLatestRendererReloader,
   deepLinkFromArguments,
   hasExactArgument,
-  isSafeExternalUrl,
   isTrustedRendererUrl,
   normalizeApiBaseUrl,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
+  rendererPolicyOriginsForSelection,
   validatedDevServerUrl,
 } from './security';
 import {
@@ -92,6 +98,7 @@ import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import { configureNativeSmokeLogsPath } from './smoke-log-path';
+import { configureNativeShutdownDiagnostics } from './native-shutdown-diagnostics';
 import {
   configureDesktopSessionSecurity,
   createPackagedConnectOwnershipReporter,
@@ -163,11 +170,18 @@ interface PackagedConnectJourneyDiagnosticState {
 let packagedConnectJourneyDiagnosticState: PackagedConnectJourneyDiagnosticState | null = null;
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
+let liveGithubSmoke: ReturnType<typeof authorizeLiveGithubSmoke> = null;
 let packagedSmokeUserDataDirectory: string | null = null;
 let packagedAcceptanceUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 let nativeSmokePhase: NativeSmokePhase | undefined;
+let nativeShutdownDiagnostics: ReturnType<typeof configureNativeShutdownDiagnostics> = null;
 try {
+  liveGithubSmoke = authorizeLiveGithubSmoke({
+    argv: process.argv, environment: process.env, isPackaged: app.isPackaged,
+    platform: process.platform, appData: app.getPath('appData'),
+  });
+  if (liveGithubSmoke) app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
   packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
     argv: process.argv,
     defaultUserDataDirectory: join(app.getPath('appData'), app.name),
@@ -212,6 +226,15 @@ try {
     }
     app.setPath('userData', packagedAcceptanceUserDataDirectory);
   }
+  if (liveGithubSmoke && (packagedSmokeUserDataDirectory || packagedAcceptanceUserDataDirectory)) {
+    throw new Error('Desktop test modes are mutually exclusive');
+  }
+  nativeShutdownDiagnostics = configureNativeShutdownDiagnostics({
+    app,
+    crashReporter,
+    argv: process.argv,
+    authorizedSmokeDirectory: packagedSmokeUserDataDirectory,
+  });
 } catch {
   process.exit(1);
 }
@@ -219,6 +242,9 @@ if (process.platform === 'darwin') configureMacOSBranding(app);
 
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
+// This authorized fixture scenario exercises the production document policy.
+const packagedAcceptancePolicyReload = packagedAcceptanceTest
+  && process.env.PROPR_DESKTOP_ACCEPTANCE_SCENARIO === 'csp-reload';
 const acceptancePairingTiming = packagedAcceptancePairingTiming(packagedAcceptanceUserDataDirectory);
 const acceptanceAccountConfirmation = packagedAcceptanceAccountConfirmation(packagedAcceptanceUserDataDirectory);
 let mainWindow: BrowserWindow | null = null;
@@ -659,11 +685,8 @@ const configurePackagedRendererProtocol = (
 
 const openAllowedExternalUrl = async (url: string): Promise<void> => {
   if (shutdownStarted) return;
-  if (!isSafeExternalUrl(url)) {
-    log('warn', 'desktop.external_url.rejected');
-    return;
-  }
-  await shell.openExternal(url);
+  if (liveGithubSmoke) throw new Error('Live smoke permits only instance browser pairing');
+  await openExternalWithPolicy(url, value => shell.openExternal(value), () => log('warn', 'desktop.external_url.rejected'));
 };
 
 const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<string, unknown>> => {
@@ -1552,7 +1575,7 @@ if (!hasSingleInstanceLock) {
     const smokeProfileOrigin = packagedSmokeTest
       ? normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL ?? '')
       : null;
-    let rendererPolicyOrigins: readonly string[] = packagedAcceptanceTest
+    let rendererPolicyOrigins: readonly string[] = packagedAcceptanceTest && !packagedAcceptancePolicyReload
       ? PACKAGED_ACCEPTANCE_LOOPBACK_ORIGINS
       : transportSmoke
       ? [transportSmoke.firstOrigin, transportSmoke.secondOrigin]
@@ -1643,13 +1666,14 @@ if (!hasSingleInstanceLock) {
         ? packagedJourneyApprovals.open
         : packagedAcceptanceTest
           ? async () => undefined
-          : request => openApprovedDesktopPairingUrl(request, shell, {
+          : request => openApprovedDesktopPairingUrl(request, liveGithubSmoke ?? shell, {
               ambiguousOsLaunchFailure: supportsAmbiguousPairingLaunchRecovery(process.platform),
             }),
       copyPairingApproval: request => copyApprovedDesktopPairingUrl(request, clipboard),
       clientName: `ProPR Desktop (${process.platform})`,
       confirmAccount: async (account, origin, signal) => {
         if (!mainWindow || mainWindow.isDestroyed() || signal.aborted) return false;
+        if (liveGithubSmoke) return liveGithubSmoke.confirmAccount(account, origin);
         if (packagedJourneyAccountConfirmation) {
           return packagedJourneyAccountConfirmation.confirm(account, origin, signal);
         }
@@ -1775,7 +1799,7 @@ if (!hasSingleInstanceLock) {
       }
     }
     if (app.isPackaged && !rendererPolicyPinnedForSmoke) {
-      if (!packagedAcceptanceTest) {
+      if (!packagedAcceptanceTest || packagedAcceptancePolicyReload) {
         const current = await credentials.listProfiles();
         const activeOrigin = current.profiles
           .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl;
@@ -1841,6 +1865,7 @@ if (!hasSingleInstanceLock) {
       log: (level, event) => log(level, event),
     });
     const applicationMenu = configureApplicationMenu(Menu, desktopNativeCommands, process.platform);
+    const applicationMenuPopup = createApplicationMenuPopup<BrowserWindow>(Menu, desktopNativeCommands, process.platform);
     nativeProfiles = profiles;
     const trayArtworkPath = resolveDesktopTrayIconPath({
       isPackaged: app.isPackaged,
@@ -1864,10 +1889,37 @@ if (!hasSingleInstanceLock) {
       commands: desktopNativeCommands,
       log: (level, event, fields) => log(level, event, fields),
     });
-    const setupHost = process.platform === 'linux'
+    const showGithubDialog = (options: MessageBoxOptions) => {
+      if (!mainWindow || mainWindow.isDestroyed()) throw new Error('Desktop window is unavailable');
+      // macOS can only abort an asynchronous message box when it has a parent.
+      return dialog.showMessageBox(mainWindow, options);
+    };
+    const githubClientId = resolveGithubClientId(app.isPackaged, __PROPR_DESKTOP_GITHUB_CLIENT_ID__, process.env.PROPR_DESKTOP_GITHUB_CLIENT_ID);
+    const setupHost = (process.platform === 'linux' || process.platform === 'darwin')
       ? await createDesktopSetupHost({
           configDir: join(app.getPath('userData'), 'local-setup', 'cli'),
           authenticationHandoff: launchDesktopAuthentication,
+          refreshGithubCredential: createGithubTokenRefresher({ clientId: githubClientId }),
+          githubBrowserLogin: createGithubBrowserLogin({
+            clientId: githubClientId,
+            presentCode: createGithubCodePresenter({
+              showDialog: showGithubDialog,
+              copy: code => clipboard.writeText(code),
+              openExternal: openAllowedExternalUrl,
+              isShuttingDown: () => shutdownStarted,
+            }),
+            confirmIdentity: async (login, signal) => {
+              mainWindow?.show();
+              mainWindow?.focus();
+              const result = await showGithubDialog({
+                type: 'question', title: 'Confirm GitHub account',
+                message: `Continue as @${login}?`,
+                detail: 'This identity was verified with GitHub. If it is the wrong account, cancel and retry sign-in, then switch accounts in GitHub before approving. Installation access will be checked next.',
+                buttons: ['Use this account', 'Cancel'], defaultId: 1, cancelId: 1, signal,
+              });
+              return result.response === 0;
+            },
+          }),
           ...(app.isPackaged ? { resourcesPath: process.resourcesPath } : {}),
           ...(!app.isPackaged && process.env.PROPR_DESKTOP_RUNTIME_MANIFEST
             ? { runtimeManifestPath: process.env.PROPR_DESKTOP_RUNTIME_MANIFEST }
@@ -1908,6 +1960,10 @@ if (!hasSingleInstanceLock) {
       openExternal: openAllowedExternalUrl,
       platform: process.platform,
       windowForSender: event => mainWindow?.webContents === event.sender ? mainWindow : null,
+      showApplicationMenu: (event, request) => {
+        if (!mainWindow || mainWindow.webContents !== event.sender) throw new Error('Application menu window is unavailable');
+        applicationMenuPopup.show(mainWindow, request);
+      },
       rendererConsumerReady: event => {
         const ready = deepLinkDelivery.rendererConsumerReady(event.sender, event.senderFrame);
         if (ready) recordNativeEvent('desktop.deeplink.consumer_ready');
@@ -1927,10 +1983,10 @@ if (!hasSingleInstanceLock) {
       onActiveWorkRefresh: () => desktopTray.refresh(),
       onNativeNavigationState: state => desktopNativeCommands?.updateNavigationState?.(state),
       ...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {
-        onRendererActiveProfileChanged: (origin: string | null) => {
+        onRendererActiveProfileChanged: (origin: string | null | undefined) => {
           notifications.clear();
-          if (packagedAcceptanceTest) return;
-          const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
+          if (packagedAcceptanceTest && !packagedAcceptancePolicyReload) return;
+          const nextOrigins = rendererPolicyOriginsForSelection(rendererPolicyOrigins, origin);
           if (rendererPolicyOrigins.length === nextOrigins.length
             && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
           rendererPolicyOrigins = nextOrigins;
@@ -1976,7 +2032,10 @@ if (!hasSingleInstanceLock) {
       getWindow: () => mainWindow,
       quit: () => app.quit(),
       onStarted: () => { shutdownStarted = true; },
-      log,
+      log: (level, event, fields) => {
+        if (event === 'desktop.app.shutdown_step') nativeShutdownDiagnostics?.recordPhase(fields?.step);
+        log(level, event, fields);
+      },
     }, transportSmoke?.shutdownMode === 'forced-timeout' ? { drainTimeoutMs: 250 } : undefined);
     app.on('before-quit', event => shutdown.beforeQuit(event));
 
@@ -2067,6 +2126,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  nativeShutdownDiagnostics?.recordPhase('will-quit');
   packagedSmokeEvidence?.close();
   packagedSmokeEvidence = null;
 });

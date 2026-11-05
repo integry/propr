@@ -242,7 +242,7 @@ export const InstanceChooser: React.FC<ChooserProps> = ({
       <h1>{profiles.length ? (listProps.onAddAccount ? 'Choose an account' : 'Choose an instance') : localSetupSupported ? 'Let’s set up this computer' : 'Connect to ProPR'}</h1>
       <p>{localSetupSupported
         ? 'Keep your repositories and coding agents close, or connect securely to a ProPR instance you already use.'
-        : 'Local setup is currently available on Linux. Connect securely to a ProPR instance hosted elsewhere.'}</p>
+        : 'Local setup is currently available on Linux and macOS. Connect securely to a ProPR instance hosted elsewhere.'}</p>
     </div>
     <div className="desktop-setup-actions">
       {localSetupSupported && (

@@ -16,11 +16,15 @@ const APP_NAME = 'ProPR';
  * @example
  * // Shows "ProPR" in the browser tab
  * useDocumentTitle('');
+ *
+ * @param enabled - When false the hook leaves the title alone, for a view
+ *                  embedded in a page that owns the title.
  */
-export function useDocumentTitle(title?: string): void {
+export function useDocumentTitle(title?: string, enabled = true): void {
   const originalTitleRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!enabled) return;
     // Store the original title on first mount
     if (originalTitleRef.current === null) {
       originalTitleRef.current = document.title;
@@ -39,7 +43,7 @@ export function useDocumentTitle(title?: string): void {
         document.title = originalTitleRef.current;
       }
     };
-  }, [title]);
+  }, [title, enabled]);
 }
 
 export default useDocumentTitle;

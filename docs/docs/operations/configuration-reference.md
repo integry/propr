@@ -1,11 +1,16 @@
 ---
 sidebar_position: 10
-title: Configuration Reference
+sidebar_label: "Configuration Reference"
+title: "ProPR environment configuration reference"
+description: "Look up stack .env variables, defaults, and when to override setup-generated values for authentication, agents, and operations."
 ---
+
+# Configuration Reference
+
 
 ProPR reads its configuration from the `.env` file in the stack root — the directory you run `propr` from. `propr setup`, `propr relay enroll`, and `propr tunnel setup` write most of these values for you; this page is the reference for reading or hand-editing the file. Where the value shipped in `.env.example` differs from the fallback the code uses when a variable is unset, both are shown.
 
-Deep dives live elsewhere: [Production Deployment](./deployment.md), [PWA, Web Push, and Badges](./pwa-web-push.md), [GitHub Authentication](./github-auth.md), [Worker Runtime](../architecture/worker-runtime.md), and [Agent Tank](./agent-tank.md).
+Additional details are available in: [Production Deployment](./deployment.md), [PWA, Web Push, and Badges](./pwa-web-push.md), [GitHub Authentication](./github-auth.md), [Worker Runtime](../architecture/worker-runtime.md), and [Agent Tank](./agent-tank.md).
 
 ## Core & GitHub Auth
 
@@ -13,14 +18,15 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `GH_AUTH_MODE` | Unset (mode is inferred) | Forces the auth mode: `app`, `relay`, or `demo`. Relay is inferred automatically when `PROPR_GH_RELAY_URL` + `PROPR_GH_RELAY_TOKEN` are set. | Rarely — only to override inference. |
+| `GH_AUTH_MODE` | Unset (mode is inferred) | Forces the auth mode: `app`, `relay`, or `demo`. Relay is inferred automatically when `PROPR_GH_RELAY_TOKEN` is set (the relay URL defaults to the hosted relay). | Rarely — only to override inference. |
 | `PROPR_GH_RELAY_URL` | Hosted relay `https://webhook.propr.dev/v1` when unset | Token relay URL, including the version prefix (`https://`; `http` only for localhost). | Self-hosted relay only. |
 | `PROPR_GH_RELAY_TOKEN` | Unset | Durable relay credential issued for your install. `propr relay enroll` writes it. | Relay mode. |
 | `GH_INSTALLATION_ID` | Unset | Which GitHub App installation ProPR acts on. | Relay and app modes. |
 | `GH_APP_ID` | Unset | Your own GitHub App's numeric id. | App mode (own GitHub App). |
 | `GH_PRIVATE_KEY_PATH` | Unset | Path to your App's private key (`.pem`). | App mode. |
 | `HOST_GH_PRIVATE_KEY` | Unset | Absolute host path to the `.pem`. The CLI/launcher bind-mounts it read-only into the app containers and overrides `GH_PRIVATE_KEY_PATH`, so the key can live anywhere on the host. No `~`. | App mode via the `propr` CLI or launcher. |
-| `GH_OAUTH_CLIENT_ID` / `GH_OAUTH_CLIENT_SECRET` | Placeholders | GitHub OAuth App credentials for Web UI login. | Always, for UI login. |
+| `PROPR_WEB_AUTH_MODE` | Inferred | Browser login mode: `connect` (ProPR Connect and the shared ProPR GitHub App), `github` (your own OAuth App), or `disabled`. Unset, it is `connect` for a relay-enrolled stack with the tunnel enabled, then `github` when OAuth client credentials are set, then `connect` for a stack enrolled with the hosted relay whose callback is on localhost, and otherwise `disabled`. `propr setup` and `propr tunnel setup` write `connect`. | Override only. |
+| `GH_OAUTH_CLIENT_ID` / `GH_OAUTH_CLIENT_SECRET` | Unset | GitHub OAuth App credentials for Web UI login in `github` mode. Relay-enrolled installs log in through Connect and do not need them. | `github` login mode only. |
 | `GH_OAUTH_CALLBACK_URL` | Derived: `<API host>/api/auth/github/callback` | OAuth callback served by the API. Leave commented so tunnel-mode derivation wins; an active localhost value is used as-is even in tunnel mode. Register the URL — derived or explicit — in your GitHub OAuth App. | Override only. |
 | `GITHUB_VISUAL_PREVIEW_TOKEN` | Unset | Advanced override for the OAuth App token (`gho_`), classic PAT, or fine-grained PAT used only to upload visual-preview attachments. Administrators can normally paste a PAT in Settings instead, and `propr setup` imports a compatible `gh` CLI token when available. GitHub's uploader rejects GitHub App user (`ghu_`) and installation (`ghs_`) tokens. | Optional override. |
 | `PROPR_CREDENTIAL_ENCRYPTION_KEY` | `SYSTEM_TASK_SECRET`, then `SESSION_SECRET` | Optional dedicated secret used to encrypt the persisted visual-preview OAuth grant. It must be identical in the API and worker containers and remain stable across restarts; changing it requires reconnecting the GitHub login. | Optional security isolation. |
@@ -47,9 +53,13 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Requests loopback HTTP Push enrollment for isolated local development. It is honored only outside production when `API_PUBLIC_URL` is unset/local or has a loopback host, and can be changed without migrating the stable schema. | Local browser development only. |
 | `PROPR_API_RATE_LIMIT_MAX` / `PROPR_API_RATE_LIMIT_WINDOW_MS` | `600` / `60000` | Per-client quota and window (milliseconds) for all `/api` requests. | Optional tuning. |
 | `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth initiation and callback endpoints. | Optional tuning. |
+| `PROPR_OPERATOR_RATE_LIMIT_MAX` / `PROPR_OPERATOR_RATE_LIMIT_WINDOW_MS` | `30` / `60000` | Per-client quota for authorized operator recovery endpoints (`/api/admin/followup-handoffs`), applied after the `instance.manage_runtime` guard. | Optional tuning. |
 | `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
 | `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: reserved `self` mode | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. The launcher injects `self` only for its managed sidecar sharing the API network namespace. Its broad `uniquelocal` name is accepted only when `API_PORT` is explicitly loopback-bound. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
+| `PROPR_DESKTOP_TOKEN_TTL_DAYS` | Unset (no expiry) | Lifetime of newly paired desktop instance tokens, 1–3650 days. See [Desktop Pairing](./desktop-pairing.md). | Optional. |
+| `PROPR_DISCOVERY_RATE_LIMIT_MAX` / `PROPR_PAIRING_START_RATE_LIMIT_MAX` / `PROPR_PAIRING_POLL_RATE_LIMIT_MAX` | `60` per minute / `10` per 15 minutes / `180` per 15 minutes | Per-client quotas for desktop discovery, pairing start, and pairing polls. Matching `*_WINDOW_MS` variables set the windows. | Optional tuning. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
+| `PROPR_API_TIMING_SAMPLE_RATE` | `0` (off) | Fraction of API requests (0–1) whose static route/stage names and durations are logged. Request URLs, parameters, headers, bodies, credentials and SQL are never logged. | Temporary latency diagnosis. |
 | `NODE_ENV` | `development` in the source template; `production` in stacks scaffolded by the packaged CLI | Packaged API, daemon, and worker containers require `production`. Source-development commands may use `development`. Existing files are preserved during upgrades; if an older generated stack still says `development`, review it and change it to `production` before running `propr start`. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
 
@@ -66,13 +76,13 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `POLLING_INTERVAL_MS` | `60000` | Poll period when pulling events from the GitHub API. | Polling mode only. |
 | `GH_WEBHOOK_SECRET` | Unset | Shared secret GitHub signs webhook deliveries with. | Direct webhook mode. |
 | `GITHUB_REPOS_TO_MONITOR` | Unset | Optional authoritative, comma-separated repository list when `CONFIG_REPO` is unset. When neither variable is set, the daemon uses repositories selected through setup or Settings and reloads that persisted list live. | Static environment-managed deployments only. |
-| `CONFIG_REPO` | Example config repo URL | Legacy external config-repository switch; when set, processing labels and persisted repo config load dynamically. | Optional. |
+| `CONFIG_REPO` | Unset | Legacy external config-repository switch; when set, processing labels and persisted repo config load dynamically. | Optional. |
 | `PRIMARY_PROCESSING_LABELS` | Shipped `AI,propr` / code falls back to `AI` | Issue labels that trigger processing. | Optional. |
 | `PR_LABEL` | `propr` | Label applied to PRs ProPR creates. | Optional. |
-| `GITHUB_BOT_USERNAME` | Placeholder / code falls back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
+| `GITHUB_BOT_USERNAME` | Shipped `propr.dev[bot]` / code auto-detects the App's `<slug>[bot]`, falling back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
 | `GITHUB_USER_WHITELIST` / `GITHUB_USER_BLACKLIST` | Empty | Comma-separated allow/deny lists for who can trigger processing. | Optional. |
 | `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames that bootstrap instance administrators. Non-demo startup fails when neither this list nor a durable administrator exists. The list remains an independent, authoritative override while configured. **Username risk:** GitHub usernames can be renamed or recycled; store the bootstrap role from **Web UI → Access** to bind it to the numeric GitHub ID, then remove or carefully maintain the environment entry. | Initial setup, or optional break-glass access. |
-| `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
+| `PR_FOLLOWUP_TRIGGER_KEYWORDS` | Shipped `!propr` / unset or empty: no keyword is required | Keywords in PR comments that trigger follow-up work on PRs without a processing label. With no keywords, every comment passes the keyword check. See [PR Follow-up](../features/pr-followup.md). | Optional. |
 | `CANCEL_CI_FOLLOWUP_WORKFLOWS` | Unset (nothing selected) | Fallback selection of the workflows the per-repository option *Cancel CI while follow-up implementation is in progress* may cancel, for instances configured outside the Web UI. Comma-separated, matched case-insensitively and exactly by workflow display name, file path, file name or numeric ID — never as a substring. Applies only to repositories whose own selection is empty; a repository selection always wins. With neither, nothing is cancelled. See [PR Follow-up](../features/pr-followup.md#cancelling-obsolete-checks-during-follow-up). | Optional; only with that option enabled. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 
@@ -82,11 +92,11 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. | Optional. |
+| `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. In a published Desktop runtime the generated `propr/agent:latest` value resolves to the signed, digest-pinned managed agent image; any other value is kept as an intentional override. Agents on default CLI versions run that pinned image directly; an agent with a custom CLI version still uses a locally built image (set it back to the default version to use the published image). | Optional. |
 | `AGENT_CONTAINER_MEMORY_LIMIT` | `6g` | Hard memory and memory-plus-swap ceiling applied to every coding-agent container. Use a positive Docker memory value such as `8g`. | Optional tuning. |
 | `AGENT_CONTAINER_CPU_LIMIT` | Adaptive: `min(4, detected CPUs)` | Maximum CPUs available to each coding-agent container; fractional overrides such as `1.5` are accepted. Leave unset to stay within the worker host's detected capacity. | Optional tuning. |
 | `AGENT_CONTAINER_PIDS_LIMIT` | `512` | Maximum processes/threads available to each coding-agent container. | Optional tuning. |
-| `PROPR_MANAGED_CREDENTIALS_DIR` | Native/Compose: `~/.propr/agent-credentials`; launcher: `PROPR_DATA_DIR/agent-credentials` | Host-visible root for isolated accounts created through direct Web login. The default is derived automatically; a launcher/CLI override must be an absolute Docker-host path. | Optional advanced override. |
+| `PROPR_MANAGED_CREDENTIALS_DIR` | CLI, native and Compose: `~/.propr/agent-credentials`; launcher container: `PROPR_DATA_DIR/agent-credentials` | Host-visible root for isolated accounts created through direct Web login. The default is derived automatically; a launcher/CLI override must be an absolute Docker-host path. | Optional advanced override. |
 | `CLAUDE_CONFIG_PATH` | Empty | Absolute path to an existing `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. Direct-login agents do not need this setting. | Reusing an existing Claude account. |
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
@@ -94,14 +104,27 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `CODEX_STREAM_TRANSPORT` | `websocket` | Codex response transport. `websocket` avoids long-lived HTTP response deadlines, `sse` supports environments that cannot carry WebSockets, and `inherit` leaves the mounted Codex provider configuration unchanged. | Optional; use `inherit` with a custom provider. |
 | `CODEX_STREAM_IDLE_TIMEOUT_MS` | `1800000` (30 minutes) | Maximum quiet period on a Codex response stream before reconnecting. This is separate from the whole-task `CODEX_TIMEOUT_MS`. | Optional tuning. |
 | `CODEX_STREAM_MAX_RETRIES` | `5` | Number of Codex response-stream reconnect attempts. Zero disables retries. | Optional tuning. |
+| `ANALYSIS_MODEL_FAST` / `PLANNER_CONTEXT_MODEL` / `PLANNER_GENERATION_MODEL` | Unset | Initial values for **Fast analysis model** and planner models while **Settings → AI Models & Reasoning** has no saved value. The fast analysis model (`analysis_model_fast`) is used by `/review` to gather repository context before the review. `ANALYSIS_MODEL_FAST` remains its environment fallback. A saved setting wins. Prefer choosing models in Settings. | Optional. |
 | `CONTEXT_ANALYSIS_TIMEOUT_MS` | `3600000` (60 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
+| `PROPR_PLAN_GENERATION_MODE` | `file` | `file`: the planning agent writes one JSON file per issue in a scratch workspace and runs the plan validator until it passes; ProPR re-validates before saving. `response`: the plan is parsed from the agent's reply. If the file workspace or agent cannot be started at all, ProPR falls back to `response` for that run; an invalid plan fails instead. | Optional. |
+| `PROPR_PLAN_WORKSPACE_ROOT` | `/tmp/git-processor/plan-workspaces` | Scratch workspaces for plan agents. Must be the same path for the API and the Docker daemon, like the worktree root. | Custom worktree layouts only. |
 | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
 | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | Vibe task run timeout. | Optional. |
+| `AGENT_STALL_TIMEOUT_MS` | `600000` (10 minutes) | Stops a coding-agent run that produces no output (records, log lines, transcript updates) for this long, publishing its partial work with `terminalReason` `stalled`. `0` disables. Overridden by **Settings → Sandbox & Network → Agent watchdog** (`agent_stall_timeout_ms`) without a restart; invalid values fall back to the default with a warning. | Optional tuning. |
+| `AGENT_TOOL_STALL_TIMEOUT_MS` | `1800000` (30 minutes) | Silence allowed after an agent reports a tool call started without streaming its output (builds, test suites, `npm ci`), measured from the tool start. `0` never stops a run during a tool call. Setting: `agent_tool_stall_timeout_ms`. | Optional tuning. |
+| `AGENT_DEGENERATE_OUTPUT_LIMIT` | `50` | Consecutive whitespace-only text deltas that stop a run with `terminalReason` `degenerate_output`. Empty deltas never count. `0` disables. Setting: `agent_degenerate_output_limit`. | Optional tuning. |
+| `AGENT_NETWORK_MODE` | `open` | Agent container network mode: `open`, or `restricted` (no network interface; egress only through a per-run allowlist proxy). Overridden by **Settings → Sandbox & Network → Agent network** (`agent_network_mode`) without a restart. `.propr/workflow.yml` `network.mode` can choose either unless restricted mode is enforced. See [Restricted network mode](../features/execution-safety.md#restricted-network-mode). | Optional hardening. |
+| `AGENT_NETWORK_MODE_ENFORCED` | `false` | With `restricted`, repositories cannot choose `open`, and agents that cannot use the proxy are refused instead of falling back. Setting: `agent_network_mode_enforced`. | Optional hardening. |
+| `AGENT_NETWORK_ALLOW` | Unset | Comma-separated hosts (`host`, `*.domain`, `host:port`) every restricted run may reach, in addition to the built-in provider, GitHub, npm and PyPI hosts. Setting: `agent_network_allow`. Only these instance entries can open a loopback, private or link-local address, and only as IP literals. | Restricted mode with private registries. |
+| `AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW` | `false` | With enforced restricted mode, ignore the hosts a repository adds in `.propr/workflow.yml` `network.allow`, so runs reach only the built-in hosts and `agent_network_allow`. Setting: `agent_network_ignore_repository_allow`. | Enforced restricted mode that bounds every repository. |
+| `PROPR_EGRESS_SOCKET_DIR` | `/tmp/propr-egress` | Where the worker and the indexing worker create per-run egress proxy sockets for restricted mode. If the worker reaches the internet only through a proxy, its own `HTTPS_PROXY`/`HTTP_PROXY` (and `NO_PROXY`) are used to chain allowed connections. Agent containers bind-mount these directories, so the Docker daemon must see this path, or `HOST_PROPR_EGRESS_SOCKET_DIR` must give its Docker host path. The bundled Compose files and launcher mount `/tmp/propr-egress`. | Containerized workers with a custom layout. |
+| `HOST_PROPR_EGRESS_SOCKET_DIR` | Same as `PROPR_EGRESS_SOCKET_DIR` | Docker host path of `PROPR_EGRESS_SOCKET_DIR`, used as the bind-mount source for agent containers. | Containerized workers that mount the directory at a different path. |
 | `VIBE_CONFIG_PATH` | Unset | Absolute path to your `~/.vibe` directory (no `~`). | Running a Vibe agent. |
 | `MISTRAL_API_KEY` | Unset | Vibe credentials fallback when `VIBE_CONFIG_PATH` does not provide them. | Vibe without config-dir credentials. |
 | `HOST_CLAUDE_DIR` / `HOST_CODEX_DIR` / `HOST_ANTIGRAVITY_DIR` / `HOST_VIBE_DIR` | Unset | Production launcher only — absolute host paths for reusing existing agent credential directories. ProPR-managed direct-login accounts need no `HOST_*` setting. Antigravity is Gemini-based, so its directory is `~/.gemini`. | Reusing host credentials with the launcher. |
+| `HOST_CLAUDE_JSON` | The `.claude.json` next to `HOST_CLAUDE_DIR` (e.g. `~/.claude.json`), when it exists | Production launcher only — absolute host path of Claude Code's config file. It is mounted read-only; each Claude agent run gets a private copy and private `~/.claude/backups`, so runs never write the host file or its backups. Set it explicitly when the launcher runs in a container, which cannot see host files. Without the file, runs start from a minimal config. | Claude Code with a launcher-managed install. |
 | `HOST_OPENCODE_XDG_DIR` | Unset | Host path to an existing OpenCode XDG config directory (`~/.config/opencode`). | Reusing OpenCode host config via docker/launcher. |
 | `HOST_OPENCODE_DATA_DIR` | Unset | Host path to existing OpenCode auth data (`~/.local/share/opencode`), so `opencode auth login` credentials reach spawned agent containers. Managed accounts keep their own isolated data directory. | Reusing OpenCode host auth via launcher. |
 | `VIBE_PROMPT_CACHE_DIR` / `HOST_VIBE_PROMPT_CACHE_DIR` | Container `/tmp/propr-vibe-prompts`; host `/tmp/propr-vibe-prompts-<uid>` | Vibe Docker-outside-Docker writes prompt files to a host-visible directory so spawned containers can bind-mount them. Set both only to override the locations. | Optional. |
@@ -112,17 +135,29 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `REDIS_HOST` / `REDIS_PORT` | `127.0.0.1` / `6379` | Redis connection for the job queue. | Optional. |
+| `REDIS_HOST` / `REDIS_PORT` | `127.0.0.1` / `6379` | Redis connection for the job queue. Requires Redis 6.2 or newer (BullMQ's minimum). Repository workflow capacity scripts also call `TIME` before writing, which relies on script effects replication (Redis 5 or newer). | Optional. |
 | `REDIS_EXTERNAL_BIND_HOST` / `REDIS_EXTERNAL_PORT` | `127.0.0.1` / `6380` | Host bind used only by the development `docker-compose.yml` when publishing Redis. Keep the bind on loopback or a private Docker bridge; never expose unauthenticated Redis on a public interface. | Optional; contributor preview deployment derives a private Docker gateway automatically. |
 | `GITHUB_ISSUE_QUEUE_NAME` | `github-issue-processor` | Name of the issue-processing queue. | Optional. |
 | `WORKER_CONCURRENCY` | Shipped `2` / code falls back to `5` if unset | Jobs a worker processes in parallel. | Optional. |
 | `COMMENT_BATCH_DELAY_MS` | `3000` | Delay for batching GitHub comment updates. | Optional. |
+| `TASK_STATE_RECONCILIATION_INTERVAL_MS` / `TASK_STATE_RECONCILIATION_STALE_MS` | `60000` / `900000` | How often the worker reconciles persisted task state with live queue jobs and containers, and how long after its last state update an unfinished task becomes eligible for that check. | Optional tuning. |
+| `TASK_STATE_RECONCILIATION_ORPHAN_GRACE_MS` / `TASK_STATE_RECONCILIATION_BATCH_SIZE` / `TASK_STATE_RECONCILIATION_TIME_BUDGET_MS` | `60000` / `100` / `30000` | Grace window across which a missing job or container must be observed repeatedly before a task is treated as orphaned, tasks checked per pass, and the time budget per pass. | Optional tuning. |
+| `INFRA_LOST_REPLACEMENT` | `true` | Dispatch one replacement attempt for an issue task orphaned with its worker (no queue job or running task container). A second orphaning in the same lineage is final. Set `false` to disable. See [automatic replacement runs](../architecture/worker.md#reconciliation-and-automatic-replacement-runs). | Optional. |
+| `MAX_PROVIDER_REPLACEMENTS` | `2` | Replacement attempts per lineage after an issue run ends with a transient provider error (5xx, overloaded, connection or timeout errors; 429/usage limits excluded). `0` disables them; maximum `10`. The instance setting **Provider failure replacements** (`max_provider_replacements`) overrides it. | Optional. |
+| `PR_TASK_TITLE_GENERATION_TIMEOUT_MS` | `30000` | Timeout for the lightweight agent call that titles PR comment tasks, including container startup. | Optional tuning. |
 | `SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD` | `3` | Promotes the summarization fallback to primary after this many primary quota failures for the same agent/model. | Optional. |
 | `SUMMARIZATION_QUOTA_COOLDOWN_MS` | `3600000` (1 hour) | Pauses normal summarization jobs for a repository/branch after both primary and fallback paths fail. | Optional. |
-| `SYSTEM_TASK_SECRET` | Empty | Signs system task requests (for example revert operations). Generate with `openssl rand -hex 32`. | System tasks (reverts). |
+| `ULTRAFIX_CI_WAIT_TIMEOUT_MS` | Instance setting `ultrafix_ci_wait_timeout_ms`, default `7200000` (2 hours) | How long an Ultrafix review may wait for blocking CI on the PR head before the loop stops with "CI did not settle". Overrides the instance setting when set to a positive integer. See [`/ultrafix`](../features/pr-commands.md#ultrafix). | Optional tuning. |
+| `SYSTEM_TASK_SECRET` | Empty | Signs system task requests (for example revert operations) and the worker's requests for [agent run](../features/agents.md) MCP grants. Must be identical on the API and worker. Generate with `openssl rand -hex 32`. | System tasks (reverts); agents with `propr_mcp` or a `preview`/`auto` acting step. |
 | `SYSTEM_TASK_TOKEN_MAX_AGE_MS` | `7200000` (2 hours) | Maximum age for signed system task tokens. Increase if jobs expire due to queue backlog or worker downtime. | Optional. |
+| `PROPR_INTERNAL_API_URL` | `http://api:4000` | Base URL the worker uses to reach the API's internal agent-run endpoints (run-scoped MCP grants). Set on the API and worker. | Services not reachable under the default Compose name `api`. |
+| `PROPR_AGENT_MCP_URL` | `$PROPR_INTERNAL_API_URL/api/mcp` | MCP endpoint handed to agent containers together with their run-scoped grant. Must be reachable from the agent containers' network. | Agent containers on a different network than the API. |
 | `GIT_CLONES_BASE_PATH` | `/tmp/git-processor/clones` | Where workers keep repository clones. | Optional. |
 | `GIT_WORKTREES_BASE_PATH` | `/tmp/git-processor/worktrees` | Where workers create per-job worktrees. | Optional. |
+| `PUSH_RESCUE_RETENTION_DAYS` | `14` | How long push-salvage rescue refs (`refs/propr/rescue/<taskId>--<timestamp>`, aged from the creation time in the name) and rescue bundles are kept before the daemon deletes them; worktree protection follows the separate salvage retention record. `0` disables the automatic deletion. See [Maintenance → Rejected Pushes](./maintenance.md#rejected-pushes-and-the-salvage-ladder). | Optional. |
+| `PUSH_RESCUE_BUNDLE_DIR` | `<DATA_DIR>/rescue` (next to the SQLite database) | Durable directory for git bundles written when a rejected push cannot reach a rescue ref. Bundles are stored as `<dir>/<owner>/<repo>/<taskId>.bundle`. Must be visible to both the worker (which writes) and the daemon (which prunes). | Optional. |
+| `PUSH_RESCUE_WORKTREE_RECORD_DIR` | `<DATA_DIR>/rescue-worktrees` (next to the SQLite database) | Worker-controlled records of worktrees kept by the last salvage rung. These records protect salvage state independently of `WORKTREE_RETENTION_STRATEGY`; such worktrees are protected while the record has no cleanup deadline or its `scheduledCleanup` is still in the future; a `.retention-info.json` inside the worktree is informational, since repository contents could forge it. Must be shared at the same configured location by workers and the daemon, whose idle sweep reads these records. | Optional. |
+| `PUSH_RESCUE_SWEEP_INTERVAL_MS` | `21600000` (6 hours) | How often the daemon deletes expired rescue refs and bundles. | Optional tuning. |
 | `GIT_DEFAULT_BRANCH` | `main` | Default base branch for PRs. Per-repo overrides use `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` — see [Branch Configuration](../features/branch-config.md). | Optional. |
 | `GIT_SHALLOW_CLONE_DEPTH` | Empty (full clones) | Depth for shallow clones; leave empty to clone full history. | Optional. |
 
@@ -140,11 +175,14 @@ Optional: expose a local stack's API to the hosted control plane at `https://app
 
 ## Agent Tank & Metrics
 
-These two variables are read from code but are not in `.env.example` — Agent Tank is normally connected through the Web UI or `propr agent-tank`, which save the URL as a backend setting. See [Agent Tank](./agent-tank.md).
+These variables are read from code but are not in `.env.example` — Agent Tank is normally configured through the Web UI or `propr tank`, which save the mode as a backend setting. The integration has three modes (`disabled`, `bundled`, `external`); see [Agent Tank](./agent-tank.md).
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `AGENT_TANK_URL` | Code falls back to `http://0.0.0.0:3456` when no saved setting exists | Fallback Agent Tank service URL used when no URL is saved in settings. Empty or `false` disables usage tracking for LLM calls. | Only when configuring Agent Tank via env instead of the UI/CLI. |
+| `AGENT_TANK_MODE` | `disabled` | Integration mode used when **no** Agent Tank setting has been saved yet: `disabled`, `bundled` (run the CLI inside the agent image), or `external` (talk HTTP to your own daemon). A saved setting always wins, and an unrecognized value is treated as `disabled`. | Only when configuring Agent Tank via env instead of the UI/CLI. |
+| `AGENT_TANK_URL` | Code falls back to `http://0.0.0.0:3456` when no saved setting exists | Fallback Agent Tank service URL used when no URL is saved in settings. **Applies to `external` mode only** — bundled mode contacts no URL. Empty or `false` disables usage tracking for LLM calls in external mode. | Only when configuring external Agent Tank via env instead of the UI/CLI. |
+| `AGENT_TANK_BUNDLED_TIMEOUT_MS` | `120000` | How long a bundled-mode refresh container may run before it is abandoned. A timeout degrades to "no usage data"; it never fails a task. | Optional, `bundled` mode only. |
+| `AGENT_TANK_BUNDLED_CACHE_TTL_MS` | `60000` | How long a bundled-mode usage snapshot stays fresh before the next refresh starts a container. Per-LLM-call probes only read this cache. | Optional, `bundled` mode only. |
 | `ANALYSIS_AGENT_TANK_TIMEOUT_MS` | `2000` | Timeout for the Agent Tank status fetch wrapped around each LLM call. | Optional. |
 
 ## Advanced
@@ -152,5 +190,22 @@ These two variables are read from code but are not in `.env.example` — Agent T
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
 | `ENABLE_GITHUB_WEBHOOKS` | Deprecated | No longer selects the intake mode; use `GITHUB_EVENT_INTAKE_MODE` instead. Present only so existing `.env` files are recognized — a deprecation warning is logged when it is set. | Never — remove it. |
+| `MCP_ENABLED` and other `MCP_*` variables | Shipped `MCP_ENABLED=false` / unset: managed in **Settings → Integrations & MCP → MCP Server** | `true` selects environment-managed MCP configuration; `false` prevents enabling MCP from the UI, so remove or comment out the shipped line to manage MCP in Settings. See [MCP](../features/mcp.md). | Environment-managed MCP, or keeping MCP off. |
+| `PROPR_DOCS_DIR` | Bundled docs in the app image | Documentation root served to agents by the MCP docs tools. Override only to mount a different docs checkout; a version mismatch with the running API is reported as a warning. | Override only. |
 | `STAGING_ENV_FILE` | Placeholder | Path to a staging `.env` that provides base configuration for PR preview environments. Consumed by `docker-compose.yml` and `scripts/deploy-pr.sh`; the PR Preview workflow maps repository variables onto it. | Contributor PR preview deploys only. |
 | `STAGING_DB_PATH` | Placeholder | Optional staging database file for seeding PR preview environments. | Contributor PR preview deploys only. |
+
+### Worktree generated payload cleanup and admission
+
+Finished and idle Git worktrees can be removed according to the retention settings below, after Git safety and liveness checks. The separate instance storage policy is disabled by default; reviewed enablement permits only proven generated payloads after at least 24 hours of durable actual inactivity. See [safe preview/execute and producer controls](./maintenance.md#repository-and-worktree-cleanup).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WORKTREE_RETENTION_STRATEGY` | `always_delete` | When a finished job's worktree is removed. `always_delete`: whenever nothing in it would be lost. `keep_on_failure` / `keep_for_hours`: failed jobs keep theirs (the idle sweep can still remove them later). `always_keep`: never remove automatically. See [Maintenance → Repository And Worktree Cleanup](./maintenance.md#repository-and-worktree-cleanup). |
+| `WORKTREE_RETENTION_HOURS` | `24` | How long a worktree must be idle (no Git activity) before the daemon's sweep can remove it. Positive integer hours; invalid values disable sweeping with a warning. |
+| `WORKTREE_SWEEP_INTERVAL_MS` | `3600000` | How often the daemon sweeps for idle worktrees whose work is stored in Git. Positive integer milliseconds, at most `2147483647`; invalid values disable scheduling with a warning. |
+| `FOLLOWUP_HOLD_AUTO_RELEASE_HOURS` | `24` | Age after which recovery releases a follow-up hold that can no longer publish anything (its attempt is over, and it was cancelled or its worktree gave up the branch) even when no new comment is waiting. A new comment on the pull request releases such a hold right away. |
+| `WORKTREE_ADMISSION_RESERVE_BYTES` | `2147483648` | Minimum free filesystem reserve required before worker admission. Positive safe integer; unknown capacity fails closed. |
+| `WORKTREE_TASK_BUDGET_BYTES` | `1073741824` | Additional capacity reservation per admitted task, shared through durable lifecycle claims. An estimate, not an enforced write quota. |
+
+Lifecycle claims are never stolen based on age. Crashed/unknown claims require investigation; failed/recovering/queued task authority prevents optional cleanup. Generated ownership records are kept under `<DATA_DIR>/storage-control/generated-payloads`. Old/unregistered dependency directories cannot be adopted merely by name, task completion or age.

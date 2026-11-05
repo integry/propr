@@ -1,0 +1,426 @@
+import assert from 'node:assert/strict';
+import { createECDH } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, afterEach, beforeEach, describe, test } from 'node:test';
+import knex, { type Knex } from 'knex';
+import type { NotificationUpdatePayload } from '@propr/shared';
+import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
+import { NotificationService } from '../src/services/notificationService.js';
+import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
+import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as addBadgePreference } from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
+import { up as addAdvertisedActions } from '../src/db/migrations/20260824020000_add_notification_advertised_actions.js';
+import { up as addSystemFailureState } from '../src/db/migrations/20260829000000_add_notification_system_failure_state.js';
+import { up as addPullRequestState } from '../src/db/migrations/20260829010000_add_notification_pull_request_state.js';
+
+type Announcement = Omit<NotificationUpdatePayload, 'eventType'>;
+
+let database: Knex;
+let service: NotificationService;
+let published: Announcement[];
+let publishError: Error | null;
+let clock = Date.parse('2026-09-26T10:00:00.000Z');
+
+/** A valid browser encryption key, so push enrollment is not rejected. */
+function pushKey(privateKeyValue: number): string {
+    const privateKey = Buffer.alloc(32);
+    privateKey[31] = privateKeyValue;
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(privateKey);
+    return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
+}
+
+function createDatabase(filename = ':memory:'): Knex {
+    return knex({
+        client: 'better-sqlite3',
+        connection: { filename },
+        useNullAsDefault: true,
+        pool: {
+            afterCreate(
+                connection: BetterSqliteConnection,
+                done: (error: Error | null, connection: BetterSqliteConnection) => void
+            ) {
+                connection.pragma('foreign_keys = ON');
+                connection.pragma('recursive_triggers = ON');
+                connection.pragma('busy_timeout = 1000');
+                done(null, connection);
+            }
+        }
+    });
+}
+
+/** How a knex client runs one statement, including inside a transaction. */
+interface QueryRunner {
+    query: (
+        this: unknown,
+        connection: unknown,
+        request: { sql?: string }
+    ) => Promise<unknown>;
+}
+
+/**
+ * The prototype a knex client and its transaction clients share `query` through.
+ *
+ * A transaction client is built from the client constructor's prototype, so this
+ * is the one place a hook sees both a direct statement and one issued inside a
+ * transaction.
+ */
+function queryPrototypeOf(target: Knex): QueryRunner {
+    let prototype: object | null = Object.getPrototypeOf(target.client);
+    while (prototype && !Object.prototype.hasOwnProperty.call(prototype, 'query')) {
+        prototype = Object.getPrototypeOf(prototype);
+    }
+    assert.ok(prototype, 'the knex client must expose query on a prototype');
+    return prototype as unknown as QueryRunner;
+}
+
+async function migrate(target: Knex): Promise<void> {
+    await up(target);
+    await addPreferenceApis(target);
+    await addBadgePreference(target);
+    await addAdvertisedActions(target);
+    await addSystemFailureState(target);
+    await addPullRequestState(target);
+}
+
+async function createEvent(eventId: string, recipients: string[]) {
+    return service.createNotificationEvent({
+        eventId,
+        deduplicationKey: `dedupe:${eventId}`,
+        kind: 'task',
+        severity: 'success',
+        target: { type: 'task', repository: 'integry/propr', taskId: `task-${eventId}` },
+        title: `Event ${eventId}`,
+        body: `Body ${eventId}`,
+        recipients
+    });
+}
+
+beforeEach(async () => {
+    clock = Date.parse('2026-09-26T10:00:00.000Z');
+    published = [];
+    publishError = null;
+    database = createDatabase();
+    await migrate(database);
+    service = new NotificationService({
+        database,
+        now: () => new Date(clock += 1000),
+        allowInsecureLocalhost: false,
+        publishUpdate: async payload => {
+            if (publishError) throw publishError;
+            published.push(payload);
+        }
+    });
+});
+
+afterEach(async () => database.destroy());
+after(async () => closeConnection());
+
+describe('notification activity events', { concurrency: false }, () => {
+    test('a created event announces itself to the recipients that received it', async () => {
+        await createEvent('event-1', ['user-a', 'user-b']);
+
+        assert.equal(published.length, 1);
+        assert.equal(published[0].change, 'created');
+        assert.equal(published[0].eventId, 'event-1');
+        assert.deepEqual(published[0].recipientIds.sort(), ['user-a', 'user-b']);
+        assert.equal(published[0].repository, 'integry/propr');
+        assert.equal(new Date(published[0].occurredAt).toISOString(), published[0].occurredAt);
+    });
+
+    test('a recipient who disabled the kind is not told about the event', async () => {
+        await service.updateNotificationPreference('user-b', 'task', {
+            inboxEnabled: false,
+            pushEnabled: false
+        });
+        published = [];
+        await createEvent('event-1', ['user-a', 'user-b']);
+
+        assert.deepEqual(published.map(announcement => announcement.recipientIds), [['user-a']]);
+    });
+
+    test('reading and dismissing each announce once, repeats announce nothing', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        await service.markNotificationRead('user-a', 'event-1');
+        await service.markNotificationRead('user-a', 'event-1');
+        await service.dismissNotification('user-a', 'event-1');
+        await service.dismissNotification('user-a', 'event-1');
+
+        assert.deepEqual(published.map(announcement => [
+            announcement.change,
+            announcement.eventId,
+            announcement.recipientIds,
+        ]), [
+            ['read', 'event-1', ['user-a']],
+            ['dismissed', 'event-1', ['user-a']],
+        ]);
+    });
+
+    test('a bulk clear announces one recipient-scoped reconcile', async () => {
+        await createEvent('event-1', ['user-a']);
+        await createEvent('event-2', ['user-a']);
+        published = [];
+
+        await service.dismissAllNotifications('user-a');
+        await service.dismissAllNotifications('user-a');
+
+        assert.deepEqual(published, [{
+            change: 'dismissed_all',
+            eventId: null,
+            recipientIds: ['user-a'],
+            repository: null,
+            occurredAt: published[0]?.occurredAt
+        }]);
+    });
+
+    test('a server-side pull request cleanup announces the cards it closed', async () => {
+        await service.createNotificationEvent({
+            eventId: 'pr-event',
+            deduplicationKey: 'dedupe:pr-event',
+            kind: 'pull_request',
+            severity: 'info',
+            target: {
+                type: 'pull_request',
+                repository: 'integry/propr',
+                prNumber: 42
+            },
+            title: 'PR needs attention',
+            body: 'Review requested',
+            recipients: ['user-a', 'user-b']
+        });
+        published = [];
+
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 2);
+
+        assert.equal(published.length, 1);
+        assert.equal(published[0].change, 'dismissed');
+        assert.equal(published[0].eventId, 'pr-event');
+        assert.deepEqual(published[0].recipientIds.sort(), ['user-a', 'user-b']);
+        assert.equal(published[0].repository, 'integry/propr');
+    });
+
+    test('a cleanup announces a recipient it dismissed mid-flight', async () => {
+        // Two connections to one database, so a second process can really
+        // commit between the statements of the cleanup below.
+        const directory = await mkdtemp(join(tmpdir(), 'propr-notification-race-'));
+        const filename = join(directory, 'notifications.sqlite');
+        const cleanupDatabase = createDatabase(filename);
+        const assignmentDatabase = createDatabase(filename);
+        const announcements: Announcement[] = [];
+        const publishUpdate = async (payload: Announcement) => {
+            announcements.push(payload);
+        };
+
+        try {
+            await migrate(cleanupDatabase);
+            const cleanup = new NotificationService({
+                database: cleanupDatabase,
+                now: () => new Date(clock += 1000),
+                allowInsecureLocalhost: false,
+                publishUpdate
+            });
+            const assignment = new NotificationService({
+                database: assignmentDatabase,
+                now: () => new Date(clock += 1000),
+                allowInsecureLocalhost: false,
+                publishUpdate
+            });
+            await cleanup.createNotificationEvent({
+                eventId: 'pr-event',
+                deduplicationKey: 'dedupe:pr-event',
+                kind: 'pull_request',
+                severity: 'info',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'PR needs attention',
+                body: 'Review requested',
+                recipients: ['user-a']
+            });
+            announcements.length = 0;
+
+            // user-b is assigned once the cleanup is under way: its receipt is
+            // still active when the dismissal runs, so the dismissal closes it.
+            //
+            // Hooked on the prototype that owns `query` rather than on the
+            // client instance: the cleanup dismisses inside a transaction, and
+            // knex builds its transaction client from the constructor's
+            // prototype, so an instance-level hook would never see the
+            // statement and the interleaving would silently not happen.
+            const clientPrototype = queryPrototypeOf(cleanupDatabase);
+            const runQuery = clientPrototype.query;
+            let interleaved = false;
+            clientPrototype.query = async function (connection, request) {
+                const sql = String(request.sql ?? '');
+                if (
+                    !interleaved
+                    && /^update\s+[`"[]?notification_user_states/i.test(sql)
+                    && sql.includes('dismissed_at')
+                ) {
+                    // Set before awaiting, so the assignment's own statements -
+                    // which run through this same prototype - cannot re-enter.
+                    interleaved = true;
+                    await assignment.assignNotificationRecipients('pr-event', ['user-b']);
+                }
+                return runQuery.call(this, connection, request);
+            };
+
+            let dismissed: number;
+            try {
+                dismissed = await cleanup.dismissNotificationsForPullRequest('integry/propr', 42);
+            } finally {
+                clientPrototype.query = runQuery;
+            }
+
+            assert.ok(interleaved, 'the assignment must commit inside the cleanup');
+            assert.equal(dismissed, 2, 'the cleanup closes the receipt it never read');
+            const closed = await cleanupDatabase('notification_user_states')
+                .whereNotNull('dismissed_at')
+                .pluck('user_id') as string[];
+            assert.deepEqual(closed.sort(), ['user-a', 'user-b']);
+            // Every recipient the update changed hears about it. Announcing the
+            // audience read before the update would leave user-b with a card
+            // that arrived and never went away.
+            const told = announcements
+                .filter(announcement => announcement.change === 'dismissed')
+                .flatMap(announcement => [...announcement.recipientIds]);
+            assert.deepEqual(told.sort(), ['user-a', 'user-b']);
+        } finally {
+            await cleanupDatabase.destroy();
+            await assignmentDatabase.destroy();
+            await rm(directory, { recursive: true, force: true });
+        }
+    });
+
+    test('replaying a create announces nothing the second time', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        // Same deduplication key: the event row and the receipt are both already
+        // there, so nothing was created and nothing may claim to have been.
+        await createEvent('event-1', ['user-a']);
+
+        assert.deepEqual(published, []);
+        assert.equal(
+            await database('notification_user_states')
+                .where({ event_id: 'event-1' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            1
+        );
+    });
+
+    test('a replay announces only the recipient that gained a receipt', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        await createEvent('event-1', ['user-a', 'user-c']);
+
+        assert.deepEqual(published.map(announcement => [
+            announcement.change,
+            announcement.eventId,
+            announcement.recipientIds
+        ]), [['created', 'event-1', ['user-c']]]);
+    });
+
+    test('re-assigning an existing recipient announces nothing, a new one once', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        await service.assignNotificationRecipients('event-1', ['user-a']);
+        assert.deepEqual(published, []);
+
+        await service.assignNotificationRecipients('event-1', ['user-a', 'user-c']);
+        assert.deepEqual(published.map(announcement => [
+            announcement.change,
+            announcement.recipientIds
+        ]), [['created', ['user-c']]]);
+    });
+
+    test('a replay never re-announces a receipt its owner already dismissed', async () => {
+        await createEvent('event-1', ['user-a']);
+        await service.dismissNotification('user-a', 'event-1');
+        published = [];
+
+        await createEvent('event-1', ['user-a']);
+        await service.assignNotificationRecipients('event-1', ['user-a']);
+
+        assert.deepEqual(published, []);
+        const receipt = await database('notification_user_states')
+            .where({ event_id: 'event-1', user_id: 'user-a' })
+            .first() as { dismissed_at?: string | null };
+        assert.ok(receipt.dismissed_at, 'the replay must not resurrect a dismissed receipt');
+    });
+
+    test('a replay still runs push delivery for the recipients it adds', async () => {
+        for (const userId of ['user-a', 'user-c']) {
+            await service.updateNotificationPreferences(userId, {
+                preferences: { task: { pushEnabled: true } }
+            });
+            await service.upsertPushSubscription(userId, {
+                endpoint: `https://fcm.googleapis.com/fcm/send/${userId}`,
+                expirationTime: null,
+                keys: { p256dh: pushKey(userId === 'user-a' ? 1 : 2), auth: 'A'.repeat(22) }
+            });
+        }
+        const pushRecipient = (userId: string) => ({
+            userId,
+            inboxEnabled: true,
+            pushEnabled: true
+        });
+        await service.createNotificationEvent({
+            eventId: 'event-1',
+            deduplicationKey: 'dedupe:event-1',
+            kind: 'task',
+            severity: 'success',
+            target: { type: 'task', repository: 'integry/propr', taskId: 'task-event-1' },
+            title: 'Event event-1',
+            body: 'Body event-1',
+            recipients: [pushRecipient('user-a')]
+        });
+        published = [];
+
+        await service.createNotificationEvent({
+            eventId: 'event-1',
+            deduplicationKey: 'dedupe:event-1',
+            kind: 'task',
+            severity: 'success',
+            target: { type: 'task', repository: 'integry/propr', taskId: 'task-event-1' },
+            title: 'Event event-1',
+            body: 'Body event-1',
+            recipients: [pushRecipient('user-a'), pushRecipient('user-c')]
+        });
+
+        assert.deepEqual(published.map(announcement => announcement.recipientIds), [['user-c']]);
+        // Push delivery is keyed on the eligible set, not on the announcement:
+        // the added recipient is queued and the replayed one stays deduplicated.
+        const jobs = await database('push_delivery_jobs')
+            .where({ event_id: 'event-1' })
+            .select('user_id') as Array<{ user_id: string }>;
+        assert.deepEqual(jobs.map(job => job.user_id).sort(), ['user-a', 'user-c']);
+    });
+
+    test('a publish failure is swallowed and the write still stands', async () => {
+        publishError = new Error('Redis is unreachable');
+        await assert.doesNotReject(createEvent('event-1', ['user-a']));
+        publishError = null;
+
+        const stored = await database('notification_user_states')
+            .where({ event_id: 'event-1', user_id: 'user-a' })
+            .first();
+        assert.ok(stored, 'the receipt must exist even though its announcement failed');
+
+        await assert.doesNotReject(async () => {
+            publishError = new Error('Redis is unreachable');
+            await service.dismissNotification('user-a', 'event-1');
+        });
+        publishError = null;
+        const dismissed = await database('notification_user_states')
+            .where({ event_id: 'event-1', user_id: 'user-a' })
+            .first() as { dismissed_at?: string | null };
+        assert.ok(dismissed.dismissed_at, 'the dismissal must have committed');
+    });
+});

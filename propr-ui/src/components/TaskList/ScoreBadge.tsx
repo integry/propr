@@ -9,10 +9,10 @@ interface ScoreBadgeProps {
   /**
    * Draw the score inside square brackets: `[ ● 9 ]`.
    *
-   * Reserved for fixed-width right rails (the dashboard's completed feed), where
-   * the brackets give every score the same visible start and end and stop the
-   * rail from vibrating as 7, 8 and 9 trade places. The task list asked for the
-   * bare form, so brackets are opt-in rather than the default.
+   * Used by the fixed-width score columns (the dashboard's completed feed and
+   * the task ledger), where the brackets give every score the same visible start
+   * and end and stop the column from vibrating as 7, 8 and 9 trade places.
+   * Free-standing scores elsewhere keep the bare form, so brackets are opt-in.
    */
   bracketed?: boolean;
   /** What the score measures, for the tooltip. */

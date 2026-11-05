@@ -54,7 +54,7 @@ export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className 
     );
   }
 
-  if (normalized.includes('vibe') || normalized.includes('mistral') || normalized.startsWith('devstral')) {
+  if (normalized.includes('vibe') || normalized.includes('mistral') || normalized.startsWith('devstral') || normalized.startsWith('zai-glm-')) {
     // Mistral Vibe Icon (official logo)
     return (
       <svg className={className} viewBox="0 0 49 34" fill="currentColor" xmlns="http://www.w3.org/2000/svg">

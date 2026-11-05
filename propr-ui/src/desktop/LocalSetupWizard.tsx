@@ -115,15 +115,23 @@ const GithubInstallationChoice: React.FC<{
     });
   }, [identity.selectedInstallationId, identity.username, installationIds]);
   const waiting = ['refreshing', 'installing', 'reauthenticating', 'enrolling'].includes(identity.status);
+  // During and after a failed account change, the shown identity is the old saved one, not the attempt.
+  const switchFailed = identity.status === 'reauthentication-failed';
+  const unconfirmed = switchFailed || identity.status === 'reauthenticating';
   return <section className="desktop-github-choice" aria-labelledby="desktop-github-choice-title">
-    <div className="desktop-github-identity"><Github aria-hidden="true" /><div><small>Authenticated GitHub account</small><strong>@{identity.username}</strong></div></div>
+    <div className="desktop-github-identity"><Github aria-hidden="true" /><div><small>{unconfirmed ? 'Previously saved GitHub account' : 'Authenticated GitHub account'}</small><strong>@{identity.username}</strong></div></div>
     <h2 id="desktop-github-choice-title">Choose a GitHub App installation</h2>
     <p>Discovery shows installations this account can access. The relay separately verifies enrollment permission after you choose.</p>
+    {identity.status === 'reauthenticating' && <p role="status">Waiting for GitHub sign-in in your browser. Choose your intended account, then return to ProPR to confirm it. To stop signing in, choose Cancel sign-in in the desktop dialog.</p>}
+    {switchFailed && <div className="desktop-inline-error" role="alert">
+      <strong>Changing GitHub account did not complete.</strong> {identity.reauthenticationFailure}
+      {' '}ProPR did not replace the saved account. @{identity.username} is shown below, and ProPR will not use it unless you choose Keep @{identity.username}.
+    </div>}
     {identity.permissionExplanation && <div className="desktop-inline-error" role="alert">{identity.permissionExplanation}</div>}
     {identity.installations.length > 0 ? <div className="desktop-setup-options desktop-github-installations">
       {identity.installations.map(installation => <label key={installation.installationId}>
         <input type="radio" name="github-installation" checked={selected === installation.installationId}
-          disabled={busy || waiting} onChange={() => setSelected(installation.installationId)} />
+          disabled={busy || waiting || switchFailed} onChange={() => setSelected(installation.installationId)} />
         <span><strong>{installation.accountLogin}</strong><small>{installation.accountType} · Installation {installation.installationId}</small></span>
       </label>)}
     </div> : <div className="desktop-setup-note">No GitHub App installation is visible to @{identity.username} yet. Install the app, then refresh this list.</div>}
@@ -133,9 +141,11 @@ const GithubInstallationChoice: React.FC<{
       <button type="button" className="desktop-secondary-button" disabled={busy || waiting} onClick={() => {
         setSelected('');
         choose({ action: 'reauthenticate' });
-      }}><UserRoundCog /> Change GitHub account</button>
+      }}><UserRoundCog /> {switchFailed ? 'Try changing account again' : 'Change GitHub account'}</button>
+      {switchFailed && <button type="button" className="desktop-secondary-button" disabled={busy || waiting}
+        onClick={() => choose({ action: 'keep-account' })}><Github /> Keep @{identity.username}</button>}
     </div>
-    <button type="button" className="desktop-primary-button" disabled={busy || waiting || !selected}
+    <button type="button" className="desktop-primary-button" disabled={busy || waiting || switchFailed || !selected}
       onClick={() => choose({ action: 'select', installationId: selected })}>
       {waiting ? <><LoaderCircle className="desktop-spin" /> {identity.status === 'enrolling' ? 'Checking permission…' : 'Updating…'}</> : <>Continue with selection <ChevronRight /></>}
     </button>
@@ -153,6 +163,8 @@ const Running: React.FC<{ snapshot: DesktopSetupSnapshot; busy: boolean; choiceB
       <span>{step.status === 'active' ? <LoaderCircle className="desktop-spin" /> : step.status === 'done' ? <Check /> : step.status === 'failed' ? <X /> : null}</span>
       <div><strong>{step.title}</strong><small>{step.detail || step.description}</small></div>
     </div>)}</div>
+    {!snapshot.githubIdentity && snapshot.state?.steps.some(step => step.id === 'github-auth' && step.status === 'active')
+      && <p role="status">Sign in via GitHub using the desktop sign-in dialog. Finish in your browser, then return to ProPR to confirm your account. To stop signing in, choose Cancel sign-in in the desktop dialog.</p>}
     {snapshot.githubIdentity && snapshot.githubIdentity.status !== 'enrolled'
       && <GithubInstallationChoice snapshot={snapshot} busy={choiceBusy} choose={choose} />}
     {snapshot.logs.length > 0 && <pre className="desktop-setup-log">{snapshot.logs.slice(-8).join('\n')}</pre>}
@@ -188,7 +200,7 @@ const Recovery: React.FC<{ snapshot: DesktopSetupSnapshot; busy: boolean; error:
 };
 
 const Form: React.FC<{ stage: Stage; draft: Draft; busy: boolean; error: string | null; back(): void; next(): void;
-  allowGithubKeep: boolean; setDraft: React.Dispatch<React.SetStateAction<Draft>>; chooseKey(): void; acquireSecret(): void }> = props => {
+  platform: DesktopSetupSnapshot['capability']['platform']; allowGithubKeep: boolean; setDraft: React.Dispatch<React.SetStateAction<Draft>>; chooseKey(): void; acquireSecret(): void }> = props => {
   const { stage, draft, setDraft } = props;
   const index = stages.indexOf(stage);
   const githubModes = githubModesFor(props.allowGithubKeep);
@@ -199,7 +211,7 @@ const Form: React.FC<{ stage: Stage; draft: Draft; busy: boolean; error: string 
       : mode === 'app' && current.intakeMode === 'routing_websocket' ? 'polling' : current.intakeMode }));
   return <main className="desktop-setup-wizard"><button type="button" className="desktop-back-button" onClick={props.back}><ArrowLeft /> Back</button>
     <span className="desktop-eyebrow">Local setup · {index + 1} of {stages.length}</span>
-    {stage === 'prerequisites' && <><h1>Check the essentials</h1><p>ProPR needs Linux and a running Docker Engine. Setup checks Docker before changing the local stack and reports anything you need to fix.</p></>}
+    {stage === 'prerequisites' && <><h1>Check the essentials</h1><p>{props.platform === 'darwin' ? 'Open Docker Desktop and wait for its engine to start. On Apple Silicon, the AMD64 coding-agent image requires Docker Desktop emulation. Setup never installs Docker or grants file access for you.' : 'ProPR needs Linux and a running Docker Engine.'} Setup checks Docker before changing the local stack and reports anything you need to fix.</p></>}
     {stage === 'directory' && <><h1>Private local storage</h1><p>Environment, data, logs, and repositories stay in a fixed owner-only directory managed by ProPR Desktop.</p><div className="desktop-setup-note">Desktop-managed local runtime</div></>}
     {stage === 'github' && <><h1>Connect GitHub</h1><p>Secrets stay in the trusted desktop process and are never returned to this page.</p>
       {draft.githubMode === 'demo' && <div className="desktop-setup-recovery">Demo mode is no longer available in desktop setup. Select a supported GitHub configuration to continue.</div>}
@@ -295,5 +307,5 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopGuidedLocalSetupAdapte
     if (stage === 'github' && draft.githubMode === 'app' && (!/^\d{1,20}$/.test(draft.appId) || !/^\d{1,20}$/.test(draft.installationId) || !draft.privateKey)) return setError('Enter numeric App and installation IDs, then choose the private key.');
     if (stage === 'intake' && draft.intakeMode === 'direct_webhook' && !draft.webhookSecret) return setError('Enter the webhook secret securely.');
     if (index === stages.length - 1) void run(reconfiguring); else setStage(stages[index + 1]); };
-  return <Form stage={stage} draft={draft} allowGithubKeep={!recoveringLegacyDemo} setDraft={setDraft} busy={busy} error={error} chooseKey={() => void chooseKey()} acquireSecret={() => void acquireSecret()} next={next} back={index ? () => setStage(stages[index - 1]) : onBack} />;
+  return <Form platform={snapshot.capability.platform} stage={stage} draft={draft} allowGithubKeep={!recoveringLegacyDemo} setDraft={setDraft} busy={busy} error={error} chooseKey={() => void chooseKey()} acquireSecret={() => void acquireSecret()} next={next} back={index ? () => setStage(stages[index - 1]) : onBack} />;
 };

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Loader2 } from 'lucide-react';
+import { SkeletonBlock } from '../ui/Skeleton';
 
 export interface KPICardProps {
   title: string;
@@ -18,7 +19,10 @@ export const KPICard: React.FC<KPICardProps> = ({
     <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">{title}</div>
     <div className={`text-2xl font-bold ${color} flex items-center gap-2`}>
       {isLoading ? (
-        <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+        <>
+          <SkeletonBlock pulse className="h-8 w-16" />
+          <span className="sr-only">Loading…</span>
+        </>
       ) : (
         value
       )}

@@ -21,9 +21,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createECDH, timingSafeEqual } from 'node:crypto';
 import {
     readFileSync, writeFileSync, renameSync, unlinkSync, lstatSync, chmodSync,
-    existsSync, statSync, accessSync, constants as fsConstants,
+    existsSync, statSync, accessSync, constants as fsConstants, mkdtempSync, rmSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -221,6 +221,23 @@ function envFileValueFrom(envFileLocal, name) {
     return undefined;
 }
 
+// Split an --env-file the way the docker CLI reads it (left-trimmed line, split
+// at the first '=', value verbatim — no quote, comment, or `export` handling).
+// Each source line is kept verbatim with the variable it binds (null for blank
+// and comment lines); `value` is undefined for a bare `NAME` line, which Docker
+// resolves from the docker CLI's own environment. Returns undefined when the
+// file cannot be read.
+function dockerEnvFileLines(envFileLocal) {
+    if (!envFileLocal || !isReadableFile(envFileLocal)) return undefined;
+    return readFileSync(envFileLocal, 'utf8').replace(/^\uFEFF/, '').split('\n').map((raw) => {
+        const line = raw.replace(/\r$/, '').trimStart();
+        if (!line || line.startsWith('#')) return { raw, variable: null };
+        const equalsIndex = line.indexOf('=');
+        if (equalsIndex === -1) return { raw, variable: line, value: undefined };
+        return { raw, variable: line.slice(0, equalsIndex).trimStart(), value: line.slice(equalsIndex + 1) };
+    });
+}
+
 /**
  * Parse every assignment from an env file into a plain object. Used by the CLI
  * `check`/`init` commands to inspect HOST_*_DIR settings without re-reading.
@@ -267,7 +284,8 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // developer's shell NODE_ENV cannot accidentally describe (or alter) the
     // packaged container runtime.
     const authorizedEnvFileValues = overrides.envFileValues;
-    const nodeEnv = (authorizedEnvFileValues ?? readEnvFile(envFileLocal)).NODE_ENV || undefined;
+    const envFileValues = authorizedEnvFileValues ?? readEnvFile(envFileLocal);
+    const nodeEnv = envFileValues.NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
     const get = (name) => env[name] !== undefined
@@ -320,6 +338,15 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
+    // Claude Code keeps its account/onboarding config in the `.claude.json` file
+    // next to its credential dir (~/.claude → ~/.claude.json). An explicit
+    // HOST_CLAUDE_JSON is always mounted (a missing file then fails loudly); the
+    // derived sibling only when it exists, because a launcher running in a
+    // container cannot see host files it was not given.
+    const hostClaudeJsonOverride = get('HOST_CLAUDE_JSON');
+    const derivedClaudeJson = hostClaudeDir ? defaultHostClaudeJson(hostClaudeDir) : undefined;
+    const hostClaudeJson = hostClaudeJsonOverride
+        || (derivedClaudeJson && isReadableFile(derivedClaudeJson) ? derivedClaudeJson : undefined);
     const mistralApiKey = get('MISTRAL_API_KEY');
 
     const vibePromptCacheDir = get('VIBE_PROMPT_CACHE_DIR') || '/tmp/propr-vibe-prompts';
@@ -337,6 +364,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
 
     const manifestPath = overrides.manifestPath ?? resolve(__dirname, 'manifest.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const managedAgent = managedAgentPinFrom(manifest);
+    // Like NODE_ENV, the app containers receive AGENT_DOCKER_IMAGE from the
+    // stack --env-file, so inspect that exact source rather than the CLI shell.
+    const agentDockerImageOverride = managedAgentImageOverride(managedAgent, envFileValues.AGENT_DOCKER_IMAGE);
 
     // Hosted UI tunnel: expose this local stack's UI/API to the hosted control
     // plane (https://app.propr.dev) via a Cloudflare Tunnel. A token alone is
@@ -352,6 +383,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
         ?? get('PROPR_TRUSTED_PROXY_PEERS')
         ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
+    // Whether the API spec may read envFileLocal as Docker will, to give the API
+    // exactly one PROPR_INSTANCE_ID binding (Fleet admission rejects duplicate
+    // identity bindings). Authorized pre-parsed values are not Docker-literal.
+    const envFileDockerLiteral = !authorizedEnvFileValues;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
     // final fallback for manifests without a cloudflared entry.
@@ -367,18 +402,21 @@ export function resolveConfig(env = process.env, overrides = {}) {
         stack, network, envFileLocal, envFileHost, nodeEnv,
         validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos, managedCredentialsDir,
+        managedDiagnosticsEnabled: get('PROPR_MANAGED_LOGS') === '1',
+        managedDiagnosticsInstanceValid: /^[a-zA-Z0-9._:-]{1,128}$/.test(get('PROPR_INSTANCE_ID') || ''),
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
         apiRateLimitMax, apiRateLimitWindowMs,
         authRateLimitMax, authRateLimitWindowMs,
         webhookRateLimitMax, webhookRateLimitWindowMs,
         webPushVapidSubject, webPushVapidPublicKey, webPushVapidPrivateKey,
-        hostClaudeDir, hostCodexDir, hostAntigravityDir,
+        hostClaudeDir, hostClaudeJson, hostClaudeJsonExplicit: Boolean(hostClaudeJsonOverride),
+        hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
         hostGhPrivateKey,
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
-        uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        uiTunnelEnabled, uiTunnelToken, proprInstanceId, envFileDockerLiteral, uiPublicApiUrl, cloudflaredImage,
         trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
@@ -395,7 +433,49 @@ export function resolveConfig(env = process.env, overrides = {}) {
         mistralApiKey,
         vibeConfigPath: get('VIBE_CONFIG_PATH'),
         manifest, images: manifest.images, manifestPath,
+        managedAgent, agentDockerImageOverride,
     });
+}
+
+// The generated stack .env has always carried this unified default. It names
+// "whatever the release provides", not an operator's image choice.
+export const LEGACY_DEFAULT_AGENT_DOCKER_IMAGE = 'propr/agent:latest';
+const MANAGED_AGENT_IMAGE = /^propr\/agent:([0-9a-f]{40})@sha256:[0-9a-f]{64}$/;
+
+/**
+ * The published, digest-pinned managed agent image a Desktop/preview runtime
+ * manifest binds to its source revision, or undefined for every other
+ * manifest (generic launcher/hosted stacks keep their existing behavior).
+ * The app image must come from the same revision: that revision fixes the
+ * CLI defaults and bundle content the app expects the pin to provide.
+ */
+export function managedAgentPinFrom(manifest) {
+    const runtime = manifest?.desktopRuntime;
+    const image = runtime?.managedAgent?.image;
+    if (runtime?.distribution !== 'published' || typeof image !== 'string' || manifest.images?.agent !== image) return undefined;
+    const sourceRevision = MANAGED_AGENT_IMAGE.exec(image)?.[1];
+    if (!sourceRevision || sourceRevision !== runtime.sourceRevision || manifest.git_sha !== sourceRevision) return undefined;
+    if (typeof manifest.images.app !== 'string' || !manifest.images.app.startsWith(`propr/app:${sourceRevision}@sha256:`)) return undefined;
+    return Object.freeze({ image, sourceRevision });
+}
+
+/**
+ * Existing profiles migrate without rewriting the user's .env: the legacy
+ * generated default resolves to the bound pin inside the app containers, while
+ * an unset value stays unset and any other value is an intentional selection
+ * that is passed through untouched.
+ */
+export function managedAgentImageOverride(managedAgent, envFileAgentImage) {
+    return managedAgent && envFileAgentImage?.trim() === LEGACY_DEFAULT_AGENT_DOCKER_IMAGE ? managedAgent.image : undefined;
+}
+
+function managedAgentEnvArgs(cfg) {
+    if (!cfg.managedAgent) return [];
+    return [
+        '-e', `PROPR_MANAGED_AGENT_IMAGE=${cfg.managedAgent.image}`,
+        '-e', `PROPR_MANAGED_AGENT_REVISION=${cfg.managedAgent.sourceRevision}`,
+        ...(cfg.agentDockerImageOverride ? ['-e', `AGENT_DOCKER_IMAGE=${cfg.agentDockerImageOverride}`] : []),
+    ];
 }
 
 /**
@@ -421,25 +501,43 @@ export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, 
 // docker arg builders
 // ---------------------------------------------------------------------------
 
+// The `.claude.json` that sits next to a Claude credential dir (~/.claude →
+// ~/.claude.json).
+export function defaultHostClaudeJson(hostClaudeDir) {
+    const dir = hostClaudeDir.replace(/\/+$/, '') || '/';
+    return `${dir}.json`;
+}
+
+function mountField(key, value) {
+    return /[",]/.test(value) ? `"${key}=${value.replace(/"/g, '""')}"` : `${key}=${value}`;
+}
+
 // Mount host credentials at the same path on both sides (HOST:HOST) and set the
 // *_CONFIG_PATH env vars to that path, so the worker/api can re-mount them into
 // agent containers without any path translation.
-export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
+export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false, readOnly = false } = {}) {
     const args = [];
     if (cfg.hostClaudeDir) {
-        args.push('-v', `${cfg.hostClaudeDir}:${cfg.hostClaudeDir}`);
+        args.push('-v', `${cfg.hostClaudeDir}:${cfg.hostClaudeDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `CLAUDE_CONFIG_PATH=${cfg.hostClaudeDir}`);
     }
+    if (cfg.hostClaudeJson) {
+        // Always read-only: the backend only seeds a private per-agent copy from
+        // it and must never write the user's config. `--mount` fails on a missing
+        // source instead of creating a directory at the config file's path.
+        args.push('--mount', ['type=bind', mountField('source', cfg.hostClaudeJson), mountField('target', cfg.hostClaudeJson), 'readonly'].join(','));
+        args.push('-e', `CLAUDE_JSON_PATH=${cfg.hostClaudeJson}`);
+    }
     if (cfg.hostCodexDir) {
-        args.push('-v', `${cfg.hostCodexDir}:${cfg.hostCodexDir}`);
+        args.push('-v', `${cfg.hostCodexDir}:${cfg.hostCodexDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `CODEX_CONFIG_PATH=${cfg.hostCodexDir}`);
     }
     if (cfg.hostAntigravityDir) {
-        args.push('-v', `${cfg.hostAntigravityDir}:${cfg.hostAntigravityDir}`);
+        args.push('-v', `${cfg.hostAntigravityDir}:${cfg.hostAntigravityDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `ANTIGRAVITY_CONFIG_PATH=${cfg.hostAntigravityDir}`);
     }
     if (cfg.hostOpencodeXdgDir) {
-        args.push('-v', `${cfg.hostOpencodeXdgDir}:${cfg.hostOpencodeXdgDir}`);
+        args.push('-v', `${cfg.hostOpencodeXdgDir}:${cfg.hostOpencodeXdgDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `OPENCODE_CONFIG_PATH=${cfg.hostOpencodeXdgDir}`);
     }
     if (cfg.hostOpencodeDataDir) {
@@ -448,18 +546,18 @@ export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {})
         args.push('-e', `HOST_OPENCODE_DATA_DIR=${cfg.hostOpencodeDataDir}`);
     }
     if (cfg.hostVibeDir) {
-        args.push('-v', `${cfg.hostVibeDir}:${cfg.hostVibeDir}`);
+        args.push('-v', `${cfg.hostVibeDir}:${cfg.hostVibeDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `VIBE_CONFIG_PATH=${cfg.hostVibeDir}`);
     }
     return args;
 }
 
-function managedCredentialArgs(cfg) {
+function managedCredentialArgs(cfg, readOnly = false) {
     if (!cfg.managedCredentialsDir) return [];
     return [
         // HOST:HOST keeps the generated path valid when an app container asks
         // the host Docker daemon to mount it into a sibling agent container.
-        '-v', `${cfg.managedCredentialsDir}:${cfg.managedCredentialsDir}`,
+        '-v', `${cfg.managedCredentialsDir}:${cfg.managedCredentialsDir}${readOnly ? ':ro' : ''}`,
         '-e', `PROPR_MANAGED_CREDENTIALS_DIR=${cfg.managedCredentialsDir}`,
     ];
 }
@@ -491,14 +589,45 @@ function vibePromptCacheArgs(cfg) {
 // — only the cloudflared sidecar receives the token. The instance id and public
 // API URL are injected only when set, so local-development containers (no tunnel)
 // stay free of empty PROPR_* vars while still always reporting the enabled flag.
-function tunnelApiEnvArgs(cfg) {
+function tunnelApiEnvArgs(cfg, identity) {
     const args = ['-e', `PROPR_UI_TUNNEL_ENABLED=${cfg.uiTunnelEnabled ? 'true' : 'false'}`];
-    // Inject the instance id lowercased so it matches the derived public URL
-    // (proprInstanceProxyUrl lowercases the host), keeping the id and the
-    // PROPR_UI_PUBLIC_API_URL host consistent for any consumer that compares them.
-    if (isValidProprInstanceId(cfg.proprInstanceId)) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.trim().toLowerCase()}`);
+    args.push(...identity.args);
     if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
     return args;
+}
+
+// The API's env-file input and PROPR_INSTANCE_ID override. The id is injected
+// lowercased so it matches the derived public URL (proprInstanceProxyUrl
+// lowercases the host), keeping the id and the PROPR_UI_PUBLIC_API_URL host
+// consistent for any consumer that compares them. Docker records every env-file
+// and -e entry without merging, and Fleet admission rejects duplicate identity
+// bindings, so the API must end up with exactly one:
+// - the shared env file already binds exactly the canonical id → use it as is;
+// - it binds nothing → the shared file plus the -e override;
+// - otherwise (mixed case, quoted, bare, repeated, or a differing process-env
+//   override) → a private copy of the shared file without its PROPR_INSTANCE_ID
+//   lines, plus the -e override. The shared file stays untouched for the other
+//   services. The caller removes `scratchDir` once `docker run` has read it.
+function apiIdentityEnv(cfg) {
+    if (!isValidProprInstanceId(cfg.proprInstanceId)) return { envFile: cfg.envFileLocal, args: [] };
+    const instanceId = cfg.proprInstanceId.trim().toLowerCase();
+    const override = ['-e', `PROPR_INSTANCE_ID=${instanceId}`];
+    // One read decides and supplies the copy, so the two cannot disagree.
+    const lines = cfg.envFileDockerLiteral ? dockerEnvFileLines(cfg.envFileLocal) : undefined;
+    if (!lines) return { envFile: cfg.envFileLocal, args: override };
+    const bindings = lines.filter((line) => line.variable === 'PROPR_INSTANCE_ID');
+    if (bindings.length === 1 && bindings[0].value === instanceId) return { envFile: cfg.envFileLocal, args: [] };
+    if (bindings.length === 0) return { envFile: cfg.envFileLocal, args: override };
+    // The copy holds the stack's secrets: mkdtemp creates a 0700 directory.
+    const scratchDir = mkdtempSync(join(tmpdir(), 'propr-api-env-'));
+    const envFile = join(scratchDir, '.env');
+    const kept = lines.filter((line) => line.variable !== 'PROPR_INSTANCE_ID').map((line) => line.raw);
+    writeFileSync(envFile, kept.join('\n'), { mode: 0o600 });
+    return { envFile, args: override, scratchDir };
+}
+
+function removeScratchDir(spec) {
+    if (spec.scratchDir) rmSync(spec.scratchDir, { recursive: true, force: true });
 }
 
 function proxyTrustApiEnvArgs(cfg) {
@@ -525,12 +654,23 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 
 const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 5000;
 
+// Finder launches do not read shell profiles. Scope discovery to Docker children;
+// never change the Electron host's environment or other programs' search paths.
+export function dockerExecutionEnvironment(env = process.env, platform = process.platform) {
+    if (platform !== 'darwin') return env;
+    return { ...env, PATH: [...new Set([
+        ...(env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(path => path.startsWith('/')),
+        '/Applications/Docker.app/Contents/Resources/bin',
+        join(env.HOME ?? homedir(), '.docker', 'bin'), '/opt/homebrew/bin', '/usr/local/bin',
+    ])].join(':') };
+}
+
 export function docker(args, { capture = false, timeout, env, maxBuffer } = {}) {
     const res = spawnSync('docker', args, {
         stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         encoding: 'utf8',
         timeout,
-        env,
+        env: dockerExecutionEnvironment(env),
         maxBuffer,
     });
     if (res.status !== 0 && !capture) {
@@ -547,10 +687,10 @@ export function docker(args, { capture = false, timeout, env, maxBuffer } = {}) 
  * On timeout it kills the child and reports an ETIMEDOUT error, matching the
  * spawnSync timeout contract that `dockerError` inspects.
  */
-export function dockerAsync(args, { timeout, signal } = {}) {
+export function dockerAsync(args, { timeout, signal, env } = {}) {
     signal?.throwIfAborted();
     return new Promise((resolveResult, reject) => {
-        const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'], env: dockerExecutionEnvironment(env) });
         let stdout = '';
         let stderr = '';
         let settled = false;
@@ -614,10 +754,15 @@ function dockerRunDetached(cfg, name, service, args, networkMode = cfg.network) 
     }
 }
 
-function latestTagFor(imageTag) {
-    const slashIndex = imageTag.lastIndexOf('/');
-    const tagIndex = imageTag.lastIndexOf(':');
-    return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
+export function latestTagFor(imageTag) {
+    // A digest-pinned reference (repo:tag@sha256:…, as bound by Linux previews)
+    // names its repository before the digest; never derive a tag from the digest.
+    const digestIndex = imageTag.indexOf('@');
+    const reference = digestIndex === -1 ? imageTag : imageTag.slice(0, digestIndex);
+    const slashIndex = reference.lastIndexOf('/');
+    const tagIndex = reference.lastIndexOf(':');
+    if (tagIndex > slashIndex) return `${reference.slice(0, tagIndex)}:latest`;
+    return digestIndex === -1 ? null : `${reference}:latest`;
 }
 
 export function tagAgentLatest(key, imageTag) {
@@ -650,14 +795,24 @@ export function ensureNetwork(cfg, onLog) {
     }
 }
 
+// Configured images may be digest-pinned (`repo:tag@sha256:…`). `docker images -q`
+// only filters by repository/tag and never matches that combined reference, so
+// presence is decided by `docker image inspect` on the exact configured
+// reference. Only a successful inspect that reports an image ID counts as present.
+function imageInspectIdArgs(tag) {
+    return ['image', 'inspect', '--format', '{{.Id}}', tag];
+}
+
+function inspectFoundImage(res) {
+    return res.status === 0 && (res.stdout || '').trim().length > 0;
+}
+
 function imagePresentLocally(tag) {
-    const res = docker(['images', '-q', tag], { capture: true });
-    return res.stdout.trim().length > 0;
+    return inspectFoundImage(docker(imageInspectIdArgs(tag), { capture: true }));
 }
 
 async function imagePresentLocallyAsync(tag, signal) {
-    const res = await dockerAsync(['images', '-q', tag], { signal });
-    return res.stdout.trim().length > 0;
+    return inspectFoundImage(await dockerAsync(imageInspectIdArgs(tag), { signal }));
 }
 
 function firstLine(value) {
@@ -911,10 +1066,15 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 // service registry
 // ---------------------------------------------------------------------------
 
-export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
+export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'indexing-worker', 'api'];
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
-const DATABASE_SERVICES = new Set(['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']);
+const DATABASE_SERVICES = new Set(['daemon', 'worker', 'indexing-worker', 'api']);
+// Retired containers are recognized for upgrades and database safety only.
+// Their old Redis jobs are left inert: no current service consumes that queue.
+const RETIRED_SERVICES = ['analysis-worker'];
+const MANAGED_SERVICES = [...SERVICES, ...RETIRED_SERVICES];
+const DATABASE_CONTAINER_SERVICES = new Set([...DATABASE_SERVICES, ...RETIRED_SERVICES]);
 // This value is intentionally module-private. A caller cannot opt a database
 // service out of its migration gate by passing an option to startService();
 // only startStack(), after its owner process exits successfully, can provide
@@ -926,7 +1086,7 @@ function imageTagForService(cfg, service) {
     if (service === 'ui') return cfg.images.ui;
     if (service === 'docs') return cfg.images.docs;
     if (service === 'tunnel') return cfg.cloudflaredImage;
-    // daemon/worker/analysis-worker/indexing-worker/api all run the app image
+    // daemon/worker/indexing-worker/api all run the app image
     return cfg.images.app;
 }
 
@@ -938,16 +1098,18 @@ function packagedRuntimeModeError(cfg) {
         + 'Source-development commands continue to support NODE_ENV=development outside the packaged launcher.';
 }
 
-function appBaseArgs(cfg) {
+function appBaseArgs(cfg, envFile = cfg.envFileLocal) {
     const runtimeModeError = packagedRuntimeModeError(cfg);
     if (runtimeModeError) throw new Error(runtimeModeError);
     return [
         // --env-file is resolved by the docker CLI (inside the launcher / on host).
-        '--env-file', cfg.envFileLocal,
+        '--env-file', envFile,
         // Published images default to production, but make the launcher contract
         // explicit after --env-file so a missing value cannot regress it. A
         // conflicting existing value is rejected above rather than overwritten.
         '-e', 'NODE_ENV=production',
+        // The published managed agent pin follows --env-file for the same reason.
+        ...managedAgentEnvArgs(cfg),
         '-v', `${cfg.hostLogs}:/usr/src/app/logs`,
         '-v', `${cfg.hostData}:/usr/src/app/data`,
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
@@ -962,8 +1124,8 @@ function appBaseArgs(cfg) {
     ];
 }
 
-function appSpec(cfg, command, extraArgs = []) {
-    return { image: cfg.images.app, args: [...appBaseArgs(cfg), ...extraArgs], command: ['node', ...command] };
+function appSpec(cfg, command, extraArgs = [], envFile = cfg.envFileLocal) {
+    return { image: cfg.images.app, args: [...appBaseArgs(cfg, envFile), ...extraArgs], command: ['node', ...command] };
 }
 
 function migrationSpec(cfg) {
@@ -983,6 +1145,11 @@ function migrationSpec(cfg) {
             '-e', 'NODE_ENV=production',
             '-e', 'PROPR_CONTAINERIZED=1',
             '-e', 'PROPR_MIGRATIONS_PREAPPLIED=0',
+            // Docker's --init reaps as PID 1, so the image's tini ENTRYPOINT
+            // runs as its child. Registered as a subreaper it still reaps
+            // grandchildren and no longer prints the "not running as PID 1"
+            // warning ahead of the real migration error.
+            '-e', 'TINI_SUBREAPER=1',
             '-v', `${cfg.hostData}:/usr/src/app/data`,
         ],
         command: ['node', 'dist/src/migrate.js'],
@@ -1014,6 +1181,10 @@ export function buildServiceSpec(cfg, service) {
         }
         case 'daemon':
             return appSpec(cfg, ['dist/src/daemon.js'], [
+                ...(cfg.managedDiagnosticsEnabled && cfg.managedDiagnosticsInstanceValid ? [
+                    ...managedCredentialArgs(cfg, true),
+                    ...agentCredentialArgs(cfg, { readOnly: true }),
+                ] : []),
                 '-v', `${cfg.envFileHost}:/usr/src/app/.env:ro`,
                 '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
                 '-e', `GITHUB_BOT_USERNAME=${cfg.githubBotUsername}`,
@@ -1023,6 +1194,9 @@ export function buildServiceSpec(cfg, service) {
             return appSpec(cfg, ['dist/src/worker.js'], [
                 '-v', `${cfg.hostRepos}:/usr/src/app/repos`,
                 '-v', '/tmp/claude-logs:/tmp/claude-logs',
+                // Restricted agent networking: per-run egress proxy sockets that the
+                // host Docker daemon bind-mounts into agent containers (HOST:HOST).
+                '-v', '/tmp/propr-egress:/tmp/propr-egress',
                 '--ulimit', 'nofile=65536:65536',
                 // The worker validates the attachment base URL at startup
                 // (validateAttachmentBaseUrlConfig); inject the computed value so a
@@ -1032,22 +1206,22 @@ export function buildServiceSpec(cfg, service) {
                 ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg, { opencodeDataReadWrite: true }),
             ]);
-        case 'analysis-worker':
-            return appSpec(cfg, ['dist/src/analysis_worker.js'], [
-                ...vibePromptCacheArgs(cfg),
-                ...managedCredentialArgs(cfg),
-                ...agentCredentialArgs(cfg),
-            ]);
         case 'indexing-worker':
             return appSpec(cfg, ['dist/src/indexing_worker.js'], [
                 '-v', '/tmp/claude-logs:/tmp/claude-logs',
+                // Summarization containers follow the restricted network policy too.
+                '-v', '/tmp/propr-egress:/tmp/propr-egress',
                 '-e', `INDEXING_SCAN_INTERVAL_MS=${cfg.indexingScanInterval}`,
                 '-e', `INDEXING_REINDEX_INTERVAL_MS=${cfg.indexingReindexInterval}`,
                 ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg),
             ]);
-        case 'api':
-            return appSpec(cfg, ['dist/packages/api/server.js'], [
+        case 'api': {
+            // Fails before apiIdentityEnv can create a scratch copy.
+            const runtimeModeError = packagedRuntimeModeError(cfg);
+            if (runtimeModeError) throw new Error(runtimeModeError);
+            const identity = apiIdentityEnv(cfg);
+            const spec = appSpec(cfg, ['dist/packages/api/server.js'], [
                 // Stable in-network DNS alias so the cloudflared sidecar (and the
                 // Cloudflare Tunnel ingress config) can target a fixed
                 // `http://api:4000` regardless of the stack prefix. Without it the
@@ -1077,9 +1251,11 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
                 '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
                 '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
-                ...tunnelApiEnvArgs(cfg),
+                ...tunnelApiEnvArgs(cfg, identity),
                 ...proxyTrustApiEnvArgs(cfg),
-            ]);
+            ], identity.envFile);
+            return identity.scratchDir ? { ...spec, scratchDir: identity.scratchDir } : spec;
+        }
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from
             // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
@@ -1149,9 +1325,13 @@ export function startService(cfg, service, { onLog, pull = true, freshnessCache,
     assertDatabaseServiceCanStart(cfg, service, migrationHandoff);
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
-    removeIfExists(cfg, name, onLog);
-    const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
+    try {
+        removeIfExists(cfg, name, onLog);
+        const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
+        dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
+    } finally {
+        removeScratchDir(spec);
+    }
     onLog?.(`  [ok] started ${name}`);
     return getServiceState(cfg, service);
 }
@@ -1197,6 +1377,7 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     const started = [];
     const freshnessCache = new Map();
     try {
+        for (const service of RETIRED_SERVICES) stopService(cfg, service, { onLog });
         runMigrationPhase(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
             startService(cfg, service, {
@@ -1207,7 +1388,7 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
                 // service's normal fail-closed migration gate.
                 migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
                 // The migration phase already verified/pulled this exact app
-                // image tag. Avoid repeating the freshness check for all five
+                // image tag. Avoid repeating the freshness check for all four
                 // app containers.
                 pull: !DATABASE_SERVICES.has(service),
             });
@@ -1240,9 +1421,31 @@ function migrationDockerArgs(cfg) {
     ];
 }
 
+const MIGRATION_FAILURE_DETAIL_MAX_CHARS = 500;
+// Notices from Docker's --init or the image's tini entrypoint. A tini FATAL
+// (for example a failed exec) is the actual failure and is kept.
+const TINI_NOTICE_LINE = /^\[(?:WARN|INFO|DEBUG|TRACE)\s+tini\s+\(\d+\)\]/;
+// Node prints an uncaught error as source location, caret, then `Error: ...`.
+const ERROR_LINE = /^[A-Za-z]*Error\b/;
+
+function boundedDetail(line) {
+    return line.length > MIGRATION_FAILURE_DETAIL_MAX_CHARS ? `${line.slice(0, MIGRATION_FAILURE_DETAIL_MAX_CHARS)}…` : line;
+}
+
+// One bounded line naming the migration error, never the raw container output.
+function migrationFailureDetail(res) {
+    const outputs = [res.stderr, res.stdout].map((output) => (output || '').split('\n').map((line) => line.trim()).filter(Boolean));
+    for (const lines of outputs) {
+        const candidates = lines.filter((line) => !TINI_NOTICE_LINE.test(line));
+        const detail = candidates.find((line) => ERROR_LINE.test(line)) ?? candidates[0];
+        if (detail) return boundedDetail(detail);
+    }
+    const notice = outputs.flat()[0];
+    return boundedDetail(notice || firstLine(res.error?.message || 'migration container exited unsuccessfully'));
+}
+
 function migrationFailure(res) {
-    const detail = firstLine(res.stderr || res.stdout || res.error?.message || 'migration container exited unsuccessfully');
-    return new Error(`Database migration phase failed: ${detail}`);
+    return new Error(`Database migration phase failed: ${migrationFailureDetail(res)}`);
 }
 
 function containerRunning(cfg, name) {
@@ -1254,7 +1457,7 @@ function containerRunning(cfg, name) {
 }
 
 function runningDatabaseServiceNames(cfg) {
-    return [...DATABASE_SERVICES]
+    return [...DATABASE_CONTAINER_SERVICES]
         .map((service) => `${cfg.stack}-${service}`)
         .filter((name) => containerRunning(cfg, name));
 }
@@ -1363,7 +1566,7 @@ async function assertNoLiveMigrationOwnerAsync(cfg, service, signal) {
 
 async function runningDatabaseServiceNamesAsync(cfg, signal) {
     const running = [];
-    for (const service of DATABASE_SERVICES) {
+    for (const service of DATABASE_CONTAINER_SERVICES) {
         const name = `${cfg.stack}-${service}`;
         if (await containerRunningAsync(cfg, name, signal)) running.push(name);
     }
@@ -1464,9 +1667,13 @@ export async function startServiceAsync(cfg, service, { onLog, pull = true, fres
     await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
-    await removeIfExistsAsync(cfg, name, onLog, signal);
-    const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal);
+    try {
+        await removeIfExistsAsync(cfg, name, onLog, signal);
+        const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
+        await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal);
+    } finally {
+        removeScratchDir(spec);
+    }
     onLog?.(`  [ok] started ${name}`);
     return getServiceStateAsync(cfg, service, signal);
 }
@@ -1502,6 +1709,7 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
     const started = [];
     const freshnessCache = new Map();
     try {
+        for (const service of RETIRED_SERVICES) await stopServiceAsync(cfg, service, { onLog, signal });
         await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal });
         for (const service of toStart) {
             await startServiceAsync(cfg, service, {
@@ -1593,7 +1801,7 @@ function validateReplacementMarker(cfg, marker) {
     if (!marker || typeof marker !== 'object' || Array.isArray(marker)
         || marker.schemaVersion !== 1 || marker.stack !== cfg.stack
         || !Array.isArray(marker.containers) || marker.containers.length === 0
-        || marker.containers.length > SERVICES.length) {
+        || marker.containers.length > MANAGED_SERVICES.length) {
         throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
     }
     const ids = new Set();
@@ -1601,7 +1809,7 @@ function validateReplacementMarker(cfg, marker) {
     for (const container of marker.containers) {
         if (!container || typeof container !== 'object' || Array.isArray(container)
             || typeof container.id !== 'string' || !/^[a-f0-9]{64}$/.test(container.id)
-            || typeof container.service !== 'string' || !SERVICES.includes(container.service)
+            || typeof container.service !== 'string' || !MANAGED_SERVICES.includes(container.service)
             || container.name !== `${cfg.stack}-${container.service}`
             || ids.has(container.id) || services.has(container.service)) {
             throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
@@ -1609,7 +1817,7 @@ function validateReplacementMarker(cfg, marker) {
         ids.add(container.id);
         services.add(container.service);
     }
-    if (!marker.containers.some((container) => DATABASE_SERVICES.has(container.service))) {
+    if (!marker.containers.some((container) => DATABASE_CONTAINER_SERVICES.has(container.service))) {
         throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is not root-bound`);
     }
     return marker;
@@ -1694,7 +1902,7 @@ function replacementMountsMatch(cfg, service, mounts, rootPaths) {
             type: 'volume', destination: '/data', name: `${cfg.stack}-redis-data`,
         });
     }
-    if (DATABASE_SERVICES.has(service)) {
+    if (DATABASE_CONTAINER_SERVICES.has(service)) {
         if (!hasReplacementMount(mounts, {
             type: 'bind', source: rootPaths.data, destination: '/usr/src/app/data',
         }) || !hasReplacementMount(mounts, {
@@ -1730,7 +1938,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
         throw new Error(`Failed to list ${cfg.stack} containers: ${(listed.stderr || '').trim()}`);
     }
     const ids = listed.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
-    if (ids.length > SERVICES.length || new Set(ids).size !== ids.length
+    if (ids.length > MANAGED_SERVICES.length || new Set(ids).size !== ids.length
         || ids.some((id) => !/^[a-f0-9]{64}$/.test(id))) {
         throw new Error(`Refusing to replace ${cfg.stack} containers because the ownership target set is invalid`);
     }
@@ -1748,7 +1956,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
             || container.name !== `/${cfg.stack}-${service}`
             || container.labels['propr.stack'] !== cfg.stack
             || typeof service !== 'string'
-            || !SERVICES.includes(service)
+            || !MANAGED_SERVICES.includes(service)
             || services.has(service)
             || (recovery && (recoveryById.get(container.id)?.name !== container.name.slice(1)
                 || recoveryById.get(container.id)?.service !== service))
@@ -1756,7 +1964,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
             throw new Error(`Refusing to replace ${cfg.stack} containers because ownership metadata does not match the managed root and service set`);
         }
         services.add(service);
-        if (DATABASE_SERVICES.has(service)) rootBoundServices += 1;
+        if (DATABASE_CONTAINER_SERVICES.has(service)) rootBoundServices += 1;
         validated.push({ id: container.id, name: container.name.slice(1), service });
     }
     if (validated.length > 0 && rootBoundServices === 0) {
@@ -1768,7 +1976,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
     // A retry can therefore re-prove this exact root even if interruption lands
     // between any two removals; the final root-bound removal leaves no target.
     const replacementOrder = validated.toSorted((left, right) =>
-        Number(DATABASE_SERVICES.has(left.service)) - Number(DATABASE_SERVICES.has(right.service)));
+        Number(DATABASE_CONTAINER_SERVICES.has(left.service)) - Number(DATABASE_CONTAINER_SERVICES.has(right.service)));
     for (const container of replacementOrder) {
         const stopped = await dockerAsync(['stop', '-t', '10', container.id], { signal });
         if (stopped.status !== 0) {
@@ -1830,14 +2038,16 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 
 /** Parse the `docker ps` table into per-service stack status (shared by sync/async). */
 export function parseStackStatus(cfg, stdout) {
-    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const expectedNames = new Set(MANAGED_SERVICES.map((service) => `${cfg.stack}-${service}`));
     const byName = new Map();
     for (const line of stdout.split('\n').filter(Boolean)) {
         const [name, state, status, ports] = line.split('\t');
         if (expectedNames.has(name)) byName.set(name, { state, status, ports: ports || '' });
     }
 
-    const services = SERVICES.map((service) => {
+    // Show retired services only while their containers still exist on an upgraded stack.
+    const visibleServices = [...SERVICES, ...RETIRED_SERVICES.filter((service) => byName.has(`${cfg.stack}-${service}`))];
+    const services = visibleServices.map((service) => {
         const name = `${cfg.stack}-${service}`;
         const found = byName.get(name);
         return {
@@ -1901,7 +2111,7 @@ export function inspectStackStatus(cfg, { timeout, env } = {}) {
         return { result };
     }
 
-    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const expectedNames = new Set(MANAGED_SERVICES.map((service) => `${cfg.stack}-${service}`));
     const seenExpectedNames = new Set();
     const validStates = new Set(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
     for (const line of result.stdout.split('\n')) {
@@ -2022,7 +2232,7 @@ export function getServiceLogs(cfg, service, { follow = false, tail = 'all', std
     const args = ['logs'];
     if (follow) args.push('-f');
     args.push('--tail', String(tail), `${cfg.stack}-${service}`);
-    return spawn('docker', args, { stdio });
+    return spawn('docker', args, { stdio, env: dockerExecutionEnvironment() });
 }
 
 // ---------------------------------------------------------------------------
@@ -2036,6 +2246,10 @@ export function getServiceLogs(cfg, service, { follow = false, tail = 'all', std
 export function validateEnv(cfg) {
     const errors = [];
     const warnings = [];
+
+    if (cfg.managedDiagnosticsEnabled && !cfg.managedDiagnosticsInstanceValid) {
+        errors.push('PROPR_MANAGED_LOGS=1 requires a valid PROPR_INSTANCE_ID diagnostic binding');
+    }
 
     const runtimeModeError = packagedRuntimeModeError(cfg);
     if (runtimeModeError) errors.push(runtimeModeError);
@@ -2152,6 +2366,15 @@ export function validateEnv(cfg) {
         .map(([name, value]) => (value ? validateDockerBindPath(name, value) : null))
         .find(Boolean);
     if (invalidCredential) errors.push(invalidCredential);
+
+    if (cfg.hostClaudeJsonExplicit && cfg.hostClaudeJson) {
+        const invalidClaudeJson = validateDockerBindPath('HOST_CLAUDE_JSON', cfg.hostClaudeJson);
+        if (invalidClaudeJson) {
+            errors.push(invalidClaudeJson);
+        } else if (cfg.validateHostPaths && !isReadableFile(cfg.hostClaudeJson)) {
+            errors.push(`HOST_CLAUDE_JSON (${cfg.hostClaudeJson}) is not a file. Point it at the .claude.json written by \`claude\` login on this host, or unset it.`);
+        }
+    }
 
     if (cfg.hostGhPrivateKey) {
         const invalidKeyPath = validateDockerBindPath('HOST_GH_PRIVATE_KEY', cfg.hostGhPrivateKey);

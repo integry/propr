@@ -27,8 +27,26 @@ export default {
         // Dashboard card styling
         'card-bg': '#FFFFFF',
         'card-border': '#E2E8F0',
-      }
+      },
+      // Mobile bottom sheets rise from the screen's edge over a fading scrim.
+      keyframes: {
+        'sheet-up': { from: { transform: 'translateY(100%)' }, to: { transform: 'translateY(0)' } },
+        'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },
+      },
+      animation: {
+        'sheet-up': 'sheet-up 200ms ease-out',
+        'fade-in': 'fade-in 200ms ease-out',
+      },
     },
   },
-  plugins: [],
+  plugins: [
+    // Layouts for a finger rather than a mouse: a coarse primary pointer, or
+    // any phone-width viewport. `touch:` rows get 44px targets and no
+    // hover-only controls; fine-pointer desktop rows stay compact. This is a
+    // variant, not a `screens` entry: a raw screen disables every `max-*` and
+    // `min-*` variant (such as `max-lg:min-h-11`) across the app.
+    ({ addVariant }) => {
+      addVariant('touch', '@media (pointer: coarse), (max-width: 639.98px)');
+    },
+  ],
 }

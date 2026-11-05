@@ -44,6 +44,11 @@
   --desktop-titlebar-height: 44px;
 }
 
+/* The application menu control leads the Linux window-control group. */
+.desktop-platform-linux.desktop-has-application-menu {
+  --desktop-window-controls-end-inset: 11.5rem;
+}
+
 /* A three-pixel transparent allowance holds a short shadow, not a solid rim.
    Keep the top flush and round only the upper corners, like integrated chrome.
    Electron's native five-pixel resize band includes this allowance. */
@@ -78,6 +83,11 @@ html[data-desktop-window="linux"] #root {
      the app itself is inert. Clip their backgrounds at the upper corners. */
   transform: translateZ(0);
   clip-path: inset(0 round var(--desktop-frame-radius));
+  /* The frame allowance makes the root shorter than the viewport. Never let
+     content below it make the document scrollable: a scrolled document moves
+     the toolbar but not the window controls pinned to this root. */
+  overflow: hidden;
+  overflow: clip;
 }
 
 html[data-desktop-window="linux"] .desktop-entry {
@@ -142,10 +152,23 @@ html[data-desktop-window="linux"] .desktop-sidebar-header {
   margin: 0;
   padding: 0;
   grid-template-columns: repeat(3, 1fr);
-  border-bottom: 1px solid #e2e8f0;
+  /* The divider is drawn by ::after over the buttons, so every hit target
+     spans the full titlebar height, flush with the toolbar's lower edge. */
+  border-bottom: 0 solid #e2e8f0;
   color: #475569;
   background: #f8fafc;
   -webkit-app-region: no-drag;
+}
+
+.desktop-window-controls::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-bottom: 1px solid;
+  border-bottom-color: inherit;
+  pointer-events: none;
 }
 
 .desktop-window-controls button {
@@ -163,14 +186,60 @@ html[data-desktop-window="linux"] .desktop-sidebar-header {
 .desktop-window-controls button:hover { background: #e2e8f0; }
 .desktop-window-controls button:active { background: #cbd5e1; }
 .desktop-window-controls button:focus-visible { outline: 2px solid var(--desktop-focus); outline-offset: -2px; }
+.desktop-window-controls:has(.desktop-application-menu-button) {
+  width: 11.5rem;
+  grid-template-columns: repeat(4, 1fr);
+}
+.desktop-window-controls .desktop-application-menu-logo {
+  /* logo.png is 30x32: fixed height, natural width, never stretched. */
+  width: auto;
+  height: 1.25rem;
+  pointer-events: none;
+  user-select: none;
+}
 .desktop-window-controls .desktop-window-close:hover { color: #fff; background: #dc2626; }
 .desktop-window-controls .desktop-window-close:active { color: #fff; background: #b91c1c; }
 .desktop-window-controls svg { width: .9rem; height: .9rem; stroke-width: 1.75; }
+
+/* App dialogs (`.app-modal-layer`) open below the desktop titlebar, never over
+   it. The window controls, application menu and macOS traffic lights stay
+   visible and own every point of their row; the dialog, its close control and
+   its backdrop start beneath them. Ordinary web/mobile UI is unaffected. */
+html:has(.desktop-app.desktop-platform-linux) {
+  --desktop-titlebar-height: 44px;
+}
+
+html:has(.desktop-app) .app-modal-layer {
+  top: max(var(--desktop-titlebar-height), env(titlebar-area-height, 0px));
+}
+
+/* The narrow Search sheet would otherwise share the Linux window-control row:
+   its field and Close search sat under Close window. Like app dialogs, it opens
+   beneath that row. macOS and web layouts keep the sheet at the top edge. */
+.desktop-app.desktop-platform-linux .mobile-search-overlay {
+  top: max(var(--desktop-titlebar-height), env(titlebar-area-height, 0px));
+}
+
+/* A dialog portaled to <body> sits outside the transformed #root, so it also
+   keeps inside the restored Linux frame's left and bottom allowance. */
+html[data-desktop-window="linux"] body > .app-modal-layer {
+  bottom: var(--desktop-frame-inset);
+  left: var(--desktop-frame-inset);
+}
 
 .desktop-app {
   height: 100vh;
   overflow: hidden;
   background: #f8fafc;
+}
+
+/* These clip like `overflow: hidden` but are not scroll containers, so focus
+   or scrollIntoView can never offset the toolbar and its drag region from the
+   fixed window controls, even if some content outgrows the window. */
+.desktop-app,
+.desktop-app > .desktop-shell,
+.desktop-app .desktop-shell-content {
+  overflow: clip;
 }
 
 .desktop-app > .desktop-shell {
@@ -526,14 +595,14 @@ body:has(.desktop-platform-macos),
 .desktop-setup-summary > div { display: grid; grid-template-columns: 7rem 1fr; gap: .8rem; padding: .7rem .85rem; border-bottom: 1px solid #e6edec; font-size: .78rem; }
 .desktop-setup-summary > div:last-child { border-bottom: 0; }
 .desktop-setup-summary dt { color: #758382; } .desktop-setup-summary dd { overflow-wrap: anywhere; color: #273a39; font-weight: 600; }
-.desktop-setup-footer { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.4rem; }
+.desktop-setup-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .6rem; margin-top: 1.4rem; }
 .desktop-setup-progress { height: .45rem; margin: 1.2rem 0; border-radius: 999px; overflow: hidden; background: #e4eceb; }
 .desktop-setup-progress > span { display: block; height: 100%; border-radius: inherit; background: #16827c; transition: width .25s ease; }
 .desktop-setup-step-list { display: grid; gap: .35rem; max-height: 22rem; overflow-y: auto; }
 .desktop-setup-step-list > div { display: grid; grid-template-columns: 1.25rem 1fr; gap: .55rem; padding: .45rem .55rem; border-radius: .5rem; }
 .desktop-setup-step-list > div[data-status="active"] { background: #edf8f7; } .desktop-setup-step-list > div[data-status="failed"] { color: #9f2d20; background: #fff6f4; }
 .desktop-setup-step-list svg { width: .95rem; height: .95rem; } .desktop-setup-step-list strong, .desktop-setup-step-list small { display: block; }
-.desktop-setup-step-list strong { font-size: .78rem; } .desktop-setup-step-list small { margin-top: .1rem; color: #6d7c7b; font-size: .68rem; line-height: 1.35; }
+.desktop-setup-step-list strong { font-size: .78rem; } .desktop-setup-step-list small { margin-top: .1rem; color: #5e6d6d; font-size: .68rem; line-height: 1.35; }
 .desktop-setup-log { max-height: 7rem; margin: .8rem 0; overflow: auto; border-radius: .55rem; padding: .65rem; color: #c7e8e4; background: #18302f; font-size: .65rem; line-height: 1.45; white-space: pre-wrap; }
 .desktop-github-choice { margin-top: 1rem; border: 1px solid #bcdad7; border-radius: .85rem; padding: 1rem; background: #f8fcfb; }
 .desktop-github-choice h2 { margin: .9rem 0 .2rem; color: #193130; font-size: 1rem; }
@@ -549,6 +618,11 @@ body:has(.desktop-platform-macos),
 .desktop-github-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0; }
 .desktop-github-actions button { font-size: .68rem; }
 .desktop-github-actions svg { width: .8rem; height: .8rem; }
+/* Touch and narrow (including zoomed) layouts get the app's 44px target; fine pointers keep the compact row. */
+@media (pointer: coarse), (max-width: 640px) {
+  .desktop-github-choice :is(.desktop-github-actions button, .desktop-primary-button) { min-height: 44px; }
+  .desktop-github-actions button { font-size: .76rem; }
+}
 .desktop-setup-hero-icon { width: 2.5rem; height: 2.5rem; margin-bottom: .8rem; color: #b46a2a; } .desktop-setup-error-icon { color: #b64334; }
 .desktop-setup-success { display: grid; place-items: center; width: 3.5rem; height: 3.5rem; margin-bottom: 1rem; border-radius: 1rem; color: white; background: #21956c; }
 
@@ -595,3 +669,24 @@ body:has(.desktop-platform-macos),
 .desktop-app.desktop-platform-macos .desktop-sidebar-hidden .desktop-content-toolbar {
   padding-left: max(80px, env(titlebar-area-x, 80px));
 }
+
+.desktop-github-recovery {
+  position: fixed;
+  z-index: 90;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  width: min(32rem, calc(100vw - 3rem));
+  max-height: calc(100vh - 6rem);
+  overflow: auto;
+  padding: 1.5rem;
+  color: #17212b;
+  background: #fff;
+  border: 1px solid #d3dfdf;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgb(15 23 42 / 18%);
+}
+
+.desktop-github-recovery h2 { margin: 0 0 1rem; font-size: 1.2rem; }
+.desktop-github-recovery p { margin: 0 0 1rem; line-height: 1.5; }
+.desktop-github-recovery .desktop-github-recovery-reason { font-weight: 600; }
+.desktop-github-recovery .desktop-actions { display: flex; flex-wrap: wrap; gap: .75rem; }

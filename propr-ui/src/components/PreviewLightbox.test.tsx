@@ -157,6 +157,29 @@ describe('PreviewLightbox', () => {
     expect(screen.queryByText('1 / 1')).toBeNull();
   });
 
+  it('plays a video inline, keeps its keys, and still closes and navigates', () => {
+    const onClose = vi.fn();
+    const mixed: PublishedVisualPreview[] = [{ type: 'video', title: 'Walkthrough', url: 'https://github.com/user-attachments/assets/walkthrough' }, previews[0]];
+    render(<Harness items={mixed} onClose={onClose} />);
+    const dialog = screen.getByRole('dialog', { name: 'Walkthrough' });
+    const player = dialog.querySelector('video') as HTMLVideoElement;
+    expect(player).toHaveAttribute('controls');
+    expect(player).toHaveAttribute('playsinline');
+    expect(player).not.toHaveAttribute('autoplay');
+    expect(screen.queryByRole('button', { name: 'Zoom in' })).toBeNull();
+    // Arrow keys seek in a focused player; everywhere else they still move through the gallery.
+    fireEvent.keyDown(player, { key: 'ArrowRight' });
+    expect(screen.getByRole('dialog', { name: 'Walkthrough' })).toBeInTheDocument();
+    fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    expect(screen.getByRole('dialog', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Zoom in' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowLeft' });
+    fireEvent.click(screen.getByRole('dialog', { name: 'Walkthrough' }).querySelector('video') as HTMLVideoElement);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(stage());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('traps focus inside the dialog and returns it to the opener on close', () => {
     const opener = document.createElement('button');
     document.body.appendChild(opener);
@@ -175,6 +198,25 @@ describe('PreviewLightbox', () => {
     expect(opener).toHaveFocus();
     opener.remove();
   });
+  it('keeps keyboard control when navigation removes the focused zoom control', () => {
+    const onClose = vi.fn();
+    const mixed: PublishedVisualPreview[] = [previews[0], { type: 'video', title: 'Walkthrough', url: 'https://github.com/user-attachments/assets/walkthrough' }];
+    render(<Harness items={mixed} onClose={onClose} />);
+    const zoomIn = screen.getByRole('button', { name: 'Zoom in' });
+    zoomIn.focus();
+    // ArrowRight moves to the video, which renders without the zoom controls the user was standing on.
+    fireEvent.keyDown(zoomIn, { key: 'ArrowRight' });
+    const dialog = screen.getByRole('dialog', { name: 'Walkthrough' });
+    expect(screen.queryByRole('button', { name: 'Zoom in' })).toBeNull();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(screen.getByRole('button', { name: 'Close preview' })).toHaveFocus();
+    // Escape and arrow keys still reach the dialog from wherever focus landed.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowLeft' });
+    expect(screen.getByRole('dialog', { name: 'Dashboard' })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps focus in the dialog when background content is focused by a document-level shortcut', () => {
     const search = document.createElement('input');
     document.body.appendChild(search);

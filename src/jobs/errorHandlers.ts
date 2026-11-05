@@ -1,14 +1,18 @@
+import { createHash } from 'node:crypto';
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
+    isBookkeepingCancellation,
     safeRemoveLabel,
     safeAddLabel,
     formatRetryTime,
     hoursUntil,
     issueQueue,
-    recordLLMMetrics
+    recordLLMMetrics,
+    updateWithdrawnIssueLabels
 } from '@propr/core';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
+import { completeProviderReplacement, isAgentExecutionFailure, prepareProviderReplacement } from './providerReplacement.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -36,6 +40,8 @@ export interface GenericErrorOptions extends UsageLimitErrorOptions {
 
 interface PostErrorCommentOptions {
     octokit: Octokit;
+    /** Retry notice or attempt lineage appended to the failure comment. */
+    replacementSection?: string;
     errorCategory: string;
     claudeResult: ClaudeCodeResponse | null;
     worktreeInfo: WorktreeInfo | undefined;
@@ -96,6 +102,26 @@ function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number):
 *The task will automatically resume after the rate limit resets. No action needed.*`;
 }
 
+async function requireIssueRetry(jobId: string, correlationId: string): Promise<Job<IssueJobData> | null> {
+    const retry = await issueQueue.getJob(jobId);
+    if (!retry || !('isRetryFromRateLimit' in retry.data) || !retry.data.isRetryFromRateLimit || !('correlationId' in retry.data) || retry.data.correlationId !== correlationId) {
+        throw new Error(`Unable to persist issue usage-limit retry ${jobId}`);
+    }
+    const state = await retry.getState();
+    if (state === 'unknown') throw new Error(`Unable to persist issue usage-limit retry ${jobId}`);
+    if (['completed', 'failed'].includes(state)) return null;
+    return retry as Job<IssueJobData>;
+}
+
+async function issueRetryWasStopped(stateManager: WorkerStateManager, taskId: string): Promise<boolean> {
+    const state = await stateManager.getTaskState(taskId);
+    return state?.state === 'cancelled' && !isBookkeepingCancellation(state);
+}
+
+function issueUsageLimitRetryJobId(issueRef: IssueJobData, attempt: string): string {
+    return `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry-${attempt}`;
+}
+
 export async function handleUsageLimitError(
     error: UsageLimitError,
     job: Job<IssueJobData>,
@@ -145,17 +171,36 @@ export async function handleUsageLimitError(
         }
     }
 
+    // Keep the task/correlation identity (including goal parent links). Only
+    // the queue job identity changes, so each delayed handoff can be verified.
+    const attempt = createHash('sha256').update(JSON.stringify({ taskId, sourceJobId: job.id })).digest('hex').slice(0, 16);
     const requeuedJobData: IssueJobData = {
         ...job.data,
         isRetryFromRateLimit: true
     };
 
-    const requeueJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry`;
+    const requeueJobId = issueUsageLimitRetryJobId(issueRef, attempt);
 
-    await issueQueue.add(job.name, requeuedJobData, {
+    if (await issueRetryWasStopped(stateManager, taskId)) return;
+    const retryJob = await issueQueue.add(job.name, requeuedJobData, {
         jobId: requeueJobId,
         delay: Math.max(0, delay)
     });
+    let persistedRetry = await requireIssueRetry(String(retryJob.id ?? requeueJobId), requeuedJobData.correlationId!);
+    for (let generation = 0; !persistedRetry && generation <= (job.attemptsMade ?? 0); generation++) {
+        // Retain a live handoff across BullMQ attempts; only replace a terminal
+        // owner. Preserve the task/correlation identity in the new queue job.
+        if (await issueRetryWasStopped(stateManager, taskId)) return;
+        const retryAttempt = createHash('sha256').update(JSON.stringify({ attempt, generation })).digest('hex').slice(0, 16);
+        const replacementId = `${requeueJobId}-${retryAttempt}`;
+        const replacement = await issueQueue.add(job.name, requeuedJobData, { jobId: replacementId, delay: Math.max(0, delay) });
+        persistedRetry = await requireIssueRetry(String(replacement.id ?? replacementId), requeuedJobData.correlationId!);
+    }
+    if (!persistedRetry) throw new Error(`Unable to persist issue usage-limit retry ${requeueJobId}`);
+    if (await issueRetryWasStopped(stateManager, taskId)) {
+        await persistedRetry.remove();
+        return;
+    }
 
     try {
         await stateManager.updateTaskState(taskId, 'processing', {
@@ -170,6 +215,7 @@ export async function handleUsageLimitError(
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state for rate limit wait');
     }
+    if (await issueRetryWasStopped(stateManager, taskId)) await persistedRetry.remove();
 }
 
 function parseGitHubHtmlError(html: string): string {
@@ -226,23 +272,18 @@ function categorizeError(errorMessage: string | undefined): string {
     return 'unknown_error';
 }
 
-async function postCancellationNotice(
+export async function postCancellationNotice(
     issueRef: IssueJobData,
-    octokit: Octokit,
-    AI_PROCESSING_TAG: string,
-    correlatedLogger: Logger
+    options: GenericErrorOptions,
 ): Promise<void> {
+    const { octokit, correlatedLogger } = options;
     try {
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             issue_number: issueRef.number,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can re-add the AI label to restart processing.`
+            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can remove and re-add the trigger label to restart processing.`
         });
-        await safeRemoveLabel(
-            { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-            AI_PROCESSING_TAG
-        );
     } catch (commentError) {
         correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');
     }
@@ -286,10 +327,22 @@ export async function handleGenericError(
         }
     }
 
+    // Decided before the failure is reported, so the comment and Inbox reflect a pending replacement.
+    // Only an error the agent's execution threw can be a provider failure; GitHub and git errors are not.
+    const fromAgentExecution = isAgentExecutionFailure(error);
+    const replacementSection = isUserCancelled ? '' : await prepareProviderReplacement({ taskId, error, fromAgentExecution, correlatedLogger });
     if (octokit && !isUserCancelled) {
-        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
+        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger, replacementSection });
     } else if (octokit && isUserCancelled) {
-        await postCancellationNotice(issueRef, octokit, AI_PROCESSING_TAG, correlatedLogger);
+        await postCancellationNotice(issueRef, options);
+        try {
+            await updateWithdrawnIssueLabels(
+                { ...issueRef, kind: 'issue', triggeringLabel: AI_PROCESSING_TAG.replace(/-processing$/, '') },
+                [], 'cancelled_by_user', taskId,
+            );
+        } catch (cleanupError) {
+            correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to clean up user-stopped issue');
+        }
     }
 
     try {
@@ -305,6 +358,7 @@ export async function handleGenericError(
             correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
         } else {
             await stateManager.markTaskFailed(taskId, error, { errorCategory });
+            await completeProviderReplacement({ taskId, error, fromAgentExecution, correlatedLogger });
         }
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
@@ -312,7 +366,7 @@ export async function handleGenericError(
 }
 
 async function postErrorComment(issueRef: IssueJobData, error: Error, options: PostErrorCommentOptions): Promise<void> {
-    const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger } = options;
+    const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger, replacementSection = '' } = options;
     try {
         const categoryHints: Record<string, string> = {
             github_server_error: 'GitHub API returned a server error (5xx). This is a temporary issue on GitHub\'s side. The system will automatically retry.\n\n',
@@ -322,7 +376,7 @@ async function postErrorComment(issueRef: IssueJobData, error: Error, options: P
         };
         const sanitizedMessage = sanitizeErrorMessage(error.message);
         const sanitizedStack = error.stack ? sanitizeErrorMessage(error.stack) : sanitizedMessage;
-        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
+        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>${replacementSection}\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: errorMessage });
         await safeRemoveLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
     } catch (commentError) {

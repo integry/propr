@@ -98,3 +98,11 @@ export function verifyAuthToken(data: SystemTaskJobData, secret: string | undefi
     );
     return isValid ? { valid: true } : { valid: false, reason: 'HMAC mismatch' };
 }
+
+/**
+ * Signature the worker sends to the API's internal agent-run MCP grant
+ * endpoints: HMAC-SHA256(SYSTEM_TASK_SECRET, `${runId}:${phase}:${ts}`), hex.
+ */
+export function signAgentRunGrantRequest(secret: string, runId: string, phase: string, ts: number): string {
+    return crypto.createHmac('sha256', secret).update(`${runId}:${phase}:${ts}`).digest('hex');
+}

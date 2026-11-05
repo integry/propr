@@ -25,12 +25,14 @@ export {
     extractMetricRecords,
     isAgentTankEnabled,
     type UsageTrackingResult,
+    type UsageTrackingOptions,
     type UsageTrackingMetrics,
     type UsageMetricRecord
 } from './usageTrackingWrapper.js';
 
 export {
     getClaudeAnalysisText,
+    getFinalAnswerText,
     type PersistLogsParams
 } from './claudeOutputHelpers.js';
 

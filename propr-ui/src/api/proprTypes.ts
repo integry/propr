@@ -77,11 +77,6 @@ export interface StatusResponse {
   connectAccount?: unknown;
 }
 
-export interface TaskAnalysisResponse {
-  analysis: unknown | null;
-  message?: string;
-}
-
 export interface QueueStats {
   active: number;
   activeGoals?: number;
@@ -114,6 +109,12 @@ export interface GetTasksOptions {
   search?: string;
   forReview?: boolean;
   excludeMerged?: boolean;
+  /** Page by task (a pull request or issue with all its runs) instead of by run. */
+  groupBy?: 'task';
+  /** With `groupBy: 'task'`: only the task this run belongs to, with all its runs, whatever the filters. */
+  task?: string;
+  /** `all`, `me`, `unassigned` or comma-separated GitHub logins; see `formatTaskAssignmentFilter`. */
+  assignee?: string;
 }
 
 export interface MonitoredRepo {
@@ -126,8 +127,18 @@ export interface MonitoredRepo {
   cancelCiDuringFollowup?: boolean;
   /** Exactly which validation workflows that option may cancel: file names, paths, display names or IDs. Empty cancels nothing. */
   cancelCiDuringFollowupWorkflows?: string[];
+  /** Check run names (`*` matches any text) that never block ProPR's CI-driven automation. */
+  nonBlockingChecks?: string[];
   /** Whether Inbox and push notifications are generated for this repository. Missing values are on. */
   notificationsEnabled?: boolean;
+  /** Repository-wide merge-conflict auto-resolve override; missing or null inherits the instance default. */
+  autoResolveMergeConflicts?: boolean | null;
+  /** Whether ProPR assigns its finished pull requests. Missing values are off. */
+  autoAssignPullRequests?: boolean;
+  /** GitHub login to assign; missing or null assigns the issue author. */
+  autoAssignDefaultAssignee?: string | null;
+  /** Whether a review is also requested from the assignee. Missing values are off. */
+  autoAssignRequestReview?: boolean;
   /** Generated media to embed in PRs when a change has a visible result. */
   visualPreview?: {
     githubAttachmentPlan?: GitHubAttachmentPlanOverride;
@@ -149,6 +160,20 @@ export interface RepoConfigResponse {
 export interface RepoBranchesResponse {
   branches: string[];
   defaultBranch: string;
+}
+
+export interface RepoWorkflow {
+  id: number;
+  name: string;
+  path: string;
+  file: string;
+  /** Events from the workflow file's `on:` key; null when GitHub did not return a readable file. */
+  triggers: string[] | null;
+  pullRequest: boolean | null;
+}
+
+export interface RepoWorkflowsResponse {
+  workflows: RepoWorkflow[];
 }
 
 export interface StopExecutionResponse {
@@ -173,6 +198,7 @@ export interface AgentConfig {
   configPath: string;
   supportedModels: string[];
   defaultModel?: string;
+  /** Values arrive redacted as `[REDACTED]`; sending the marker back keeps the stored value. */
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
   modelReasoningLevels?: Record<string, ReasoningLevel>;
@@ -186,12 +212,19 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 export interface SystemSettings {
   default_agent_alias?: string;
   worker_concurrency?: string | number;
+  /** Replacement attempts after transient provider failures; 0 disables them. */
+  max_provider_replacements?: number;
   github_user_whitelist?: string[];
   analysis_model_fast?: string;
   planner_context_model?: string;
   planner_generation_model?: string;
+  /** @deprecated REST compatibility only; this setting has no effect. */
   auto_followup_score_threshold?: number;
+  deprecated_settings?: Record<string, string>;
+  usage_tips_enabled?: boolean;
   auto_resolve_merge_conflicts?: boolean;
+  /** Only users assigned to a task may start follow-up work on it. */
+  followup_requires_assignment?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;
@@ -204,6 +237,21 @@ export interface SystemSettings {
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
+  /** Instance default per-run spend cap in USD; 0 = no cap. */
+  default_max_cost_usd?: number;
+  /** Agent watchdog overrides; null uses the environment default. */
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
+  agent_watchdog_defaults?: Record<string, number>;
+  agent_watchdog_effective?: Record<string, number>;
+  /** Agent network policy overrides; null uses the environment default. */
+  agent_network_mode?: 'open' | 'restricted' | null;
+  agent_network_mode_enforced?: boolean | null;
+  agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
+  agent_network_defaults?: { agent_network_mode?: 'open' | 'restricted'; agent_network_mode_enforced?: boolean; agent_network_allow?: string[]; agent_network_ignore_repository_allow?: boolean };
+  agent_network_effective?: { agent_network_mode?: 'open' | 'restricted'; agent_network_mode_enforced?: boolean; agent_network_allow?: string[]; agent_network_ignore_repository_allow?: boolean };
   invalid_settings?: Record<string, unknown>;
 }
 
@@ -265,8 +313,25 @@ export interface TriggerReindexAllResponse {
 }
 
 export interface PostFollowupResponse {
+  commandMode?: 'review';
   success: boolean;
-  message: string;
+  message?: string;
+  /** `unknown` when the comment was posted but its queue submission could not be confirmed. */
+  state?: 'queued' | 'batched' | 'handled' | 'refused' | 'failed' | 'unknown';
+  posted?: boolean;
+  commentId?: number;
+  jobId?: string;
+  sourceTaskId?: string;
+  /** Present when a failed implementation without a pull request was retried on its issue. */
+  intent?: 'issue';
+  issueNumber?: number;
+}
+
+/** The runs an issue follow-up started, for the signed-in user who posted it; none until its run starts. */
+export interface FollowupRunsResponse {
+  sourceTaskId: string;
+  commentId: number;
+  runs: Array<{ taskId: string; status: string }>;
 }
 
 export interface UserRepoPreference {

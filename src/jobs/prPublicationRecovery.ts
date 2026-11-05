@@ -3,7 +3,7 @@ import type { Redis } from 'ioredis';
 import {
     ensureGitRepository, TaskStates,
     type getAuthenticatedOctokit, type WorkerStateManager, type WorktreeInfo,
-    type ClaudeCodeResponse, type CommentJobData, type UnprocessedComment, type JobResult,
+    type ClaudeCodeResponse, type CommentJobData, type UnprocessedComment, type JobResult, type ResolvedRepositoryWorkflow,
 } from '@propr/core';
 import type { PRJobContext } from './prCommentReviewJob.js';
 import { createPRCommentTaskStateIfMissing } from './prCommentCollisionRecovery.js';
@@ -14,6 +14,7 @@ import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 import { PullRequestPublication } from './prPublication.js';
 import { findPRContinuation, savePublicationCheckpoint, type ContinuationRecord, type Contribution } from './prContinuation.js';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
+import type { FollowupHandoffRecord } from './followupHandoffStore.js';
 
 const TERMINAL_STATES: ReadonlySet<string> = new Set([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
@@ -26,6 +27,14 @@ class RecoveryCancelledError extends Error {
 
 export interface ProcessingState {
     publication?: PullRequestPublication;
+    /** Policy resolved for this execution, retained if admission is refused. */
+    repositoryWorkflow?: ResolvedRepositoryWorkflow;
+    /** PR base branch the policy above was read from, including when it has no workflow. */
+    repositoryWorkflowBaseBranch?: string;
+    /** Durable publication handoff recorded before the agent launched, for restart recovery. */
+    followupHandoff?: FollowupHandoffRecord | null;
+    /** Set once a checkpoint observed the handoff move on without this writer. */
+    followupHandoffOwnershipLost?: boolean;
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     localRepoPath: string | undefined;
     worktreeInfo: WorktreeInfo | undefined;

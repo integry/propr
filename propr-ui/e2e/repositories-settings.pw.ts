@@ -1,9 +1,16 @@
+/* eslint-disable max-lines -- one spec covers every repository settings control against the same API stub */
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { CurrentUser, MonitoredRepo } from '../src/api/proprApi';
 
 const repositoryIconFixture = fileURLToPath(new URL('../public/logo.png', import.meta.url));
+
+async function capturePreview(page: Page, name: string, clip?: { x: number; y: number; width: number; height: number }) {
+  if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
+  await mkdir('../.propr/previews', { recursive: true });
+  await page.screenshot({ animations: 'disabled', path: `../.propr/previews/${name}.png`, clip });
+}
 
 async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: MonitoredRepo[]) {
   let repos: MonitoredRepo[] = initialRepos ?? [
@@ -14,6 +21,7 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
   const writes: MonitoredRepo[][] = [];
   let chatLoads = 0;
   const indexingWrites: { path: string; body: unknown }[] = [];
+  const improvementRequests: Record<string, unknown>[] = [];
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('https://raw.githubusercontent.com/**', route => route.fulfill({
     path: repositoryIconFixture,
@@ -51,6 +59,7 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
         break;
       case '/api/instance/catalog': json = { repositories: repos, agents: [] }; break;
       case '/api/github/repos': json = { repos: [] }; break;
+      case '/api/config/settings': json = { auto_resolve_merge_conflicts: true }; break;
       case '/api/user/repo-preferences': json = { preferences: { 'integry/propr': { starred: true } } }; break;
       case '/api/repositories/indexing-status':
         json = { repositories: repos.map((repo, index) => ({
@@ -60,6 +69,10 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
         })) };
         break;
       case '/api/repos/chat/messages': chatLoads++; json = { messages: [] }; break;
+      case '/api/repos/improvements':
+        improvementRequests.push(route.request().postDataJSON());
+        json = { success: true, suggestions: [{ title: 'Adopt shared retry helper', description: 'Mirror the reference repository retry wrapper for outbound calls.' }] };
+        break;
       case '/api/notifications/unread-count': json = { unreadCount: 0 }; break;
       default:
         await route.fulfill({ status: 503, json: { error: 'Optional API unavailable in repository UI test' } });
@@ -67,7 +80,7 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
     }
     await route.fulfill({ json });
   });
-  return { writes, indexingWrites, chatLoads: () => chatLoads };
+  return { writes, indexingWrites, improvementRequests, chatLoads: () => chatLoads };
 }
 
 test('shows and updates the follow-up CI cancellation option and its workflow selection', async ({ page }) => {
@@ -88,10 +101,7 @@ test('shows and updates the follow-up CI cancellation option and its workflow se
   await expect(cancelCi).toBeChecked();
   await expect(workflows).toHaveValue('pr-build-check.yml');
   await expect(settings.getByText(/Cancels exactly this workflow: pr-build-check\.yml\./)).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-cancel-ci-workflow-selection.png' });
-  }
+  await capturePreview(page, 'repository-cancel-ci-workflow-selection');
 
   // The selection is stored for every branch entry of the repository.
   await workflows.fill('pr-build-check.yml, .github/workflows/pr-test-on-label.yml');
@@ -105,14 +115,122 @@ test('shows and updates the follow-up CI cancellation option and its workflow se
   await workflows.blur();
   await expect(settings.getByText(/No workflows selected for this repository, so the instance-wide/)).toBeVisible();
   await expect(settings.getByText(/nothing is cancelled when your operator left it unset/)).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-cancel-ci-empty-selection.png' });
-  }
+  await capturePreview(page, 'repository-cancel-ci-empty-selection');
 
   await settings.getByText('Cancel CI while follow-up implementation is in progress', { exact: true }).click();
   await expect(cancelCi).not.toBeChecked();
   await expect(workflows).toBeHidden();
   await expect.poll(() => api.writes.at(-1)?.map(repo => repo.cancelCiDuringFollowup)).toEqual([false, false]);
+});
+
+test('sets the repository-wide merge-conflict auto-resolve override against the instance default', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page, true, [
+    { id: 'propr-main', name: 'integry/propr', baseBranch: 'main', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'propr-release', name: 'integry/propr', baseBranch: 'release', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+  ]);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
+  const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
+  const autoResolve = settings.getByRole('combobox', { name: 'Auto-resolve merge conflicts for integry/propr', exact: true });
+  await expect(autoResolve).toHaveValue('inherit');
+  await expect(autoResolve.getByRole('option', { name: 'Use instance default (currently On)' })).toHaveCount(1);
+  await settings.evaluate(element => element.scrollTo({ top: element.scrollHeight }));
+  await capturePreview(page, 'repository-auto-resolve-inherit');
+
+  await autoResolve.selectOption('never');
+  await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoResolveMergeConflicts)).toEqual([false, false]);
+  await capturePreview(page, 'repository-auto-resolve-never');
+
+  await autoResolve.selectOption('inherit');
+  await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoResolveMergeConflicts)).toEqual([null, null]);
+});
+
+test('assigns finished pull requests with a shared, validated default assignee', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page, true, [
+    { id: 'propr-main', name: 'integry/propr', baseBranch: 'main', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'propr-release', name: 'integry/propr', baseBranch: 'release', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'sdk', name: 'integry/integration-sdk', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+  ]);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).nth(1).click();
+  const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
+  const assign = settings.getByRole('checkbox', { name: 'Assign pull requests for integry/propr', exact: true });
+  const login = settings.getByRole('textbox', { name: 'Default assignee for integry/propr', exact: true });
+  const review = settings.getByRole('checkbox', { name: 'Request a review from the assignee for integry/propr', exact: true });
+  const autoAssignWrites = () => api.writes.at(-1)?.map(repo => [repo.id, repo.autoAssignPullRequests, repo.autoAssignDefaultAssignee, repo.autoAssignRequestReview]);
+
+  // Off for a repository that never configured it, with no inert configuration on show.
+  await expect(assign).not.toBeChecked();
+  await expect(login).toHaveCount(0);
+  await expect(review).toHaveCount(0);
+
+  await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).click();
+  await expect(assign).toBeChecked();
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, null, false], ['propr-release', true, null, false], ['sdk', false, null, false],
+  ]);
+  await expect(login).toHaveValue('');
+  await expect(settings.getByText('Empty, so the author of the issue is assigned. Bot authors are skipped.', { exact: true })).toBeVisible();
+  // Let the toggle's confirmation expire so a later one could only come from a new save.
+  await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeHidden({ timeout: 6000 });
+
+  // An invalid login is reported inline and never written.
+  const writesBeforeInvalid = api.writes.length;
+  await login.fill('not a login');
+  await login.blur();
+  await expect(login).toHaveAttribute('aria-invalid', 'true');
+  await expect(settings.getByRole('alert').filter({ hasText: 'Enter a GitHub login' })).toBeVisible();
+  await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeHidden();
+  expect(api.writes).toHaveLength(writesBeforeInvalid);
+  await capturePreview(page, 'repository-auto-assign-invalid-login');
+
+  // Typing alone saves nothing; blur commits once, for every branch entry.
+  await login.fill('');
+  await login.pressSequentially('@octocat');
+  expect(api.writes).toHaveLength(writesBeforeInvalid);
+  await login.blur();
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, 'octocat', false], ['propr-release', true, 'octocat', false], ['sdk', false, null, false],
+  ]);
+  expect(api.writes).toHaveLength(writesBeforeInvalid + 1);
+  await expect(settings.getByText('Pull requests are assigned to', { exact: false })).toContainText('@octocat');
+
+  await settings.getByText('Also request a review from the assignee', { exact: true }).click();
+  await expect(review).toBeChecked();
+  await expect(assign).toBeChecked();
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, 'octocat', true], ['propr-release', true, 'octocat', true], ['sdk', false, null, false],
+  ]);
+  await settings.evaluate(element => element.scrollTo({ top: 0 }));
+  await login.scrollIntoViewIfNeeded();
+  await capturePreview(page, 'repository-auto-assign-enabled');
+
+  // The other branch entry shows the same shared state.
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
+  await expect(login).toHaveValue('octocat');
+  await expect(review).toBeChecked();
+
+  // Clearing the login and pressing Enter returns assignment to the issue author.
+  await login.fill('');
+  await login.press('Enter');
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, null, true], ['propr-release', true, null, true], ['sdk', false, null, false],
+  ]);
+  await expect(settings.getByText('Empty, so the author of the issue is assigned. Bot authors are skipped.', { exact: true })).toBeVisible();
+  await login.fill('hubot');
+  await login.blur();
+  await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoAssignDefaultAssignee)).toEqual(['hubot', 'hubot', null]);
+
+  // Turning assignment off hides the details but keeps their stored values.
+  await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).click();
+  await expect(assign).not.toBeChecked();
+  await expect(login).toHaveCount(0);
+  await expect(review).toHaveCount(0);
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', false, 'hubot', true], ['propr-release', false, 'hubot', true], ['sdk', false, null, false],
+  ]);
 });
 
 test('shows the whole repository-wide selection the worker may cancel', async ({ page }) => {
@@ -137,10 +255,7 @@ test('shows the whole repository-wide selection the worker may cancel', async ({
   const workflows = settings.getByRole('textbox', { name: 'Validation workflows to cancel for integry/propr', exact: true });
   await expect(workflows).toHaveValue('pr-build-check.yml, pr-test-on-label.yml');
   await expect(settings.getByText(/Cancels exactly these 2 workflows: pr-build-check\.yml, pr-test-on-label\.yml\./)).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-cancel-ci-union-selection.png' });
-  }
+  await capturePreview(page, 'repository-cancel-ci-union-selection');
 });
 
 test('shows and updates shared settings while preserving the selected branch', async ({ page }) => {
@@ -157,15 +272,12 @@ test('shows and updates shared settings while preserving the selected branch', a
   const previews = settings.getByRole('checkbox', { name: 'Visual previews for integry/propr', exact: true });
   await expect(autoCi).toBeChecked();
   await expect(previews).toBeChecked();
-  await expect(settings.getByRole('textbox')).toHaveValue(sharedPreview.instructions);
+  await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue(sharedPreview.instructions);
   await expect(settings.getByRole('button', { name: 'Videos', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(settings.getByRole('button', { name: 'Images', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await expect(settings.getByText('release', { exact: true })).toBeVisible();
   await expect(settings.getByRole('checkbox', { name: 'Monitor integry/propr', exact: true })).not.toBeChecked();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-shared-branch-settings.png' });
-  }
+  await capturePreview(page, 'repositories-shared-branch-settings');
 
   await settings.getByText('Auto CI follow-up', { exact: true }).click();
   await expect(autoCi).not.toBeChecked();
@@ -207,10 +319,7 @@ test('silences notifications for every branch entry of the selected repository',
     ['propr-main', false], ['propr-release', false], ['sdk', true],
   ]);
   await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-notifications-disabled.png' });
-  }
+  await capturePreview(page, 'repository-notifications-disabled');
 
   await page.reload();
   await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
@@ -229,10 +338,7 @@ test('keeps navigation compact and saves settings for the selected repository', 
     'src',
     /\/integry\/propr\/8a6fe50123456789\/public\/logo\.png$/,
   );
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-icons-desktop.png' });
-  }
+  await capturePreview(page, 'repository-icons-desktop');
   const originalHeight = (await propr.locator('../..').boundingBox())!.height;
   expect(originalHeight).toBe((await sdk.locator('../..').boundingBox())!.height);
   await expect(propr.locator('../..').getByText('8a6fe50', { exact: true })).toBeVisible();
@@ -249,7 +355,7 @@ test('keeps navigation compact and saves settings for the selected repository', 
   await expect.poll(api.chatLoads).toBeGreaterThan(0);
   const initialChatLoads = api.chatLoads();
   await settings.getByText('Auto CI follow-up', { exact: true }).click();
-  await settings.getByRole('textbox').fill('Capture separate desktop and mobile views.');
+  await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).fill('Capture separate desktop and mobile views.');
   await settings.getByRole('button', { name: 'Videos', exact: true }).click();
   await expect.poll(() => api.writes.at(-1)?.[0].visualPreview).toEqual({
     enabled: true, types: ['image', 'video'], instructions: 'Capture separate desktop and mobile views.',
@@ -261,22 +367,19 @@ test('keeps navigation compact and saves settings for the selected repository', 
 
   await sdk.click();
   const sdkSettings = page.getByRole('region', { name: 'Settings for integry/integration-sdk', exact: true });
-  await expect(sdkSettings.getByRole('textbox')).toHaveCount(0);
+  await expect(sdkSettings.getByRole('textbox', { name: 'Visual preview instructions for integry/integration-sdk', exact: true })).toHaveCount(0);
   await sdkSettings.getByText('Visual previews', { exact: true }).click();
-  await expect(sdkSettings.getByRole('textbox')).toHaveValue('');
+  await expect(sdkSettings.getByRole('textbox', { name: 'Visual preview instructions for integry/integration-sdk', exact: true })).toHaveValue('');
   await propr.click();
-  await expect(settings.getByRole('textbox')).toHaveValue('Capture separate desktop and mobile views.');
+  await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue('Capture separate desktop and mobile views.');
   await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(settings).toHaveCount(0);
   await expect(page.getByRole('checkbox', { name: /Automatic CI follow-up/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Reindex repository', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(settings.getByRole('textbox')).toHaveValue('Capture separate desktop and mobile views.');
+  await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue('Capture separate desktop and mobile views.');
   await page.mouse.move(1400, 850);
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-desktop.png' });
-  }
+  await capturePreview(page, 'repositories-desktop');
 });
 
 for (const width of [320, 390]) {
@@ -285,39 +388,54 @@ for (const width of [320, 390]) {
     const api = await stubRepositoryApis(page);
     await page.goto('/repositories');
     await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true }).locator('..').getByTestId('repository-icon-image')).toBeVisible();
-    if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
-      await mkdir('../.propr/previews', { recursive: true });
-      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-icons-mobile.png' });
-    }
+    if (width === 390) await capturePreview(page, 'repository-icons-mobile');
     await page.getByRole('button', { name: 'Select integry/propr', exact: true }).click();
     const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
-    await expect(settings.getByRole('textbox')).toBeVisible();
-    for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Settings']) {
+    await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toBeVisible();
+    for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Media', 'Settings']) {
       const tab = page.getByRole('button', { name, exact: true });
       await expect(tab).toBeInViewport({ ratio: 1 });
       const bounds = (await tab.boundingBox())!;
       expect(bounds.x).toBeGreaterThanOrEqual(0);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      expect(bounds.height).toBeGreaterThanOrEqual(40);
+      // The full label must fit inside the tab's padding, not merely its border box.
+      expect(await tab.evaluate(button => {
+        const style = getComputedStyle(button);
+        const contentWidth = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        return button.querySelector('span')!.getBoundingClientRect().width <= contentWidth;
+      })).toBe(true);
     }
     const tabStrip = page.getByRole('button', { name: 'Settings', exact: true }).locator('../..');
     expect(await tabStrip.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-    await settings.getByRole('textbox').fill('Capture the mobile navigation.');
+    await capturePreview(page, `repository-tabs-${width}`, { x: 0, y: 0, width, height: 260 });
+    await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).fill('Capture the mobile navigation.');
     await settings.getByText('Auto CI follow-up', { exact: true }).click();
     await expect.poll(() => api.writes.at(-1)?.[0].autoFollowupOnFailedCi).toBe(true);
     await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-    const box = (await settings.getByRole('textbox').boundingBox())!;
-    expect(box.x + box.width).toBeLessThanOrEqual(width);
-    if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
-      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-mobile.png' });
+    await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).click();
+    const assignee = settings.getByRole('textbox', { name: 'Default assignee for integry/propr', exact: true });
+    await assignee.fill('octocat');
+    await assignee.blur();
+    await expect.poll(() => api.writes.at(-1)?.[0].autoAssignDefaultAssignee).toBe('octocat');
+    for (const control of [assignee, settings.getByRole('checkbox', { name: 'Request a review from the assignee for integry/propr', exact: true }).locator('..')]) {
+      const bounds = (await control.boundingBox())!;
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
     }
+    expect(await settings.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    if (width === 320) {
+      await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
+      await capturePreview(page, 'repository-auto-assign-320');
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    const box = (await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+    if (width === 390) await capturePreview(page, 'repositories-mobile');
     await settings.getByRole('button', { name: 'Reindex repository', exact: true }).scrollIntoViewIfNeeded();
     await expect(settings.getByRole('button', { name: 'Reindex repository', exact: true })).toBeInViewport();
     await settings.getByRole('button', { name: 'Remove repository from ProPR', exact: true }).scrollIntoViewIfNeeded();
     await expect(settings.getByRole('button', { name: 'Remove repository from ProPR', exact: true })).toBeInViewport();
-    if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
-      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-mobile-indexing.png' });
-    }
+    if (width === 390) await capturePreview(page, 'repositories-mobile-indexing');
     await page.getByRole('button', { name: 'Back to repositories' }).click();
     await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true })).toBeVisible();
   });
@@ -362,7 +480,8 @@ test('keeps repository and indexing changes unavailable to read-only users', asy
   await expect(page.getByRole('checkbox', { name: 'Hide repository', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Reindex repository', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Remove repository from ProPR', exact: true })).toBeDisabled();
-  await expect(page.getByRole('checkbox', { name: /Automatic CI follow-up|Visual previews/ })).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: /Automatic CI follow-up|Visual previews|Assign pull requests|Request a review/ })).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: /Default assignee/ })).toHaveCount(0);
   const notifications = page.getByRole('checkbox', { name: 'Notifications for integry/propr', exact: true });
   await expect(notifications).toBeDisabled();
   // Playwright treats a disabled control's label as disabled; force the click to prove it is inert.
@@ -418,4 +537,28 @@ test('saves monitoring and confirms removal from Settings', async ({ page }) => 
   await expect.poll(() => api.writes.at(-1)?.map(repo => repo.name)).toEqual(['integry/integration-sdk', 'integry/documentation']);
   await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true })).toHaveCount(0);
   await expect(page.getByRole('region', { name: /Settings for/ })).toHaveCount(0);
+});
+
+test('offers other indexed repositories as Improve references and sends the chosen one', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).click();
+  await page.getByRole('button', { name: 'Improve', exact: true }).click();
+  await expect(page.getByText('Reference Repository (Optional)', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Select repository', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'integry/integration-sdk', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'integry/documentation', exact: true })).toBeVisible();
+  // The current repository is never offered as its own reference.
+  await expect(page.getByRole('button', { name: 'integry/propr', exact: true })).toHaveCount(0);
+  await capturePreview(page, 'improve-reference-repository-options');
+
+  await page.getByRole('button', { name: 'integry/integration-sdk', exact: true }).click();
+  await page.getByRole('button', { name: /Security/ }).click();
+  await capturePreview(page, 'improve-reference-repository-selected');
+  await page.getByRole('button', { name: /Generate Suggestions/ }).click();
+  await expect(page.getByText('Adopt shared retry helper', { exact: true })).toBeVisible();
+  expect(api.improvementRequests).toEqual([expect.objectContaining({
+    repository: 'integry/propr', categories: ['security'], referenceRepoId: 'integry/integration-sdk',
+  })]);
 });

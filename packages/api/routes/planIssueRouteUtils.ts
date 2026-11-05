@@ -1,4 +1,5 @@
 import { PlanIssueStatus, logger } from '@propr/core';
+import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
 
 export interface ImplementationSettings { useEpic: boolean; autoMerge: boolean; }
 export interface ImplementationSettingsOverrides { useEpic?: boolean; autoMerge?: boolean; }
@@ -414,4 +415,13 @@ export function buildIssueUpdate(
     ultrafix_goal: ultrafixGoal,
     ultrafix_max_cycles: ultrafixMaxCycles
   };
+}
+
+/** `max_cost_usd` on an implementation request: a USD amount (0 clears an earlier one); anything else is rejected with `fail`. */
+export function parseImplementationCostCap(value: unknown, fail: (message: string) => Error): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > MAX_RUN_COST_CAP_USD) {
+    throw fail(`max_cost_usd must be a USD amount from 0 to ${MAX_RUN_COST_CAP_USD}`);
+  }
+  return value;
 }

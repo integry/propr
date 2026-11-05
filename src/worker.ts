@@ -1,12 +1,14 @@
+import { preventWithdrawnJob } from '@propr/core';
+import { prepareWorktreeHost } from './gitDirectoryTrust.js';
+import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
+import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
-import { logger } from '@propr/core';
-import { generateCorrelationId } from '@propr/core';
-import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
-import { loadAiPrimaryTag, loadSettings } from '@propr/core';
-import { loadSettingsFromConfig } from '@propr/core';
+import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
+import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
+import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
@@ -17,7 +19,7 @@ import {
 import {
     AGENT_IMAGE_PREPARATION_QUEUE_NAME,
     createAgentImagePreparationQueue,
-    closeAgentImageBuildLock,
+    abortAgentImageBuildsForShutdown, closeAgentImageBuildLock,
     type AgentImagePreparationJobData,
 } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
@@ -28,16 +30,20 @@ import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { processGoalJob } from './jobs/processGoalJob.js';
+import { processAgentRunJob } from './jobs/processAgentRunJob.js';
+import { processAgentActionJob } from './jobs/processAgentActionJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
+import { resolveWorkerConcurrency } from './workerConcurrency.js';
 import type { MainWorker } from './workerFactory.js';
-import {
-    attachPRCommentTaskStateFinalizers,
-    type PRCommentTaskStateFinalizers,
-} from './jobs/prCommentTaskStateFinalizers.js';
+import { attachPRCommentTaskStateFinalizers, type PRCommentTaskStateFinalizers } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
+import { ultrafixFailedStepFinalizerOptions } from './jobs/ultrafixFailedStepFinalizer.js';
+import { getTaskReplacementService } from './taskReplacement/index.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
-import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob } from './workerAgentPreparation.js';
+import { recoverFollowupHandoffsAndClosedHolds } from './jobs/closedPullRequestHandoffs.js';
+import { cancelClosedPullRequestValidation } from './jobs/closedPullRequestCiCancellation.js';
+import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob, startAgentImageWatchdog } from './workerAgentPreparation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -188,8 +194,9 @@ export interface StartedWorker {
 }
 
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
+    await prepareWorktreeHost();
     const workerId = `worker:${generateCorrelationId()}`;
-    let workerConcurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
+    let workerConcurrency = resolveWorkerConcurrency();
     let aiPrimaryTag = 'AI';
 
     validateAttachmentBaseUrlConfig();
@@ -200,12 +207,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     try {
         if (process.env.CONFIG_REPO) {
             const settings = await loadSettings();
-            if (settings.worker_concurrency && typeof settings.worker_concurrency === 'number') {
-                workerConcurrency = settings.worker_concurrency;
-                logger.info({ concurrency: workerConcurrency }, 'Successfully loaded worker_concurrency from config repo');
-            } else {
-                logger.info({ concurrency: workerConcurrency }, 'Using worker_concurrency from environment variable');
-            }
+            workerConcurrency = resolveWorkerConcurrency(settings?.worker_concurrency);
+            logger.info({ concurrency: workerConcurrency }, 'Resolved worker concurrency with config repo override');
             await loadSettingsFromConfig();
             logger.info('Successfully initialized runtime settings from config repo');
         }
@@ -284,7 +287,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     // Do not advertise or claim task capacity while an image is still building.
-    await prepareAgentRegistryAtStartup();
+    const agentImageWatchdog = startAgentImageWatchdog(await prepareAgentRegistryAtStartup());
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
@@ -320,7 +323,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     setCheckRunDeps({
         areAllChecksPassing,
         getCurrentPRHead,
-        getCheckRunsStatus,
+        getCheckRunsStatus: getCheckRunsStatusForRepo,
     });
     logger.info('Check run dependencies initialized for ultrafix');
 
@@ -382,24 +385,43 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processTaskImportJob,
             processSystemTaskJob,
             processMergeConflictJob,
-            processGoalJob,
+            processGoalJob, processAgentRunJob, processAgentActionJob,
+        },
+        beforeProcess: async job => {
+            const reason = await preventWithdrawnJob(job);
+            return reason ? { status: 'cancelled', reason } : null;
         },
         beforeRun: configuredWorker => {
-            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
+            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager, ultrafixFailedStepFinalizerOptions);
         },
     });
     if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
     const attachedTaskStateFinalizers = taskStateFinalizers;
     const taskStateRecovery = await startWorkerTaskStateRecovery({
-        stateManager,
+        stateManager, replacement: getTaskReplacementService(),
         recoverGoals: () => recoverNonterminalGoals(),
-        reconcileCiSuspensions: () => reconcileFollowupCiSuspensions(),
+        reconcileCiSuspensions: async () => ({
+            ...await reconcileFollowupCiSuspensions(),
+            closedPullRequests: await cancelClosedPullRequestValidation(),
+            epicQueues: await reconcileEpicExecutionQueues(),
+        }),
+        recoverFollowupHandoffs: () => recoverFollowupHandoffsAndClosedHolds(),
     });
+
+    const usageTipsRunner = await startUsageTipsSelectionRunner();
+    const egressProxySweeper = startEgressProxySweeper();
+    enforceInstanceNetworkPolicyOutsideRuns();
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
+        // Before draining jobs: an image build would otherwise run on (or keep
+        // waiting for the slot) until the stop timeout kills the process and
+        // leaves the slot held by a dead owner.
+        agentImageWatchdog.close(); await abortAgentImageBuildsForShutdown();
+        await usageTipsRunner.close();
         await taskStateRecovery.close();
-        await worker.close();
+        // Proxies close only after running jobs (and their containers) have drained.
+        await worker.close().finally(() => egressProxySweeper.close());
         await attachedTaskStateFinalizers.close();
         await closeStateManager();
         await runtimeBuildWorker.close();
@@ -411,18 +433,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
     };
-
-    process.on('SIGINT', async () => {
-        logger.info('Worker received SIGINT, shutting down gracefully...');
-        await close();
-        process.exit(0);
-    });
-
-    process.on('SIGTERM', async () => {
-        logger.info('Worker received SIGTERM, shutting down gracefully...');
-        await close();
-        process.exit(0);
-    });
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        process.on(signal, async () => {
+            logger.info(`Worker received ${signal}, shutting down gracefully...`);
+            await close();
+            process.exit(0);
+        });
+    }
 
     return { worker, runtimeBuildWorker, close };
 }

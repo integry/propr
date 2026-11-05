@@ -315,7 +315,7 @@ if [ -f "$SEED_DB_PATH" ]; then
     # them and applies all pending migrations to the copied schema.
     STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
         $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
-        -p "propr-pr-${PR_NUMBER}" stop api daemon worker analysis-worker indexing-worker
+        -p "propr-pr-${PR_NUMBER}" stop api daemon worker indexing-worker
     mkdir -p "$REPO_ROOT/data"
     if [ "$SEED_DB_PATH" = "$PREVIEW_DB_PATH" ]; then
         echo "Preview database already seeded at $PREVIEW_DB_PATH"
@@ -357,7 +357,7 @@ STAGING_ENV_FILE="" \
 STAGING_DB_PATH="" \
 PR_SOURCE_DIR="" \
 PR_HEAD_SHA="" \
-$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" up -d --build
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" up -d --build --remove-orphans
 
 # `docker compose up -d` succeeds once containers are created, even when an
 # entrypoint exits immediately. Wait for the API endpoint and then verify every
@@ -391,7 +391,7 @@ while [ "$attempt" -le 30 ]; do
 done
 
 FAILED_SERVICES=""
-for service_name in api daemon worker analysis-worker indexing-worker; do
+for service_name in api daemon worker indexing-worker; do
     if ! service_is_running "$service_name"; then
         FAILED_SERVICES="${FAILED_SERVICES} ${service_name}"
     fi
@@ -412,7 +412,7 @@ if [ "$API_HEALTHY" != "true" ] || [ -n "$FAILED_SERVICES" ]; then
     STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
         $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
         -p "propr-pr-${PR_NUMBER}" logs --no-color --tail=100 \
-        api daemon worker analysis-worker indexing-worker || true
+        api daemon worker indexing-worker || true
     exit 1
 fi
 

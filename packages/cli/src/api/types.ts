@@ -37,6 +37,19 @@ export interface RequestOptions {
    * Request timeout in milliseconds. Defaults to 30000 (30 seconds).
    */
   timeout?: number;
+
+  /**
+   * Caller cancellation. An aborted request is never retried and rejects with
+   * a `RequestCancelledError`.
+   */
+  signal?: AbortSignal;
+
+  /**
+   * Set to `false` to send a GET exactly once. Use it for reads whose answer
+   * depends on when the server handles them, so a repeat is not equivalent.
+   * Defaults to retrying transient transport failures.
+   */
+  retry?: boolean;
 }
 
 /**

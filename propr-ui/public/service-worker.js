@@ -1,7 +1,7 @@
 /* global ServiceWorkerGlobalScope */
 
 const CACHE_PREFIX = 'propr-shell-';
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v2`;
 const SHELL_FALLBACK_URL = '/index.html';
 const SHELL_ASSET_MANIFEST_URL = '/pwa-shell-assets.json';
 const LOCAL_DISMISS_ACTION = 'propr-dismiss';
@@ -11,7 +11,6 @@ const MAX_EVENT_ID_BYTES = 255;
 
 const PRECACHE_URLS = [
   '/',
-  SHELL_FALLBACK_URL,
   '/manifest.webmanifest',
   APP_ICON_URL,
   '/icons/pwa-512x512.png',
@@ -30,6 +29,7 @@ const APP_ROUTE_PATTERNS = [
   /^\/$/,
   /^\/repositories\/?$/,
   /^\/tasks(?:\/[^/]+)?\/?$/,
+  /^\/goals(?:\/[^/]+)?\/?$/,
   /^\/studio(?:\/[^/]+)?\/?$/,
   /^\/plans\/?$/,
   /^\/inbox\/?$/,
@@ -109,6 +109,9 @@ async function fetchAndCache(cache, url, expectedKind) {
   const documentHtml = expectedKind === 'document'
     ? await response.clone().text()
     : null;
+  // Static hosts may redirect /index.html to /index. Fetch the canonical /
+  // document once and keep a fallback alias without following that redirect.
+  if (expectedKind === 'document') await cache.put(SHELL_FALLBACK_URL, response.clone());
   await cache.put(request, response);
   return documentHtml;
 }
@@ -150,7 +153,7 @@ async function precacheShell() {
     })),
     fetchBuiltShellAssets(cache),
   ]);
-  const index = documents[PRECACHE_URLS.indexOf(SHELL_FALLBACK_URL)] ?? '';
+  const index = documents[PRECACHE_URLS.indexOf('/')] ?? '';
   await Promise.all([...new Set([...shellAssetsFromDocument(index), ...builtAssets])]
     .map(url => fetchAndCache(cache, url, 'asset')));
 }

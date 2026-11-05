@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { db } from '@propr/core';
 import type { FlatRequest } from '../requestTypes.js';
-import { trimPathSlashes } from './summaryPathUtils.js';
+import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH, trimPathSlashes } from './summaryPathUtils.js';
 
 interface SummaryPathParams {
   owner: string;
@@ -9,8 +9,7 @@ interface SummaryPathParams {
   path?: string[];
 }
 
-export const SUMMARY_TREE_ROUTE_PATH = '/api/summaries/:owner/:repo/tree/*path';
-export const SUMMARY_PATH_ROUTE_PATH = '/api/summaries/:owner/:repo/summary/*path';
+export { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH };
 
 interface SummaryEntry {
   name: string;

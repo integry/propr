@@ -1,16 +1,26 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AuthenticationCommandHandoff } from '@propr/cli/desktop-local-setup';
 
 export interface TerminalCandidate {
   command: string;
+  commandFile?: boolean;
   args(title: string, command: string, args: string[]): string[];
 }
 
-const terminals: TerminalCandidate[] = [
+export const darwinTerminal: TerminalCandidate = {
+  command: '/usr/bin/open',
+  commandFile: true,
+  args: (_title, command) => ['-a', 'Terminal', command],
+};
+
+/** POSIX single-quote escaping; no command or argument becomes shell source. */
+export const quoteAuthenticationArgument = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
+
+const terminals: TerminalCandidate[] = process.platform === 'darwin' ? [darwinTerminal] : [
   { command: 'x-terminal-emulator', args: (title, command, args) => ['-T', title, '-e', command, ...args] },
   { command: 'gnome-terminal', args: (title, command, args) => ['--wait', `--title=${title}`, '--', command, ...args] },
   { command: 'konsole', args: (title, command, args) => ['--nofork', '-p', `tabtitle=${title}`, '-e', command, ...args] },
@@ -18,6 +28,25 @@ const terminals: TerminalCandidate[] = [
 ];
 
 const START_TIMEOUT_MS = 5_000;
+const COMMAND_FILE_START_TIMEOUT_MS = 30_000;
+
+// Forward locations/settings only. Tokens (including GH_TOKEN and Docker auth
+// JSON) never belong in a command file. Clear Terminal overrides as well as
+// supplying host values: an inherited context otherwise overrides DOCKER_HOST.
+const authenticationEnvironmentKeys = [
+  'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG',
+  'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_API_VERSION', 'GH_CONFIG_DIR', 'GH_HOST',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'TMPDIR',
+] as const;
+const authenticationEnvironmentArguments = (): string[] => [
+  ...[...authenticationEnvironmentKeys, 'GH_TOKEN', 'GITHUB_TOKEN', 'DOCKER_AUTH_CONFIG']
+    .flatMap(key => ['-u', key]),
+  ...authenticationEnvironmentKeys.flatMap(key => process.env[key] === undefined ? [] : [`${key}=${process.env[key]}`]),
+  `PATH=${process.platform === 'darwin'
+    ? [...new Set([...(process.env.PATH ?? '/usr/bin:/bin').split(':').filter(path => path.startsWith('/')),
+      '/Applications/Docker.app/Contents/Resources/bin', join(homedir(), '.docker', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'])].join(':')
+    : process.env.PATH ?? '/usr/bin:/bin'}`,
+];
 const POLL_INTERVAL_MS = 25;
 const TERMINAL_STOP_GRACE_MS = 1_000;
 
@@ -252,8 +281,17 @@ const tryTerminal = async (
   let cancellationWritten = false;
   try {
     await writeFile(wrapperPath, commandWrapper, { mode: 0o700, flag: 'wx' });
+    let launchPath = wrapperPath;
+    if (terminal.commandFile) {
+      launchPath = join(runtimeDirectory, 'ProPR authentication.command');
+      // LaunchServices cannot pass argv to a .command file. The private file
+      // carries only the explicit login command, never provider credentials.
+      const argv = ['/usr/bin/env', ...authenticationEnvironmentArguments(), wrapperPath, stateBase, command, ...args];
+      await writeFile(launchPath, `#!/bin/sh\nexec ${argv.map(quoteAuthenticationArgument).join(' ')}\n`, { mode: 0o700, flag: 'wx' });
+    }
+    signal?.throwIfAborted();
     const admission = await new Promise<'spawned' | 'missing'>((resolve, reject) => {
-      const child = spawn(terminal.command, terminal.args(title, wrapperPath, [stateBase, command, ...args]), {
+      const child = spawn(terminal.command, terminal.args(title, launchPath, [stateBase, command, ...args]), {
         stdio: 'ignore',
         detached: true,
       });
@@ -272,7 +310,7 @@ const tryTerminal = async (
     if (admission === 'missing') return undefined;
     terminalAdmitted = true;
 
-    const startDeadline = Date.now() + START_TIMEOUT_MS;
+    const startDeadline = Date.now() + (terminal.commandFile ? COMMAND_FILE_START_TIMEOUT_MS : START_TIMEOUT_MS);
     while (true) {
       const status = parseStatus(await readOwnedMarker(resultPath));
       if (status !== null) {
@@ -295,7 +333,17 @@ const tryTerminal = async (
         cancellationWritten = true;
       }
       if (!started && terminalClosed && terminalStatus !== 0) {
+        // Completion can be published during the awaited started-marker read.
+        const completedStatus = parseStatus(await readOwnedMarker(resultPath));
+        if (completedStatus !== null) {
+          completed = true;
+          if (cancellationWritten) throw abortError();
+          return completedStatus;
+        }
+        started ||= hasStartedCommand(await readOwnedMarker(`${stateBase}.started`));
+        if (started) continue;
         if (signal?.aborted) throw abortError();
+        if (terminal.commandFile) throw new Error('Terminal could not be opened. Open Terminal on this Mac and retry authentication.');
         return terminalStatus;
       }
       if (!started && Date.now() >= startDeadline) {
@@ -320,7 +368,9 @@ export const createDesktopAuthenticationLauncher = (
     const status = await tryTerminal(terminal, command, args, options.title, options.signal);
     if (status !== undefined) return { status };
   }
-  throw new Error('No supported desktop terminal is installed. Install x-terminal-emulator, GNOME Terminal, Konsole, or xterm and retry.');
+  throw new Error(process.platform === 'darwin'
+    ? 'Terminal could not be opened. Open Terminal on this Mac and retry authentication.'
+    : 'No supported desktop terminal is installed. Install x-terminal-emulator, GNOME Terminal, Konsole, or xterm and retry.');
 };
 
 /** Open interactive authentication in a real desktop terminal without blocking Electron's main loop. */

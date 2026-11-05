@@ -7,8 +7,8 @@ import { calculateReviewCost, resolveReviewerBudget, type ReviewBudgetSettings }
 import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
 import type { PreparedPRDiff } from './prDiffFormatting.js';
 import { ReviewTokenEstimator, type ReviewTokenStatsCache } from './reviewTokenEstimator.js';
-import { buildReviewErrorComment } from './reviewCommentFormatter.js';
-import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
+import { buildReviewErrorComment, type ReviewRecordStartNumbers } from './reviewCommentFormatter.js';
+import { buildReviewCommentWithReservedRecordRanges } from './reviewFindingNumberAllocator.js';
 
 const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
 const REVIEW_ANALYSIS_SAFETY_SUFFIX = buildAnalysisSafetySuffix('text', false, undefined);
@@ -30,6 +30,11 @@ export interface ReviewResult {
     error?: string;
     prompt?: string;
     findingCount?: number;
+    suggestionCount?: number;
+    /** The posted review covered only part of the diff (its comment is marked partial). */
+    isPartial?: boolean;
+    /** The review comment as posted to the pull request. */
+    commentBody?: string;
 }
 
 export interface RunReviewsContext {
@@ -44,6 +49,8 @@ export interface RunReviewsContext {
     combinedCommentBody: string;
     commentHistory: string;
     originalTaskSpec: string;
+    /** Formatted follow-up requests ProPR accepted and completed on this PR. */
+    authorizedFollowups?: string;
     commandInstructions?: string;
     /** Untrimmed diff; each reviewer selects the files that fit its own budget. */
     preparedDiff: PreparedPRDiff;
@@ -51,6 +58,7 @@ export interface RunReviewsContext {
     tokenStats: ReviewTokenStatsCache;
     changedFilePaths: string[];
     findingStartNumber: number;
+    suggestionStartNumber: number;
     redisClient: Redis;
     fileContents: string;
     relatedContext: string;
@@ -91,7 +99,7 @@ export async function runSingleReview(
         }, ctx.reviewBudgetSettings);
         const promptResult = buildReviewPromptWithinBudget({
             pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
-            originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
+            originalTaskSpec: ctx.originalTaskSpec, authorizedFollowups: ctx.authorizedFollowups, repoOwner, repoName, instructions: ctx.commandInstructions,
             fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
             checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
         }, ceiling.ceiling, REVIEW_ANALYSIS_SAFETY_SUFFIX, {
@@ -150,7 +158,7 @@ export async function runSingleReview(
         }, 'Review analysis completed');
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
-        const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
+        const { reviewCommentBody, findingCount, suggestionCount } = await buildReviewCommentWithReservedRecordRanges(
             assignment, analysisResult, taskUrl, {
                 reviewedHead: ctx.reviewedHead, taskId,
                 omittedDiffFiles: [
@@ -167,6 +175,7 @@ export async function runSingleReview(
                 changedFilePaths: ctx.changedFilePaths,
                 redisClient: ctx.redisClient, issueRef: { repoOwner, repoName, pullRequestNumber },
                 observedNextFindingNumber: ctx.findingStartNumber,
+                observedNextSuggestionNumber: ctx.suggestionStartNumber,
             },
         );
 
@@ -174,7 +183,9 @@ export async function runSingleReview(
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
         });
 
-        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount };
+        const isPartial = promptResult.prDiffTruncated === true || promptResult.missingPatchFiles.length > 0
+            || promptResult.ioGuardOmittedFiles.length > 0 || promptResult.budgetOmittedFiles.length > 0;
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount, suggestionCount, isPartial, commentBody: reviewCommentBody };
     } catch (reviewError) {
         const errorMsg = (reviewError as Error).message;
         correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
@@ -225,20 +236,24 @@ export async function routeReviewAssignments(
 }
 
 export async function runReviewRoutingOutcomes(
-    routingOutcomes: ReviewRoutingOutcome[], reviewCtx: RunReviewsContext, firstFindingNumber: number,
+    routingOutcomes: ReviewRoutingOutcome[], reviewCtx: RunReviewsContext, startNumbers: ReviewRecordStartNumbers,
 ): Promise<ReviewResult[]> {
     const reviewResults: ReviewResult[] = [];
-    let nextFindingNumber = firstFindingNumber;
+    let nextFindingNumber = startNumbers.firstFindingNumber;
+    let nextSuggestionNumber = startNumbers.firstSuggestionNumber;
     for (const outcome of routingOutcomes) {
         if (outcome.status === 'failed') {
             reviewResults.push(outcome.result);
             continue;
         }
         const result = await runSingleReview(outcome.assignment, {
-            ...reviewCtx, findingStartNumber: nextFindingNumber,
+            ...reviewCtx, findingStartNumber: nextFindingNumber, suggestionStartNumber: nextSuggestionNumber,
         });
         reviewResults.push(result);
+        // Reviewers of one job publish in turn, so each continues both sequences
+        // where the previous reviewer's comment stopped.
         nextFindingNumber += result.findingCount ?? 0;
+        nextSuggestionNumber += result.suggestionCount ?? 0;
     }
     return reviewResults;
 }

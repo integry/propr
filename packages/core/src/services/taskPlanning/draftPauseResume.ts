@@ -1,3 +1,12 @@
+async function resumeEpicQueue(draftId: string): Promise<void> {
+  try {
+    const { startEpicQueueHead } = await import('./epicExecutionQueue.js');
+    await startEpicQueueHead(draftId);
+  } catch (error) {
+    logger.warn({ draftId, error: (error as Error).message }, 'Failed to resume epic queue');
+  }
+}
+
 /**
  * Draft pause/resume management.
  * Allows pausing plan execution so the next task doesn't start until resumed.
@@ -98,6 +107,7 @@ export async function resumeDraft(draftId: string): Promise<PauseResumeResult> {
     }
 
     if (!draft.paused) {
+      await resumeEpicQueue(draftId);
       // Already not paused
       return { success: true, paused: false, pausedAt: null };
     }
@@ -110,6 +120,7 @@ export async function resumeDraft(draftId: string): Promise<PauseResumeResult> {
         updated_at: db.fn.now()
       });
 
+    await resumeEpicQueue(draftId);
     logger.info({ draftId, previousPausedAt: draft.paused_at }, 'Draft execution resumed');
     return { success: true, paused: false, pausedAt: null };
   } catch (error) {

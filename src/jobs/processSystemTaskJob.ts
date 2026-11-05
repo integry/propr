@@ -263,6 +263,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
 
     let worktreePath: string | undefined;
     let localRepoPath: string | undefined;
+    let jobSucceeded = false;
 
     try {
         const octokit = await getAuthenticatedOctokit();
@@ -289,6 +290,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
             commitHash
         }, 'System task completed successfully');
 
+        jobSucceeded = true;
         return {
             status: 'complete',
             correlationId,
@@ -307,7 +309,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
     } finally {
         if (worktreePath && localRepoPath) {
             try {
-                await cleanupWorktree(localRepoPath, worktreePath, prBranch);
+                await cleanupWorktree(localRepoPath, worktreePath, prBranch, { success: jobSucceeded });
                 correlatedLogger.debug({ worktreePath }, 'Cleaned up worktree');
             } catch (cleanupError) {
                 correlatedLogger.warn({

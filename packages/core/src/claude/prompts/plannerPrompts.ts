@@ -230,6 +230,7 @@ You MUST return a JSON object with this exact structure:
 2. Update implementation code when the task changes.
 3. Keep body content verbose with context, requirements, implementation details, and acceptance criteria.
 4. If action is "answered" or "clarify", return the plan UNCHANGED.
+5. Always return the COMPLETE plan: every issue in full with its title, body and implementation, copying unchanged issues verbatim. Never return edit instructions (such as "retain", "extend", "keep issue 3 unchanged") or only the issues you changed.
 
 Return ONLY the JSON object. No markdown, no explanations outside the JSON.
 `;

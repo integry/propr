@@ -111,3 +111,34 @@ export async function restorePendingComments(comments: UnprocessedComment[], opt
     }
     await redisClient.expire(pendingCommentsKey, 3600);
 }
+
+const WITHDRAW_PENDING_COMMENTS_SCRIPT = `
+local ids = {}
+for index = 1, #ARGV do ids[ARGV[index]] = true end
+local existing = redis.call('lrange', KEYS[1], 0, -1)
+local removed = 0
+for _, value in ipairs(existing) do
+    local ok, comment = pcall(cjson.decode, value)
+    if ok and comment.id ~= nil and ids[tostring(comment.id)] then
+        removed = removed + redis.call('lrem', KEYS[1], 0, value)
+    end
+end
+return removed
+`;
+
+/** Remove the given comment IDs from the shared pending list (the inverse of restorePendingComments). */
+export async function withdrawPendingComments(commentIds: number[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis }): Promise<void> {
+    if (commentIds.length === 0) return;
+    const { repoOwner, repoName, pullRequestNumber, redisClient } = options;
+    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
+    if (typeof redisClient.eval === 'function') {
+        await redisClient.eval(WITHDRAW_PENDING_COMMENTS_SCRIPT, 1, pendingCommentsKey, ...commentIds.map(String));
+        return;
+    }
+    const ids = new Set(commentIds);
+    const existingJson = await redisClient.lrange(pendingCommentsKey, 0, -1);
+    for (const value of existingJson) {
+        const id = parsePendingComment(value, { warn: () => undefined } as unknown as Logger)?.id;
+        if (id !== undefined && ids.has(id)) await redisClient.lrem(pendingCommentsKey, 0, value);
+    }
+}

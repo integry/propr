@@ -31,6 +31,9 @@ export {
   REFINEMENT_STALE_AFTER_MS
 } from './operationGuard.js';
 
+// Plan revision history
+export { PLAN_RESTORABLE_STATUSES, listPlanRevisions, getPlanRevision, restorePlanRevision } from './planRevisions.js';
+
 // Utility functions
 export { updateDraftContextConfig, runBackgroundGeneration, selectRefinementModel, scoreDraftsBySearch, buildIssueSummaries, parseDraftJsonFields } from './utils.js';
 
@@ -43,3 +46,4 @@ export {
   createImplementIssueHandler,
   createUpdateIssueHandler
 } from '../planIssueHandlers.js';
+export { createGetExecutionQueueHandler, createQueueRemainingHandler } from '../planExecutionQueueHandlers.js';

@@ -59,7 +59,7 @@ export interface DesktopNativeCommandDispatcher {
 }
 
 const AUTHENTICATED_COMMANDS = new Set<DesktopNativeCommand>([
-  'new-task', 'search', 'toggle-sidebar', 'new-plan', 'tasks', 'plans', 'inbox', 'notification-settings',
+  'new-task', 'new-plan', 'new-goal', 'new-automation', 'new-todo', 'search', 'toggle-sidebar', 'tasks', 'plans', 'inbox', 'notification-settings',
   'dashboard', 'goals', 'repositories', 'llm-logs', 'settings', 'back', 'forward',
 ]);
 

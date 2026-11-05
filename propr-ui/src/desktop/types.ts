@@ -80,6 +80,21 @@ export class DesktopAuthenticationError extends Error {
 
 export const DESKTOP_AUTHENTICATION_COMPLETE_EVENT = 'propr:desktop-authentication-complete';
 export const DESKTOP_ACCESS_INVALID_EVENT = 'propr:desktop-access-invalid';
+export const DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT = 'propr:desktop-github-authorization-required';
+
+/** Precise stored-grant reasons the API reports with GITHUB_REAUTH_REQUIRED (#3387). */
+export const GITHUB_REAUTH_REASON_MESSAGES = {
+  renewal_revoked: 'Your GitHub authorization for Connect was revoked.',
+  renewal_expired: 'Your GitHub authorization for Connect expired after the refresh window.',
+  reauth_required: 'ProPR Connect needs you to sign in to GitHub again.',
+  missing_refresh_token: 'This GitHub sign-in cannot be renewed automatically. Signing in again once gives this instance a renewable authorization.',
+} as const;
+
+export type GitHubReauthReason = keyof typeof GITHUB_REAUTH_REASON_MESSAGES;
+
+export const knownGitHubReauthReason = (value: unknown): GitHubReauthReason | undefined => (
+  typeof value === 'string' && Object.prototype.hasOwnProperty.call(GITHUB_REAUTH_REASON_MESSAGES, value) ? value as GitHubReauthReason : undefined
+);
 
 export interface DesktopAuthenticationCompleteEventDetail {
   profileId: string;
@@ -89,6 +104,8 @@ export interface DesktopAccessInvalidEventDetail {
   profileId: string;
   transportScope: string;
   code: string;
+  /** Why GitHub authorization needs a browser sign-in, when the instance reports it. */
+  reason?: string;
 }
 
 export interface DesktopExternalBrowserAdapter {
@@ -114,6 +131,14 @@ export type DesktopGuidedLocalSetupAdapter = Required<Omit<DesktopLocalSetupAdap
 
 export interface DesktopConnectionAdapter {
   probe(profile: DesktopProfile): Promise<DesktopConnectionResult>;
+  /**
+   * Persists no active selection before (re)connecting `profileId`, as
+   * `profiles.setActiveId(null)` does, so a failed or interrupted attempt
+   * restores no account. Unlike a plain deselection, it lets a later
+   * activation of the same published profile, endpoint and identity keep its
+   * renderer state; any other selection change in between forfeits that.
+   */
+  fenceSelection?(profileId: string): Promise<void>;
   activate?(
     profile: DesktopProfile,
     result: Extract<DesktopConnectionResult, { status: 'ready' }>,
@@ -157,6 +182,8 @@ export interface DesktopAdapters {
     minimize?(): Promise<void>;
     toggleMaximize?(): Promise<void>;
     closeWindow?(): Promise<void>;
+    /** Linux frameless window only; absent on macOS, Windows and the web. */
+    showApplicationMenu?(request: import('../../../apps/desktop/src/shared/contract').DesktopApplicationMenuRequest): Promise<void>;
   };
   profiles: DesktopProfileAdapter;
   discovery: DesktopDiscoveryAdapter;

@@ -11,7 +11,11 @@ import {
 } from '../../agents/version/versionService.js';
 import { assertAgentImageBuildCapacity } from '../../agents/agentImageBuildCapacity.js';
 import { withAgentImageBuildSlot } from '../../agents/agentImageBuildLock.js';
+import { readManagedAgentPin } from '../../agents/managedAgentPin.js';
 import { executeDockerCommand } from './dockerExecutor.js';
+import { agentDockerImageExists } from './dockerImagePresence.js';
+
+export { agentDockerImageExists };
 
 const PROJECT_ROOT = process.env.PROPR_ROOT
     || (fs.existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -51,13 +55,8 @@ function bundleBuildArgs(versions: AgentCliVersionMatrix): string[] {
     ];
 }
 
-export async function agentDockerImageExists(image: string): Promise<boolean> {
-    const result = await executeDockerCommand('docker', ['images', '-q', image]);
-    return result.exitCode === 0 && Boolean(result.stdout.trim());
-}
-
-async function pullImage(image: string): Promise<boolean> {
-    const result = await executeDockerCommand('docker', ['pull', image], { timeout: 10 * 60 * 1000 });
+async function pullImage(image: string, signal?: AbortSignal): Promise<boolean> {
+    const result = await executeDockerCommand('docker', ['pull', image], { timeout: 10 * 60 * 1000, signal });
     return result.exitCode === 0;
 }
 
@@ -71,10 +70,10 @@ async function buildBundle(
         return { success: false, imageTag, error: `Unified agent Dockerfile not found: ${dockerfile}` };
     }
 
-    return withAgentImageBuildSlot(async () => {
+    return withAgentImageBuildSlot(async signal => {
         // Recheck after acquiring the installation-wide slot so concurrent
         // processes do not build an image that another process just produced.
-        if (await agentDockerImageExists(imageTag) || await pullImage(imageTag)) {
+        if (await agentDockerImageExists(imageTag) || await pullImage(imageTag, signal)) {
             return { success: true, imageTag };
         }
         await assertAgentImageBuildCapacity();
@@ -85,7 +84,7 @@ async function buildBundle(
             ...bundleBuildArgs(versions),
             '-t', imageTag,
             basePath
-        ], { timeout: 20 * 60 * 1000 });
+        ], { timeout: 20 * 60 * 1000, signal });
         if (result.exitCode !== 0) {
             // Docker reports disk pressure on either stream depending on the
             // builder and progress mode. Both are kept so the message-based
@@ -116,6 +115,10 @@ function scheduleBundleImageCleanup(imageTag: string): void {
                 // is never referenced by a config, so keep it explicitly.
                 const defaultBundleTag = generateAgentBundleImageTag(getDefaultAgentCliVersionMatrix(), computeContentHash());
                 tagsInUse.add(defaultBundleTag.slice(prefix.length));
+                // A Desktop runtime's published pin serves default matrices; a
+                // custom build must not untag it.
+                const managedPin = readManagedAgentPin();
+                if (managedPin) tagsInUse.add(managedPin.sourceRevision);
                 for (const agent of await loadAgents()) {
                     if (agent.dockerImage.startsWith(prefix)) {
                         tagsInUse.add(agent.dockerImage.slice(prefix.length));

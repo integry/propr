@@ -4,7 +4,9 @@ import {
     getAuthenticatedOctokit,
     getDetailedUsageStats,
     getModelPricing,
+    getNonBlockingChecksForRepository,
     getOpenRouterId,
+    isNonBlockingCheck,
 } from '@propr/core';
 import {
     resolveReviewInputCapacity,
@@ -41,9 +43,11 @@ async function fetchCurrentHeadCheckSummary(
             filter: 'latest',
             per_page: 100,
         }) as unknown as ReviewCheckRun[];
+        const nonBlockingChecks = await getNonBlockingChecksForRepository(repoOwner, repoName);
+        const isNonBlocking = (name: string | undefined) => isNonBlockingCheck(name, nonBlockingChecks);
         return {
-            checkSummary: formatCurrentHeadCheckSummary(checkRuns),
-            hasCurrentCheckFailure: currentHeadChecksHaveFailures(checkRuns),
+            checkSummary: formatCurrentHeadCheckSummary(checkRuns, isNonBlocking),
+            hasCurrentCheckFailure: currentHeadChecksHaveFailures(checkRuns, isNonBlocking),
         };
     } catch (error) {
         correlatedLogger.warn(

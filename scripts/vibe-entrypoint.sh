@@ -5,8 +5,6 @@
 
 set -e
 
-echo "Skipping firewall setup (would require --privileged Docker flag)" >&2
-
 SOURCE_VIBE_HOME="${VIBE_SOURCE_HOME:-/home/node/.vibe}"
 RUNTIME_VIBE_HOME="${VIBE_RUNTIME_HOME:-/tmp/propr-vibe-home}"
 VIBE_READ_ONLY_CONFIG="${VIBE_READ_ONLY_CONFIG:-0}"

@@ -3,7 +3,7 @@ import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { db, sanitizeAgentReport, TaskStates } from '@propr/core';
+import { db, getModelName, sanitizeAgentReport, TaskStates } from '@propr/core';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
 const RESTRICTED_FAILURE_DETAIL = 'Agent execution failed; detailed output is available in restricted logs.';
@@ -44,7 +44,7 @@ export function buildConflictResolutionPrompt(options: {
     repoOwner: string;
     repoName: string;
 }): string {
-    const { pullRequestNumber, baseBranch, headBranch, conflictedFiles, worktreeInfo, repoOwner, repoName } = options;
+    const { pullRequestNumber, baseBranch, headBranch, conflictedFiles, repoOwner, repoName } = options;
 
     const hasKnownConflicts = conflictedFiles && conflictedFiles.length > 0;
     const fileList = hasKnownConflicts ? conflictedFiles.map(f => `- \`${f}\``).join('\n') : '';
@@ -68,7 +68,7 @@ ${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
    - Why you chose this resolution approach
 
 **CRITICAL INSTRUCTIONS:**
-- You are in directory: ${worktreeInfo.worktreePath}
+- Work in /home/node/workspace, the writable repository mount inside your container. Use this directory for all file edits and verification commands.
 - DO NOT commit your changes - the system will handle the commit for you.
 - Do not inspect or repair .git permissions. In your final response, do not mention that changes are uncommitted or that you did not create a commit; ProPR creates and reports the commit after you finish.
 - DO NOT create a new pull request.
@@ -107,7 +107,7 @@ PR: #${pullRequestNumber}`;
 Automatically resolved merge conflicts after merging target branch into PR branch.${fileList}
 
 PR: #${pullRequestNumber}
-Model: ${model || 'unknown'}`;
+Model: ${model ? getModelName(model) : 'unknown'}`;
 }
 
 /**
@@ -134,7 +134,7 @@ export function buildMergeConflictComment(options: {
 
         if (model || executionTimeMs) {
             comment += `\n---\n### 🤖 Verification Details\n\n`;
-            if (model) comment += `* **Model:** ${model}\n`;
+            if (model) comment += `* **Model:** ${getModelName(model)}\n`;
             if (executionTimeMs) {
                 const seconds = Math.floor(executionTimeMs / 1000);
                 const m = Math.floor(seconds / 60);
@@ -168,7 +168,7 @@ export function buildMergeConflictComment(options: {
 
     if (model || executionTimeMs) {
         comment += `---\n### 🤖 Resolution Details\n\n`;
-        if (model) comment += `* **Model:** ${model}\n`;
+        if (model) comment += `* **Model:** ${getModelName(model)}\n`;
         if (executionTimeMs) {
             const seconds = Math.floor(executionTimeMs / 1000);
             const m = Math.floor(seconds / 60);
@@ -197,7 +197,7 @@ export function mergeConflictJobToCommentJob(mergeJob: {
     baseBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'sweep';
     correlationId: string;
 }): {
     userId?: string;

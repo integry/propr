@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
-import type { PublishedVisualPreview } from '@propr/shared';
-import { PreviewImage } from './PreviewMedia';
+import { trustedApplicationPreviewMediaUrl, type PublishedVisualPreview } from '@propr/shared';
+import { PreviewImage, PreviewVideo } from './PreviewMedia';
 import PreviewLightbox from './PreviewLightbox';
 
 /**
@@ -30,14 +30,14 @@ export default function VisualPreviewGallery({ previews, className = '' }: { pre
           className="block w-full cursor-zoom-in bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-500">
           <PreviewImage preview={preview} className="max-h-[65vh] w-full object-contain" />
         </button>
-        : <video src={preview.url} aria-label={preview.title} controls preload="metadata" playsInline className="aspect-video max-h-[65vh] w-full bg-slate-950" />}
+        : <PreviewVideo preview={preview} className="aspect-video max-h-[65vh] w-full bg-slate-950" />}
       <figcaption className="p-3">
         <div className="flex items-start justify-between gap-2">
           <p className="min-w-0 break-words text-sm font-medium text-slate-800">{preview.title}</p>
-          <a href={preview.url} target="_blank" rel="noopener noreferrer" aria-label={`Open original: ${preview.title}`}
+          {!trustedApplicationPreviewMediaUrl(preview.url) && <a href={preview.url} target="_blank" rel="noopener noreferrer" aria-label={`Open original: ${preview.title}`}
             className="inline-flex min-h-6 shrink-0 items-center gap-1 text-xs font-medium text-sky-700 hover:underline">
             Original <ExternalLink className="h-3 w-3" aria-hidden="true" />
-          </a>
+          </a>}
         </div>
         {preview.description && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{preview.description}</p>}
       </figcaption>

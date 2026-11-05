@@ -1,5 +1,5 @@
-import { getAuthenticatedOctokit, logger, ensureBranchAndPush, handleError, getModelShortName } from '@propr/core';
-import { generatePRBody, generateClaudeLogsComment } from './prFormatters.js';
+import { getAuthenticatedOctokit, logger, ensureBranchAndPush, handleError } from '@propr/core';
+import { describeIssuePullRequestForRepository, generateClaudeLogsComment } from './prFormatters.js';
 import { waitForBranchPropagation, compareBranches, createPRWithRetry, type PRInfo } from './prHelpers.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
@@ -101,7 +101,7 @@ export async function createPullRequestRobust(params: CreatePullRequestRobustPar
         await ensureBranchAndPush(worktreePath, branchName, baseBranch, {
             repoUrl, authToken,
             tokenRefreshFn: async () => {
-                const auth = await (octokit as unknown as { auth: (opts: { type: string }) => Promise<{ token: string }> }).auth({ type: "installation" });
+                const auth = await (octokit as unknown as { auth: (opts: { type: string; refresh: boolean }) => Promise<{ token: string }> }).auth({ type: "installation", refresh: true });
                 return auth.token;
             },
             correlationId: params.correlationId || 'unknown'
@@ -145,10 +145,9 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const modelShortName = getModelShortName(modelName);
-        // Format: [412 by Claude Opus] Title
-        const prTitle = `[${issueNumber} by ${modelShortName}] ${issueTitle}`;
-        const prBody = await generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
+        const { title: prTitle, body: prBody } = await describeIssuePullRequestForRepository({
+            octokit, owner, repoName, baseBranch, branch: branchName, issueNumber, issueTitle, commitMessage, claudeResult, modelName,
+        });
 
         logger.info({
             owner,

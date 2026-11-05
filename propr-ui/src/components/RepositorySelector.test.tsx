@@ -222,7 +222,7 @@ describe('RepositorySelector', () => {
     expect(trigger.textContent).toContain('(develop)');
 
     fireEvent.click(trigger);
-    const selectedItem = getVisibleRepoButtons().find(btn => btn.className.includes('bg-indigo-50'));
+    const selectedItem = getVisibleRepoButtons().find(btn => btn.getAttribute('aria-pressed') === 'true');
     expect(selectedItem?.textContent).toContain('(develop)');
   });
 
@@ -300,6 +300,19 @@ describe('RepositorySelector', () => {
     expect(items[2].textContent).not.toContain('7');
   });
 
+  it('groups the digits of large counts the way the pagination footer does', () => {
+    const repos: RepoOption[] = [
+      { name: 'all', enabled: true, displayName: 'All Repos', count: 14769 },
+      { name: 'org/repo-beta', enabled: true, count: 1200 },
+    ];
+    render(<RepositorySelector repos={repos} selectedRepo="all" onRepoChange={vi.fn()} />);
+    expect(screen.getByRole('button').textContent).toContain('14,769');
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+    expect(items[0].textContent).toContain('14,769');
+    expect(items[1].textContent).toContain('1,200');
+  });
+
   it('hides the collapsed count badge on mobile for stacked labels', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },
@@ -317,6 +330,15 @@ describe('RepositorySelector', () => {
     const countBadge = trigger.querySelector('.bg-gray-100');
 
     expect(countBadge).toHaveClass('hidden', 'sm:inline-flex');
+  });
+
+  it('hides the collapsed count badge on mobile when asked', () => {
+    const repos: RepoOption[] = [
+      { name: 'all', enabled: true, displayName: 'All Repos', count: 14769 },
+    ];
+    render(<RepositorySelector repos={repos} selectedRepo="all" onRepoChange={vi.fn()} hideCountOnMobile />);
+
+    expect(screen.getByRole('button').querySelector('.bg-gray-100')).toHaveClass('hidden', 'sm:inline-flex');
   });
 
   it('filters by repo name even when displayName differs', () => {

@@ -165,3 +165,56 @@ test("repo add omits notifications without a flag so the server inherits a muted
   assert.equal(added[1]?.baseBranch, "next");
   assert.equal("notificationsEnabled" in (added[1] ?? {}), false);
 });
+
+test("repo add and toggle set, keep and clear the merge-conflict auto-resolve override", async () => {
+  const existing: MonitoredRepo = { id: "repo-1", name: "integry/propr", enabled: true, autoFollowupOnFailedCi: false };
+
+  const inherited = await runRepoWrite(["add", "integry/inherit"], [existing]);
+  assert.equal("autoResolveMergeConflicts" in (inherited[1] ?? {}), false);
+
+  const added = await runRepoWrite(["add", "integry/on", "--auto-resolve-conflicts", "on"], [existing]);
+  assert.equal(added[1]?.autoResolveMergeConflicts, true);
+
+  const off = await runRepoWrite(["toggle", "integry/propr", "--auto-resolve-conflicts", "off"], [existing]);
+  assert.equal(off[0]?.autoResolveMergeConflicts, false);
+
+  const unrelated = await runRepoWrite(["toggle", "integry/propr", "--disable"], off);
+  assert.equal(unrelated[0]?.autoResolveMergeConflicts, false);
+
+  const cleared = await runRepoWrite(["toggle", "integry/propr", "--auto-resolve-conflicts", "inherit"], off);
+  assert.equal(cleared[0]?.autoResolveMergeConflicts, null);
+});
+
+test("repo list shows the override or the inherited instance default", async () => {
+  const output: string[] = [];
+  console.log = (...values: unknown[]) => { output.push(values.join(" ")); };
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const body = url.includes("/api/config/settings")
+      ? { auto_resolve_merge_conflicts: true }
+      : { repos_to_monitor: [
+        { id: "repo-1", name: "integry/always", enabled: true, autoFollowupOnFailedCi: false, autoResolveMergeConflicts: false },
+        { id: "repo-2", name: "integry/inherit", enabled: true, autoFollowupOnFailedCi: false },
+      ] };
+    return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+
+  await createRepoCommand().parseAsync(["list"], { from: "user" });
+
+  const text = output.join("\n");
+  assert.match(text, /Auto-resolve conflicts/);
+  assert.match(text, /integry\/always.*\bOff\b/);
+  assert.match(text, /integry\/inherit.*Inherit \(On\)/);
+});
+
+test("repo add sends an explicit inherit as null and omits the field when no flag is given", async () => {
+  const existing: MonitoredRepo = { id: "repo-1", name: "integry/propr", enabled: true, autoFollowupOnFailedCi: false, autoResolveMergeConflicts: true };
+
+  const inherited = await runRepoWrite(["add", "integry/other", "--auto-resolve-conflicts", "inherit"], [existing]);
+  assert.equal("autoResolveMergeConflicts" in (inherited[1] ?? {}), true);
+  assert.equal(inherited[1]?.autoResolveMergeConflicts, null);
+  assert.equal(inherited[0]?.autoResolveMergeConflicts, true);
+
+  const omitted = await runRepoWrite(["add", "integry/other"], [existing]);
+  assert.equal("autoResolveMergeConflicts" in (omitted[1] ?? {}), false);
+});

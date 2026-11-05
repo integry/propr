@@ -30,6 +30,30 @@ export async function prepareAgentRegistryAtStartup(): Promise<AgentRegistry> {
     return registry;
 }
 
+export const AGENT_IMAGE_WATCHDOG_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Periodically re-checks the prepared images so one removed while the worker
+ * is idle (for example by a manual `docker image prune`) is rebuilt without
+ * waiting for the next task, probe, or worker restart. Recovery reuses the
+ * registry's backoff and circuit; overlapping checks are skipped.
+ */
+export function startAgentImageWatchdog(
+    registry: Pick<AgentRegistry, 'ensureInitialized'>,
+    intervalMs = AGENT_IMAGE_WATCHDOG_INTERVAL_MS,
+): { close(): void } {
+    let running = false;
+    const timer = setInterval(() => {
+        if (running) return;
+        running = true;
+        registry.ensureInitialized()
+            .catch(error => logger.error({ error: (error as Error).message }, 'Agent image watchdog check failed'))
+            .finally(() => { running = false; });
+    }, intervalMs);
+    timer.unref?.();
+    return { close: () => clearInterval(timer) };
+}
+
 export async function processAgentImagePreparationJob(job: Job<AgentImagePreparationJobData>): Promise<void> {
     logger.info({ imageTag: job.data.imageTag }, 'Preparing unified agent image in the worker-owned path');
     const workerRegistry = AgentRegistry.getInstance();

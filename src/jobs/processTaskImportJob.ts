@@ -73,6 +73,7 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
     let octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
     let localRepoPath: string | undefined;
     let worktreeInfo: WorktreeInfo | undefined;
+    let importSucceeded = false;
     const [repoOwner, repoName] = repository.split('/');
     const taskId = taskImportTaskId(repoOwner, repoName, jobId);
 
@@ -169,6 +170,7 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
             notificationRecap: taskImportNotificationRecap(agentResult, repository),
         });
 
+        importSucceeded = agentResult.success;
         return {
             status: 'complete',
             repository,
@@ -195,7 +197,7 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
             try {
                 await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
                     deleteBranch: true,
-                    success: true
+                    success: importSucceeded
                 });
             } catch (cleanupError) {
                 correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');

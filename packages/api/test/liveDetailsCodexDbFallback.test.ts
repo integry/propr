@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import type { Response as ExpressResponse } from 'express';
@@ -5,6 +8,7 @@ import knex, { type Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import type { FlatRequest } from '../requestTypes.js';
 import type { ExecutionDetailRow } from '../routes/liveDetailsExecutionParser.js';
+import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
 process.env.NODE_ENV = 'test';
 process.env.PROPR_DEMO_MODE = 'true';
@@ -177,12 +181,9 @@ test('Codex command lifecycle pairs starts and completions and recovers an unmat
 
 test('Codex database fallback retains row content for minimal error metadata', () => {
   const row: ExecutionDetailRow = {
-    event_type: 'error',
-    event_timestamp: timestamp(0),
-    content: 'persisted error diagnostic',
-    is_error: true,
-    tool_name: null,
-    tool_input: null,
+    event_type: 'error', event_timestamp: timestamp(0),
+    content: 'persisted error diagnostic', is_error: true,
+    tool_name: null, tool_input: null,
     metadata: '{"type":"error"}'
   };
 
@@ -193,12 +194,9 @@ test('Codex database fallback retains row content for minimal error metadata', (
 
 test('Codex database fallback retains row content and error flag for minimal tool-result metadata', () => {
   const row: ExecutionDetailRow = {
-    event_type: 'tool_result',
-    event_timestamp: timestamp(0),
-    content: 'persisted tool-result diagnostic',
-    is_error: true,
-    tool_name: null,
-    tool_input: null,
+    event_type: 'tool_result', event_timestamp: timestamp(0),
+    content: 'persisted tool-result diagnostic', is_error: true,
+    tool_name: null, tool_input: null,
     metadata: '{"type":"tool_result"}'
   };
 
@@ -299,7 +297,7 @@ test('live-details database fallback preserves token usage and stable event IDs'
     await database('llm_execution_details').insert(fixture.map((row, sequenceNumber) => ({
       execution_id: 'execution-1915', sequence_number: sequenceNumber, ...row
     })));
-    const redisClient = { get: async () => null } as unknown as RedisClientType;
+    const redisClient = withLiveOutputReads({ get: async () => null }) as unknown as RedisClientType;
     const { getLiveDetails } = createLiveDetailsRoutes({ redisClient, db: database });
     const request = { params: { taskId } } as unknown as FlatRequest;
 
@@ -342,7 +340,7 @@ test('live-details keeps persisted goal output visible after completion cleanup'
       timestamp: timestamp(0),
       metadata: JSON.stringify({ goalOutputRecords: outputRecords }),
     });
-    const redisClient = { get: async () => null } as unknown as RedisClientType;
+    const redisClient = withLiveOutputReads({ get: async () => null }) as unknown as RedisClientType;
     const { getLiveDetails } = createLiveDetailsRoutes({ redisClient, db: database });
     const request = { params: { taskId } } as unknown as FlatRequest;
     const completedResponse = createJsonResponse();
@@ -376,7 +374,7 @@ test('live-details database output redacts local preview references while preser
         id: 'preview-command', type: 'command_execution', command: `capture ${local}`, aggregated_output: `Saved ${local}`, exit_code: 0,
       } }),
     });
-    const routes = createLiveDetailsRoutes({ redisClient: { get: async () => null } as unknown as RedisClientType, db: database });
+    const routes = createLiveDetailsRoutes({ redisClient: withLiveOutputReads({ get: async () => null }) as unknown as RedisClientType, db: database });
     const recorder = createJsonResponse();
     await routes.getLiveDetails({ params: { taskId } } as unknown as FlatRequest, recorder.response);
     const output = JSON.stringify(recorder.body());
@@ -385,3 +383,50 @@ test('live-details database output redacts local preview references while preser
     assert.match(output, /live:integry-propr-2283-codex:database:preview-redaction/);
   } finally { await database.destroy(); }
 });
+
+
+for (const source of ['conversation', 'redis']) {
+  for (const state of ['claude_execution', 'completed', 'failed', 'cancelled']) {
+    test(`${source} live details apply raw selection only while active (${state})`, async () => {
+      const database = await createFallbackDatabase();
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'live-details-history-'));
+      const previousDirectory = process.env.CLAUDE_PROJECTS_DIR;
+      process.env.CLAUDE_PROJECTS_DIR = directory;
+      const taskId = 'long-live-task';
+      const sessionId = 'long-conversation';
+      const records = Array.from({ length: 510 }, (_, index) => JSON.stringify({
+        type: 'assistant', timestamp: timestamp(index), message: { content: [
+          { type: 'tool_use', id: `tool-${index}`, name: 'Bash', input: { command: `echo ${index}` } },
+        ] },
+      }));
+      const output = records.join('\n') + '\n';
+      try {
+        await database('task_history').insert({ task_id: taskId, state, timestamp: timestamp(0) });
+        if (source === 'conversation') {
+          const project = path.join(directory, '-home-node-workspace');
+          await fs.mkdir(project);
+          await fs.writeFile(path.join(project, `${sessionId}.jsonl`), output);
+        }
+        const redis = withLiveOutputReads({ get: async (key: string) => {
+          // Exercise DB lifecycle fallback for conversation reads; Redis lifecycle for output reads.
+          if (key === `worker:state:${taskId}`) return JSON.stringify({ history: [
+            { state: 'claude_execution', metadata: source === 'conversation' ? { sessionId } : {} },
+            ...(source === 'redis' ? [{ state }] : [{ metadata: {} }]),
+          ] });
+          return key === `agent:output:${taskId}` && source === 'redis' ? output : null;
+        } }) as unknown as RedisClientType;
+        const { getLiveDetails } = createLiveDetailsRoutes({ redisClient: redis, db: database });
+        const response = createJsonResponse();
+        await getLiveDetails({ params: { taskId } } as FlatRequest, response.response);
+        const body = response.body() as { events: Array<{ id: string }>; omittedEventCount: number };
+        assert.equal(body.events.length, state === 'claude_execution' ? 500 : 510);
+        assert.equal(body.omittedEventCount, state === 'claude_execution' ? 10 : 0);
+      } finally {
+        if (previousDirectory === undefined) delete process.env.CLAUDE_PROJECTS_DIR;
+        else process.env.CLAUDE_PROJECTS_DIR = previousDirectory;
+        await fs.rm(directory, { recursive: true, force: true });
+        await database.destroy();
+      }
+    });
+  }
+}

@@ -1,3 +1,8 @@
+---
+sidebar_label: "Hosted UI Tunnel"
+title: "Connect the hosted ProPR UI to your local API"
+description: "Set up a managed Cloudflare Tunnel so the hosted UI can reach your local API, and verify URLs, authentication, and security."
+---
 # Hosted UI Tunnel
 
 The hosted ProPR UI at `https://app.propr.dev` can drive a locally-running stack from your browser. An optional **Cloudflare Tunnel** — a managed sidecar running the official `cloudflare/cloudflared` image — publishes your local **API** at a per-instance hostname `https://t-<id>.propr.dev`. You keep everything running on your own machine and skip owning a public domain or operating an inbound proxy.
@@ -58,7 +63,7 @@ ProPR Connect provisions the Cloudflare Tunnel and instance id for Plus installa
 propr tunnel setup --token <connector-token> --url https://t-abc123.propr.dev --start
 ```
 
-This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`, `PROPR_WEB_AUTH_MODE=connect`), records the tunnel as enabled, and — with `--start` — starts a stopped stack or recreates a running one so the hosted URLs apply immediately. Prefer this command over hand-editing `.env`: it also overwrites stale localhost values left over from a previous local setup.
+This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_UI_TUNNEL_ENABLED=true`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`, `PROPR_WEB_AUTH_MODE=connect`), records the tunnel as enabled, and — with `--start` — starts a stopped stack or recreates a running one so the hosted URLs apply immediately. Prefer this command over hand-editing `.env`: it also overwrites stale localhost values left over from a previous local setup.
 
 ### Manual `.env` fallback
 
@@ -131,7 +136,7 @@ Desktop invokes an explicit stack root; the CLI never scans for installations:
 propr connect status --json --root /explicit/stack/root
 ```
 
-Stdout is exactly one schema-versioned JSON document. It reports only the canonical endpoint, public installation identity, configured/enabled/sidecar/API readiness, restart requirement, compatibility/version, and bounded reason codes. `configured` means that a valid canonical endpoint exists; it deliberately says nothing about whether any credential is present. Diagnostics go to stderr. It never reports token presence or values, GitHub/account/repository identity, host details, environment contents, or filesystem paths. Exit codes are stable: `0` ready, `2` known not ready, `3` incompatible discovery/API, `4` invalid configuration/root, `5` probe timeout, and `1` internal failure.
+Stdout is exactly one schema-versioned JSON document. It reports only the canonical endpoint, public installation identity, configured/enabled/sidecar/API readiness, restart requirement, compatibility/version, and bounded reason codes. `configured` means that a valid canonical endpoint exists; it deliberately says nothing about whether any credential is present. Diagnostics go to stderr. It never reports token presence or values, GitHub/account/repository identity, host details, environment contents, or filesystem paths. Exit codes are stable: `0` when the document was produced for a ready, not-ready, or timed-out probe (read `status` to tell them apart), `2` for incompatible discovery/API, and `1` for invalid configuration/root or an internal failure.
 
 The public identity is generated randomly in the stack's durable `data/` boundary. It survives normal restart, image upgrade, and tunnel rotation. Replacing/reinitializing that durable stack data generates a new identity. A sidecar is not `apiReady` until the remote discovery response matches both the expected canonical origin and this identity; consequently, `propr tunnel on` without an API restart reports `restartRequired` instead of a false-ready endpoint.
 

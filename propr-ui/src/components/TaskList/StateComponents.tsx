@@ -1,26 +1,25 @@
-import React from 'react';
-import { LoaderCircle } from 'lucide-react';
+import React, { useMemo } from 'react';
 import type { TaskGroup } from './types';
-import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskRows';
+import { TaskQueueRow } from './TaskRows';
 import { MobileTaskCard } from './MobileTaskCard';
+import { buildTaskRow, TASK_QUEUE_COLUMNS } from './rowModel';
+import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
-import { useDesktop } from '../../desktop/DesktopContext';
-import './desktop-task-table.css';
+import './task-queue.css';
 
-/** Renders a simple loading message for dashboard integration */
+/** Renders the first read of the task list as feed rows for dashboard integration */
 export const DashboardLoadingState: React.FC = () => (
-  <div role="status" className="flex items-center gap-2 p-4 text-gray-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading tasks...</div>
+  <ListSkeleton rows={4} layout="row" label="Loading tasks…" className="p-4" data-testid="tasks-skeleton" />
 );
 
-/** Renders a full-page loading state with header for the main Tasks page */
+/**
+ * Renders a full-page read as table columns. It fills the body under the Tasks
+ * header, which stays mounted so a search or filter keeps its focus while the
+ * next scope loads.
+ */
 export const FullPageLoadingState: React.FC = () => (
-  <div className="flex flex-col h-full">
-    <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-      <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-    </div>
-    <div className="flex-1 overflow-auto px-6 py-6">
-      <div role="status" className="flex items-center gap-2 text-gray-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading tasks...</div>
-    </div>
+  <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+    <ListSkeleton rows={8} layout="table" columns={4} label="Loading tasks…" data-testid="tasks-skeleton" />
   </div>
 );
 
@@ -29,15 +28,10 @@ export const DashboardErrorState: React.FC<{ error: string }> = ({ error }) => (
   <SystemAlert>Error loading tasks: {error}</SystemAlert>
 );
 
-/** Renders a full-page error state with header for the main Tasks page */
+/** Renders a full-page error state in the body under the Tasks header */
 export const FullPageErrorState: React.FC<{ error: string }> = ({ error }) => (
-  <div className="flex flex-col h-full">
-    <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-      <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-    </div>
-    <div className="flex-1 overflow-auto px-6 py-6">
-      <SystemAlert>Error loading tasks: {error}</SystemAlert>
-    </div>
+  <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+    <SystemAlert>Error loading tasks: {error}</SystemAlert>
   </div>
 );
 
@@ -46,96 +40,77 @@ interface TaskTableContentProps {
   expandedGroups: Set<string>;
   onRowClick: (taskId: string) => void;
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
+  /** The task open beside the list; its row is marked selected. */
+  selectedTaskId?: string | null;
+  /** A row click opens the task beside the list instead of navigating to it. */
+  selectsInPlace?: boolean;
 }
 
-/** Renders the desktop table and mobile card views for tasks */
+const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
+
+/** The times and the score after ASSIGNEES are right-aligned, as their cells are. */
+const RIGHT_ALIGNED_FROM = TASK_QUEUE_COLUMNS.indexOf('Assignees');
+
+/**
+ * Renders the task ledger: a flat table where the list is wide enough for its fixed
+ * metadata columns plus a readable title, and one card per group anywhere narrower.
+ */
 export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   groupedTasks,
   expandedGroups,
   onRowClick,
   onToggleGroup,
+  selectedTaskId,
+  selectsInPlace = false,
 }) => {
-  const desktop = useDesktop();
-  const desktopLayout = desktop?.platform === 'macos' || desktop?.platform === 'linux';
+  const rows = useMemo(() => groupedTasks.map(group => ({ group, row: buildTaskRow(group) })), [groupedTasks]);
 
   return (
-    <>
-      {/* Mobile Card View */}
-      <div className="md:hidden">
-        {groupedTasks.map((group) => (
+    <div className="task-ledger">
+      {/* Card View (phones and narrow panes) */}
+      <div className="task-queue task-ledger-cards pt-1">
+        {/*
+          The cards have no header row to scroll under, so a card leaving the top would be sliced
+          against the toolbar's border. This fade, pinned to the top of the scroll area, lets it go
+          out of view softly instead. It takes no space, so the first card starts where it did.
+        */}
+        <div aria-hidden="true" data-testid="task-cards-top-fade" className="pointer-events-none sticky top-0 z-10 -mb-2 h-2 bg-gradient-to-b from-white to-transparent" />
+        {rows.map(({ group, row }) => (
           <MobileTaskCard
             key={group.key}
-            group={group}
-            expandedGroups={expandedGroups}
+            row={row}
+            prNumber={group.prNumber}
             onRowClick={onRowClick}
-            onToggleGroup={onToggleGroup}
+            selectedTaskId={selectedTaskId}
+            selectsInPlace={selectsInPlace}
           />
         ))}
       </div>
 
-      {/* Desktop Table View */}
-      <div className={desktopLayout ? 'desktop-task-list hidden md:block' : 'hidden md:block'}>
-        <table className="w-full">
-          {desktopLayout && (
-            <colgroup>
-              <col className="task-repository" />
-              <col />
-              <col className="task-status" />
-              <col className="task-metadata" />
-            </colgroup>
-          )}
-          <thead className="sr-only">
-            <tr>
-              <th className="task-repository">Repository</th>
-              <th>Issue/Task</th>
-              <th>Status</th>
-              <th>Metadata</th>
-              {!desktopLayout && <th>Actions</th>}
-            </tr>
-          </thead>
-          <tbody className="bg-white">
-            {groupedTasks.map((group, index) => {
-              const parentTask = group.tasks[0];
-              const allChildren = group.tasks.slice(1);
-              const isExpanded = expandedGroups.has(group.key);
-              const shouldCollapse = allChildren.length > 3;
-
-              let visibleChildren = allChildren;
-              let hiddenCount = 0;
-
-              if (shouldCollapse && !isExpanded) {
-                visibleChildren = allChildren.slice(0, 3);
-                hiddenCount = allChildren.length - 3;
-              }
-
-              const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
-              const isDuplicateRepo = prevGroup
-                ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
-                : false;
-
-              return (
-                <React.Fragment key={group.key}>
-                  <ParentTaskRow desktopLayout={desktopLayout} group={group} task={parentTask} onRowClick={onRowClick} isDuplicateRepo={isDuplicateRepo} />
-
-                  {visibleChildren.map((child, childIndex) => (
-                    <ChildTaskRow
-                      desktopLayout={desktopLayout}
-                      key={child.id}
-                      task={child}
-                      onRowClick={onRowClick}
-                      isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
-                    />
-                  ))}
-
-                  {hiddenCount > 0 && (
-                    <CollapseToggleRow desktopLayout={desktopLayout} groupKey={group.key} hiddenCount={hiddenCount} onToggle={onToggleGroup} />
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Ledger */}
+      <div role="table" aria-label="Tasks" className="task-queue task-ledger-table">
+        <div role="rowgroup" className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
+          <div role="row" className="task-queue-grid pl-8 pr-6 py-2">
+            {TASK_QUEUE_COLUMNS.map((column, index) => (
+              <span key={column} role="columnheader" className={`${index > RIGHT_ALIGNED_FROM ? 'text-right ' : ''}${columnHeader}`}>{column}</span>
+            ))}
+          </div>
+        </div>
+        <div role="rowgroup">
+          {rows.map(({ group, row }) => (
+            <TaskQueueRow
+              key={group.key}
+              row={row}
+              prNumber={group.prNumber}
+              expanded={expandedGroups.has(group.key)}
+              onRowClick={onRowClick}
+              onToggle={onToggleGroup}
+              selectedTaskId={selectedTaskId}
+              selectsInPlace={selectsInPlace}
+            />
+          ))}
+        </div>
       </div>
-    </>
+    </div>
   );
 };

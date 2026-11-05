@@ -1,1 +1,1 @@
-Check library_docs for repomix documentation
+Check docs/library for repomix documentation

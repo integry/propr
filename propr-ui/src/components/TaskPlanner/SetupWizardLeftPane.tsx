@@ -3,11 +3,15 @@ import { PlannerAttachment, GenerationTrace, getAttachmentUrl } from '../../api/
 import { Paperclip, Loader2 } from 'lucide-react';
 import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
-import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
+import { NewModeHeader, EditModeHeader, ScopeError } from './SetupWizardHeaders';
 import { ManualFileSelector } from './ManualFileSelector';
 import { RepoSelection } from '../RepositorySelector';
+import { StudioPhaseSwitcher } from './StudioStepper';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
+
+// New plans only resolve the repository's branch; an existing draft can also report a branch it could not use.
+const scopeErrorFor = (isNewMode: boolean, branchError: string | null, repoError: string | null) => (isNewMode ? repoError : branchError || repoError);
 
 // Extracted: Attachments section
 const AttachmentsSection: React.FC<{
@@ -124,6 +128,8 @@ interface SetupWizardLeftPaneProps {
   onRemoveManualFile: (filePath: string) => void;
   hideManualFileSelector?: boolean;
   attachButtonPressed?: boolean;
+  /** Generation settings and the Generate button, docked to the bottom edge of the prompt box. */
+  composerFooter?: React.ReactNode;
 }
 
 export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
@@ -163,43 +169,51 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   onRemoveManualFile,
   hideManualFileSelector,
   attachButtonPressed,
+  composerFooter,
 }) => (
-  <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
+  <div data-testid="setup-wizard-left-pane" className="w-full md:w-[65%] md:min-w-0 h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
     <div className="px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">
-      <div className="flex items-center gap-1.5 sm:gap-2 text-sm">
-        {isNewMode ? (
-          <NewModeHeader
-            reposLoading={reposLoading}
-            selectedRepo={selectedRepo}
-            selectedBaseBranch={selectedBaseBranch}
-            repos={repos}
-            onRepoChange={onRepoChange}
-            baseBranch={baseBranch}
-            isLoadingBranches={isRepoLoading}
-            branchError={repoError}
-          />
-        ) : (
-          <EditModeHeader
-            repository={repository}
-            isRepoLoading={isRepoLoading}
-            baseBranch={baseBranch}
-            selectedBaseBranch={selectedBaseBranch}
-            configuredBaseBranch={configuredBaseBranch}
-            branchError={branchError}
-            repoError={repoError}
-            repos={repos}
-            onRepoChange={onRepoChange || (() => {})}
-            reposLoading={reposLoading}
-          />
-        )}
+      {/* With enlarged text the phase pill wraps under repo and branch instead of running beneath the context pane. */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {/* Repo and branch share the row with the phase pill, so their percentage widths are of this box. Sized by
+            their content, they push the pill to its own line before either has to be cut short. */}
+        <div className="flex min-w-0 flex-auto items-center gap-1.5 sm:gap-2">
+          {isNewMode ? (
+            <NewModeHeader
+              reposLoading={reposLoading}
+              selectedRepo={selectedRepo}
+              selectedBaseBranch={selectedBaseBranch}
+              repos={repos}
+              onRepoChange={onRepoChange}
+              baseBranch={baseBranch}
+              isLoadingBranches={isRepoLoading}
+              branchError={repoError}
+            />
+          ) : (
+            <EditModeHeader
+              repository={repository}
+              isRepoLoading={isRepoLoading}
+              baseBranch={baseBranch}
+              selectedBaseBranch={selectedBaseBranch}
+              configuredBaseBranch={configuredBaseBranch}
+              branchError={branchError}
+              repoError={repoError}
+              repos={repos}
+              onRepoChange={onRepoChange || (() => {})}
+              reposLoading={reposLoading}
+            />
+          )}
+        </div>
+        <StudioPhaseSwitcher wrap />
       </div>
+      <ScopeError message={scopeErrorFor(isNewMode, branchError, repoError)} />
     </div>
 
-    {/* Main content area */}
-    <div className="flex-1 flex flex-col min-h-0">
-      {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
-      <div className="flex-1 flex flex-col min-h-0 relative">
+    {/* One composer: prompt, attachments and generation settings. Desktop draws it as one bordered box;
+        a phone runs it edge to edge as part of the white page, divided by hairlines. */}
+    <div className="md:flex-1 md:min-h-0 md:overflow-auto md:p-4">
+      <div data-testid="setup-composer" className="flex flex-col border-b border-slate-100 bg-white md:rounded-lg md:border md:border-slate-200 md:focus-within:border-slate-300 md:focus-within:ring-1 md:focus-within:ring-slate-200">
         <textarea
           ref={textareaRef}
           value={prompt}
@@ -208,11 +222,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onPaste={onPaste}
           disabled={isGenerating || isUploading}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-          className={`flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none min-h-[320px] md:min-h-[160px] ${
+          className={`w-full md:rounded-t-lg text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 focus:outline-none min-h-[320px] md:min-h-[160px] max-h-[60vh] ${
             isGenerating || isUploading ? 'opacity-70 cursor-not-allowed bg-gray-50' : ''
           }`}
         />
-        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">
+        <div className="px-4 py-3 border-t border-slate-100">
           <div className="flex flex-col gap-3">
             <AttachmentsSection
               isNewMode={isNewMode}
@@ -237,6 +251,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             )}
           </div>
         </div>
+        {composerFooter && (
+          <div data-testid="composer-footer" className="rounded-b-lg border-t border-slate-200 bg-slate-50 px-3 py-2">
+            {composerFooter}
+          </div>
+        )}
       </div>
     </div>
 

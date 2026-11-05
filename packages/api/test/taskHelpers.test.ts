@@ -1,63 +1,11 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
-import knex, { Knex } from 'knex';
-import { getTasksFromDb } from '../routes/taskHelpers.js';
+import { test } from 'node:test';
+import { createTaskListTestDatabase as createDatabase } from './fixtures/taskListDatabase.js';
+import { getTasksFromDb, type TaskQuery } from '../routes/taskHelpers.js';
 import {
   down as removeTaskHistoryLookupIndex,
   up as addTaskHistoryLookupIndex,
 } from '../../core/src/db/migrations/20260914000000_optimize_task_history_lookup.js';
-
-const databases: Knex[] = [];
-
-afterEach(async () => {
-  await Promise.all(databases.splice(0).map(database => database.destroy()));
-});
-
-async function createDatabase(): Promise<Knex> {
-  const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-  databases.push(database);
-  await database.schema.createTable('tasks', table => {
-    table.string('task_id').primary();
-    table.string('repository');
-    table.string('task_type');
-    table.string('model_name');
-    table.timestamp('created_at');
-    table.text('initial_job_data');
-    table.text('final_result');
-    table.integer('issue_number');
-    table.integer('pr_number');
-  });
-  await database.schema.createTable('task_history', table => {
-    table.increments('history_id').primary();
-    table.string('task_id');
-    table.string('state');
-    table.timestamp('timestamp');
-    table.text('reason');
-    table.text('metadata');
-    table.index('task_id');
-    table.index('state');
-    table.index('timestamp');
-  });
-  await database.schema.createTable('plan_issues', table => {
-    table.increments('id').primary();
-    table.string('draft_id');
-    table.string('repository');
-    table.integer('issue_number');
-    table.integer('pr_number');
-    table.string('task_id');
-    table.string('status');
-    table.timestamp('created_at');
-    table.timestamp('updated_at');
-    table.index('task_id');
-  });
-  await database.schema.createTable('llm_executions', table => {
-    table.increments('execution_id').primary();
-    table.string('task_id');
-    table.text('analysis_report');
-    table.index('task_id');
-  });
-  return database;
-}
 
 test('task pages preserve filters and enrich only unique task identities', async () => {
   const database = await createDatabase();
@@ -66,7 +14,7 @@ test('task pages preserve filters and enrich only unique task identities', async
   await database('tasks').insert([
     {
       task_id: 'newest', repository: 'acme/widget', task_type: 'issue', model_name: 'gpt',
-      issue_number: 12, created_at: '2026-09-14T05:00:00.000Z',
+      issue_number: 12, created_at: '2026-09-14T05:00:00.000Z', commit_hash: 'abc1234def',
       initial_job_data: JSON.stringify({ title: 'Needle performance work' }),
     },
     {
@@ -124,13 +72,15 @@ test('task pages preserve filters and enrich only unique task identities', async
 
   const newest = (all.tasks as Array<Record<string, unknown>>)[0];
   assert.equal(newest.planIssueStatus, 'merged');
-  assert.equal(newest.critiqueScore, null);
+  assert.ok(!('critiqueScore' in newest));
   assert.equal(newest.processedAt, '2026-09-14T05:01:00.000Z');
   assert.equal(newest.completedAt, '2026-09-14T05:03:00.000Z');
+  assert.equal(newest.commitHash, 'abc1234def');
   const tied = (all.tasks as Array<Record<string, unknown>>)[1];
   assert.equal(tied.status, 'failed');
   assert.equal(tied.failedReason, 'first tie');
-  assert.equal((all.tasks as Array<Record<string, unknown>>)[2].critiqueScore, 8.5);
+  assert.equal(tied.commitHash, null);
+  assert.ok((all.tasks as Array<Record<string, unknown>>).every(task => !('critiqueScore' in task)));
 
   const openReview = await getTasksFromDb({
     db: database, status: 'all', repository: 'all', limit: 10, offset: 0,
@@ -169,13 +119,63 @@ test('presentation enrichment queries are constrained to the selected page', asy
   database.on('query', event => queries.push({ sql: event.sql, bindings: event.bindings ?? [] }));
   await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 1, offset: 0 });
 
-  assert.equal(queries.length, 6);
+  assert.equal(queries.length, 9);
+  assert.ok(queries.every(query => !/analysis_report/i.test(query.sql)));
+  assert.match(queries[6].sql, /from `task_assignees`/i);
   assert.doesNotMatch(queries[0].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   assert.doesNotMatch(queries[1].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   for (const query of queries.slice(2)) {
     assert.ok(query.bindings.includes('page-task'));
     assert.ok(!query.bindings.includes('off-page-task'));
   }
+});
+
+test('each run carries the score its latest completion recorded', async () => {
+  const database = await createDatabase();
+  await database('tasks').insert([
+    { task_id: 'review', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T04:00:00.000Z' },
+    { task_id: 'ultrafix', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T03:00:00.000Z' },
+    { task_id: 'rerun', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T02:00:00.000Z' },
+    { task_id: 'fix', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T01:00:00.000Z' },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'review', state: 'processing', timestamp: '2026-09-14T04:01:00.000Z' },
+    // Two reviewers: the lower score decides.
+    { task_id: 'review', state: 'completed', timestamp: '2026-09-14T04:02:00.000Z', metadata: JSON.stringify({ notificationRecap: 'Scores 8/10, 6/10 · 2 issues found' }) },
+    { task_id: 'ultrafix', state: 'processing', timestamp: '2026-09-14T03:01:00.000Z' },
+    { task_id: 'ultrafix', state: 'completed', timestamp: '2026-09-14T03:02:00.000Z', metadata: JSON.stringify({ ultrafixScore: 4 }) },
+    // A score from before the task was started again does not describe the new run.
+    { task_id: 'rerun', state: 'completed', timestamp: '2026-09-14T02:01:00.000Z', metadata: JSON.stringify({ notificationRecap: 'Score 9/10' }) },
+    { task_id: 'rerun', state: 'processing', timestamp: '2026-09-14T02:02:00.000Z' },
+    { task_id: 'fix', state: 'completed', timestamp: '2026-09-14T01:02:00.000Z', metadata: JSON.stringify({ notificationRecap: 'Fixed the seed test' }) },
+  ]);
+
+  const page = await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 10, offset: 0 });
+  const scores = Object.fromEntries((page.tasks as Array<Record<string, unknown>>).map(task => [task.id, task.score]));
+  assert.deepEqual(scores, { review: 6, ultrafix: 4, rerun: null, fix: null });
+});
+
+test('runs of a merged pull request say so, and runs of an open one do not', async () => {
+  const database = await createDatabase();
+  await database('tasks').insert([
+    { task_id: 'merged-fix', repository: 'acme/widget', task_type: 'pr_comment', pr_number: 7, created_at: '2026-09-14T04:00:00.000Z' },
+    { task_id: 'merged-review', repository: 'acme/widget', task_type: 'pr_comment', pr_number: 7, created_at: '2026-09-14T03:00:00.000Z' },
+    // The same number in another repository is another pull request.
+    { task_id: 'other-repo', repository: 'acme/other', task_type: 'pr_comment', pr_number: 7, created_at: '2026-09-14T02:00:00.000Z' },
+    { task_id: 'open', repository: 'acme/widget', task_type: 'pr_comment', pr_number: 8, created_at: '2026-09-14T01:00:00.000Z' },
+  ]);
+  await database('task_history').insert(['merged-fix', 'merged-review', 'other-repo', 'open'].map(taskId => (
+    { task_id: taskId, state: 'completed', timestamp: '2026-09-14T05:00:00.000Z' })));
+  await database('notification_pull_request_state').insert([
+    { repository: 'acme/widget', pr_number: 7, merged_at: '2026-09-14T06:00:00.000Z' },
+    { repository: 'acme/widget', pr_number: 8, merged_at: null },
+  ]);
+
+  // Previews are read from GitHub for a PR; they have their own suite.
+  const previewReader = { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never;
+  const page = await getTasksFromDb({ db: database, previewReader, status: 'all', repository: 'all', limit: 10, offset: 0 });
+  const states = Object.fromEntries((page.tasks as Array<Record<string, unknown>>).map(task => [task.id, task.prState ?? null]));
+  assert.deepEqual(states, { 'merged-fix': 'merged', 'merged-review': 'merged', 'other-repo': null, open: null });
 });
 
 test('task history migration replaces the redundant index and satisfies latest-state ordering', async () => {
@@ -291,4 +291,164 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
     created_at: hoursAgo(6), updated_at: hoursAgo(5),
   });
   assert.deepEqual((await idsFor('attention')).ids, ['completed-task', 'blocked-task']);
+});
+
+test('task count covering index preserves repository lookups and rolls back', async () => {
+  const database = await createDatabase();
+  const migration = await import('../../core/src/db/migrations/20260929000000_cover_task_list_counts.js');
+  await database.schema.alterTable('tasks', table => table.index('repository'));
+  await migration.up(database);
+  for (const suffix of ['', " AND t.repository = 'acme/widget'"]) {
+    const plan = await database.raw(`EXPLAIN QUERY PLAN
+      SELECT count(*) FROM tasks t
+      WHERE (t.task_type IS NULL OR t.task_type <> 'goal')
+        AND EXISTS (SELECT 1 FROM task_history h WHERE h.task_id = t.task_id) ${suffix}`) as Array<{ detail: string }>;
+    assert.ok(plan.some(row => row.detail.includes('COVERING INDEX tasks_repository_type_identity_index')));
+  }
+  await migration.down(database);
+  const indexes = await database.raw("PRAGMA index_list('tasks')") as Array<{ name: string }>;
+  assert.ok(indexes.some(row => row.name === 'tasks_repository_index'));
+  assert.ok(!indexes.some(row => row.name === 'tasks_repository_type_identity_index'));
+});
+
+test('task pages count and slice tasks, returning every run of each task on the page', async () => {
+  const database = await createDatabase();
+  await addTaskHistoryLookupIndex(database);
+  const at = (minute: number) => `2026-10-04T08:${String(minute).padStart(2, '0')}:00.000Z`;
+  await database('tasks').insert([
+    // PR #20: three runs, one recorded only in the job data and one only in the result.
+    { task_id: 'pr20-review', repository: 'acme/widget', task_type: 'pr', pr_number: 20, created_at: at(50) },
+    { task_id: 'pr20-fix', repository: 'acme/widget', task_type: 'pr', created_at: at(40), initial_job_data: JSON.stringify({ pullRequestNumber: 20 }) },
+    // Issue #7 opened PR #20; its run joins the pull request's task.
+    { task_id: 'issue7', repository: 'acme/widget', task_type: 'issue', issue_number: 7, created_at: at(10), final_result: JSON.stringify({ postProcessing: { pr: { number: 20 } } }), initial_job_data: JSON.stringify({ issueNumber: 7 }) },
+    // Issue #8: two runs, no pull request yet.
+    { task_id: 'issue8-b', repository: 'acme/widget', task_type: 'issue', issue_number: 8, created_at: at(45) },
+    { task_id: 'issue8-a', repository: 'acme/widget', task_type: 'issue', issue_number: 8, created_at: at(5) },
+    // The same issue number in another repository is another task, and malformed JSON is ignored.
+    { task_id: 'other8', repository: 'acme/other', task_type: 'issue', issue_number: 8, created_at: at(30), initial_job_data: '{not json' },
+    { task_id: 'loose', repository: 'acme/widget', task_type: 'goal-step', created_at: at(20) },
+  ]);
+  await database('task_history').insert((await database('tasks').select('task_id', 'created_at'))
+    .map(row => ({ task_id: row.task_id, state: 'completed', timestamp: row.created_at })));
+
+  // Pull request runs would otherwise ask GitHub for their preview media.
+  const previewReader = { project: async (sources: unknown[]) => sources.map(() => ({ previews: [] })) } as unknown as NonNullable<TaskQuery['previewReader']>;
+  const page = async (offset: number, limit: number) => {
+    const result = await getTasksFromDb({ db: database, previewReader, status: 'all', repository: 'all', limit, offset, groupByTask: true });
+    return { ...result, ids: (result.tasks as Array<{ id: string }>).map(task => task.id) };
+  };
+
+  const first = await page(0, 2);
+  assert.equal(first.total, 4);
+  assert.equal(first.totalRuns, 7);
+  assert.deepEqual(first.ids, ['pr20-review', 'issue8-b', 'pr20-fix', 'issue7', 'issue8-a']);
+  const second = await page(2, 2);
+  assert.deepEqual(second.ids, ['other8', 'loose']);
+  assert.deepEqual((await page(4, 2)).ids, []);
+  // Without grouping, the page still counts runs.
+  const runs = await getTasksFromDb({ db: database, previewReader, status: 'all', repository: 'all', limit: 2, offset: 0 });
+  assert.equal(runs.total, 7);
+  assert.equal(runs.tasks.length, 2);
+  assert.equal('totalRuns' in runs, false);
+});
+
+test('task pages select a task by its newest run and return every run of it', async () => {
+  const database = await createDatabase();
+  await addTaskHistoryLookupIndex(database);
+  const at = (minute: number) => `2026-10-04T09:${String(minute).padStart(2, '0')}:00.000Z`;
+  await database('tasks').insert([
+    // PR #30: an older completed review, then a run still processing.
+    { task_id: 'pr30-review', repository: 'acme/widget', task_type: 'pr', pr_number: 30, created_at: at(10), initial_job_data: JSON.stringify({ title: 'Review the retry budget' }) },
+    { task_id: 'pr30-fix', repository: 'acme/widget', task_type: 'pr', pr_number: 30, created_at: at(40), initial_job_data: JSON.stringify({ title: 'Fix the flaky seed' }) },
+    // PR #31: an older processing run that never finished, then a completed one.
+    { task_id: 'pr31-old', repository: 'acme/widget', task_type: 'pr', pr_number: 31, created_at: at(20) },
+    { task_id: 'pr31-new', repository: 'acme/widget', task_type: 'pr', pr_number: 31, created_at: at(30) },
+    { task_id: 'pr32-queued', repository: 'acme/widget', task_type: 'pr', pr_number: 32, created_at: at(50) },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'pr30-review', state: 'completed', timestamp: at(11) },
+    { task_id: 'pr30-fix', state: 'processing', timestamp: at(41) },
+    { task_id: 'pr31-old', state: 'processing', timestamp: at(21) },
+    { task_id: 'pr31-new', state: 'completed', timestamp: at(31) },
+    { task_id: 'pr32-queued', state: 'queued', timestamp: at(51) },
+  ]);
+  const previewReader = { project: async (sources: unknown[]) => sources.map(() => ({ previews: [] })) } as unknown as NonNullable<TaskQuery['previewReader']>;
+  const page = async (status: string, search?: string) => {
+    const result = await getTasksFromDb({ db: database, previewReader, status, repository: 'all', limit: 10, offset: 0, search, groupByTask: true });
+    return { total: result.total, totalRuns: result.totalRuns, ids: (result.tasks as Array<{ id: string }>).map(task => task.id) };
+  };
+
+  // Completed lists the task whose newest run completed, with its older run; not PR #30, still working.
+  assert.deepEqual(await page('completed'), { total: 1, totalRuns: 2, ids: ['pr31-new', 'pr31-old'] });
+  // Active lists PR #30 with its completed history, and not PR #31's stale processing run.
+  assert.deepEqual(await page('active'), { total: 1, totalRuns: 2, ids: ['pr30-fix', 'pr30-review'] });
+  assert.deepEqual(await page('waiting'), { total: 1, totalRuns: 1, ids: ['pr32-queued'] });
+  // Text only an older run carries finds the task, and the page still carries its current run.
+  assert.deepEqual(await page('all', 'retry budget'), { total: 1, totalRuns: 2, ids: ['pr30-fix', 'pr30-review'] });
+  assert.deepEqual(await page('completed', 'retry budget'), { total: 0, totalRuns: 0, ids: [] });
+  // By run, filters still pick runs.
+  const runs = await getTasksFromDb({ db: database, previewReader, status: 'completed', repository: 'all', limit: 10, offset: 0 });
+  assert.deepEqual((runs.tasks as Array<{ id: string }>).map(task => task.id), ['pr31-new', 'pr30-review']);
+});
+
+test('a task page asked for by one of its runs lists that whole task whatever the filters are', async () => {
+  const database = await createDatabase();
+  await addTaskHistoryLookupIndex(database);
+  const at = (minute: number) => `2026-10-04T10:${String(minute).padStart(2, '0')}:00.000Z`;
+  await database('tasks').insert([
+    { task_id: 'pr40-review', repository: 'acme/widget', task_type: 'pr', pr_number: 40, created_at: at(10) },
+    { task_id: 'pr40-fix', repository: 'acme/widget', task_type: 'pr', pr_number: 40, created_at: at(30) },
+    { task_id: 'pr41', repository: 'acme/widget', task_type: 'pr', pr_number: 41, created_at: at(20) },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'pr40-review', state: 'completed', timestamp: at(11) },
+    { task_id: 'pr40-fix', state: 'processing', timestamp: at(31) },
+    { task_id: 'pr41', state: 'completed', timestamp: at(21) },
+  ]);
+  const previewReader = { project: async (sources: unknown[]) => sources.map(() => ({ previews: [] })) } as unknown as NonNullable<TaskQuery['previewReader']>;
+  // The completed filter and a search that matches nothing would both exclude PR #40.
+  const result = await getTasksFromDb({
+    db: database, previewReader, status: 'completed', repository: 'all', limit: 1, offset: 0, search: 'nothing matches', groupByTask: true, containsTask: 'pr40-review',
+  });
+  assert.equal(result.total, 1);
+  assert.deepEqual((result.tasks as Array<{ id: string; status: string }>).map(task => [task.id, task.status]), [['pr40-fix', 'processing'], ['pr40-review', 'completed']]);
+});
+
+test('task list exposes recorded command mode with latest history taking precedence over job data', async () => {
+  const database = await createDatabase();
+  const at = '2026-10-14T08:00:00.000Z';
+  await database('tasks').insert([
+    { task_id: 'job-review', repository: 'acme/widget', task_type: 'pr_comment', created_at: at, initial_job_data: JSON.stringify({ commandMode: 'review' }) },
+    { task_id: 'history-review', repository: 'acme/widget', task_type: 'pr_comment', created_at: at, initial_job_data: JSON.stringify({ commandMode: 'fix' }) },
+    { task_id: 'current-fix', repository: 'acme/widget', task_type: 'pr_comment', created_at: at, initial_job_data: JSON.stringify({ commandMode: 'review' }) },
+    { task_id: 'typed-review', repository: 'acme/widget', task_type: 'review', created_at: at },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'job-review', state: 'queued', timestamp: at },
+    { task_id: 'history-review', state: 'processing', timestamp: at, metadata: JSON.stringify({ commandMode: 'review' }) },
+    { task_id: 'history-review', state: 'claude_execution', timestamp: '2026-10-14T08:01:00.000Z' },
+    { task_id: 'current-fix', state: 'processing', timestamp: at, metadata: JSON.stringify({ commandMode: 'review' }) },
+    { task_id: 'current-fix', state: 'claude_execution', timestamp: '2026-10-14T08:01:00.000Z', metadata: JSON.stringify({ commandMode: 'fix' }) },
+    { task_id: 'typed-review', state: 'processing', timestamp: at },
+  ]);
+  const page = await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 10, offset: 0 });
+  const modes = Object.fromEntries((page.tasks as Array<Record<string, unknown>>).map(task => [task.id, task.commandMode]));
+  assert.deepEqual(modes, { 'job-review': 'review', 'history-review': 'review', 'current-fix': 'fix', 'typed-review': 'review' });
+});
+
+test('task ledger recovers actual Codex follow-up routing and leaves unresolved runs unknown', async () => {
+  const database = await createDatabase();
+  for (const id of ['followup', 'review', 'pending']) {
+    await database('tasks').insert({ task_id: id, repository: 'acme/widget', task_type: 'pr-comment', model_name: 'claude-opus-5-5', created_at: '2026-10-13T12:00:00Z', initial_job_data: JSON.stringify({ pullRequestNumber: 7 }) });
+    await database('task_history').insert({ task_id: id, state: id === 'pending' ? 'pending' : 'completed', timestamp: '2026-10-13T12:01:00Z', metadata: id === 'review' ? JSON.stringify({ model: 'gpt-6-astra', executionRouting: { model: 'gpt-6-astra', agentAlias: 'codex' } }) : null });
+  }
+  await database('llm_executions').insert({ task_id: 'followup', model_name: 'gpt-6-astra', start_time: '2026-10-13T12:00:30Z' });
+  const { tasks } = await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 20, offset: 0 });
+  for (const id of ['followup', 'review']) {
+    const run = tasks.find(task => task.id === id)!;
+    assert.equal(run.model, 'gpt-6-astra');
+    assert.equal(run.modelName, 'gpt-6-astra');
+    assert.notEqual(run.llmProvider, 'claude');
+  }
+  assert.equal(tasks.find(task => task.id === 'pending')!.model, null);
 });

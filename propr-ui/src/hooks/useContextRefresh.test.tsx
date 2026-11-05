@@ -4,6 +4,7 @@ import { getDraft, previewContext } from '../api/proprApi';
 import { useContextRefresh } from './useContextRefresh';
 
 const socketState = vi.hoisted(() => ({
+  isConnected: true,
   listener: null as ((payload: Record<string, unknown>) => void) | null,
   subscribeToDraft: vi.fn(),
   unsubscribeFromDraft: vi.fn(),
@@ -17,7 +18,7 @@ vi.mock('../api/proprApi', () => ({
 
 vi.mock('../contexts/useSocket', () => ({
   useSocket: () => ({
-    isConnected: true,
+    isConnected: socketState.isConnected,
     subscribeToDraft: socketState.subscribeToDraft,
     unsubscribeFromDraft: socketState.unsubscribeFromDraft,
     onDraftUpdate: socketState.onDraftUpdate,
@@ -63,6 +64,7 @@ describe('useContextRefresh', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     socketState.listener = null;
+    socketState.isConnected = true;
     socketState.onDraftUpdate.mockImplementation((listener) => {
       socketState.listener = listener;
       return () => {
@@ -112,6 +114,31 @@ describe('useContextRefresh', () => {
     expect(result.current.preview.isLoading).toBe(false);
     expect(result.current.preview.data?.fileTokenCounts).toEqual({ 'src/index.ts': 100 });
   });
+  it('avoids five-second connected polling and recovers a pending preview after disconnect', async () => {
+    vi.useFakeTimers();
+    const onBranchError = vi.fn();
+    const { result, rerender, unmount } = renderHook(() => useContextRefresh({ draftId: 'draft-1', config, onBranchError }));
+    try {
+      let finished!: Promise<boolean>;
+      act(() => { finished = result.current.fetchPreview(); });
+      await act(async () => {});
+      expect(mockGetDraft).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(mockGetDraft).toHaveBeenCalledTimes(1);
+      socketState.isConnected = false;
+      rerender();
+      mockGetDraft.mockResolvedValue(completedDraft);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_100); });
+      expect(mockGetDraft).toHaveBeenCalledTimes(2);
+      await expect(finished).resolves.toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(mockGetDraft).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
   describe('autoRefresh', () => {
     const onBranchError = vi.fn();
 

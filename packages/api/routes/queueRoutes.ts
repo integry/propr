@@ -21,6 +21,15 @@ interface QueueRoutesDeps {
 export function createQueueRoutes(deps: QueueRoutesDeps) {
   const { redisClient, taskQueue } = deps;
 
+  // Fleet health and drain decisions consume only waiting and active counts.
+  async function collectQueueStats(): Promise<{ waiting: number; active: number }> {
+    const [waiting, active] = await Promise.all([
+      taskQueue.getWaitingCount(),
+      taskQueue.getActiveCount()
+    ]);
+    return { waiting, active };
+  }
+
   async function getQueueStats(_req: Request, res: Response): Promise<void> {
     try {
       // The header has always treated only active jobs as Running. Waiting and
@@ -91,7 +100,7 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
     }
   }
 
-  return { getQueueStats, getActivity, getMetrics };
+  return { collectQueueStats, getQueueStats, getActivity, getMetrics };
 }
 
 function serializeLiveJobs(jobs: Job[]): LiveQueueJob[] {

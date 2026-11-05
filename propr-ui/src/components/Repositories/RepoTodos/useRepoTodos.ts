@@ -220,7 +220,8 @@ export function useRepoTodos({ repositoryId }: UseRepoTodosOptions): UseRepoTodo
         }));
 
         setTodos((prev) => {
-          const otherTodos = prev.filter((t) => (t.categoryId || 'uncategorized') !== activeCategoryId);
+          // `reordered` holds only the category's active to-dos; keep its completed ones.
+          const otherTodos = prev.filter((t) => t.isCompleted || (t.categoryId || 'uncategorized') !== activeCategoryId);
           const updatedTodos = reordered.map((todo, index) => ({ ...todo, orderIndex: index }));
           return [...otherTodos, ...updatedTodos];
         });

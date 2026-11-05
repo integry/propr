@@ -6,14 +6,32 @@ import type { OperationResult } from './operations.js';
 
 export type WorkflowHandler = (req: Request<never>, res: Response) => unknown;
 
+function workflowErrorCode(status: number, data: unknown): string {
+  if (typeof data === 'object' && data !== null && 'code' in data && typeof data.code === 'string') return data.code;
+  if (status === 409) return 'PRECONDITION_FAILED';
+  if (status === 403) return 'FORBIDDEN';
+  if (status === 404) return 'NOT_FOUND';
+  return 'WORKFLOW_REJECTED';
+}
+
+/**
+ * Mask credential-shaped substrings in place without otherwise changing the
+ * text. Idempotent, so text already masked by a tool can pass through again.
+ * Matches never span a line break, so masking keeps line structure and masks
+ * a line the same whether it is read alone or with its neighbours.
+ */
+export function redactText(value: string): string {
+  return value
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|propr_mcp_[A-Za-z0-9_-]+)\b/g, '[redacted]')
+    .replace(/Bearer[ \t]+[A-Za-z0-9._~+/-]+/gi, 'Bearer [redacted]');
+}
+
 export function redact(value: unknown, depth = 0): unknown {
   if (depth > 16) return '[depth limit]';
   if (typeof value === 'string' && (value.trim().startsWith('[') || value.trim().startsWith('{'))) {
     try { return JSON.stringify(redact(JSON.parse(value), depth + 1)); } catch { /* ordinary text */ }
   }
-  if (typeof value === 'string') return value
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|propr_mcp_[A-Za-z0-9_-]+)\b/g, '[redacted]')
-    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/gi, 'Bearer [redacted]');
+  if (typeof value === 'string') return redactText(value);
   if (Array.isArray(value)) return value.slice(0, 200).map(item => redact(item, depth + 1));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
     .filter(([key]) => key === 'pr_review_max_context_tokens' || !/(?:token|secret|password|credential|private.?key|api.?key|access.?key|cookie|authorization|worktree.?path|stored.?path|job_data|container_env)/i.test(key))
@@ -50,7 +68,7 @@ export async function callWorkflow(handler: WorkflowHandler, principal: McpPrinc
   await handler(req, res as unknown as Response);
   if (status >= 400) {
     const message = typeof data === 'object' && data !== null && 'error' in data ? String(data.error) : 'Workflow rejected the request.';
-    throw new McpError(status === 409 ? 'PRECONDITION_FAILED' : status === 403 ? 'FORBIDDEN' : status === 404 ? 'NOT_FOUND' : 'WORKFLOW_REJECTED', status >= 500 ? 'Workflow failed; inspect the operation and target before retrying.' : String(redact(message)), status);
+    throw new McpError(workflowErrorCode(status, data), status >= 500 ? 'Workflow failed; inspect the operation and target before retrying.' : String(redact(message)), status);
   }
   const safe = redact(input.projectResult ? input.projectResult(data ?? {}) : data ?? {});
   if (Buffer.byteLength(JSON.stringify(safe)) > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Result exceeds 256 KiB. Request a smaller page or a specific artifact.');

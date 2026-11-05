@@ -1,6 +1,8 @@
 ---
 sidebar_position: 6
-title: PR Follow-up
+sidebar_label: "PR Follow-up"
+title: "Refine pull requests with comments and AI review"
+description: "Continue work on a pull request with GitHub comments, AI reviews, fixes, model switches, and branch conflict resolution."
 ---
 
 # PR Follow-up
@@ -21,11 +23,13 @@ When ProPR finishes an implementation task, it handles the GitHub plumbing aroun
 
 This keeps the agent focused on code while ProPR handles the repeatable workflow around the code.
 
+The pull request title and description follow ProPR's default layout. To add required sections, ticket references or a checklist, use a [pull request template](./pr-templates.md). When the repository has none, ProPR adds the repository's GitHub pull request template under its summary.
+
 ## Use ProPR On Any Pull Request
 
 You can skip ProPR-driven PR creation entirely and still use its review and fix tools. The pull request is an entry point on its own, so you can apply ProPR to PRs opened by a teammate, another agent, or yourself outside ProPR:
 
-- **Review or fix only**: comment `/review` on any eligible PR to get AI review feedback, then `/fix` to apply the suggestions you keep.
+- **Review or fix only**: comment `/review` on any eligible PR to get AI review feedback, then `/fix` to resolve its merge blockers, or `/fix F2 S1` to pick exactly the records you want.
 - **Take over an existing PR**: add a configured processing label (for example `AI` or `propr`) to the open PR. From then on, normal follow-up comments are picked up just like on a ProPR-created PR, and ProPR continues the work in place.
 
 Once ProPR is engaged, follow-up comments and slash commands behave the same way on a handed-over PR as on a ProPR-created one. Other details can still differ — a handed-over PR keeps its original branch name, may link no source issue, and carries no prior ProPR task history — but the command and follow-up behavior is identical.
@@ -44,21 +48,196 @@ ProPR picks up the comment, includes PR context and the comment content, and que
 - Line-level review comments carry their file path, line, and diff hunk to the agent, so "fix this" on a specific line has real context.
 - Images attached to comments are available to the agent — paste a screenshot of the bug and the agent sees it.
 
-Comment pickup is gated by processing labels, trigger keywords, and author permissions; see [Who Can Trigger Commands](./pr-commands.md#who-can-trigger-commands) for the rules.
+Comment pickup is gated by processing labels, trigger keywords, author permissions and, when it is turned on, the [assignment gate](./assignment.md#the-assignment-gate); see [Who Can Trigger Commands](./pr-commands.md#who-can-trigger-commands) for the rules.
 
 ## The Review And Fix Loop
 
 When you want a quality pass on top of your own reading, the loop goes: ask, prune, apply.
 
-1. `/review` posts AI review feedback with severity findings and a score — the code is untouched.
-2. You edit the feedback: delete suggestions you disagree with, sharpen vague ones, keep what matters.
-3. `/fix` applies the `/review`'s pending suggestions in one implementation pass.
+1. `/review` posts a review with numbered merge blockers (`F1`, `F2`, …), optional suggestions (`S1`, `S2`, …) and a score — the code is untouched. The numbers continue across every review on the PR and are never reused.
+2. You decide what to apply: copy the review's `/fix F1 S1` line and drop the IDs you don't want, or edit the comment itself to sharpen or remove a record.
+3. `/fix` resolves every pending merge blocker in one implementation pass, `/fix all` adds every pending suggestion, and `/fix F1 S2` applies exactly the records you name. See [`/fix`](./pr-commands.md#fix).
 
-The split by feedback source keeps intent clear: plain user comments start follow-up work directly the moment you post them, and `/fix` handles the AI review suggestions from `/review`.
+The split by feedback source keeps intent clear: plain user comments start follow-up work directly the moment you post them, and `/fix` handles the records from `/review`.
 
-For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until the review score reaches its goal, waiting for CI and PR inactivity between cycles; a visible PR label acts as its circuit breaker. When the base branch has moved, `/merge` brings the base branch into the PR branch and resolves conflicts with agent help — you merge the PR itself when you are satisfied.
+For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until the review score reaches its goal, waiting for CI and PR inactivity between cycles; a visible PR label acts as its circuit breaker. If CI goes red after an automatic fix, the loop pauses rather than ending. Once a follow-up fix or your own push turns the required checks green, check-run and check-suite events, or the polling reconciliation, wake the loop and schedule its next review. The cycle limit, the goal, and the label are still respected at that point, and a per-PR lock with BullMQ job ID deduplication stops simultaneous check events from queuing duplicate cycles. See [Recovery From CI Failures](./pr-commands.md#recovery-from-ci-failures). When the base branch has moved, `/merge` brings the base branch into the PR branch and resolves conflicts with agent help — you merge the PR itself when you are satisfied.
 
 Full syntax, parameters, and trigger rules for every command are in [PR Comment Commands](./pr-commands.md).
+
+## Withdrawing Work
+
+Closing a PR without merging cancels queued and running follow-up, review and
+Ultrafix work for that PR, with terminal reason `cancelled_pr_closed`. Its Ultrafix
+loop is cleared. Polling checks active and queued PRs each cycle, and workers
+recheck the live PR before starting, so missed webhooks cannot start work on a
+closed PR. Cancellation uses the same stop mechanism as the task view and
+`propr task stop`; cancelled attempts are never automatically retried.
+
+Closing the source issue or removing its processing trigger cancels only that
+issue's implementation work. Existing PRs and their independent follow-ups remain
+open. Removing a model label does not cancel work. See
+[task state and terminal reasons](../architecture/worker.md#cancellation-and-terminal-reasons)
+for reason codes and issue state labels.
+
+## Automatic Follow-Up For Failed CI
+
+**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Check runs that GitHub delivers without a PR number, which is common for fork PRs, are matched to open PRs by commit, so they are reported too. Enable it only where CI failures are trustworthy signals.
+
+While Ultrafix is waiting for CI, its periodic check also recovers failed-CI follow-ups whose webhook was missed, such as during a restart. Recovery respects this setting and the repository's non-blocking checks, ignores replaced commits and closed PRs, and shares duplicate protection with webhook delivery.
+
+A cancelled check is not a failure, and neither is a check that failed only because its workflow run was deliberately cancelled. For example, an aggregate gate that runs under `always()` and fails closed when its shards were cancelled. Without this rule, [cancelling obsolete checks during follow-up](#cancelling-obsolete-checks-during-follow-up) would start a new follow-up from the gate's failure, which would then cancel the next commit's checks. ProPR skips the comment only when all of the following hold:
+
+- The check itself concluded `failure`. A check that timed out, failed to start or is waiting for approval is always reported, even if the cancellation evidence points elsewhere.
+- The run attempt was cancelled by ProPR's own recorded suspension, or GitHub reports that attempt as cancelled.
+- No other job of that attempt failed or timed out.
+- The check failed after the cancellation stopped its sibling jobs.
+- The check's own failure annotations show it failed because of the cancellation: at least one reports a needed job as `cancelled`, and every other one is the runner's exit-code notice or a recognized consequence of cancelled shards, such as shard coverage verification failing.
+- Every step of the check that failed is the recognized gate that enforces its needed jobs' results (or the shard coverage verification that fails only because cancelled shards uploaded nothing), and the gate itself failed. Any other failed step — including a plain shell command whose only annotation is `Process completed with exit code 1.` — is reported.
+
+Timing and provenance alone are not enough: a job that runs under `always()` and fails its own step after the cancellation still produces a follow-up.
+
+If ProPR can't read that evidence, it posts the comment. The check keeps its failing conclusion, so required merge gates are unchanged, and a genuine failure on a later attempt of the same commit is still reported.
+
+## Automatic Pull Request Assignment
+
+When work on a ProPR pull request completes, ProPR can assign the pull request to someone, and optionally request their review, so it lands in a person's queue instead of waiting unowned. It is off unless you turn it on. See [Task Assignment](./assignment.md) for how assignment works in general.
+
+### Where it is configured
+
+| Option | Where | Values |
+|---|---|---|
+| Assign pull requests | Repositories → repository → Automation → **Assign the pull request when ProPR finishes**, MCP `update_repository_configuration` (`autoAssignPullRequests`), `propr repo add\|toggle owner/repo --auto-assign <on\|off>` | on / off (default off) |
+| Default assignee | The **Assignee** field under that option, MCP `update_repository_configuration` (`autoAssignDefaultAssignee`), `propr repo add\|toggle owner/repo --auto-assign-to <login\|none>` | A GitHub login, or empty for the source issue author (default empty) |
+| Request a review | **Also request a review from the assignee** under that option, MCP `update_repository_configuration` (`autoAssignRequestReview`), `propr repo add\|toggle owner/repo --auto-assign-review <on\|off>` | on / off (default off) |
+
+There is no instance default: each repository opts in for itself. The options are repository-wide, so every branch entry of a monitored repository shares them. `none` (or `null` through MCP, or clearing the **Assignee** field) removes the default assignee. A leading `@` is accepted, and a value that is not a valid GitHub login is rejected. Clients that do not send a field never change it. MCP `get_repository_configuration` returns all three fields, and `propr repo list` shows them in its **Auto-assign PRs** column, for example `Off` or `On (@octocat, review)`.
+
+### When it runs
+
+Assignment is tied to work **completing**, never to work starting:
+
+- **Implementation done.** When an implementation publishes its pull request and the issue moves to `<trigger>-done`. This also covers a final validation that finds or recreates a pull request that post-processing missed.
+- **Follow-up done.** When a follow-up, including `/fix`, pushes a commit. If the work was published to a continuation pull request, that pull request is assigned instead.
+
+**Resumed work triggers nothing.** ProPR switches the label back to `<trigger>-processing` and posts its "starting work" comment when a follow-up begins, and neither assigns anyone nor requests a review. A `/review` run and a follow-up that pushed no commit do not change the pull request, so they trigger nothing either.
+
+Each commit is one opportunity. A completed attempt is remembered per repository, pull request and head commit, so a retry or redelivery for the same commit does nothing, while the next follow-up commit is a new opportunity. An attempt that a crashed worker left unfinished holds off other attempts for that commit for 10 minutes. Nothing retries it on a schedule: a later completion for the same commit after that, such as a redelivery or a final validation, tries again, and otherwise the next follow-up commit does.
+
+### Who is assigned
+
+The assignee is resolved in this order:
+
+1. The repository's **default assignee**, when one is set.
+2. Otherwise the **author of the source issue**: the issue the implementation was created from, or for a follow-up, the first issue the pull request body closes (`Closes #123`). **Bot authors are skipped.** An issue opened by a bot, such as a ProPR planner issue, leaves the pull request unassigned unless a default assignee is set.
+
+The person who wrote a follow-up comment is never the target. A follow-up keeps the pull request with the issue author or default assignee.
+
+**Manual assignees are preserved.** ProPR only adds its assignee and never removes anyone already assigned, by hand or otherwise. If the target is already assigned, nothing is written.
+
+### Review requests
+
+With **Also request a review from the assignee** on, ProPR asks the assignee for a GitHub review after assigning them:
+
+- **A review is requested at most once.** Nothing is sent while a review from that person is still pending, and a commit that was already handled sends nothing again, so the implementation and a follow-up never stack two requests. Only after the assignee has answered the earlier request can a later follow-up commit ask them again.
+- **The pull request author is never asked to review their own pull request.** GitHub refuses such requests, so ProPR skips the request and records why.
+- When GitHub refused the assignment, no review is requested either.
+
+A failed review request does not undo the assignment, and a retry of the same commit tries the review request again.
+
+### Why a pull request was not assigned
+
+Each decision is recorded on the task timeline (event `pull_request.auto_assignment`) and logged as `Pull request auto-assignment decision`, `... skipped` or `... failed` with `{ repository, prNumber, opportunity, reason }`. A repository with the option off records nothing on the timeline. Every decision not to assign:
+
+| Status | Reason | Meaning |
+|---|---|---|
+| `disabled` | `disabled for the repository` | Automatic assignment is off for this repository. Nothing is read from GitHub. |
+| `already_assigned` | `already handled for head <sha>` | This commit was already handled, for example by an earlier attempt or a redelivery. |
+| `already_assigned` | `<login> is already assigned` | The target is already assigned. Only the review request, if enabled, is considered. |
+| `skipped` | `another attempt for head <sha> is in progress` | Another worker is handling this commit right now. |
+| `skipped` | `the pull request has no linked source issue` | No default assignee, and no source issue to take the author from. |
+| `skipped` | `the source issue has no author` | No default assignee, and GitHub returned no author for the source issue. |
+| `skipped` | `the source issue author <login> is a bot` | No default assignee, and the issue was opened by a bot. |
+| `skipped` | `no task to record the assignment on` | The completion had no ProPR task to record the decision on. |
+| `not_assigned` | `GitHub did not assign <login>, who may lack repository access` | GitHub refused the assignee, usually because they cannot access the repository. Check the default assignee. |
+| `failed` | The error message | Reading the pull request or issue, or assigning, failed. The failure never fails the implementation or follow-up itself. |
+
+Review requests record their own outcome alongside the assignment: `requested`, `skipped` (`<login> authored the pull request`, or `a review from <login> is already requested`), or `failed` with the error.
+
+## Automatic Merge-Conflict Resolution
+
+When the base branch of a ProPR pull request moves on (typically because another
+pull request merged) and the two now conflict, ProPR can merge the base branch
+into the pull request and let an agent resolve the conflicts. It is off unless
+you turn it on.
+
+### Where it is configured
+
+| Level | Where | Values |
+|---|---|---|
+| Instance default | Settings → Workflow & PR Rules → Repository defaults → **Auto-Resolve Merge Conflicts (default for repositories)**, MCP `update_execution_settings` (`auto_resolve_merge_conflicts`), `propr setting update auto_resolve_merge_conflicts <true\|false>` | on / off (default off) |
+| Repository override | Repositories → repository → Automation → **Auto-resolve merge conflicts**, MCP `update_repository_configuration` (`autoResolveMergeConflicts`), `propr repo add\|toggle owner/repo --auto-resolve-conflicts <on\|off\|inherit>` | Always / Never / Use instance default |
+
+The effective value is the repository override when one is set, otherwise the
+instance default, otherwise off. The override is repository-wide: every branch
+entry of a monitored repository shares it. `inherit` (or `null` through MCP)
+removes the override. Clients that do not send the field never change it.
+MCP `get_repository_configuration` returns the stored override and
+`effective.autoResolveMergeConflicts` with `enabled`, `source` (`repository` or
+`instance`), `repositoryOverride` and `instanceDefault`; `propr repo list` shows
+`On`, `Off` or `Inherit (On/Off)`.
+
+### When it runs
+
+- **Base branch push.** A push to branch `X` evaluates up to 30 open pull requests
+  whose base is `X`. Every one is read once first so GitHub starts computing
+  mergeability, then each is evaluated.
+- **Pull request events.** `opened`, `reopened`, `synchronize` and
+  `ready_for_review`.
+- **Sweep.** A safety net evaluates open pull requests of every repository with
+  the setting on: every 5 minutes with `GITHUB_EVENT_INTAKE_MODE=polling` (which
+  never receives push events) and every 15 minutes otherwise.
+  `MERGE_CONFLICT_SWEEP_INTERVAL_MS` overrides the interval.
+
+GitHub computes mergeability lazily and answers `mergeable: null` right after a
+push, so ProPR re-reads the pull request after 2, 5, 10 and 20 seconds before
+giving up. A pull request is conflicted when GitHub reports `mergeable: false`
+or `mergeable_state: "dirty"`.
+
+Only ProPR pull requests are touched: those carrying the PR label, a processing
+label or the AI primary tag, an `llm-*` model label, or that ProPR has a task
+for. Human pull requests are never modified. Each head+base pair is queued once
+(for 30 minutes), and a pull request gets at most 3 automatic attempts in 24
+hours so a constantly moving base cannot cause a loop.
+
+The resolution job merges the base into the pull request branch, asks the agent
+to resolve the conflicted files, refuses to continue while any conflict marker
+remains, records a merge commit (hooks disabled) whose parents are the previous
+head and the base, and pushes it. Any failure aborts the merge and leaves the
+remote branch untouched.
+
+The `/merge` comment is unaffected by these settings: it is an explicit request
+and always runs for a ProPR pull request.
+
+### Why a pull request was not resolved
+
+Every decision not to act is logged at `info` (`warn` for
+`mergeability_unknown` and `attempt_limit`) with
+`{ repository, pullNumber, trigger, reason }`:
+
+| Reason | Meaning |
+|---|---|
+| `auto_resolve_disabled` | The effective setting for the repository is off. |
+| `pull_request_closed` | The pull request is no longer open. |
+| `draft_pull_request` | Drafts are left alone until they are ready for review. |
+| `fork_pull_request` | The head repository no longer exists. |
+| `not_propr_pull_request` | No ProPR label and no ProPR task for the pull request. |
+| `mergeability_unknown` | GitHub had still not computed mergeability after polling. |
+| `not_conflicted` | GitHub reports the pull request as mergeable. |
+| `already_queued` | This exact head+base state was already queued. |
+| `attempt_limit` | 3 automatic attempts in the last 24 hours. |
+
+Queued jobs are logged with their job ID, head and base.
+
 
 ## Cancelling Obsolete Checks During Follow-Up
 
@@ -77,4 +256,29 @@ The repository setting **Cancel CI while follow-up implementation is in progress
 
 Prerequisite: the GitHub App installation needs **Actions: Read and write**. With read-only Actions access the option is inert — the attempt is logged as a permission error and implementation continues with CI untouched. If access is lost after checks were already cancelled, the obligation to restart them survives and is honoured as soon as the access is granted back. Fork contributions that ProPR publishes to a continuation pull request are handled through that continuation; runs GitHub does not associate with a pull request are left alone.
 
+### Closed pull requests
+
+The same opt-in cancellation policy also applies when a pull request closes or
+merges. A worker reconciles the recorded closure and cancels selected queued or
+running validation for that PR head. It rechecks whether the head is still under
+review before cancelling, so reopening a PR protects its validation. These are
+cancellations, never successful-check results.
+
+## Checks That Never Block Automation
+
+Some checks are worth running but should not decide whether ProPR moves a pull request forward, for example slow packaging or platform checks that occasionally fail on hosted runners. List them under **Checks that never block automation** (Repositories → repository → Automation). Each entry is a check run name, matched case-insensitively; `*` matches any text, so `Validate unsigned * package` covers every platform leg.
+
+A failure of a listed check:
+
+- does not hold back auto-merge or ultrafix continuation;
+- does not start an automatic failed-CI follow-up;
+- is shown to reviews as neutral and marked *(non-blocking)*, not as a failure of the change.
+
+GitHub still shows the check and its result. Unlisted checks keep blocking, and if the repository configuration cannot be read, every check blocks.
+
 {/* VIDEO PLACEHOLDER: Record a 45-second clip: post a natural follow-up comment on a ProPR-created PR, show the task appearing in the Web UI task list, then return to the PR to show the new commit and the completion comment. Show the completion comment's expandable slash-command block as the key moment. */}
+
+## Next steps
+
+- [PR Comment Commands](/docs/features/pr-commands)
+- [Visual Previews](/docs/features/visual-previews)

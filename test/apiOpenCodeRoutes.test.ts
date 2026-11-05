@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.18.31');
+            assert.equal(agent?.cliVersionResolved, '1.19.5');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({

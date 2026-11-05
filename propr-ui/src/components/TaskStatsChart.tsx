@@ -4,6 +4,7 @@ import { VolumeChart, ProcessingTimeChart, StatusSegmentedBar } from './TaskStat
 import { buildStatusBreakdown } from './taskStatusBreakdown';
 import { useSocket } from '../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
+import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 const formatDate = (dateStr: string): string => {
@@ -15,9 +16,11 @@ interface TaskStatsChartProps {
   data?: TaskStatsResponse | null;
   mode?: 'all' | 'trends' | 'distribution';
   isLoading?: boolean;
+  /** Off where the surrounding pane already names the chart. */
+  showHeading?: boolean;
 }
 
-const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all', isLoading: externalLoading }) => {
+const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all', isLoading: externalLoading, showHeading = true }) => {
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
@@ -81,21 +84,21 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   // Loading skeleton for distribution mode (segmented bar + tabular legend)
   const renderDistributionSkeleton = () => (
     <div>
-      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
-      <div className="animate-pulse">
-        <div className="h-2 w-full rounded-sm bg-gray-200" />
+      {showHeading && <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>}
+      <SkeletonRegion label="Loading task status…">
+        <SkeletonBlock className="h-2 w-full" />
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
           {[...Array(4)].map((_, i) => (
             <div key={i} className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
-                <div className="h-2 w-2 rounded-sm bg-gray-200" />
-                <div className="h-3 w-16 rounded bg-gray-200" />
+                <SkeletonBlock className="h-2 w-2" />
+                <SkeletonBlock className="h-3 w-16" />
               </div>
-              <div className="h-3 w-8 rounded bg-gray-200" />
+              <SkeletonBlock className="h-3 w-8" />
             </div>
           ))}
         </div>
-      </div>
+      </SkeletonRegion>
     </div>
   );
 
@@ -185,7 +188,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     <>
       {statusBreakdown.length > 0 && (
         <div>
-          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
+          {showHeading && <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>}
           <StatusSegmentedBar data={statusBreakdown} />
         </div>
       )}

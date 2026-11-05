@@ -8,7 +8,9 @@ import {
     assertInstanceAdministratorConfigured,
     authenticatedUserResponse,
     resolveInstanceAuthorization,
+    resolveDurableInstanceAuthorization,
     requirePermission,
+    INSTANCE_PERMISSIONS,
     type InstanceAuthorization
 } from '../authorization.js';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
@@ -31,12 +33,7 @@ const actor: GitHubUser = {
 
 const adminAuthorization: InstanceAuthorization = {
     role: 'admin',
-    permissions: [
-        'instance.manage_agents',
-        'instance.manage_members',
-        'instance.manage_runtime',
-        'instance.manage_settings'
-    ],
+    permissions: [...INSTANCE_PERMISSIONS],
     source: 'local'
 };
 
@@ -124,13 +121,12 @@ describe('instance authorization', () => {
         assert.equal(authorization.source, 'local');
     });
 
-    test('resolves demo users without installation permissions', async () => {
+    test('resolves demo users as read-only viewers without the administrator role', async () => {
         configureDemoMode(true);
 
         const authorization = await resolveInstanceAuthorization(actor, database);
 
-        assert.equal(authorization.source, 'demo');
-        assert.deepEqual(authorization.permissions, []);
+        assert.deepEqual(authorization, { role: 'member', permissions: [...INSTANCE_PERMISSIONS], source: 'demo' });
     });
 
     test('permission middleware rejects members with a stable error code', () => {
@@ -191,7 +187,7 @@ describe('instance member service', () => {
         assert.equal((await service.listAudit())[0].action, 'admin_claimed');
     });
 
-    test('adds explicit members and writes an audit entry', async () => {
+    test('adds directly assigned members and writes an audit entry', async () => {
         const service = new InstanceMemberService(database);
 
         const member = await service.addMember(actor, { id: '200', username: 'developer' }, 'member');
@@ -266,7 +262,8 @@ describe('instance catalog', () => {
                 loadSettings: async () => ({
                     default_agent_alias: 'default',
                     github_user_whitelist: ['private-user']
-                })
+                }),
+                loadUltrafixDefaults: async () => ({ ratingGoal: 8, maxCycles: 3 })
             }
         });
         const { response, record } = responseRecorder();
@@ -279,6 +276,7 @@ describe('instance catalog', () => {
                 id: 'agent-1',
                 kind: 'direct',
                 alias: 'default',
+                type: 'codex',
                 enabled: true,
                 supportedModels: ['gpt-5.4'],
                 defaultModel: 'gpt-5.4'
@@ -289,7 +287,7 @@ describe('instance catalog', () => {
                 baseBranch: 'main',
                 notificationsEnabled: true
             }],
-            defaultAgentAlias: 'default'
+            defaultAgentAlias: 'default', ultrafixDefaults: { ratingGoal: 8, maxCycles: 3 }
         });
         const serialized = JSON.stringify(record.body);
         assert.doesNotMatch(serialized, /private\.registry|operator|SECRET_TOKEN|private-user|private-disabled/);
@@ -357,9 +355,7 @@ describe('instance admin routes', () => {
     test('resolves a GitHub username and creates one durable member assignment', async () => {
         const routes = createAdminRoutes({
             database,
-            services: {
-                resolveGitHubUser: async username => ({ id: '200', username })
-            }
+            services: { resolveGitHubUser: async username => ({ id: '200', username }) }
         });
         const { response, record } = responseRecorder();
 
@@ -397,4 +393,64 @@ describe('instance admin routes', () => {
             assert.equal((record.body as { code: string }).code, 'INVALID_GITHUB_USERNAME');
         }
     });
+});
+
+test('private numeric actor lookup uses current durable roles without bootstrap fallback', async () => {
+    process.env.PROPR_ADMIN_USERS = actor.username;
+    assert.equal((await resolveInstanceAuthorization(actor, database)).role, 'admin');
+    assert.equal((await resolveDurableInstanceAuthorization(actor.id, database)).role, 'member');
+    await database('instance_members').insert({ github_user_id: actor.id, github_username: actor.username, role: 'admin', source: 'local' });
+    assert.ok((await resolveDurableInstanceAuthorization(actor.id, database)).permissions.includes('instance.manage_settings'));
+    await database('instance_members').where({ github_user_id: actor.id }).update({ role: 'member' });
+    assert.equal((await resolveDurableInstanceAuthorization(actor.id, database)).role, 'member');
+    await database('instance_members').where({ github_user_id: actor.id }).delete();
+    await database('instance_members').insert({ github_user_id: '101', github_username: actor.username, role: 'admin', source: 'local' });
+    assert.equal((await resolveDurableInstanceAuthorization(actor.id, database)).role, 'member');
+    assert.equal((await resolveDurableInstanceAuthorization(actor.username, database)).role, 'member');
+});
+
+test('Unix Fleet listener revalidates the authoritative instance database across requests', async t => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const { request } = await import('node:http');
+    const { createHash, createHmac, randomUUID, randomBytes } = await import('node:crypto');
+    const { canonicalFleetJson } = await import('@propr/shared');
+    const { FleetDataPlane } = await import('../../core/src/fleet/dataPlane.js');
+    const { InstanceStorageService } = await import('../../core/src/storage/service.js');
+    const { StorageLifecycle } = await import('../../core/src/storage/lifecycle.js');
+    const { listenFleetData } = await import('../fleetDataListener.js');
+    const { digest } = await import('../../core/src/fleet/contract.js');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-durable-admin-'));
+    const control = path.join(root, 'fleet');
+    const secret = 'PUBLIC-TEST-FLEET-DURABLE-ADMIN-SECRET';
+    await fs.mkdir(control, { mode: 0o700 });
+    await fs.writeFile(path.join(control, 'authority.json'), JSON.stringify({ hostedInstanceId: 'test-hosted', placementGeneration: 'test-placement', scope: 'hosted_customer_data', secretSha256: createHash('sha256').update(secret).digest('hex') }), { mode: 0o600 });
+    const storage = new InstanceStorageService({ lifecycle: new StorageLifecycle(path.join(root, 'storage')), clonesRoot: path.join(root, 'clones'), roots: [], hasPendingTasks: async () => false });
+    const plane = new FleetDataPlane(storage, control, () => secret, id => resolveDurableInstanceAuthorization(String(id), database));
+    await plane.initialize();
+    const server = await listenFleetData(plane);
+    t.after(async () => { await server.shutdown(); await fs.rm(root, { recursive: true, force: true }); });
+    const runtime = await plane.runtime();
+    const invoke = async () => {
+        const payload = { action: 'repositories.list' };
+        const assertion = { ...runtime, githubActorId: 100, action: payload.action, requestDigest: digest(payload), operationId: randomUUID(), nonce: randomBytes(32).toString('hex'), issuedAt: Math.floor(Date.now() / 1000), expiresAt: Math.floor(Date.now() / 1000) + 60 };
+        const raw = canonicalFleetJson({ assertion, request: payload, mac: createHmac('sha256', secret).update(canonicalFleetJson(assertion)).digest('hex') });
+        return new Promise<number>((resolve, reject) => {
+            const req = request({ socketPath: server.address()!, method: 'POST', path: '/v1/invoke', headers: { 'Content-Type': 'application/json' } }, res => {
+                res.resume(); res.on('end', () => resolve(res.statusCode!));
+            }); req.on('error', reject); req.end(raw);
+        });
+    };
+    process.env.PROPR_ADMIN_USERS = actor.username;
+    assert.equal(await invoke(), 403);
+    await database('instance_members').insert({ github_user_id: '100', github_username: actor.username, role: 'member', source: 'local' });
+    assert.equal(await invoke(), 403);
+    await database('instance_members').where({ github_user_id: '100' }).update({ role: 'admin' });
+    assert.equal(await invoke(), 200);
+    await database('instance_members').where({ github_user_id: '100' }).update({ role: 'member' });
+    assert.equal(await invoke(), 403);
+    await database('instance_members').where({ github_user_id: '100' }).delete();
+    await database('instance_members').insert({ github_user_id: '101', github_username: actor.username, role: 'admin', source: 'local' });
+    assert.equal(await invoke(), 403);
 });

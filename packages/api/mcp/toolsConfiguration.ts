@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, AGENT_DEFAULTS, AGENT_TYPES } from '@propr/core';
-import { getManagedAgentConfigPath, isAgentLoginSupported, syntheticAgentConfigSchema, REASONING_LEVELS } from '@propr/shared';
+import { AGENT_TANK_MODES, getManagedAgentConfigPath, isAgentLoginSupported, syntheticAgentConfigSchema, REASONING_LEVELS } from '@propr/shared';
 import type { createConfigRoutes } from '../routes/configRoutes.js';
 import { configRevision } from '../routes/configRevision.js';
 import { callWorkflow } from './adapter.js';
 import { McpError } from './config.js';
 import { type McpTool, type ToolDeps, mutationShape, repositorySchema, idSchema, ok, workflow } from './tools.js';
+import { addTriggerAccessTools } from './toolsTriggerAccess.js';
 
 const configurationId = z.string().min(1).max(256);
 const agentPatch = {
@@ -21,6 +22,7 @@ const safeAgent = (agent: Awaited<ReturnType<typeof loadAgents>>[number]) => Obj
 );
 
 export function addConfigurationTools(tools: McpTool[], deps: ToolDeps, config: ReturnType<typeof createConfigRoutes>): void {
+  addTriggerAccessTools(tools, config);
   tools.push({ name: 'get_agent_configuration', description: 'Read all direct and synthetic agent configurations and actual built-in model defaults. Credential paths/environment variables are excluded.', scope: 'manage', permission: 'instance.manage_agents', readOnly: true, schema: z.object({}).strict(), run: async () => ok({ agents: (await loadAgents()).map(safeAgent), syntheticAgents: await loadSyntheticAgents(), types: AGENT_TYPES, defaults: Object.fromEntries(Object.entries(AGENT_DEFAULTS).map(([type, value]) => [type, { models: value.defaultModels, alias: value.defaultAlias, cliVersion: value.defaultCliVersion }])), reasoningLevels: REASONING_LEVELS }) });
   for (const action of ['create', 'update', 'remove'] as const) tools.push({ name: `${action}_agent_configuration`, description: `${action} a direct agent through the existing validated configuration workflow. Creation uses managed credential storage; provider login requires secure browser setup.`, scope: 'manage', permission: 'instance.manage_agents',
     schema: z.object({ ...mutationShape, agentId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/), ...(action === 'create' ? { type: z.enum(AGENT_TYPES), alias: z.string().regex(/^[a-z0-9-]{1,63}$/), supportedModels: z.array(idSchema).min(1).max(100), defaultModel: idSchema, enabled: z.literal(false).default(false) } : action === 'update' ? agentPatch : {}) }).strict(), run: async ({ principal, args }) => {
@@ -56,7 +58,23 @@ export function addConfigurationTools(tools: McpTool[], deps: ToolDeps, config: 
   workflow(tools, { name: 'get_indexing_configuration', description: 'Read indexing model/fallback policy, prompt, cooldowns and degradation state.', scope: 'manage', permission: 'instance.manage_settings', readOnly: true, schema: z.object({}).strict() }, config.getSummarizationSettings, () => ({}));
   workflow(tools, { name: 'update_indexing_configuration', description: 'Replace indexing configuration with explicit primary/fallback alias:model and prompt. Existing validation and delayed reindex behavior apply.', scope: 'manage', permission: 'instance.manage_settings', schema: z.object({ ...mutationShape, enabled: z.boolean(), agent_alias: z.string().max(256), fallback_agent_alias: z.string().max(256), custom_prompt: z.string().max(65536) }).strict() }, config.postSummarizationSettings, args => ({ body: args }));
   workflow(tools, { name: 'get_provider_policy', description: 'Read the configured Agent Tank provider policy; does not return credentials.', scope: 'manage', permission: 'instance.manage_agents', readOnly: true, schema: z.object({}).strict() }, config.getAgentTankSettings, () => ({}));
-  workflow(tools, { name: 'update_provider_policy', description: 'Configure the existing Agent Tank provider service with a non-secret HTTP(S) base URL and explicit enabled state. Requires instance.manage_agents.', scope: 'manage', permission: 'instance.manage_agents', schema: z.object({ ...mutationShape, enabled: z.boolean(), url: z.url().max(2048).refine(value => { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash && url.pathname === '/'; }, 'Use an HTTP(S) origin without credentials, path, query or fragment') }).strict() }, config.postAgentTankSettings, args => ({ body: { enabled: args.enabled, url: args.url.replace(/\/$/, '') } }));
+  workflow(tools, {
+    name: 'update_provider_policy',
+    description: 'Configure Agent Tank usage tracking. "bundled" runs it inside the ProPR agent image and needs no url; "external" targets an operator-run instance at a non-secret HTTP(S) base URL; "disabled" turns it off. Requires instance.manage_agents.',
+    scope: 'manage',
+    permission: 'instance.manage_agents',
+    schema: z.object({
+      ...mutationShape,
+      mode: z.enum(AGENT_TANK_MODES),
+      // Optional because it is meaningless outside external mode; the refine
+      // below makes it required exactly when it matters, so the tool cannot be
+      // called into an inconsistent state.
+      url: z.url().max(2048).refine(value => { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash && url.pathname === '/'; }, 'Use an HTTP(S) origin without credentials, path, query or fragment').optional(),
+    }).strict().refine(
+      args => args.mode !== 'external' || typeof args.url === 'string',
+      { message: 'url is required when mode is "external"' },
+    ),
+  }, config.postAgentTankSettings, args => ({ body: { mode: args.mode, url: args.url?.replace(/\/$/, '') } }));
   for (const [name, handler] of [['get_provider_status', config.getAgentTankStatus], ['get_provider_usage', config.getAgentTankUsage], ['detect_provider_service', config.getAgentTankDetect]] as const) workflow(tools, { name, description: 'Read the existing configured Agent Tank provider service state.', scope: 'manage', permission: 'instance.manage_agents', readOnly: true, schema: z.object({}).strict() }, handler, () => ({}));
   workflow(tools, { name: 'refresh_provider_usage', description: 'Refresh usage from the existing configured Agent Tank service.', scope: 'manage', permission: 'instance.manage_agents', schema: z.object(mutationShape).strict() }, config.postAgentTankRefresh, () => ({}));
   for (const action of ['create', 'remove'] as const) tools.push({ name: `${action}_repository_configuration`, description: `${action} a repository configuration under instance administration and explicit repository grants. Missing consent returns browser continuation without changing configuration.`, scope: 'manage', permission: 'instance.manage_settings', schema: z.object({ ...mutationShape, repository: repositorySchema, ...(action === 'create' ? { baseBranch: idSchema, enabled: z.boolean().default(true), alias: idSchema.optional() } : {}) }).strict(), run: async ({ principal, args }) => {

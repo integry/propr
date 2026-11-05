@@ -4,7 +4,7 @@
 
 import { runLightweightLLMAnalysis } from '../../claude/claudeService.js';
 import { REFINER_SYSTEM_PROMPT, PlanItem, RefinementResponse } from '../../claude/prompts/plannerPrompts.js';
-import { parseLlmJson, JsonParseError } from '../../utils/jsonUtils.js';
+import { parseLlmJson, extractLlmJsonText, JsonParseError } from '../../utils/jsonUtils.js';
 import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
@@ -12,6 +12,15 @@ import { loadSettings } from '../../config/configManager.js';
 import { resolveConfiguredModel } from '../../config/configuredModel.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import { PlanningFailedError, getRawInputCharLimit, type MinimalLogger } from '../planning/index.js';
+import { incompletePlanItems, PLAN_FILE, PLAN_ORIGINAL_FILE, unreadableDocumentOriginal } from './planValidation.js';
+import { runPlanFileAgent } from './planFileAgent.js';
+import {
+  normalizeRefinedPlan,
+  RefinementOutputError,
+  type RefinementOutputDetails,
+} from './refinementOutput.js';
+
+export { incompletePlanItems };
 import type { RefinePlanOptions, RefinePlanResult, RefinePlanEstimation } from './types.js';
 
 const TRUNCATION_MARKER = '\n\n…[truncated to fit the model input limit]…\n\n';
@@ -100,15 +109,13 @@ export function assembleRefinementPrompt(params: {
 }
 
 /**
- * Parse LLM response into a RefinementResponse, handling various response formats.
+ * Normalize a parsed LLM response into a RefinementResponse.
  * Wraps plain arrays and applies default values for missing fields.
  */
-function parseRefinementResponse(
-  response: string,
+function toRefinementResponse(
+  parsed: RefinementResponse | PlanItem[],
   correlatedLogger: MinimalLogger
 ): RefinementResponse {
-  const parsed = parseLlmJson<RefinementResponse | PlanItem[]>(response);
-
   // Check if LLM returned a plain array instead of structured response
   if (Array.isArray(parsed)) {
     correlatedLogger.warn('LLM returned plain array instead of structured response, wrapping');
@@ -138,7 +145,8 @@ function validateRefinementResponse(
 ): RefinementResponse {
   // Handle alternative keys for plan array
   if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
-    const altKeys = ['tasks', 'items', 'issues', 'changes'] as const;
+    // Never `changes`: a list of edits is not a plan.
+    const altKeys = ['tasks', 'items', 'issues'] as const;
     const responseObj = refinementResponse as unknown as Record<string, unknown>;
     for (const key of altKeys) {
       if (Array.isArray(responseObj[key])) {
@@ -166,6 +174,180 @@ function validateRefinementResponse(
   }
 
   return refinementResponse;
+}
+
+/** Task for the agent that repairs a refinement response whose JSON does not parse. */
+export function buildRefinementRepairPrompt(parseError: string): string {
+  return `${PLAN_FILE} in this workspace holds a plan refinement response (a JSON object with "action", "summary" and a "plan" array of tasks) that another model wrote, but it is not valid JSON (${parseError}).
+
+Fix ${PLAN_FILE} so that \`node validate-plan.mjs --document\` exits with status 0.
+
+- Fix JSON syntax only: escaping of quotes, backslashes and newlines inside strings, and missing or extra commas, brackets or braces.
+- Keep every field and value with its exact text. Never reword, summarize, shorten, reorder or add content: the validator compares ${PLAN_FILE} with ${PLAN_ORIGINAL_FILE} and rejects any content change.
+- Do not modify ${PLAN_ORIGINAL_FILE} or validate-plan.mjs.
+- Edit the broken spots in place instead of rewriting the whole file; it may be very large.
+
+Run \`node validate-plan.mjs --document\` after each change and stop once it reports "valid": true.`;
+}
+
+/**
+ * Task for the agent that salvages a refinement response the model started
+ * over after being cut off: a partial first attempt followed by a restarted copy.
+ */
+export function buildRefinementSalvagePrompt(parseError: string, unreadable: string): string {
+  return `${PLAN_FILE} in this workspace holds a plan refinement response (a JSON object with "action", "summary" and a "plan" array of tasks) that another model wrote, but it is not valid JSON (${parseError}) and cannot be read as one document (${unreadable}).
+
+The model's answer was cut off part-way and the model then started the whole answer over, so the file holds an incomplete first attempt followed by a complete restarted copy, which may itself contain syntax errors.
+
+Make ${PLAN_FILE} hold only the restarted copy, as valid JSON, so that \`node validate-plan.mjs --document --salvage\` exits with status 0.
+
+- Delete the incomplete first attempt: everything before the point where the answer starts over (\`{\` followed by \`"action"\` again).
+- In the restarted copy, fix JSON syntax only: escaping of quotes, backslashes and newlines inside strings, and missing or extra commas, brackets or braces.
+- Keep every field, value and task of the restarted copy with its exact text. Never reword, summarize, shorten, reorder or add content: the validator compares the result with the restarted copy in ${PLAN_ORIGINAL_FILE} and rejects any content change.
+- Do not modify ${PLAN_ORIGINAL_FILE} or validate-plan.mjs.
+- The file may be very large: cut and edit it in place with your tools instead of retyping it.
+
+Run \`node validate-plan.mjs --document --salvage\` after each change and stop once it reports "valid": true.`;
+}
+
+const isUsageLimitError = (error: unknown) => (error as Error)?.name === 'UsageLimitError';
+
+interface RefinementRepairContext {
+  draftId?: string;
+  repository: string;
+  githubToken: string;
+  correlationId?: string;
+  generationModel: string;
+  correlatedLogger: MinimalLogger;
+}
+
+/**
+ * Parses a refinement response. Malformed JSON is never re-requested from a
+ * model: an agent repairs it in place in a file, and the validator proves the
+ * repair changed syntax only.
+ */
+async function parseRefinementWithRepair(response: string, context: RefinementRepairContext): Promise<RefinementResponse> {
+  const { correlatedLogger } = context;
+  let parseError: JsonParseError;
+  try {
+    return toRefinementResponse(parseLlmJson<RefinementResponse | PlanItem[]>(response), correlatedLogger);
+  } catch (error) {
+    if (!(error instanceof JsonParseError)) throw error;
+    parseError = error;
+  }
+
+  let original: string;
+  try {
+    original = extractLlmJsonText(response);
+  } catch {
+    // No JSON document at all: there is nothing to repair.
+    throw new PlanningFailedError(`Failed to parse refined plan: ${parseError.message}`);
+  }
+
+  // An original the validator cannot read as one document is usually an answer
+  // the model started over after being cut off: the agent salvages it, and the
+  // validator then requires a syntax-only repair of the restarted copy.
+  const unreadable = await unreadableDocumentOriginal(original);
+  if (unreadable) {
+    // Without a complete restarted copy the content is simply missing, and no
+    // repair could pass validation.
+    const unsalvageable = await unreadableDocumentOriginal(original, { salvage: true });
+    if (unsalvageable) {
+      correlatedLogger.error({ error: parseError.message, unreadable, unsalvageable, responseLength: response.length }, 'Refinement response cannot be repaired in place');
+      throw new PlanningFailedError(`Failed to parse refined plan: ${parseError.message}. It cannot be repaired in place: ${unreadable}`);
+    }
+    correlatedLogger.warn({ error: parseError.message, unreadable, responseLength: response.length }, 'Refinement response restarts part-way; salvaging the restarted copy with an agent');
+  }
+
+  let repairModel: string | undefined;
+  try {
+    // JSON repair is handled by the configured default coding model, as for plan generation.
+    repairModel = await resolveConfiguredModel();
+    const separator = repairModel.indexOf(':');
+    const repairRoute = AgentRegistry.getInstance().beginRoutingSession(separator < 0
+      ? { requestedAgentAlias: repairModel }
+      : { requestedAgentAlias: repairModel.slice(0, separator), requestedModel: repairModel.slice(separator + 1) });
+    correlatedLogger.warn({
+      error: parseError.message, responseLength: response.length, generationModel: context.generationModel, repairModel,
+    }, 'Failed to parse refinement response, repairing it in place with an agent');
+    const repaired = await runPlanFileAgent<RefinementResponse | PlanItem[]>({
+      purpose: 'repair',
+      document: true,
+      salvage: !!unreadable,
+      prompt: unreadable ? buildRefinementSalvagePrompt(parseError.message, unreadable) : buildRefinementRepairPrompt(parseError.message),
+      files: { [PLAN_FILE]: original, [PLAN_ORIGINAL_FILE]: original },
+      original,
+      model: repairModel,
+      draftId: context.draftId,
+      repository: context.repository,
+      githubToken: context.githubToken,
+      executionType: 'plan-refinement',
+      correlationId: context.correlationId ? `${context.correlationId}-repair` : undefined,
+      metadata: { jsonRepair: true, jsonSalvage: !!unreadable, sourceModel: context.generationModel, sourceResponseLength: response.length },
+      routingSession: repairRoute,
+    });
+    correlatedLogger.info({ originalError: parseError.message, repairModel, salvaged: !!unreadable }, 'Repaired refinement response passed validation');
+    return toRefinementResponse(repaired, correlatedLogger);
+  } catch (repairError) {
+    if (isUsageLimitError(repairError)) throw repairError;
+    correlatedLogger.error({
+      originalError: parseError.message,
+      repairError: repairError instanceof Error ? repairError.message : String(repairError),
+      repairModel,
+    }, 'Failed to repair refinement response');
+    throw new PlanningFailedError(`Failed to parse refined plan, and the in-place repair failed: ${repairError instanceof Error ? repairError.message : String(repairError)}`);
+  }
+}
+
+function incompletePlanRepairPrompt(currentPlan: PlanItem[], instruction: string, response: string, details: RefinementOutputDetails): string {
+  return `Your previous response was not a safe complete refined plan (${details.reason}).
+
+Apply the requested changes to the current plan below and return ONLY this JSON object:
+{"action": "modified", "summary": "<what changed>", "plan": [ ... ]}
+
+The plan array must contain EVERY issue of the refined plan in full, each as {"title", "body", "implementation"}, copying unchanged issues verbatim. Do not return edit instructions such as "retain", "extend" or "unchanged". No markdown or code fences.
+
+Current plan:
+${JSON.stringify(currentPlan)}
+
+Requested change:
+${instruction}
+
+Your previous response:
+${response}`;
+}
+
+/**
+ * Asks once for the complete plan when a refinement returned edits or partial
+ * issues. Saving those would replace the plan with stubs, so if the second
+ * answer is still incomplete the refinement fails and the plan is kept.
+ */
+async function requestCompletePlan(
+  details: RefinementOutputDetails,
+  context: {
+    currentPlan: PlanItem[];
+    instruction: string;
+    response: string;
+    charLimit: number | null;
+    correlatedLogger: MinimalLogger;
+    llm: (prompt: string) => Promise<string>;
+    parse: (response: string) => Promise<RefinementResponse>;
+  },
+): Promise<RefinementResponse | undefined> {
+  const { currentPlan, instruction, response, charLimit, correlatedLogger } = context;
+  correlatedLogger.warn({ details }, 'Refinement returned an invalid plan, asking for the full plan');
+  const repairPrompt = incompletePlanRepairPrompt(currentPlan, instruction, response, details);
+  if (charLimit === null || repairPrompt.length <= charLimit) {
+    try {
+      const repaired = validateRefinementResponse(await context.parse(await context.llm(repairPrompt)), correlatedLogger);
+      return repaired.action === 'modified' ? repaired : { ...repaired, plan: currentPlan };
+    } catch (repairError) {
+      // Usage limits keep their identity for upstream requeueing.
+      if (isUsageLimitError(repairError)) throw repairError;
+      correlatedLogger.warn({ error: repairError instanceof Error ? repairError.message : String(repairError) }, 'Complete-plan repair failed');
+    }
+  }
+  return undefined;
 }
 
 export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult & { estimation?: RefinePlanEstimation }> {
@@ -239,53 +421,53 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   // Debug: log raw response (first 1000 chars) to diagnose parsing issues
   correlatedLogger.info({ responsePreview: response.substring(0, 1000), responseLength: response.length }, 'Raw LLM refinement response');
 
-  let refinementResponse: RefinementResponse;
-  try {
-    refinementResponse = parseRefinementResponse(response, correlatedLogger);
-  } catch (error) {
-    if (error instanceof JsonParseError) {
-      correlatedLogger.warn({ error: error.message, responseLength: response.length }, 'Failed to parse refinement response, attempting repair');
-
-      // Try to repair the JSON by asking the same LLM to fix it
-      const repairPrompt = `The following JSON is malformed and cannot be parsed.
-Error: ${error.message}
-
-Please fix the JSON syntax errors and return ONLY the corrected JSON.
-Do not include any explanation, markdown formatting, or code fences.
-Ensure all strings are properly escaped (especially quotes and newlines within string values).
-
-Broken JSON:
-${response}`;
-
-      try {
-        const repairedResponse = await runLightweightLLMAnalysis({
-          prompt: repairPrompt,
-          model: generationModel,
-          correlationId: correlationId ? `${correlationId}-repair` : 'plan-refinement-repair',
-          worktreePath,
-          githubToken,
-          issueRef,
-          taskId: draftId,
-          executionType: 'plan-refinement',
-          routingSession: routingSession.fork()
-        });
-
-        refinementResponse = parseRefinementResponse(repairedResponse, correlatedLogger);
-        correlatedLogger.info({ originalError: error.message }, 'Successfully repaired refinement JSON response');
-      } catch (repairError) {
-        correlatedLogger.error({
-          originalError: error.message,
-          repairError: repairError instanceof Error ? repairError.message : 'Unknown error',
-          responsePreview: response.substring(0, 500)
-        }, 'Failed to repair refinement response');
-        throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
-      }
-    } else {
-      throw error;
-    }
-  }
+  const repairContext: RefinementRepairContext = { draftId, repository, githubToken, correlationId, generationModel, correlatedLogger };
+  let refinementResponse = await parseRefinementWithRepair(response, repairContext);
 
   refinementResponse = validateRefinementResponse(refinementResponse, correlatedLogger);
+
+  // Answers and clarifying questions never change the plan, whatever came back with them.
+  if (refinementResponse.action !== 'modified') {
+    refinementResponse.plan = currentPlan;
+  }
+
+  let normalized = refinementResponse.action === 'modified'
+    ? normalizeRefinedPlan(currentPlan, refinementResponse.plan)
+    : { ok: true as const, plan: currentPlan, merged: false, operations: undefined };
+  if (!normalized.ok) {
+    const repaired = await requestCompletePlan(normalized.details, {
+      currentPlan, instruction, response, charLimit, correlatedLogger,
+      parse: completeResponse => parseRefinementWithRepair(completeResponse, repairContext),
+      llm: prompt => runLightweightLLMAnalysis({
+        prompt,
+        model: generationModel,
+        correlationId: correlationId ? `${correlationId}-complete-plan` : 'plan-refinement-complete-plan',
+        worktreePath,
+        githubToken,
+        issueRef,
+        taskId: draftId,
+        executionType: 'plan-refinement',
+        routingSession: routingSession.fork(),
+      }),
+    });
+    if (repaired) {
+      refinementResponse = repaired;
+      normalized = refinementResponse.action === 'modified'
+        ? normalizeRefinedPlan(currentPlan, refinementResponse.plan)
+        : { ok: true as const, plan: currentPlan, merged: false, operations: undefined };
+    }
+  }
+  if (!normalized.ok) {
+    throw new RefinementOutputError(normalized.message, normalized.details);
+  }
+
+  refinementResponse.plan = normalized.plan;
+  if (normalized.merged) {
+    const mergeSummary = `Applied ${normalized.operations} edits to the existing plan.`;
+    refinementResponse.summary = refinementResponse.summary
+      ? `${mergeSummary} ${refinementResponse.summary}`
+      : mergeSummary;
+  }
 
   correlatedLogger.info({
     taskCount: refinementResponse.plan.length,
@@ -298,6 +480,8 @@ ${response}`;
     action: refinementResponse.action,
     summary: refinementResponse.summary,
     model: generationModel,
+    merged: normalized.merged,
+    operations: normalized.operations,
     estimation: {
       estimatedDurationMs: estimation.estimatedDurationMs,
       startedAt,

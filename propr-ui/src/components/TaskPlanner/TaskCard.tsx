@@ -1,12 +1,17 @@
-import { useState, forwardRef, useRef, useCallback } from 'react';
+import { useState, forwardRef, useRef, useCallback, useLayoutEffect } from 'react';
 import { MessageSquare, Trash2, Pencil, ChevronDown, Maximize2, Minimize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask, uploadAttachment, removeAttachment } from '../../api/proprApi';
 import { AttachmentUploader } from './AttachmentUploader';
 import { resizeImage } from './imageUtils';
 import { ClearImplementationDialog } from './ClearImplementationDialog';
+import { DeleteTaskDialog } from './DeleteTaskDialog';
 import { extractFilePaths } from './taskCardUtils';
+import { getOutlineTitle } from './planDisplayName';
 import { RenderEditableContent, CollapsedImplementationPreview, EditableField, ViewMode } from './TaskCardComponents';
+
+/** Heading text: the step number sits beside it, so a generated "<plan> (n/m):" prefix is dropped. */
+const getHeadingTitle = (title: string | undefined): string => getOutlineTitle(title ?? '');
 
 interface TaskCardProps {
   task: PlanTask;
@@ -17,6 +22,8 @@ interface TaskCardProps {
   onDelete: () => void;
   id?: string;
   hideNotes?: boolean;
+  /** Phones drop the heading trash icon, which sat a thumb's width from the pencil; Delete moves into edit mode. */
+  isMobile?: boolean;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
@@ -28,12 +35,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   onDelete,
   id,
   hideNotes = false,
+  isMobile = false,
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
   const [isCodeExpanded, setIsCodeExpanded] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -136,51 +145,36 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         {/* SECTION 1: ISSUE CONTENT (Title & Specification) */}
         <div className="pb-4">
           <div className="flex flex-col gap-3">
-            {/* Title Row with Step Number, Title, Edit Icon, and Delete */}
+            {/* Title Row with Step Number, Title and Edit Icon (plus a desktop hover Delete) */}
             <div className="flex items-start gap-3">
               <span className="text-xl font-semibold flex-shrink-0 mt-0.5" style={{ color: 'rgb(29, 138, 138)' }}>{stepNumber}.</span>
               <div className="flex-1 min-w-0">
                 {viewMode === 'edit' || editingField === 'title' ? (
-                  <input
+                  <TaskTitleInput
                     value={task.title}
-                    onChange={e => onChange({ ...task, title: e.target.value })}
+                    onChange={title => onChange({ ...task, title })}
                     onBlur={handleBlur}
                     onFocus={() => setEditingField('title')}
                     autoFocus={editingField === 'title'}
-                    className="w-full text-xl font-semibold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
-                    placeholder="Task Title"
                   />
                 ) : (
                   <h3
                     onClick={() => handleFieldClick('title')}
                     className="text-xl font-semibold text-gray-900 cursor-default hover:bg-gray-50 rounded px-2 py-1 -ml-2 leading-tight"
+                    title={task.title}
                   >
-                    {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
+                    {/* The step number sits beside the heading, so a generated "<plan> (n/m):" prefix (which
+                        keeps its original position after a reorder) is dropped; editing shows the raw title. */}
+                    {getHeadingTitle(task.title) || <span className="text-gray-400 italic font-normal">Task Title</span>}
                   </h3>
                 )}
               </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                {/* Edit Toggle Icon */}
-                <button
-                  onClick={() => setViewMode(viewMode === 'edit' ? 'preview' : 'edit')}
-                  className={`p-1.5 rounded-md transition-colors ${
-                    viewMode === 'edit'
-                      ? 'text-teal-600 bg-teal-50 hover:bg-teal-100'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={viewMode === 'edit' ? 'Done editing' : 'Edit task'}
-                >
-                  <Pencil size={14} />
-                </button>
-                {/* Delete Button */}
-                <button
-                  onClick={onDelete}
-                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
-                  title="Delete task"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
+              <TaskHeadingActions
+                isEditing={viewMode === 'edit'}
+                showDelete={!isMobile}
+                onToggleEdit={() => setViewMode(viewMode === 'edit' ? 'preview' : 'edit')}
+                onDelete={() => setShowDeleteDialog(true)}
+              />
             </div>
             <div className="mt-1">
               <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Specification</span>
@@ -277,7 +271,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
 
         {/* SECTION 3: NOTES (Draft Style - Scratchpad) */}
         {!hideNotes && (
-          <div className="bg-white rounded-lg mt-3 mb-8 p-4 border border-dashed border-gray-300">
+          <div className="mt-3 mb-8 rounded-md border border-slate-200 bg-slate-50/50 p-3">
             <div className="flex items-start gap-3">
               <div className="mt-1 p-1.5 text-gray-400">
                 <Pencil size={16} />
@@ -292,8 +286,8 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   className="w-full text-sm text-gray-800 bg-transparent placeholder-gray-400"
                   markdownClassName="w-full text-sm text-gray-800"
                 />
-                {/* Attachments section */}
-                <div className="mt-3">
+                {/* Attachments dock at the foot of the note */}
+                <div className="mt-3 border-t border-slate-200 pt-2">
                   <AttachmentUploader
                     files={task.attachments || []}
                     draftId={draftId}
@@ -301,10 +295,26 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                     onUpload={handleAttachmentUpload}
                     onRemove={handleAttachmentRemove}
                     compact
+                    docked
                   />
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Edit mode holds the deliberate Delete action at the very end of the step, after the notes,
+            so it never interrupts the specification and sits well away from the pencil in the heading. */}
+        {viewMode === 'edit' && (
+          <div className="mb-8 flex">
+            <button
+              type="button"
+              onClick={() => setShowDeleteDialog(true)}
+              className="flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+            >
+              <Trash2 size={14} />
+              Delete task
+            </button>
           </div>
         )}
       </div>
@@ -319,10 +329,92 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         }}
         fileCount={fileCount || 1}
       />
+
+      <DeleteTaskDialog
+        isOpen={showDeleteDialog}
+        onClose={() => setShowDeleteDialog(false)}
+        onConfirm={() => {
+          setShowDeleteDialog(false);
+          onDelete();
+        }}
+        stepNumber={stepNumber}
+        taskTitle={getHeadingTitle(task.title)}
+      />
     </div>
   );
 });
 
 TaskCard.displayName = 'TaskCard';
+
+interface TaskTitleInputProps {
+  value: string;
+  onChange: (title: string) => void;
+  onBlur: () => void;
+  onFocus: () => void;
+  autoFocus: boolean;
+}
+
+/**
+ * The title editor wraps onto as many lines as the title needs, so a long title is never clipped
+ * mid-word beside the pencil. It is still a single-line value: Enter and pasted line breaks are dropped.
+ */
+const TaskTitleInput: React.FC<TaskTitleInputProps> = ({ value, onChange, onBlur, onFocus, autoFocus }) => {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    // border-box: the height includes the borders, which scrollHeight leaves out.
+    textarea.style.height = `${textarea.scrollHeight + textarea.offsetHeight - textarea.clientHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={textareaRef}
+      rows={1}
+      value={value}
+      onChange={e => onChange(e.target.value.replace(/\s*[\r\n]+\s*/g, ' '))}
+      onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
+      onBlur={onBlur}
+      onFocus={onFocus}
+      autoFocus={autoFocus}
+      aria-label="Task title"
+      className="block w-full resize-none overflow-hidden text-xl font-semibold leading-tight text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
+      placeholder="Task Title"
+    />
+  );
+};
+
+interface TaskHeadingActionsProps {
+  isEditing: boolean;
+  showDelete: boolean;
+  onToggleEdit: () => void;
+  onDelete: () => void;
+}
+
+/** The pencil, plus a desktop-only hover Delete that, like the edit-mode button, only opens the confirmation. */
+const TaskHeadingActions: React.FC<TaskHeadingActionsProps> = ({ isEditing, showDelete, onToggleEdit, onDelete }) => (
+  <div className="flex items-center gap-1 flex-shrink-0">
+    <button
+      onClick={onToggleEdit}
+      className={`p-1.5 rounded-md transition-colors ${
+        isEditing
+          ? 'text-teal-600 bg-teal-50 hover:bg-teal-100'
+          : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+      }`}
+      title={isEditing ? 'Done editing' : 'Edit task'}
+    >
+      <Pencil size={14} />
+    </button>
+    {showDelete && (
+      <button
+        onClick={onDelete}
+        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+        title="Delete task"
+      >
+        <Trash2 size={14} />
+      </button>
+    )}
+  </div>
+);
 
 export default TaskCard;

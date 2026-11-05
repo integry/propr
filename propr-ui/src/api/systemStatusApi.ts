@@ -88,6 +88,11 @@ export const getSystemStatus = (): Promise<SystemStatus> =>
     const response = await apiFetch(`${API_BASE_URL}/api/status`, { credentials: 'include', signal });
     await handleApiResponse(response);
     const data: StatusResponse = await response.json();
+    return mapSystemStatus(data);
+  });
+
+/** Shared mapping for HTTP bootstrap and WebSocket snapshots. */
+export function mapSystemStatus(data: StatusResponse): SystemStatus {
     const workers: { id: number; status: string }[] = [];
     for (let index = 0; index < (data.workerCount || 0); index++) {
       workers.push({ id: index + 1, status: 'active' });
@@ -113,4 +118,4 @@ export const getSystemStatus = (): Promise<SystemStatus> =>
       warnings: data.warnings || [],
       ...(connectAccount ? { connectAccount } : {}),
     };
-  });
+}

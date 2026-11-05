@@ -21,7 +21,7 @@ export async function buildAgentRuntimeImage(options: {
 }): Promise<{ record: AgentRuntimeImageRecord; log: string }> {
     const { baseImage, packages, installationId, inspection, image, buildDockerfile } = options;
     const { id: baseImageId, user, packageManager } = inspection;
-    return withAgentImageBuildSlot(async () => {
+    return withAgentImageBuildSlot(async signal => {
         if (await imageExists(image)) {
             return {
                 record: { baseImage, baseImageId, image, packageManager, builtAt: new Date().toISOString() },
@@ -36,6 +36,7 @@ export async function buildAgentRuntimeImage(options: {
         ], {
             timeout: 20 * 60 * 1000,
             stdinData: buildDockerfile(baseImage, packages, user),
+            signal,
         });
         const log = `${result.stdout}\n${result.stderr}`.trim();
         if (result.exitCode !== 0) throw new Error(log || `Docker build exited with code ${result.exitCode}`);

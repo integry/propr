@@ -7,15 +7,17 @@ import {
   db,
   findPlanIssueByRepoAndNumber,
   PlanIssueStatus,
-  triggerNextPendingIssue,
   updatePlanIssueStatus,
   resolveAgentTerminationReason,
-  ErrorCategories
+  ErrorCategories,
+  formatPushFailureMessage
 } from '@propr/core';
+import { agentFailureLine, taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
-import { buildWorkNotificationRecap } from '../notificationRecap.js';
+import { buildWorkNotificationRecap, fullNotificationSummary } from '../notificationRecap.js';
+import { completeProviderReplacement } from '../providerReplacement.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
   if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {
@@ -32,10 +34,13 @@ type TerminalStateParams = Pick<
   'stateManager' | 'taskId' | 'claudeResult' | 'postProcessingResult' | 'commitResult'
 >;
 
+const terminalSummary = ({ claudeResult, commitResult }: TerminalStateParams): unknown =>
+  claudeResult?.summary ?? claudeResult?.finalResult?.result ?? commitResult?.commitMessage;
+
 function buildTerminalNotificationRecap(params: TerminalStateParams, status: string) {
   const { claudeResult, postProcessingResult, commitResult } = params;
   return buildWorkNotificationRecap(
-    claudeResult?.summary ?? claudeResult?.finalResult?.result ?? commitResult?.commitMessage,
+    terminalSummary(params),
     {
       filesChanged: claudeResult?.modifiedFiles?.length,
       createdPullRequest: Boolean(postProcessingResult?.pr),
@@ -45,7 +50,32 @@ function buildTerminalNotificationRecap(params: TerminalStateParams, status: str
   );
 }
 
+function terminalReasonFields(claudeResult: ClaudeCodeResponse | null) {
+  const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
+  return terminalReason ? { terminalReason } : {};
+}
+
+/** A rejected push is a task failure even when the agent succeeded: the work only
+ * exists in the rescue location named by the recovery instruction. */
+async function markPushFailure(params: TerminalStateParams): Promise<boolean> {
+  const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
+  const pushFailure = postProcessingResult?.pr ? undefined : postProcessingResult?.pushFailure;
+  if (!pushFailure) return false;
+  const commitResultData = commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null;
+  await stateManager.markTaskFailed(taskId, new Error(formatPushFailureMessage(pushFailure)), {
+    errorCategory: ErrorCategories.GIT_OPERATION,
+    prResult: { status: 'push_failed', claudeSuccess: claudeResult?.success || false, prCreated: false, commitResult: commitResultData },
+    historyMetadata: { pushFailure, commitResult: commitResultData },
+  });
+  return true;
+}
+
 export async function markTaskTerminalState(params: TerminalStateParams): Promise<void> {
+  if (await markPushFailure(params)) return;
+  await markAgentTerminalState(params);
+}
+
+async function markAgentTerminalState(params: TerminalStateParams): Promise<void> {
   const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
   const status = getTaskCompletionStatus(claudeResult, postProcessingResult);
   const commitResultData = commitResult
@@ -53,20 +83,23 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
     : null;
   const taskResult = {
     status,
+    ...terminalReasonFields(claudeResult),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
     prUrl: postProcessingResult?.pr?.url ?? undefined,
     commitResult: commitResultData,
-    notificationRecap: buildTerminalNotificationRecap(params, status)
+    notificationRecap: buildTerminalNotificationRecap(params, status),
+    notificationSummary: fullNotificationSummary(terminalSummary(params))
   };
 
   if (status === 'claude_processing_failed') {
     await stateManager.markTaskFailed(
       taskId,
-      new Error(claudeResult?.error || 'Agent processing failed'),
+      new Error(claudeResult?.error ? agentFailureLine(claudeResult.error) : 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
+        ...terminalReasonFields(claudeResult),
         prResult: taskResult,
         historyMetadata: {
           pr: (taskResult.prUrl && taskResult.prNumber)
@@ -114,8 +147,8 @@ async function persistTaskUpdateFields(
   }
 }
 
-async function closeFailedPlanIssueAndContinue(taskCompletionParams: TaskCompletionParams): Promise<void> {
-  const { issueRef, currentIssueLabels, claudeResult, postProcessingResult, correlatedLogger } = taskCompletionParams;
+async function closeFailedPlanIssue(taskCompletionParams: TaskCompletionParams): Promise<void> {
+  const { issueRef, claudeResult, postProcessingResult, correlatedLogger } = taskCompletionParams;
   if (claudeResult?.success || postProcessingResult?.pr) return;
 
   const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -128,22 +161,23 @@ async function closeFailedPlanIssueAndContinue(taskCompletionParams: TaskComplet
     issueNumber: issueRef.number,
     draftId: planIssue.draft_id
   }, 'Marked plan issue closed after terminal task without PR');
-
-  const hasAutoMerge = currentIssueLabels.includes('auto-merge');
-  const epicLabel = currentIssueLabels.find((label) => label.startsWith('base-'));
-  if (!hasAutoMerge && !epicLabel) return;
-
-  await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, correlatedLogger);
 }
 
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
   const { taskId, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
     await markTaskTerminalState(taskCompletionParams);
+    const { claudeResult } = taskCompletionParams;
+    if (getTaskCompletionStatus(claudeResult, postProcessingResult) === 'claude_processing_failed') {
+      await completeProviderReplacement({
+        taskId, error: claudeResult?.error ?? '', fromAgentExecution: true,
+        terminationReason: claudeResult ? resolveAgentTerminationReason(claudeResult) ?? null : null, correlatedLogger,
+      });
+    }
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
-    await closeFailedPlanIssueAndContinue(taskCompletionParams);
+    await closeFailedPlanIssue(taskCompletionParams);
   } catch (stateError) {
     correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update terminal task state');
   }

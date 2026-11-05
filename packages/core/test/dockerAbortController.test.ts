@@ -92,3 +92,35 @@ test('close disconnects after a bounded wait for an unresponsive Redis poll', as
     assert.equal(disconnect.mock.calls.length, 1);
     assert.equal(redis.quit.mock.calls.length, 0);
 });
+
+test('durable cancellation stops every reviewer after a sibling consumed the abort marker', async () => {
+    const { checkAbortSignal } = await import('../src/claude/docker/dockerAbortController.js');
+    const redis = {
+        get: async (key: string) => key === 'worker:state:review-task' ? JSON.stringify({ state: 'cancelled', terminalReason: 'cancelled_pr_closed' }) : null,
+        del: async () => 1, quit: async () => {}, disconnect: () => {},
+    };
+    assert.equal(await checkAbortSignal('review-task', 'planner:abort:review-task', () => redis), true);
+    assert.equal(await checkAbortSignal('another-task', 'planner:abort:another-task', () => redis), false);
+});
+
+for (const status of ['requeued', 'rescheduled']) {
+    test(`${status} bookkeeping state does not abort a retry, but withdrawal and explicit abort signals do`, async () => {
+        const { checkAbortSignal } = await import('../src/claude/docker/dockerAbortController.js');
+        let terminalReason: string | undefined;
+        let abort: string | null = null;
+        const redis = {
+            get: async (key: string) => key === 'worker:state:retry-task'
+                ? JSON.stringify({ state: 'cancelled', terminalReason, history: [{ metadata: { jobResultStatus: status } }] })
+                : key === 'worker:abort:retry-task' ? abort : null,
+            del: async () => 1, quit: async () => {}, disconnect: () => {},
+        };
+        assert.equal(await checkAbortSignal('retry-task', 'planner:abort:retry-task', () => redis), false);
+        for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_by_user']) {
+            terminalReason = reason;
+            assert.equal(await checkAbortSignal('retry-task', 'planner:abort:retry-task', () => redis), true);
+        }
+        terminalReason = undefined;
+        abort = 'explicit user stop';
+        assert.equal(await checkAbortSignal('retry-task', 'planner:abort:retry-task', () => redis), true);
+    });
+}

@@ -155,7 +155,7 @@ export function isRetryableError(error: Error | unknown, config: RetryConfig): b
 
     // Check status codes - but don't short-circuit, also check message patterns below
     if (err.status) {
-        const retryableStatuses = [429, 500, 502, 503, 504];
+        const retryableStatuses = [429, 500, 502, 503, 504, 529];
         if (retryableStatuses.includes(err.status)) {
             return true;
         }
@@ -175,6 +175,7 @@ export function isRetryableError(error: Error | unknown, config: RetryConfig): b
         /no server.*available/i,
         /service unavailable/i,
         /bad gateway/i,
+        /overloaded/i,
         /could not resolve to a node/i, // GitHub API propagation delay
         /unprocessable.*node/i
     ];
@@ -185,6 +186,13 @@ export function isRetryableError(error: Error | unknown, config: RetryConfig): b
     return retryablePatterns.some(pattern =>
         pattern.test(errorMessage) || pattern.test(errorString)
     );
+}
+
+/**
+ * Whether `withRetry` with its default configuration would retry this error.
+ */
+export function isDefaultRetryableError(error: Error | unknown): boolean {
+    return isRetryableError(error, DEFAULT_RETRY_CONFIG);
 }
 
 /**

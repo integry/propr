@@ -4,9 +4,6 @@
 
 set -e
 
-# Skip firewall initialization for now (requires privileged container)
-echo "Skipping firewall setup (would require --privileged Docker flag)"
-
 # Ensure GitHub token is available
 if [ -z "$GH_TOKEN" ]; then
     echo "Warning: GH_TOKEN environment variable not set"

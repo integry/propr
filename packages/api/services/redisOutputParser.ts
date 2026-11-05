@@ -43,6 +43,15 @@ interface ParseState {
   emittedOpenCodeToolUseIds: Set<string>;
   emittedOpenCodeToolResultIds: Set<string>;
   nativeGoal: NativeGoalProjection | null;
+  /** Live projection only: the record that started the buffered assistant message. */
+  pendingAssistantKey: string | null;
+  eventKeys: WeakMap<object, string>;
+  /**
+   * Live projection only: `events.length` wherever the current record skipped an
+   * event already emitted by an earlier record. The skipped event keeps its slot,
+   * so later events of the record keep their IDs once that earlier record is trimmed.
+   */
+  skippedSlots: number[];
 }
 
 interface OpenCodeRedisEventUsage {
@@ -224,11 +233,6 @@ function processCodexTurnCompleted(event: CodexEvent, _timestamp: string, state:
   return true;
 }
 
-function applyAuthoritativeCodexUsage(state: ParseState): void {
-  const usage = state.codexTurnCompletedUsage ?? state.codexResultUsage;
-  if (usage) addRedisTokenUsage(state.tokenUsage, usage);
-}
-
 function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseState): boolean {
   switch (event.type) {
     case 'message':
@@ -344,7 +348,10 @@ function processAntigravityToolUse(
 ): void {
   flushPendingMessage(state, timestamp);
   const id = event.tool_id;
-  if (id && state.emittedAntigravityToolUseIds.has(id)) return;
+  if (id && state.emittedAntigravityToolUseIds.has(id)) {
+    state.skippedSlots.push(state.events.length);
+    return;
+  }
   if (id) state.emittedAntigravityToolUseIds.add(id);
   state.events.push({
     type: 'tool_use' as const,
@@ -430,9 +437,10 @@ function processOpenCodeEvent(
     });
   }
   const toolEvents = extractOpenCodeToolEvents(event, timestamp, state);
-  if (toolEvents.length) {
-    flushPendingMessage(state, timestamp);
-    state.events.push(...toolEvents);
+  if (toolEvents.some(toolEvent => toolEvent !== SKIPPED_TOOL_EVENT)) flushPendingMessage(state, timestamp);
+  for (const toolEvent of toolEvents) {
+    if (toolEvent === SKIPPED_TOOL_EVENT) state.skippedSlots.push(state.events.length);
+    else state.events.push(toolEvent);
   }
 
   const eventUsage = buildOpenCodeRedisEventUsage(event);
@@ -566,6 +574,9 @@ interface OpenCodeRedisToolTracker {
   emittedToolResultIds: Set<string>;
 }
 
+/** Stands in for a tool event already emitted by an earlier (cumulative) record. */
+const SKIPPED_TOOL_EVENT: ConversationEvent = Object.freeze({ type: 'tool_result' as const, timestamp: '' });
+
 function extractOpenCodeToolEvents(event: OpenCodeRedisEvent, timestamp: string, state: ParseState): ConversationEvent[] {
   const events: ConversationEvent[] = [];
   const tracker: OpenCodeRedisToolTracker = {
@@ -588,7 +599,11 @@ function appendOpenCodeToolEvent(events: ConversationEvent[], source: (OpenCodeR
   }
   if (!isOpenCodeToolUseType(type)) return;
   const toolId = getOpenCodeToolId(sourceWithState);
-  if (toolId && tracker.emittedToolUseIds.has(toolId)) return;
+  if (toolId && tracker.emittedToolUseIds.has(toolId)) {
+    events.push(SKIPPED_TOOL_EVENT);
+    if (type === 'tool' && hasOpenCodeCompletedState(sourceWithState)) events.push(SKIPPED_TOOL_EVENT);
+    return;
+  }
   if (toolId) tracker.emittedToolUseIds.add(toolId);
   events.push(buildOpenCodeToolUseEvent(sourceWithState, timestamp));
   if (type === 'tool') appendOpenCodeCompletedToolResult(events, sourceWithState, timestamp, tracker.emittedToolResultIds);
@@ -602,17 +617,27 @@ function buildOpenCodeToolUseEvent(source: OpenCodeRedisToolSource, timestamp: s
   return { type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args || source.state?.input, id: getOpenCodeToolId(source), timestamp };
 }
 
+function hasOpenCodeCompletedState(source: OpenCodeRedisToolSource): boolean {
+  return Boolean(source.state && ['completed', 'error'].includes(source.state.status ?? ''));
+}
+
 function appendOpenCodeCompletedToolResult(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {
-  if (!source.state || !['completed', 'error'].includes(source.state.status ?? '')) return;
+  if (!hasOpenCodeCompletedState(source)) return;
   const toolId = getOpenCodeToolId(source);
-  if (toolId && emittedToolResultIds.has(toolId)) return;
+  if (toolId && emittedToolResultIds.has(toolId)) {
+    events.push(SKIPPED_TOOL_EVENT);
+    return;
+  }
   if (toolId) emittedToolResultIds.add(toolId);
   events.push({ type: 'tool_result' as const, toolUseId: getOpenCodeToolId(source), result: truncateContent(extractOpenCodeToolResult(source)), isError: isOpenCodeToolStateError(source), timestamp });
 }
 
 function appendOpenCodeToolResultEvent(events: ConversationEvent[], source: OpenCodeRedisToolSource, timestamp: string, emittedToolResultIds: Set<string>): void {
   const toolId = getOpenCodeToolId(source);
-  if (toolId && emittedToolResultIds.has(toolId)) return;
+  if (toolId && emittedToolResultIds.has(toolId)) {
+    events.push(SKIPPED_TOOL_EVENT);
+    return;
+  }
   if (toolId) emittedToolResultIds.add(toolId);
   events.push({ type: 'tool_result' as const, toolUseId: toolId, result: truncateContent(source.output || source.result), isError: source.status === 'error', timestamp });
 }
@@ -680,14 +705,21 @@ function hasRedisTokenUsage(usage: ParseState['tokenUsage']): boolean {
 /**
  * Flush pending assistant message to events
  */
+function pendingMessageEvent(state: ParseState, timestamp: string): ConversationEvent {
+  return {
+    type: 'thought' as const,
+    content: state.pendingAssistantMessage,
+    ...(state.pendingAssistantInternalReasoning ? { internalReasoning: true } : {}),
+    timestamp: state.pendingAssistantTimestamp ?? timestamp,
+  };
+}
+
 function flushPendingMessage(state: ParseState, timestamp: string): void {
   if (state.pendingAssistantMessage) {
-    state.events.push({
-      type: 'thought' as const,
-      content: state.pendingAssistantMessage,
-      ...(state.pendingAssistantInternalReasoning ? { internalReasoning: true } : {}),
-      timestamp: state.pendingAssistantTimestamp ?? timestamp,
-    });
+    const event = pendingMessageEvent(state, timestamp);
+    if (state.pendingAssistantKey) state.eventKeys.set(event, state.pendingAssistantKey);
+    state.events.push(event);
+    state.pendingAssistantKey = null;
     state.pendingAssistantMessage = '';
     state.pendingAssistantTimestamp = null;
     state.pendingAssistantInternalReasoning = false;
@@ -814,9 +846,9 @@ function shouldProcessOpenCodeBeforeCodex(event: OpenCodeRedisEvent): boolean {
 /**
  * Parse Redis output (Codex, Antigravity, OpenCode, or Vibe JSONL format)
  */
-export function parseRedisOutput(lines: string[], options: RedisOutputParseOptions = {}): ParsedRedisOutput {
+function createParseState(options: RedisOutputParseOptions): ParseState {
   const executionStartMs = options.executionStartTimestamp ? new Date(options.executionStartTimestamp).getTime() : NaN;
-  const state: ParseState = {
+  return {
     events: [],
     todos: [],
     tokenUsage: emptyRedisTokenUsage(),
@@ -834,37 +866,116 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     emittedOpenCodeToolUseIds: new Set(),
     emittedOpenCodeToolResultIds: new Set(),
     nativeGoal: null,
+    pendingAssistantKey: null,
+    eventKeys: new WeakMap(),
+    skippedSlots: [],
   };
+}
 
-  if (parseVibeTranscriptOutput(lines.join('\n'), state)) {
-    const hasTokens = state.tokenUsage.input_tokens > 0 || state.tokenUsage.output_tokens > 0;
+/**
+ * One record's contribution to a live projection: the events it completed, each
+ * with its source key. Events of the fed record also carry their slot within it,
+ * which counts events skipped as already emitted by earlier records.
+ */
+export interface ProjectedLineEvents {
+  events: Array<{ event: ConversationEvent; key: string; slot?: number }>;
+}
+
+/**
+ * Record-by-record projection of provider output, for readers that only fetch
+ * new output. Feeding every record and then calling result() gives exactly what
+ * parseRedisOutput() returns for the same records.
+ */
+export interface RedisOutputProjection {
+  seedOpenCodeTools(tools: { uses?: Record<string, boolean>; results?: Record<string, boolean> }): void;
+  /**
+   * Consumes one record; `key` identifies it (its absolute offset in the live log).
+   * An `ordinal` (the record's position among the execution's JSON records, which
+   * survives trimming) replaces the running count behind synthetic timestamps.
+   */
+  feed(line: string, key: string, ordinal?: number): ProjectedLineEvents;
+  /** The buffered assistant message not yet completed by a later record, if any. */
+  pendingEvent(): { event: ConversationEvent; key: string } | null;
+  /** Everything but the events, without touching them. */
+  metadata(): Omit<ParsedRedisOutput, 'events' | 'totalEventCount'>;
+  /** Every event fed so far, plus the buffered one; only the buffered one unless the projection retains events. */
+  result(): ParsedRedisOutput;
+}
+
+/**
+ * `retainEvents: false` releases each event once feed() returns it, keeping only
+ * parser state later records depend on (including a buffered message), so a
+ * live reader's memory does not grow with the length of the run.
+ */
+export function createRedisOutputProjection(
+  { retainEvents = true, ...options }: RedisOutputParseOptions & { retainEvents?: boolean } = {},
+): RedisOutputProjection {
+  const state = createParseState(options);
+  const metadata = () => {
+    const tokenUsage = { ...state.tokenUsage };
+    const usage = state.codexTurnCompletedUsage ?? state.codexResultUsage;
+    if (usage) addRedisTokenUsage(tokenUsage, usage);
+    const inProgressTask = state.todos.find(t => t.status === 'in_progress');
     return {
-      events: state.events,
       todos: state.todos,
-      currentTask: null,
-      tokenUsage: hasTokens ? state.tokenUsage : null,
-      totalEventCount: state.events.length,
+      currentTask: inProgressTask ? inProgressTask.content : null,
+      tokenUsage: hasRedisTokenUsage(tokenUsage) ? tokenUsage : null,
       nativeGoal: state.nativeGoal,
     };
-  }
+  };
+  return {
+    seedOpenCodeTools(tools) {
+      for (const id of Object.keys(tools.uses ?? {})) state.emittedOpenCodeToolUseIds.add(id);
+      for (const id of Object.keys(tools.results ?? {})) state.emittedOpenCodeToolResultIds.add(id);
+    },
+    feed(line, key, ordinal) {
+      const before = state.events.length;
+      state.skippedSlots = [];
+      if (ordinal !== undefined) state.syntheticTimestampIndex = ordinal;
+      parseLine(line, state);
+      if (state.pendingAssistantMessage && !state.pendingAssistantKey) state.pendingAssistantKey = key;
+      let slot = 0;
+      const events = state.events.slice(before).map((event, index) => {
+        const eventKey = state.eventKeys.get(event) ?? key;
+        if (eventKey !== key) return { event, key: eventKey };
+        const skipped = state.skippedSlots.filter(at => at <= before + index).length;
+        return { event, key, slot: slot++ + skipped };
+      });
+      if (!retainEvents) state.events.length = 0;
+      return { events };
+    },
+    pendingEvent() {
+      if (!state.pendingAssistantMessage) return null;
+      return { event: pendingMessageEvent(state, new Date().toISOString()), key: state.pendingAssistantKey ?? 'pending' };
+    },
+    metadata,
+    result() {
+      const pending = state.pendingAssistantMessage ? [pendingMessageEvent(state, new Date().toISOString())] : [];
+      const events = [...state.events, ...pending];
+      return { events, ...metadata(), totalEventCount: events.length };
+    },
+  };
+}
 
-  for (const line of lines) {
-    parseLine(line, state);
-  }
-  applyAuthoritativeCodexUsage(state);
-
-  // Flush any remaining pending message
-  flushPendingMessage(state, new Date().toISOString());
-
-  const inProgressTask = state.todos.find(t => t.status === 'in_progress');
-  const hasTokens = hasRedisTokenUsage(state.tokenUsage);
-
+/** Whole-output Vibe transcripts cannot be projected record by record. */
+export function parseVibeTranscript(output: string, options: RedisOutputParseOptions = {}): ParsedRedisOutput | null {
+  const state = createParseState(options);
+  if (!parseVibeTranscriptOutput(output, state)) return null;
+  const hasTokens = state.tokenUsage.input_tokens > 0 || state.tokenUsage.output_tokens > 0;
   return {
     events: state.events,
     todos: state.todos,
-    currentTask: inProgressTask ? inProgressTask.content : null,
+    currentTask: null,
     tokenUsage: hasTokens ? state.tokenUsage : null,
     totalEventCount: state.events.length,
     nativeGoal: state.nativeGoal,
   };
+}
+
+export function parseRedisOutput(lines: string[], options: RedisOutputParseOptions = {}): ParsedRedisOutput {
+  const vibe = parseVibeTranscript(lines.join('\n'), options);
+  if (vibe) return vibe;
+  const projection = createRedisOutputProjection(options);
+  lines.forEach((line, index) => projection.feed(line, String(index)));
+  return projection.result();
 }

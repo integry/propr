@@ -1,5 +1,5 @@
 import { fireEvent, screen } from '@testing-library/react';
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 import type { DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
 import { localProfile } from './DesktopExperience.testSupport';
 import type { DesktopGuidedLocalSetupAdapter } from './types';
@@ -41,3 +41,27 @@ export const openAndSubmitWizard = async () => {
   }
   fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));
 };
+
+export async function clickAndWaitForHeading(button: string | RegExp, heading: string) {
+  fireEvent.click(await screen.findByRole('button', { name: button }));
+  expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument();
+}
+
+export async function continueThrough(...headings: string[]) {
+  for (const heading of headings) {
+    await clickAndWaitForHeading(/Continue/i, heading);
+  }
+}
+
+export function installationSnapshot(identity: Partial<NonNullable<DesktopSetupSnapshot['githubIdentity']>> = {}): DesktopSetupSnapshot {
+  return {
+    ...idle, phase: 'running', githubIdentity: {
+      status: 'selection-required', username: 'member-user', installAvailable: true,
+      installations: [
+        { installationId: '100', accountLogin: 'acme', accountType: 'Organization' },
+        { installationId: '200', accountLogin: 'member-user', accountType: 'User' },
+      ],
+      ...identity,
+    },
+  };
+}

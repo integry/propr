@@ -14,7 +14,7 @@ const deferred = () => {
 };
 
 describe('desktop native command dispatcher', () => {
-  for (const command of ['settings', 'new-task', 'search', 'toggle-sidebar'] as const) {
+  for (const command of ['settings', 'new-task', 'new-plan', 'new-goal', 'new-automation', 'new-todo', 'search', 'toggle-sidebar'] as const) {
   it(`drops queued ${command} when another account replaces the same profile and scopes menu history`, () => {
     let scope = { profileId: 'profile-a', transportScope: 'abcdefghijklmnopqrstuv' };
     const oldScope = scope;
@@ -78,6 +78,28 @@ describe('desktop native command dispatcher', () => {
       { command: 'quit', connectionScope: scope },
     ]);
     assert.equal(restores, 3);
+  });
+
+  it('delivers every creation command only for an authenticated connection, bound to its scope', () => {
+    const sent: DesktopNativeCommandDelivery[] = [];
+    const scope = { profileId: 'profile-a', transportScope: 'abcdefghijklmnopqrstuv' };
+    const dispatcher = createDesktopNativeCommandDispatcher({
+      channel: 'desktop:native-command',
+      getWindow: () => ({ isDestroyed: () => false, webContents: { send: (_channel, value) => sent.push(value) } }),
+      restoreWindow: () => undefined,
+      activeConnectionScope: () => scope,
+      activeNotificationScope: () => null,
+      notificationState: () => ({ available: false, enabled: false }),
+      setNativeNotificationsEnabled: async () => undefined,
+      quit: () => undefined,
+    });
+    const creation = ['new-task', 'new-plan', 'new-goal', 'new-automation', 'new-todo'] as const;
+    dispatcher.rendererReady();
+    for (const command of creation) dispatcher.dispatch(command);
+    assert.deepEqual(sent, []);
+    dispatcher.connectionAvailable();
+    for (const command of creation) dispatcher.dispatch(command);
+    assert.deepEqual(sent, creation.map(command => ({ command, connectionScope: scope })));
   });
 
   it('queues startup navigation but drops it after an instance switch', () => {

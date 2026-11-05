@@ -134,17 +134,14 @@ export class ConnectAccountStatusTracker {
         return this.account;
     }
 
+    /** Send the connection's hello, which advertises {@link ACCOUNT_STATUS_CAPABILITY}. */
     open(
         socket: MinimalWebSocket,
-        protocolVersion: number,
+        hello: Record<string, unknown>,
         send: (frame: Record<string, unknown>) => boolean,
     ): void {
         this.clear();
-        if (send({
-            type: 'hello',
-            protocolVersion,
-            capabilities: [ACCOUNT_STATUS_CAPABILITY],
-        })) this.negotiatedSocket = socket;
+        if (send(hello)) this.negotiatedSocket = socket;
     }
 
     clear(): void {

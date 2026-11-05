@@ -38,7 +38,7 @@ interface AIModelSelectionSectionProps {
   agents: AgentConfig[];
   /** Operational direct and synthetic agents exposed by the instance catalog. */
   catalogAgents?: InstanceCatalogAgent[];
-  onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  onSettingChange: (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => void;
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
   onReviewContextEnabledChange: (enabled: boolean) => void;
@@ -209,7 +209,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         <SettingsField
           label="Summarization Model"
           htmlFor="summarization_model"
-          helperText="Used to generate file and directory summaries for semantic search."
+          helperText="Used for repository indexing and, when enabled under Experimental, dashboard AI summaries."
         >
           {hasEnabledAgents ? (
             <select
@@ -315,9 +315,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Post-Implementation Analysis Model"
+          label="Fast Analysis Model"
           htmlFor="analysis_model_fast"
-          helperText="Analyzes the agent run, prompt, and diff after implementation. This is not used for PR review."
+          helperText="Used by /review to gather repository context before the review."
         >
           {hasAgents ? (
             <select

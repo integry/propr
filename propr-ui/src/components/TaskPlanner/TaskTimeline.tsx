@@ -1,5 +1,5 @@
-import React, { useState, useRef, useCallback } from 'react';
-import { CheckCircle2, GripVertical } from 'lucide-react';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { CheckCircle2, GripVertical, PanelLeftClose } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -16,7 +16,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { TaskStepsPreview } from './TaskStepsPreview';
+import { getOutlineTitle } from './planDisplayName';
 
 interface TaskTimelineProps {
   taskCount: number;
@@ -27,28 +27,27 @@ interface TaskTimelineProps {
   completedIndices?: number[];
   onReorderTasks?: (activeId: string, overId: string) => void;
   onScrollToTask?: (taskId: string, index: number) => void;
+  onCollapse?: () => void;
 }
 
-interface SortableStepProps {
+interface OutlineItemProps {
   id: string;
   index: number;
+  title: string;
   isActive: boolean;
   isCompleted: boolean;
-  isPast: boolean;
-  onStepClick: (index: number) => void;
-  isLast: boolean;
-  stepRef?: (el: HTMLDivElement | null) => void;
+  canReorder: boolean;
+  onSelect: (id: string, index: number) => void;
 }
 
-const SortableStep: React.FC<SortableStepProps> = ({
+const OutlineItem: React.FC<OutlineItemProps> = ({
   id,
   index,
+  title,
   isActive,
   isCompleted,
-  isPast,
-  onStepClick,
-  isLast,
-  stepRef,
+  canReorder,
+  onSelect,
 }) => {
   const {
     attributes,
@@ -57,85 +56,68 @@ const SortableStep: React.FC<SortableStepProps> = ({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id });
+  } = useSortable({ id, disabled: !canReorder });
+  const itemRef = useRef<HTMLLIElement | null>(null);
 
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  // Combine refs
-  const combinedRef = useCallback((el: HTMLDivElement | null) => {
+  const combinedRef = useCallback((el: HTMLLIElement | null) => {
     setNodeRef(el);
-    if (stepRef) stepRef(el);
-  }, [setNodeRef, stepRef]);
+    itemRef.current = el;
+  }, [setNodeRef]);
+
+  // Keep the active entry visible while the specification pane scrolls. Only the outline list
+  // scrolls: scrollIntoView would also scroll every ancestor and shift the page layout.
+  useEffect(() => {
+    const item = itemRef.current;
+    const list = item?.parentElement;
+    if (!isActive || !item || !list) return;
+    const itemRect = item.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    if (itemRect.top < listRect.top) list.scrollTop += itemRect.top - listRect.top;
+    else if (itemRect.bottom > listRect.bottom) list.scrollTop += itemRect.bottom - listRect.bottom;
+  }, [isActive]);
 
   return (
-    <div
+    <li
       ref={combinedRef}
-      style={style}
-      className={`relative flex flex-col items-center ${isDragging ? 'z-50' : ''}`}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`group relative flex items-center ${isDragging ? 'z-50 shadow-md bg-white' : ''}`}
     >
-      {/* Connecting line (above) */}
-      {index > 0 && (
-        <div
-          className={`w-0.5 h-4 ${
-            isPast || isActive ? 'bg-indigo-400' : 'bg-gray-300'
-          }`}
-        />
-      )}
-
-      {/* Step indicator with drag handle */}
-      <div className="group relative flex items-center">
-        {/* Drag handle - positioned to be fully visible and draggable */}
-        <div
+      {canReorder && (
+        <span
           {...attributes}
           {...listeners}
-          className="absolute -left-6 w-5 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-20"
+          aria-label={`Reorder step ${index + 1}`}
+          // Inset past the 2px active border so the handle sits inside the row, left of the step number.
+          className="absolute left-1.5 z-10 flex h-full w-4 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
           style={{ touchAction: 'none' }}
         >
-          <GripVertical size={14} className="text-gray-400 hover:text-gray-600" />
-        </div>
-
-        <button
-          onClick={() => onStepClick(index)}
-          className={`relative flex items-center justify-center w-8 h-8 rounded-full transition-all duration-200 ${
-            isDragging
-              ? 'bg-indigo-600 text-white shadow-lg scale-110'
-              : isActive
-              ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300 ring-offset-2'
-              : isCompleted
-              ? 'bg-green-500 text-white'
-              : isPast
-              ? 'bg-indigo-100 text-indigo-500'
-              : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
-          }`}
-        >
-          {isCompleted ? (
-            <CheckCircle2 size={16} />
-          ) : (
-            <span className="text-xs font-semibold">{index + 1}</span>
-          )}
-        </button>
-      </div>
-
-      {/* Connecting line (below) */}
-      {!isLast && (
-        <div
-          className={`w-0.5 h-4 ${
-            isPast ? 'bg-indigo-400' : 'bg-gray-300'
-          }`}
-        />
+          <GripVertical size={12} className="text-slate-400" />
+        </span>
       )}
-    </div>
+      <button
+        type="button"
+        onClick={() => onSelect(id, index)}
+        aria-current={isActive ? 'step' : undefined}
+        title={title}
+        className={`flex w-full min-w-0 items-baseline gap-2 border-l-2 py-1.5 ${canReorder ? 'pl-6' : 'pl-4'} pr-3 text-left text-[13px] leading-5 transition-colors ${
+          isActive
+            ? 'border-teal-600 bg-white font-medium text-slate-900'
+            : 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+        }`}
+      >
+        <span className={`w-5 flex-shrink-0 text-right font-mono text-xs tabular-nums ${isActive ? 'text-teal-700' : 'text-slate-400'}`}>
+          {isCompleted ? <CheckCircle2 size={12} className="inline text-slate-500" /> : `${index + 1}.`}
+        </span>
+        <span className="min-w-0 line-clamp-2 break-words">{title}</span>
+      </button>
+    </li>
   );
 };
 
-interface StepPosition {
-  top: number;
-  height: number;
-}
-
+/**
+ * Plan outline (table of contents) for the Review step. Every step is listed
+ * with its title so engineers can scan and jump without a blocking popover.
+ */
 export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   taskCount,
   activeIndex,
@@ -145,16 +127,8 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   completedIndices = [],
   onReorderTasks,
   onScrollToTask,
+  onCollapse,
 }) => {
-  const [isHovered, setIsHovered] = useState(false);
-  const [timelineRect, setTimelineRect] = useState<DOMRect | null>(null);
-  const [stepsTop, setStepsTop] = useState<number>(0);
-  const [stepPositions, setStepPositions] = useState<StepPosition[]>([]);
-  const timelineRef = useRef<HTMLDivElement>(null);
-  const stepsContainerRef = useRef<HTMLDivElement>(null);
-  const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -174,63 +148,12 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
     }
   };
 
-  const handleMouseEnter = useCallback(() => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    if (timelineRef.current) {
-      setTimelineRect(timelineRef.current.getBoundingClientRect());
-    }
-    if (stepsContainerRef.current) {
-      const containerRect = stepsContainerRef.current.getBoundingClientRect();
-      setStepsTop(containerRect.top);
-
-      // Calculate positions for each step relative to container
-      const positions: StepPosition[] = stepRefs.current.map((ref) => {
-        if (ref) {
-          const rect = ref.getBoundingClientRect();
-          return {
-            top: rect.top - containerRect.top,
-            height: rect.height,
-          };
-        }
-        return { top: 0, height: 40 };
-      });
-      setStepPositions(positions);
-    }
-    setIsHovered(true);
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    hoverTimeoutRef.current = setTimeout(() => {
-      setIsHovered(false);
-      setTimelineRect(null);
-    }, 150);
-  }, []);
-
-  const handlePreviewMouseEnter = useCallback(() => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-  }, []);
-
-  const handlePreviewMouseLeave = useCallback(() => {
-    hoverTimeoutRef.current = setTimeout(() => {
-      setIsHovered(false);
-      setTimelineRect(null);
-    }, 150);
-  }, []);
-
-  const handleScrollTo = useCallback((taskId: string, index: number) => {
+  const handleSelect = useCallback((taskId: string, index: number) => {
     if (onScrollToTask) {
       onScrollToTask(taskId, index);
     } else {
       onStepClick(index);
     }
-    setIsHovered(false);
-    setTimelineRect(null);
   }, [onScrollToTask, onStepClick]);
 
   if (taskCount === 0) return null;
@@ -238,83 +161,57 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   // Generate IDs if not provided
   const ids = taskIds.length > 0 ? taskIds : Array.from({ length: taskCount }, (_, i) => `step-${i}`);
 
-  // Build tasks array for preview
-  const tasks = ids.map((id, index) => ({
-    id,
-    title: taskTitles[index] || `Step ${index + 1}`,
-  }));
-
   return (
-    <div
-      ref={timelineRef}
-      className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4 overflow-y-auto min-h-0 scrollbar-thin"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
+    <nav
+      aria-label="Plan outline"
+      className="sticky top-0 flex h-full w-72 min-h-0 flex-shrink-0 flex-col border-r border-slate-200 bg-slate-50"
     >
-      <div className="flex flex-col items-center">
-        {/* Timeline header */}
-        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
-          Steps
-        </div>
-
-        {/* Timeline steps with Drag & Drop */}
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
-        >
-          <SortableContext
-            items={ids}
-            strategy={verticalListSortingStrategy}
-          >
-            <div ref={stepsContainerRef} className="relative flex flex-col items-center gap-0">
-              {ids.map((id, index) => {
-                const isActive = index === activeIndex;
-                const isCompleted = completedIndices.includes(index);
-                const isPast = index < activeIndex;
-
-                return (
-                  <SortableStep
-                    key={id}
-                    id={id}
-                    index={index}
-                    isActive={isActive}
-                    isCompleted={isCompleted}
-                    isPast={isPast}
-                    onStepClick={onStepClick}
-                    isLast={index === taskCount - 1}
-                    stepRef={(el) => {
-                      stepRefs.current[index] = el;
-                    }}
-                  />
-                );
-              })}
-            </div>
-          </SortableContext>
-        </DndContext>
-
-        {/* Progress indicator */}
-        <div className="mt-4 text-xs text-gray-500">
-          <span className="font-medium text-indigo-600">{activeIndex + 1}</span>
-          <span> / {taskCount}</span>
-        </div>
+      <div className="flex items-center justify-between gap-2 px-4 pt-4 pb-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Plan Outline</span>
+        <span className="flex items-center gap-2">
+          <span className="text-xs tabular-nums text-slate-400">
+            <span className="font-medium text-slate-600">{activeIndex + 1}</span> / {taskCount}
+          </span>
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              aria-label="Collapse outline"
+              title="Collapse outline"
+              className="rounded p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 transition-colors"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          )}
+        </span>
       </div>
 
-      {/* Task Steps Preview Portal */}
-      {isHovered && timelineRect && (
-        <TaskStepsPreview
-          tasks={tasks}
-          activeIndex={activeIndex}
-          completedIndices={completedIndices}
-          timelineRect={timelineRect}
-          stepsTop={stepsTop}
-          stepPositions={stepPositions}
-          onScrollTo={handleScrollTo}
-          onMouseEnter={handlePreviewMouseEnter}
-          onMouseLeave={handlePreviewMouseLeave}
-        />
-      )}
-    </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext
+          items={ids}
+          strategy={verticalListSortingStrategy}
+        >
+          <ol className="min-h-0 flex-1 overflow-y-auto pb-4 scrollbar-thin">
+            {ids.map((id, index) => (
+              <OutlineItem
+                key={id}
+                id={id}
+                index={index}
+                title={getOutlineTitle(taskTitles[index] || `Step ${index + 1}`)}
+                isActive={index === activeIndex}
+                isCompleted={completedIndices.includes(index)}
+                canReorder={!!onReorderTasks}
+                onSelect={handleSelect}
+              />
+            ))}
+          </ol>
+        </SortableContext>
+      </DndContext>
+    </nav>
   );
 };
 

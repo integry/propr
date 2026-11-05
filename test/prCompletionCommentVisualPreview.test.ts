@@ -97,3 +97,84 @@ test('omits agent-side commit housekeeping from a committed follow-up report', a
     assert.doesNotMatch(commitMessage, /No commits|uncommitted/i);
     assert.doesNotMatch(comment, /No commits|uncommitted/i);
 });
+
+test('names the findings and the suggestions a fix run addressed', async () => {
+    const comments: UnprocessedComment[] = [{
+        id: 5700144816,
+        body: '/fix F20 S3 S5',
+        author: 'integry',
+        createdAt: new Date().toISOString(),
+    }];
+    const result: ClaudeCodeResponse = {
+        success: true,
+        executionTime: 1000,
+        output: null,
+        logs: '',
+        exitCode: 0,
+        finalResult: null,
+        modifiedFiles: ['src/config.ts'],
+        commitMessage: null,
+        summary: 'Rejected stale revisions and extracted the retry helper.',
+    };
+
+    const comment = await buildCompletionComment({ commitHash: 'abcdef1234567890' }, comments, {
+        changesSummary: result.summary!,
+        commitMessage: 'fix: reject stale revisions',
+        llm: 'claude-opus-5',
+        authorsText: '@integry',
+        consumedReviewCommentIds: [960],
+        addressedFeedback: { findingIds: ['F20'], suggestionIds: ['S3', 'S5'] },
+    }, result);
+
+    // Blocking and optional work stay visually separate in the receipt.
+    assert.match(comment, /> Addressed finding F20 · suggestions S3, S5/);
+});
+
+test('omits the addressed line when a run addressed no review record', async () => {
+    const comments: UnprocessedComment[] = [{
+        id: 5700144817,
+        body: 'Please tidy the helper',
+        author: 'integry',
+        createdAt: new Date().toISOString(),
+    }];
+    const result: ClaudeCodeResponse = {
+        success: true,
+        executionTime: 1000,
+        output: null,
+        logs: '',
+        exitCode: 0,
+        finalResult: null,
+        modifiedFiles: ['src/config.ts'],
+        commitMessage: null,
+        summary: 'Tidied the helper.',
+    };
+
+    const comment = await buildCompletionComment({ commitHash: 'abcdef1234567890' }, comments, {
+        changesSummary: result.summary!,
+        commitMessage: 'chore: tidy the helper',
+        llm: 'claude-opus-5',
+        authorsText: '@integry',
+        addressedFeedback: { findingIds: [], suggestionIds: [] },
+    }, result);
+
+    assert.doesNotMatch(comment, /> Addressed/);
+});
+
+test('repository validation survives conversation-summary selection and no-change completion comments', async () => {
+    const { generateCompletionComment } = await import('@propr/core');
+    const result: ClaudeCodeResponse = {
+        success: true, executionTime: 1000, output: null, logs: '', modifiedFiles: [], commitMessage: null,
+        summary: 'Implemented the change.',
+        conversationLog: [{ type: 'assistant', message: { content: [{ type: 'text', text: '## Summary of Changes\n\nA preferred conversation summary.' }] } }] as ClaudeCodeResponse['conversationLog'],
+        repositoryValidation: '### Repository validation\n\n- npm test: Passed\n- npm run lint: Failed (exit 1)',
+    };
+    const context = { changesSummary: 'Implemented the change.', commitMessage: 'Fix behavior', llm: 'test', authorsText: '@example' };
+    const committed = await buildCompletionComment({ commitHash: 'abcdef1234567', filesChanged: 1, message: 'Fix behavior' } as never, [], context, result);
+    const unchanged = await buildCompletionComment(null, [], context, result);
+    const issue = await generateCompletionComment(result, { number: 2660, repoOwner: 'example', repoName: 'workflow' });
+    assert.match(committed, /preferred conversation summary/);
+    for (const comment of [committed, unchanged, issue]) {
+        assert.match(comment, /npm test: Passed/);
+        assert.match(comment, /npm run lint: Failed \(exit 1\)/);
+    }
+});

@@ -80,6 +80,7 @@ export class RootDirectoryAuthority {
       || anchored.dev !== this.#device || anchored.ino !== this.#inode || current.dev !== this.#device
       || current.ino !== this.#inode || realpathSync(this.path) !== this.path) throw new SetupCapabilityError('The setup directory changed during setup.');
     assertOwner(current.uid);
+    if ((current.mode & 0o777n) !== 0o700n) throw new SetupCapabilityError('The setup directory is no longer private.');
     const scope = relative(this.#boundary, this.path);
     if (!scope || scope.startsWith('..') || isAbsolute(scope)) throw new SetupCapabilityError();
   }

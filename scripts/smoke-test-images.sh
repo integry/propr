@@ -7,7 +7,7 @@
 # What this validates:
 #   - Images boot (no missing files, Dockerfile commands work end-to-end)
 #   - TypeScript build output is runnable (no import path errors)
-#   - Native modules load (better-sqlite3 works on alpine musl)
+#   - Native modules load (better-sqlite3 and sharp work in the app image)
 #   - API server binds and responds to /health
 #   - Workers connect to Redis without crashing
 #
@@ -20,6 +20,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# Bounded removal of the private data root, shared with the other image smokes.
+# shellcheck source=apps/desktop/scripts/smoke-local-runtime-cleanup.sh disable=SC1091
+source "$REPO_ROOT/apps/desktop/scripts/smoke-local-runtime-cleanup.sh"
 
 STACK="${STACK:-propr-smoke-${GITHUB_RUN_ID:-local-$$}}"
 if [[ ! "$STACK" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
@@ -27,9 +30,7 @@ if [[ ! "$STACK" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
   exit 1
 fi
 NETWORK="${STACK}-net"
-DATA_DIR="/tmp/${STACK}-data"
 STACK_LABEL_KEY="com.propr.smoke.stack"
-DATA_OWNER_FILE="$DATA_DIR/.propr-smoke-owner"
 API_PORT="${API_PORT:-14000}"
 APP_TAG="${APP_TAG:-propr/app:latest}"
 UI_TAG="${UI_TAG:-propr/ui:latest}"
@@ -74,30 +75,35 @@ remove_stack_resources() {
 
   for resource in "${STACK_CONTAINERS[@]}"; do
     if docker container inspect "$resource" >/dev/null 2>&1; then
-      docker rm -f "$resource" >/dev/null
+      docker rm -f "$resource" >/dev/null || return 1
     fi
   done
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
-    docker network rm "$NETWORK" >/dev/null
+    docker network rm "$NETWORK" >/dev/null || return 1
   fi
 }
 
-remove_data_dir() {
-  if [ ! -e "$DATA_DIR" ] && [ ! -L "$DATA_DIR" ]; then
-    return 0
-  fi
-  if [ -L "$DATA_DIR" ] || [ ! -f "$DATA_OWNER_FILE" ] || [ "$(< "$DATA_OWNER_FILE")" != "$STACK" ]; then
-    echo "✗ refusing to remove unowned smoke data directory $DATA_DIR" >&2
-    return 1
-  fi
-  rm -rf -- "$DATA_DIR"
-}
+# A private per-run data root.  The app containers run as root and leave
+# root-owned 0700 entries (e.g. data/web-push) in its bind mounts, so removal
+# goes through the bounded helper rather than a host `rm -rf`.
+SMOKE_TMP_BASE="$(cd "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" && pwd -P)"
+DATA_DIR="$(mktemp -d "$SMOKE_TMP_BASE/propr-image-smoke.XXXXXX")"
+DATA_DIR_IDENTITY="$(smoke_root_identity "$DATA_DIR")"
 
+# The smoke's own exit status is preserved; a cleanup failure is reported and
+# turns an otherwise successful run into a failure.
 cleanup() {
+  local status=$? failed=0
+  set +e
   echo ""
   echo "▸ cleaning up"
-  remove_stack_resources 2>/dev/null || true
-  remove_data_dir 2>/dev/null || true
+  remove_stack_resources || failed=1
+  remove_smoke_root "$DATA_DIR" "$SMOKE_TMP_BASE" "$DATA_DIR_IDENTITY" "$APP_TAG" "$STACK_LABEL_KEY" "$STACK" || failed=1
+  if (( failed )); then
+    echo "✗ image smoke cleanup did not remove every owned resource" >&2
+    (( status )) || status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -119,9 +125,6 @@ reconcile_stale_stack() {
       exit 1
     fi
   fi
-  if ! remove_data_dir; then
-    exit 1
-  fi
 }
 
 echo "▸ propr image smoke test"
@@ -138,7 +141,6 @@ reconcile_stale_stack
 
 # --- Prepare throwaway data dir and fake .env ------------------------------
 mkdir -p "$DATA_DIR"/{data,logs}
-printf '%s\n' "$STACK" > "$DATA_OWNER_FILE"
 
 # Dummy GitHub App private key — structurally valid RSA PEM so openssl-based
 # parsers accept it. The smoke test doesn't make actual GitHub API calls.
@@ -179,6 +181,26 @@ for image in "$APP_TAG" "$UI_TAG" "$DOCS_TAG" "$AGENT_TAG" "$LAUNCHER_TAG"; do
     exit 1
   fi
 done
+
+docker run --rm --entrypoint node "$APP_TAG" -e '
+  const fs = require("node:fs");
+  const manifestPath = "/app/docs/docs-manifest.json";
+  if (!fs.existsSync(manifestPath)) throw new Error("app image is missing docs/docs-manifest.json");
+  if (!fs.existsSync("/app/docs/docs/features/pr-commands.md")) throw new Error("app image is missing bundled Markdown pages");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const appPackage = JSON.parse(fs.readFileSync("/usr/src/app/package.json", "utf8"));
+  const apiPackage = JSON.parse(fs.readFileSync("/usr/src/app/packages/api/package.json", "utf8"));
+  if (manifest.version !== appPackage.version || manifest.version !== apiPackage.version) {
+    throw new Error(`docs manifest version ${manifest.version} does not match app ${appPackage.version} and API ${apiPackage.version}`);
+  }
+' >/dev/null
+echo "✓ app contains version-matched MCP documentation"
+
+# Resolve sharp from every shipped importer and run a real image operation.
+"$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_TAG"
+
+# The worker builds custom agent bundles from the app image's /usr/src/app.
+"$REPO_ROOT/scripts/smoke-check-app-agent-build-context.sh" "$APP_TAG"
 
 wait_for_http() {
   local label="$1" url="$2" body
@@ -312,13 +334,23 @@ fi
 check_ui_api_configuration
 
 # --- Agent and launcher artifact checks ------------------------------------
+# Restricted snapshotters (rootless, userxattr overlay, OrbStack's containerd
+# store) cannot unpack a layer that carries overlayfs whiteouts.
+"$REPO_ROOT/scripts/check-image-whiteouts.sh" "$AGENT_TAG"
+
 docker run --rm "$AGENT_TAG" sh -c '
   set -eu
-  for executable in claude codex agy opencode vibe git gh rg python3; do
+  for executable in claude codex agy opencode vibe agent-tank git gh rg python3; do
     command -v "$executable" >/dev/null
   done
 ' >/dev/null
 echo "✓ agent runtime exposes every bundled CLI"
+
+# Bundled Agent Tank runs through the shared entrypoint's agent-tank branch,
+# which must not hand it a provider entrypoint. This is the unauthenticated half
+# of that check; scripts/verify-agent-tank-image.sh drives real usage through it.
+docker run --rm --network none -e PROPR_AGENT_TYPE=agent-tank "$AGENT_TAG" agent-tank --version >/dev/null
+echo "✓ agent-tank runs through the entrypoint without a provider entrypoint"
 
 # Exercise GitHub CLI through every normal agent entrypoint. Merely checking
 # command -v is insufficient because each entrypoint places gh-wrapper first in

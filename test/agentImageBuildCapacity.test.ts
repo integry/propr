@@ -1,5 +1,6 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 import { getDockerRootDir } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import {
     AGENT_IMAGE_BUILD_MIN_FREE_BYTES,
@@ -10,6 +11,8 @@ import {
     isAgentImageDiskPressureError,
     readAgentImageBuildDiskSpace,
 } from '../packages/core/src/agents/agentImageBuildCapacity.js';
+
+after(closeConnection);
 
 test('Docker-root discovery uses Docker info API output', async () => {
     const rootDir = await getDockerRootDir(async (_command, args) => {

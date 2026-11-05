@@ -204,23 +204,32 @@ describe('packaged acceptance authorization', () => {
     assert.doesNotMatch(acceptanceRunner, /rendererLifecycleEvidenceInvalid/);
 
     const errorSummaryStart = acceptanceRunner.indexOf(
-      'const rendererConsoleErrorCategory = (record, expectedRevokedAuthorizationRecord) =>',
+      'const rendererConsoleErrorCategory = (record, expectedRevokedAuthorizationRecord, expectedCspRecords) =>',
     );
     const errorSummaryEnd = acceptanceRunner.indexOf('\nconst rendererLifecycleDiagnosticSummary', errorSummaryStart);
     assert.notEqual(errorSummaryStart, -1);
     assert.notEqual(errorSummaryEnd, -1);
     const errorSummary = acceptanceRunner.slice(errorSummaryStart, errorSummaryEnd);
     for (const category of [
-      'expectedRevokedAuthorizationResponse', 'currentUserSync', 'apiLoad', 'socketContext',
+      'expectedCspPolicyTransition', 'expectedRevokedAuthorizationResponse', 'currentUserSync', 'apiLoad', 'socketContext',
       'reactRuntime', 'networkResource', 'other', 'pageError',
     ]) {
       assert.ok(errorSummary.includes(category), category);
     }
     assert.match(errorSummary, /consoleErrorCategoryCounts: rendererConsoleErrorCategoryCounts\(rendererConsoleErrors, rendererPageErrors\)/);
     assert.match(errorSummary, /correlateExpectedRevokedAuthorizationConsoleRecord\(\{/);
+    assert.match(errorSummary, /if \(expectedCspRecords\.has\(record\)\) return 'expectedCspPolicyTransition'/);
+    assert.match(errorSummary, /const expectedCspRecords = new Set\(correlateExpectedCspReloadConsoleRecords\(\{\s*records, origin: readyOrigin, evidence: cspReloadEvidence, deniedRequests: cspDeniedRequests,/);
+    assert.match(errorSummary, /rendererConsoleErrorCategory\(record, expectedRevokedAuthorizationRecord, expectedCspRecords\)/);
+    assert.match(errorSummary, /const errors = rendererConsoleErrors\.length \+ pageErrorRecords\.length/);
+    assert.match(errorSummary, /const expectedErrors = errorCategoryCounts\.expectedRevokedAuthorizationResponse\s*\+ errorCategoryCounts\.expectedCspPolicyTransition/);
+    assert.match(errorSummary, /unexpectedErrors: errors - expectedErrors/);
     assert.match(acceptanceRunner, /rendererRequestOccurrence: source === 'renderer' \? authChecks : 0/);
     assert.match(errorSummary, /counts\[category\] = Math\.min\(counts\[category\] \+ 1, 9\)/);
-    assert.doesNotMatch(errorSummary, /arguments|location|stack|url/);
+    assert.match(errorSummary, /errorRecords: errors\.slice\(0, 64\)/);
+    assert.match(errorSummary, /requestFailures: cspDeniedRequests\.slice\(0, 32\)/);
+    // Sanitization comments name forbidden fields; only executable code can leak them.
+    assert.doesNotMatch(errorSummary.replace(/^\s*\/\/.*$/gm, ''), /arguments|location|stack|url/);
     assert.match(acceptanceRunner, /if \(rendererErrors\.unexpectedErrors !== 0\)/);
     assert.match(acceptanceRunner, /unexpectedErrors: rendererErrors\.unexpectedErrors/);
   });

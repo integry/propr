@@ -1,5 +1,6 @@
 import {
   getManagedAgentConfigPath,
+  getAntigravityCompatibilityRoute,
   isAgentLoginSupported,
   type ReasoningLevel,
 } from '@propr/shared';
@@ -44,7 +45,9 @@ export function buildAgentConfig(formData: AgentFormData): AgentConfig {
   const modelCustomLabels = Object.fromEntries(
     Object.entries(formData.modelCustomLabels || {})
       .map(([modelId, label]) => [modelId, label?.trim()])
-      .filter(([modelId, label]) => label && formData.supportedModels.includes(modelId)),
+      .filter(([modelId, label]) => label && formData.supportedModels.includes(
+        formData.type === 'antigravity' ? getAntigravityCompatibilityRoute(modelId)?.model ?? modelId : modelId,
+      )),
   );
   const modelReasoningLevels = Object.fromEntries(
     Object.entries(formData.modelReasoningLevels || {})

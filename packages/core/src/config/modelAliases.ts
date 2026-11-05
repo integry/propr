@@ -1,3 +1,5 @@
+import { ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
+import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, getModelInfoWithAntigravityCompatibility } from '@propr/shared';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../agents/impl/openCodeModelIds.js';
@@ -16,7 +18,7 @@ export { MODEL_SHORT_NAMES };
  */
 export function getModelShortName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
-    const modelInfo = MODEL_INFO_MAP[modelId];
+    const modelInfo = getModelInfoWithAntigravityCompatibility(modelId);
     if (modelInfo?.shortName) return modelInfo.shortName;
     const normalized = modelId.substring(modelId.lastIndexOf(':') + 1);
     const leaf = normalized.substring(normalized.lastIndexOf('/') + 1);
@@ -39,7 +41,7 @@ export function getModelShortName(modelId: string | undefined): string {
  */
 export function getModelName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
-    const modelInfo = MODEL_INFO_MAP[modelId];
+    const modelInfo = getModelInfoWithAntigravityCompatibility(modelId);
     return modelInfo?.name || getModelShortName(modelId);
 }
 
@@ -54,7 +56,7 @@ export interface LlmLabelResolution {
 /**
  * Static model aliases for backwards compatibility.
  * These map short names to full Claude model IDs.
- * Default aliases (opus, sonnet) point to the latest versions for each tier.
+ * Default aliases (fable, opus, sonnet, haiku) point to the latest versions for each tier.
  * Use opus45/sonnet45 aliases for older Claude Code versions.
  */
 const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
@@ -89,8 +91,12 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     'opus-4-8': 'claude-opus-4-8',
     'claude-opus-4-8': 'claude-opus-4-8',
 
-    'sonnet': 'claude-sonnet-5',
-    'claude-sonnet': 'claude-sonnet-5',
+    'sonnet': 'claude-sonnet-5-5',
+    'claude-sonnet': 'claude-sonnet-5-5',
+
+    'sonnet55': 'claude-sonnet-5-5',
+    'sonnet-5-5': 'claude-sonnet-5-5',
+    'claude-sonnet-5-5': 'claude-sonnet-5-5',
 
     'sonnet5': 'claude-sonnet-5',
     'sonnet-5': 'claude-sonnet-5',
@@ -119,10 +125,16 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     'sonnet-4-5': 'claude-sonnet-4-5-20250929',
     'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
 
-    // Haiku aliases (only 4.5 available)
-    'haiku': 'claude-haiku-4-5-20251001',
+    // Haiku aliases: the plain alias points to the latest Haiku
+    'haiku': 'claude-haiku-5-5',
+    'claude-haiku': 'claude-haiku-5-5',
+
+    'haiku55': 'claude-haiku-5-5',
+    'haiku-5-5': 'claude-haiku-5-5',
+    'claude-haiku-5-5': 'claude-haiku-5-5',
+
     'haiku45': 'claude-haiku-4-5-20251001',
-    'claude-haiku': 'claude-haiku-4-5-20251001',
+    'haiku-4-5': 'claude-haiku-4-5-20251001',
     'claude-haiku-4-5': 'claude-haiku-4-5-20251001'
 };
 
@@ -131,7 +143,7 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
  * Uses the openRouterId field from ModelInfo (modelDefinitions.ts).
  */
 function getOpenRouterId(internalModelId: ModelId): string {
-    const modelInfo = MODEL_INFO_MAP[internalModelId];
+    const modelInfo = getModelInfoWithAntigravityCompatibility(internalModelId);
     if (modelInfo?.openRouterId) return modelInfo.openRouterId;
     // Native opencode-go/* models aren't in the curated catalog; derive their
     // OpenRouter slug so pricing/cost still resolves.
@@ -142,7 +154,8 @@ function getOpenRouterId(internalModelId: ModelId): string {
     // cost uses the model's own published rates instead of falling through to
     // OpenRouter's generic pricing for an ID it does not know.
     if (internalModelId) {
-        const aliasedInfo = MODEL_INFO_MAP[resolveModelAlias(internalModelId)];
+        const alias = resolveModelAlias(internalModelId);
+        const aliasedInfo = getModelInfoWithAntigravityCompatibility(alias);
         if (aliasedInfo?.openRouterId) return aliasedInfo.openRouterId;
     }
     return internalModelId;
@@ -185,6 +198,11 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     }
 
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
+    if (ANTIGRAVITY_COMPATIBILITY_ALIASES[lowerCaseModel]) return ANTIGRAVITY_COMPATIBILITY_ALIASES[lowerCaseModel];
+    if (getAntigravityCompatibilityRoute(lowerCaseModel)) return lowerCaseModel;
+    const openCodeRoute = OPENCODE_RETIRED_MODEL_ROUTES[lowerCaseModel] ?? OPENCODE_RETIRED_MODEL_ALIASES[lowerCaseModel]
+        ?? OPENCODE_RETIRED_MODEL_ALIASES[`opencode-${lowerCaseModel}`];
+    if (openCodeRoute) return openCodeRoute;
 
     // 1. Check static MODEL_ALIASES (backwards compatibility for Claude aliases)
     if (MODEL_ALIASES[lowerCaseModel]) {
@@ -314,7 +332,7 @@ function getAgentTypeFromModel(modelId: string): AgentType {
     if (isOpenCodeModelId(lowerModel)) return 'opencode';
     if (lowerModel.startsWith('antigravity')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
-    if (lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
+    if (lowerModel.startsWith('zai-glm-') || lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) return 'codex';
     return 'claude'; // Default fallback
 }
@@ -324,8 +342,20 @@ function getAgentTypeFromModel(modelId: string): AgentType {
  * E.g., "pro" matches "gemini-2.5-pro", "opus" matches "claude-opus-4-5-20251101"
  * Also matches shortAlias from modelDefinitions (e.g., "g3-flash-preview" matches "gemini-3-flash-preview")
  */
+function findAntigravityCompatibilityModel(lowerShort: string, config: AgentConfig): string | null {
+    const candidate = lowerShort.startsWith('antigravity-') ? lowerShort : `antigravity-${lowerShort}`;
+    const compatibility = resolveModelAlias(candidate);
+    // Retired aliases (e.g. "pro") may resolve straight to a current base model.
+    const isCompatibility = getAntigravityCompatibilityRoute(compatibility) || ANTIGRAVITY_COMPATIBILITY_ALIASES[candidate];
+    return isCompatibility && antigravitySupportedModel(config, compatibility) ? compatibility : null;
+}
+
 function findMatchingModel(shortName: string, config: AgentConfig): string | null {
     const lowerShort = shortName.toLowerCase();
+    if (config.type === 'antigravity') {
+        const compatibility = findAntigravityCompatibilityModel(lowerShort, config);
+        if (compatibility) return compatibility;
+    }
 
     // Try exact match against model ID first
     for (const model of config.supportedModels) {
@@ -341,6 +371,14 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
                 return model;
             }
         }
+    }
+
+    // Prefer the canonical model behind a bare tier alias (e.g. "fable" -> Fable 5.1)
+    // over older releases whose IDs also contain the alias.
+    const canonical = MODEL_ALIASES[lowerShort];
+    if (canonical) {
+        const canonicalModel = config.supportedModels.find(model => model.toLowerCase() === canonical);
+        if (canonicalModel) return canonicalModel;
     }
 
     // Try exact match against shortAlias from modelDefinitions

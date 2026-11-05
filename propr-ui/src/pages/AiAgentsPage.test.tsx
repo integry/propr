@@ -55,6 +55,7 @@ vi.mock('react-resizable-panels', () => ({
 }));
 
 const sharedModelId = 'provider:model:1';
+const sharedModelDisplayName = 'Provider Model 1';
 
 const agents: AgentConfig[] = [
   {
@@ -120,7 +121,7 @@ describe('AiAgentsPage model selection', () => {
   it('places each desktop header and content region in the same resizable pane', async () => {
     render(<AiAgentsPage />);
 
-    await screen.findAllByRole('button', { name: `First Codex: ${sharedModelId}` });
+    await screen.findAllByRole('button', { name: `First Codex: ${sharedModelDisplayName}` });
 
     const group = screen.getByTestId('ai-agents-panel-group');
     const configurationPane = screen.getByTestId('ai-agents-configuration-pane');
@@ -141,7 +142,7 @@ describe('AiAgentsPage model selection', () => {
     render(<AiAgentsPage />);
 
     const firstChips = await screen.findAllByRole('button', {
-      name: `First Codex: ${sharedModelId}`
+      name: `First Codex: ${sharedModelDisplayName}`
     });
     await waitFor(() => {
       firstChips.forEach(chip => expect(chip).toHaveAttribute('aria-pressed', 'true'));
@@ -154,39 +155,39 @@ describe('AiAgentsPage model selection', () => {
 
     await waitFor(() => {
       screen.getAllByRole('button', {
-        name: `First Codex: ${sharedModelId}`
+        name: `First Codex: ${sharedModelDisplayName}`
       }).forEach(chip => expect(chip).toHaveAttribute('aria-pressed', 'true'));
       screen.getAllByRole('button', {
-        name: `Second Codex: ${sharedModelId}`
+        name: `Second Codex: ${sharedModelDisplayName}`
       }).forEach(chip => expect(chip).toHaveAttribute('aria-pressed', 'true'));
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Configuration' }));
 
     const disabledModelButtons = screen.getAllByRole('button', {
-      name: `Select ${sharedModelId} from Disabled Codex in Playground`
+      name: `Select ${sharedModelDisplayName} from Disabled Codex in Playground`
     });
     disabledModelButtons.forEach(button => expect(button).toBeDisabled());
     fireEvent.click(disabledModelButtons[0]);
 
     expect(screen.getByRole('button', {
-      name: `First Codex: ${sharedModelId}`
+      name: `First Codex: ${sharedModelDisplayName}`
     })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', {
-      name: `Second Codex: ${sharedModelId}`
+      name: `Second Codex: ${sharedModelDisplayName}`
     })).toHaveAttribute('aria-pressed', 'true');
 
     fireEvent.click(screen.getAllByRole('button', {
-      name: `Select ${sharedModelId} from Second Codex in Playground`
+      name: `Select ${sharedModelDisplayName} from Second Codex in Playground`
     })[0]);
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Playground' })).toHaveClass('border-b-2');
       expect(screen.queryByRole('button', {
-        name: `First Codex: ${sharedModelId}`
+        name: `First Codex: ${sharedModelDisplayName}`
       })).not.toBeInTheDocument();
       screen.getAllByRole('button', {
-        name: `Second Codex: ${sharedModelId}`
+        name: `Second Codex: ${sharedModelDisplayName}`
       }).forEach(chip => expect(chip).toHaveAttribute('aria-pressed', 'true'));
     });
 
@@ -206,7 +207,7 @@ describe('AiAgentsPage model selection', () => {
   it('sends the stable synthetic configuration ID and virtual model from the Playground', async () => {
     render(<AiAgentsPage />);
 
-    const directChips = await screen.findAllByRole('button', { name: `First Codex: ${sharedModelId}` });
+    const directChips = await screen.findAllByRole('button', { name: `First Codex: ${sharedModelDisplayName}` });
     await waitFor(() => directChips.forEach(chip => expect(chip).toHaveAttribute('aria-pressed', 'true')));
     const modelSearch = screen.getAllByRole('combobox', { name: 'Search and add models to compare' })[0];
     fireEvent.focus(modelSearch);

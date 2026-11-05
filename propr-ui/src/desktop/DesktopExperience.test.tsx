@@ -447,11 +447,12 @@ describe('DesktopExperience', () => {
   it.each(['macos', 'windows'] as const)('offers remote connection guidance instead of local setup on %s', async platform => {
     const adapters = adaptersFor();
     adapters.platform = platform;
+    adapters.localSetup.supported = false;
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
 
     expect(await screen.findByRole('heading', { name: 'Connect to ProPR' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Set up this computer/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/local setup is currently available on Linux/i)).toBeInTheDocument();
+    expect(screen.getByText(/local setup is currently available on Linux and macOS/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Connect to an existing instance/i })).toBeInTheDocument();
   });
 });

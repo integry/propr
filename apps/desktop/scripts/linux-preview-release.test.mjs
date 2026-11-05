@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { describe, test } from 'node:test';
 import {
@@ -11,6 +12,7 @@ import {
   prepareLinuxPreview,
   publishLinuxPreviewDraft,
   readLinuxPreviewBundle,
+  readHistoricalLinuxPreviewMetadata,
   stageLinuxPreviewDraft,
 } from './linux-preview-release.mjs';
 import { signReleaseMetadata } from './release-artifacts.mjs';
@@ -27,6 +29,7 @@ const repository = 'integry/propr';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const runtimeAppImage = `propr/app:${sourceRevision}@sha256:${'a'.repeat(64)}`;
 const runtimeUiImage = `propr/ui:${sourceRevision}@sha256:${'b'.repeat(64)}`;
+const runtimeAgentImage = `propr/agent:${sourceRevision}@sha256:${'c'.repeat(64)}`;
 
 const createValidatedInput = async root => {
   const inputDirectory = join(root, 'validated');
@@ -72,6 +75,7 @@ const createBundle = async () => {
     sourceRevision,
     runtimeAppImage,
     runtimeUiImage,
+    runtimeAgentImage,
     repository,
     workflowRunId: '1234',
     createdAt: '2026-09-12T09:00:00.000Z',
@@ -205,6 +209,113 @@ describe('Linux preview release channel', () => {
     assert.doesNotMatch(bundle.notes, /macOS|Windows/);
   });
 
+  test('binds the exact linux/amd64 managed agent beside app/UI in metadata and checksums', async () => {
+    const { directory, manifest } = await createBundle();
+    assert.equal(manifest.schemaVersion, 2);
+    assert.deepEqual(manifest.runtime, {
+      distribution: 'published',
+      appImage: runtimeAppImage,
+      uiImage: runtimeUiImage,
+      agentImage: runtimeAgentImage,
+      agentPlatforms: ['linux/amd64'],
+    });
+    const bundle = await readLinuxPreviewBundle({ directory, version, sourceRevision, repository });
+    assert.equal(bundle.manifest.runtime.agentImage, runtimeAgentImage);
+    const checksums = await readFile(join(directory, 'SHA256SUMS'), 'utf8');
+    const manifestBytes = await readFile(join(directory, 'linux-preview.json'));
+    assert.match(checksums, new RegExp(`^${digest(manifestBytes)}  linux-preview\\.json$`, 'm'));
+    assert.match(bundle.notes, /published for `linux\/amd64` only/);
+    assert.match(bundle.notes, /On an `arm64` host/);
+    assert.match(bundle.notes, /real task execution with this preview have not\nyet been validated/);
+  });
+
+  test('rejects missing, mutable, other-source, or other-repository agent references for new previews', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-linux-preview-agent-'));
+    const inputDirectory = await createValidatedInput(root);
+    const invalid = [
+      undefined,
+      '',
+      'propr/agent:0.9.0',
+      `propr/agent:${sourceRevision}`,
+      `propr/agent:${'2'.repeat(40)}@sha256:${'c'.repeat(64)}`,
+      `propr/app:${sourceRevision}@sha256:${'c'.repeat(64)}`,
+      `example/agent:${sourceRevision}@sha256:${'c'.repeat(64)}`,
+      ` ${runtimeAgentImage}`,
+    ];
+    for (const agentImage of invalid) {
+      await assert.rejects(prepareLinuxPreview({
+        inputDirectory,
+        outputDirectory: join(root, 'bundle'),
+        version,
+        sourceRevision,
+        runtimeAppImage,
+        runtimeUiImage,
+        runtimeAgentImage: agentImage,
+        repository,
+        workflowRunId: '1234',
+      }), /digest-pinned linux\/amd64 propr\/agent image/, String(agentImage));
+    }
+  });
+
+  test('refuses app/UI-only schema 1 bundles and tampered agent bindings', async () => {
+    const { directory } = await createBundle();
+    const manifestPath = join(directory, 'linux-preview.json');
+    const original = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const rewrite = async manifest => {
+      const bytes = `${JSON.stringify(manifest, null, 2)}\n`;
+      await writeFile(manifestPath, bytes);
+      const checksums = (await readFile(join(directory, 'SHA256SUMS'), 'utf8'))
+        .replace(/^[a-f0-9]{64}  linux-preview\.json$/m, `${digest(Buffer.from(bytes))}  linux-preview.json`);
+      await writeFile(join(directory, 'SHA256SUMS'), checksums);
+    };
+    const legacyRuntime = { distribution: 'published', appImage: runtimeAppImage, uiImage: runtimeUiImage };
+    await rewrite({ ...original, schemaVersion: 1, runtime: legacyRuntime });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /not the managed-agent-bound schema 2/);
+    await rewrite({ ...original, runtime: legacyRuntime });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /missing or unknown fields/);
+    await rewrite({ ...original, runtime: { ...original.runtime, agentPlatforms: ['linux/amd64', 'linux/arm64'] } });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /not published, digest-pinned, and source-aligned/);
+    await rewrite({ ...original, runtime: { ...original.runtime, agentImage: 'propr/agent:0.9.0' } });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /not published, digest-pinned, and source-aligned/);
+  });
+
+  test('never overwrites an existing app/UI-only draft at the same preview identity', async () => {
+    const { directory } = await createBundle();
+    const github = createGitHub();
+    const legacyManifest = Buffer.from('{"schemaVersion":1}\n');
+    github.release = {
+      id: 7,
+      tag_name: linuxPreviewTag(version, sourceRevision),
+      target_commitish: sourceRevision,
+      draft: true,
+      prerelease: true,
+      published_at: null,
+      name: `ProPR Desktop Linux preview ${version} (${sourceRevision.slice(0, 12)})`,
+      body: linuxPreviewInstallNotes({ version, sourceRevision, tag: linuxPreviewTag(version, sourceRevision) }),
+      upload_url: 'https://uploads.github.com/releases/7/assets{?name,label}',
+    };
+    github.assets.push({
+      id: 1,
+      name: 'linux-preview.json',
+      state: 'uploaded',
+      size: legacyManifest.length,
+      digest: `sha256:${digest(legacyManifest)}`,
+      url: 'https://api.github.com/assets/1',
+      bytes: legacyManifest,
+    });
+    await assert.rejects(stageLinuxPreviewDraft({
+      directory, version, sourceRevision, repository, token: 'token', fetchImpl: github.fetchImpl,
+    }), /asset metadata mismatch: linux-preview\.json/);
+    assert.equal(github.assets.length, 1);
+    assert.equal(github.assets[0].bytes, legacyManifest);
+    assert.equal(github.createCalls, 0);
+    assert.equal(github.patchCalls, 0);
+  });
+
   test('rejects a runtime image that is mutable or belongs to a different source revision', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-linux-preview-invalid-'));
     const inputDirectory = await createValidatedInput(root);
@@ -215,6 +326,7 @@ describe('Linux preview release channel', () => {
       sourceRevision,
       runtimeAppImage: `propr/app:${sourceRevision}`,
       runtimeUiImage,
+      runtimeAgentImage,
       repository,
       workflowRunId: '1234',
     }), /digest-pinned/);
@@ -236,7 +348,7 @@ describe('Linux preview release channel', () => {
       directory: '/unused',
       profile: LINUX_PREVIEW_RELEASE_PROFILE,
       token: 'token',
-    }), /explicitly authorized Linux preview publication channel/);
+    }), /explicitly authorized Linux or macOS preview publication channel/);
   });
 
   test('stages, resumes, and publishes via paginated release lists when release-by-tag returns 404', async () => {
@@ -273,23 +385,10 @@ describe('Linux preview release channel', () => {
     assert.equal(github.assets.length, 7);
     assert.equal(github.patchCalls, 0);
 
-    const published = await publishLinuxPreviewDraft({
-      version,
-      sourceRevision,
-      repository,
-      token: 'token',
-      fetchImpl: github.fetchImpl,
-      inspectArchitecture: async ({ kind, arch }) => ({
-        format: kind,
-        executable: { platform: 'linux', architectures: [arch] },
-      }),
-      inspectPackageVersion: async () => undefined,
-    });
-    assert.equal(published.draft, false);
-    assert.equal(published.prerelease, true);
-    assert.equal(github.patchCalls, 1);
-    assert.equal(github.tagLookupCalls, 0);
-    assert.deepEqual(github.releaseListCalls, [1, 1, 2, 1, 2]);
+    await assert.rejects(publishLinuxPreviewDraft({ version, sourceRevision, repository,
+      token: 'token', fetchImpl: github.fetchImpl }), /requires authenticated DEB and RPM/);
+    assert.equal(github.patchCalls, 0);
+    assert.deepEqual(github.releaseListCalls, [1, 1, 2]);
   });
 
   test('fails closed if finalized package bytes change before preview preparation', async () => {
@@ -303,8 +402,104 @@ describe('Linux preview release channel', () => {
       sourceRevision,
       runtimeAppImage,
       runtimeUiImage,
+      runtimeAgentImage,
       repository,
       workflowRunId: '1234',
     }), /bytes drifted/);
   });
+});
+
+// Does not need RPM installed: stop at the first package parser and observe only
+// presence/absence, never print the supplied secret values.
+test('sign-bundle scrubs inherited signing secrets before its first package parser', {
+  skip: process.platform === 'win32' ? 'POSIX parser wrappers' : false,
+}, async t => {
+  const { root, directory } = await createBundle();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = join(root, 'bin');
+  const evidence = join(root, 'parser.json');
+  await mkdir(bin);
+  const parser = `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(evidence)}, JSON.stringify({
+  key: 'PROPR_DESKTOP_RPM_PRIVATE_KEY' in process.env,
+  passphrase: 'PROPR_DESKTOP_RPM_PASSPHRASE' in process.env,
+}));
+process.exit(42);
+`;
+  for (const name of ['rpm', 'dpkg-deb']) await writeFile(join(bin, name), parser, { mode: 0o755 });
+  const result = spawnSync(process.execPath, ['apps/desktop/scripts/linux-preview-release.mjs',
+    'sign-bundle', '--signed-rpm', '--input', directory, '--output', join(root, 'signed'),
+    '--version', version, '--source-revision', sourceRevision, '--repository', repository], {
+    cwd: resolve(import.meta.dirname, '../../..'),
+    encoding: 'utf8', env: { ...process.env, PATH: bin,
+      PROPR_DESKTOP_RPM_PRIVATE_KEY: 'private-test-sentinel', PROPR_DESKTOP_RPM_PASSPHRASE: 'password-test-sentinel',
+      PROPR_DESKTOP_RPM_PUBLIC_KEY: '-----BEGIN PGP PUBLIC KEY BLOCK-----',
+      PROPR_DESKTOP_RPM_FINGERPRINT: '80FE0A7667A92A0AD3CEAE6D4C2FF8C3CC4E1599' },
+  });
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(await readFile(evidence, 'utf8')), { key: false, passphrase: false });
+  assert.doesNotMatch(result.stdout + result.stderr, /private-test-sentinel|password-test-sentinel/);
+});
+
+test('signed install notes make rpmkeys primary and offer a standalone pinned-source helper', () => {
+  const rpmIdentity = { fingerprint: 'A'.repeat(40), publicKey: '-----BEGIN PGP PUBLIC KEY BLOCK-----' };
+  const notes = linuxPreviewInstallNotes({ version, sourceRevision, tag: linuxPreviewTag(version, sourceRevision, rpmIdentity), rpmIdentity });
+  assert.match(notes, /rpmkeys --checksig --verbose/);
+  assert.match(notes, /does not require Node or a repository checkout/);
+  assert.match(notes, /Both key IDs must match the confirmed fingerprint suffix/);
+  assert.match(notes, /Optionally.*Node.js 22\+/);
+  assert.ok(notes.includes('https://raw.githubusercontent.com/integry/propr/${HELPER_REVISION}/apps/desktop/scripts/rpm-signing.mjs'));
+  assert.match(notes, /node \.\/rpm-signing.mjs verify/);
+  assert.doesNotMatch(notes, /node apps\/desktop\/scripts/);
+});
+
+test('generated RPM key extraction command LF-terminates the tool-input file without changing the manifest', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-linux-preview-extract-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const armor = '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGdisposable\n=AbCd\n-----END PGP PUBLIC KEY BLOCK-----';
+  const cases = [[armor, `${armor}\n`], [`${armor}\n`, `${armor}\n`], [`${armor}\r\n`, `${armor}\r\n`]];
+  for (const [index, [publicKey, expected]] of cases.entries()) {
+    const rpmIdentity = Object.freeze({ fingerprint: 'A'.repeat(40), publicKey });
+    const notes = linuxPreviewInstallNotes({ version, sourceRevision, tag: linuxPreviewTag(version, sourceRevision, rpmIdentity), rpmIdentity });
+    const commands = notes.split('\n').filter(line => line.startsWith('python3 '));
+    assert.equal(commands.length, 1);
+    assert.match(commands[0], / > propr-desktop-rpm\.asc$/);
+    const directory = join(root, String(index));
+    await mkdir(directory);
+    const manifest = Buffer.from(JSON.stringify({ rpmSigning: { fingerprint: rpmIdentity.fingerprint, publicKey } }));
+    await writeFile(join(directory, 'linux-preview.json'), manifest);
+    const result = spawnSync('sh', ['-c', commands[0]], { cwd: directory, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readFile(join(directory, 'propr-desktop-rpm.asc')), Buffer.from(expected));
+    assert.deepEqual(await readFile(join(directory, 'linux-preview.json')), manifest);
+    assert.equal(rpmIdentity.publicKey, publicKey);
+  }
+});
+
+
+test('historical metadata remains explicitly unauthenticated and cannot enter all-signed publication', async () => {
+  const { directory } = await createBundle();
+  const path = join(directory, 'linux-preview.json');
+  const options = { path, version, sourceRevision, repository };
+  const unsigned = await readHistoricalLinuxPreviewMetadata(options);
+  assert.equal(unsigned.trust, 'unsigned-preview');
+  assert.equal(unsigned.metadataAuthenticated, false);
+  assert.equal(unsigned.publicationEligible, false);
+  const manifest = unsigned.manifest;
+  const rpmIdentity = { fingerprint: 'A'.repeat(40), publicKey: '-----BEGIN PGP PUBLIC KEY BLOCK-----' };
+  manifest.schemaVersion = 3;
+  manifest.trust = 'rpm-signed-preview';
+  manifest.tag += '-rpm-signed';
+  manifest.rpmSigning = { ...rpmIdentity, originals: Object.fromEntries(manifest.artifacts.filter(a => a.kind === 'rpm')
+    .map(a => [a.fileName, { sha256: a.sha256, contentSha256: 'b'.repeat(64) }])) };
+  await writeFile(path, JSON.stringify(manifest));
+  const old = await readHistoricalLinuxPreviewMetadata({ ...options, rpmIdentity });
+  assert.equal(old.trust, 'rpm-signed-preview');
+  assert.equal(old.metadataAuthenticated, false);
+  assert.equal(old.publicationEligible, false);
+  await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository, rpmIdentity }), /missing or unexpected/);
+  manifest.trust = 'authenticated-linux-preview';
+  await writeFile(path, JSON.stringify(manifest));
+  await assert.rejects(readHistoricalLinuxPreviewMetadata({ ...options, rpmIdentity }), /identity/);
 });

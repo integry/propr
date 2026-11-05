@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { scheduleManagedDiagnostics } from './daemon/managedDiagnostics.js';
+import { reconcileTaskIntentsSafely } from './daemon/taskIntentReconciliation.js';
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';
@@ -21,22 +23,23 @@ import {
     setUltrafixCheckRunHook,
     areAllChecksPassing,
     getCurrentPRHead,
-    getCheckRunsStatus,
+    getCheckRunsStatusForRepo,
     loadUltrafixRatingGoal,
     loadUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
     loadPrReviewModel,
     AgentRegistry,
+    sweepConflictedPullRequests,
+    getMergeConflictSweepIntervalMs,
     runMigrations
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
-import { logger } from '@propr/core';
 import { pollForPullRequestComments } from './polling/prCommentPolling.js';
 import {
-    loadAllConfigs,
+    logger, loadAllConfigs,
     reloadConfigs,
     getRepos,
-    isMonitoredRepository,
+    monitoredRepositoryFilter,
     getBotUsername,
     getUserWhitelist,
     getPrimaryProcessingLabels,
@@ -44,6 +47,12 @@ import {
 } from '@propr/core';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
+import { sweepPushRescues } from './daemon/rescueRefSweep.js';
+import { scheduleWorktreeSweep } from './daemon/worktreeSweep.js';
+import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
+import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
+import { scheduleEpicMergeProgressRetrySweep } from './daemon/epicMergeProgressRetrySweep.js';
+import { scheduleAutoMergeSweep } from './daemon/autoMergeSweep.js';
 import {
     clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
@@ -119,6 +128,7 @@ async function pollForIssues(): Promise<DetectedIssue[]> {
 
     const allDetectedIssues: DetectedIssue[] = [];
     const repos = getRepos();
+    await reconcileTaskIntentsSafely(redisClient, repos);
 
     for (const repoFullName of repos) {
         correlatedLogger.debug({ repository: repoFullName }, 'Polling repository');
@@ -154,6 +164,27 @@ async function pollForIssues(): Promise<DetectedIssue[]> {
     return allDetectedIssues;
 }
 
+// Safety net for merge-conflict auto-resolution: polling intake never sees push
+// events, and webhook deliveries can be missed. Only repositories whose effective
+// setting is on cost GitHub calls.
+function scheduleMergeConflictSweep(intakeMode: string): NodeJS.Timeout {
+    const intervalMs = getMergeConflictSweepIntervalMs(intakeMode);
+    let running = false;
+    const sweep = async (): Promise<void> => {
+        if (running) return;
+        running = true;
+        try {
+            await sweepConflictedPullRequests({ repositories: getRepos(), redisClient });
+        } catch (error) {
+            logger.error({ error: (error as Error).message }, 'Merge conflict sweep failed');
+        } finally {
+            running = false;
+        }
+    };
+    logger.info({ intakeMode, intervalMs }, 'Scheduled merge conflict sweep');
+    return setInterval(() => { void sweep(); }, intervalMs);
+}
+
 interface DaemonOptions {
     reset?: boolean;
 }
@@ -165,6 +196,14 @@ async function scheduleDraftContextSweep(): Promise<NodeJS.Timeout> {
     const DRAFT_CONTEXT_SWEEP_INTERVAL_MS = parseInt(process.env.DRAFT_CONTEXT_SWEEP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
     await sweepDraftContext();
     return setInterval(() => { void sweepDraftContext(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
+}
+
+// Delete push-salvage rescue refs and bundles past PUSH_RESCUE_RETENTION_DAYS. Runs in the
+// background so a slow remote never delays startup.
+function schedulePushRescueSweep(): NodeJS.Timeout {
+    const PUSH_RESCUE_SWEEP_INTERVAL_MS = parseInt(process.env.PUSH_RESCUE_SWEEP_INTERVAL_MS || `${6 * 60 * 60 * 1000}`, 10);
+    void sweepPushRescues();
+    return setInterval(() => { void sweepPushRescues(); }, PUSH_RESCUE_SWEEP_INTERVAL_MS);
 }
 
 async function startDaemon(options: DaemonOptions = {}): Promise<void> {
@@ -192,7 +231,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     setCheckRunDeps({
         areAllChecksPassing,
         getCurrentPRHead,
-        getCheckRunsStatus,
+        getCheckRunsStatus: getCheckRunsStatusForRepo,
     });
 
     // Wire up check_run hook to resume deferred ultrafix continuations
@@ -201,8 +240,14 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         const log = logger.withCorrelation(generateCorrelationId());
         await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);
     });
+    // Retry obligations and deferred reviews are swept here too, so a daemon
+    // without the API server and with polling off does not wait for a webhook.
+    const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep(redisClient);
+    const epicMergeProgressRetryInterval = scheduleEpicMergeProgressRetrySweep();
+    const autoMergeSweepInterval = scheduleAutoMergeSweep();
 
     const repos = getRepos();
+    await reconcileTaskIntentsSafely(redisClient, repos);
 
     if (repos.length === 0) {
         logger.warn('No repositories configured yet. The daemon will stay active and reload repositories added through setup or Settings.');
@@ -242,6 +287,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
     const draftContextSweepInterval = await scheduleDraftContextSweep();
+    const pushRescueSweepInterval = schedulePushRescueSweep();
+    const worktreeSweepInterval = scheduleWorktreeSweep();
+    // Fires scheduled agents, retries runs the cost gate deferred, fails runs
+    // whose worker stopped, and revokes leftover run-scoped MCP grants.
+    const stopAgentRunSweeps = scheduleAgentRunSweeps();
+    const stopManagedDiagnostics = scheduleManagedDiagnostics();
 
     let intervalId: NodeJS.Timeout | null = null;
     let routingService: RoutingWebSocketIntakeService | null = null;
@@ -310,7 +361,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
             commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig),
-            repositoryFilter: (repository: string) => isMonitoredRepository(repository),
+            redisClient,
+            repositoryFilter: monitoredRepositoryFilter,
         });
     };
 
@@ -320,6 +372,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const enqueueConfigReload = (): Promise<void> => {
         configReloadQueue = configReloadQueue
             .then(reloadConfigs)
+            // The relay's delivery interest mirrors the monitored repositories;
+            // an unchanged declaration is not re-sent.
+            .then(() => routingService?.refreshDeliveryInterest())
             .catch((error: unknown) => {
                 const err = error as Error;
                 logger.error({ error: err.message }, 'Failed to reload daemon config');
@@ -393,7 +448,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         safePoll,
         pollingIntervalMs: POLLING_INTERVAL_MS,
         initWebhookHandler: initSharedWebhookHandler,
-        createRoutingService: () => new RoutingWebSocketIntakeService(),
+        // Assigned on creation, not after startup resolves, so a config reload
+        // while the status publisher starts still refreshes the delivery interest.
+        createRoutingService: () => (routingService = new RoutingWebSocketIntakeService()),
         startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
         logger,
         startupLogContext: baseStartupLog,
@@ -401,15 +458,23 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         routingUrl: process.env.PROPR_ROUTING_URL,
     });
     intervalId = intakeStartup.intervalId;
+    const mergeConflictSweepInterval = scheduleMergeConflictSweep(EVENT_INTAKE_MODE);
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
-    const shutdown = async (signal: string): Promise<void> => {
-        logger.info(`Received ${signal}, shutting down gracefully...`);
+    const close = async (): Promise<void> => {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
+        clearInterval(pushRescueSweepInterval);
+        if (worktreeSweepInterval) clearInterval(worktreeSweepInterval);
+        clearInterval(ultrafixResumeSweepInterval);
+        clearInterval(epicMergeProgressRetryInterval);
+        clearInterval(autoMergeSweepInterval);
+        clearInterval(mergeConflictSweepInterval);
+        stopManagedDiagnostics();
+        await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the
@@ -422,9 +487,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();
+    };
+    const shutdown = async (signal: string): Promise<void> => {
+        logger.info(`Received ${signal}, shutting down gracefully...`);
+        await close();
         process.exit(0);
     };
-
     process.on('SIGINT', () => { void shutdown('SIGINT'); });
     process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }

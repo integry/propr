@@ -1,13 +1,36 @@
 import type {ReactNode} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import Head from '@docusaurus/Head';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
 import CodeBlock from '@theme/CodeBlock';
 
 import styles from './index.module.css';
+
+const STRUCTURED_DATA = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'Organization',
+      '@id': 'https://propr.dev/#organization',
+      name: 'ProPR',
+      url: 'https://propr.dev',
+      logo: 'https://docs.propr.dev/img/logo-and-name-transparent.png',
+      sameAs: ['https://github.com/integry/propr'],
+    },
+    {
+      '@type': 'WebSite',
+      '@id': 'https://docs.propr.dev/#website',
+      name: 'ProPR',
+      url: 'https://docs.propr.dev',
+      description: 'Official ProPR documentation for self-hosted AI coding workflows, the CLI, and API.',
+      publisher: {'@id': 'https://propr.dev/#organization'},
+      sameAs: ['https://github.com/integry/propr'],
+    },
+  ],
+};
 
 const QUICKSTART_SNIPPET = `npm install -g propr-cli   # Node.js 22+; prefix with sudo only if your global npm prefix requires it
 
@@ -19,7 +42,7 @@ propr setup         # interactive wizard: checks, scaffold, images, GitHub auth,
 #   propr init stack   # scaffold .env + data/ logs/ repos/, detect agent credentials
 #   propr check        # verify Docker, images, agents, and GitHub auth
 #   propr start        # pull images and start the stack with a live dashboard
-#   propr ui           # open the Web UI`;
+#   propr ui on        # start the UI if it is stopped`;
 
 type IconName =
   | 'rocket'
@@ -219,12 +242,12 @@ function HomepageHeader() {
       <div className="container">
         <img className={styles.heroLogo} src={logo} alt="ProPR" />
         <Heading as="h1" className={styles.heroTitle}>
-          Documentation
+          Official ProPR documentation
         </Heading>
         <p className={styles.heroSubtitle}>
-          Self-hosted, open-source platform that turns GitHub issues and plans into
-          agent-implemented, reviewable pull requests — with planning, isolated execution,
-          PR commands, and full task records.
+          Set up your self-hosted ProPR instance and turn GitHub issues and plans
+          into reviewable pull requests with AI coding agents. Find setup guides,
+          workflow walkthroughs, and CLI and API references.
         </p>
         <div className={styles.buttons}>
           <Link className="button button--primary button--lg" to="/docs/tutorials/setup">
@@ -236,7 +259,17 @@ function HomepageHeader() {
           <Link className="button button--outline button--primary button--lg" to="/docs/features/propr-cli">
             <Icon name="terminal" /> CLI Reference
           </Link>
+          <Link className="button button--outline button--primary button--lg" to="/docs/operations/api-reference">
+            API Reference
+          </Link>
         </div>
+        <p className={styles.signInNote}>
+          Looking for ProPR login? Open your instance's Web UI (<code>http://localhost:5173</code>{' '}
+          by default on a local install, or the address you configured) and sign in with GitHub.{' '}
+          If the UI is stopped, run <code>propr ui on</code> from your stack directory to start it.{' '}
+          For relay seats, tokens, and tunnels, use the{' '}
+          <Link to="/docs/operations/connect-dashboard">ProPR Connect dashboard</Link>.
+        </p>
       </div>
     </header>
   );
@@ -325,11 +358,13 @@ function SectionGrid() {
 }
 
 export default function Home(): ReactNode {
-  const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title={`${siteConfig.title} Documentation`}
-      description="Set up ProPR, run issue-to-PR workflows with AI coding agents, drive follow-ups with PR commands, and operate the self-hosted stack.">
+      title="Official ProPR documentation: setup, CLI, and API"
+      description="Official ProPR documentation. Set up your self-hosted instance, sign in, run AI coding workflows, and find the CLI and API references.">
+      <Head>
+        <script type="application/ld+json">{JSON.stringify(STRUCTURED_DATA)}</script>
+      </Head>
       <HomepageHeader />
       <main>
         <Quickstart />

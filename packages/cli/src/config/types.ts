@@ -7,7 +7,24 @@
 export interface RemoteProfile {
   remoteUrl?: string;
   githubToken?: string;
+  /** Epoch milliseconds when an expiring GitHub user token stops working. */
+  githubTokenExpiresAt?: number;
+  /** Single-use GitHub refresh token; rotated on every refresh. Never printed. */
+  githubRefreshToken?: string;
+  /** Epoch milliseconds when `githubRefreshToken` stops working. */
+  githubRefreshTokenExpiresAt?: number;
   defaultProject?: string;
+}
+
+/**
+ * The stored GitHub user credential. Non-expiring tokens carry only
+ * `accessToken`; expiring GitHub OAuth tokens also carry a refresh token.
+ */
+export interface GithubCredential {
+  accessToken: string;
+  expiresAt?: number;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: number;
 }
 
 /**

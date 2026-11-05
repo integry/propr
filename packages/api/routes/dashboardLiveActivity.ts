@@ -37,6 +37,9 @@ export interface LiveActivity {
   awaitingFirstOutput: boolean;
 }
 
+/** Maximum running streams projected by one dashboard request. */
+export const MAX_LIVE_DETAIL_LOOKUPS = 20;
+
 /** Nothing known about the stream: it was not read, or could not be. */
 export const EMPTY_LIVE_ACTIVITY: LiveActivity = {
   progressLine: null,

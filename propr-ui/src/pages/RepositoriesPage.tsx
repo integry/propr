@@ -26,10 +26,11 @@ const RepositoriesPage: React.FC = () => {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, handleStopIndexing, handleReindexRepo, handleAddRepo,
     handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden,
-    handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows,
-    handleToggleNotifications, handleUpdateVisualPreview,
+    handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks,
+    handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleToggleAutoAssign, handleUpdateAutoAssignTarget, handleToggleAutoAssignReview, handleUpdateVisualPreview,
     handleToggleShowHidden, handleRetry
   } = useRepositoryManagement();
+  const autoAssignHandlers = { onToggle: handleToggleAutoAssign, onUpdateTarget: handleUpdateAutoAssignTarget, onToggleReview: handleToggleAutoAssignReview };
 
   const [newRepo, setNewRepo] = useState<string>('');
   const [newAlias, setNewAlias] = useState<string>('');
@@ -107,7 +108,10 @@ const RepositoriesPage: React.FC = () => {
       onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
       onToggleCancelCiDuringFollowup={handleToggleCancelCiDuringFollowup}
       onUpdateCancelCiWorkflows={handleUpdateCancelCiWorkflows}
+      onUpdateNonBlockingChecks={handleUpdateNonBlockingChecks}
       onToggleNotifications={handleToggleNotifications}
+      onUpdateAutoResolveMergeConflicts={handleUpdateAutoResolveMergeConflicts}
+      autoAssignHandlers={autoAssignHandlers}
       onUpdateVisualPreview={handleUpdateVisualPreview}
       isReadOnly={isReadOnly}
     />
@@ -124,49 +128,13 @@ const RepositoriesPage: React.FC = () => {
         isReadOnly={isReadOnly}
       />
 
-      {/* Mobile Layout */}
-      <div className="flex-1 overflow-hidden lg:hidden">
-        {selectedRepoId && selectedRepo ? (
-          <div className="h-full bg-[#F8FAFC] flex flex-col">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-white">
-              <button
-                onClick={() => setSelectedRepoId(null)}
-                className="p-1.5 -ml-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
-                title="Back to repositories"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-              <span className="font-medium text-slate-900 truncate">
-                {selectedRepo.alias || selectedRepo.name}
-              </span>
-            </div>
-            <div className="flex-1 min-h-0">
-              <RepoActionContainer selectedRepo={selectedRepo} initialTab={navActiveTab} settingsContent={settingsContent} />
-            </div>
-            <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
-          </div>
-        ) : (
-          <div className="h-full bg-white flex flex-col">
-            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
-              <RepositoryListContent
-                repos={filteredRepos}
-                loading={loading}
-                error={error}
-                indexingStatuses={indexingStatuses}
-                selectedRepoId={selectedRepoId}
-                onSelect={handleSelectRepo}
-                onRetry={handleRetry}
-              />
-            </div>
-            <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
-          </div>
-        )}
-      </div>
-
-      {/* Desktop Layout */}
-      <div className="flex-1 overflow-hidden hidden lg:block">
+      {/* One layout for every width, so the action panel is a single live instance:
+          resizing across the breakpoint only changes CSS and never remounts it or
+          moves its DOM, which would lose its tab, drafts and the focused editor.
+          Below lg the list and the selected repository take turns filling the page. */}
+      <div className="flex-1 overflow-hidden">
         <PanelGroup direction="horizontal">
-          <Panel defaultSize={40} minSize={25}>
+          <Panel defaultSize={40} minSize={25} className={selectedRepo ? 'max-lg:hidden' : undefined}>
             <div className="h-full bg-white flex flex-col">
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
                 <RepositoryListContent
@@ -183,15 +151,34 @@ const RepositoriesPage: React.FC = () => {
             </div>
           </Panel>
 
-          <PanelResizeHandle className="w-2 bg-slate-100 hover:bg-teal-500 transition-colors flex items-center justify-center cursor-col-resize">
+          <PanelResizeHandle className="w-2 bg-slate-100 hover:bg-teal-500 transition-colors flex items-center justify-center cursor-col-resize max-lg:hidden">
             <GripVertical size={12} className="text-gray-400" />
           </PanelResizeHandle>
 
-          <Panel defaultSize={60} minSize={30}>
+          <Panel defaultSize={60} minSize={30} className={selectedRepo ? undefined : 'max-lg:hidden'}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
+              {selectedRepo && (
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-white lg:hidden">
+                  <button
+                    onClick={() => setSelectedRepoId(null)}
+                    className="p-1.5 -ml-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
+                    title="Back to repositories"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                  <span className="font-medium text-slate-900 truncate">
+                    {selectedRepo.alias || selectedRepo.name}
+                  </span>
+                </div>
+              )}
               <div className="flex-1 min-h-0">
                 <RepoActionContainer selectedRepo={selectedRepo || null} initialTab={navActiveTab} settingsContent={settingsContent} />
               </div>
+              {selectedRepo && (
+                <div className="flex-shrink-0 lg:hidden">
+                  <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
+                </div>
+              )}
             </div>
           </Panel>
         </PanelGroup>

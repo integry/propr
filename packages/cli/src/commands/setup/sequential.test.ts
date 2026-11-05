@@ -9,8 +9,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PassThrough } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildSequentialPrompts,
+  createReadlineIo,
   buildSequentialReporter,
   runSequentialSetup,
   SequentialSetupUnavailableError,
@@ -89,7 +94,7 @@ test("select: numeric choice maps to the option value, blank to the default", as
 
   // Options are keep(1), Token relay(2), Custom GitHub App(3); option 3 selects
   // the custom-app branch and collects its three inputs.
-  const app = await buildSequentialPrompts(scriptedIo(["3", "123", "/key.pem", "456"])).configureGithubAuth!({ current });
+  const app = await buildSequentialPrompts(scriptedIo(["3", "2", "123", "/key.pem", "456"])).configureGithubAuth!({ current });
   assert.equal(app.mode, "app");
   assert.equal(app.vars?.GH_AUTH_MODE, "app");
   assert.equal(app.vars?.GH_APP_ID, "123");
@@ -126,7 +131,7 @@ test("select: ProPR Connect accepts the hosted relay default on a blank URL", as
 test("select: an out-of-range number re-prompts until valid", async () => {
   // current.mode "none" → options Token relay(1), Custom GitHub App(2). Two
   // invalid choices, then option 2 (the custom App), then its three inputs.
-  const io = scriptedIo(["9", "0", "2", "123", "/key.pem", "456"]);
+  const io = scriptedIo(["9", "0", "2", "2", "123", "/key.pem", "456"]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
   assert.equal(decision.mode, "app", "option 2 is the custom GitHub App branch");
   assert.equal(decision.vars?.GH_APP_ID, "123");
@@ -413,7 +418,7 @@ test("no-TUI setup recovers from zero installations before opening its legacy pi
 test("no-TUI custom-App setup logs in before polling protected status", async () => {
   // Root + re-scaffold + agents; choose custom App and enter its three values;
   // accept GitHub user login; then accept/skip the remaining defaults.
-  const io = scriptedIo(["", "n", "", "3", "123", "/keys/app.pem", "456", "", "", "", "", "n", "n"]);
+  const io = scriptedIo(["", "n", "", "3", "2", "123", "/keys/app.pem", "456", "", "", "", "", "n", "n"]);
   let tokenPresent = false;
   let loginCalled = false;
   let healthCalled = false;
@@ -462,4 +467,77 @@ test("runSequentialSetup reports an unfinished run when a required step fails", 
   assert.equal(result.completed, false);
   assert.equal(statusOf(result.state, "check"), "failed");
   assert.match(io.lines.join("\n"), /did not finish/);
+});
+
+test("custom App creation uses the selected root and keeps the configuration it saved", async () => {
+  const io = scriptedIo(["2", "1", "https://propr.example.com", "integry"]);
+  let received: unknown;
+  const hooks = buildSequentialPrompts(io, undefined, async options => {
+    received = options;
+    return { envPath: "/stack/.env", keyPath: "/stack/key.pem", backupPath: undefined, fields: [], checks: [] };
+  });
+  const decision = await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" });
+  assert.deepEqual(received, { root: "/selected-stack", publicUrl: "https://propr.example.com", org: "integry", browser: !process.env.SSH_CONNECTION });
+  assert.deepEqual(decision, { keep: true });
+});
+
+test("custom App creation confirms and forces replacement for a stray credential key", async t => {
+  const root = mkdtempSync(join(tmpdir(), "propr-sequential-credentials-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, ".env"), "GH_WEBHOOK_SECRET=stray-secret\n");
+  const io = scriptedIo(["2", "1", "y", "https://propr.example.com", ""]);
+  let receivedForce: boolean | undefined;
+  const hooks = buildSequentialPrompts(io, undefined, async options => {
+    receivedForce = options.force;
+    return { envPath: join(root, ".env"), keyPath: join(root, "key.pem"), backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: root }), { keep: true });
+  assert.equal(receivedForce, true);
+  assert.match(io.lines.join("\n"), /Replace the current GitHub authentication/);
+});
+
+for (const mode of ['relay', 'app'] as const) test(`declining ${mode} replacement keeps authentication without creating an App`, async () => {
+  const io = scriptedIo(['3', '1', '']);
+  const hooks = buildSequentialPrompts(io, undefined, async () => { throw new Error('must not create'); });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode, warnings: [] } }), { keep: true });
+  assert.match(io.lines.join('\n'), /timestamped .env backup/);
+});
+
+test('sequential paste prompts propagate cancellation into readline', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const io = createReadlineIo(input, output);
+  const controller = new AbortController();
+  try {
+    const answer = io.ask('Paste redirect: ', { mask: true, signal: controller.signal });
+    controller.abort();
+    await assert.rejects(answer, { name: 'AbortError' });
+  } finally { io.close(); input.destroy(); output.destroy(); }
+});
+
+test('own-App public URL re-prompts after Enter and invalid URL forms before creation', async () => {
+  const io = scriptedIo(['2', '1', '', 'ftp://example.com', 'https://user:secret@example.com', 'https://example.com?q=1', 'https://example.com#fragment', ' https://propr.example.com ', '']);
+  let calls = 0;
+  const hooks = buildSequentialPrompts(io, undefined, async options => {
+    calls++;
+    assert.equal(options.publicUrl, 'https://propr.example.com');
+    return { envPath: '/stack/.env', keyPath: '/stack/key.pem', backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] }, rootDir: '/stack' }), { keep: true });
+  assert.equal(calls, 1);
+  assert.equal(io.lines.filter(line => line.includes('Public ProPR URL')).length, 6);
+  assert.match(io.lines.join('\n'), /absolute HTTP\(S\) public URL/);
+  assert.match(io.lines.join('\n'), /without credentials, query parameters, or a fragment/);
+});
+
+test('cancelling a repeated public URL prompt stops setup before creation', async () => {
+  const io = scriptedIo(['2', '1', '']);
+  const ask = io.ask;
+  let questions = 0;
+  io.ask = async (...args) => {
+    if (++questions === 4) throw new DOMException('cancelled', 'AbortError');
+    return ask(...args);
+  };
+  const hooks = buildSequentialPrompts(io, undefined, async () => { assert.fail('must not create'); });
+  await assert.rejects(hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] } }), { name: 'AbortError' });
 });

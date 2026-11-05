@@ -1,4 +1,4 @@
-import type { PublishedVisualPreview } from '@propr/shared';
+import type { AttributedUser, PublishedVisualPreview } from '@propr/shared';
 export interface Task {
   previewMedia?: PublishedVisualPreview[];
   id: string;
@@ -10,6 +10,7 @@ export interface Task {
   linkedIssueNumber?: number | null;
   title?: string | null;
   subtitle?: string | null;
+  commandMode?: string | null;
   status: string;
   createdAt: string;
   processedAt?: string | null;
@@ -18,24 +19,37 @@ export interface Task {
   model?: string | null;
   llmProvider?: string | null;
   planIssueStatus?: string | null;
-  critiqueScore?: number | null;
-}
-
-export type TaskType = 'new-issue' | 'followup' | 'pr-workflow' | 'unknown';
-
-export interface TaskTypeInfo {
-  type: TaskType;
-  cleanTitle: string;
-  /** Workflow verb for PR-scoped tasks (Fix, Review, Follow-up, Ultrafix, Merge). */
-  workflowLabel?: string;
-  /** Pull request number parsed from a PR-scoped task title. */
-  workflowPrNumber?: number;
+  /** `merged` once the run's pull request has merged. */
+  prState?: string | null;
+  failedReason?: string | null;
+  commitHash?: string | null;
+  /** The score the run recorded when it completed (a review's `6/10`), when it was scored. */
+  score?: number | null;
+  /**
+   * What the review that recorded `score` came to; null when the run was not a
+   * review or its outcome is unknown, absent when the server predates it.
+   */
+  reviewOutcome?: 'clean' | 'findings' | 'reviewer_failed' | null;
+  /** Users assigned to the task's issue or pull request; absent from servers that predate assignment. */
+  assignees?: AttributedUser[];
 }
 
 export interface TaskListProps {
   limit: number;
   showViewAll?: boolean;
   hideFilters?: boolean;
+  /** The task open beside the list; its row is marked selected. */
+  selectedTaskId?: string | null;
+  /**
+   * Opens a task beside the list instead of navigating to it. When set, a
+   * plain click on a row selects it, and while a task is selected j/k and the
+   * arrow keys step through the rows of the page.
+   */
+  onSelectTask?: (taskId: string) => void;
+  /** Changing it reloads the page of tasks in place, e.g. after a task is deleted beside the list. */
+  refreshKey?: number;
+  /** Receives the page's rows, so the task pane can switch between the runs of the open task. */
+  onGroupsChange?: (groups: TaskGroup[]) => void;
 }
 
 export interface TaskGroup {

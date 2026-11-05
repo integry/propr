@@ -9,6 +9,12 @@ body {
 
 :root {
   --mobile-bottom-navigation-height: calc(4rem + env(safe-area-inset-bottom));
+  /* Room a bottom-docked composer leaves below itself for the floating Voice
+     briefing launcher (2.75rem tall, above the mobile nav or the window edge). */
+  --floating-launcher-clearance: 0px;
+  /* Room such a composer leaves beside the launcher instead, when the panel is
+     too short to stack it above (the launcher's width, offset and a gap). */
+  --floating-launcher-inline-clearance: 0px;
 }
 
 /* Sidebar glyphs share one literal stroke weight. Without this, SVG stroke
@@ -38,13 +44,6 @@ body {
   min-height: 0;
 }
 
-/* A wrapped task summary must never grow into the fixed mobile navigation. */
-.task-mobile-sticky-summary {
-  max-height: 100%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
 @media (max-width: 767.98px) {
   /* Keep mobile action docks comfortable around home indicators when they are
      reused outside the standard app shell. The containing Studio viewport
@@ -56,11 +55,57 @@ body {
   .mobile-plan-intent-overlay {
     padding-bottom: calc(var(--mobile-bottom-navigation-height) + 0.75rem);
   }
+
+  html[data-voice-briefing-launcher] {
+    --floating-launcher-clearance: 4rem;
+    --floating-launcher-inline-clearance: calc(var(--voice-briefing-launcher-width, 7.5rem) + max(0.75rem, env(safe-area-inset-right)) + 0.5rem);
+  }
+
+  /* A docked composer whose panel (a size container) cannot hold it above the
+     launcher plus the controls above it sits level with the launcher, beside
+     it, so it never covers those controls. */
+  @container (max-height: 20rem) {
+    .launcher-docked-composer {
+      --floating-launcher-clearance: 0px;
+      --floating-launcher-inline-reserve: var(--floating-launcher-inline-clearance);
+    }
+  }
 }
 
 @media (min-width: 768px) {
   .mobile-content-clearance {
     padding-bottom: 0;
+  }
+
+  /* On desktop the launcher floats 1.25rem in from the window's lower-right
+     corner, where a docked composer in the rightmost pane ends. */
+  html[data-voice-briefing-launcher] {
+    --floating-launcher-clearance: 4.5rem;
+    --floating-launcher-inline-clearance: calc(var(--voice-briefing-launcher-width, 7.5rem) + 1.25rem + 0.5rem);
+  }
+
+  /* A short but narrow pane (the Playground at its minimum split) has no room
+     for the composer beside the launcher, so the composer stays above it and
+     the panel's parts tighten to keep the whole stack within the pane. */
+  @container (max-height: 24rem) and (max-width: 24rem) {
+    html[data-voice-briefing-launcher] .launcher-docked-composer {
+      --launcher-docked-composer-block-start: 0.5rem;
+      --launcher-docked-composer-box-padding: 0.5rem;
+    }
+
+    html[data-voice-briefing-launcher] .launcher-docked-transcript {
+      --launcher-docked-transcript-min-height: 4rem;
+    }
+  }
+
+  /* The desktop composer is taller, so it moves beside the launcher sooner,
+     once the pane is wide enough for both (the composer's ~12.5rem and the
+     launcher's reserve). */
+  @container (max-height: 24rem) and (min-width: 24rem) {
+    .launcher-docked-composer {
+      --floating-launcher-clearance: 0px;
+      --floating-launcher-inline-reserve: var(--floating-launcher-inline-clearance);
+    }
   }
 
 }
@@ -108,6 +153,45 @@ body {
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
+}
+
+/* Subtle scrollbar - stealth thumb revealed on hover, no track and no stepper buttons.
+   Chromium ignores the ::-webkit-scrollbar rules (and draws stepper arrows) once the
+   standard properties are set, so those only apply where WebKit styling is unsupported. */
+@supports not selector(::-webkit-scrollbar) {
+  .scrollbar-subtle {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .scrollbar-subtle:hover {
+    scrollbar-color: #cbd5e1 transparent;
+  }
+}
+
+.scrollbar-subtle::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-track,
+.scrollbar-subtle::-webkit-scrollbar-button {
+  display: none;
+  background: transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 /* Stealth scrollbar - invisible until hovered */

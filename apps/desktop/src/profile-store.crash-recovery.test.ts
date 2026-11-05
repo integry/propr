@@ -9,6 +9,11 @@ import {
   type EncryptionProvider,
   type ProfileStoreDurabilityStep,
 } from './profile-store';
+import { applyDesktopTestFsyncPolicy } from './profile-store-test-fsync';
+
+// Apply the full-suite fsync policy to setup and recovery, as the child fixture does.
+// Direct runs and the native durability matrix retain native fsync.
+await applyDesktopTestFsyncPolicy();
 
 // Child-process crash fixtures for the profile store. They spawn one tsx child
 // per durability boundary, so they live apart from profile-store.test.ts to keep

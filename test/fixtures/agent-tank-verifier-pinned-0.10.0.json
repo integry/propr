@@ -1,0 +1,163 @@
+{
+  "cliVersion": "0.10.0",
+  "status": {
+    "providers": [
+      {
+        "id": "claude",
+        "provider": "claude",
+        "plan": null,
+        "status": "ok",
+        "last_updated": "2026-09-27T12:00:00.000Z",
+        "error": null,
+        "windows": [
+          {
+            "type": "session",
+            "label": "Current session",
+            "model": null,
+            "used_percent": 42,
+            "remaining_percent": 58,
+            "resets_at": "2026-09-27T12:12:44.000Z",
+            "resets_in_seconds": 759,
+            "pace": null
+          },
+          {
+            "type": "weekly",
+            "label": "Current week (all models)",
+            "model": null,
+            "used_percent": 31,
+            "remaining_percent": 69,
+            "resets_at": "2026-10-01T17:12:44.000Z",
+            "resets_in_seconds": 364359,
+            "pace": null
+          }
+        ],
+        "context_window": null,
+        "credits": null,
+        "raw": {
+          "name": "claude",
+          "usage": {
+            "session": {
+              "label": "Current session",
+              "percent": 42,
+              "resetsInSeconds": 764
+            },
+            "weeklyAll": {
+              "label": "Current week (all models)",
+              "percent": 31,
+              "resetsInSeconds": 364364
+            }
+          },
+          "lastUpdated": "2026-09-27T12:00:00.000Z",
+          "error": null,
+          "id": "claude"
+        }
+      },
+      {
+        "id": "codex",
+        "provider": "codex",
+        "plan": null,
+        "status": "ok",
+        "last_updated": "2026-09-27T12:00:01.000Z",
+        "error": null,
+        "windows": [
+          {
+            "type": "five_hour",
+            "label": "5h limit",
+            "model": null,
+            "used_percent": 9,
+            "remaining_percent": 91,
+            "resets_at": "2026-09-27T14:35:01.000Z",
+            "resets_in_seconds": 9296,
+            "pace": null
+          },
+          {
+            "type": "weekly",
+            "label": "Weekly limit",
+            "model": null,
+            "used_percent": 22,
+            "remaining_percent": 78,
+            "resets_at": "2026-10-01T19:20:01.000Z",
+            "resets_in_seconds": 371996,
+            "pace": null
+          }
+        ],
+        "context_window": null,
+        "credits": null,
+        "raw": {
+          "name": "codex",
+          "usage": {
+            "fiveHour": {
+              "label": "5h limit",
+              "percentLeft": 91,
+              "percentUsed": 9,
+              "resetsInSeconds": 9300
+            },
+            "weekly": {
+              "label": "Weekly limit",
+              "percentLeft": 78,
+              "percentUsed": 22,
+              "resetsInSeconds": 372000
+            }
+          },
+          "lastUpdated": "2026-09-27T12:00:01.000Z",
+          "error": null,
+          "id": "codex"
+        }
+      },
+      {
+        "id": "agy",
+        "provider": "antigravity",
+        "plan": null,
+        "status": "ok",
+        "last_updated": "2026-09-27T12:00:02.000Z",
+        "error": null,
+        "windows": [
+          {
+            "type": "session",
+            "label": "Gemini 3.8 Flash",
+            "model": "Gemini 3.8 Flash",
+            "used_percent": 16,
+            "remaining_percent": 84,
+            "resets_at": null,
+            "resets_in_seconds": null,
+            "pace": null
+          },
+          {
+            "type": "session",
+            "label": "Claude Sonnet 4.6",
+            "model": "Claude Sonnet 4.6",
+            "used_percent": 0,
+            "remaining_percent": 100,
+            "resets_at": null,
+            "resets_in_seconds": null,
+            "pace": null
+          }
+        ],
+        "context_window": null,
+        "credits": null,
+        "raw": {
+          "name": "agy",
+          "usage": {
+            "models": [
+              {
+                "model": "Gemini 3.8 Flash",
+                "usageLeft": 84,
+                "percentUsed": 16,
+                "cycle": "daily"
+              },
+              {
+                "model": "Claude Sonnet 4.6",
+                "usageLeft": 100,
+                "percentUsed": 0,
+                "cycle": "daily"
+              }
+            ]
+          },
+          "lastUpdated": "2026-09-27T12:00:02.000Z",
+          "error": null,
+          "id": "agy"
+        }
+      }
+    ]
+  }
+}

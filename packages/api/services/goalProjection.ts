@@ -1,5 +1,6 @@
 import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
+import type { AttributedUser } from '@propr/shared';
 import {
   goalTitleFallback,
   parseGoalArtifacts,
@@ -13,6 +14,8 @@ import {
   publicGoalAttachments,
   stripGoalAttachmentSection,
 } from './goalAttachmentService.js';
+import { goalAttention } from './goalAttention.js';
+import { creatorFrom, projectCreators } from './creatorProjection.js';
 
 export interface GoalProjectionRow {
   goal_id: string;
@@ -45,6 +48,7 @@ export interface GoalProjectionRow {
   active_turn_id: string | null;
   pause_confirmed_at: string | null;
   resume_requested: number | boolean;
+  continue_requested?: number | boolean;
   final_pr_number: number | null;
   final_pr_url: string | null;
   artifact_refs: string | unknown[] | null;
@@ -195,8 +199,8 @@ function checkpointProjection(
       exclude: parseCheckpointPaths(latestCheckpoint.exclude_paths),
       summary: latestCheckpoint.summary,
       error: latestCheckpoint.error,
-      createdAt: latestCheckpoint.created_at,
-      completedAt: latestCheckpoint.completed_at,
+      createdAt: isoTimestamp(latestCheckpoint.created_at as string | Date | number | null),
+      completedAt: isoTimestamp(latestCheckpoint.completed_at as string | Date | number | null),
     } : null,
   };
 }
@@ -213,6 +217,27 @@ function liveSummary(live: Awaited<ReturnType<typeof projectTaskLiveDetails>>) {
 export interface SerializeGoalOptions {
   /** The goal list projects hundreds of rows; only single-goal responses pay for the timeline. */
   includeInputs?: boolean;
+  /**
+   * Creator profiles already loaded for a page of goals, so a list costs one profile read.
+   * Omitted for a single goal, which reads its own.
+   */
+  creators?: ReadonlyMap<string, AttributedUser>;
+}
+
+/**
+ * The goal's creator from the profile cache. A goal stores its creator's login beside the id,
+ * so an uncached creator still projects as a login-only user rather than null.
+ */
+export function goalCreator(row: Pick<GoalProjectionRow, 'owner_id' | 'owner_login'>, creators: ReadonlyMap<string, AttributedUser>): AttributedUser | null {
+  const cached = creatorFrom(creators, row.owner_id);
+  if (cached) return cached;
+  if (!row.owner_id || !row.owner_login) return null;
+  return { id: String(row.owner_id), login: row.owner_login, displayName: null, avatarUrl: null };
+}
+
+/** Loads the creator profiles of a page of goals in one read, for `SerializeGoalOptions.creators`. */
+export async function loadGoalCreators(rows: readonly Pick<GoalProjectionRow, 'owner_id'>[]): Promise<Map<string, AttributedUser>> {
+  return projectCreators(rows.map(row => row.owner_id));
 }
 
 export async function serializeGoal(
@@ -221,7 +246,17 @@ export async function serializeGoal(
   source: GoalProjectionRow,
   options: SerializeGoalOptions = {},
 ) {
-  const row = source;
+  // Normalize before both duration arithmetic and serialization. SQLite UTC datetimes
+  // must not be interpreted in the API process's or the browser's local timezone.
+  const row = {
+    ...source,
+    created_at: isoTimestamp(source.created_at)!,
+    updated_at: isoTimestamp(source.updated_at)!,
+    started_at: isoTimestamp(source.started_at),
+    paused_at: isoTimestamp(source.paused_at),
+    completed_at: isoTimestamp(source.completed_at),
+    last_checkpoint_at: isoTimestamp(source.last_checkpoint_at),
+  };
   const includeInputs = options.includeInputs !== false;
   const inputs = includeInputs ? await loadGoalInputs(db, row.goal_id, row.owner_id) : [];
   const live = await projectTaskLiveDetails(redis, db, row.current_task_id, { sessionId: row.session_id });
@@ -238,6 +273,8 @@ export async function serializeGoal(
       .whereIn('state', ['pending', 'processing']).first('checkpoint_id')
     : null;
   const timing = goalTiming(row);
+  const attention = await goalAttention(db, row.owner_id, row);
+  const createdBy = goalCreator(row, options.creators ?? await loadGoalCreators([row]));
   const optionalInputs: { inputs?: GoalInputProjection[] } = includeInputs ? { inputs } : {};
   const projection = {
     id: row.goal_id,
@@ -284,5 +321,7 @@ export async function serializeGoal(
   // Preview redaction rewrites runtime paths inside arbitrary strings, so it runs before the
   // already-sanitized operator bodies are attached: the timeline must show what was sent verbatim.
   const redacted = redactVisualPreviewValue(projection) as typeof projection;
-  return { ...redacted, ...optionalInputs };
+  // Attention is the shared projection every surface reads; it is attached as projected so the
+  // console, MCP and the attention listing show the same blocker text.
+  return { ...redacted, createdBy, attention, ...optionalInputs };
 }

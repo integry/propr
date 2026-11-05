@@ -47,3 +47,14 @@ export function applyPlanIssueDefaults(
     return issue;
   });
 }
+
+/** True when the issue carries its own agent/model rather than the plan default. */
+export const isOverriddenFromDefault = (
+  issue: Pick<PlanIssue, 'agent_alias' | 'model_name'>,
+  defaultSelection?: PlanIssueDefaultSelection | null
+): boolean => {
+  if (!defaultSelection?.agentAlias) return false;
+  if (issue.agent_alias !== defaultSelection.agentAlias) return true;
+  // A missing model on either side means "the agent's default model", so only two explicit models can differ.
+  return !!issue.model_name && !!defaultSelection.modelName && issue.model_name !== defaultSelection.modelName;
+};

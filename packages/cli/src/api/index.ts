@@ -20,6 +20,7 @@ export {
   InternalServerError,
   NetworkError,
   TimeoutError,
+  RequestCancelledError,
   createApiError,
 } from "./errors.js";
 
@@ -38,6 +39,21 @@ export {
   updateAgentRuntimePackages,
   verifyAgentRuntimePackages,
 } from './agentRuntime.js';
+
+export {
+  followupHandoffPath,
+  getFollowupHandoff,
+  listFollowupHandoffs,
+  releaseFollowupHandoff,
+  resumeFollowupHandoff,
+} from './followupHandoffs.js';
+export type {
+  FollowupHandoffListResponse,
+  FollowupHandoffRecoverySummary,
+  FollowupHandoffReleaseResponse,
+  FollowupHandoffResumeResponse,
+  FollowupHandoffStatus,
+} from './followupHandoffs.js';
 
 export {
   getVisualPreviewAuthStatus,
@@ -100,6 +116,8 @@ export type {
   TaskInfo,
   TaskStatusResponse,
   TaskStatus,
+  TaskBudget,
+  TaskPushFailure,
 } from "./implement.js";
 
 // Tasks API
@@ -248,3 +266,45 @@ export type {
   RoutingState,
   QueueStats,
 } from "./system.js";
+
+// Stats API
+export { getReviewScoreSummary } from "./stats.js";
+export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreQuery, MeanFigure } from "./stats.js";
+
+// Goals API
+export {
+  GOAL_LAUNCH_STRATEGIES,
+  GOAL_LIST_STATES,
+  GOAL_MUTATION_ATTEMPTS,
+  IDEMPOTENCY_KEY_PATTERN,
+  GoalMutationUncertainError,
+  newIdempotencyKey,
+  resolveIdempotencyKey,
+  getGoalCapabilities,
+  listGoals,
+  getGoalDetail,
+  listGoalInputs,
+  createGoal,
+  sendGoalInput,
+  pauseGoal,
+  resumeGoal,
+  cancelGoal,
+  setGoalModel,
+} from "./goals.js";
+
+export type {
+  Goal,
+  GoalDetail,
+  GoalInput,
+  GoalInputPage,
+  GoalCheckpoint,
+  GoalCapabilityAgent,
+  GoalLaunchStrategy,
+  GoalListState,
+  GoalListResponse,
+  GoalCreateOutcome,
+  GoalCreateResult,
+  GoalMutationResult,
+  CreateGoalRequest,
+  GoalApiOptions,
+} from "./goals.js";

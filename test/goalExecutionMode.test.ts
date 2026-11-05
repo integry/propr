@@ -13,8 +13,13 @@ import {
   parseGoalCheckpointDeclaration,
 } from '../packages/core/src/goals.ts';
 import {
+  parseGoalCheckpointDeclaration as parseSharedGoalCheckpointDeclaration,
+  parseGoalCheckpointOutput,
+} from '../packages/shared/src/goalCheckpoints.ts';
+import {
   GoalCapabilityProbe,
   antigravityConversationIdentity,
+  antigravityGoalCommandProbeSucceeded,
   antigravityHelpSupportsWholeSession,
   claudeHelpSupportsWholeSession,
   claudeHelpSupportsNativeGoal,
@@ -26,6 +31,8 @@ import {
 } from '../packages/core/src/agents/goalCapabilities.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import { buildCodexAppServerDockerArgs, buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
+import { buildOpenCodeDockerArgs } from '../packages/core/src/agents/impl/openCodeUtils.ts';
+import { VibeAgent } from '../packages/core/src/agents/impl/VibeAgent.ts';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.ts';
 import type { Agent, AgentConfig } from '../packages/core/src/agents/types.ts';
 
@@ -41,9 +48,11 @@ const baseConfig = (type: AgentConfig['type']): AgentConfig => ({
   enabled: true,
   dockerImage: 'propr/agent:test',
   configPath: type === 'codex' ? codexConfigPath : `/tmp/${type}-config`,
-  supportedModels: ['test-model'],
-  defaultModel: 'test-model',
+  supportedModels: [type === 'antigravity' ? 'antigravity-gemini-3.8-flash' : 'test-model'],
+  defaultModel: type === 'antigravity' ? 'antigravity-gemini-3.8-flash' : 'test-model',
 });
+
+const antigravityModel = 'antigravity-gemini-3.8-flash';
 
 const common = {
   worktreePath: '/tmp/worktree',
@@ -63,6 +72,24 @@ after(async () => {
 });
 
 describe('native goal provider contract', () => {
+  test('core and browser surfaces use the same checkpoint parser', () => {
+    const declaration = '{"checkpointReady":true,"message":"feat: shared parser"}';
+    assert.deepEqual(
+      parseGoalCheckpointDeclaration(declaration),
+      parseSharedGoalCheckpointDeclaration(declaration),
+    );
+    const output = parseGoalCheckpointOutput([
+      'Stable work is ready.',
+      '```json',
+      declaration,
+      '```',
+    ].join('\n'));
+    assert.deepEqual(output, {
+      declaration: { checkpointReady: true, message: 'feat: shared parser' },
+      remainder: 'Stable work is ready.',
+    });
+  });
+
   test('separates the direct goal command from ProPR delivery context', () => {
     const options = {
       objective: 'Ship the dashboard', launchStrategy: 'direct', maxParallelTasks: 3, ultrafix: true,
@@ -187,14 +214,13 @@ describe('native goal provider contract', () => {
         executionMode: 'goal'; environment: Record<string, string>;
       }): string[];
     };
-    const agy = antigravity.buildDockerArgs({ ...common, executionMode: 'goal', environment });
+    const agy = antigravity.buildDockerArgs({ ...common, modelName: antigravityModel, executionMode: 'goal', environment });
 
     for (const args of [claude, codex, agy]) {
       assert.ok(args.includes('/tmp/worktree:/home/node/workspace:rw'));
       assert.ok(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'));
       assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:ro'));
-      assert.equal(args.some(argument => argument === 'GH_TOKEN=token'), false);
-      assert.equal(args.some(argument => argument === 'GITHUB_TOKEN=token'), false);
+      assert.equal(args.some(argument => argument === 'GH_TOKEN=token'), true);
       assert.equal(args.some(argument => argument.includes('must-not-leak')), false);
     }
   });
@@ -212,15 +238,25 @@ describe('native goal provider contract', () => {
 
   test('Antigravity retains state and resumes the exact conversation', () => {
     const agent = new AntigravityAgent(baseConfig('antigravity')) as unknown as {
-      buildDockerArgs(params: typeof common & { executionMode?: 'task' | 'goal'; resumeConversationId?: string }): string[];
+      buildDockerArgs(params: typeof common & { executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean }): string[];
     };
-    const normal = agent.buildDockerArgs(common);
-    const initial = agent.buildDockerArgs({ ...common, executionMode: 'goal' });
-    const resumed = agent.buildDockerArgs({ ...common, executionMode: 'goal', resumeConversationId: 'agy-conversation' });
+    const normal = agent.buildDockerArgs({ ...common, modelName: antigravityModel });
+    const initial = agent.buildDockerArgs({ ...common, modelName: antigravityModel, executionMode: 'goal', nativeGoalLaunch: true });
+    const resumed = agent.buildDockerArgs({ ...common, modelName: antigravityModel, executionMode: 'goal', resumeConversationId: 'agy-conversation' });
     assert.ok(normal.includes('PROPR_EPHEMERAL_STATE=1'));
     assert.ok(normal.some(argument => argument.endsWith(':/home/node/.gemini-source:rw')));
     assert.equal(initial.includes('PROPR_EPHEMERAL_STATE=1'), false);
     assert.ok(initial.some(argument => argument.endsWith(':/home/node/.gemini:rw')));
+    // Only the launch expands the native `/goal` command; resumed invocations
+    // carry operator input that slash commands must not consume.
+    assert.equal(normal.includes('--disable-slash-commands'), false);
+    assert.equal(initial.includes('--disable-slash-commands'), false);
+    assert.ok(resumed.includes('--disable-slash-commands'));
+    assert.equal(normal.includes('--output-format'), false);
+    for (const args of [initial, resumed]) {
+      assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 2),
+        ['--output-format', 'stream-json']);
+    }
     assert.deepEqual(resumed.slice(resumed.indexOf('--conversation'), resumed.indexOf('--conversation') + 2), ['--conversation', 'agy-conversation']);
   });
 
@@ -250,6 +286,15 @@ describe('native goal provider contract', () => {
       JSON.stringify({ event: 'init', conversation_id: 'conversation-1', init: { model: 'gemini' } }),
       JSON.stringify({ event: 'result', result: { conversation_id: 'different-conversation', status: 'SUCCESS' } }),
     ].join('\n')), undefined);
+  });
+
+  test('the pinned Antigravity CLI help exposes every goal flag', () => {
+    const help = readFileSync('packages/core/test/fixtures/antigravity-help-1.2.4.txt', 'utf8');
+    assert.equal(antigravityHelpSupportsWholeSession(help), true);
+    assert.equal(antigravityHelpSupportsWholeSession(help.replace(/^\s*--conversation .*$/m, '')), false);
+    assert.equal(antigravityGoalCommandProbeSucceeded('1\n'), true);
+    assert.equal(antigravityGoalCommandProbeSucceeded('0\n'), false);
+    assert.equal(antigravityGoalCommandProbeSucceeded(''), false);
   });
 
   test('recognizes the pinned Codex experimental schema only when every goal method is present', () => {
@@ -309,7 +354,11 @@ describe('native goal provider contract', () => {
         '===PROPR-CLAUDE-GOAL-PROBE===',
         JSON.stringify({ type: 'result', is_error: false, result: 'No goal set. Usage: `/goal <condition>`' }),
       ].join('\n'),
-      antigravity: '--print\n--conversation <id>\n--output-format <format>\n--disable-slash-commands',
+      antigravity: [
+        '--print\n--conversation <id>\n--output-format <format>\n--disable-slash-commands',
+        '===PROPR-ANTIGRAVITY-GOAL-PROBE===',
+        '1',
+      ].join('\n'),
     };
     for (const type of ['codex', 'claude', 'antigravity'] as const) {
       const calls: Array<{ args: string[]; stdinData?: string }> = [];
@@ -336,8 +385,13 @@ describe('native goal provider contract', () => {
         assert.deepEqual(capability.lifecycle, { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' });
         assert.equal(capability.controls.liveInput, true);
       } else {
-        assert.doesNotMatch(calls[0].args.join(' '), /\/goal/);
-        assert.ok(calls[0].args.includes('--help'));
+        // The native `/goal` command is detected in the binary: no model call.
+        assert.match(calls[0].args.join(' '), /agy --help; .*grep -c -a -F 'Run until the specified goal is completely finished\.'/);
+        assert.doesNotMatch(calls[0].args.join(' '), /agy -p|--print/);
+      }
+      if (type !== 'codex') {
+        assert.deepEqual(capability.lifecycle, { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' });
+        assert.equal(capability.controls.liveInput, true);
       }
     }
   });
@@ -388,3 +442,37 @@ const REQUIRED_GOAL_SCHEMA = { anyOf: [
   { properties: { method: { enum: ['thread/goal/get'] } } },
   { properties: { method: { enum: ['thread/goal/clear'] } } },
 ] };
+
+
+test('all five implementation adapters expose only writable task files and reject credential overrides', () => {
+  const params = { ...common, issueNumber: 1 };
+  const config = (type: AgentConfig['type']) => ({ ...baseConfig(type), envVars: {
+    GH_TOKEN: 'must-not-leak', GITHUB_TOKEN: 'must-not-leak', MISTRAL_API_KEY: 'test-key',
+  } });
+  const antigravity = new AntigravityAgent(config('antigravity')) as unknown as { buildDockerArgs(input: typeof params): string[] };
+  const vibe = new VibeAgent(config('vibe')) as unknown as { buildDockerArgs(input: typeof params): string[] };
+  const variants = [
+    buildClaudeDockerArgs(config('claude'), 1000, params),
+    buildCodexDockerArgs(config('codex'), params),
+    antigravity.buildDockerArgs({ ...params, modelName: antigravityModel }),
+    buildOpenCodeDockerArgs({ ...params, config: config('opencode'), ensureConfigPath: () => {} }),
+    vibe.buildDockerArgs(params),
+  ];
+  for (const args of variants) {
+    assert.ok(args.includes('/tmp/worktree:/home/node/workspace:rw'));
+    assert.ok(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'));
+    assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:ro'));
+    assert.ok(args.includes('GIT_CONFIG_VALUE_1=!gh auth git-credential'));
+    assert.equal(args.some(arg => arg.includes('must-not-leak')), false);
+  }
+});
+
+test('orchestrated goal adapters retain GitHub credentials and writable git mounts', () => {
+  const params = { ...common, executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } };
+  const antigravity = new AntigravityAgent(baseConfig('antigravity')) as unknown as { buildDockerArgs(input: typeof params): string[] };
+  for (const args of [buildClaudeDockerArgs(baseConfig('claude'), 1000, params), buildCodexAppServerDockerArgs(baseConfig('codex'), params), antigravity.buildDockerArgs({ ...params, modelName: antigravityModel })]) {
+    assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:rw'));
+    assert.ok(args.includes('GH_TOKEN=token'));
+    assert.equal(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'), false);
+  }
+});

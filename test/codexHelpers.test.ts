@@ -355,6 +355,78 @@ describe('parseCodexStreamOutput', () => {
             });
         });
 
+        test('leaves the cache count absent when every usage event omits cached_input_tokens', () => {
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 25 } },
+                { type: 'result', status: 'success', usage: { input_tokens: 40, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            // An omitted count is unknown telemetry, not a measured zero.
+            assert.deepStrictEqual(result.tokenUsage, { input_tokens: 140, output_tokens: 30 });
+            assert.ok(!('cache_read_input_tokens' in result.tokenUsage!));
+            assert.ok(!('cache_usage_incomplete' in result.tokenUsage!));
+        });
+
+        test('keeps an explicitly reported zero cached_input_tokens as a measured zero', () => {
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 25 } },
+                { type: 'turn.completed', usage: { input_tokens: 40, cached_input_tokens: 0, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, { input_tokens: 140, output_tokens: 30, cache_read_input_tokens: 0 });
+        });
+
+        test('marks the cache count incomplete when only some prompt-bearing usage events report cached_input_tokens', () => {
+            // The second prompt's cache portion is unknown, so a count covering
+            // only the first prompt would be mistaken for a measurement of both.
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 25 } },
+                { type: 'turn.completed', usage: { input_tokens: 900, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, {
+                input_tokens: 1000, output_tokens: 30, cache_read_input_tokens: 0, cache_usage_incomplete: true
+            });
+        });
+
+        test('keeps a partially counted cached subtotal for pricing instead of folding it into input_tokens', () => {
+            // The first prompt's 60 cached tokens are known to be cached, so they
+            // must keep the cache-read price; only the hit-rate measurement is
+            // withheld, by marking the breakdown incomplete.
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 25 } },
+                { type: 'turn.completed', usage: { input_tokens: 900, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, {
+                input_tokens: 940, output_tokens: 30, cache_read_input_tokens: 60, cache_usage_incomplete: true
+            });
+        });
+
+        test('keeps the cache count when the only event without cached_input_tokens carries no prompt', () => {
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 25 } },
+                { type: 'turn.completed', usage: { output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, { input_tokens: 40, output_tokens: 30, cache_read_input_tokens: 60 });
+        });
+
         test('captures reasoning tokens without adding them to output tokens', () => {
             const event = {
                 type: 'turn.completed',

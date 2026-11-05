@@ -1,9 +1,10 @@
+import { MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
 /**
  * System Settings API
  *
  * Functions for interacting with the ProPR backend system settings endpoints.
  * These functions provide a typed interface to view and update global system configuration
- * like worker concurrency, auto-followup thresholds, and model settings.
+ * like worker concurrency and model settings.
  */
 
 import { ApiClient, createApiClient } from "./client.js";
@@ -28,6 +29,7 @@ const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
  * These settings control global system behavior.
  */
 export interface SystemSettings {
+  usage_tips_enabled: boolean;
   /**
    * Alias of the default implementation agent.
    */
@@ -37,6 +39,11 @@ export interface SystemSettings {
    * Number of concurrent workers for processing tasks.
    */
   worker_concurrency: number;
+
+  /**
+   * Replacement attempts dispatched after transient provider failures (0 disables).
+   */
+  max_provider_replacements?: number;
 
   /**
    * List of GitHub usernames allowed to use the system.
@@ -59,15 +66,21 @@ export interface SystemSettings {
   planner_generation_model: string;
 
   /**
-   * Score threshold (0-9) for auto-followup on issues.
+   * @deprecated Retained for REST compatibility only. Post-implementation analysis
+   * was removed, so this setting has no effect.
    */
   auto_followup_score_threshold: number;
+
+  /** Deprecation reasons for legacy settings returned by the server. */
+  deprecated_settings?: Record<string, string>;
 
   /**
    * When enabled, the system will automatically merge the PR base branch into
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts: boolean;
+  dashboard_summary_enabled: boolean;
+  followup_requires_assignment: boolean;
 
   /**
    * Global reasoning effort/level for supported GPT and Claude agents.
@@ -105,6 +118,10 @@ export interface SystemSettings {
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
+  ultrafix_escalation_enabled: boolean;
+  ultrafix_escalation_models: string[];
+  ultrafix_escalation_patience: number;
+  ultrafix_escalation_max_reasoning_levels: number;
   ultrafix_rating_goal: number;
 
   /**
@@ -116,6 +133,36 @@ export interface SystemSettings {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds: number;
+
+  /**
+   * Instance default per-run spend cap in USD (0 = no cap).
+   */
+  default_max_cost_usd?: number;
+
+  /**
+   * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
+   */
+  ultrafix_ci_wait_timeout_ms: number;
+
+  /** Agent network policy overrides; null uses the environment default. */
+  agent_network_mode?: "open" | "restricted" | null;
+  agent_network_mode_enforced?: boolean | null;
+  agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
+  agent_network_defaults?: Record<string, unknown>;
+  agent_network_effective?: Record<string, unknown>;
+
+  /**
+   * Agent watchdog overrides (null = the environment default applies; 0 disables the rule).
+   * Absent when the server predates the watchdog.
+   */
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
+  /** Environment defaults used when an override is null. */
+  agent_watchdog_defaults?: Record<string, number>;
+  /** Thresholds in force for the next agent run. */
+  agent_watchdog_effective?: Record<string, number>;
 }
 
 export const NAMED_CONFIG_ENDPOINTS = {
@@ -154,6 +201,7 @@ export type GetSettingsResponse = SystemSettings;
  * Supports partial updates - only include fields you want to change.
  */
 export interface UpdateSettingsOptions {
+  usage_tips_enabled?: boolean;
   /**
    * Alias of the default implementation agent.
    */
@@ -163,6 +211,11 @@ export interface UpdateSettingsOptions {
    * Number of concurrent workers for processing tasks.
    */
   worker_concurrency?: number;
+
+  /**
+   * Replacement attempts dispatched after transient provider failures (0 disables).
+   */
+  max_provider_replacements?: number;
 
   /**
    * List of GitHub usernames allowed to use the system.
@@ -185,7 +238,8 @@ export interface UpdateSettingsOptions {
   planner_generation_model?: string;
 
   /**
-   * Score threshold (0-9) for auto-followup on issues.
+   * @deprecated Legacy REST update option accepted for compatibility only.
+   * Post-implementation analysis was removed, so writing this has no effect.
    */
   auto_followup_score_threshold?: number;
 
@@ -194,6 +248,8 @@ export interface UpdateSettingsOptions {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts?: boolean;
+  dashboard_summary_enabled?: boolean;
+  followup_requires_assignment?: boolean;
 
   /**
    * Global reasoning effort/level for supported GPT and Claude agents.
@@ -228,6 +284,10 @@ export interface UpdateSettingsOptions {
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
+  ultrafix_escalation_enabled?: boolean;
+  ultrafix_escalation_models?: string[];
+  ultrafix_escalation_patience?: number;
+  ultrafix_escalation_max_reasoning_levels?: number;
   ultrafix_rating_goal?: number;
 
   /**
@@ -239,6 +299,27 @@ export interface UpdateSettingsOptions {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds?: number;
+
+  /**
+   * Instance default per-run spend cap in USD (0 = no cap).
+   */
+  default_max_cost_usd?: number;
+
+  /**
+   * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
+   */
+  ultrafix_ci_wait_timeout_ms?: number;
+
+  /** Agent watchdog overrides; null restores the environment default. */
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
+
+  /** Agent network policy overrides; null restores the environment default. */
+  agent_network_mode?: "open" | "restricted" | null;
+  agent_network_mode_enforced?: boolean | null;
+  agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
 }
 
 /**
@@ -264,20 +345,23 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = keyof SystemSettings;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective' | 'agent_network_defaults' | 'agent_network_effective'>;
 
 /**
  * List of valid setting keys for validation.
  */
 export const VALID_SETTING_KEYS: SettingKey[] = [
+  "usage_tips_enabled",
   "default_agent_alias",
   "worker_concurrency",
+  "max_provider_replacements",
   "github_user_whitelist",
   "analysis_model_fast",
   "planner_context_model",
   "planner_generation_model",
-  "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
+  "dashboard_summary_enabled",
+  "followup_requires_assignment",
   "model_reasoning_level",
   "pr_review_model",
   "pr_review_prompt",
@@ -285,9 +369,22 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "pr_review_context_model",
   "pr_review_max_context_tokens",
   "pr_review_context_budget_percent",
+  "ultrafix_escalation_enabled",
+  "ultrafix_escalation_models",
+  "ultrafix_escalation_patience",
+  "ultrafix_escalation_max_reasoning_levels",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
+  "default_max_cost_usd",
+  "ultrafix_ci_wait_timeout_ms",
+  "agent_stall_timeout_ms",
+  "agent_tool_stall_timeout_ms",
+  "agent_degenerate_output_limit",
+  "agent_network_mode",
+  "agent_network_mode_enforced",
+  "agent_network_allow",
+  "agent_network_ignore_repository_allow",
 ];
 
 /**
@@ -308,19 +405,50 @@ export function isValidSettingKey(key: string): key is SettingKey {
  * @returns The parsed value.
  * @throws Error if the value cannot be parsed for the given key.
  */
-export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean {
+export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean | null {
   switch (key) {
-    case "worker_concurrency":
-    case "auto_followup_score_threshold": {
+    case "agent_stall_timeout_ms":
+    case "agent_tool_stall_timeout_ms":
+    case "agent_degenerate_output_limit": {
+      // "default" (or "null") clears the override so the environment default applies.
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer (0 disables), or "default"`);
+      }
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer up to ${Number.MAX_SAFE_INTEGER}`);
+      }
+      return parsed;
+    }
+    case "agent_network_mode": {
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      const mode = value.trim().toLowerCase();
+      if (mode !== "open" && mode !== "restricted") {
+        throw new Error(`Invalid value for ${key}: must be "open", "restricted" or "default"`);
+      }
+      return mode;
+    }
+    case "agent_network_mode_enforced":
+    case "agent_network_ignore_repository_allow": {
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      const lower = value.trim().toLowerCase();
+      if (lower !== "true" && lower !== "false") {
+        throw new Error(`Invalid value for ${key}: must be "true", "false" or "default"`);
+      }
+      return lower === "true";
+    }
+    case "agent_network_allow":
+      // Comma-separated hostnames; "default" restores the environment list.
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      return value.split(",").map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+    case "worker_concurrency": {
       if (!/^-?\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be an integer`);
       }
       const parsed = Number(value);
       if (!Number.isSafeInteger(parsed)) {
         throw new Error(`Invalid value for ${key}: must be an integer up to ${Number.MAX_SAFE_INTEGER}`);
-      }
-      if (key === "auto_followup_score_threshold" && (parsed < 0 || parsed > 9)) {
-        throw new Error(`Invalid value for ${key}: must be between 0 and 9`);
       }
       if (key === "worker_concurrency" && parsed < 1) {
         throw new Error(`Invalid value for ${key}: must be at least 1`);
@@ -337,6 +465,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_patience":
+    case "ultrafix_ci_wait_timeout_ms":
     case "ultrafix_max_cycles": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a positive integer`);
@@ -347,6 +477,14 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_max_reasoning_levels":
+    case "max_provider_replacements": {
+      const parsed = parseMaxProviderReplacements(value);
+      if (parsed === null) {
+        throw new Error(`Invalid value for ${key}: must be an integer from 0 to ${MAX_PROVIDER_REPLACEMENTS_LIMIT}`);
+      }
+      return parsed;
+    }
     case "ultrafix_pause_seconds": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
@@ -354,6 +492,14 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       const parsed = Number(value);
       if (parsed < 0 || !Number.isSafeInteger(parsed)) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer up to ${Number.MAX_SAFE_INTEGER}`);
+      }
+      return parsed;
+    }
+    case "default_max_cost_usd": {
+      const trimmed = value.trim().replace(/^\$/, "");
+      const parsed = /^\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+      if (!Number.isFinite(parsed) || parsed > 100000) {
+        throw new Error(`Invalid value for ${key}: must be a USD amount from 0 (no cap) to 100000`);
       }
       return parsed;
     }
@@ -371,6 +517,17 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_models": {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed) || parsed.some(m => typeof m !== 'string' || !m.trim())) {
+        throw new Error('Escalation models must be a JSON array of nonempty model names');
+      }
+      return parsed.map(m => m.trim());
+    }
+    case "ultrafix_escalation_enabled":
+    case "usage_tips_enabled":
+    case "dashboard_summary_enabled":
+    case "followup_requires_assignment":
     case "auto_resolve_merge_conflicts":
     case "pr_review_context_enabled": {
       const lower = value.toLowerCase();
@@ -426,7 +583,6 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
  * ```typescript
  * const settings = await getSettings();
  * console.log(`Worker concurrency: ${settings.worker_concurrency}`);
- * console.log(`Auto-followup threshold: ${settings.auto_followup_score_threshold}`);
  * ```
  */
 export async function getSettings(client?: ApiClient): Promise<GetSettingsResponse> {
@@ -452,7 +608,7 @@ export async function getSettings(client?: ApiClient): Promise<GetSettingsRespon
  * // Update multiple settings
  * await updateSettings({
  *   worker_concurrency: 10,
- *   auto_followup_score_threshold: 7
+ *   auto_resolve_merge_conflicts: true
  * });
  * ```
  */
@@ -482,13 +638,13 @@ export async function updateSettings(
  * // Update worker concurrency
  * await updateSetting("worker_concurrency", 10);
  *
- * // Update auto-followup threshold
- * await updateSetting("auto_followup_score_threshold", 7);
+ * // Update merge-conflict resolution
+ * await updateSetting("auto_resolve_merge_conflicts", true);
  * ```
  */
 export async function updateSetting(
   key: SettingKey,
-  value: number | string | string[] | boolean,
+  value: number | string | string[] | boolean | null,
   client?: ApiClient
 ): Promise<UpdateSettingsResponse> {
   const settings: UpdateSettingsOptions = { [key]: value };
@@ -546,7 +702,7 @@ export async function triggerSummarizationReindexAll(
  * await settingsApi.updateSettings({ worker_concurrency: 10 });
  *
  * // Update a single setting
- * await settingsApi.updateSetting("auto_followup_score_threshold", 7);
+ * await settingsApi.updateSetting("auto_resolve_merge_conflicts", true);
  * ```
  */
 export const settingsApi = {

@@ -3,6 +3,7 @@ export { createTaskRoutes } from './taskRoutes.js';
 export { createTaskHistoryRoutes } from './taskHistoryRoutes.js';
 export { createLiveDetailsRoutes } from './liveDetailsRoutes.js';
 export { createFileChangesRoutes } from './fileChangesRoutes.js';
+export { createTaskAssignmentRoutes } from './taskAssignmentRoutes.js';
 export { createConfigRoutes } from './configRoutes.js';
 export { createQueueRoutes } from './queueRoutes.js';
 export { createExecutionRoutes } from './executionRoutes.js';
@@ -17,6 +18,8 @@ export { createInstanceCatalogRoutes } from './instanceCatalogRoutes.js';
 export { createAgentLoginRoutes } from './agentLoginRoutes.js';
 export { createAgentVersionRoutes } from './agentVersionRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
+export { createReviewScoreRoutes } from './reviewScoreStats.js';
+export { createAnalyticsCache } from './analyticsCache.js';
 export { createDashboardRoutes } from './dashboardRoutes.js';
 export {
   createSummaryBrowserRoutes,
@@ -30,9 +33,16 @@ export { createUserRepoPreferencesRoutes } from './userRepoPreferencesRoutes.js'
 export { createAgentRuntimeRoutes } from './agentRuntimeRoutes.js';
 export { createNotificationRoutes } from './notificationRoutes.js';
 export { createAdminRoutes } from './adminRoutes.js';
+export {
+  createHostedFleetRoutes,
+  isHostedFleetControlEnabled,
+  registerHostedFleetRoutes
+} from './hostedFleetRoutes.js';
 export { createAdminMcpRoutes } from './adminMcpRoutes.js';
 export { createDesktopAuthRoutes } from './desktopAuthRoutes.js';
 export { createActiveWorkRoutes } from './activeWorkRoutes.js';
 export { createGoalRoutes } from './goalRoutes.js';
 export { createVisualPreviewAuthRoutes } from './visualPreviewAuthRoutes.js';
 export { createVoiceRoutes } from './voiceRoutes.js';
+export { createFollowupHandoffRoutes, createDefaultFollowupHandoffDeps } from './followupHandoffRoutes.js';
+export { createAutomationDefinitionRoutes, automationDefinitionAttachmentUpload } from './automationDefinitionRoutes.js';
