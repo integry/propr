@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { signAgentRunGrantRequest } from '@propr/core';
 
-const { agentContainerMcpUrl, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, AgentRunMcpGrantError } = await import('../src/jobs/agentRuns/mcpGrantClient.ts');
+const { agentContainerMcpUrl, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, AgentRunMcpGrantError } = await import('../src/jobs/agentRuns/mcpGrantClient.ts');
 
 // Importing @propr/core opens the shared database connection.
 after(async () => {
@@ -30,8 +30,8 @@ test('the container URL defaults to the internal API on the Docker network', () 
 test('grant requests are signed over run id, phase and timestamp', async () => {
   const { calls, fetchImpl } = recorder(Response.json({ grantId: 'g-1', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1 }));
   const environment = { SYSTEM_TASK_SECRET: 'secret', PROPR_INTERNAL_API_URL: 'http://propr-api:4000' };
-  const grant = await requestAgentRunMcpGrant('run/1', 'action', { environment, fetchImpl, now: () => NOW });
-  assert.deepEqual(grant, { grantId: 'g-1', phase: 'action', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1 });
+  const grant = await requestAgentRunMcpGrant('run/1', 'action', { environment, fetchImpl, now: () => NOW, resolveNetwork: async () => 'propr_propr-net' });
+  assert.deepEqual(grant, { grantId: 'g-1', phase: 'action', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-net' });
   assert.equal(calls[0].url, 'http://propr-api:4000/api/internal/agent-runs/run%2F1/mcp-grants');
   assert.deepEqual(calls[0].body, { phase: 'action', ts: NOW, signature: signAgentRunGrantRequest('secret', 'run/1', 'action', NOW) });
 
@@ -48,4 +48,30 @@ test('API rejections and a missing secret surface as typed errors without the to
   await assert.rejects(requestAgentRunMcpGrant('run-1', 'report', { environment: { SYSTEM_TASK_SECRET: 's' }, fetchImpl }),
     (error: InstanceType<typeof AgentRunMcpGrantError>) => error.status === 409 && error.code === 'INVALID_RUN_STATE');
   await assert.rejects(requestAgentRunMcpGrant('run-1', 'report', { environment: {}, fetchImpl }), { code: 'SYSTEM_TASK_SECRET_MISSING' });
+});
+
+test('revocation reports how much the grant was used, and an unused grant is logged as unreachable', async () => {
+  const environment = { SYSTEM_TASK_SECRET: 'secret' };
+  const grant = { grantId: 'g-1', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-net' };
+
+  const used = recorder(Response.json({ revoked: true, grantId: 'g-1', calls: 3 }));
+  assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: used.fetchImpl, now: () => NOW }), { revoked: true, grantId: 'g-1', calls: 3 });
+
+  const legacy = recorder(Response.json({ revoked: false, grantId: null }));
+  assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: legacy.fetchImpl, now: () => NOW }), { revoked: false, grantId: null, calls: null });
+
+  const warnings: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const log = { warn: (fields: Record<string, unknown>, message: string) => { warnings.push({ fields, message }); } };
+  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: 0 }), 'run-1', grant, log);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0].message, /without a single recorded call/);
+  assert.equal(warnings[0].fields.mcpUrl, grant.url);
+  assert.equal(warnings[0].fields.network, 'propr_propr-net');
+  assert.ok(!JSON.stringify(warnings).includes('propr_mcp_x'));
+
+  warnings.length = 0;
+  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: 2 }), 'run-1', grant, log);
+  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: null }), 'run-1', grant, log);
+  await revokeGrantQuietly(async () => undefined as never, 'run-1', grant, log);
+  assert.equal(warnings.length, 0);
 });

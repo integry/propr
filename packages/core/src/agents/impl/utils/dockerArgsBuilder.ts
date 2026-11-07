@@ -9,6 +9,7 @@ import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } fro
 import logger from '../../../utils/logger.js';
 import type { AgentConfig, AgentToolPolicy } from '../../types.js';
 import { claudeToolPolicyArgs } from '../../agentToolPolicy.js';
+import { agentContainerNetwork } from '../../agentContainerNetwork.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { claudeConfigDockerArgs } from '../../../claude/docker/claudeConfigSeed.js';
@@ -122,11 +123,13 @@ function buildBaseDockerArgs(options: {
     executionMode: 'task' | 'goal';
     resumeSessionId?: string;
     sessionId?: string;
+    /** Docker network to join; the default bridge unless the tool policy needs a Compose service. */
+    network?: string;
 }): string[] {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
         githubToken, envVars, claudeConfigArgs, inspectionArgs, reasoningLevel, readOnlyWorkspace, repositoryInspection,
-        workerOwnedGit, executionMode, resumeSessionId, sessionId,
+        workerOwnedGit, executionMode, resumeSessionId, sessionId, network = agentContainerNetwork(),
     } = options;
     const goal = executionMode === 'goal';
     return [
@@ -134,7 +137,7 @@ function buildBaseDockerArgs(options: {
         '--name', containerName,
         '--security-opt', 'no-new-privileges',
         '--cap-add', 'CHOWN',
-        '--network', 'bridge',
+        '--network', network,
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceMountTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
         ...(repositoryInspection ? [] : options.gitMountArgs ?? (readOnlyWorkspace ? [] : buildAgentGitMountArgs(worktreePath, !workerOwnedGit))),
@@ -238,6 +241,7 @@ export function buildDockerArgs(
         executionMode,
         resumeSessionId,
         sessionId,
+        network: agentContainerNetwork(toolPolicy),
     });
 
     // Add model parameter if specified

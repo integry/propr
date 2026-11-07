@@ -2,6 +2,7 @@ import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } fro
 import logger from '../../../utils/logger.js';
 import type { AgentConfig, AgentToolPolicy } from '../../types.js';
 import { codexToolPolicyArgs } from '../../agentToolPolicy.js';
+import { agentContainerNetwork } from '../../agentContainerNetwork.js';
 import {
     assertCodexConfigPathAvailable,
     resolveCodexConfigPath,
@@ -194,7 +195,7 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
         '--security-opt', 'seccomp=unconfined',
         '--security-opt', 'apparmor=unconfined',
         '--cap-add', 'CHOWN',
-        '--network', 'bridge',
+        '--network', agentContainerNetwork(params.toolPolicy),
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
         ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace)),

@@ -173,6 +173,20 @@ describe('launcher integration', () => {
         assert.ok(!args.some(arg => arg.includes(TOKEN)));
         assert.ok(args.indexOf('web_search="disabled"') < args.lastIndexOf('-'));
     });
+
+    test('containers stay on the default bridge unless the policy names the network its MCP server lives on', () => {
+        for (const build of [
+            (policy?: AgentToolPolicy) => buildClaudeDockerArgs(claudeConfig, 100, { ...baseParams, toolPolicy: policy }),
+            (policy?: AgentToolPolicy) => buildCodexDockerArgs(codexConfig, { ...baseParams, toolPolicy: policy }),
+        ]) {
+            assert.ok(hasSequence(build(), ['--network', 'bridge']));
+            assert.ok(hasSequence(build(MCP_POLICY), ['--network', 'bridge']));
+            const joined = build({ ...MCP_POLICY, dockerNetwork: 'propr_propr-net' });
+            assert.ok(hasSequence(joined, ['--network', 'propr_propr-net']));
+            assert.ok(!joined.includes('bridge'));
+            assert.throws(() => build({ ...MCP_POLICY, dockerNetwork: 'bad net; rm -rf /' }), /Invalid Docker network name/);
+        }
+    });
 });
 
 describe('goal mode', () => {
@@ -210,6 +224,14 @@ describe('agentRunToolPolicy', () => {
     test('action phase: MCP is always on and web follows the definition', () => {
         assert.deepEqual(agentRunToolPolicy({ phase: 'action', capabilities: [], mcpGrant: grant }), MCP_POLICY);
         assert.deepEqual(agentRunToolPolicy({ phase: 'action', capabilities: ['web'], mcpGrant: grant }), { ...MCP_POLICY, allowWeb: true });
+    });
+
+    test('a grant that names the MCP network puts the container on it', () => {
+        assert.deepEqual(
+            agentRunToolPolicy({ phase: 'action', capabilities: [], mcpGrant: { ...grant, network: 'propr_propr-net' } }),
+            { ...MCP_POLICY, dockerNetwork: 'propr_propr-net' },
+        );
+        assert.deepEqual(agentRunToolPolicy({ phase: 'action', capabilities: [], mcpGrant: { ...grant, network: null } }), MCP_POLICY);
     });
 });
 

@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Request, RequestHandler, Response } from 'express';
 import type { Knex } from 'knex';
 import { db, getAgentRunById, logger, signAgentRunGrantRequest, type StoredAgentRun } from '@propr/core';
+import { loadMcpGrantActivity } from '../mcp/accessLog.js';
 import { McpError } from '../mcp/config.js';
 import {
   AGENT_RUN_GRANT_PHASES,
@@ -127,7 +128,11 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
     const runId = req.params.runId as string;
     try {
       const revoked = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy });
-      res.json({ revoked: revoked !== null, grantId: revoked });
+      // How much the grant was used, so the worker can tell a run whose agent
+      // never reached the endpoint from one that simply chose not to call it.
+      const activity = revoked ? await loadMcpGrantActivity(database, [revoked]) : null;
+      const calls = revoked ? (activity ? activity.get(revoked)?.recentRequests ?? 0 : null) : null;
+      res.json({ revoked: revoked !== null, grantId: revoked, calls });
     } catch (error) {
       sendGrantError(res, error, 'revoke', runId);
     }

@@ -8,6 +8,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection, db as coreDb, runMigrations, signAgentRunGrantRequest, type StoredAgentRun } from '@propr/core';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
 import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
+import { up as accessLogMigration } from '../../core/src/db/migrations/20260923010000_add_mcp_access_log.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider, type McpGrant } from '../mcp/oauth.js';
 import { McpPolicy } from '../mcp/policy.js';
@@ -60,6 +61,7 @@ beforeEach(async () => {
   await db.schema.createTable('task_drafts', table => table.string('draft_id').primary());
   await mcpMigration(db);
   await lifecycleMigration(db);
+  await accessLogMigration(db);
   await db.schema.createTable('instance_members', table => { table.string('github_user_id').primary(); table.string('role'); table.string('source'); });
   await db('instance_members').insert({ github_user_id: OWNER, role: 'member', source: 'local' });
   grantDeps = { database: db, resolveConfig: async () => config, userGrants: activeGrant };
@@ -161,6 +163,8 @@ test('a report grant is read-only, limited to the run snapshot repositories and 
   const revoked = await post('/revoke', { ...signed('report'), grantId: response.body.grantId });
   assert.equal(revoked.status, 200);
   assert.equal(revoked.body.revoked, true);
+  // The worker warns about a grant that was never used; this one made no MCP call.
+  assert.equal(revoked.body.calls, 0);
   await assert.rejects(policy.authenticate(token));
   assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), undefined);
   assert.equal((await post('/revoke', signed('report'))).body.revoked, false);

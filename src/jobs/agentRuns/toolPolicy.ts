@@ -5,6 +5,8 @@ import { PROPR_MCP_BEARER_TOKEN_ENV, PROPR_MCP_SERVER_NAME, type AgentToolPolicy
 export interface AgentRunMcpGrant {
     url: string;
     token: string;
+    /** Docker network the container joins so `url` resolves; null keeps the default bridge. */
+    network?: string | null;
 }
 
 export type AgentRunPhase = 'report' | 'action';
@@ -27,5 +29,10 @@ export function agentRunToolPolicy(input: {
     const { phase, capabilities, mcpGrant } = input;
     const allowWeb = capabilities.includes('web');
     const wantsMcp = phase === 'action' || capabilities.includes('propr_mcp');
-    return wantsMcp && mcpGrant ? { allowWeb, mcpServers: [proprMcpServer(mcpGrant)] } : { allowWeb };
+    if (!wantsMcp || !mcpGrant) return { allowWeb };
+    return {
+        allowWeb,
+        mcpServers: [proprMcpServer(mcpGrant)],
+        ...(mcpGrant.network ? { dockerNetwork: mcpGrant.network } : {}),
+    };
 }
