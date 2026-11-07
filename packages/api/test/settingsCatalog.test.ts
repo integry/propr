@@ -51,7 +51,11 @@ test('settings catalog MCP references and configuration-tool coverage do not dri
   }
 
   const configurationTool = /^(get|update)_.*(settings|configuration|keywords|labels|label|tag|policy|agent)$/;
-  for (const tool of catalog.filter(candidate => configurationTool.test(candidate.name))) {
+  // Tools that act on one pull request (e.g. update_pull_request_labels) are not settings.
+  const pullRequestAction = /_pull_request_/;
+  const settingsTools = catalog.filter(candidate => configurationTool.test(candidate.name) && !pullRequestAction.test(candidate.name));
+  assert.ok(settingsTools.length > 0, 'configuration-tool heuristic still matches settings tools');
+  for (const tool of settingsTools) {
     assert.ok(
       SETTINGS_CATALOG.some(entry => entry.mcp?.read === tool.name || entry.mcp?.write === tool.name),
       `${tool.name} must appear in SETTINGS_CATALOG`,
