@@ -1,15 +1,11 @@
 import { executeDockerCommand, isValidDockerNetworkName, logger } from '@propr/core';
 
 /**
- * Finds the Docker network an agent container must join to reach the ProPR
- * MCP endpoint. The default MCP URL names the Compose service `api`, which
- * only resolves on the Compose network, while agent containers are started on
- * the default bridge. A containerized worker shares that network with the API,
- * so its own container's networks name it. An operator can pin it with
- * `PROPR_AGENT_DOCKER_NETWORK`, which also serves a worker outside Compose.
+ * MCP containers use the API-only Compose network, never the worker's shared
+ * service network. Compose's project label identifies the network declared in
+ * docker-compose.yml. Other deployments can explicitly pin an API-only network.
  */
-
-const RESERVED_NETWORKS = new Set(['bridge', 'host', 'none']);
+const MCP_NETWORK_SUFFIX = '_propr-agent-mcp';
 const INSPECT_TIMEOUT_MS = 10_000;
 
 export interface McpNetworkOptions {
@@ -22,9 +18,9 @@ function containerized(environment: NodeJS.ProcessEnv): boolean {
     return flag === '1' || flag === 'true';
 }
 
-async function inspectNetworks(containerId: string) {
+async function inspectProject(containerId: string) {
     return executeDockerCommand('docker', [
-        'inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}', containerId,
+        'inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}', containerId,
     ], { timeout: INSPECT_TIMEOUT_MS });
 }
 
@@ -41,18 +37,22 @@ export async function resolveMcpContainerNetwork(options: McpNetworkOptions = {}
         logger.warn({ network: pinned }, 'PROPR_AGENT_DOCKER_NETWORK is not a valid Docker network name; agent containers stay on the default bridge');
         return null;
     }
+    if (environment.PROPR_AGENT_MCP_URL?.trim()) return null;
     const containerId = environment.HOSTNAME?.trim();
     if (!containerized(environment) || !containerId) return null;
     try {
-        const result = await (options.inspect ?? inspectNetworks)(containerId);
+        const result = await (options.inspect ?? inspectProject)(containerId);
         if (result.exitCode !== 0) {
-            logger.warn({ containerId, stderr: result.stderr.trim().slice(0, 300) }, 'Could not inspect the worker container for its Docker network; agent containers stay on the default bridge');
+            logger.warn({ containerId, stderr: result.stderr.trim().slice(0, 300) }, 'Could not inspect the worker container for its Compose project; agent containers stay on the default bridge');
             return null;
         }
-        const networks = result.stdout.split('\n').map(name => name.trim()).filter(Boolean);
-        const network = networks.find(name => !RESERVED_NETWORKS.has(name) && isValidDockerNetworkName(name));
-        if (!network) logger.warn({ containerId, networks }, 'The worker container is on no named Docker network; agent containers stay on the default bridge');
-        return network ?? null;
+        const project = result.stdout.trim();
+        const network = `${project}${MCP_NETWORK_SUFFIX}`;
+        if (!project || !isValidDockerNetworkName(network)) {
+            logger.warn({ containerId }, 'The worker has no valid Compose project label; agent containers stay on the default bridge');
+            return null;
+        }
+        return network;
     } catch (error) {
         logger.warn({ containerId, error: (error as Error).message }, 'Could not resolve the Docker network for MCP-bearing agent containers; they stay on the default bridge');
         return null;
@@ -61,8 +61,12 @@ export async function resolveMcpContainerNetwork(options: McpNetworkOptions = {}
 
 let resolved: Promise<string | null> | undefined;
 
-/** Process-wide cached {@link resolveMcpContainerNetwork}: the worker's network does not change while it runs. */
+/** Cache Compose discovery only; explicit configuration always takes precedence. */
 export function mcpContainerNetwork(options: McpNetworkOptions = {}): Promise<string | null> {
+    const environment = options.environment ?? process.env;
+    if (environment.PROPR_AGENT_DOCKER_NETWORK?.trim() || environment.PROPR_AGENT_MCP_URL?.trim()) {
+        return resolveMcpContainerNetwork(options);
+    }
     resolved ??= resolveMcpContainerNetwork(options).catch(() => null);
     return resolved;
 }

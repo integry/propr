@@ -30,8 +30,8 @@ test('the container URL defaults to the internal API on the Docker network', () 
 test('grant requests are signed over run id, phase and timestamp', async () => {
   const { calls, fetchImpl } = recorder(Response.json({ grantId: 'g-1', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1 }));
   const environment = { SYSTEM_TASK_SECRET: 'secret', PROPR_INTERNAL_API_URL: 'http://propr-api:4000' };
-  const grant = await requestAgentRunMcpGrant('run/1', 'action', { environment, fetchImpl, now: () => NOW, resolveNetwork: async () => 'propr_propr-net' });
-  assert.deepEqual(grant, { grantId: 'g-1', phase: 'action', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-net' });
+  const grant = await requestAgentRunMcpGrant('run/1', 'action', { environment, fetchImpl, now: () => NOW, resolveNetwork: async () => 'propr_propr-agent-mcp' });
+  assert.deepEqual(grant, { grantId: 'g-1', phase: 'action', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-agent-mcp' });
   assert.equal(calls[0].url, 'http://propr-api:4000/api/internal/agent-runs/run%2F1/mcp-grants');
   assert.deepEqual(calls[0].body, { phase: 'action', ts: NOW, signature: signAgentRunGrantRequest('secret', 'run/1', 'action', NOW) });
 
@@ -52,7 +52,7 @@ test('API rejections and a missing secret surface as typed errors without the to
 
 test('revocation reports how much the grant was used, and an unused grant is logged as unreachable', async () => {
   const environment = { SYSTEM_TASK_SECRET: 'secret' };
-  const grant = { grantId: 'g-1', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-net' };
+  const grant = { grantId: 'g-1', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-agent-mcp' };
 
   const used = recorder(Response.json({ revoked: true, grantId: 'g-1', calls: 3 }));
   assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: used.fetchImpl, now: () => NOW }), { revoked: true, grantId: 'g-1', calls: 3 });
@@ -66,7 +66,7 @@ test('revocation reports how much the grant was used, and an unused grant is log
   assert.equal(warnings.length, 1);
   assert.match(warnings[0].message, /without a single recorded call/);
   assert.equal(warnings[0].fields.mcpUrl, grant.url);
-  assert.equal(warnings[0].fields.network, 'propr_propr-net');
+  assert.equal(warnings[0].fields.network, 'propr_propr-agent-mcp');
   assert.ok(!JSON.stringify(warnings).includes('propr_mcp_x'));
 
   warnings.length = 0;
@@ -75,3 +75,21 @@ test('revocation reports how much the grant was used, and an unused grant is log
   await revokeGrantQuietly(async () => undefined as never, 'run-1', grant, log);
   assert.equal(warnings.length, 0);
 });
+
+for (const phase of ['report', 'action'] as const) {
+  test(`${phase} grants with an explicit MCP URL skip network discovery unless a network is pinned`, async () => {
+    const { fetchImpl } = recorder(Response.json({ grantId: 'g-1', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1 }));
+    const environment = { SYSTEM_TASK_SECRET: 'secret', PROPR_AGENT_MCP_URL: 'https://mcp.example/api/mcp' };
+    let discoveries = 0;
+    const resolveNetwork = async () => { discoveries++; return 'api-only'; };
+    const grant = await requestAgentRunMcpGrant('run-1', phase, { environment, fetchImpl, resolveNetwork });
+    assert.equal(grant.url, environment.PROPR_AGENT_MCP_URL);
+    assert.equal(grant.network, null);
+    assert.equal(discoveries, 0);
+    const pinned = await requestAgentRunMcpGrant('run-1', phase, {
+      environment: { ...environment, PROPR_AGENT_DOCKER_NETWORK: 'api-only' }, fetchImpl, resolveNetwork,
+    });
+    assert.equal(pinned.network, 'api-only');
+    assert.equal(discoveries, 1);
+  });
+}

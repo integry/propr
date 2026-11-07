@@ -30,7 +30,7 @@ export interface McpGrantClientOptions {
     environment?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
     now?: () => number;
-    /** Docker network the agent container joins to reach the MCP URL; defaults to the worker's own Compose network. */
+    /** Docker network the agent container joins to reach the MCP URL; defaults to the API-only Compose network. */
     resolveNetwork?: () => Promise<string | null>;
 }
 
@@ -90,9 +90,10 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
     const environment = options.environment ?? process.env;
     // An explicit worker-side URL wins: it describes the network the worker launches containers on.
     const mcpUrl = environment.PROPR_AGENT_MCP_URL || (typeof url === 'string' && url ? url : agentContainerMcpUrl(environment));
-    // The container must be able to resolve that URL: a Compose service name
-    // such as `api` only exists on the Compose network, not the default bridge.
-    const network = await (options.resolveNetwork ?? (() => mcpContainerNetwork({ environment })))();
+    // A custom endpoint does not authorize joining any Compose network.
+    const network = environment.PROPR_AGENT_MCP_URL?.trim() && !environment.PROPR_AGENT_DOCKER_NETWORK?.trim()
+        ? null
+        : await (options.resolveNetwork ?? (() => mcpContainerNetwork({ environment })))();
     return { grantId, phase, url: mcpUrl, token, expiresAt, network };
 }
 

@@ -181,8 +181,8 @@ describe('launcher integration', () => {
         ]) {
             assert.ok(hasSequence(build(), ['--network', 'bridge']));
             assert.ok(hasSequence(build(MCP_POLICY), ['--network', 'bridge']));
-            const joined = build({ ...MCP_POLICY, dockerNetwork: 'propr_propr-net' });
-            assert.ok(hasSequence(joined, ['--network', 'propr_propr-net']));
+            const joined = build({ ...MCP_POLICY, dockerNetwork: 'propr_propr-agent-mcp' });
+            assert.ok(hasSequence(joined, ['--network', 'propr_propr-agent-mcp']));
             assert.ok(!joined.includes('bridge'));
             assert.throws(() => build({ ...MCP_POLICY, dockerNetwork: 'bad net; rm -rf /' }), /Invalid Docker network name/);
         }
@@ -226,12 +226,15 @@ describe('agentRunToolPolicy', () => {
         assert.deepEqual(agentRunToolPolicy({ phase: 'action', capabilities: ['web'], mcpGrant: grant }), { ...MCP_POLICY, allowWeb: true });
     });
 
-    test('a grant that names the MCP network puts the container on it', () => {
-        assert.deepEqual(
-            agentRunToolPolicy({ phase: 'action', capabilities: [], mcpGrant: { ...grant, network: 'propr_propr-net' } }),
-            { ...MCP_POLICY, dockerNetwork: 'propr_propr-net' },
-        );
-        assert.deepEqual(agentRunToolPolicy({ phase: 'action', capabilities: [], mcpGrant: { ...grant, network: null } }), MCP_POLICY);
+    test('report and action grants carry only the selected API network into the policy', () => {
+        for (const phase of ['report', 'action'] as const) {
+            const options = { phase, capabilities: ['propr_mcp'] as const };
+            assert.deepEqual(
+                agentRunToolPolicy({ ...options, mcpGrant: { ...grant, network: 'propr_propr-agent-mcp' } }),
+                { ...MCP_POLICY, dockerNetwork: 'propr_propr-agent-mcp' },
+            );
+            assert.deepEqual(agentRunToolPolicy({ ...options, mcpGrant: { ...grant, network: null } }), MCP_POLICY);
+        }
     });
 });
 
