@@ -8,7 +8,6 @@ import {
     getAuthenticatedOctokit,
     linkPRToPlanIssue,
     processCommentEvent,
-    safeUpdateLabels,
     updatePlanIssueStatus,
     PlanIssueStatus,
     db,
@@ -22,6 +21,7 @@ import { isAutoMergeDisabledForRepository, suggestEnablingAutoMerge } from '../g
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { redisClient } from './issueJob/config.js';
 import { resolveImplementationPrUltrafixTrigger } from './implementationPrUltrafix.js';
+import { completeIssueLabels } from './issueJobCompletionLabels.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -282,11 +282,7 @@ export async function handleNoCodeChanges(options: {
     } = options;
 
     correlatedLogger.info({ issueNumber: issueRef.number }, 'No code changes needed - work was already complete');
-    await safeUpdateLabels(
-        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-        [AI_PROCESSING_TAG],
-        [AI_DONE_TAG],
-    );
+    await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
 
     const completionComment = await generateCompletionComment(claudeResult, {
         number: issueRef.number,

@@ -70,10 +70,6 @@ export function isUnfinishedDispatchSibling(issueRef: IssueJobData, doneTag: str
  */
 export function checkLabelConditions(currentLabels: string[], context: JobContext, ownTaskState?: string): LabelCheckResult {
   const { jobId, issueRef, AI_PRIMARY_TAG, AI_DONE_TAG } = context;
-  if (!currentLabels.includes(AI_PRIMARY_TAG)) {
-    logger.warn({ jobId, issueNumber: issueRef.number }, `Issue no longer has primary tag '${AI_PRIMARY_TAG}'. Skipping.`);
-    return { skip: true, reason: 'Primary tag missing', terminalReason: 'cancelled_label_removed' };
-  }
   if (currentLabels.includes(AI_DONE_TAG)) {
     if (ownTaskState !== 'completed' && isUnfinishedDispatchSibling(issueRef, AI_DONE_TAG)) {
       logger.info({ jobId, issueNumber: issueRef.number, dispatchId: issueRef.dispatchId },
@@ -82,6 +78,10 @@ export function checkLabelConditions(currentLabels: string[], context: JobContex
     }
     logger.warn({ jobId, issueNumber: issueRef.number }, `Issue already has '${AI_DONE_TAG}' tag. Skipping.`);
     return { skip: true, reason: 'Already done', terminalReason: 'skipped_issue_done' };
+  }
+  if (!currentLabels.includes(AI_PRIMARY_TAG)) {
+    logger.warn({ jobId, issueNumber: issueRef.number }, `Issue no longer has primary tag '${AI_PRIMARY_TAG}'. Skipping.`);
+    return { skip: true, reason: 'Primary tag missing', terminalReason: 'cancelled_label_removed' };
   }
   return { skip: false };
 }

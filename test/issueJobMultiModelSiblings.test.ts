@@ -67,7 +67,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   // Each model's post-processing swaps the processing label for the done label, as a finished run does.
   executeWorktreeOperations: async ({ job }: { job: Job<IssueJobData> }) => {
     ran.push(job.data.modelName!);
-    liveLabels = [...liveLabels.filter(label => label !== 'AI-processing' && label !== 'AI-done'), 'AI-done'];
+    liveLabels = [...liveLabels.filter(label => label !== 'AI' && label !== 'AI-processing' && label !== 'AI-done'), 'AI-done'];
     return { worktreeInfo: { worktreePath: '/tmp/worktree' }, claudeResult: { success: true }, postProcessingResult: { success: true, pr: { number: 1, url: 'https://github.com/o/r/pull/1' } }, commitResult: null };
   },
   markTaskComplete: async ({ taskId }: { taskId: string }) => { tasks.set(taskId, { state: 'completed' }); },
@@ -109,7 +109,7 @@ test('with concurrency 1, models of one request still run after the first labels
   }
   assert.deepEqual(ran, models);
   assert.deepEqual(models.map(model => tasks.get(`task-${model}`)?.state), ['completed', 'completed', 'completed']);
-  assert.deepEqual(liveLabels, ['AI', 'AI-done'], 'the issue ends done with no processing label left');
+  assert.deepEqual(liveLabels, ['AI-done'], 'the issue ends done with its trigger and processing labels removed');
 });
 
 test('a stale job on an already-done issue is skipped and its task ends instead of staying pending', async () => {

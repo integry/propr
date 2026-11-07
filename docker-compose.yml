@@ -50,17 +50,24 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/usr/src/app/logs
-      - ./data:/usr/src/app/data
+      # An absolute PROPR_DATA_DIR is mounted at the same path so host DB_FILENAME paths work.
+      - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}
       - /tmp/git-processor:/tmp/git-processor
       # Docker socket for PR preview deployments
       - /var/run/docker.sock:/var/run/docker.sock
       # Worktrees directory for PR branch checkouts
       - /tmp/pr-worktrees:/tmp/pr-worktrees
       # Mount .env for deploy-pr.sh script
-      - ./.env:/usr/src/app/.env:ro
+      - ${PROPR_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
+      # Existing installation settings are defaults; this checkout owns its overrides.
+      - ${PROPR_ENV_FILE:-.env}
       - .env
     environment:
+      - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME:-propr-dev[bot]}
       - STAGING_ENV_FILE=/usr/src/app/.env
     depends_on:
@@ -85,7 +92,8 @@ services:
     volumes:
       - ./logs:/usr/src/app/logs
       - ./repos:/usr/src/app/repos
-      - ./data:/usr/src/app/data
+      # An absolute PROPR_DATA_DIR is mounted at the same path so host DB_FILENAME paths work.
+      - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}
       - /tmp/git-processor:/tmp/git-processor
       # Mount agent credentials at the same path on both sides so the worker
       # can pass host-valid paths when spawning sibling agent containers.
@@ -106,8 +114,14 @@ services:
       # into agent containers by the host Docker daemon at the same path.
       - /tmp/propr-egress:/tmp/propr-egress
     env_file:
+      # Existing installation settings are defaults; this checkout owns its overrides.
+      - ${PROPR_ENV_FILE:-.env}
       - .env
     environment:
+      - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
@@ -136,7 +150,8 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./logs:/usr/src/app/logs
-      - ./data:/usr/src/app/data
+      # An absolute PROPR_DATA_DIR is mounted at the same path so host DB_FILENAME paths work.
+      - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}
       - /tmp/git-processor:/tmp/git-processor
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
@@ -151,8 +166,14 @@ services:
       # Restricted agent networking: per-run egress proxy sockets for summarization containers.
       - /tmp/propr-egress:/tmp/propr-egress
     env_file:
+      # Existing installation settings are defaults; this checkout owns its overrides.
+      - ${PROPR_ENV_FILE:-.env}
       - .env
     environment:
+      - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
@@ -177,8 +198,11 @@ services:
       context: .
       dockerfile: propr-ui/Dockerfile
       args:
-        - VITE_API_BASE_URL=${VITE_API_BASE_URL}
-        - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL}
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-}
+        - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL:-}
+    environment:
+      # The static UI has no /api proxy; supply its browser-visible API origin at startup.
+      - PROPR_UI_PUBLIC_API_URL=${PROPR_UI_PUBLIC_API_URL:-${VITE_API_BASE_URL:-http://localhost:${API_PORT:-4000}}}
     ports:
       # Allow injection of UI_PORT for PR preview environments, default to 5173
       - '${UI_PORT:-5173}:5173'
@@ -200,7 +224,7 @@ services:
       - -c
       - |
         case "$${DB_FILENAME}" in
-          "") export DB_FILENAME=/usr/src/app/data/propr.sqlite ;;
+          "") export DB_FILENAME="$${DATA_DIR:-/usr/src/app/data}/propr.sqlite" ;;
           /*|:memory:|file:*) ;;
           *) export DB_FILENAME="/usr/src/app/$${DB_FILENAME}" ;;
         esac
@@ -216,7 +240,8 @@ services:
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
-      - ./data:/usr/src/app/data
+      # An absolute PROPR_DATA_DIR is mounted at the same path so host DB_FILENAME paths work.
+      - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
@@ -227,9 +252,13 @@ services:
       # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env
       - ${STAGING_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
-      # Use the same env file for environment variable injection
+      # Load existing credentials first, then let the selected local/preview settings win.
+      - ${PROPR_ENV_FILE:-.env}
       - ${STAGING_ENV_FILE:-.env}
     environment:
+      - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
@@ -243,13 +272,12 @@ services:
       # Keep API-owned durable state on the mounted data directory. The startup
       # command preserves env_file database paths and resolves relative filenames
       # from /usr/src/app, matching the daemon and workers before changing cwd.
-      - DATA_DIR=/usr/src/app/data
       # Allow injection of API_PUBLIC_URL for PR preview environments
-      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       # Allow injection of FRONTEND_URL for CORS in PR preview environments
-      - FRONTEND_URL=${FRONTEND_URL:-https://ui.gitfix.dev}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:${UI_PORT:-5173}}
       # Allow injection of GH_OAUTH_CALLBACK_URL for PR preview environments
-      - GH_OAUTH_CALLBACK_URL=${GH_OAUTH_CALLBACK_URL:-https://api.gitfix.dev/api/auth/github/callback}
+      - GH_OAUTH_CALLBACK_URL=${GH_OAUTH_CALLBACK_URL:-http://localhost:${API_PORT:-4000}/api/auth/github/callback}
       # Allow PR previews to share sessions via host Redis
       - SESSION_REDIS_HOST=${SESSION_REDIS_HOST:-redis}
       - SESSION_REDIS_PORT=${SESSION_REDIS_PORT:-6379}

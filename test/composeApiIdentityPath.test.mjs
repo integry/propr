@@ -24,19 +24,17 @@ test('compose API resolves durable identity state at its mounted data directory'
   const launch = /^cd \/usr\/src\/app\/packages\/api && exec npx tsx server\.ts\n?$/mu;
   assert.match(script, launch);
   const normalization = script.replace(launch, 'printf \'%s\' "$DB_FILENAME"');
-  assert.match(apiService, /^      - \.\/data:\/usr\/src\/app\/data$/mu);
-  assert.match(apiService, /^      - DATA_DIR=\/usr\/src\/app\/data$/mu);
+  assert.ok(apiService.includes('      - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}'));
+  assert.ok(apiService.includes('      - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}'));
 
   // The startup shell resolves the relative filename supplied by env_file.
-  const example = readFileSync(new URL('../.env.example', import.meta.url), 'utf8');
-  const exampleDatabase = example.match(/^DB_FILENAME=(.+)$/mu)?.[1];
-  assert.equal(exampleDatabase, './data/propr.sqlite');
-  assert.match(apiService, /env_file:\n(?:      #.*\n)*      - \$\{STAGING_ENV_FILE:-\.env\}/u);
+  const exampleDatabase = './data/propr.sqlite';
+  assert.match(apiService, /env_file:\n(?:      #.*\n)*      - \$\{PROPR_ENV_FILE:-\.env\}\n      - \$\{STAGING_ENV_FILE:-\.env\}/u);
   const overrides = Object.fromEntries(
     [...apiService.matchAll(/^      - (DB_FILENAME|DATA_DIR)=(.+)$/gmu)]
       .map(([, key, value]) => [key, value]),
   );
-  const environment = { DB_FILENAME: exampleDatabase, ...overrides };
+  const environment = { DB_FILENAME: exampleDatabase, ...overrides, DATA_DIR: '/usr/src/app/data' };
   const resolvedDatabase = execFileSync('sh', ['-c', normalization], {
     env: environment,
     encoding: 'utf8',
@@ -57,8 +55,14 @@ test('compose API resolves durable identity state at its mounted data directory'
     }), expected, `startup DB_FILENAME=${JSON.stringify(filename)}`);
   }
 
+  // An existing absolute host path and its default filename share the selected mount.
+  for (const filename of ['/custom/data/propr.sqlite', '']) {
+    const resolved = execFileSync('sh', ['-c', normalization], {
+      env: { DATA_DIR: '/custom/data', DB_FILENAME: filename }, encoding: 'utf8',
+    });
+    assert.equal(resolved, '/custom/data/propr.sqlite');
+  }
   const explicitDataDirectories = compose.match(/^\s+- DATA_DIR=.*$/gmu) ?? [];
-  assert.deepEqual(explicitDataDirectories, [
-    '      - DATA_DIR=/usr/src/app/data',
-  ]);
+  assert.equal(explicitDataDirectories.length, 4);
+  assert.ok(explicitDataDirectories.every(line => line.trim() === '- DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}'));
 });

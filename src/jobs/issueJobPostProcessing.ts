@@ -23,6 +23,7 @@ import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, 
 import { prepareProviderReplacement } from './providerReplacement.js';
 import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
 import { retryPRCreationViaAPI } from './issueJobPRRetry.js';
+import { completeIssueLabels } from './issueJobCompletionLabels.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -146,7 +147,11 @@ async function handlePostProcessingFailure(
 
     try {
         const completedLabels = canMarkDone ? [AI_DONE_TAG] : [];
-        await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], completedLabels);
+        if (canMarkDone) {
+            await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
+        } else {
+            await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], []);
+        }
         const completionComment = await generateCompletionComment(
             claudeResult,
             { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
@@ -284,10 +289,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             });
         }
 
-        await safeUpdateLabels(
-            { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-            [AI_PROCESSING_TAG], [AI_DONE_TAG]
-        );
+        await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
 
         await autoAssignCompletedPullRequest(options, postProcessingResult);
 
@@ -339,7 +341,7 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
     });
 
     if (finalPRValidation.isValid && !postProcessingResult?.pr) {
-        await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], [AI_DONE_TAG]);
+        await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
 
         // Link PR to plan issue if found during validation
         if (finalPRValidation.pr?.number) {

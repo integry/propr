@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
+import { safeUpdateLabels } from '../packages/core/src/utils/github/labelOperations.js';
 
 /**
  * A no-change auto-merge completion records the plan issue as merged. That
@@ -8,6 +9,7 @@ import { beforeEach, mock, test } from 'node:test';
  */
 const requests: Array<{ route: string; body: Record<string, unknown> }> = [];
 const statusWrites: Array<[string, number, string]> = [];
+let rejectPrimaryRemoval = false;
 const getPlanIssuesByDraft = mock.fn(async () => [
     { issue_number: 10, status: 'merged' },
     { issue_number: 20, status: 'pending' },
@@ -16,6 +18,7 @@ const getPlanIssuesByDraft = mock.fn(async () => [
 const octokit = {
     request: async (route: string, body: Record<string, unknown>) => {
         requests.push({ route, body });
+        if (rejectPrimaryRemoval && route.startsWith('DELETE ') && body.name === 'AI') throw new Error('GitHub unavailable');
         return { data: {} };
     },
 };
@@ -32,7 +35,7 @@ await mock.module('@propr/core', {
         getPrimaryProcessingLabels: mock.fn(() => ['AI']),
         linkPRToPlanIssue: mock.fn(async () => undefined),
         processCommentEvent: mock.fn(async () => undefined),
-        safeUpdateLabels: mock.fn(async () => ({ success: true, removed: [], added: [], errors: [] })),
+        safeUpdateLabels,
         updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string) => {
             statusWrites.push([repository, issueNumber, status]);
         }),
@@ -49,6 +52,7 @@ const logger = { debug: mock.fn(), info: mock.fn(), warn: mock.fn(), error: mock
 
 beforeEach(() => {
     requests.length = 0;
+    rejectPrimaryRemoval = false;
     statusWrites.length = 0;
     getPlanIssuesByDraft.mock.resetCalls();
 });
@@ -72,14 +76,16 @@ test('no-change completion records merged status but leaves successor selection 
     assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
     assert.equal(getPlanIssuesByDraft.mock.callCount(), 0);
     const labelRequests = requests.filter(request => request.route.endsWith('/labels'));
-    assert.deepEqual(labelRequests, []);
-    assert.deepEqual(requests.map(request => request.body.issue_number), [10]);
+    assert.deepEqual(labelRequests.map(request => request.body.labels), [['AI-done']]);
+    assert.deepEqual(requests.map(request => request.body.name ?? request.body.labels ?? 'comment'),
+        [['AI-done'], 'AI', 'AI-processing', 'comment']);
+    assert.ok(requests.every(request => request.body.issue_number === 10));
 });
 
 test('no-change completion without auto-merge leaves plan status to other observers', async () => {
     await completeWithoutChanges(['AI']);
     assert.deepEqual(statusWrites, []);
-    assert.deepEqual(requests.filter(request => request.route.endsWith('/labels')), []);
+    assert.deepEqual(requests.filter(request => request.route.endsWith('/labels')).map(request => request.body.labels), [['AI-done']]);
 });
 
 test('a no-change issue completion keeps the observed repository validation report', async () => {
@@ -96,4 +102,11 @@ test('a no-change issue completion keeps the observed repository validation repo
     const [comment] = requests.filter(request => request.route.endsWith('/comments'));
     assert.match(String(comment.body.body), /No code changes needed/);
     assert.ok(String(comment.body.body).includes(repositoryValidation));
+});
+
+test('failed trigger cleanup prevents no-change completion from advancing the plan', async () => {
+    rejectPrimaryRemoval = true;
+    await assert.rejects(completeWithoutChanges(['AI', 'auto-merge']), /Failed to remove 'AI'/);
+    assert.deepEqual(statusWrites, []);
+    assert.ok(!requests.some(request => request.route.endsWith('/comments')));
 });

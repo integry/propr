@@ -20,6 +20,9 @@ let beforeIssueRead: (() => Promise<void>) | null = null;
 const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
 await mock.module('../src/db/connection.js', { namedExports: { db: database } });
 await mock.module('../src/utils/logger.js', { defaultExport: log });
+await mock.module('../src/services/taskPlanning/epicIssueLabelHandoff.js', { namedExports: {
+  releaseEpicIssueLabels: async () => {},
+} });
 await mock.module('../src/config/planIssueManager.js', { namedExports: {
   PlanIssueStatus: { PENDING: 'pending', PROCESSING: 'processing', UNDER_REVIEW: 'under_review',
     IN_REFINEMENT: 'in_refinement', REFINEMENT_PROCESSING: 'refinement_processing', MERGED: 'merged', CLOSED: 'closed' },

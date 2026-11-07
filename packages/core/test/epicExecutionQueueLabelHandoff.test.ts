@@ -1,0 +1,164 @@
+import assert from 'node:assert/strict';
+import { after, beforeEach, mock, test } from 'node:test';
+import knex from 'knex';
+import { up } from '../src/db/migrations/20261003000000_add_epic_execution_queues.js';
+import { up as finalization } from '../src/db/migrations/20261003010000_add_epic_queue_finalization.js';
+import { up as useEpic } from '../src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
+import { up as parallel } from '../src/db/migrations/20261003030000_add_epic_queue_parallel.js';
+import { up as recovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
+import { safeUpdateLabels } from '../src/utils/github/labelOperations.js';
+
+const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
+let configured = ['AI'];
+let labels = new Set<string>();
+let failAdd = false;
+let failRemove = false;
+let removalBarrier: Promise<void> | undefined;
+const events: string[] = [];
+const octokit = { async request(route: string, body: Record<string, unknown>) {
+  if (route.startsWith('GET ')) return { data: { labels: [...labels].map(name => ({ name })) } };
+  if (route.startsWith('POST ')) {
+    const added = body.labels as string[];
+    events.push(`add:${body.issue_number}:${added.join(',')}`);
+    if (failAdd) throw new Error('GitHub unavailable');
+    added.forEach(label => labels.add(label));
+  } else if (route.startsWith('DELETE ')) {
+    events.push(`remove:${body.issue_number}:${body.name}`);
+    await removalBarrier;
+    if (failRemove) throw new Error('GitHub unavailable');
+    if (!labels.delete(body.name as string)) throw Object.assign(new Error('Label absent'), { status: 404 });
+  } else throw new Error(`Unexpected route: ${route}`);
+  return { data: {} };
+} };
+await mock.module('../src/db/connection.js', { namedExports: { db: database } });
+await mock.module('../src/utils/logger.js', { defaultExport: log });
+await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => octokit } });
+await mock.module('../src/daemon/configLoader.js', { namedExports: { getPrimaryProcessingLabels: () => configured } });
+await mock.module('../src/config/planIssueManager.js', { namedExports: {
+  PlanIssueStatus: { PENDING: 'pending', PROCESSING: 'processing', UNDER_REVIEW: 'under_review',
+    IN_REFINEMENT: 'in_refinement', REFINEMENT_PROCESSING: 'refinement_processing', MERGED: 'merged', CLOSED: 'closed' },
+} });
+await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
+  labelPlanIssueForProcessing: async ({ issueNumber }: { issueNumber: number }) => { events.push(`start:${issueNumber}`); },
+  reconcileTerminalInProgressIssues: async (_repository: string, issues: unknown[]) => issues,
+  finalizeEpicPlanIfComplete: async () => { events.push('finalize'); return true; },
+} });
+await mock.module('@propr/core', { namedExports: { safeUpdateLabels } });
+const { completeIssueLabels } = await import('../../../src/jobs/issueJobCompletionLabels.js');
+const { createEpicExecutionQueue, getEpicExecutionQueue, startEpicQueueHead, reconcileEpicExecutionQueues } =
+  await import('../src/services/taskPlanning/epicExecutionQueue.js');
+
+await database.schema.createTable('task_drafts', table => {
+  table.string('draft_id').primary(); table.boolean('paused').defaultTo(false); table.text('context_config');
+});
+await database.schema.createTable('plan_issues', table => {
+  table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.string('status');
+});
+for (const migrate of [up, finalization, useEpic, parallel, recovery]) await migrate(database);
+after(async () => database.destroy());
+beforeEach(async () => {
+  await database('epic_execution_queues').delete();
+  await database('task_drafts').delete();
+  await database('plan_issues').delete();
+  await database('task_drafts').insert({ draft_id: 'draft' });
+  await database('plan_issues').insert([
+    { draft_id: 'draft', issue_number: 10, status: 'merged' },
+    { draft_id: 'draft', issue_number: 20, status: 'pending' },
+  ]);
+  configured = ['AI']; labels = new Set(['AI', 'AI-processing', 'base-epic', 'bug']);
+  failAdd = false; failRemove = false; removalBarrier = undefined; events.length = 0;
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
+});
+async function complete(primaryLabel = 'AI', triggeringLabel: string | null = primaryLabel) {
+  await completeIssueLabels({ octokit: octokit as never,
+    issueRef: { repoOwner: 'acme', repoName: 'repo', number: 10, triggeringLabel: triggeringLabel ?? undefined },
+    AI_PROCESSING_TAG: `${primaryLabel}-processing`, AI_DONE_TAG: `${primaryLabel}-done`, correlatedLogger: log as never });
+}
+
+test('completion publishes done before releasing AI, then the queue starts its successor', async () => {
+  await complete();
+  await startEpicQueueHead('draft');
+  assert.deepEqual(events, ['add:10:AI-done', 'remove:10:AI', 'remove:10:AI-processing', 'start:20']);
+  assert.deepEqual([...labels].sort(), ['AI-done', 'base-epic', 'bug']);
+});
+
+test('custom PRIMARY_PROCESSING_LABELS and old jobs without triggeringLabel use the configured prefix', async () => {
+  configured = ['Robot', 'Assistant'];
+  labels = new Set(['Assistant', 'Assistant-processing', 'bug']);
+  await complete('Assistant', null);
+  await startEpicQueueHead('draft');
+  assert.deepEqual(events, ['add:10:Assistant-done', 'remove:10:Assistant', 'remove:10:Assistant-processing', 'start:20']);
+  assert.deepEqual([...labels].sort(), ['Assistant-done', 'bug']);
+});
+
+test('a merge before worker completion holds the cursor until done and cleanup succeed', async () => {
+  await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+  assert.deepEqual(events, []);
+  labels.add('AI-done');
+  await reconcileEpicExecutionQueues();
+  assert.deepEqual(events, ['remove:10:AI', 'remove:10:AI-processing', 'start:20']);
+});
+
+test('failed completion publication keeps the trigger and prevents handoff', async () => {
+  failAdd = true;
+  await assert.rejects(complete(), /Failed to add 'AI-done'/);
+  await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
+  assert.deepEqual(events, ['add:10:AI-done']);
+  assert.ok(labels.has('AI'));
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+});
+
+test('failed removal blocks advancement and recovery retries cleanup before starting the next issue', async () => {
+  labels.add('AI-done'); failRemove = true;
+  await assert.rejects(startEpicQueueHead('draft'), /Failed to remove 'AI'/);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+  assert.match((await getEpicExecutionQueue('draft'))?.blockedReason ?? '', /Could not release issue #10/);
+  assert.ok(!events.includes('start:20'));
+  failRemove = false; events.length = 0;
+  await reconcileEpicExecutionQueues();
+  assert.deepEqual(events, ['remove:10:AI', 'remove:10:AI-processing', 'start:20']);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1);
+});
+
+test('concurrent observers cannot start the successor while removal is still pending', async () => {
+  labels.add('AI-done');
+  let release!: () => void;
+  removalBarrier = new Promise(resolve => { release = resolve; });
+  let observed!: () => void;
+  const deleting = new Promise<void>(resolve => { observed = resolve; });
+  const original = octokit.request;
+  const request = mock.method(octokit, 'request', async (route: string, body: Record<string, unknown>) => {
+    if (route.startsWith('DELETE ')) observed();
+    return original(route, body);
+  });
+  try {
+    const first = startEpicQueueHead('draft');
+    await deleting;
+    assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+    assert.ok(!events.includes('start:20'));
+    const second = startEpicQueueHead('draft');
+    release();
+    await Promise.all([first, second]);
+    assert.equal(events.filter(event => event === 'start:20').length, 1);
+    assert.ok(!labels.has('AI'));
+    assert.ok(!labels.has('AI-processing'));
+  } finally { release(); request.mock.restore(); }
+});
+
+test('terminal-policy failed issues release triggers without claiming successful completion', async () => {
+  await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ advance_on: 'terminal' });
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'closed' });
+  await startEpicQueueHead('draft');
+  assert.deepEqual(events, ['remove:10:AI', 'remove:10:AI-processing', 'start:20']);
+  assert.ok(!labels.has('AI-done'));
+});
+
+test('the final child releases all configured triggers before epic finalization', async () => {
+  configured = ['AI', 'Assistant'];
+  labels = new Set(['AI', 'AI-done', 'Assistant', 'Assistant-done']);
+  await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ issues: '[10]' });
+  await startEpicQueueHead('draft');
+  assert.deepEqual(events, ['remove:10:AI', 'remove:10:Assistant', 'finalize']);
+});
