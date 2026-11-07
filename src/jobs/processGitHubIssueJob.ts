@@ -28,6 +28,7 @@ import {
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 import { recordReplayableIssueTask } from '../taskReplacement/store.js';
+import { readNoChangeCompletion } from './noChangeCompletionObligation.js';
 
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
@@ -259,6 +260,12 @@ async function processIssueWithAdmission(
     const cancellation = await checkIssueCancellation(context, currentIssueData);
     if (cancellation) return cancellation;
     currentLabels = currentIssueData.data.labels.map(label => label.name);
+    // A published done marker skips this job, so an owed no-change completion is finished first.
+    const owedCompletion = currentLabels.includes(AI_DONE_TAG) ? await readNoChangeCompletion(issueRef) : null;
+    if (owedCompletion) {
+      const { replayNoChangeCompletion } = await import('./noChangeCompletion.js');
+      currentLabels = await replayNoChangeCompletion({ octokit, issueRef, currentLabels, held: owedCompletion, correlatedLogger });
+    }
     const ownTask = await stateManager.getTaskState(taskId);
     const labelCheck = checkLabelConditions(currentLabels, context, ownTask?.state);
     if (labelCheck.skip) {

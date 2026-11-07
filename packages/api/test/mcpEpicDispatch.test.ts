@@ -814,7 +814,18 @@ for (const partial of [{ agent_alias: null, model_name: null }, { agent_alias: '
 }
 
 test('successful no-change head releases its successor with auto-merge disabled', async () => {
-  await mock.module('../../../src/jobs/issueJob/config.js', { namedExports: { redisClient: {} } });
+  // The completion obligation is retained, then released by compare-and-delete once settled.
+  const completions = new Map<string, string>();
+  await mock.module('../../../src/jobs/issueJob/config.js', { namedExports: { redisClient: {
+    get: async (key: string) => completions.get(key) ?? null,
+    set: async (key: string, value: string) => { completions.set(key, value); return 'OK'; },
+    eval: async (...args: [script: string, keys: number, key: string, expected: string, next: string]) => {
+      const [, , key, expected, next] = args;
+      if (completions.get(key) !== expected) return 0;
+      if (next === '') completions.delete(key); else completions.set(key, next);
+      return 1;
+    },
+  } } });
   await mock.module('../../../src/github/autoMergeOperations.js', { namedExports: { enableAutoMerge: async () => ({ success: true }) } });
   const { handleNoCodeChanges } = await import('../../../src/jobs/issueJobPostProcessingHelpers.js');
   await run({ issues: [10, 20], autoMerge: false });
@@ -826,6 +837,7 @@ test('successful no-change head releases its successor with auto-merge disabled'
   assert.equal((await core.getEpicExecutionQueue(planId))?.cursor, 1);
   assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [20]);
   assert.equal(issueLabels.get(20)?.includes('auto-merge'), false);
+  assert.equal(completions.size, 0, 'the settled completion owes nothing');
 });
 
 

@@ -10,6 +10,19 @@ import { safeUpdateLabels } from '../packages/core/src/utils/github/labelOperati
 const requests: Array<{ route: string; body: Record<string, unknown> }> = [];
 const statusWrites: Array<[string, number, string]> = [];
 let rejectPrimaryRemoval = false;
+let failStatusWrite = false;
+// Mirrors the Redis commands the completion obligation uses.
+const store = new Map<string, string>();
+const redisClient = {
+    get: async (key: string) => store.get(key) ?? null,
+    set: async (key: string, value: string) => { store.set(key, value); return 'OK'; },
+    eval: async (script: string, _keys: number, key: string, expected: string, next: string) => {
+        assert.match(script, /redis.call\('GET', KEYS\[1\]\)/);
+        if (store.get(key) !== expected) return 0;
+        if (next === '') store.delete(key); else store.set(key, next);
+        return 1;
+    },
+};
 const getPlanIssuesByDraft = mock.fn(async () => [
     { issue_number: 10, status: 'merged' },
     { issue_number: 20, status: 'pending' },
@@ -37,6 +50,7 @@ await mock.module('@propr/core', {
         processCommentEvent: mock.fn(async () => undefined),
         safeUpdateLabels,
         updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string) => {
+            if (failStatusWrite) throw new Error('database unavailable');
             statusWrites.push([repository, issueNumber, status]);
         }),
         PlanIssueStatus: { MERGED: 'merged' },
@@ -45,14 +59,19 @@ await mock.module('@propr/core', {
     },
 });
 await mock.module('../src/github/autoMergeOperations.js', { namedExports: { enableAutoMerge: mock.fn() } });
-await mock.module('../src/jobs/issueJob/config.js', { namedExports: { redisClient: {} } });
+await mock.module('../src/jobs/issueJob/config.js', { namedExports: { redisClient } });
 
 const { handleNoCodeChanges } = await import('../src/jobs/issueJobPostProcessingHelpers.js');
+const { readNoChangeCompletion } = await import('../src/jobs/noChangeCompletionObligation.js');
+const { replayNoChangeCompletion } = await import('../src/jobs/noChangeCompletion.js');
+const issue = { repoOwner: 'acme', repoName: 'repo', number: 10 } as never;
 const logger = { debug: mock.fn(), info: mock.fn(), warn: mock.fn(), error: mock.fn() } as never;
 
 beforeEach(() => {
     requests.length = 0;
     rejectPrimaryRemoval = false;
+    failStatusWrite = false;
+    store.clear();
     statusWrites.length = 0;
     getPlanIssuesByDraft.mock.resetCalls();
 });
@@ -80,6 +99,7 @@ test('no-change completion records merged status but leaves successor selection 
     assert.deepEqual(requests.map(request => request.body.name ?? request.body.labels ?? 'comment'),
         [['AI-done'], 'AI', 'AI-processing', 'comment']);
     assert.ok(requests.every(request => request.body.issue_number === 10));
+    assert.equal(store.size, 0, 'a finished completion owes nothing');
 });
 
 test('no-change completion without auto-merge leaves plan status to other observers', async () => {
@@ -104,9 +124,56 @@ test('a no-change issue completion keeps the observed repository validation repo
     assert.ok(String(comment.body.body).includes(repositoryValidation));
 });
 
-test('failed trigger cleanup prevents no-change completion from advancing the plan', async () => {
+test('failed trigger cleanup keeps the published completion owed until a replay finishes it', async () => {
     rejectPrimaryRemoval = true;
     await assert.rejects(completeWithoutChanges(['AI', 'auto-merge']), /Failed to remove 'AI'/);
     assert.deepEqual(statusWrites, []);
     assert.ok(!requests.some(request => request.route.endsWith('/comments')));
+    const held = await readNoChangeCompletion(issue);
+    assert.ok(held, 'the done marker was published, so the remaining steps stay owed');
+    assert.deepEqual(held.record.labels, ['AI', 'auto-merge']);
+
+    // A later job finds the marker; the replay finishes the cleanup, comment and status write.
+    rejectPrimaryRemoval = false;
+    requests.length = 0;
+    const labels = await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: ['AI', 'AI-done'], held, correlatedLogger: logger });
+    assert.deepEqual(labels, ['AI-done']);
+    assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
+    assert.equal(requests.filter(request => request.route.endsWith('/comments')).length, 1);
+    assert.match(String(requests.find(request => request.route.endsWith('/comments'))?.body.body), /No code changes needed/);
+    assert.equal(store.size, 0);
+});
+
+test('a failed plan-status write stays owed after the comment, which a replay does not repeat', async () => {
+    failStatusWrite = true;
+    const result = await completeWithoutChanges(['AI', 'auto-merge']);
+    assert.equal(result.success, true);
+    const held = await readNoChangeCompletion(issue);
+    assert.ok(held);
+    assert.equal(held.record.comment, undefined, 'the posted comment is no longer owed');
+
+    failStatusWrite = false;
+    requests.length = 0;
+    await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: ['AI-done'], held, correlatedLogger: logger });
+    assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
+    assert.ok(!requests.some(request => request.route.endsWith('/comments')));
+    assert.equal(store.size, 0);
+});
+
+test('a completion whose done marker was never published is not replayed', async () => {
+    const held = await (await import('../src/jobs/noChangeCompletionObligation.js')).retainNoChangeCompletion(issue, {
+        processingTag: 'AI-processing', doneTag: 'AI-done', labels: ['AI', 'auto-merge'], comment: 'done',
+    });
+    const labels = await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: ['AI'], held, correlatedLogger: logger });
+    assert.deepEqual(labels, ['AI']);
+    assert.deepEqual(requests, []);
+    assert.deepEqual(statusWrites, []);
+});
+
+test('settling never releases a newer completion retained for the same issue', async () => {
+    const obligations = await import('../src/jobs/noChangeCompletionObligation.js');
+    const older = await obligations.retainNoChangeCompletion(issue, { processingTag: 'AI-processing', doneTag: 'AI-done', labels: [] });
+    const newer = await obligations.retainNoChangeCompletion(issue, { processingTag: 'AI-processing', doneTag: 'AI-done', labels: [] });
+    assert.equal(await obligations.replaceNoChangeCompletion(older, null), null);
+    assert.equal((await readNoChangeCompletion(issue))?.record.id, newer.record.id);
 });

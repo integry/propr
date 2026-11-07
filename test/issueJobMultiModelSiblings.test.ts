@@ -75,7 +75,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
 await mock.module('../src/jobs/repositoryWorkflow.js', { namedExports: { ...workflowJobs, prepareRepositoryWorkflow: async () => undefined } });
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
-  redisClient: { eval: async () => 1 },
+  redisClient: { eval: async () => 1, get: async () => null },
   DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
