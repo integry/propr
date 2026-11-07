@@ -29,15 +29,18 @@ export async function extensionLaunchIntegrationFixture() {
     selection,
     database,
     captures: () => captures,
-    execute: (options: AgentTaskOptions) => executeWithExtensions({ type: 'claude', alias: 'claude' } as AgentConfig, options, async prepared => {
+    execute: (options: AgentTaskOptions, { inspect, networkMode = 'restricted' }: { inspect?: (prepared: AgentTaskOptions) => void; networkMode?: 'open' | 'restricted' } = {}) => executeWithExtensions({ type: 'claude', alias: 'claude' } as AgentConfig, options, async prepared => {
+      inspect?.(prepared);
       const token = prepared.toolPolicy!.mcpServers!.find(s => s.name === 'docs')!.bearerToken;
       const grant = await database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).first();
       const network = JSON.parse(grant.network_policy);
-      assert.equal(network.mode, 'restricted');
-      assert.ok(network.allow.includes('8.8.8.8'));
-      assert.deepEqual(network.instanceAllow, ['8.8.8.8']);
+      assert.equal(network.mode, networkMode);
+      if (networkMode === 'restricted') {
+        assert.ok(network.allow.includes('8.8.8.8'));
+        assert.deepEqual(network.instanceAllow, ['8.8.8.8']);
+      }
       await currentExtensionLaunch()!.beforeLaunch();
-      assert.equal((await store.grantSnapshot(token)).network.mode, 'restricted');
+      assert.equal((await store.grantSnapshot(token)).network.mode, networkMode);
       captures++;
       return { success: true, logs: '', modifiedFiles: [], modelUsed: 'synthetic', executionTimeMs: 1, summary: 'Documentation checked.' };
     }, store),

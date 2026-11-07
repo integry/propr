@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import { runRepositoryWorkflow } from '../src/jobs/repositoryWorkflow.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.js';
+import { buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.js';
+import { PROPR_MCP_BEARER_TOKEN_ENV, PROPR_MCP_SERVER_NAME } from '../packages/core/src/agents/agentToolPolicy.js';
+import type { AgentConfig, AgentTaskOptions } from '@propr/core';
 import { extensionLaunchIntegrationFixture } from './fixtures/extensionLaunchIntegration.js';
 after(closeConnection);
 
@@ -50,4 +57,25 @@ test('submission resume retains extension authority at worker pickup before and 
     if (!earlyPickup) await pickup('queued');
   }
   assert.equal(fixture.captures(), 2);
+});
+
+test('extension preparation keeps the ProPR MCP network through to the Claude and Codex containers', async t => {
+  const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
+  const previousContainerized = process.env.PROPR_CONTAINERIZED; process.env.PROPR_CONTAINERIZED = '0';
+  const codexConfigPath = mkdtempSync(join(tmpdir(), 'propr-extension-network-codex-'));
+  t.after(() => { rmSync(codexConfigPath, { recursive: true, force: true }); if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED; else process.env.PROPR_CONTAINERIZED = previousContainerized; });
+  const agent = { enabled: true, dockerImage: 'propr/agent:latest', supportedModels: ['synthetic'], defaultModel: 'synthetic' };
+  const claudeConfig = { ...agent, id: 'claude', type: 'claude', alias: 'claude', configPath: '~/.claude' } as AgentConfig;
+  const codexConfig = { ...agent, id: 'codex', type: 'codex', alias: 'codex', configPath: codexConfigPath } as AgentConfig;
+  const toolPolicy = { allowWeb: false, dockerNetwork: 'propr_propr-agent-mcp', mcpServers: [{ name: PROPR_MCP_SERVER_NAME, url: 'http://api:4000/api/mcp', bearerTokenEnv: PROPR_MCP_BEARER_TOKEN_ENV, bearerToken: 'propr_mcp_run_token_abcdef0123456789' }] };
+  let prepared: AgentTaskOptions | undefined;
+  const result = await fixture.execute({ extensionProfile: fixture.selection, extensionActorId: '1', taskId: 'agent-run-extension-network', issueRef: { repoOwner: 'acme', repoName: 'web', number: 1 }, worktreePath: '/unused', prompt: 'Check documentation', githubToken: '', toolPolicy }, { networkMode: 'open', inspect: options => { prepared = options; } });
+  assert.equal(result.success, true);
+  assert.equal(prepared!.toolPolicy!.dockerNetwork, 'propr_propr-agent-mcp');
+  assert.ok(prepared!.toolPolicy!.mcpServers!.some(s => s.name === PROPR_MCP_SERVER_NAME && s.url === 'http://api:4000/api/mcp'));
+  const params = { worktreePath: '/tmp/worktree', githubToken: '', issueNumber: 1, taskId: 'agent-run-extension-network', toolPolicy: prepared!.toolPolicy };
+  for (const args of [buildClaudeDockerArgs(claudeConfig, 100, params), buildCodexDockerArgs(codexConfig, params)]) {
+    assert.equal(args[args.indexOf('--network') + 1], 'propr_propr-agent-mcp');
+    assert.ok(!args.includes('bridge'));
+  }
 });
