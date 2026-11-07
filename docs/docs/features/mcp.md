@@ -95,6 +95,9 @@ plain labels; it never creates a label and leaves the managed `llm-*` and
 `ultrafix` labels to their own tools. `close_pull_request` closes a PR that
 should not proceed (a duplicate, out of scope, invalid or harmful), posting the
 reason as a comment first; it requires `expectedHead`.
+`approve_pull_request_workflow_runs` approves the CI runs waiting on a fork or
+first-time-contributor PR, also pinned to `expectedHead`; it refuses a PR that
+changes workflow files.
 
 `publish_plan` needs the plan's exact `expectedRevision`. If publication fails
 partway, call it again with `resume: true` to continue from the issues already

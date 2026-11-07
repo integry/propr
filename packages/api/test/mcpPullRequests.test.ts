@@ -11,7 +11,7 @@ import { leaseRedis, verifyPullRequestWrites } from './fixtures/mcpPullRequestWr
 import { verifyFixReanchor } from './fixtures/mcpFixReanchor.js';
 import { verifyFixRelocation } from './fixtures/mcpFixRelocation.js';
 import { verifyModelReviews } from './fixtures/mcpPullRequestModelReviews.js';
-import type { Args, CommentFixture, PullRequestFixture } from './fixtures/mcpPullRequestWrites.js';
+import type { Args, CommentFixture, PullRequestFixture, WorkflowRunFixture } from './fixtures/mcpPullRequestWrites.js';
 
 const NOW = Date.now();
 const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
@@ -88,6 +88,10 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
 
   const graphqlCalls: Args[] = [];
   const restCalls: Array<{ route: string; args: Args }> = [];
+  /** Workflow runs GitHub lists for a repository; `action_required` ones wait for a maintainer. */
+  const workflowRuns: WorkflowRunFixture[] = [];
+  /** Files a pull request changes, keyed by `owner/repo#number`; absent entries change one source file. */
+  const pullFiles = new Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>();
   /** Files changed between two heads, keyed by `from...to`; an unknown range is a 404 as for an unreachable commit. */
   const comparisons = new Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>();
   /** Every file path at a commit, keyed by its SHA; an unknown commit is a 404. */
@@ -164,6 +168,20 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     }
     return undefined;
   };
+  const workflowRequest = (route: string, args: Args, repository: string): { data: unknown } | undefined => {
+    if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files') return { data: pullFiles.get(`${repository}#${args.pull_number}`) ?? [{ filename: 'src/index.ts', status: 'modified' }] };
+    if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+      return { data: { workflow_runs: workflowRuns.filter(run => run.repository === repository && run.head_sha === args.head_sha && run.status === args.status) } };
+    }
+    if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve') {
+      const run = workflowRuns.find(item => item.repository === repository && item.id === Number(args.run_id));
+      if (!run) throw Object.assign(new Error('Not Found'), { status: 404 });
+      if (run.status !== 'action_required') throw Object.assign(new Error('Conflict'), { status: 409 });
+      run.status = 'queued';
+      return { data: {} };
+    }
+    return undefined;
+  };
   const github = {
     graphql: async (query: string, args: Args) => {
       graphqlCalls.push({ query, ...args });
@@ -219,6 +237,8 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}' || route === 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}') return gitHistory(route, args);
       const labelResponse = labelRequest(route, args, repository);
       if (labelResponse) return labelResponse;
+      const workflowResponse = workflowRequest(route, args, repository);
+      if (workflowResponse) return workflowResponse;
       throw new Error(`Unexpected GitHub fixture request: ${route}`);
     },
   };
@@ -406,7 +426,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
     });
 
-    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, trees, redis: deps.redisClient as never };
+    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, trees, workflowRuns, pullFiles, redis: deps.redisClient as never };
     await verifyPullRequestWrites(writeFixture);
     await verifyFixReanchor(writeFixture);
     await verifyFixRelocation(writeFixture);
@@ -462,7 +482,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     await t.test('every new tool declares its scope, strict schema and write posture', async () => {
       assert.equal(tool('list_pull_requests').readOnly, true);
       assert.equal(tool('list_pull_requests').scope, 'read');
-      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix', 'resolve_merge_conflicts', 'update_pull_request_labels', 'close_pull_request']) assert.equal(tool(name).scope, 'execute');
+      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix', 'resolve_merge_conflicts', 'update_pull_request_labels', 'close_pull_request', 'approve_pull_request_workflow_runs']) assert.equal(tool(name).scope, 'execute');
       for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'update_pull_request_labels']) {
         const appendOnly = tool(name);
         assert.notEqual(appendOnly.readOnly, true);
@@ -470,13 +490,13 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         assert.equal(appendOnly.schema.shape.expectedHead.isOptional(), true, `${name} must list expectedHead as optional`);
         assert.ok(appendOnly.description.includes('expectedHead is optional; when omitted the current head at call time is used and returned as resolvedHead.'));
       }
-      for (const name of ['merge_pull_request', 'update_pull_request_branch', 'resolve_merge_conflicts', 'start_ultrafix', 'stop_ultrafix', 'close_pull_request']) {
+      for (const name of ['merge_pull_request', 'update_pull_request_branch', 'resolve_merge_conflicts', 'start_ultrafix', 'stop_ultrafix', 'close_pull_request', 'approve_pull_request_workflow_runs']) {
         const guarded = tool(name);
         assert.equal(guarded.schema.shape.expectedHead.isOptional(), false, `${name} must require expectedHead`);
         assert.ok(guarded.description.includes('expectedHead is required'));
         assert.equal(guarded.schema.safeParse({ repository: 'acme/repo', pullRequest: 42, idempotencyKey: 'missing-head-key' }).success, false);
       }
-      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix', 'resolve_merge_conflicts', 'update_pull_request_labels', 'close_pull_request']) {
+      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix', 'resolve_merge_conflicts', 'update_pull_request_labels', 'close_pull_request', 'approve_pull_request_workflow_runs']) {
         assert.notEqual(tool(name).readOnly, true);
         await assert.rejects(call(name, { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40), idempotencyKey: 'strict-extra-key', unexpected: true }));
       }

@@ -80,6 +80,8 @@ function rulesSection(definition: AgentActionPromptDefinition, runId: string, me
         '- Avoid duplicates: before creating a task or TODO, check `list_tasks` and `list_todos` for an existing one covering the same thing, and prefer updating or referencing it over creating another.',
         '- Prefer creating TODOs or tasks for a human or a coding agent to pick up over taking any more drastic step.',
         '- You may close a pull request with `close_pull_request` only when it should not proceed at all: a duplicate, out of scope, invalid or harmful. Give the reason; it is posted on the pull request. When the submitter could fix it, ask with a comment instead of closing.',
+        '- You may request a ProPR review with `review_pull_request` when a pull request needs a current score before it can proceed, and address its findings with `fix_review_findings` or `run_ultrafix`. Slash commands typed into comments are rejected; use these tools.',
+        '- You may approve the waiting CI runs of a pull request from a fork or a first-time contributor with `approve_pull_request_workflow_runs`, but only after reading its whole diff and finding nothing harmful. Pass the exact head you examined as expectedHead; the tool refuses a pull request that changes workflow files, which a person must approve in GitHub.',
         mergeRule(mergeAllowed),
         '- If a tool call fails, do not retry it blindly; report the failure in your summary.',
     ].join('\n');

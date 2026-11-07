@@ -155,8 +155,9 @@ Automation runs are also MCP clients. A report run with the `propr_mcp` capabili
 and every acting step of a `preview` or `auto` automation, receives a delegated
 grant from the internal client **ProPR Agent**. The grant acts as the agent's
 owner, is limited to the definition's repositories, and carries `read` scope for
-the report run or `read`, `plan` and `execute` for the acting step, never
-`merge`, `deploy`, `review`, `publish` or `manage`. Like any grant it is
+the report run or `read`, `plan`, `execute` and `review` for the acting step
+(plus `merge` only when the definition has the `merge` capability), never
+`deploy`, `publish` or `manage`. Like any grant it is
 re-checked against membership and GitHub access on every call, listed under
 connected apps and recorded in the MCP access log. It expires after two hours
 at the latest and is revoked as soon as its step ends. Issuing it requires
@@ -1070,7 +1071,7 @@ as that model's failed review rather than as a rejection at call time.
 
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
 `resolve_merge_conflicts`, `start_ultrafix`, `stop_ultrafix`,
-`set_pull_request_model`, `close_pull_request` and `revert_pull_request_commit` tools still require
+`set_pull_request_model`, `close_pull_request`, `approve_pull_request_workflow_runs` and `revert_pull_request_commit` tools still require
 `expectedHead`. The pin
 prevents them from acting on unseen code; for `start_ultrafix` and
 `stop_ultrafix`, a moved head may contain a fix the loop should still see.
@@ -1117,6 +1118,24 @@ reopened in GitHub. When the submitter could fix the PR, use
   "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
   "reason": "Duplicate of #56, which carries the more complete description.",
   "idempotencyKey": "pr-57-close-duplicate-1" }
+```
+
+`approve_pull_request_workflow_runs` approves the GitHub Actions runs of an
+open PR that wait for a maintainer, which is how CI starts for a fork or a
+first-time contributor. The runs execute the PR's code on the repository's
+runners, so approve only after reading the whole diff. It requires
+`expectedHead` and approves only the runs waiting on that head; runs on other
+heads and runs that already started are left alone. A PR that changes workflow
+or action definitions under `.github/workflows` or `.github/actions` is refused
+with `CI_CONFIGURATION_CHANGED` (the paths are in `details`), because that is
+what the maintainer gate exists for: approve those in GitHub. The receipt lists
+the runs approved; an empty list means nothing was waiting. GitHub refusing the
+approval for lack of Actions write access fails with `ACTIONS_WRITE_REQUIRED`.
+
+```json
+{ "repository": "acme/web", "pullRequest": 58,
+  "expectedHead": "9a8b7c6d5e4f30211203f4e5d6c7b8a9908f7e6d",
+  "idempotencyKey": "pr-58-approve-ci-1" }
 ```
 Concurrent routings of one pull request are serialized; a routing that loses
 that serialization to another before writing fails with

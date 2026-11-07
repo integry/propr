@@ -393,6 +393,8 @@ describe('buildAgentActionPrompt', () => {
     assert.match(prompt, /list_todos/);
     assert.match(prompt, /Never merge pull requests, deploy, or change settings/);
     assert.match(prompt, /close a pull request with `close_pull_request` only when it should not proceed at all/);
+    assert.match(prompt, /request a ProPR review with `review_pull_request`/);
+    assert.match(prompt, /approve the waiting CI runs .* with `approve_pull_request_workflow_runs`, but only after reading its whole diff/);
   });
 
   test('the merge rule follows the grant: forbidden by default, permitted under the tool preconditions with the merge scope', () => {

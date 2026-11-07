@@ -9,6 +9,7 @@ export interface PullRequestFixture {
   reviewDecision: string | null; checks: string | null;
 }
 export interface CommentFixture { id: number; pullRequest: number; repository: string; body: string; createdAt: string; author: string }
+export interface WorkflowRunFixture { repository: string; id: number; name: string; head_sha: string; status: string; html_url: string }
 export type Args = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 /**
@@ -64,6 +65,10 @@ export interface WriteFixture {
   comparisons: Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>;
   /** Every file path at a commit, keyed by its SHA, as GitHub's recursive tree endpoint reports them. */
   trees: Map<string, string[]>;
+  /** Workflow runs GitHub lists; `action_required` ones wait for a maintainer. */
+  workflowRuns: WorkflowRunFixture[];
+  /** Files a pull request changes, keyed by `owner/repo#number`. */
+  pullFiles: Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>;
   redis: LeaseRedis;
 }
 
@@ -132,7 +137,7 @@ export function fixtureReviewBody(head: string): string {
  * state each subtest leaves behind is the state the next one reads.
  */
 export async function verifyPullRequestWrites(
-  { t, call, mutate, principal, findPullRequest, restCalls, comments, redis }: WriteFixture,
+  { t, call, mutate, principal, findPullRequest, restCalls, comments, workflowRuns, pullFiles, redis }: WriteFixture,
 ): Promise<void> {
   await t.test('comment_on_pull_request resolves an omitted head and enforces a supplied head', async () => {
     const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
@@ -626,5 +631,45 @@ export async function verifyPullRequestWrites(
     const closeIndex = restCalls.findIndex((item, index) => index > baseline && item.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}');
     assert.ok(reasonIndex >= 0 && closeIndex > reasonIndex);
     live.state = 'OPEN';
+  });
+
+  await t.test('approve_pull_request_workflow_runs approves only the runs waiting on the examined head and refuses CI configuration changes', async () => {
+    const live = findPullRequest('acme/repo', 42);
+    const approvals = () => restCalls.filter(item => item.route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve').length;
+    const baseline = approvals();
+    const url = (id: number) => `https://github.com/acme/repo/actions/runs/${id}`;
+    workflowRuns.push(
+      { repository: 'acme/repo', id: 7001, name: 'CI', head_sha: live.head, status: 'action_required', html_url: url(7001) },
+      { repository: 'acme/repo', id: 7002, name: 'Lint', head_sha: live.head, status: 'action_required', html_url: url(7002) },
+      { repository: 'acme/repo', id: 7003, name: 'CI', head_sha: 'd'.repeat(40), status: 'action_required', html_url: url(7003) },
+      { repository: 'acme/repo', id: 7004, name: 'Deploy', head_sha: live.head, status: 'completed', html_url: url(7004) },
+    );
+    for (const [args, code] of [
+      [{ pullRequest: 42, expectedHead: 'f'.repeat(40) }, 'STALE_HEAD'],
+      [{ pullRequest: 41, expectedHead: 'b'.repeat(40) }, 'PULL_REQUEST_ALREADY_MERGED'],
+      [{ pullRequest: 40, expectedHead: 'c'.repeat(40) }, 'PULL_REQUEST_CLOSED'],
+    ] as const) {
+      const refused = await mutate('approve_pull_request_workflow_runs', { repository: 'acme/repo', ...args });
+      assert.equal(refused.result.error?.code, code, `${JSON.stringify(args)} should fail with ${code}`);
+    }
+    // Workflow definitions are what the maintainer gate exists for: never approved by a tool.
+    pullFiles.set('acme/repo#42', [{ filename: 'src/index.ts', status: 'modified' }, { filename: '.github/workflows/ci.yml', status: 'modified' }]);
+    const guarded = await mutate('approve_pull_request_workflow_runs', { repository: 'acme/repo', pullRequest: 42, expectedHead: live.head });
+    assert.equal(guarded.result.error?.code, 'CI_CONFIGURATION_CHANGED');
+    assert.deepEqual(guarded.result.error?.details, { paths: ['.github/workflows/ci.yml'] });
+    assert.equal(approvals(), baseline);
+
+    pullFiles.set('acme/repo#42', [{ filename: 'src/index.ts', status: 'modified' }]);
+    const approved = await mutate('approve_pull_request_workflow_runs', { repository: 'acme/repo', pullRequest: 42, expectedHead: live.head });
+    assert.deepEqual(approved.result.approved, [{ id: 7001, name: 'CI', url: url(7001) }, { id: 7002, name: 'Lint', url: url(7002) }]);
+    assert.equal(approved.result.url, 'https://github.com/acme/repo/pull/42');
+    assert.equal(approvals(), baseline + 2);
+    // Other heads and runs that already started are left alone.
+    assert.deepEqual(workflowRuns.map(run => run.status), ['queued', 'queued', 'action_required', 'completed']);
+
+    const nothing = await mutate('approve_pull_request_workflow_runs', { repository: 'acme/repo', pullRequest: 42, expectedHead: live.head });
+    assert.deepEqual(nothing.result.approved, []);
+    assert.equal(approvals(), baseline + 2);
+    pullFiles.delete('acme/repo#42');
   });
 }

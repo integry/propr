@@ -30,10 +30,14 @@ export const AGENT_RUN_GRANT_RECORD_KIND = 'agent_run_grant';
 export type AgentRunGrantPhase = 'report' | 'action';
 export const AGENT_RUN_GRANT_PHASES: readonly AgentRunGrantPhase[] = ['report', 'action'];
 
-/** Report reads context only; acting never deploys, manages or reviews, and merges only with the `merge` capability. */
+/**
+ * Report reads context only. Acting may plan, execute and request reviews (so
+ * the fix and ultrafix loops are open to it), never deploys or manages, and
+ * merges only with the `merge` capability.
+ */
 export const AGENT_RUN_PHASE_SCOPES: Readonly<Record<AgentRunGrantPhase, readonly McpScope[]>> = {
   report: ['read'],
-  action: ['read', 'plan', 'execute'],
+  action: ['read', 'plan', 'execute', 'review'],
 };
 
 /**
