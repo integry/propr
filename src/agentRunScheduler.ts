@@ -459,7 +459,7 @@ export async function cleanupAgentRunGrants(deps: AgentRunGrantCleanupDependenci
     const {
         database = db,
         now = Date.now,
-        revoke = (runId, phase, { expiredBy }) => revokeAgentRunMcpGrant(runId, { phase, expiredBy }),
+        revoke = async (runId, phase, { expiredBy }) => { await revokeAgentRunMcpGrant(runId, { phase, expiredBy }); },
     } = deps;
     const timestamp = now();
     let revoked = 0;
