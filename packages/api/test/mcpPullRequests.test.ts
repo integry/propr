@@ -140,6 +140,30 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         createdAt: comment.createdAt, author: { login: comment.author },
       })) };
   };
+  const labelRequest = (route: string, args: Args, repository: string): { data: unknown } | undefined => {
+    if (route === 'GET /repos/{owner}/{repo}/labels') {
+      const all = repositoryLabels.get(repository) ?? [];
+      const perPage = Number(args.per_page ?? 30);
+      const page = Number(args.page ?? 1);
+      return { data: all.slice((page - 1) * perPage, page * perPage).map(name => ({ name })) };
+    }
+    if (route === 'GET /repos/{owner}/{repo}/labels/{name}') {
+      const found = (repositoryLabels.get(repository) ?? []).find(name => name === args.name);
+      if (!found) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { name: found } };
+    }
+    if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+      const pull = findPullRequest(repository, Number(args.issue_number));
+      pull.labels.push(...(args.labels as string[]));
+      return { data: pull.labels.map(name => ({ name })) };
+    }
+    if (route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+      const pull = findPullRequest(repository, Number(args.issue_number));
+      pull.labels = pull.labels.filter(name => name !== args.name);
+      return { data: pull.labels.map(name => ({ name })) };
+    }
+    return undefined;
+  };
   const github = {
     graphql: async (query: string, args: Args) => {
       graphqlCalls.push({ query, ...args });
@@ -193,27 +217,8 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         return { data: { id: comment.id, html_url: `https://github.com/${repository}/pull/${comment.pullRequest}#issuecomment-${comment.id}` } };
       }
       if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}' || route === 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}') return gitHistory(route, args);
-      if (route === 'GET /repos/{owner}/{repo}/labels') {
-        const all = repositoryLabels.get(repository) ?? [];
-        const perPage = Number(args.per_page ?? 30);
-        const page = Number(args.page ?? 1);
-        return { data: all.slice((page - 1) * perPage, page * perPage).map(name => ({ name })) };
-      }
-      if (route === 'GET /repos/{owner}/{repo}/labels/{name}') {
-        const found = (repositoryLabels.get(repository) ?? []).find(name => name === args.name);
-        if (!found) throw Object.assign(new Error('Not Found'), { status: 404 });
-        return { data: { name: found } };
-      }
-      if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
-        const pull = findPullRequest(repository, Number(args.issue_number));
-        pull.labels.push(...(args.labels as string[]));
-        return { data: pull.labels.map(name => ({ name })) };
-      }
-      if (route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
-        const pull = findPullRequest(repository, Number(args.issue_number));
-        pull.labels = pull.labels.filter(name => name !== args.name);
-        return { data: pull.labels.map(name => ({ name })) };
-      }
+      const labelResponse = labelRequest(route, args, repository);
+      if (labelResponse) return labelResponse;
       throw new Error(`Unexpected GitHub fixture request: ${route}`);
     },
   };

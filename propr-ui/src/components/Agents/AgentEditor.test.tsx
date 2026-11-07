@@ -4,27 +4,16 @@ import { MemoryRouter } from 'react-router-dom';
 import { validateAutomationSchedule } from '@propr/shared';
 import { AgentEditor } from './AgentEditor';
 import {
-  AutomationApiError,
-  createAutomationDefinition,
-  deleteAutomationAttachment,
-  deleteAutomationDefinition, getAutomationCapacity, getAutomationDefinition,
-  triggerAutomationRun,
-  updateAutomationDefinition,
-  uploadAutomationAttachment,
-  type AutomationDefinitionRecord,
+  AutomationApiError, createAutomationDefinition, deleteAutomationAttachment, deleteAutomationDefinition, getAutomationCapacity,
+  getAutomationDefinition, triggerAutomationRun, updateAutomationDefinition, uploadAutomationAttachment, type AutomationDefinitionRecord,
 } from '../../api/automationDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
 import { useAgentEditor } from './useAgentEditor';
 
 vi.mock('../../api/automationDefinitionsApi', async importOriginal => ({
   ...(await importOriginal<typeof import('../../api/automationDefinitionsApi')>()),
-  createAutomationDefinition: vi.fn(),
-  getAutomationDefinition: vi.fn(),
-  updateAutomationDefinition: vi.fn(),
-  deleteAutomationDefinition: vi.fn(),
-  uploadAutomationAttachment: vi.fn(),
-  deleteAutomationAttachment: vi.fn(),
-  triggerAutomationRun: vi.fn(), getAutomationCapacity: vi.fn(),
+  createAutomationDefinition: vi.fn(), getAutomationDefinition: vi.fn(), updateAutomationDefinition: vi.fn(), deleteAutomationDefinition: vi.fn(),
+  uploadAutomationAttachment: vi.fn(), deleteAutomationAttachment: vi.fn(), triggerAutomationRun: vi.fn(), getAutomationCapacity: vi.fn(),
 }));
 
 vi.mock('../../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
