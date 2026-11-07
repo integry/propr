@@ -28,10 +28,11 @@ test('the container URL defaults to the internal API on the Docker network', () 
 });
 
 test('grant requests are signed over run id, phase and timestamp', async () => {
-  const { calls, fetchImpl } = recorder(Response.json({ grantId: 'g-1', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1 }));
+  const { calls, fetchImpl } = recorder(Response.json({ grantId: 'g-1', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, scopes: ['read', 'plan', 'execute', 'merge', 7] }));
   const environment = { SYSTEM_TASK_SECRET: 'secret', PROPR_INTERNAL_API_URL: 'http://propr-api:4000' };
   const grant = await requestAgentRunMcpGrant('run/1', 'action', { environment, fetchImpl, now: () => NOW, resolveNetwork: async () => 'propr_propr-agent-mcp' });
-  assert.deepEqual(grant, { grantId: 'g-1', phase: 'action', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-agent-mcp' });
+  // The scopes the API reports drive the acting prompt; anything but strings is dropped, and an older API that omits them yields none.
+  assert.deepEqual(grant, { grantId: 'g-1', phase: 'action', url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-agent-mcp', scopes: ['read', 'plan', 'execute', 'merge'] });
   assert.equal(calls[0].url, 'http://propr-api:4000/api/internal/agent-runs/run%2F1/mcp-grants');
   assert.deepEqual(calls[0].body, { phase: 'action', ts: NOW, signature: signAgentRunGrantRequest('secret', 'run/1', 'action', NOW) });
 

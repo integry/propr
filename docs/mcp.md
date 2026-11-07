@@ -1088,6 +1088,21 @@ converging the managed `llm-*` labels the repository already defines:
 It never creates a label: an undefined one fails with `MODEL_LABEL_MISSING`, and
 a label list too long to read completely fails with
 `MODEL_LABEL_LOOKUP_INCOMPLETE` rather than claiming the label is absent.
+
+`update_pull_request_labels` adds and removes plain labels on an open PR, for
+example the instance trigger label (`get_ai_primary_tag`) that hands the PR to
+ProPR. Like `comment_on_pull_request` it makes `expectedHead` optional and
+reports `resolvedHead`. Only labels the repository already defines are added
+(`LABEL_MISSING` otherwise); a label already present is not added again and one
+already absent is not removed. Managed labels are refused with `MANAGED_LABEL`:
+`llm-*` belongs to `set_pull_request_model` and the ultrafix circuit-breaker
+label to `start_ultrafix` and `stop_ultrafix`.
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "add": ["AI"], "remove": ["needs-triage"],
+  "idempotencyKey": "pr-42-hand-to-propr-1" }
+```
 Concurrent routings of one pull request are serialized; a routing that loses
 that serialization to another before writing fails with
 `MODEL_LABEL_LEASE_LOST` instead of adding a second label. Read the pull

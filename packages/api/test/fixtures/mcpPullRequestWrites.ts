@@ -215,6 +215,50 @@ export async function verifyPullRequestWrites(
     assert.equal(restCalls.filter(item => item.route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels').length, adds);
   });
 
+  await t.test('update_pull_request_labels adds defined labels, removes present ones and refuses managed or undefined ones', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42 };
+    const live = findPullRequest('acme/repo', 42);
+    const before = [...live.labels];
+    assert.ok(!before.includes('AI'));
+    const writes = () => restCalls.filter(item => item.route.includes('/issues/{issue_number}/labels')).length;
+
+    const added = await mutate('update_pull_request_labels', { ...pull, add: ['AI'] });
+    assert.equal(added.result.state, 'updated');
+    assert.equal(added.result.headSource, 'server');
+    assert.equal(added.result.resolvedHead, live.head);
+    assert.deepEqual(added.result.addedLabels, ['AI']);
+    assert.deepEqual(added.result.removedLabels, []);
+    assert.ok(live.labels.includes('AI'));
+
+    // Already present: nothing is written again; already absent: nothing is deleted.
+    const writesBefore = writes();
+    const again = await mutate('update_pull_request_labels', { ...pull, add: ['AI'], remove: ['never-there'] });
+    assert.deepEqual(again.result.addedLabels, []);
+    assert.deepEqual(again.result.removedLabels, []);
+    assert.equal(writes(), writesBefore);
+
+    const removed = await mutate('update_pull_request_labels', { ...pull, remove: ['AI'], expectedHead: live.head });
+    assert.equal(removed.result.headSource, 'caller');
+    assert.deepEqual(removed.result.removedLabels, ['AI']);
+    assert.deepEqual(live.labels, before);
+
+    // ProPR never invents a label, and managed labels keep their dedicated tools.
+    const labelWrites = writes();
+    for (const [args, code] of [
+      [{ add: ['no-such-label'] }, 'LABEL_MISSING'],
+      [{ add: ['llm-claude-opus-5'] }, 'MANAGED_LABEL'],
+      [{ remove: ['ultrafix'] }, 'MANAGED_LABEL'],
+      [{}, 'INVALID_INPUT'],
+      [{ add: ['AI'], remove: ['ai'] }, 'INVALID_INPUT'],
+      [{ add: ['AI'], expectedHead: 'f'.repeat(40) }, 'STALE_HEAD'],
+    ] as const) {
+      const refused = await mutate('update_pull_request_labels', { ...pull, ...args });
+      assert.equal(refused.result.error?.code, code, `${JSON.stringify(args)} should fail with ${code}`);
+    }
+    assert.equal(writes(), labelWrites);
+    assert.deepEqual(live.labels, before);
+  });
+
   await t.test('set_pull_request_model refuses unknown, disabled and undefined labels', async () => {
     const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
     const unknown = await mutate('set_pull_request_model', { ...pull, model: 'not-a-real-model' });

@@ -26,6 +26,8 @@ export interface AgentActionPromptInput {
     report: string;
     /** Guidance the approver added when approving a preview run. */
     operatorNote?: string | null;
+    /** Whether this step's MCP grant holds the merge scope (the definition's `merge` capability, within the instance ceiling). */
+    mergeAllowed?: boolean;
 }
 
 const ACTION_FENCE_TAGS = ['agent-report', 'agent-task', 'operator-note'] as const;
@@ -55,7 +57,16 @@ function roleSection(): string {
     ].join('\n');
 }
 
-function rulesSection(definition: AgentActionPromptDefinition, runId: string): string {
+/** The merge rule follows the grant: with the merge scope the agent may merge, under the tool's own preconditions. */
+function mergeRule(mergeAllowed: boolean): string {
+    if (!mergeAllowed) return '- Never merge pull requests, deploy, or change settings or configuration. Those tools are not granted to you, and you must not try to work around that.';
+    return [
+        '- You may merge a pull request with `merge_pull_request`, but only one the report shows is ready: reviewed, checks passing and no outstanding change requests. Pass the exact head you examined as expectedHead; the tool refuses a moved head, failing checks or unmet protection rules, and you must not try to work around a refusal.',
+        '- Never deploy or change settings or configuration. Those tools are not granted to you.',
+    ].join('\n');
+}
+
+function rulesSection(definition: AgentActionPromptDefinition, runId: string, mergeAllowed: boolean): string {
     const repositories = definition.repositories.map(inlineValue);
     const scope = repositories.length > 0
         ? `Act only on these repositories: ${repositories.join(', ')}. Do not create or change anything for any other repository.`
@@ -68,7 +79,7 @@ function rulesSection(definition: AgentActionPromptDefinition, runId: string): s
         `- Pass an idempotency key with every tool call that creates something, of the form \`${agentActionIdempotencyKey(runId, '<n>')}\`, where <n> counts your creating calls from 1 (\`${agentActionIdempotencyKey(runId, 1)}\`, \`${agentActionIdempotencyKey(runId, 2)}\`, …).`,
         '- Avoid duplicates: before creating a task or TODO, check `list_tasks` and `list_todos` for an existing one covering the same thing, and prefer updating or referencing it over creating another.',
         '- Prefer creating TODOs or tasks for a human or a coding agent to pick up over taking any more drastic step.',
-        '- Never merge pull requests, deploy, or change settings or configuration. Those tools are not granted to you, and you must not try to work around that.',
+        mergeRule(mergeAllowed),
         '- If a tool call fails, do not retry it blindly; report the failure in your summary.',
     ].join('\n');
 }
@@ -128,7 +139,7 @@ function assemble(input: AgentActionPromptInput, report: string): string {
     const note = input.operatorNote?.trim().slice(0, AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS);
     const sections = [
         roleSection(),
-        rulesSection(definition, run.id),
+        rulesSection(definition, run.id, input.mergeAllowed === true),
         taskSection(definition, run.id),
         reportSection(report),
         ...(note ? [operatorNoteSection(note)] : []),

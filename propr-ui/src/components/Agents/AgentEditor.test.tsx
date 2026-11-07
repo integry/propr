@@ -109,10 +109,17 @@ describe('AgentEditor', () => {
     expect(mcpToggle).toBeEnabled();
     fireEvent.click(mcpToggle);
     expect(mcpToggle).toBeChecked();
+    const mergeToggle = screen.getByRole('switch', { name: /Merge pull requests/ });
+    expect(mergeToggle).toBeEnabled();
+    fireEvent.click(mergeToggle);
+    expect(mergeToggle).toBeChecked();
 
     fireEvent.change(agentSelect, { target: { value: 'opencode-main' } });
     expect(mcpToggle).toBeDisabled();
     expect(mcpToggle).not.toBeChecked();
+    expect(mergeToggle).toBeDisabled();
+    expect(mergeToggle).not.toBeChecked();
+    expect(screen.getByTestId('agent-capability-merge-hint')).toHaveTextContent('merging happens in the acting step');
     expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: only Claude and Codex');
     expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on OpenCode');
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeDisabled();

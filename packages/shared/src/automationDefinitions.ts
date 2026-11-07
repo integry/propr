@@ -15,8 +15,12 @@ import {
   validateAutomationSchedule,
 } from './cronSchedule.js';
 
-/** Each capability is separately togglable on a definition. */
-export const AUTOMATION_CAPABILITIES = ['repository_read', 'web', 'propr_mcp'] as const;
+/**
+ * Each capability is separately togglable on a definition. `merge` concerns the
+ * acting step only: it adds the MCP `merge` scope to that step's grant, so the
+ * acting agent may merge pull requests that pass review and checks.
+ */
+export const AUTOMATION_CAPABILITIES = ['repository_read', 'web', 'propr_mcp', 'merge'] as const;
 export type AutomationCapability = typeof AUTOMATION_CAPABILITIES[number];
 
 /**

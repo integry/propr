@@ -18,6 +18,7 @@ import { configureDemoMode } from '../demoMode.js';
 import {
   AGENT_RUN_GRANT_RECORD_KIND,
   AGENT_RUN_MCP_CLIENT_ID,
+  agentRunGrantScopes,
   issueAgentRunGrant,
   revokeAgentRunGrant,
   revokeAgentRunPhaseGrant,
@@ -168,6 +169,28 @@ test('a report grant is read-only, limited to the run snapshot repositories and 
   await assert.rejects(policy.authenticate(token));
   assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), undefined);
   assert.equal((await post('/revoke', signed('report'))).body.revoked, false);
+});
+
+test('the merge capability adds the merge scope to the acting grant alone, and the response lists the scopes held', async () => {
+  assert.deepEqual(agentRunGrantScopes('report', ['repository_read', 'merge']), ['read']);
+  assert.deepEqual(agentRunGrantScopes('action', ['repository_read']), ['read', 'plan', 'execute']);
+  assert.deepEqual(agentRunGrantScopes('action', ['repository_read', 'merge']), ['read', 'plan', 'execute', 'merge']);
+  assert.deepEqual(agentRunGrantScopes('action'), ['read', 'plan', 'execute'], 'A snapshot from before capabilities were stored');
+
+  const snapshot = { ...run().definitionSnapshot!, capabilities: ['repository_read', 'merge'] } as StoredAgentRun['definitionSnapshot'];
+  runs.set('run-1', run({ state: 'acting', definitionSnapshot: snapshot }));
+  const action = await post('', signed('action'));
+  assert.equal(action.status, 200, JSON.stringify(action.body));
+  assert.deepEqual(action.body.scopes, ['read', 'plan', 'execute', 'merge']);
+  const principal = await policy.authenticate(action.body.token as string);
+  assert.deepEqual(principal.scopes, ['read', 'plan', 'execute', 'merge']);
+  policy.requireScope(principal, 'merge');
+  for (const scope of ['deploy', 'manage', 'review'] as const) assert.throws(() => policy.requireScope(principal, scope), new RegExp(`requires ${scope}`));
+
+  runs.set('run-1', run({ definitionSnapshot: snapshot }));
+  const report = await post('', signed('report'));
+  assert.equal(report.status, 200, JSON.stringify(report.body));
+  assert.deepEqual(report.body.scopes, ['read']);
 });
 
 test('an action grant may plan and execute but never merge, deploy, manage or review', async () => {

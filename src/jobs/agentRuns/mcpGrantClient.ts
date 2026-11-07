@@ -17,6 +17,8 @@ export interface IssuedAgentRunMcpGrant extends AgentRunMcpGrant {
     grantId: string;
     phase: AgentRunPhase;
     expiresAt: number;
+    /** MCP scopes the grant holds after the instance scope ceiling; empty when the API did not say. */
+    scopes: string[];
 }
 
 export class AgentRunMcpGrantError extends Error {
@@ -87,6 +89,7 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
     if (typeof grantId !== 'string' || typeof token !== 'string' || typeof expiresAt !== 'number') {
         throw new AgentRunMcpGrantError('ProPR MCP grant response is malformed', null, 'INVALID_RESPONSE');
     }
+    const scopes = Array.isArray(payload.scopes) ? payload.scopes.filter((scope): scope is string => typeof scope === 'string') : [];
     const environment = options.environment ?? process.env;
     // An explicit worker-side URL wins: it describes the network the worker launches containers on.
     const mcpUrl = environment.PROPR_AGENT_MCP_URL || (typeof url === 'string' && url ? url : agentContainerMcpUrl(environment));
@@ -94,7 +97,7 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
     const network = environment.PROPR_AGENT_MCP_URL?.trim() && !environment.PROPR_AGENT_DOCKER_NETWORK?.trim()
         ? null
         : await (options.resolveNetwork ?? (() => mcpContainerNetwork({ environment })))();
-    return { grantId, phase, url: mcpUrl, token, expiresAt, network };
+    return { grantId, phase, url: mcpUrl, token, expiresAt, network, scopes };
 }
 
 /**

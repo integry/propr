@@ -112,9 +112,9 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
       const definition = run.definitionSnapshot;
       if (!definition) { sendError(res, 409, 'INVALID_RUN_STATE', 'The agent definition snapshot is unreadable.'); return; }
       const grant = await issueAgentRunGrant({
-        ownerId: run.ownerId, definitionName: definition.name, runId, phase: body.phase, repositories: definition.repositories,
+        ownerId: run.ownerId, definitionName: definition.name, runId, phase: body.phase, repositories: definition.repositories, capabilities: definition.capabilities,
       }, grantDeps);
-      res.set('Cache-Control', 'no-store').json({ grantId: grant.grantId, url: mcpUrl(), token: grant.accessToken, expiresAt: grant.expiresAt });
+      res.set('Cache-Control', 'no-store').json({ grantId: grant.grantId, url: mcpUrl(), token: grant.accessToken, expiresAt: grant.expiresAt, scopes: grant.scopes });
     } catch (error) {
       sendGrantError(res, error, 'issue', runId);
     }

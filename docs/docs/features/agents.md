@@ -59,6 +59,7 @@ Each capability can be switched on or off separately. The default is `repository
 | `repository_read` | Checks out the repositories and gives the container a read-only GitHub token. Off: the workspace is an empty git directory with only the input files. No clone is mounted and no repository token is issued. | Enforced by ProPR | Enforced by ProPR | Enforced by ProPR |
 | `web` | Allows web search and fetching URLs. | Enforced natively (`WebFetch`, `WebSearch` disallowed when off) | Enforced natively (`web_search` disabled when off) | **Best effort**: the prompt tells the agent not to use the web, but the runtime has no switch to enforce it |
 | `propr_mcp` | Mounts ProPR's MCP server in the report run with a read-only grant, so the agent can read tasks, PRs, TODOs and docs. | Supported | Supported | **Not supported**: saving such a definition is refused |
+| `merge` | Adds the `merge` MCP scope to the acting step's grant, so the acting agent may merge pull requests through `merge_pull_request`. Off (the default): the acting step is told it must never merge and holds no merge scope. Has no effect on the report step or on `dry_run` automations. | Supported | Supported | **Not supported**: the acting step needs ProPR tools |
 
 The acting step of `preview` and `auto` automations always uses ProPR's MCP server, so those modes also require Claude Code or Codex (or a synthetic pool whose enabled members all support it). `web` in the acting step follows the definition.
 
@@ -222,13 +223,16 @@ In `preview` (after approval) and `auto` mode, ProPR starts a second agent run, 
 The acting agent **can**, within the automation's repositories:
 
 - create tasks, plans and goals, TODOs and pull request comments;
-- read anything a `read` grant can (tasks, PRs, TODOs, docs).
+- add or remove plain pull request labels with `update_pull_request_labels`, for example the instance's trigger label that hands a PR to ProPR (managed `llm-*` and `ultrafix` labels stay with their own tools);
+- run `fix_review_findings` and `run_ultrafix` on a pull request;
+- read anything a `read` grant can (tasks, PRs, TODOs, docs);
+- with the `merge` capability, merge a pull request with `merge_pull_request`. The tool still requires the exact head the agent examined, passing checks and satisfied review and protection rules, and the prompt limits merges to pull requests the report shows are ready.
 
-It receives the `read`, `plan` and `execute` MCP scopes, limited to the definition's repositories and to what the owner can access. Each creating call carries an idempotency key derived from the run id, so a retried acting step does not create duplicates. The prompt also tells it to check for existing tasks and TODOs before creating new ones.
+It receives the `read`, `plan` and `execute` MCP scopes, plus `merge` when the capability is on, limited to the definition's repositories, to what the owner can access and to the instance's MCP scope ceiling. Each creating call carries an idempotency key derived from the run id, so a retried acting step does not create duplicates. The prompt also tells it to check for existing tasks and TODOs before creating new ones.
 
 The acting agent **cannot**:
 
-- merge pull requests, deploy, review, publish, or change settings or configuration (no `merge`, `deploy`, `review`, `publish` or `manage` scope);
+- deploy, review, publish, or change settings or configuration (no `deploy`, `review`, `publish` or `manage` scope), nor merge without the `merge` capability;
 - touch repositories outside the definition;
 - edit files, commit, push or open pull requests itself (its workspace is never committed; changes go through the tasks it creates);
 - trigger, approve or reject automation runs: those tools refuse every agent-issued grant with `AGENT_RECURSION_FORBIDDEN`, so coding agents cannot start other automations.
@@ -288,6 +292,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 - **`AGENT_INVALID`.** The agent or model no longer exists, a repository is no longer enabled, or the agent does not support `propr_mcp` while the definition or its autonomy mode needs it. Edit the definition.
 - **"The worker stopped before recording the result."** The run's task ended, but the worker died before storing the outcome. The daemon fails such runs 10 minutes later. Trigger a new run.
 - **The agent used the web although `web` is off.** Antigravity, OpenCode and Vibe only receive a prompt instruction. Use Claude Code or Codex for enforcement.
+- **The acting step says it is not allowed to merge.** That is the default: merging needs the `merge` capability on the definition. If the capability is on and the step still cannot merge, the worker log carries "Automation has the merge capability, but the MCP grant was issued without the merge scope": the instance's MCP scope ceiling (**Settings → Integrations & MCP → MCP Server**) excludes `merge`.
 
 ## Deferred beyond v1
 

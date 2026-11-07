@@ -32,11 +32,15 @@ const CAPABILITY_TEXT: Record<AutomationCapability, { label: string; description
     label: 'ProPR tools',
     description: 'Let the report step read tasks, goals and plans through the ProPR MCP server.',
   },
+  merge: {
+    label: 'Merge pull requests',
+    description: 'Let the acting step merge pull requests that pass review and checks. Report-only automations never merge.',
+  },
 };
 
 const NATIVE_WEB_RUNTIMES = new Set(['claude', 'codex']);
 
-/** Three independent capability toggles, each with what it allows. */
+/** Independent capability toggles, each with what it allows. */
 export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> = ({
   capabilities, onChange, proprMcpSupport, agentType, disabled,
 }) => {
@@ -54,6 +58,9 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
     if (capability === 'web' && agentType && !NATIVE_WEB_RUNTIMES.has(agentType)) {
       return `Best effort on ${agentTypeLabel(agentType)}: web access depends on what the runtime provides.`;
     }
+    if (capability === 'merge' && proprMcpSupport === 'unsupported') {
+      return `Not available for ${agentType ? agentTypeLabel(agentType) : 'this coding agent'}: merging happens in the acting step, which needs ProPR tools.`;
+    }
     return null;
   };
 
@@ -62,7 +69,7 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
       <ul className="space-y-3">
         {AUTOMATION_CAPABILITIES.map(capability => {
           const text = CAPABILITY_TEXT[capability];
-          const locked = capability === 'propr_mcp' && proprMcpSupport === 'unsupported';
+          const locked = (capability === 'propr_mcp' || capability === 'merge') && proprMcpSupport === 'unsupported';
           const hint = hintFor(capability);
           const id = `agent-capability-${capability}`;
           return (
