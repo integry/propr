@@ -333,6 +333,17 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       return ok({ repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, resolvedHead, headSource,
         previousLabels: current, addedLabels: additions, removedLabels: removals, labels: [...current.filter(name => !removals.includes(name)), ...additions], state: 'updated' });
     } });
+  tools.push({ name: 'close_pull_request', description: 'Close an open PR without merging, for a submission that should not proceed at all: a duplicate, out of scope, invalid or harmful. The reason is posted as a comment first, so the submitter sees why. expectedHead is required so only the revision you examined is closed; a moved head fails with STALE_HEAD. Prefer comment_on_pull_request when the submitter could fix the PR. The branch is kept and the PR can be reopened in GitHub.', scope: 'execute',
+    schema: z.object({ ...mutation, reason: textSchema }).strict(), run: async ({ principal, args, operationId }) => {
+      const { owner, repo, pr } = await pull(principal, args);
+      assertPullRequestOpen(pr, 'close');
+      assertPullRequestHead(pr, args.expectedHead);
+      const body = `${args.reason}\n\n<!-- propr-mcp:${operationId}; head:${pr.head.sha}; action:close -->`;
+      const comment = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+      const closed = await principal.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: args.pullRequest, state: 'closed' });
+      return ok({ repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, commentId: comment.data.id, commentUrl: comment.data.html_url,
+        url: pr.html_url, state: closed.data.state === 'closed' ? 'closed' : 'open' });
+    } });
   tools.push({ name: 'set_pull_request_model', description: 'Route an open PR to exactly one enabled model by converging its managed llm-* labels. Only labels the repository already defines are used; none are created.', scope: 'execute',
     schema: z.object({ ...mutation, model: idSchema }).strict(), run: async ({ principal, args }) => withModelLabelLease(deps.redisClient, args.repository, args.pullRequest, async lease => {
       const choice = await resolveEnabledModel(args.model);

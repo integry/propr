@@ -225,6 +225,7 @@ The acting agent **can**, within the automation's repositories:
 - create tasks, plans and goals, TODOs and pull request comments;
 - add or remove plain pull request labels with `update_pull_request_labels`, for example the instance's trigger label that hands a PR to ProPR (managed `llm-*` and `ultrafix` labels stay with their own tools);
 - run `fix_review_findings` and `run_ultrafix` on a pull request;
+- close a pull request that should not proceed at all (a duplicate, out of scope, invalid or harmful) with `close_pull_request`, which posts the reason as a comment first and closes only the head the agent examined;
 - read anything a `read` grant can (tasks, PRs, TODOs, docs);
 - with the `merge` capability, merge a pull request with `merge_pull_request`. The tool still requires the exact head the agent examined, passing checks and satisfied review and protection rules, and the prompt limits merges to pull requests the report shows are ready.
 

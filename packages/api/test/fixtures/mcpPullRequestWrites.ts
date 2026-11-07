@@ -598,4 +598,33 @@ export async function verifyPullRequestWrites(
 
     assert.equal(posted(), before, 'no rejected selection may reach GitHub');
   });
+
+  await t.test('close_pull_request posts the reason, closes only the examined head and refuses merged or closed pull requests', async () => {
+    const live = findPullRequest('acme/repo', 42);
+    const closes = () => restCalls.filter(item => item.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length;
+    const baseline = closes();
+    for (const [args, code] of [
+      [{ pullRequest: 42, expectedHead: 'f'.repeat(40) }, 'STALE_HEAD'],
+      [{ pullRequest: 41, expectedHead: 'b'.repeat(40) }, 'PULL_REQUEST_ALREADY_MERGED'],
+      [{ pullRequest: 40, expectedHead: 'c'.repeat(40) }, 'PULL_REQUEST_CLOSED'],
+    ] as const) {
+      const refused = await mutate('close_pull_request', { repository: 'acme/repo', reason: 'Duplicate of #39.', ...args });
+      assert.equal(refused.result.error?.code, code, `${JSON.stringify(args)} should fail with ${code}`);
+    }
+    assert.equal(closes(), baseline);
+    assert.equal(live.state, 'OPEN');
+
+    const closed = await mutate('close_pull_request', { repository: 'acme/repo', pullRequest: 42, expectedHead: live.head, reason: 'Duplicate of #39, which has the more complete description.' });
+    assert.equal(closed.result.state, 'closed');
+    assert.equal(closed.result.url, 'https://github.com/acme/repo/pull/42');
+    assert.equal(live.state, 'CLOSED');
+    const reason = comments.find(comment => comment.id === closed.result.commentId);
+    assert.ok(reason && reason.body.startsWith('Duplicate of #39, which has the more complete description.'));
+    assert.match(reason!.body, /<!-- propr-mcp:[^;]+; head:a{40}; action:close -->/);
+    // The reason precedes the close, so a closed PR is never left unexplained.
+    const reasonIndex = restCalls.findIndex(item => item.route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments' && String(item.args.body).startsWith('Duplicate of #39, which'));
+    const closeIndex = restCalls.findIndex((item, index) => index > baseline && item.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}');
+    assert.ok(reasonIndex >= 0 && closeIndex > reasonIndex);
+    live.state = 'OPEN';
+  });
 }

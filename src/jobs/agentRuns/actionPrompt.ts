@@ -79,6 +79,7 @@ function rulesSection(definition: AgentActionPromptDefinition, runId: string, me
         `- Pass an idempotency key with every tool call that creates something, of the form \`${agentActionIdempotencyKey(runId, '<n>')}\`, where <n> counts your creating calls from 1 (\`${agentActionIdempotencyKey(runId, 1)}\`, \`${agentActionIdempotencyKey(runId, 2)}\`, …).`,
         '- Avoid duplicates: before creating a task or TODO, check `list_tasks` and `list_todos` for an existing one covering the same thing, and prefer updating or referencing it over creating another.',
         '- Prefer creating TODOs or tasks for a human or a coding agent to pick up over taking any more drastic step.',
+        '- You may close a pull request with `close_pull_request` only when it should not proceed at all: a duplicate, out of scope, invalid or harmful. Give the reason; it is posted on the pull request. When the submitter could fix it, ask with a comment instead of closing.',
         mergeRule(mergeAllowed),
         '- If a tool call fails, do not retry it blindly; report the failure in your summary.',
     ].join('\n');

@@ -1070,7 +1070,7 @@ as that model's failed review rather than as a rejection at call time.
 
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
 `resolve_merge_conflicts`, `start_ultrafix`, `stop_ultrafix`,
-`set_pull_request_model` and `revert_pull_request_commit` tools still require
+`set_pull_request_model`, `close_pull_request` and `revert_pull_request_commit` tools still require
 `expectedHead`. The pin
 prevents them from acting on unseen code; for `start_ultrafix` and
 `stop_ultrafix`, a moved head may contain a fix the loop should still see.
@@ -1102,6 +1102,21 @@ label to `start_ultrafix` and `stop_ultrafix`.
 { "repository": "acme/web", "pullRequest": 42,
   "add": ["AI"], "remove": ["needs-triage"],
   "idempotencyKey": "pr-42-hand-to-propr-1" }
+```
+
+`close_pull_request` closes an open PR without merging, for a submission that
+should not proceed at all: a duplicate, out of scope, invalid or harmful. The
+reason is posted as a comment before the close, so the submitter sees why. It
+requires `expectedHead`, so only the revision the caller examined is closed, and
+refuses merged or already closed PRs. The branch is kept and the PR can be
+reopened in GitHub. When the submitter could fix the PR, use
+`comment_on_pull_request` instead.
+
+```json
+{ "repository": "acme/web", "pullRequest": 57,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "reason": "Duplicate of #56, which carries the more complete description.",
+  "idempotencyKey": "pr-57-close-duplicate-1" }
 ```
 Concurrent routings of one pull request are serialized; a routing that loses
 that serialization to another before writing fails with
