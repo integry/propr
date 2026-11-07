@@ -60,13 +60,13 @@ services:
       # Mount .env for deploy-pr.sh script
       - ${PROPR_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
-      # Existing installation settings are defaults; this checkout owns its overrides.
+      # Later files win: bundled defaults, then existing installation settings,
+      # then this checkout's overrides.
+      - docker/compose-backend-defaults.env
       - ${PROPR_ENV_FILE:-.env}
       - .env
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME:-propr-dev[bot]}
       - STAGING_ENV_FILE=/usr/src/app/.env
@@ -114,13 +114,13 @@ services:
       # into agent containers by the host Docker daemon at the same path.
       - /tmp/propr-egress:/tmp/propr-egress
     env_file:
-      # Existing installation settings are defaults; this checkout owns its overrides.
+      # Later files win: bundled defaults, then existing installation settings,
+      # then this checkout's overrides.
+      - docker/compose-backend-defaults.env
       - ${PROPR_ENV_FILE:-.env}
       - .env
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
@@ -166,13 +166,13 @@ services:
       # Restricted agent networking: per-run egress proxy sockets for summarization containers.
       - /tmp/propr-egress:/tmp/propr-egress
     env_file:
-      # Existing installation settings are defaults; this checkout owns its overrides.
+      # Later files win: bundled defaults, then existing installation settings,
+      # then this checkout's overrides.
+      - docker/compose-backend-defaults.env
       - ${PROPR_ENV_FILE:-.env}
       - .env
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
@@ -252,13 +252,13 @@ services:
       # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env
       - ${STAGING_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
-      # Load existing credentials first, then let the selected local/preview settings win.
+      # Later files win: bundled defaults, then existing credentials, then the
+      # selected local/preview settings.
+      - docker/compose-backend-defaults.env
       - ${PROPR_ENV_FILE:-.env}
       - ${STAGING_ENV_FILE:-.env}
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
