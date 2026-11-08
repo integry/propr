@@ -26,6 +26,25 @@ interface GateRecord { owner: ClaimOwner; token: string; takenAt: number }
 /** What a waiter saw inside the gate: the holder's record (by file name) and every other entry. */
 interface GateContents { holder: { file: string; record: GateRecord } | null; entries: string[] }
 
+/**
+ * Admission refused a task because the worktree filesystem is below its
+ * reserve. Thrown before the task's processor runs, so the processor's own
+ * failure reporting never sees it; callers that owe someone an answer (a PR
+ * comment job, for instance) recognise it by name.
+ */
+export class WorktreeDiskPressureError extends Error {
+  constructor() {
+    super('Worktree disk pressure: admission reserve unavailable; data retained');
+    this.name = 'WorktreeDiskPressureError';
+  }
+}
+
+/** True for the admission refusal above, whether or not the instance survived a queue round-trip. */
+export function isWorktreeDiskPressureError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === 'WorktreeDiskPressureError' || error.message.startsWith('Worktree disk pressure:');
+}
+
 export interface StorageLifecycleOptions {
   /** Interval of the default "still waiting for the gate" warning. */
   waitWarningMs?: number;
@@ -387,7 +406,7 @@ export class StorageLifecycle {
       }
     }
     const stat = await fs.statfs(filesystem);
-    if (stat.bavail * stat.bsize < admission.reserveBytes + reserved) throw new Error('Worktree disk pressure: admission reserve unavailable; data retained');
+    if (stat.bavail * stat.bsize < admission.reserveBytes + reserved) throw new WorktreeDiskPressureError();
   }
 
   private async release(scope: StorageUseScope): Promise<void> {

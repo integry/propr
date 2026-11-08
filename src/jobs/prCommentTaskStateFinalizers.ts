@@ -1,6 +1,7 @@
 import type { Job } from 'bullmq';
 import {
     logger,
+    type CommentJobData,
     type JobResult,
     type WorkerStateManager,
 } from '@propr/core';
@@ -11,6 +12,7 @@ import {
     type PRCommentTaskFinalizationResult,
 } from './prCommentTaskFinalizer.js';
 import { scheduleAutomaticPRCommentRetry } from './prCommentAutomaticRetry.js';
+import { postUnstartedPRCommentFailure } from './prCommentUnstartedFailure.js';
 
 const FAILURE_STATE_ATTEMPTS = 3;
 
@@ -56,7 +58,7 @@ export function attachPRCommentTaskStateFinalizers(
                     logger.error({ taskId, publication: result.publication },
                         'Finalized PR comment task in Redis with incomplete publication');
                 } else if (result.outcome === 'task_missing') {
-                    logger.warn({ taskId }, 'Could not finalize PR comment task because its state is missing');
+                    logger.warn({ taskId }, 'Could not finalize PR comment task because its state is missing: the job never started');
                 } else if (result.outcome === 'retry_scheduled') {
                     logger.info({ taskId }, 'PR comment task is waiting for its automatic retry');
                 } else if (result.outcome === 'retry_pending') {
@@ -94,7 +96,11 @@ export function attachPRCommentTaskStateFinalizers(
             } catch (hookError) {
                 logger.warn({ taskId, error: (hookError as Error).message }, 'Failed to record follow-up for exhausted PR comment job');
             }
-            return finalizeFailedPRCommentTask(taskId, error, stateManager);
+            const result = await finalizeFailedPRCommentTask(taskId, error, stateManager);
+            // No task means the processor never ran (worktree admission refused the job, for
+            // instance), so its own failure handling never told GitHub; this does.
+            if (result.outcome === 'task_missing') await postUnstartedPRCommentFailure(job as Job<CommentJobData>, error);
+            return result;
         };
         track(finalizeIfExhausted(), taskId);
     };

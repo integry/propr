@@ -22,6 +22,10 @@ await mock.module('../src/jobs/prCommentAutomaticRetry.js', {
 await mock.module('@propr/core', {
     namedExports: { logger: { info: logInfo, error: logError, warn: logWarn, debug: logDebug } },
 });
+const postUnstartedPRCommentFailure = mock.fn(async (_job: unknown, _error: Error) => true);
+await mock.module('../src/jobs/prCommentUnstartedFailure.js', {
+    namedExports: { postUnstartedPRCommentFailure },
+});
 
 const { attachPRCommentTaskStateFinalizers } = await import('../src/jobs/prCommentTaskStateFinalizers.js');
 
@@ -126,6 +130,36 @@ test('failed hook runs the exhausted-failure hook only once attempts are exhaust
 
     assert.equal(onExhaustedFailure.mock.calls.length, 1);
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1, 'a failing hook does not block finalization');
+});
+
+test('failed hook reports an exhausted job that never started on the pull request', async (t) => {
+    const originalImplementation = finalizeFailedPRCommentTask.mock.mockImplementation;
+    t.after(() => finalizeFailedPRCommentTask.mock.mockImplementation(originalImplementation));
+    finalizeFailedPRCommentTask.mock.mockImplementation(async () => ({ outcome: 'task_missing' as const, stateChanged: false }));
+    postUnstartedPRCommentFailure.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
+    const job = makeJob(async () => 'failed');
+    const error = new Error('Worktree disk pressure: admission reserve unavailable; data retained');
+
+    harness.emit('failed', makeJob(async () => 'waiting'), error);
+    harness.emit('failed', job, error);
+    await finalizers.close();
+
+    assert.equal(postUnstartedPRCommentFailure.mock.calls.length, 1, 'only the exhausted attempt is reported');
+    assert.equal(postUnstartedPRCommentFailure.mock.calls[0].arguments[0], job);
+    assert.equal(postUnstartedPRCommentFailure.mock.calls[0].arguments[1], error);
+});
+
+test('failed hook does not report a job whose own failure handling ran', async () => {
+    postUnstartedPRCommentFailure.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
+
+    harness.emit('failed', makeJob(async () => 'failed'), new Error('exhausted'));
+    await finalizers.close();
+
+    assert.equal(postUnstartedPRCommentFailure.mock.calls.length, 0);
 });
 
 test('failed hook does not finalize from retry metadata without a failed state', async () => {

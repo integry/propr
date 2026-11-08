@@ -52,6 +52,10 @@ ProPR filters PR comments by author before processing anything (commands and nat
 
 Slash commands from an allowed author are processed directly. Natural follow-up comments are additionally gated: the PR must carry one of the configured processing labels (for example `AI` or `propr`), or the comment must contain a trigger keyword from `PR_FOLLOWUP_TRIGGER_KEYWORDS` (for example `!propr`). When `PR_FOLLOWUP_TRIGGER_KEYWORDS` is empty or unset, every comment from an allowed author triggers a follow-up, labeled PR or not.
 
+## When A Command Cannot Start
+
+A command that ProPR accepted can still fail before any work begins, most often because the worker's worktree disk is below its admission reserve (see [Maintenance](../operations/maintenance.md)). The queue retries such a job three times within a minute; when the last attempt fails, ProPR posts a comment on the pull request that names the cause (for disk pressure: free space on the worker host, then post the command again). That comment carries the usual processed markers, so the original command is not picked up again on its own: once the cause is gone, post the command again.
+
 ## Review And Fix
 
 Use `/review` and `/fix` when you want AI review feedback first, then an implementation pass that applies the review comments you kept.

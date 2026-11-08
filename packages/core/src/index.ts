@@ -665,6 +665,7 @@ export {
 
 export { GeneratedPayloadStorage, generatedPayloadStorage, GENERATED_PAYLOADS } from './storage/generatedPayloads.js';
 export { generateManagedDependencies } from './storage/managedDependencies.js';
+export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storage/lifecycle.js';
 
 export * from './extensions/extensionProfileStore.js';
 
