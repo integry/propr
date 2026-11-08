@@ -156,6 +156,9 @@ test('frees a branch held only by the registration of a worktree whose directory
         assert.equal(worktreeHoldingBranch(error.message), holder);
 
         assert.equal(await releaseBranchFromSettledWorktree(git, BRANCH, holder), true);
+        // A registration already detached (here by the release above, in production
+        // by failure cleanup) holds nothing: releasing it again is not a refusal.
+        assert.equal(await releaseBranchFromSettledWorktree(git, BRANCH, holder), true, 'an already detached missing registration counts as released');
 
         const listing = await git.raw(['worktree', 'list', '--porcelain']);
         assert.ok(listing.includes(`worktree ${holder}\n`), 'the registration is kept');
