@@ -1,5 +1,6 @@
 import type { Knex } from 'knex';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { AutomationCapability } from '@propr/shared';
 import { db } from '@propr/core';
 import type { GitHubUser } from '../authTypes.js';
 import { resolveInstanceAuthorization } from '../authorization.js';
@@ -29,11 +30,26 @@ export const AGENT_RUN_GRANT_RECORD_KIND = 'agent_run_grant';
 export type AgentRunGrantPhase = 'report' | 'action';
 export const AGENT_RUN_GRANT_PHASES: readonly AgentRunGrantPhase[] = ['report', 'action'];
 
-/** Report reads context only; acting never merges, deploys, manages or reviews. */
+/**
+ * Report reads context only. Acting may plan, execute and request reviews (so
+ * the fix and ultrafix loops are open to it), never deploys or manages, and
+ * merges only with the `merge` capability.
+ */
 export const AGENT_RUN_PHASE_SCOPES: Readonly<Record<AgentRunGrantPhase, readonly McpScope[]>> = {
   report: ['read'],
-  action: ['read', 'plan', 'execute'],
+  action: ['read', 'plan', 'execute', 'review'],
 };
+
+/**
+ * Scopes one phase's grant asks for. The `merge` capability widens the acting
+ * step alone; the report step stays read-only whatever the definition enables.
+ * The instance scope ceiling may still withhold a scope asked for here.
+ */
+export function agentRunGrantScopes(phase: AgentRunGrantPhase, capabilities: readonly AutomationCapability[] = []): McpScope[] {
+  const scopes = [...AGENT_RUN_PHASE_SCOPES[phase]];
+  if (phase === 'action' && capabilities.includes('merge')) scopes.push('merge');
+  return scopes;
+}
 
 /**
  * Internal public client. With no redirect URIs and no grant types it can never
@@ -60,6 +76,8 @@ export interface IssuedAgentRunGrant {
   grantId: string;
   accessToken: string;
   expiresAt: number;
+  /** Scopes the grant actually holds, after the instance scope ceiling. */
+  scopes: McpScope[];
 }
 
 export interface AgentRunGrantDependencies {
@@ -126,7 +144,7 @@ async function readPhaseRecord(store: McpStore, tx: Knex.Transaction, recordId: 
 }
 
 export async function issueAgentRunGrant(
-  input: { ownerId: string; definitionName: string; runId: string; phase: AgentRunGrantPhase; repositories: readonly string[] },
+  input: { ownerId: string; definitionName: string; runId: string; phase: AgentRunGrantPhase; repositories: readonly string[]; capabilities?: readonly AutomationCapability[] },
   deps: AgentRunGrantDependencies = {},
 ): Promise<IssuedAgentRunGrant> {
   const database = deps.database ?? db;
@@ -150,7 +168,7 @@ export async function issueAgentRunGrant(
       credential,
       clientId: AGENT_RUN_MCP_CLIENT_ID,
       clientName: `ProPR Agent: ${input.definitionName}`,
-      scopes: [...AGENT_RUN_PHASE_SCOPES[input.phase]],
+      scopes: agentRunGrantScopes(input.phase, input.capabilities),
       repositories: [...new Set(input.repositories)],
       membershipSource: authorization.source,
       ttlMs: AGENT_RUN_GRANT_TTL_MS,
@@ -160,7 +178,7 @@ export async function issueAgentRunGrant(
     await oauth.store.put(AGENT_RUN_GRANT_RECORD_KIND, recordId, record, { expiresAt: issued.grant.expiresAt, database: tx });
     return issued;
   });
-  return { grantId: grant.id, accessToken, expiresAt: grant.expiresAt };
+  return { grantId: grant.id, accessToken, expiresAt: grant.expiresAt, scopes: [...grant.scopes] };
 }
 
 /** Same revocation as the Connected apps "Revoke" button. */

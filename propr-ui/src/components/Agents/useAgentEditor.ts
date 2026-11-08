@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { agentTypeSupportsProprMcp, validateAutomationDefinitionInput, type InstanceCatalogAgent } from '@propr/shared';
+import { agentTypeSupportsProprMcp, validateAutomationDefinitionInput, type AutomationCapability, type InstanceCatalogAgent } from '@propr/shared';
 import { getInstanceCatalog } from '../../api/proprApi';
 import {
   createAutomationDefinition,
@@ -66,6 +66,9 @@ export function formDiffersFrom(form: AgentEditorForm, definition: AutomationDef
 }
 
 /** Whether the chosen agent can be given ProPR's MCP tools, judged from the instance catalog. */
+/** Capabilities that only work through ProPR's MCP server: `merge` acts in the acting step, which needs it. */
+const MCP_CAPABILITIES: ReadonlySet<AutomationCapability> = new Set(['propr_mcp', 'merge']);
+
 export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alias: string | null): { support: ProprMcpSupport; agentType: string | null } {
   if (!alias) return { support: 'unknown', agentType: null };
   const agent = agents.find(candidate => candidate.alias === alias);
@@ -183,13 +186,13 @@ export function useAgentEditor(
     setForm(current => {
       const next = { ...current, agentId };
       if (proprMcpSupportFor(agents, agentId).support !== 'unsupported') return next;
-      return { ...next, capabilities: next.capabilities.filter(capability => capability !== 'propr_mcp'), autonomy: 'dry_run' };
+      return { ...next, capabilities: next.capabilities.filter(capability => !MCP_CAPABILITIES.has(capability)), autonomy: 'dry_run' };
     });
   }, [agents]);
 
   const save = useCallback(async () => {
     const input = formToInput(form);
-    if (proprMcpSupport === 'unsupported') input.capabilities = input.capabilities?.filter(capability => capability !== 'propr_mcp');
+    if (proprMcpSupport === 'unsupported') input.capabilities = input.capabilities?.filter(capability => !MCP_CAPABILITIES.has(capability));
     const invalid = validateAutomationDefinitionInput(input);
     if (invalid) { setError(invalid); return; }
     // Both return a whole definition; a save answered after an attachment change would restore the old file list.

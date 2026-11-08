@@ -57,6 +57,11 @@ export interface AgentToolPolicy {
     exclusiveMcp?: boolean;
     allowWeb: boolean;
     mcpServers?: AgentToolPolicyMcpServer[];
+    /**
+     * Docker network the container joins instead of the default bridge, so it
+     * can resolve an `mcpServers` URL that names a Compose service such as `api`.
+     */
+    dockerNetwork?: string;
     /** Internal operator-resolved stdio descriptors; never customer API input. */
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
 }

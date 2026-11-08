@@ -76,6 +76,20 @@ export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
     notifyAwaitingApproval: run => notifyAgentReportAwaitingApproval(run),
 };
 
+/**
+ * Whether the acting agent is told it may merge: the definition asks with the
+ * `merge` capability and the grant actually holds the scope. An instance scope
+ * ceiling that withholds it is logged, since the automation's prompt likely
+ * expects merges to happen.
+ */
+export function actionMayMerge(definition: Pick<StoredAgentDefinition, 'id' | 'capabilities'>, grant: Pick<IssuedAgentRunMcpGrant, 'grantId' | 'scopes'>, log: Logger): boolean {
+    if (!definition.capabilities.includes('merge')) return false;
+    if (grant.scopes.includes('merge')) return true;
+    log.warn({ definitionId: definition.id, grantId: grant.grantId, scopes: grant.scopes },
+        'Automation has the merge capability, but the MCP grant was issued without the merge scope: the instance scope ceiling excludes merge, so the acting step cannot merge pull requests');
+    return false;
+}
+
 export function agentRunActionTaskId(runId: string): string {
     return `agent-run-${runId}-action`;
 }
@@ -263,9 +277,9 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             // 4. Same workspace rules as the report; its own directory, since an
             //    auto run's report workspace may not be cleaned up yet.
             workspace = await deps.prepareWorkspace({ runId: `${runId}-action`, definition, githubToken: token, octokit, logger: log });
-            const prompt = deps.buildPrompt({ definition, run: { id: runId }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote });
 
-            // 5. Execute with the action-phase MCP grant, within the spend cap.
+            // 5. Execute with the action-phase MCP grant, within the spend cap. The
+            //    prompt follows the grant, so what it permits is what the tools permit.
             const { agent, alias, model } = await deps.resolveAgent(definition, log);
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, agentRunExecutionUpdate(alias, model));
             const current = await deps.getRun(runId);
@@ -273,6 +287,8 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             const stopped = await followCancelledTask(context, 'before its agent started');
             if (stopped) return stopped;
             mcpGrant = await deps.mcpGrants.request(runId, 'action');
+            const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
+            const prompt = deps.buildPrompt({ definition, run: { id: runId }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },

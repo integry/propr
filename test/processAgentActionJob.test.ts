@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, describe, mock, test } from 'node:test';
 import type { Job } from 'bullmq';
+import type { Logger } from 'pino';
 import type { AutomationRunState } from '@propr/shared';
 import type { AgentRunJobData, AgentTaskOptions, StoredAgentDefinition, StoredAgentRun } from '@propr/core';
 
 const {
   AGENT_ACTION_ABANDONED_REASON,
+  actionMayMerge,
   agentRunActionTaskId,
   createAgentActionProcessor,
 } = await import('../src/jobs/processAgentActionJob.ts');
@@ -57,7 +59,7 @@ const SUCCESS = {
 };
 
 /** In-memory run and task stores honouring compare-and-set and terminal task states. */
-function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; task?: string | null } = {}) {
+function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; task?: string | null; grantScopes?: string[] } = {}) {
   let current = options.run ?? actingRun();
   let task: string | null = options.task ?? null;
   const transitions: Array<{ from: readonly AutomationRunState[]; to: AutomationRunState; patch: Record<string, unknown> }> = [];
@@ -111,7 +113,7 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
     mcpGrants: {
       request: async (_runId, phase) => {
         grants.requested.push(phase);
-        return { grantId: 'grant-1', phase, url: 'http://api:4000/api/mcp', token: 'mcp-secret', expiresAt: NOW + 60_000 };
+        return { grantId: 'grant-1', phase, url: 'http://api:4000/api/mcp', token: 'mcp-secret', expiresAt: NOW + 60_000, scopes: options.grantScopes ?? ['read', 'plan', 'execute'] };
       },
       revoke: async (_runId, grant) => { grants.revoked.push(grant.grantId); },
     },
@@ -337,6 +339,37 @@ describe('processAgentActionJob', () => {
     assert.equal(h.cleanup.mock.callCount(), 1);
   });
 
+  test('the acting prompt permits merging only when the definition asks and the grant holds the merge scope', async () => {
+    const merging = definition({ capabilities: ['repository_read', 'merge'] });
+    const granted = harness({ run: actingRun({ definitionSnapshot: merging }), grantScopes: ['read', 'plan', 'execute', 'merge'] });
+    assert.equal((await createAgentActionProcessor(granted.deps)(actionJob())).status, 'complete');
+    const grantedPrompt = (granted.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions).prompt;
+    assert.match(grantedPrompt, /You may merge a pull request with `merge_pull_request`/);
+    assert.equal((granted.buildPrompt.mock.calls[0].arguments[0] as { mergeAllowed?: boolean }).mergeAllowed, true);
+
+    // The instance scope ceiling withheld merge: the prompt must not promise what the tools refuse.
+    const withheld = harness({ run: actingRun({ definitionSnapshot: merging }) });
+    assert.equal((await createAgentActionProcessor(withheld.deps)(actionJob())).status, 'complete');
+    assert.match((withheld.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions).prompt, /Never merge pull requests/);
+
+    // Without the capability the scope is never asked for, and the prompt forbids merging.
+    const plain = harness();
+    assert.equal((await createAgentActionProcessor(plain.deps)(actionJob())).status, 'complete');
+    assert.match((plain.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions).prompt, /Never merge pull requests/);
+    assert.equal((plain.buildPrompt.mock.calls[0].arguments[0] as { mergeAllowed?: boolean }).mergeAllowed, false);
+  });
+
+  test('a withheld merge scope is logged once per acting step, with the grant and its scopes', () => {
+    const warnings: unknown[] = [];
+    const log = { warn: (fields: unknown) => { warnings.push(fields); } } as unknown as Logger;
+    const grant = { grantId: 'grant-1', scopes: ['read', 'plan', 'execute'] };
+    assert.equal(actionMayMerge(definition({ capabilities: ['repository_read', 'merge'] }), grant, log), false);
+    assert.deepEqual(warnings, [{ definitionId: 'def-1', grantId: 'grant-1', scopes: ['read', 'plan', 'execute'] }]);
+    assert.equal(actionMayMerge(definition(), grant, log), false);
+    assert.equal(actionMayMerge(definition({ capabilities: ['merge'] }), { ...grant, scopes: [...grant.scopes, 'merge'] }, log), true);
+    assert.equal(warnings.length, 1);
+  });
+
   test('the action task id is deterministic', () => {
     assert.equal(agentRunActionTaskId('abc'), 'agent-run-abc-action');
   });
@@ -359,6 +392,20 @@ describe('buildAgentActionPrompt', () => {
     assert.match(prompt, /list_tasks/);
     assert.match(prompt, /list_todos/);
     assert.match(prompt, /Never merge pull requests, deploy, or change settings/);
+    assert.match(prompt, /close a pull request with `close_pull_request` only when it should not proceed at all/);
+    assert.match(prompt, /request a ProPR review with `review_pull_request`/);
+    assert.match(prompt, /approve the waiting CI runs .* with `approve_pull_request_workflow_runs`, but only after reading its whole diff/);
+  });
+
+  test('the merge rule follows the grant: forbidden by default, permitted under the tool preconditions with the merge scope', () => {
+    const forbidden = buildAgentActionPrompt(input);
+    assert.match(forbidden, /Never merge pull requests/);
+    assert.ok(!forbidden.includes('You may merge'));
+    const permitted = buildAgentActionPrompt({ ...input, mergeAllowed: true });
+    assert.match(permitted, /You may merge a pull request with `merge_pull_request`, but only one the report shows is ready/);
+    assert.match(permitted, /Pass the exact head you examined as expectedHead/);
+    assert.match(permitted, /Never deploy or change settings or configuration/);
+    assert.ok(!permitted.includes('Never merge pull requests'));
   });
 
   test('asks for idempotency keys scoped to the run', () => {

@@ -8,6 +8,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection, db as coreDb, runMigrations, signAgentRunGrantRequest, type StoredAgentRun } from '@propr/core';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
 import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
+import { up as accessLogMigration } from '../../core/src/db/migrations/20260923010000_add_mcp_access_log.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider, type McpGrant } from '../mcp/oauth.js';
 import { McpPolicy } from '../mcp/policy.js';
@@ -17,6 +18,7 @@ import { configureDemoMode } from '../demoMode.js';
 import {
   AGENT_RUN_GRANT_RECORD_KIND,
   AGENT_RUN_MCP_CLIENT_ID,
+  agentRunGrantScopes,
   issueAgentRunGrant,
   revokeAgentRunGrant,
   revokeAgentRunPhaseGrant,
@@ -60,6 +62,7 @@ beforeEach(async () => {
   await db.schema.createTable('task_drafts', table => table.string('draft_id').primary());
   await mcpMigration(db);
   await lifecycleMigration(db);
+  await accessLogMigration(db);
   await db.schema.createTable('instance_members', table => { table.string('github_user_id').primary(); table.string('role'); table.string('source'); });
   await db('instance_members').insert({ github_user_id: OWNER, role: 'member', source: 'local' });
   grantDeps = { database: db, resolveConfig: async () => config, userGrants: activeGrant };
@@ -161,18 +164,43 @@ test('a report grant is read-only, limited to the run snapshot repositories and 
   const revoked = await post('/revoke', { ...signed('report'), grantId: response.body.grantId });
   assert.equal(revoked.status, 200);
   assert.equal(revoked.body.revoked, true);
+  // The worker warns about a grant that was never used; this one made no MCP call.
+  assert.equal(revoked.body.calls, 0);
   await assert.rejects(policy.authenticate(token));
   assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), undefined);
   assert.equal((await post('/revoke', signed('report'))).body.revoked, false);
 });
 
-test('an action grant may plan and execute but never merge, deploy, manage or review', async () => {
+test('the merge capability adds the merge scope to the acting grant alone, and the response lists the scopes held', async () => {
+  assert.deepEqual(agentRunGrantScopes('report', ['repository_read', 'merge']), ['read']);
+  assert.deepEqual(agentRunGrantScopes('action', ['repository_read']), ['read', 'plan', 'execute', 'review']);
+  assert.deepEqual(agentRunGrantScopes('action', ['repository_read', 'merge']), ['read', 'plan', 'execute', 'review', 'merge']);
+  assert.deepEqual(agentRunGrantScopes('action'), ['read', 'plan', 'execute', 'review'], 'A snapshot from before capabilities were stored');
+
+  const snapshot = { ...run().definitionSnapshot!, capabilities: ['repository_read', 'merge'] } as StoredAgentRun['definitionSnapshot'];
+  runs.set('run-1', run({ state: 'acting', definitionSnapshot: snapshot }));
+  const action = await post('', signed('action'));
+  assert.equal(action.status, 200, JSON.stringify(action.body));
+  assert.deepEqual(action.body.scopes, ['read', 'plan', 'execute', 'review', 'merge']);
+  const principal = await policy.authenticate(action.body.token as string);
+  assert.deepEqual(principal.scopes, ['read', 'plan', 'execute', 'review', 'merge']);
+  policy.requireScope(principal, 'merge');
+  for (const scope of ['deploy', 'manage'] as const) assert.throws(() => policy.requireScope(principal, scope), new RegExp(`requires ${scope}`));
+
+  runs.set('run-1', run({ definitionSnapshot: snapshot }));
+  const report = await post('', signed('report'));
+  assert.equal(report.status, 200, JSON.stringify(report.body));
+  assert.deepEqual(report.body.scopes, ['read']);
+});
+
+test('an action grant may plan, execute and review but never merge, deploy or manage', async () => {
   runs.set('run-1', run({ state: 'acting' }));
   const response = await post('', signed('action'));
   assert.equal(response.status, 200, JSON.stringify(response.body));
   const principal = await policy.authenticate(response.body.token as string);
-  assert.deepEqual(principal.scopes, ['read', 'plan', 'execute']);
-  for (const scope of ['merge', 'deploy', 'manage', 'review'] as const) assert.throws(() => policy.requireScope(principal, scope), new RegExp(`requires ${scope}`));
+  assert.deepEqual(principal.scopes, ['read', 'plan', 'execute', 'review']);
+  policy.requireScope(principal, 'review');
+  for (const scope of ['merge', 'deploy', 'manage'] as const) assert.throws(() => policy.requireScope(principal, scope), new RegExp(`requires ${scope}`));
   // `other/repo` is configured on the instance and writable on GitHub, but outside the definition.
   await runMigrations();
   const repos = JSON.stringify(['acme/repo', 'acme/docs', 'other/repo'].map(name => ({ name, enabled: true })));

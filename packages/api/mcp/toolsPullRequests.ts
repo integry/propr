@@ -28,6 +28,7 @@ import {
 } from './pullRequestPreconditions.js';
 import { type FixReanchorReport, type FixRecord, appliedSelection, reanchorFixRecords } from './fixReanchor.js';
 import { MAX_REVIEW_MODELS, postModelReviews, resolveReviewModels, reviewModelSchema } from './reviewModels.js';
+import { addPullRequestTriageTools } from './toolsPullRequestTriage.js';
 import { ULTRAFIX_COMMAND_TOOLS, resolveUltrafixGoal, resolveUltrafixMaxCycles, ultrafixGoalSchema } from './ultrafix.js';
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
@@ -297,6 +298,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
       return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead, resolvedHead, headSource, state: 'posted' } };
     } });
+  addPullRequestTriageTools(tools, { appendOnlyMutation, mutation, pull });
   tools.push({ name: 'set_pull_request_model', description: 'Route an open PR to exactly one enabled model by converging its managed llm-* labels. Only labels the repository already defines are used; none are created.', scope: 'execute',
     schema: z.object({ ...mutation, model: idSchema }).strict(), run: async ({ principal, args }) => withModelLabelLease(deps.redisClient, args.repository, args.pullRequest, async lease => {
       const choice = await resolveEnabledModel(args.model);

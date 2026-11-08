@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Request, RequestHandler, Response } from 'express';
 import type { Knex } from 'knex';
 import { db, getAgentRunById, logger, signAgentRunGrantRequest, type StoredAgentRun } from '@propr/core';
+import { loadMcpGrantActivity } from '../mcp/accessLog.js';
 import { McpError } from '../mcp/config.js';
 import {
   AGENT_RUN_GRANT_PHASES,
@@ -111,9 +112,9 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
       const definition = run.definitionSnapshot;
       if (!definition) { sendError(res, 409, 'INVALID_RUN_STATE', 'The agent definition snapshot is unreadable.'); return; }
       const grant = await issueAgentRunGrant({
-        ownerId: run.ownerId, definitionName: definition.name, runId, phase: body.phase, repositories: definition.repositories,
+        ownerId: run.ownerId, definitionName: definition.name, runId, phase: body.phase, repositories: definition.repositories, capabilities: definition.capabilities,
       }, grantDeps);
-      res.set('Cache-Control', 'no-store').json({ grantId: grant.grantId, url: mcpUrl(), token: grant.accessToken, expiresAt: grant.expiresAt });
+      res.set('Cache-Control', 'no-store').json({ grantId: grant.grantId, url: mcpUrl(), token: grant.accessToken, expiresAt: grant.expiresAt, scopes: grant.scopes });
     } catch (error) {
       sendGrantError(res, error, 'issue', runId);
     }
@@ -127,7 +128,11 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
     const runId = req.params.runId as string;
     try {
       const revoked = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy });
-      res.json({ revoked: revoked !== null, grantId: revoked });
+      // How much the grant was used, so the worker can tell a run whose agent
+      // never reached the endpoint from one that simply chose not to call it.
+      const activity = revoked ? await loadMcpGrantActivity(database, [revoked]) : null;
+      const calls = revoked ? (activity ? activity.get(revoked)?.recentRequests ?? 0 : null) : null;
+      res.json({ revoked: revoked !== null, grantId: revoked, calls });
     } catch (error) {
       sendGrantError(res, error, 'revoke', runId);
     }

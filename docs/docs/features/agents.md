@@ -59,6 +59,7 @@ Each capability can be switched on or off separately. The default is `repository
 | `repository_read` | Checks out the repositories and gives the container a read-only GitHub token. Off: the workspace is an empty git directory with only the input files. No clone is mounted and no repository token is issued. | Enforced by ProPR | Enforced by ProPR | Enforced by ProPR |
 | `web` | Allows web search and fetching URLs. | Enforced natively (`WebFetch`, `WebSearch` disallowed when off) | Enforced natively (`web_search` disabled when off) | **Best effort**: the prompt tells the agent not to use the web, but the runtime has no switch to enforce it |
 | `propr_mcp` | Mounts ProPR's MCP server in the report run with a read-only grant, so the agent can read tasks, PRs, TODOs and docs. | Supported | Supported | **Not supported**: saving such a definition is refused |
+| `merge` | Adds the `merge` MCP scope to the acting step's grant, so the acting agent may merge pull requests through `merge_pull_request`. Off (the default): the acting step is told it must never merge and holds no merge scope. Has no effect on the report step or on `dry_run` automations. | Supported | Supported | **Not supported**: the acting step needs ProPR tools |
 
 The acting step of `preview` and `auto` automations always uses ProPR's MCP server, so those modes also require Claude Code or Codex (or a synthetic pool whose enabled members all support it). `web` in the acting step follows the definition.
 
@@ -222,13 +223,18 @@ In `preview` (after approval) and `auto` mode, ProPR starts a second agent run, 
 The acting agent **can**, within the automation's repositories:
 
 - create tasks, plans and goals, TODOs and pull request comments;
-- read anything a `read` grant can (tasks, PRs, TODOs, docs).
+- add or remove plain pull request labels with `update_pull_request_labels`, for example the instance's trigger label that hands a PR to ProPR (managed `llm-*` and `ultrafix` labels stay with their own tools);
+- request a ProPR review with `review_pull_request`, and run `fix_review_findings`, `run_ultrafix` or `start_ultrafix` on a pull request;
+- approve the CI runs of a pull request from a fork or a first-time contributor with `approve_pull_request_workflow_runs`, after reading its diff. The tool approves only the head the agent examined and refuses a pull request that changes workflow or action definitions under `.github`, which a person must approve in GitHub;
+- close a pull request that should not proceed at all (a duplicate, out of scope, invalid or harmful) with `close_pull_request`, which posts the reason as a comment first and closes only the head the agent examined;
+- read anything a `read` grant can (tasks, PRs, TODOs, docs);
+- with the `merge` capability, merge a pull request with `merge_pull_request`. The tool still requires the exact head the agent examined, passing checks and satisfied review and protection rules, and the prompt limits merges to pull requests the report shows are ready.
 
-It receives the `read`, `plan` and `execute` MCP scopes, limited to the definition's repositories and to what the owner can access. Each creating call carries an idempotency key derived from the run id, so a retried acting step does not create duplicates. The prompt also tells it to check for existing tasks and TODOs before creating new ones.
+It receives the `read`, `plan`, `execute` and `review` MCP scopes, plus `merge` when the capability is on, limited to the definition's repositories, to what the owner can access and to the instance's MCP scope ceiling. Each creating call carries an idempotency key derived from the run id, so a retried acting step does not create duplicates. The prompt also tells it to check for existing tasks and TODOs before creating new ones.
 
 The acting agent **cannot**:
 
-- merge pull requests, deploy, review, publish, or change settings or configuration (no `merge`, `deploy`, `review`, `publish` or `manage` scope);
+- deploy, publish, or change settings or configuration (no `deploy`, `publish` or `manage` scope), nor merge without the `merge` capability;
 - touch repositories outside the definition;
 - edit files, commit, push or open pull requests itself (its workspace is never committed; changes go through the tasks it creates);
 - trigger, approve or reject automation runs: those tools refuse every agent-issued grant with `AGENT_RECURSION_FORBIDDEN`, so coding agents cannot start other automations.
@@ -281,12 +287,15 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 - **`GITHUB_AUTHORIZATION_REQUIRED`.** A run with `propr_mcp`, or an acting step, failed with "ProPR MCP grant request failed (GITHUB_AUTHORIZATION_REQUIRED): The agent owner must sign in to ProPR to authorize GitHub access." The owner's stored GitHub authorization is missing or expired. Sign in to the Web UI again, then trigger a new run.
 - **`MCP_DISABLED`.** The grant request failed because ProPR's MCP server is not enabled on this instance. An administrator enables it under **Settings → Integrations & MCP → MCP Server** (see [MCP](./mcp.md)). Until then, use `dry_run` automations without `propr_mcp`.
 - **`SYSTEM_TASK_SECRET_MISSING` or "ProPR API unreachable".** The worker could not request the grant. `SYSTEM_TASK_SECRET` must be set, and identical, on the API and worker. The worker must reach the API at `PROPR_INTERNAL_API_URL` (default `http://api:4000`). Agent containers must reach the MCP endpoint at `PROPR_AGENT_MCP_URL`. See [execution safety](./execution-safety.md#agent-runs).
+- **The report says the `propr` MCP tools were unavailable.** The grant was issued but the agent container never reached the MCP endpoint; the worker log carries "Agent run MCP grant ended without a single recorded call" with the URL and Docker network it used. A container with a grant joins the worker's Compose network so the default `http://api:4000/api/mcp` resolves. If the worker runs outside Compose, set `PROPR_AGENT_DOCKER_NETWORK` to the API's network, or point `PROPR_AGENT_MCP_URL` at an address the default bridge can reach.
 - **The schedule turned itself off.** When the owner is no longer an instance member, the daemon skips the slot and disables the automation's schedule. The definition and its history stay. A new owner has to recreate the automation: definitions cannot be transferred in v1.
 - **The schedule cannot be evaluated.** A stored expression that no longer parses disables the schedule with that reason. Edit and save a valid one.
 - **`REPOSITORY_FORBIDDEN` or a repository access error on trigger.** Your GitHub account, or the MCP grant you are using, lost access to one of the automation's repositories. MCP hides such automations from `list_automation_definitions`.
 - **`AGENT_INVALID`.** The agent or model no longer exists, a repository is no longer enabled, or the agent does not support `propr_mcp` while the definition or its autonomy mode needs it. Edit the definition.
 - **"The worker stopped before recording the result."** The run's task ended, but the worker died before storing the outcome. The daemon fails such runs 10 minutes later. Trigger a new run.
 - **The agent used the web although `web` is off.** Antigravity, OpenCode and Vibe only receive a prompt instruction. Use Claude Code or Codex for enforcement.
+- **The acting step says it is not allowed to merge.** That is the default: merging needs the `merge` capability on the definition. If the capability is on and the step still cannot merge, the worker log carries "Automation has the merge capability, but the MCP grant was issued without the merge scope": the instance's MCP scope ceiling (**Settings → Integrations & MCP → MCP Server**) excludes `merge`.
+- **The acting step says it cannot request a review or approve CI runs.** Acting grants carry the `review` scope, and the `approve_pull_request_workflow_runs` tool exists, from this version on; an older API issues neither, so upgrade the API and worker together. The instance's MCP scope ceiling may also exclude `review`. CI approval is refused with `CI_CONFIGURATION_CHANGED` when the pull request changes workflow files: approve those in GitHub after reading them.
 
 ## Deferred beyond v1
 

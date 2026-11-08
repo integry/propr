@@ -4,27 +4,16 @@ import { MemoryRouter } from 'react-router-dom';
 import { validateAutomationSchedule } from '@propr/shared';
 import { AgentEditor } from './AgentEditor';
 import {
-  AutomationApiError,
-  createAutomationDefinition,
-  deleteAutomationAttachment,
-  deleteAutomationDefinition, getAutomationCapacity, getAutomationDefinition,
-  triggerAutomationRun,
-  updateAutomationDefinition,
-  uploadAutomationAttachment,
-  type AutomationDefinitionRecord,
+  AutomationApiError, createAutomationDefinition, deleteAutomationAttachment, deleteAutomationDefinition, getAutomationCapacity,
+  getAutomationDefinition, triggerAutomationRun, updateAutomationDefinition, uploadAutomationAttachment, type AutomationDefinitionRecord,
 } from '../../api/automationDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
 import { useAgentEditor } from './useAgentEditor';
 
 vi.mock('../../api/automationDefinitionsApi', async importOriginal => ({
   ...(await importOriginal<typeof import('../../api/automationDefinitionsApi')>()),
-  createAutomationDefinition: vi.fn(),
-  getAutomationDefinition: vi.fn(),
-  updateAutomationDefinition: vi.fn(),
-  deleteAutomationDefinition: vi.fn(),
-  uploadAutomationAttachment: vi.fn(),
-  deleteAutomationAttachment: vi.fn(),
-  triggerAutomationRun: vi.fn(), getAutomationCapacity: vi.fn(),
+  createAutomationDefinition: vi.fn(), getAutomationDefinition: vi.fn(), updateAutomationDefinition: vi.fn(), deleteAutomationDefinition: vi.fn(),
+  uploadAutomationAttachment: vi.fn(), deleteAutomationAttachment: vi.fn(), triggerAutomationRun: vi.fn(), getAutomationCapacity: vi.fn(),
 }));
 
 vi.mock('../../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
@@ -109,10 +98,17 @@ describe('AgentEditor', () => {
     expect(mcpToggle).toBeEnabled();
     fireEvent.click(mcpToggle);
     expect(mcpToggle).toBeChecked();
+    const mergeToggle = screen.getByRole('switch', { name: /Merge pull requests/ });
+    expect(mergeToggle).toBeEnabled();
+    fireEvent.click(mergeToggle);
+    expect(mergeToggle).toBeChecked();
 
     fireEvent.change(agentSelect, { target: { value: 'opencode-main' } });
     expect(mcpToggle).toBeDisabled();
     expect(mcpToggle).not.toBeChecked();
+    expect(mergeToggle).toBeDisabled();
+    expect(mergeToggle).not.toBeChecked();
+    expect(screen.getByTestId('agent-capability-merge-hint')).toHaveTextContent('merging happens in the acting step');
     expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: only Claude and Codex');
     expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on OpenCode');
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeDisabled();

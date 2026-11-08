@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import { signAgentRunGrantRequest } from '@propr/core';
+import { mcpContainerNetwork } from './mcpNetwork.js';
 import type { AgentRunMcpGrant, AgentRunPhase } from './toolPolicy.js';
 
 /**
@@ -16,6 +17,8 @@ export interface IssuedAgentRunMcpGrant extends AgentRunMcpGrant {
     grantId: string;
     phase: AgentRunPhase;
     expiresAt: number;
+    /** MCP scopes the grant holds after the instance scope ceiling; empty when the API did not say. */
+    scopes: string[];
 }
 
 export class AgentRunMcpGrantError extends Error {
@@ -29,6 +32,15 @@ export interface McpGrantClientOptions {
     environment?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
     now?: () => number;
+    /** Docker network the agent container joins to reach the MCP URL; defaults to the API-only Compose network. */
+    resolveNetwork?: () => Promise<string | null>;
+}
+
+/** Outcome of ending a phase's grant: `calls` is what the MCP access log recorded for it, or null when that is unknown. */
+export interface RevokedAgentRunMcpGrant {
+    revoked: boolean;
+    grantId: string | null;
+    calls: number | null;
 }
 
 export function internalApiUrl(environment: NodeJS.ProcessEnv = process.env): string {
@@ -77,10 +89,15 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
     if (typeof grantId !== 'string' || typeof token !== 'string' || typeof expiresAt !== 'number') {
         throw new AgentRunMcpGrantError('ProPR MCP grant response is malformed', null, 'INVALID_RESPONSE');
     }
+    const scopes = Array.isArray(payload.scopes) ? payload.scopes.filter((scope): scope is string => typeof scope === 'string') : [];
     const environment = options.environment ?? process.env;
     // An explicit worker-side URL wins: it describes the network the worker launches containers on.
     const mcpUrl = environment.PROPR_AGENT_MCP_URL || (typeof url === 'string' && url ? url : agentContainerMcpUrl(environment));
-    return { grantId, phase, url: mcpUrl, token, expiresAt };
+    // A custom endpoint does not authorize joining any Compose network.
+    const network = environment.PROPR_AGENT_MCP_URL?.trim() && !environment.PROPR_AGENT_DOCKER_NETWORK?.trim()
+        ? null
+        : await (options.resolveNetwork ?? (() => mcpContainerNetwork({ environment })))();
+    return { grantId, phase, url: mcpUrl, token, expiresAt, network, scopes };
 }
 
 /**
@@ -92,13 +109,21 @@ export async function revokeAgentRunMcpGrant(
     runId: string,
     grant: Pick<IssuedAgentRunMcpGrant, 'phase'> & { grantId?: string; expiredBy?: number },
     options: McpGrantClientOptions = {},
-): Promise<void> {
-    await postSigned('/mcp-grants/revoke', runId, { phase: grant.phase, grantId: grant.grantId, expiredBy: grant.expiredBy }, options);
+): Promise<RevokedAgentRunMcpGrant> {
+    const payload = await postSigned('/mcp-grants/revoke', runId, { phase: grant.phase, grantId: grant.grantId, expiredBy: grant.expiredBy }, options);
+    return {
+        revoked: payload.revoked === true,
+        grantId: typeof payload.grantId === 'string' ? payload.grantId : null,
+        calls: typeof payload.calls === 'number' && Number.isFinite(payload.calls) ? payload.calls : null,
+    };
 }
 
 /**
  * Revokes a phase's grant when the phase ends. Expiry is only a backstop; a
- * revoke that fails is logged and left to the terminal-run sweep.
+ * revoke that fails is logged and left to the terminal-run sweep. A grant that
+ * ends without one recorded call is reported too: the agent most likely never
+ * reached the MCP endpoint, which otherwise only shows up as the agent saying
+ * the `propr` tools were unavailable.
  */
 export async function revokeGrantQuietly(
     revoke: typeof revokeAgentRunMcpGrant,
@@ -108,7 +133,13 @@ export async function revokeGrantQuietly(
 ): Promise<void> {
     if (!grant) return;
     try {
-        await revoke(runId, grant);
+        const result = await revoke(runId, grant) as RevokedAgentRunMcpGrant | undefined;
+        if (result?.revoked && result.calls === 0) {
+            log.warn(
+                { runId, phase: grant.phase, grantId: grant.grantId, mcpUrl: grant.url, network: grant.network ?? 'bridge' },
+                'Agent run MCP grant ended without a single recorded call: the agent container most likely could not reach the ProPR MCP endpoint (check PROPR_AGENT_MCP_URL and PROPR_AGENT_DOCKER_NETWORK)',
+            );
+        }
     } catch (error) {
         log.warn({ runId, grantId: grant.grantId, err: error instanceof Error ? error.message : String(error) }, 'Could not revoke agent run MCP grant');
     }

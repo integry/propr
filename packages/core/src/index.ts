@@ -524,6 +524,7 @@ export {
     PROPR_MCP_BEARER_TOKEN_ENV,
     type ToolPolicyLaunchArgs
 } from './agents/agentToolPolicy.js';
+export { AGENT_CONTAINER_DEFAULT_NETWORK, agentContainerNetwork, isValidDockerNetworkName } from './agents/agentContainerNetwork.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, loadEffectiveAgentBaseImages, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management

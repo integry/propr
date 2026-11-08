@@ -90,7 +90,14 @@ and the pull request's model labels never change. `get_operation` tracks each
 review. `review_pull_request`, `fix_review_findings`, `run_ultrafix` and
 `comment_on_pull_request` accept an optional `expectedHead`: without it they act
 on the head at call time and report it as `resolvedHead`; with it a moved head
-fails with `STALE_HEAD`.
+fails with `STALE_HEAD`. `update_pull_request_labels` works the same way for
+plain labels; it never creates a label and leaves the managed `llm-*` and
+`ultrafix` labels to their own tools. `close_pull_request` closes a PR that
+should not proceed (a duplicate, out of scope, invalid or harmful), posting the
+reason as a comment first; it requires `expectedHead`.
+`approve_pull_request_workflow_runs` approves the CI runs waiting on a fork or
+first-time-contributor PR, also pinned to `expectedHead`; it refuses a PR that
+changes workflow files.
 
 `publish_plan` needs the plan's exact `expectedRevision`. If publication fails
 partway, call it again with `resume: true` to continue from the issues already

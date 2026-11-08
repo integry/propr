@@ -260,6 +260,7 @@ services:
         condition: service_started
     networks:
       - propr-net
+      - propr-agent-mcp
 
   docs:
     build:
@@ -274,6 +275,9 @@ services:
 
 networks:
   propr-net:
+    driver: bridge
+  # Agent containers can reach the API without joining the private service network.
+  propr-agent-mcp:
     driver: bridge
 
 volumes:
