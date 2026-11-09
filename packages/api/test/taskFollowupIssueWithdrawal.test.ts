@@ -95,7 +95,7 @@ await mock.module('../../../src/jobs/repositoryWorkflow.js', { namedExports: {
 } });
 // The worker's own Redis connection is never opened: admission has no repository policy to hold a slot for.
 await mock.module('../../../src/jobs/issueJob/config.js', { namedExports: {
-  redisClient: { eval: async () => 1 },
+  redisClient: { eval: async () => 1, get: async () => null, set: async () => 'OK', hgetall: async () => ({}) },
   DEFAULT_MODEL_NAME: 'claude-opus-5-5', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
 const { processGitHubIssueJob } = await import('../../../src/jobs/processGitHubIssueJob.js');

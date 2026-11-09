@@ -45,7 +45,7 @@ await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
   finalizeEpicPlanIfComplete: async () => { events.push('finalize'); return true; },
 } });
 await mock.module('@propr/core', { namedExports: { safeUpdateLabels } });
-const { completeIssueLabels } = await import('../../../src/jobs/issueJobCompletionLabels.js');
+const { completeIssueLabels, completeIssueLabelsBestEffort } = await import('../../../src/jobs/issueJobCompletionLabels.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, startEpicQueueHead, reconcileEpicExecutionQueues } =
   await import('../src/services/taskPlanning/epicExecutionQueue.js');
 
@@ -55,12 +55,25 @@ await database.schema.createTable('task_drafts', table => {
 await database.schema.createTable('plan_issues', table => {
   table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.string('status');
 });
+await database.schema.createTable('tasks', table => {
+  table.string('task_id').primary(); table.string('repository'); table.integer('issue_number'); table.string('task_type');
+});
+await database.schema.createTable('task_history', table => {
+  table.increments('history_id'); table.string('task_id'); table.string('state');
+});
 for (const migrate of [up, finalization, useEpic, parallel, recovery]) await migrate(database);
+/** Records the issue's worker task in `state`, as the worker state manager would. */
+async function workerTask(state: string, taskId = 'task-10') {
+  await database('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 10, task_type: 'issue' }).onConflict('task_id').ignore();
+  await database('task_history').insert({ task_id: taskId, state });
+}
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('epic_execution_queues').delete();
   await database('task_drafts').delete();
   await database('plan_issues').delete();
+  await database('task_history').delete();
+  await database('tasks').delete();
   await database('task_drafts').insert({ draft_id: 'draft' });
   await database('plan_issues').insert([
     { draft_id: 'draft', issue_number: 10, status: 'merged' },
@@ -93,6 +106,7 @@ test('custom PRIMARY_PROCESSING_LABELS and old jobs without triggeringLabel use 
 });
 
 test('a merge before worker completion holds the cursor until done and cleanup succeed', async () => {
+  await workerTask('processing');
   await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
   assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
   assert.match((await getEpicExecutionQueue('draft'))?.blockedReason ?? '', /Waiting for 'AI-done'/);
@@ -113,6 +127,7 @@ test('a merged head whose run will never publish done releases its bare trigger'
 });
 
 test('failed completion publication keeps the trigger and prevents handoff', async () => {
+  await workerTask('processing');
   failAdd = true;
   await assert.rejects(complete(), /Failed to add 'AI-done'/);
   await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
@@ -201,9 +216,33 @@ test('mixed completion states release only the triggers whose work is finished',
 });
 
 test('a merged head still waits for the queue trigger while another trigger is done', async () => {
+  await workerTask('processing');
   configured = ['AI', 'Assistant'];
   labels = new Set(['AI', 'AI-processing', 'Assistant', 'Assistant-done']);
   await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
   assert.deepEqual(events, []);
   assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+});
+
+test('a finished worker whose done publication and processing cleanup both failed does not block handoff', async () => {
+  await workerTask('processing');
+  failAdd = true; failRemove = true;
+  const result = await completeIssueLabelsBestEffort({ octokit: octokit as never,
+    issueRef: { repoOwner: 'acme', repoName: 'repo', number: 10, triggeringLabel: 'AI' },
+    AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', correlatedLogger: log as never });
+  assert.equal(result.published, false);
+  assert.deepEqual([...labels].sort(), ['AI', 'AI-processing', 'base-epic', 'bug'], 'both label mutations failed');
+
+  // GitHub recovers and the PR merges while the worker is still finishing post-processing.
+  failAdd = false; failRemove = false; events.length = 0;
+  await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+
+  // Once the worker's task is terminal, reconciliation releases the leftover labels and advances.
+  await workerTask('completed');
+  await reconcileEpicExecutionQueues();
+  assert.deepEqual(events, ['remove:10:AI', 'remove:10:AI-processing', 'start:20']);
+  assert.deepEqual([...labels].sort(), ['base-epic', 'bug']);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1);
+  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null);
 });

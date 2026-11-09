@@ -3,6 +3,7 @@ import { after, beforeEach, test } from 'node:test';
 import { mock } from 'node:test';
 import type { Job } from 'bullmq';
 import type { IssueJobData } from '@propr/core';
+import { createNoChangeCompletionStoreDouble } from './fixtures/noChangeCompletionStoreDouble.js';
 
 /**
  * A no-change run that published its done marker but could not release its
@@ -18,10 +19,12 @@ const log = { info() {}, debug() {}, warn() {}, error() {} };
 const tasks = new Map<string, { state: string; terminalReason?: string }>();
 let liveLabels: string[] = [];
 let rejectPrimaryRemoval = false;
+let failStatusWrite = false;
 const ran: string[] = [];
 const comments: string[] = [];
 const statusWrites: Array<[string, number, string]> = [];
-const store = new Map<string, string>();
+const redisDouble = createNoChangeCompletionStoreDouble();
+const store = { clear: () => redisDouble.clear(), get size() { return redisDouble.records().length; } };
 
 const stateManager = {
   createTaskStateIfAbsent: async (taskId: string) => {
@@ -52,6 +55,7 @@ const octokit = {
       liveLabels = liveLabels.filter(label => label !== body.name);
       return { data: {} };
     }
+    if (route.startsWith('GET ') && route.endsWith('/comments')) return { data: comments.map(text => ({ body: text })) };
     if (route.endsWith('/comments')) { comments.push(String(body.body)); return { data: {} }; }
     throw new Error(`Unexpected request ${route}`);
   },
@@ -72,20 +76,14 @@ await mock.module('@propr/core', { namedExports: {
   generateCompletionComment: async () => 'Completed.',
   findPlanIssueByRepoAndNumber: async () => ({ draft_id: 'draft', issue_number: 7, status: 'processing' }),
   getEpicExecutionQueue: async () => ({ status: 'active', issues: [7, 8], cursor: 0 }),
-  updatePlanIssueStatus: async (repository: string, issueNumber: number, status: string) => { statusWrites.push([repository, issueNumber, status]); },
+  updatePlanIssueStatus: async (repository: string, issueNumber: number, status: string) => {
+    if (failStatusWrite) throw new Error('database unavailable');
+    statusWrites.push([repository, issueNumber, status]);
+  },
 } });
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
-  redisClient: {
-    eval: async (_script: string, _keys: number, key: string, expected: string, next: string) => {
-      // Only the completion obligation keys its records this way; workflow admission scripts succeed.
-      if (!String(key).startsWith('issue:no-change-completion:')) return 1;
-      if (store.get(key) !== expected) return 0;
-      if (next === '') store.delete(key); else store.set(key, next);
-      return 1;
-    },
-    get: async (key: string) => store.get(key) ?? null,
-    set: async (key: string, value: string) => { store.set(key, value); return 'OK'; },
-  },
+  // Workflow admission scripts succeed; the completion obligation's own commands are modelled.
+  redisClient: redisDouble,
   DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
 const { handleNoCodeChanges } = await import('../src/jobs/issueJobPostProcessingHelpers.js');
@@ -124,10 +122,10 @@ const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJo
 after(core.closeConnection);
 
 /** A model job outside any dispatch, so the sibling exemption never applies to it. */
-function issueJob(id: string): Job<IssueJobData> {
+function issueJob(id: string, correlationId = 'submission'): Job<IssueJobData> {
   const job = {
     id, name: 'processGitHubIssue',
-    data: { repoOwner: 'o', repoName: 'r', number: 7, isChildJob: true, agentAlias: 'claude', modelName: 'model', correlationId: 'submission',
+    data: { repoOwner: 'o', repoName: 'r', number: 7, isChildJob: true, agentAlias: 'claude', modelName: 'model', correlationId,
       baseBranch: 'main', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' } } as IssueJobData,
     updateData: async (data: IssueJobData) => { job.data = data; },
     updateProgress: async () => undefined,
@@ -137,7 +135,7 @@ function issueJob(id: string): Job<IssueJobData> {
 
 beforeEach(() => {
   tasks.clear(); store.clear(); ran.length = 0; comments.length = 0; statusWrites.length = 0;
-  liveLabels = ['AI', 'auto-merge']; rejectPrimaryRemoval = false;
+  liveLabels = ['AI', 'auto-merge']; rejectPrimaryRemoval = false; failStatusWrite = false;
 });
 
 test('a non-sibling retry finishes a no-change completion whose trigger cleanup failed', async () => {
@@ -171,4 +169,20 @@ test('a retry whose replay still fails keeps the completion owed', async () => {
   assert.deepEqual(ran, ['first']);
   assert.deepEqual(statusWrites, []);
   assert.equal(store.size, 1);
+});
+
+test('admitting renewed work drops an older request\'s owed no-change completion', async () => {
+  failStatusWrite = true;
+  await processGitHubIssueJob(issueJob('first', 'request-1'));
+  assert.deepEqual(liveLabels.sort(), ['AI-done', 'auto-merge']);
+  assert.equal(store.size, 1, 'the status write is owed');
+  failStatusWrite = false;
+
+  // The user removes AI-done and reapplies AI: a new request is admitted and runs.
+  liveLabels = ['AI', 'auto-merge'];
+  await processGitHubIssueJob(issueJob('renewed', 'request-2'));
+  assert.deepEqual(ran, ['first', 'renewed']);
+  assert.deepEqual(statusWrites, [['o/r', 7, 'merged']], 'only the renewed run\'s own completion writes status');
+  assert.equal(store.size, 0, 'the superseded completion is no longer owed');
+  assert.equal(comments.length, 2);
 });

@@ -816,17 +816,10 @@ for (const partial of [{ agent_alias: null, model_name: null }, { agent_alias: '
 
 test('successful no-change head releases its successor with auto-merge disabled', async () => {
   // The completion obligation is retained, then released by compare-and-delete once settled.
-  const completions = new Map<string, string>();
-  await mock.module('../../../src/jobs/issueJob/config.js', { namedExports: { redisClient: {
-    get: async (key: string) => completions.get(key) ?? null,
-    set: async (key: string, value: string) => { completions.set(key, value); return 'OK'; },
-    eval: async (...args: [script: string, keys: number, key: string, expected: string, next: string]) => {
-      const [, , key, expected, next] = args;
-      if (completions.get(key) !== expected) return 0;
-      if (next === '') completions.delete(key); else completions.set(key, next);
-      return 1;
-    },
-  } } });
+  const { createNoChangeCompletionStoreDouble } = await import('../../../test/fixtures/noChangeCompletionStoreDouble.js');
+  const store = createNoChangeCompletionStoreDouble();
+  const completions = { get size() { return store.records().length; } };
+  await mock.module('../../../src/jobs/issueJob/config.js', { namedExports: { redisClient: store } });
   await mock.module('../../../src/github/autoMergeOperations.js', { namedExports: { enableAutoMerge: async () => ({ success: true }) } });
   const { handleNoCodeChanges } = await import('../../../src/jobs/issueJobPostProcessingHelpers.js');
   await run({ issues: [10, 20], autoMerge: false });

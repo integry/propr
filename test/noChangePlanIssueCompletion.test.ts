@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
 import { safeUpdateLabels } from '../packages/core/src/utils/github/labelOperations.js';
+import { createNoChangeCompletionStoreDouble } from './fixtures/noChangeCompletionStoreDouble.js';
 
 /**
  * A no-change auto-merge completion records the plan issue as merged. That
@@ -12,17 +13,8 @@ const statusWrites: Array<[string, number, string]> = [];
 let rejectPrimaryRemoval = false;
 let failStatusWrite = false;
 // Mirrors the Redis commands the completion obligation uses.
-const store = new Map<string, string>();
-const redisClient = {
-    get: async (key: string) => store.get(key) ?? null,
-    set: async (key: string, value: string) => { store.set(key, value); return 'OK'; },
-    eval: async (script: string, _keys: number, key: string, expected: string, next: string) => {
-        assert.match(script, /redis.call\('GET', KEYS\[1\]\)/);
-        if (store.get(key) !== expected) return 0;
-        if (next === '') store.delete(key); else store.set(key, next);
-        return 1;
-    },
-};
+const redisClient = createNoChangeCompletionStoreDouble();
+const store = { clear: () => redisClient.clear(), get size() { return redisClient.records().length; } };
 const getPlanIssuesByDraft = mock.fn(async () => [
     { issue_number: 10, status: 'merged' },
     { issue_number: 20, status: 'pending' },
@@ -62,7 +54,8 @@ await mock.module('../src/github/autoMergeOperations.js', { namedExports: { enab
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: { redisClient } });
 
 const { handleNoCodeChanges } = await import('../src/jobs/issueJobPostProcessingHelpers.js');
-const { readNoChangeCompletion } = await import('../src/jobs/noChangeCompletionObligation.js');
+const { readNoChangeCompletions } = await import('../src/jobs/noChangeCompletionObligation.js');
+const readNoChangeCompletion = async (ref: never) => (await readNoChangeCompletions(ref))[0] ?? null;
 const { replayNoChangeCompletion } = await import('../src/jobs/noChangeCompletion.js');
 const issue = { repoOwner: 'acme', repoName: 'repo', number: 10 } as never;
 const logger = { debug: mock.fn(), info: mock.fn(), warn: mock.fn(), error: mock.fn() } as never;
@@ -151,6 +144,7 @@ test('a failed plan-status write stays owed after the comment, which a replay do
     const held = await readNoChangeCompletion(issue);
     assert.ok(held);
     assert.equal(held.record.comment, undefined, 'the posted comment is no longer owed');
+    assert.equal(held.record.commentClaim, undefined);
 
     failStatusWrite = false;
     requests.length = 0;
@@ -170,10 +164,13 @@ test('a completion whose done marker was never published is not replayed', async
     assert.deepEqual(statusWrites, []);
 });
 
-test('settling never releases a newer completion retained for the same issue', async () => {
+test('settling one completion never releases another retained for the same issue', async () => {
     const obligations = await import('../src/jobs/noChangeCompletionObligation.js');
     const older = await obligations.retainNoChangeCompletion(issue, { processingTag: 'AI-processing', doneTag: 'AI-done', labels: [] });
     const newer = await obligations.retainNoChangeCompletion(issue, { processingTag: 'AI-processing', doneTag: 'AI-done', labels: [] });
     assert.equal(await obligations.replaceNoChangeCompletion(older, null), null);
-    assert.equal((await readNoChangeCompletion(issue))?.record.id, newer.record.id);
+    assert.deepEqual((await readNoChangeCompletions(issue)).map(held => held.record.id), [newer.record.id]);
+    // A stale copy of a record cannot release it.
+    assert.equal(await obligations.replaceNoChangeCompletion({ ...newer, raw: older.raw }, null), null);
+    assert.equal((await readNoChangeCompletions(issue)).length, 1);
 });

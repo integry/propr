@@ -28,7 +28,7 @@ import {
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 import { recordReplayableIssueTask } from '../taskReplacement/store.js';
-import { readNoChangeCompletion } from './noChangeCompletionObligation.js';
+import { admitNoChangeRequest, noChangeRequestId, readNoChangeCompletions } from './noChangeCompletionObligation.js';
 
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
@@ -260,11 +260,13 @@ async function processIssueWithAdmission(
     const cancellation = await checkIssueCancellation(context, currentIssueData);
     if (cancellation) return cancellation;
     currentLabels = currentIssueData.data.labels.map(label => label.name);
-    // A published done marker skips this job, so an owed no-change completion is finished first.
-    const owedCompletion = currentLabels.includes(AI_DONE_TAG) ? await readNoChangeCompletion(issueRef) : null;
-    if (owedCompletion) {
+    // A published done marker skips this job, so owed no-change completions are finished first.
+    const owedCompletions = currentLabels.includes(AI_DONE_TAG) ? await readNoChangeCompletions(issueRef) : [];
+    if (owedCompletions.length) {
       const { replayNoChangeCompletion } = await import('./noChangeCompletion.js');
-      currentLabels = await replayNoChangeCompletion({ octokit, issueRef, currentLabels, held: owedCompletion, correlatedLogger });
+      for (const held of owedCompletions) {
+        currentLabels = await replayNoChangeCompletion({ octokit, issueRef, currentLabels, held, correlatedLogger });
+      }
     }
     const ownTask = await stateManager.getTaskState(taskId);
     const labelCheck = checkLabelConditions(currentLabels, context, ownTask?.state);
@@ -272,6 +274,9 @@ async function processIssueWithAdmission(
       await terminalizeSkippedTask(context, ownTask, labelCheck.terminalReason ?? 'skipped_issue_done');
       return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
     }
+    // Admitted work answers a newer request: an older request's retained no-change
+    // completion must no longer mark the plan issue merged or publish its marker.
+    await admitNoChangeRequest(issueRef, noChangeRequestId(issueRef));
   } catch (error) {
     return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
   }
