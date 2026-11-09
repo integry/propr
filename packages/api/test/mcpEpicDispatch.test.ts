@@ -25,37 +25,41 @@ let beforeAuth: (() => Promise<void>) | undefined;
 let afterIssueRead: (() => Promise<void>) | undefined;
 let afterIssueLoad: (() => Promise<void>) | undefined;
 let afterEpicLookup: (() => Promise<void>) | undefined;
+type GithubRoute = [(route: string) => boolean, (number: number, input: Record<string, unknown>) => Promise<{ data: unknown }>];
+const githubRoutes: GithubRoute[] = [
+  [route => route.startsWith('GET') && route.includes('/issues/'), async number => {
+    const labels = issueLabels.get(number) ?? ['llm-old', 'base-old', 'auto-merge'];
+    const hook = afterIssueRead; afterIssueRead = undefined; await hook?.();
+    return { data: { labels } };
+  }],
+  [route => route.startsWith('POST') && route.endsWith('/comments'), async () => ({ data: {} })],
+  [route => route.startsWith('POST') && route.includes('/labels'), async (number, input) => {
+    if (number === 20 && queuedLabelFailure) throw new Error('Queued selector update unavailable');
+    if (number === 999 && epicLabelFailure) throw new Error('Epic labeling unavailable');
+    const labels = input.labels as string[];
+    labelCalls.push({ number, labels });
+    issueLabels.set(number, [...new Set([...(issueLabels.get(number) ?? []), ...labels])]);
+    return { data: [] };
+  }],
+  [route => route.startsWith('DELETE'), async (number, input) => {
+    issueLabels.set(number, (issueLabels.get(number) ?? []).filter(label => label !== input.name));
+    return { data: {} };
+  }],
+  [route => route.startsWith('GET') && route.includes('/pulls'), async () => {
+    epicLookups++;
+    const data = epicPR ? [{ ...epicPR, labels: [...(issueLabels.get(epicPR.number) ?? epicPR.labels)] }] : [];
+    await afterEpicLookup?.();
+    return { data };
+  }],
+];
 const auth = await import('../../core/src/auth/githubAuth.js');
 await mock.module('../../core/src/auth/githubAuth.js', { namedExports: { ...auth,
   getAuthenticatedOctokit: async () => {
     const hook = beforeAuth; beforeAuth = undefined; await hook?.();
     return { request: async (route: string, input: Record<string, unknown>) => {
-      const number = Number(input.issue_number);
-      if (route.startsWith('GET') && route.includes('/issues/')) {
-        const labels = issueLabels.get(number) ?? ['llm-old', 'base-old', 'auto-merge'];
-        const hook = afterIssueRead; afterIssueRead = undefined; await hook?.();
-        return { data: { labels } };
-      }
-      if (route.startsWith('POST') && route.endsWith('/comments')) return { data: {} };
-      if (route.startsWith('POST') && route.includes('/labels')) {
-        if (number === 20 && queuedLabelFailure) throw new Error('Queued selector update unavailable');
-        if (number === 999 && epicLabelFailure) throw new Error('Epic labeling unavailable');
-        const labels = input.labels as string[];
-        labelCalls.push({ number, labels });
-        issueLabels.set(number, [...new Set([...(issueLabels.get(number) ?? []), ...labels])]);
-        return { data: [] };
-      }
-      if (route.startsWith('DELETE')) {
-        issueLabels.set(number, (issueLabels.get(number) ?? []).filter(label => label !== input.name));
-        return { data: {} };
-      }
-      if (route.startsWith('GET') && route.includes('/pulls')) {
-        epicLookups++;
-        const data = epicPR ? [{ ...epicPR, labels: [...(issueLabels.get(epicPR.number) ?? epicPR.labels)] }] : [];
-        await afterEpicLookup?.();
-        return { data };
-      }
-      throw new Error(`Unexpected route: ${route}`);
+      const handler = githubRoutes.find(([matches]) => matches(route))?.[1];
+      if (!handler) throw new Error(`Unexpected route: ${route}`);
+      return handler(Number(input.issue_number), input);
     } };
   },
 } });

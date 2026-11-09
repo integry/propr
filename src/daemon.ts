@@ -467,9 +467,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const close = async (): Promise<void> => {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
-        for (const interval of [heartbeatInterval, draftContextSweepInterval, pushRescueSweepInterval, worktreeSweepInterval,
-            ultrafixResumeSweepInterval, epicMergeProgressRetryInterval, noChangeCompletionRecoveryInterval,
-            autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
+        clearInterval(ultrafixResumeSweepInterval);
+        for (const interval of [heartbeatInterval, draftContextSweepInterval, pushRescueSweepInterval, worktreeSweepInterval, epicMergeProgressRetryInterval,
+            noChangeCompletionRecoveryInterval, autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
         stopManagedDiagnostics();
         await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and
