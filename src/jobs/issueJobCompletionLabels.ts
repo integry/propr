@@ -13,6 +13,12 @@ interface CompletionLabelOptions {
     AI_PROCESSING_TAG: string;
     AI_DONE_TAG: string;
     correlatedLogger: Logger;
+    /**
+     * Re-checked before each label mutation; once it answers false the
+     * remaining mutations are abandoned, because the labels now belong to
+     * newer work. Only the no-change completion obligation supplies it.
+     */
+    stillApplies?: () => Promise<boolean>;
 }
 
 export interface CompletionLabelResult {
@@ -21,21 +27,35 @@ export interface CompletionLabelResult {
     /** The trigger and processing labels are off the issue. */
     released: boolean;
     errors: string[];
+    /** `stillApplies` answered false, so the remaining mutations were abandoned. */
+    superseded?: boolean;
 }
 
 async function updateCompletionLabels({
-    octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger,
+    octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, stillApplies,
 }: CompletionLabelOptions, releaseUnpublished: boolean): Promise<CompletionLabelResult> {
     const context = { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName,
         issueNumber: issueRef.number, logger: correlatedLogger };
+    if (stillApplies && !await stillApplies()) return { published: false, released: false, errors: [], superseded: true };
     const completed = await safeUpdateLabels(context, [], [AI_DONE_TAG]);
     if (!completed.success) {
         // Without the marker the trigger is the only record of the request; keep it.
         if (releaseUnpublished) await safeUpdateLabels(context, [AI_PROCESSING_TAG], []);
         return { published: false, released: false, errors: completed.errors };
     }
-    const released = await safeUpdateLabels(context, releasedTriggerLabels(issueRef.triggeringLabel, AI_PROCESSING_TAG), []);
-    return { published: true, released: released.success, errors: released.errors };
+    const toRelease = releasedTriggerLabels(issueRef.triggeringLabel, AI_PROCESSING_TAG);
+    if (!stillApplies) {
+        const released = await safeUpdateLabels(context, toRelease, []);
+        return { published: true, released: released.success, errors: released.errors };
+    }
+    // Renewed work can be admitted while any label request is in flight; each
+    // removal is guarded so a superseded completion never strips its trigger.
+    const errors: string[] = [];
+    for (const label of toRelease) {
+        if (!await stillApplies()) return { published: true, released: false, errors, superseded: true };
+        errors.push(...(await safeUpdateLabels(context, [label], [])).errors);
+    }
+    return { published: true, released: errors.length === 0, errors };
 }
 
 /**
@@ -43,9 +63,10 @@ async function updateCompletionLabels({
  * throw when either step fails. Only callers holding a retained obligation that
  * a later job replays may use this: the throw leaves that obligation owed.
  */
-export async function completeIssueLabels(options: CompletionLabelOptions): Promise<void> {
+export async function completeIssueLabels(options: CompletionLabelOptions): Promise<CompletionLabelResult> {
     const result = await updateCompletionLabels(options, false);
     if (result.errors.length) throw new Error(result.errors.join('; '));
+    return result;
 }
 
 /**

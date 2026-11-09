@@ -10,6 +10,7 @@ import {
 import { completeIssueLabels, releasedTriggerLabels } from './issueJobCompletionLabels.js';
 import {
     isCurrentNoChangeRequest,
+    noChangeCompletionStillApplies,
     noChangeRequestId,
     replaceNoChangeCompletion,
     retainNoChangeCompletion,
@@ -127,15 +128,23 @@ async function settleNoChangeCompletion(
     const { record } = held;
     // Each mutation re-checks that this completion still answers the issue's newest request.
     if (await dropIfSuperseded(issueRef, held, options)) return false;
-    await completeIssueLabels({
+    const labels = await completeIssueLabels({
         octokit, issueRef: { ...issueRef, triggeringLabel: record.triggeringLabel },
         AI_PROCESSING_TAG: record.processingTag, AI_DONE_TAG: record.doneTag, correlatedLogger: log,
+        stillApplies: () => noChangeCompletionStillApplies(issueRef, held, store),
     });
+    if (labels.superseded) {
+        log.info({ issueNumber: issueRef.number, requestId: record.requestId },
+            'Abandoning a no-change completion superseded while its labels were being settled');
+        await dropIfSuperseded(issueRef, held, options);
+        return false;
+    }
     let current: RetainedNoChangeCompletion | null = held;
     if (record.comment !== undefined) {
         current = await deliverNoChangeComment(octokit, issueRef, held, options);
-        // Another settler holds the comment (or won it), and it finalizes the record.
-        if (!current) return true;
+        // Another settler holds the comment (or won it), and it finalizes the record;
+        // a record admission dropped for a newer request is no longer this settlement's.
+        if (!current) return isCurrentNoChangeRequest(issueRef, record, store);
     }
     if (await dropIfSuperseded(issueRef, current, options)) return true;
     // A failed status write stays owed; the next job for this issue, or recovery, replays it.

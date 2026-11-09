@@ -25,8 +25,19 @@ export function createNoChangeCompletionStoreDouble() {
             return 'OK';
         },
         hgetall: async (key: string) => Object.fromEntries(hashes.get(key) ?? []),
-        eval: async (script: string, _keys: number, key: string, field: string, expected: string, next: string, seconds: number) => {
+        eval: async (script: string, keys: number, key: string, field: string, expected: string, next: string, seconds: number) => {
             if (!String(key).startsWith(COMPLETION_KEY_PREFIX)) return 1;
+            if (Number(keys) === 2) {
+                // Admission's drop: KEYS = hash, request key; ARGV = field, expected, admitting request.
+                if (!script.includes("redis.call('GET', KEYS[2]) ~= ARGV[3]")) throw new Error('Unexpected admission script');
+                const [requestKeyName, recordId, held, admitting] = [field, expected, next, String(seconds)];
+                if (strings.get(requestKeyName) !== admitting) return -1;
+                const fields = hashes.get(key);
+                if ((fields?.get(recordId) ?? '') !== held) return 0;
+                fields!.delete(recordId);
+                if (!fields!.size) { hashes.delete(key); ttls.delete(key); }
+                return 1;
+            }
             if (!script.includes("redis.call('HGET', KEYS[1], ARGV[1])")) throw new Error('Unexpected completion script');
             const fields = hashes.get(key) ?? new Map<string, string>();
             if ((fields.get(field) ?? '') !== expected) return 0;

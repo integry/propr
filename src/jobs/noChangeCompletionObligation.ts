@@ -130,10 +130,21 @@ export async function isCurrentNoChangeRequest(
     return !current || current === record.requestId;
 }
 
+// Drops one superseded completion only while the admitting request still owns
+// the issue's request key, checked atomically with the record comparison, so an
+// admission overtaken by a newer one never deletes that newer request's record.
+// Returns -1 once the admitting request no longer owns the key.
+export const DROP_SUPERSEDED_NO_CHANGE_COMPLETION = `if redis.call('GET', KEYS[2]) ~= ARGV[3] then return -1 end
+local current = redis.call('HGET', KEYS[1], ARGV[1]) or ''
+if current ~= ARGV[2] then return 0 end
+redis.call('HDEL', KEYS[1], ARGV[1])
+return 1`;
+
 /**
  * Records that `requestId` is the issue's newest admitted request and drops
  * completions retained by older requests: their done marker and plan-status
- * write described work the user has since asked to be redone.
+ * write described work the user has since asked to be redone. Cleanup stops
+ * as soon as a newer admission takes over the request key.
  * @returns the number of superseded completions dropped.
  */
 export async function admitNoChangeRequest(
@@ -144,7 +155,26 @@ export async function admitNoChangeRequest(
     let dropped = 0;
     for (const held of await readNoChangeCompletions(issue, store)) {
         if (!held.record.requestId || held.record.requestId === requestId) continue;
-        if (await compareAndSet({ key: held.key, id: held.record.id, expected: held.raw, next: '' }, store)) dropped += 1;
+        const outcome = Number(await store.eval(
+            DROP_SUPERSEDED_NO_CHANGE_COMPLETION, 2, held.key, requestKey(issue), held.record.id, held.raw, requestId,
+        ));
+        // A newer admission owns the issue now; what remains is its to judge.
+        if (outcome === -1) break;
+        if (outcome === 1) dropped += 1;
     }
     return dropped;
+}
+
+/**
+ * Whether the held completion is still retained and still answers the issue's
+ * newest request. Settlers check it before every label mutation, so a
+ * completion superseded mid-settlement stops instead of removing labels that
+ * now belong to renewed work.
+ */
+export async function noChangeCompletionStillApplies(
+    issue: IssueCoordinates, held: RetainedNoChangeCompletion, store: NoChangeCompletionStore = redisClient,
+): Promise<boolean> {
+    const retained = await readNoChangeCompletionsAt(held.key, store);
+    const current = retained.find(entry => entry.record.id === held.record.id);
+    return current !== undefined && isCurrentNoChangeRequest(issue, current.record, store);
 }
