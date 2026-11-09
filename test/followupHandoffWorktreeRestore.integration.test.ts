@@ -93,12 +93,14 @@ test('startup trust writes managed directory entries once to the isolated global
     assert.deepEqual(entries.sort(), [`${path.join(root, 'clones')}/*`, `${path.join(root, 'worktrees')}/*`].sort());
 });
 
-test('releasing a deleted worktree reports nothing to release instead of throwing', async () => {
+test('releasing a deleted worktree whose registration is already detached succeeds instead of throwing', async () => {
     const { clone, wt } = await fixture();
     git(wt, 'checkout', '--detach'); // failure cleanup or push salvage gave up the branch
     await fs.remove(wt);
 
-    assert.equal(await ops.releaseSettledWorktree(clone, BRANCH, wt), false);
+    // The detached registration holds nothing: the branch is free, so the
+    // release succeeds rather than refusing over unpublished work.
+    assert.equal(await ops.releaseSettledWorktree(clone, BRANCH, wt), true);
     assert.deepEqual(await ops.branchWorktreeRegistrations(clone, BRANCH), [], 'the branch is already free');
     git(clone, 'worktree', 'prune', '--expire=now');
     assert.equal(await ops.releaseSettledWorktree(clone, BRANCH, wt), false, 'also with no registration left at all');
