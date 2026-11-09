@@ -28,6 +28,7 @@ import {
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 import { recordReplayableIssueTask } from '../taskReplacement/store.js';
+import { admitNoChangeRequest, noChangeRequestId, readNoChangeCompletions } from './noChangeCompletionObligation.js';
 
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
@@ -245,7 +246,7 @@ async function processIssueWithAdmission(
   /** The policy is a snapshot from an earlier attempt, not read from the base branch by this one. */
   reusedWorkflowSnapshot: boolean,
 ): Promise<JobResult> {
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG, AI_PRIMARY_TAG } = context;
   // A withdrawn or skipped issue ends before admission, so it never holds
   // repository capacity; deferred attempts repeat these checks on re-entry.
   let currentIssueData: CurrentIssueData;
@@ -259,12 +260,24 @@ async function processIssueWithAdmission(
     const cancellation = await checkIssueCancellation(context, currentIssueData);
     if (cancellation) return cancellation;
     currentLabels = currentIssueData.data.labels.map(label => label.name);
+    // A published done marker skips this job, so owed no-change completions are finished first.
+    const owedCompletions = currentLabels.includes(AI_DONE_TAG) ? await readNoChangeCompletions(issueRef) : [];
+    if (owedCompletions.length) {
+      const { replayNoChangeCompletion } = await import('./noChangeCompletion.js');
+      for (const held of owedCompletions) {
+        currentLabels = await replayNoChangeCompletion({ octokit, issueRef, currentLabels, held, correlatedLogger });
+      }
+    }
     const ownTask = await stateManager.getTaskState(taskId);
     const labelCheck = checkLabelConditions(currentLabels, context, ownTask?.state);
     if (labelCheck.skip) {
       await terminalizeSkippedTask(context, ownTask, labelCheck.terminalReason ?? 'skipped_issue_done');
       return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
     }
+    // Admitted work answers a newer request of its trigger: an older request's retained
+    // no-change completion for that trigger must no longer mark the plan issue merged or
+    // publish its marker. Another trigger's owed completion is independent and kept.
+    await admitNoChangeRequest(issueRef, { requestId: noChangeRequestId(issueRef), triggeringLabel: AI_PRIMARY_TAG });
   } catch (error) {
     return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
   }

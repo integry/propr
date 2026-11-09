@@ -9,6 +9,7 @@ import { isTerminalStatus, isInProgressStatus } from '../../webhook/statusMachin
 import { labelPlanIssueForProcessing, finalizeEpicPlanIfComplete, reconcileTerminalInProgressIssues } from '../../webhook/planIssueTrigger.js';
 import { queuedModelLabel } from './epicQueueModelLabel.js';
 import { isAwaitingHumanMergeReason } from './epicQueueHumanMerge.js';
+import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
 export type EpicQueueStatus = 'active' | 'completed' | 'cancelled';
@@ -163,14 +164,16 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   if (!queue || queue.status !== 'active' || !queue.ready || queue.issues[queue.cursor] !== issueNumber) return;
   // Use persisted evidence: a delayed closed event must not block a now-merged head.
   const issue = await database('plan_issues').where({ draft_id: draftId, issue_number: issueNumber }).first('status');
-  const decision = decideEpicAdvance(queue.advanceOn, issue?.status ?? status);
+  const currentStatus = issue?.status ?? status;
+  const decision = decideEpicAdvance(queue.advanceOn, currentStatus);
   if (decision === 'ignore') return;
   const timestamp = (deps.now ?? Date.now)();
   if (decision === 'wait') {
     await database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor })
-      .update({ blocked_reason: `Issue #${issueNumber} is ${issue?.status ?? status}; this epic advances only after it is merged. Reopen, fix and merge it to continue.`, updated_at: timestamp });
+      .update({ blocked_reason: `Issue #${issueNumber} is ${currentStatus}; this epic advances only after it is merged. Reopen, fix and merge it to continue.`, updated_at: timestamp });
     return;
   }
+  await releaseEpicIssueLabels(queue, currentStatus, database, timestamp);
   const cursor = queue.cursor + 1;
   const changed = await database('epic_execution_queues')
     .where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor })

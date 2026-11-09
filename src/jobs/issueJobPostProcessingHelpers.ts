@@ -8,9 +8,6 @@ import {
     getAuthenticatedOctokit,
     linkPRToPlanIssue,
     processCommentEvent,
-    safeUpdateLabels,
-    updatePlanIssueStatus,
-    PlanIssueStatus,
     db,
     type CommentEventConfig,
     type ClaudeCodeResponse,
@@ -22,6 +19,7 @@ import { isAutoMergeDisabledForRepository, suggestEnablingAutoMerge } from '../g
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { redisClient } from './issueJob/config.js';
 import { resolveImplementationPrUltrafixTrigger } from './implementationPrUltrafix.js';
+import { completeNoChangeIssue } from './noChangeCompletion.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -230,38 +228,6 @@ export async function triggerSystemUltrafix(options: {
     correlatedLogger.info({ prNumber, goal: sanitizedGoal, maxCycles: sanitizedMaxCycles }, 'Triggered system ultrafix for PR');
 }
 
-/**
- * Records a no-change auto-merge completion. The status write notifies the plan's
- * execution queue, which alone selects and starts any successor.
- */
-async function markNoChangePlanIssueMerged(
-    issueRef: IssueJobData,
-    currentIssueData: { data: { labels: Array<{ name: string }> } },
-    log: Logger,
-): Promise<void> {
-    try {
-        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
-        if (!planIssue || !planIssue.draft_id) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping plan status update');
-            return;
-        }
-
-        const labels = currentIssueData.data.labels.map((label) => label.name);
-        const queue = await getEpicExecutionQueue(planIssue.draft_id);
-        const queued = queue?.status === 'active' && queue.issues.includes(issueRef.number);
-        if (!labels.includes('auto-merge') && !queued) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping plan status update');
-            return;
-        }
-
-        await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED);
-        log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
-    } catch (error) {
-        log.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Failed to mark no-change plan issue as merged');
-    }
-}
-
 export async function handleNoCodeChanges(options: {
     octokit: Octokit;
     issueRef: IssueJobData;
@@ -282,25 +248,20 @@ export async function handleNoCodeChanges(options: {
     } = options;
 
     correlatedLogger.info({ issueNumber: issueRef.number }, 'No code changes needed - work was already complete');
-    await safeUpdateLabels(
-        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-        [AI_PROCESSING_TAG],
-        [AI_DONE_TAG],
-    );
-
     const completionComment = await generateCompletionComment(claudeResult, {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
     }, { publishedAs: 'issue_comment' });
-    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: issueRef.repoOwner,
-        repo: issueRef.repoName,
-        issue_number: issueRef.number,
-        body: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
+    await completeNoChangeIssue({
+        octokit,
+        issueRef,
+        labels: currentIssueData.data.labels.map((label) => label.name),
+        comment: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
+        AI_PROCESSING_TAG,
+        AI_DONE_TAG,
+        correlatedLogger,
     });
-
-    await markNoChangePlanIssueMerged(issueRef, currentIssueData, correlatedLogger);
     return { success: true, pr: null, updatedLabels: [AI_DONE_TAG] };
 }
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import { applyDatabaseMigrations } from './migrationGate.js';
 import { installSqliteRetry } from './sqliteRetry.js';
+import { assertRelativeDatabaseOnDataMount } from './dataMountGuard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,6 +52,7 @@ export function configurePooledSqliteConnection(
 // Get database filename from env or use default
 function getDbFilename(): string {
     if (process.env.DB_FILENAME) {
+        assertRelativeDatabaseOnDataMount(process.env.DB_FILENAME);
         return process.env.DB_FILENAME;
     }
     // Default path: /usr/src/app/data/propr.sqlite (inside container)

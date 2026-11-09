@@ -153,7 +153,7 @@ await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
     if (script === RECONCILE_WORKFLOW_SLOT) { reconciledLimits.push(limit); return limit > 0 && otherRuns + 1 > limit ? 0 : 1; }
     if (script === ACQUIRE_WORKFLOW_SLOT) { admissionAttempts++; return capacityFull || (limit > 0 && otherRuns >= limit) ? 0 : 1; }
     return 1;
-  } },
+  }, get: async () => null, set: async () => 'OK', hgetall: async () => ({}) },
   DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');

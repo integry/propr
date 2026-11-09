@@ -52,6 +52,7 @@ import { scheduleWorktreeSweep } from './daemon/worktreeSweep.js';
 import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
 import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
 import { scheduleEpicMergeProgressRetrySweep } from './daemon/epicMergeProgressRetrySweep.js';
+import { scheduleNoChangeCompletionRecoverySweep } from './daemon/noChangeCompletionRecoverySweep.js';
 import { scheduleAutoMergeSweep } from './daemon/autoMergeSweep.js';
 import {
     clearUltrafixStateIfCurrent,
@@ -244,6 +245,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // without the API server and with polling off does not wait for a webhook.
     const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep(redisClient);
     const epicMergeProgressRetryInterval = scheduleEpicMergeProgressRetrySweep();
+    const noChangeCompletionRecoveryInterval = scheduleNoChangeCompletionRecoverySweep(redisClient);
     const autoMergeSweepInterval = scheduleAutoMergeSweep();
 
     const repos = getRepos();
@@ -465,14 +467,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const close = async (): Promise<void> => {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
-        clearInterval(heartbeatInterval);
-        clearInterval(draftContextSweepInterval);
-        clearInterval(pushRescueSweepInterval);
-        if (worktreeSweepInterval) clearInterval(worktreeSweepInterval);
         clearInterval(ultrafixResumeSweepInterval);
-        clearInterval(epicMergeProgressRetryInterval);
-        clearInterval(autoMergeSweepInterval);
-        clearInterval(mergeConflictSweepInterval);
+        for (const interval of [heartbeatInterval, draftContextSweepInterval, pushRescueSweepInterval, worktreeSweepInterval, epicMergeProgressRetryInterval,
+            noChangeCompletionRecoveryInterval, autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
         stopManagedDiagnostics();
         await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and

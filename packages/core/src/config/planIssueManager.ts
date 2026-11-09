@@ -287,10 +287,11 @@ export async function incrementFollowupCount(draftId: string, issueNumber: numbe
 
 /**
  * Finds a plan issue by repository and issue number.
+ * A failed lookup resolves to `null` unless `throwOnError` is set, for callers
+ * that must tell a failed read apart from an issue outside every plan.
  */
 export async function findPlanIssueByRepoAndNumber(
-    repository: string,
-    issueNumber: number
+    repository: string, issueNumber: number, { throwOnError = false }: { throwOnError?: boolean } = {}
 ): Promise<PlanIssue | null> {
     try {
         const issue = await db('plan_issues')
@@ -303,6 +304,7 @@ export async function findPlanIssueByRepoAndNumber(
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, repository, issueNumber }, 'Failed to find plan issue by repo and number');
+        if (throwOnError) throw error;
         return null;
     }
 }
@@ -329,28 +331,43 @@ export async function findPlanIssueByRepoAndPR(
     }
 }
 
+/** Statuses in which a linked pull request is still awaiting merge, so its own lifecycle owns the plan issue's status. */
+const LINKED_REVIEW_STATUSES = [PlanIssueStatus.UNDER_REVIEW, PlanIssueStatus.IN_REFINEMENT, PlanIssueStatus.REFINEMENT_PROCESSING];
+
 /**
  * Updates the status of a plan issue by repository and issue number.
+ * Failures are logged rather than thrown.
+ * @param stillApplies - Evaluated after the plan-issue lookup, immediately
+ * before the update; when it answers false the update and the epic queue
+ * notification are abandoned, because the caller no longer owns the issue.
+ * @param onLinkedReview - Makes the update yield to a linked pull request
+ * still awaiting merge: such a row keeps its status, because that pull
+ * request's merge or close records the outcome. The update itself checks this,
+ * so a pull request linked after any earlier read still keeps its status.
+ * Called, in place of the epic queue notification, when the issue kept its status so.
+ * @returns whether the status update was persisted; the follow-on draft sync
+ * and activity publication stay best-effort and do not affect the result.
  */
 export async function updatePlanIssueStatus(
-    repository: string,
-    issueNumber: number,
-    status: PlanIssueStatus
-): Promise<void> {
+    repository: string, issueNumber: number, status: PlanIssueStatus,
+    { stillApplies, onLinkedReview }: { stillApplies?: () => Promise<boolean>; onLinkedReview?: () => void } = {},
+): Promise<boolean> {
+    let persisted = false;
     try {
         // Fetch the plan issue to get the draft_id for status sync
-        const planIssue = await db('plan_issues')
-            .where({ repository, issue_number: issueNumber })
-            .select('draft_id', 'issue_number')
-            .orderBy('id', 'desc')
-            .first();
+        const planIssue = await db('plan_issues').where({ repository, issue_number: issueNumber })
+            .select('draft_id', 'issue_number').orderBy('id', 'desc').first();
 
-        await db('plan_issues')
-            .where({ repository, issue_number: issueNumber })
-            .update({
-                status,
-                updated_at: db.fn.now()
-            });
+        if (stillApplies && !await stillApplies()) {
+            logger.info({ repository, issueNumber, status }, 'Abandoned a plan issue status update that no longer applies');
+            return false;
+        }
+        const rows = db('plan_issues').where({ repository, issue_number: issueNumber });
+        // Part of the update itself, so a pull request linked after the lookup still keeps its status.
+        if (onLinkedReview) rows.where(row => row.whereNull('pr_number').orWhereNotIn('status', LINKED_REVIEW_STATUSES));
+        // An existing row left unchanged by that guard is reported to the caller, which alone knows whether it settles its write.
+        if (!await rows.update({ status, updated_at: db.fn.now() }) && onLinkedReview && planIssue) { onLinkedReview(); return false; }
+        persisted = true;
 
         if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);
 
@@ -365,6 +382,7 @@ export async function updatePlanIssueStatus(
         const err = error as Error;
         logger.error({ error: err.message, repository, issueNumber, status }, 'Failed to update plan issue status');
     }
+    return persisted;
 }
 
 /**

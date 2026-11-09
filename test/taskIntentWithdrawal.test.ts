@@ -219,6 +219,8 @@ test('fresh pre-start checks ignore saved issue snapshots and never dispatch wit
 
 test('removing only model labels preserves intent; the configured trigger is the authority', () => {
     assert.equal(withdrawnIntentReason(target, { state: 'open', labels: ['AI'] }, ['AI']), null);
+    assert.equal(withdrawnIntentReason(target, { state: 'open', labels: ['AI-done'] }, ['AI']), null);
+    assert.equal(withdrawnIntentReason(target, { state: 'open', labels: ['build-done'] }, ['AI', 'build']), 'cancelled_label_removed');
     assert.equal(withdrawnIntentReason(target, { state: 'open', labels: ['build'] }, ['AI', 'build']), 'cancelled_label_removed');
     assert.equal(withdrawnIntentReason({ ...target, kind: 'pr' }, { state: 'closed', merged: true }, ['AI']), null);
     assert.equal(taskIntentTarget({ ...target, type: 'goal' }, 'goal'), null);
@@ -610,7 +612,6 @@ test('reopening during cleanup prevents publishing a cancelled marker', async ()
 for (const [label, reason, withdrawn] of [
     ['AI-processing', 'cancelled_issue_closed', { state: 'closed', labels: ['AI', 'AI-processing', 'AI-waiting'] }],
     ['AI-waiting', 'cancelled_issue_closed', { state: 'closed', labels: ['AI', 'AI-processing', 'AI-waiting'] }],
-    ['AI-done', 'cancelled_label_removed', { state: 'open', labels: ['AI-processing', 'AI-waiting', 'AI-done'] }],
 ] as const) {
     test(`${reason} cleanup stops retrying ${label} removal once intent is restored`, async () => {
         tracker = { ...withdrawn, labels: [...withdrawn.labels] };
@@ -1090,7 +1091,7 @@ test('a requeued retry is live sibling work for user-stop cleanup and restoratio
 });
 
 for (const sibling of ['same-trigger PR', 'other-trigger PR', 'no PR'] as const) {
-    test(`trigger removal with a ${sibling} sibling ${sibling === 'same-trigger PR' ? 'keeps' : 'clears'} the completion marker`, async () => {
+    test(`completion trigger cleanup with a ${sibling} sibling preserves work and the completion marker`, async () => {
         addRunning('model-b');
         tracker = { state: 'open', labels: ['AI-processing', 'AI-done'] };
         if (sibling !== 'no PR') completedTaskRows.push({
@@ -1098,11 +1099,11 @@ for (const sibling of ['same-trigger PR', 'other-trigger PR', 'no PR'] as const)
             metadata: JSON.stringify({ pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' } }),
         });
         await cancelWithdrawnIntent(target, 'cancelled_label_removed', redis as never);
-        assert.equal(states.get('model-b').terminalReason, 'cancelled_label_removed');
-        assert.ok(!tracker.labels.includes('AI-processing'));
-        const kept = sibling === 'same-trigger PR';
-        assert.equal(tracker.labels.includes('AI-done'), kept);
-        assert.equal(tracker.labels.includes('AI-cancelled'), !kept);
+        assert.equal(states.get('model-b').terminalReason, undefined);
+        assert.ok(tracker.labels.includes('AI-processing'));
+        assert.ok(tracker.labels.includes('AI-done'));
+        assert.ok(!tracker.labels.includes('AI-cancelled'));
+        assert.ok(requests.every(request => request.endpoint.startsWith('GET ')));
     });
 }
 

@@ -19,6 +19,7 @@ describe('issueJobDispatcher handleDispatch', () => {
       jobData: IssueJobData;
       options: { jobId: string; removeOnComplete: boolean; removeOnFail: boolean };
     }> = [];
+    const order: string[] = [];
     const mockOctokit = {
       request: mock.fn(async () => ({
         data: {
@@ -55,6 +56,7 @@ describe('issueJobDispatcher handleDispatch', () => {
           options: { jobId: string; removeOnComplete: boolean; removeOnFail: boolean }
         ) => {
           queuedJobs.push({ jobName, jobData, options });
+          order.push(`enqueue:${jobData.correlationId}`);
         }),
       },
       getDefaultModel: mock.fn(() => 'fallback-model'),
@@ -68,6 +70,7 @@ describe('issueJobDispatcher handleDispatch', () => {
         agentAlias: 'default',
         modelToUse: 'fallback-model',
       })),
+      registerRequest: mock.fn(async (issue: IssueJobData) => { order.push(`register:${issue.correlationId}`); }),
     } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
 
     const result = await handleDispatchWithDeps({
@@ -96,5 +99,7 @@ describe('issueJobDispatcher handleDispatch', () => {
     assert.equal(queuedJobs[0].options.jobId, 'issue-integry-propr-1701-codex-codex:gpt-5.5-develop');
     // Children of one dispatch share its ID, so a sibling's done label does not skip the others.
     assert.equal(queuedJobs[0].jobData.dispatchId, 'parent-job');
+    // The request is ordered before any child exists, so a child that runs late is still known to be older.
+    assert.deepEqual(order, ['register:test-correlation', 'enqueue:test-correlation']);
   });
 });
