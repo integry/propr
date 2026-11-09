@@ -331,18 +331,26 @@ export async function findPlanIssueByRepoAndPR(
     }
 }
 
+/** Statuses in which a linked pull request is still awaiting merge, so its own lifecycle owns the plan issue's status. */
+const LINKED_REVIEW_STATUSES = [PlanIssueStatus.UNDER_REVIEW, PlanIssueStatus.IN_REFINEMENT, PlanIssueStatus.REFINEMENT_PROCESSING];
+
 /**
  * Updates the status of a plan issue by repository and issue number.
  * Failures are logged rather than thrown.
  * @param stillApplies - Evaluated after the plan-issue lookup, immediately
  * before the update; when it answers false the update and the epic queue
  * notification are abandoned, because the caller no longer owns the issue.
+ * @param onLinkedReview - Makes the update yield to a linked pull request
+ * still awaiting merge: such a row keeps its status, because that pull
+ * request's merge or close records the outcome. The update itself checks this,
+ * so a pull request linked after any earlier read still keeps its status.
+ * Called, in place of the epic queue notification, when the issue kept its status so.
  * @returns whether the status update was persisted; the follow-on draft sync
  * and activity publication stay best-effort and do not affect the result.
  */
 export async function updatePlanIssueStatus(
     repository: string, issueNumber: number, status: PlanIssueStatus,
-    { stillApplies }: { stillApplies?: () => Promise<boolean> } = {},
+    { stillApplies, onLinkedReview }: { stillApplies?: () => Promise<boolean>; onLinkedReview?: () => void } = {},
 ): Promise<boolean> {
     let persisted = false;
     try {
@@ -354,7 +362,11 @@ export async function updatePlanIssueStatus(
             logger.info({ repository, issueNumber, status }, 'Abandoned a plan issue status update that no longer applies');
             return false;
         }
-        await db('plan_issues').where({ repository, issue_number: issueNumber }).update({ status, updated_at: db.fn.now() });
+        const rows = db('plan_issues').where({ repository, issue_number: issueNumber });
+        // Part of the update itself, so a pull request linked after the lookup still keeps its status.
+        if (onLinkedReview) rows.where(row => row.whereNull('pr_number').orWhereNotIn('status', LINKED_REVIEW_STATUSES));
+        // An existing row left unchanged by that guard is reported to the caller, which alone knows whether it settles its write.
+        if (!await rows.update({ status, updated_at: db.fn.now() }) && onLinkedReview && planIssue) { onLinkedReview(); return false; }
         persisted = true;
 
         if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);

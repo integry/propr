@@ -25,6 +25,8 @@ const failingRuns = new Set<string>();
 const ran: string[] = [];
 const comments: string[] = [];
 const statusWrites: Array<[string, number, string]> = [];
+/** The plan issue's PR link and status, as the PR-linking path and the status writer leave them. */
+let planRow: { pr_number: number | null; status: string } = { pr_number: null, status: 'processing' };
 const redisDouble = createNoChangeCompletionStoreDouble();
 const store = { clear: () => redisDouble.clear(), get size() { return redisDouble.records().length; } };
 
@@ -76,11 +78,17 @@ await mock.module('@propr/core', { namedExports: {
   ensureGitRepository: async () => undefined,
   loadSettings: async () => ({ worker_concurrency: 1 }),
   generateCompletionComment: async () => 'Completed.',
-  findPlanIssueByRepoAndNumber: async () => ({ draft_id: 'draft', issue_number: 7, status: 'processing' }),
+  findPlanIssueByRepoAndNumber: async () => ({ draft_id: 'draft', issue_number: 7, ...planRow }),
   getEpicExecutionQueue: async () => ({ status: 'active', issues: [7, 8], cursor: 0 }),
-  updatePlanIssueStatus: async (repository: string, issueNumber: number, status: string) => {
+  updatePlanIssueStatus: async (repository: string, issueNumber: number, status: string, options?: { onLinkedReview?: () => void }) => {
     // The real writer logs and swallows a database failure, resolving false.
     if (failStatusWrite) return false;
+    // Mirrors the real writer's guarded update: a linked PR awaiting merge keeps its status.
+    if (options?.onLinkedReview && planRow.pr_number !== null && ['under_review', 'in_refinement', 'refinement_processing'].includes(planRow.status)) {
+      options.onLinkedReview();
+      return false;
+    }
+    planRow = { ...planRow, status };
     statusWrites.push([repository, issueNumber, status]);
     return true;
   },
@@ -141,6 +149,7 @@ function issueJob(id: string, correlationId = 'submission', dispatch: Partial<Is
 beforeEach(() => {
   tasks.clear(); store.clear(); ran.length = 0; comments.length = 0; statusWrites.length = 0;
   liveLabels = ['AI', 'auto-merge']; rejectPrimaryRemoval = false; failStatusWrite = false; failingRuns.clear();
+  planRow = { pr_number: null, status: 'processing' };
 });
 
 test('a non-sibling retry finishes a no-change completion whose trigger cleanup failed', async () => {
@@ -217,4 +226,23 @@ test('a delayed sibling of an older request neither takes over nor drops a newer
   assert.equal((await processGitHubIssueJob(issueJob('later', 'request-b'))).status, 'skipped');
   assert.deepEqual(statusWrites, [['o/r', 7, 'merged'], ['o/r', 7, 'merged']]);
   assert.equal(store.size, 0);
+});
+
+test('a later job\'s replay leaves a sibling\'s unmerged pull request under review', async () => {
+  // Two models of one request run concurrently. A finds no changes, but its status write fails.
+  const sibling = { dispatchId: 'dispatch-1', dispatchIssueLabels: ['AI', 'auto-merge'] };
+  failStatusWrite = true;
+  await processGitHubIssueJob(issueJob('model-a', 'request-1', sibling));
+  assert.equal(store.size, 1, 'A\'s status write is owed');
+  failStatusWrite = false;
+
+  // B publishes a pull request, which the PR-linking path records as under review.
+  planRow = { pr_number: 42, status: 'under_review' };
+
+  // A redelivery of the request replays A's owed completion before the already-done skip.
+  assert.equal((await processGitHubIssueJob(issueJob('redelivered', 'request-1'))).status, 'skipped');
+  assert.deepEqual(statusWrites, [], 'the epic does not advance past B\'s unmerged pull request');
+  assert.deepEqual(planRow, { pr_number: 42, status: 'under_review' });
+  assert.equal(store.size, 0, 'the pull request owns the status, so nothing is owed');
+  assert.equal(comments.length, 1);
 });

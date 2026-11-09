@@ -21,7 +21,7 @@ import {
 
 type Octokit = Parameters<typeof completeIssueLabels>[0]['octokit'];
 
-/** What a status finalization established: nothing owed, a write still owed, or ownership lost to renewed work. */
+/** What a status finalization established: nothing owed (written, or yielded to a linked pull request), a write still owed, or ownership lost to renewed work. */
 type StatusOutcome = 'settled' | 'owed' | 'superseded';
 
 /**
@@ -30,6 +30,12 @@ type StatusOutcome = 'settled' | 'owed' | 'superseded';
  * rechecked after the plan and queue lookups, and again inside the writer after
  * its own lookup, immediately before the update, so renewed work admitted
  * meanwhile is never marked merged by this older result.
+ *
+ * A pull request linked to the issue and still awaiting merge, such as one a
+ * sibling model of the same request published after this result, owns the
+ * status: its merge or close records the outcome and releases the successor.
+ * The update itself yields to it, so this write, owed or replayed, is then
+ * obsolete and settled without marking anything merged.
  */
 async function markNoChangePlanIssueMerged(
     issueRef: IssueJobData, labels: string[], stillApplies: () => Promise<boolean>, log: Logger,
@@ -54,10 +60,18 @@ async function markNoChangePlanIssueMerged(
         // The writer awaits its own lookup before updating, so it rechecks ownership
         // immediately before the update; a lost check abandons the update and notification.
         let superseded = false;
+        let linkedReview = false;
         const ownsIssue = async () => { superseded = !await stillApplies(); return !superseded; };
         // The writer logs and swallows its own failures; only its result says the status persisted.
-        const persisted = await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED, { stillApplies: ownsIssue });
+        const persisted = await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED, {
+            stillApplies: ownsIssue, onLinkedReview: () => { linkedReview = true; },
+        });
         if (superseded) return 'superseded';
+        if (linkedReview) {
+            log.info({ repository, issueNumber: issueRef.number },
+                'A linked pull request awaiting merge owns the plan issue status; the no-change status write is obsolete');
+            return 'settled';
+        }
         if (!persisted) {
             log.warn({ issueNumber: issueRef.number }, 'The no-change plan-status write did not persist; it stays owed');
             return 'owed';
