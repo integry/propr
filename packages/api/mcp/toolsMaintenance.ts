@@ -8,6 +8,7 @@ import {
 } from '../routes/followupHandoffRoutes.js';
 import { type McpTool, type ToolDeps, mutationShape, repositorySchema, ok } from './tools.js';
 import { McpError } from './config.js';
+import type { McpPrincipal } from './policy.js';
 
 /**
  * Maintenance tools: the operator decisions that otherwise live only behind the
@@ -52,6 +53,25 @@ function targetKey(args: { repository: string; pullRequest: number }): FollowupH
   return key;
 }
 
+/**
+ * The list takes no repository argument, so the shared executor's repository
+ * check never runs for it. The instance permission authorizes the capability,
+ * not the repositories: each record is shown only when the same read check the
+ * keyed tools pass (grant, instance configuration, current GitHub access)
+ * accepts its repository. Checked once per repository per call.
+ */
+function repositoryAccess(deps: ToolDeps, principal: McpPrincipal): (repository: string) => Promise<boolean> {
+  const checked = new Map<string, Promise<boolean>>();
+  return repository => {
+    const key = repository.toLowerCase();
+    if (!checked.has(key)) checked.set(key, deps.policy.repository(principal, repository).then(() => true, error => {
+      if (error instanceof McpError && error.status === 403) return false;
+      throw error;
+    }));
+    return checked.get(key)!;
+  };
+}
+
 export function addMaintenanceTools(tools: McpTool[], deps: ToolDeps): void {
   // Built here, not at module load: tools.ts imports this module while its own schemas are still initializing.
   const targetShape = { repository: repositorySchema, pullRequest: z.number().int().min(1).max(9_999_999_999) };
@@ -62,9 +82,11 @@ export function addMaintenanceTools(tools: McpTool[], deps: ToolDeps): void {
     return handoffPayload(status);
   };
 
-  tools.push({ name: 'list_followup_handoffs', description: 'List every tracked pull request follow-up handoff: the attempts whose publication is still owed, including holds awaiting an operator that block new commands on their pull request. Requires instance.manage_runtime.', scope: 'manage', permission, readOnly: true, schema: z.object({}).strict(), run: async () => {
+  tools.push({ name: 'list_followup_handoffs', description: 'List every tracked pull request follow-up handoff in the repositories this client may access: the attempts whose publication is still owed, including holds awaiting an operator that block new commands on their pull request. Requires instance.manage_runtime.', scope: 'manage', permission, readOnly: true, schema: z.object({}).strict(), run: async ({ principal }) => {
     const statuses = await handoffs.inspectFollowupHandoffs({});
-    return ok({ handoffs: statuses.map(handoffPayload) });
+    const visible = repositoryAccess(deps, principal);
+    const allowed = await Promise.all(statuses.map(status => visible(status.record.repository)));
+    return ok({ handoffs: statuses.filter((_status, index) => allowed[index]).map(handoffPayload) });
   } });
   tools.push({ name: 'get_followup_handoff', description: 'Show one pull request follow-up handoff: phase, status and the reason it is held, agent liveness, retained worktree and the next operator action.', scope: 'manage', permission, readOnly: true, schema: z.object(targetShape).strict(), run: async ({ args }) => {
     return ok({ status: await inspectOne(targetKey(args as { repository: string; pullRequest: number })) });
