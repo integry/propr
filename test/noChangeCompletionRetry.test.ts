@@ -77,8 +77,10 @@ await mock.module('@propr/core', { namedExports: {
   findPlanIssueByRepoAndNumber: async () => ({ draft_id: 'draft', issue_number: 7, status: 'processing' }),
   getEpicExecutionQueue: async () => ({ status: 'active', issues: [7, 8], cursor: 0 }),
   updatePlanIssueStatus: async (repository: string, issueNumber: number, status: string) => {
-    if (failStatusWrite) throw new Error('database unavailable');
+    // The real writer logs and swallows a database failure, resolving false.
+    if (failStatusWrite) return false;
     statusWrites.push([repository, issueNumber, status]);
+    return true;
   },
 } });
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: {

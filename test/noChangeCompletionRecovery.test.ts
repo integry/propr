@@ -46,8 +46,10 @@ await mock.module('@propr/core', {
         logger: { debug() {}, info() {}, warn() {}, error() {} },
         safeUpdateLabels,
         updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string) => {
-            if (failStatusWrite) throw new Error('database unavailable');
+            // The real writer logs and swallows a database failure, resolving false.
+            if (failStatusWrite) return false;
             statusWrites.push([repository, issueNumber, status]);
+            return true;
         }),
         PlanIssueStatus: { MERGED: 'merged' },
     },

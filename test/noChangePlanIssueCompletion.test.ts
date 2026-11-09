@@ -12,6 +12,7 @@ const requests: Array<{ route: string; body: Record<string, unknown> }> = [];
 const statusWrites: Array<[string, number, string]> = [];
 let rejectPrimaryRemoval = false;
 let failStatusWrite = false;
+let failPlanLookup = false;
 // Mirrors the Redis commands the completion obligation uses.
 const redisClient = createNoChangeCompletionStoreDouble();
 const store = { clear: () => redisClient.clear(), get size() { return redisClient.records().length; } };
@@ -32,7 +33,12 @@ await mock.module('@propr/core', {
     namedExports: {
         getEpicExecutionQueue: mock.fn(async () => null),
         findIssueSubmission: mock.fn(async () => undefined),
-        findPlanIssueByRepoAndNumber: mock.fn(async () => ({ draft_id: 'draft', issue_number: 10, status: 'processing' })),
+        // Mirrors the real lookup: a failed read resolves null unless the caller asks for the failure.
+        findPlanIssueByRepoAndNumber: mock.fn(async (_repository: string, _issueNumber: number, options?: { throwOnError?: boolean }) => {
+            if (!failPlanLookup) return { draft_id: 'draft', issue_number: 10, status: 'processing' };
+            if (options?.throwOnError) throw new Error('database unavailable');
+            return null;
+        }),
         // Mirrors the real renderer: observed repository validation follows the summary.
         generateCompletionComment: mock.fn(async (result: { repositoryValidation?: string }) => ['Completed.', result?.repositoryValidation].filter(Boolean).join('\n\n')),
         gateAutoMergeArming: mock.fn(),
@@ -42,8 +48,10 @@ await mock.module('@propr/core', {
         processCommentEvent: mock.fn(async () => undefined),
         safeUpdateLabels,
         updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string) => {
-            if (failStatusWrite) throw new Error('database unavailable');
+            // The real writer logs and swallows a database failure, resolving false.
+            if (failStatusWrite) return false;
             statusWrites.push([repository, issueNumber, status]);
+            return true;
         }),
         PlanIssueStatus: { MERGED: 'merged' },
         getPlanIssuesByDraft,
@@ -64,6 +72,7 @@ beforeEach(() => {
     requests.length = 0;
     rejectPrimaryRemoval = false;
     failStatusWrite = false;
+    failPlanLookup = false;
     store.clear();
     statusWrites.length = 0;
     getPlanIssuesByDraft.mock.resetCalls();
@@ -151,6 +160,19 @@ test('a failed plan-status write stays owed after the comment, which a replay do
     await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: ['AI-done'], held, correlatedLogger: logger });
     assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
     assert.ok(!requests.some(request => request.route.endsWith('/comments')));
+    assert.equal(store.size, 0);
+});
+
+test('a failed plan lookup keeps the status write owed instead of reading as an issue outside every plan', async () => {
+    failPlanLookup = true;
+    await completeWithoutChanges(['AI', 'auto-merge']);
+    const held = await readNoChangeCompletion(issue);
+    assert.ok(held, 'the plan issue may still be nonterminal, so the record stays for replay');
+    assert.deepEqual(statusWrites, []);
+
+    failPlanLookup = false;
+    await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: ['AI-done'], held, correlatedLogger: logger });
+    assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
     assert.equal(store.size, 0);
 });
 

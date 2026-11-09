@@ -21,33 +21,45 @@ import {
 
 type Octokit = Parameters<typeof completeIssueLabels>[0]['octokit'];
 
+/** What a status finalization established: nothing owed, a write still owed, or ownership lost to renewed work. */
+type StatusOutcome = 'settled' | 'owed' | 'superseded';
+
 /**
  * Records a no-change auto-merge completion. The status write notifies the plan's
- * execution queue, which alone selects and starts any successor.
- * @returns whether nothing further is owed: the status was written or none was due.
+ * execution queue, which alone selects and starts any successor. Ownership is
+ * rechecked after the plan and queue lookups, immediately before the write, so
+ * renewed work admitted meanwhile is never marked merged by this older result.
  */
-async function markNoChangePlanIssueMerged(issueRef: IssueJobData, labels: string[], log: Logger): Promise<boolean> {
+async function markNoChangePlanIssueMerged(
+    issueRef: IssueJobData, labels: string[], stillApplies: () => Promise<boolean>, log: Logger,
+): Promise<StatusOutcome> {
     try {
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+        // A failed lookup must not read as "outside every plan", which would release the obligation.
+        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number, { throwOnError: true });
         if (!planIssue || !planIssue.draft_id) {
             log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping plan status update');
-            return true;
+            return 'settled';
         }
 
         const queue = await getEpicExecutionQueue(planIssue.draft_id);
         const queued = queue?.status === 'active' && queue.issues.includes(issueRef.number);
         if (!labels.includes('auto-merge') && !queued) {
             log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping plan status update');
-            return true;
+            return 'settled';
         }
 
-        await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED);
+        if (!await stillApplies()) return 'superseded';
+        // The writer logs and swallows its own failures; only its result says the status persisted.
+        if (!await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED)) {
+            log.warn({ issueNumber: issueRef.number }, 'The no-change plan-status write did not persist; it stays owed');
+            return 'owed';
+        }
         log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
-        return true;
+        return 'settled';
     } catch (error) {
         log.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Failed to mark no-change plan issue as merged');
-        return false;
+        return 'owed';
     }
 }
 
@@ -147,8 +159,18 @@ async function settleNoChangeCompletion(
         if (!current) return isCurrentNoChangeRequest(issueRef, record, store);
     }
     if (await dropIfSuperseded(issueRef, current, options)) return true;
-    // A failed status write stays owed; the next job for this issue, or recovery, replays it.
-    if (await markNoChangePlanIssueMerged(issueRef, record.labels, log)) await replaceNoChangeCompletion(current, null, store);
+    const finalizing = current;
+    const outcome = await markNoChangePlanIssueMerged(
+        issueRef, record.labels, () => noChangeCompletionStillApplies(issueRef, finalizing, store), log,
+    );
+    if (outcome === 'superseded') {
+        log.info({ issueNumber: issueRef.number, requestId: record.requestId },
+            'Abandoning a no-change status write that stopped applying while the plan was being looked up');
+        await dropIfSuperseded(issueRef, finalizing, options);
+    } else if (outcome === 'settled') {
+        await replaceNoChangeCompletion(finalizing, null, store);
+    }
+    // A status write still owed stays retained; the next job for this issue, or recovery, replays it.
     return true;
 }
 

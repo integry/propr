@@ -287,10 +287,11 @@ export async function incrementFollowupCount(draftId: string, issueNumber: numbe
 
 /**
  * Finds a plan issue by repository and issue number.
+ * A failed lookup resolves to `null` unless `throwOnError` is set, for callers
+ * that must tell a failed read apart from an issue outside every plan.
  */
 export async function findPlanIssueByRepoAndNumber(
-    repository: string,
-    issueNumber: number
+    repository: string, issueNumber: number, { throwOnError = false }: { throwOnError?: boolean } = {}
 ): Promise<PlanIssue | null> {
     try {
         const issue = await db('plan_issues')
@@ -303,6 +304,7 @@ export async function findPlanIssueByRepoAndNumber(
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, repository, issueNumber }, 'Failed to find plan issue by repo and number');
+        if (throwOnError) throw error;
         return null;
     }
 }
@@ -331,12 +333,14 @@ export async function findPlanIssueByRepoAndPR(
 
 /**
  * Updates the status of a plan issue by repository and issue number.
+ * Failures are logged rather than thrown.
+ * @returns whether the status update was persisted; the follow-on draft sync
+ * and activity publication stay best-effort and do not affect the result.
  */
 export async function updatePlanIssueStatus(
-    repository: string,
-    issueNumber: number,
-    status: PlanIssueStatus
-): Promise<void> {
+    repository: string, issueNumber: number, status: PlanIssueStatus
+): Promise<boolean> {
+    let persisted = false;
     try {
         // Fetch the plan issue to get the draft_id for status sync
         const planIssue = await db('plan_issues')
@@ -351,6 +355,7 @@ export async function updatePlanIssueStatus(
                 status,
                 updated_at: db.fn.now()
             });
+        persisted = true;
 
         if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);
 
@@ -365,6 +370,7 @@ export async function updatePlanIssueStatus(
         const err = error as Error;
         logger.error({ error: err.message, repository, issueNumber, status }, 'Failed to update plan issue status');
     }
+    return persisted;
 }
 
 /**

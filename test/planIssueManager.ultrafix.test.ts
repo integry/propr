@@ -5,6 +5,8 @@ type Row = Record<string, unknown>;
 
 const rows = new Map<string, Row>();
 let nextId = 1;
+/** Which builder operation the database rejects, mirroring an unavailable connection. */
+let failing: 'first' | 'update' | undefined;
 
 function makeKey(where: Record<string, unknown>): string {
   if ('id' in where) return `id:${where.id}`;
@@ -43,9 +45,11 @@ function createBuilder(tableName: string) {
       return [id];
     },
     async first() {
+      if (failing === 'first') throw new Error('database unavailable');
       return rows.get(makeKey(whereClause)) ?? null;
     },
     async update(data: Row) {
+      if (failing === 'update') throw new Error('database unavailable');
       const row = rows.get(makeKey(whereClause));
       if (!row) return 0;
       const next = { ...row, ...data };
@@ -80,6 +84,7 @@ await mock.module('../packages/core/src/utils/logger.js', {
   defaultExport: {
     info: mock.fn(),
     error: mock.fn(),
+    warn: mock.fn(),
   },
 });
 
@@ -104,14 +109,35 @@ await mock.module('../packages/core/src/utils/eventPublisher.js', {
   namedExports: { getEventPublisher: () => ({ publishActivity: activity }) },
 });
 
-const { createPlanIssue, updatePlanIssue, updatePlanIssueStatus, updatePlanIssueByPR, deletePlanIssue, PlanIssueStatus } = await import('../packages/core/src/config/planIssueManager.js');
+const { createPlanIssue, findPlanIssueByRepoAndNumber, updatePlanIssue, updatePlanIssueStatus, updatePlanIssueByPR, deletePlanIssue, PlanIssueStatus } = await import('../packages/core/src/config/planIssueManager.js');
 
 describe('planIssueManager ultrafix persistence', () => {
   beforeEach(() => {
     activity.mock.resetCalls();
     rows.clear();
     nextId = 1;
+    failing = undefined;
     mockCheckAndUpdateDraftStatus.mock.resetCalls();
+  });
+
+  test('updatePlanIssueStatus reports whether the status persisted, without throwing', async () => {
+    await createPlanIssue({ draft_id: 'draft-1', repository: 'owner/repo', issue_number: 101 });
+    failing = 'update';
+    assert.strictEqual(await updatePlanIssueStatus('owner/repo', 101, PlanIssueStatus.MERGED), false);
+    failing = undefined;
+    assert.strictEqual(await updatePlanIssueStatus('owner/repo', 101, PlanIssueStatus.MERGED), true);
+  });
+
+  test('updatePlanIssueStatus still reports a persisted status when the follow-on draft sync fails', async () => {
+    await createPlanIssue({ draft_id: 'draft-1', repository: 'owner/repo', issue_number: 101 });
+    mockCheckAndUpdateDraftStatus.mock.mockImplementationOnce(async () => { throw new Error('draft sync failed'); });
+    assert.strictEqual(await updatePlanIssueStatus('owner/repo', 101, PlanIssueStatus.MERGED), true);
+  });
+
+  test('a failed plan-issue lookup resolves null unless the caller asks for the failure', async () => {
+    failing = 'first';
+    assert.strictEqual(await findPlanIssueByRepoAndNumber('owner/repo', 101), null);
+    await assert.rejects(findPlanIssueByRepoAndNumber('owner/repo', 101, { throwOnError: true }), /database unavailable/);
   });
 
   test('publishes every status entry point even when the aggregate draft status is unchanged', async () => {

@@ -43,7 +43,7 @@ await mock.module('@propr/core', {
         linkPRToPlanIssue: mock.fn(async () => undefined),
         processCommentEvent,
         safeUpdateLabels: mock.fn(async () => ({ success: true, removed: [], added: [], errors: [] })),
-        updatePlanIssueStatus: mock.fn(async () => undefined),
+        updatePlanIssueStatus: mock.fn(async () => true),
         PlanIssueStatus: { MERGED: 'merged' },
         getPlanIssuesByDraft: mock.fn(async () => []),
         db: mock.fn(() => { throw new Error('No plan lookup expected'); }),

@@ -14,6 +14,8 @@ const requestKey = 'issue:no-change-request:acme/repo#10';
 let liveLabels: string[] = [];
 /** Runs once GitHub has applied the matching label mutation, before its response resumes the caller. */
 let afterLabelMutation: ((route: string, label: string) => Promise<void>) | undefined;
+/** Runs while the status finalization awaits one of its plan lookups. */
+let duringPlanLookup: ((lookup: 'plan-issue' | 'queue') => Promise<void>) | undefined;
 const comments: string[] = [];
 const statusWrites: Array<[string, number, string]> = [];
 const octokit = {
@@ -36,12 +38,19 @@ const octokit = {
 
 await mock.module('@propr/core', {
     namedExports: {
-        getEpicExecutionQueue: mock.fn(async () => ({ status: 'active', issues: [10, 20] })),
-        findPlanIssueByRepoAndNumber: mock.fn(async () => ({ draft_id: 'draft', issue_number: 10, status: 'processing' })),
+        getEpicExecutionQueue: mock.fn(async () => {
+            await duringPlanLookup?.('queue');
+            return { status: 'active', issues: [10, 20] };
+        }),
+        findPlanIssueByRepoAndNumber: mock.fn(async () => {
+            await duringPlanLookup?.('plan-issue');
+            return { draft_id: 'draft', issue_number: 10, status: 'processing' };
+        }),
         logger: { debug() {}, info() {}, warn() {}, error() {} },
         safeUpdateLabels,
         updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string) => {
             statusWrites.push([repository, issueNumber, status]);
+            return true;
         }),
         PlanIssueStatus: { MERGED: 'merged' },
     },
@@ -56,7 +65,7 @@ const store = redisClient as never;
 
 beforeEach(() => {
     redisClient.clear(); comments.length = 0; statusWrites.length = 0;
-    liveLabels = ['AI', 'AI-processing']; afterLabelMutation = undefined;
+    liveLabels = ['AI', 'AI-processing']; afterLabelMutation = undefined; duringPlanLookup = undefined;
 });
 
 const retain = (requestId: string, comment: string | undefined = 'No code changes needed') => obligations.retainNoChangeCompletion(issue, {
@@ -163,3 +172,19 @@ test('an unsuperseded settlement still releases both trigger labels and finishes
     assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
     assert.equal(redisClient.records().length, 0);
 });
+
+for (const lookup of ['plan-issue', 'queue'] as const) {
+    test(`renewed work admitted during the ${lookup} lookup is never marked merged by the older completion`, async () => {
+        await redisClient.set(requestKey, 'request-old');
+        // The labels are already settled; the replay delivers the comment, then reaches the status write.
+        const held = await retain('request-old');
+        liveLabels = ['AI-done'];
+        duringPlanLookup = async current => {
+            if (current === lookup) { duringPlanLookup = undefined; await renewAsRequestB(); }
+        };
+        await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: ['AI-done'], held, correlatedLogger: log, store });
+        assert.deepEqual(statusWrites, [], 'request B\'s implementation is not marked merged, so its successor is not released');
+        assert.equal(redisClient.strings.get(requestKey), 'request-b');
+        assert.equal(redisClient.records().length, 0, 'the superseded completion owes nothing further');
+    });
+}
