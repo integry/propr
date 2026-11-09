@@ -27,13 +27,18 @@ async function releaseIssueLabels(repository: string, issueNumber: number, statu
   const labels = new Set(issue.labels.map(label => typeof label === 'string' ? label : label.name));
   const configured = getPrimaryProcessingLabels();
   const primaryLabels = configured.length ? configured : ['AI'];
-  const active = primaryLabels.filter(label => labels.has(label) || labels.has(`${label}-processing`));
-  // A PR can merge before the worker publishes completion. Do not release its job early.
-  if (status === PlanIssueStatus.MERGED) {
-    const unfinished = active.find(label => !labels.has(`${label}-done`));
-    if (unfinished) throw new Error(`Waiting for '${unfinished}-done' on issue #${issueNumber} before releasing its processing labels.`);
+  // The queue applies only the first primary label. Another trigger is separate
+  // work unless its own completion marker shows that work is finished too.
+  const queueLabel = primaryLabels[0];
+  const owned = primaryLabels.filter(label => label === queueLabel || labels.has(`${label}-done`));
+  // A PR can merge before the worker publishes completion; its processing label
+  // shows the worker is still finishing, so do not release that job early. A bare
+  // trigger without it belongs to no running job (a stopped or failed run, or a
+  // PR a human fixed and merged), so it is released rather than waited on forever.
+  if (status === PlanIssueStatus.MERGED && labels.has(`${queueLabel}-processing`) && !labels.has(`${queueLabel}-done`)) {
+    throw new Error(`Waiting for '${queueLabel}-done' on issue #${issueNumber} before releasing its processing labels.`);
   }
-  const remove = active.flatMap(label => [label, `${label}-processing`]).filter(label => labels.has(label));
+  const remove = owned.flatMap(label => [label, `${label}-processing`]).filter(label => labels.has(label));
   if (!remove.length) return;
   const result = await safeUpdateLabels({ octokit, owner, repo, issueNumber,
     logger: logger.withCorrelation(`epic-handoff-${repository}-${issueNumber}`) }, remove, []);

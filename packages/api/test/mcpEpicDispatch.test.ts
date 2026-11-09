@@ -434,9 +434,10 @@ test('PR status hook and resume route release a head held by pause', async () =>
   await run();
   assert.equal((await core.pauseDraft(planId)).success, true);
   await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ pr_number: 100 });
-  issueLabels.set(10, [...issueLabels.get(10)!, 'AI-done']);
+  // No worker holds the issue (no AI-processing), so a merge without AI-done still releases it.
   await core.updatePlanIssueByPR(repository, 100, { status: core.PlanIssueStatus.MERGED });
   assert.equal((await core.getEpicExecutionQueue(planId))?.cursor, 1);
+  assert.equal(issueLabels.get(10)?.includes('AI'), false);
   assert.equal(labelCalls.some(call => call.labels.includes('AI')), false);
   assert.equal((await core.resumeDraft(planId)).success, true);
   assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [30]);

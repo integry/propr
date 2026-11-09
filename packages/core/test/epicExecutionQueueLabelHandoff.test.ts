@@ -95,10 +95,21 @@ test('custom PRIMARY_PROCESSING_LABELS and old jobs without triggeringLabel use 
 test('a merge before worker completion holds the cursor until done and cleanup succeed', async () => {
   await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
   assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+  assert.match((await getEpicExecutionQueue('draft'))?.blockedReason ?? '', /Waiting for 'AI-done'/);
   assert.deepEqual(events, []);
   labels.add('AI-done');
   await reconcileEpicExecutionQueues();
   assert.deepEqual(events, ['remove:10:AI', 'remove:10:AI-processing', 'start:20']);
+  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null);
+});
+
+test('a merged head whose run will never publish done releases its bare trigger', async () => {
+  // A stopped task loses only AI-processing; a human then fixes and merges the PR.
+  labels = new Set(['AI', 'base-epic']);
+  await startEpicQueueHead('draft');
+  assert.deepEqual(events, ['remove:10:AI', 'start:20']);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1);
+  assert.deepEqual([...labels], ['base-epic']);
 });
 
 test('failed completion publication keeps the trigger and prevents handoff', async () => {
@@ -120,6 +131,7 @@ test('failed removal blocks advancement and recovery retries cleanup before star
   await reconcileEpicExecutionQueues();
   assert.deepEqual(events, ['remove:10:AI', 'remove:10:AI-processing', 'start:20']);
   assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1);
+  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null, 'the stale release failure is cleared');
 });
 
 test('concurrent observers cannot start the successor while removal is still pending', async () => {
@@ -161,4 +173,37 @@ test('the final child releases all configured triggers before epic finalization'
   await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ issues: '[10]' });
   await startEpicQueueHead('draft');
   assert.deepEqual(events, ['remove:10:AI', 'remove:10:Assistant', 'finalize']);
+});
+
+test('another trigger without its own done marker is separate work and is left alone', async () => {
+  configured = ['AI', 'Assistant'];
+  for (const [policy, status] of [['merged', 'merged'], ['terminal', 'closed']] as const) {
+    events.length = 0;
+    await database('epic_execution_queues').delete();
+    await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
+    await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ advance_on: policy });
+    await database('plan_issues').where({ issue_number: 10 }).update({ status });
+    labels = new Set(['AI', 'AI-done', 'Assistant', 'Assistant-processing']);
+    await startEpicQueueHead('draft');
+    assert.deepEqual(events, ['remove:10:AI', 'start:20'], policy);
+    assert.deepEqual([...labels].sort(), ['AI-done', 'Assistant', 'Assistant-processing'], policy);
+    assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1, policy);
+  }
+});
+
+test('mixed completion states release only the triggers whose work is finished', async () => {
+  configured = ['AI', 'Assistant', 'Robot'];
+  // The queue's own trigger finished; Assistant finished too; Robot never ran.
+  labels = new Set(['AI', 'AI-done', 'Assistant', 'Assistant-done', 'Robot']);
+  await startEpicQueueHead('draft');
+  assert.deepEqual(events, ['remove:10:AI', 'remove:10:Assistant', 'start:20']);
+  assert.deepEqual([...labels].sort(), ['AI-done', 'Assistant-done', 'Robot']);
+});
+
+test('a merged head still waits for the queue trigger while another trigger is done', async () => {
+  configured = ['AI', 'Assistant'];
+  labels = new Set(['AI', 'AI-processing', 'Assistant', 'Assistant-done']);
+  await assert.rejects(startEpicQueueHead('draft'), /Waiting for 'AI-done'/);
+  assert.deepEqual(events, []);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
 });

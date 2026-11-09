@@ -116,6 +116,13 @@ the same path as `propr task stop` and the Web UI. Removing a model label such a
 `llm-codex-astra` does not cancel work. An already-opened PR stays open and retains
 its independent follow-up work.
 
+Once the issue carries `<trigger>-done`, removing `<trigger>` no longer cancels
+anything. A completing worker publishes `<trigger>-done` and then removes the
+trigger itself, and that cleanup must not stop the worker still finishing or the
+other models of the same multi-model request. To stop the remaining models after
+one of them has completed, use `propr task stop` or the Web UI stop action
+instead of removing the label.
+
 Webhook intake handles withdrawal immediately. In polling mode, each poll checks
 queued and running resources directly, including issues that disappeared from the
 open/labeled discovery query. Before dispatch or execution, workers fetch current

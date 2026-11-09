@@ -67,6 +67,8 @@ services:
       - .env
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      # Startup refuses a database outside this bind mount (e.g. a relative DB_FILENAME with a custom PROPR_DATA_DIR).
+      - PROPR_DATA_MOUNT=${PROPR_DATA_DIR:-/usr/src/app/data}
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME:-propr-dev[bot]}
       - STAGING_ENV_FILE=/usr/src/app/.env
@@ -121,6 +123,8 @@ services:
       - .env
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      # Startup refuses a database outside this bind mount (e.g. a relative DB_FILENAME with a custom PROPR_DATA_DIR).
+      - PROPR_DATA_MOUNT=${PROPR_DATA_DIR:-/usr/src/app/data}
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
@@ -173,6 +177,8 @@ services:
       - .env
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      # Startup refuses a database outside this bind mount (e.g. a relative DB_FILENAME with a custom PROPR_DATA_DIR).
+      - PROPR_DATA_MOUNT=${PROPR_DATA_DIR:-/usr/src/app/data}
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:${API_PORT:-4000}}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
@@ -202,7 +208,8 @@ services:
         - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL:-}
     environment:
       # The static UI has no /api proxy; supply its browser-visible API origin at startup.
-      - PROPR_UI_PUBLIC_API_URL=${PROPR_UI_PUBLIC_API_URL:-${VITE_API_BASE_URL:-http://localhost:${API_PORT:-4000}}}
+      # Unset falls back to the local API; set it empty to keep same-origin (reverse proxy) access.
+      - PROPR_UI_PUBLIC_API_URL=${PROPR_UI_PUBLIC_API_URL-${VITE_API_BASE_URL:-http://localhost:${API_PORT:-4000}}}
     ports:
       # Allow injection of UI_PORT for PR preview environments, default to 5173
       - '${UI_PORT:-5173}:5173'
@@ -226,7 +233,14 @@ services:
         case "$${DB_FILENAME}" in
           "") export DB_FILENAME="$${DATA_DIR:-/usr/src/app/data}/propr.sqlite" ;;
           /*|:memory:|file:*) ;;
-          *) export DB_FILENAME="/usr/src/app/$${DB_FILENAME}" ;;
+          *)
+            # Resolve from /usr/src/app like the daemon and workers, and refuse a
+            # database that would live outside the data bind mount.
+            export DB_FILENAME="$$(node -p 'require("path").resolve("/usr/src/app", process.env.DB_FILENAME)')"
+            case "$${DB_FILENAME}" in
+              "$${PROPR_DATA_MOUNT:-/usr/src/app/data}"/*) ;;
+              *) echo "DB_FILENAME resolves to $${DB_FILENAME}, outside the mounted data directory $${PROPR_DATA_MOUNT:-/usr/src/app/data}. Set an absolute DB_FILENAME inside PROPR_DATA_DIR." >&2; exit 1 ;;
+            esac ;;
         esac
         cd /usr/src/app/packages/api && exec npx tsx server.ts
     extra_hosts:
@@ -259,6 +273,8 @@ services:
       - ${STAGING_ENV_FILE:-.env}
     environment:
       - DATA_DIR=${PROPR_DATA_DIR:-/usr/src/app/data}
+      # Startup refuses a database outside this bind mount (e.g. a relative DB_FILENAME with a custom PROPR_DATA_DIR).
+      - PROPR_DATA_MOUNT=${PROPR_DATA_DIR:-/usr/src/app/data}
       - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
       - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
       - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini

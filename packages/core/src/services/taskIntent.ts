@@ -179,6 +179,9 @@ export function withdrawnIntentReason(target: IntentTarget, current: CurrentTask
     const required = target.triggeringLabel ? [target.triggeringLabel] : triggers;
     // Completion publishes -done before removing its trigger. That cleanup must
     // not cancel a worker still finishing publication or the same dispatch's siblings.
+    // Trade-off: after any sibling completes, a user removing the trigger no longer
+    // stops the others; the explicit stop path (UI, `propr task stop`) still does.
+    // Documented in docs/docs/architecture/worker.md.
     return required.some(label => labels.includes(label) || labels.includes(`${label}-done`)) ? null : 'cancelled_label_removed';
 }
 

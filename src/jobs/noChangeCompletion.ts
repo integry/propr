@@ -11,6 +11,7 @@ import {
     replaceNoChangeCompletion,
     retainNoChangeCompletion,
     type NoChangeCompletion,
+    type NoChangeCompletionStore,
     type RetainedNoChangeCompletion,
 } from './noChangeCompletionObligation.js';
 
@@ -48,7 +49,8 @@ async function markNoChangePlanIssueMerged(issueRef: IssueJobData, labels: strin
 
 /** Performs every step the held completion still owes, releasing it only once nothing is. */
 async function settleNoChangeCompletion(
-    octokit: Octokit, issueRef: IssueJobData, held: RetainedNoChangeCompletion, log: Logger,
+    octokit: Octokit, issueRef: IssueJobData, held: RetainedNoChangeCompletion,
+    { log, store }: { log: Logger; store?: NoChangeCompletionStore },
 ): Promise<void> {
     const { record } = held;
     await completeIssueLabels({
@@ -57,16 +59,24 @@ async function settleNoChangeCompletion(
     });
     let current: RetainedNoChangeCompletion | null = held;
     if (record.comment !== undefined) {
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: record.comment,
-        });
-        current = await replaceNoChangeCompletion(held, { ...record, comment: undefined });
-        // A newer completion of this issue now owns the remaining steps.
+        // Claim the comment before posting it, so of two settlers holding this
+        // record (a retry and recovery, or two deliveries) only one posts it.
+        current = await replaceNoChangeCompletion(held, { ...record, comment: undefined }, store);
+        // Another settler, or a newer completion of this issue, owns the remaining steps.
         if (!current) return;
+        try {
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: record.comment,
+            });
+        } catch (error) {
+            // Hand the comment back so a later replay posts it; a newer record keeps precedence.
+            await replaceNoChangeCompletion(current, record, store).catch(() => null);
+            throw error;
+        }
     }
-    // A failed status write stays owed; the next job for this issue replays it.
+    // A failed status write stays owed; the next job for this issue, or recovery, replays it.
     if (!await markNoChangePlanIssueMerged(issueRef, record.labels, log)) return;
-    await replaceNoChangeCompletion(current, null);
+    await replaceNoChangeCompletion(current, null, store);
 }
 
 export async function completeNoChangeIssue(options: {
@@ -85,7 +95,7 @@ export async function completeNoChangeIssue(options: {
     };
     // Retained before the done marker exists, so no moment has the marker without the record.
     const held = await retainNoChangeCompletion(issueRef, completion);
-    await settleNoChangeCompletion(octokit, issueRef, held, correlatedLogger);
+    await settleNoChangeCompletion(octokit, issueRef, held, { log: correlatedLogger });
 }
 
 /**
@@ -100,11 +110,12 @@ export async function replayNoChangeCompletion(options: {
     currentLabels: string[];
     held: RetainedNoChangeCompletion;
     correlatedLogger: Logger;
+    store?: NoChangeCompletionStore;
 }): Promise<string[]> {
-    const { octokit, issueRef, currentLabels, held, correlatedLogger } = options;
+    const { octokit, issueRef, currentLabels, held, correlatedLogger, store } = options;
     if (!currentLabels.includes(held.record.doneTag)) return currentLabels;
     correlatedLogger.info({ issueNumber: issueRef.number }, 'Finishing an interrupted no-change completion');
-    await settleNoChangeCompletion(octokit, issueRef, held, correlatedLogger);
+    await settleNoChangeCompletion(octokit, issueRef, held, { log: correlatedLogger, store });
     const released = releasedTriggerLabels(held.record.triggeringLabel, held.record.processingTag);
     return currentLabels.filter(label => !released.includes(label));
 }

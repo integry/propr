@@ -23,7 +23,7 @@ import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, 
 import { prepareProviderReplacement } from './providerReplacement.js';
 import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
 import { retryPRCreationViaAPI } from './issueJobPRRetry.js';
-import { completeIssueLabels } from './issueJobCompletionLabels.js';
+import { completeIssueLabelsBestEffort } from './issueJobCompletionLabels.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -148,7 +148,8 @@ async function handlePostProcessingFailure(
     try {
         const completedLabels = canMarkDone ? [AI_DONE_TAG] : [];
         if (canMarkDone) {
-            await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
+            // A failed label mutation must not suppress the failure comment below.
+            await completeIssueLabelsBestEffort({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
         } else {
             await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], []);
         }
@@ -289,7 +290,8 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             });
         }
 
-        await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
+        // The pull request exists: a label failure is logged, never fatal to its follow-up steps.
+        await completeIssueLabelsBestEffort({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
 
         await autoAssignCompletedPullRequest(options, postProcessingResult);
 
@@ -341,7 +343,8 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
     });
 
     if (finalPRValidation.isValid && !postProcessingResult?.pr) {
-        await completeIssueLabels({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
+        // The pull request exists: a label failure is logged, never fatal to linking and assignment.
+        await completeIssueLabelsBestEffort({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
 
         // Link PR to plan issue if found during validation
         if (finalPRValidation.pr?.number) {
