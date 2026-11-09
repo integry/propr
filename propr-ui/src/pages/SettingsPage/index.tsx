@@ -21,7 +21,7 @@ import { useDesktop } from '../../desktop/DesktopContext';
 import SettingsNavigation, { type SettingsNavigationSection } from './SettingsNavigation';
 import McpServerSection from './McpServerSection';
 import { useSettingsCategoryRoute } from './useSettingsCategoryRoute';
-import { agentExtensionSections, settingsDataSections } from './settingsDataSections';
+import { agentExtensionSections, maintenanceSections, settingsDataSections } from './settingsDataSections';
 import SettingsSaveStatusBar from './SettingsSaveStatusBar';
 
 const AdminSettingsPage: React.FC = () => {
@@ -266,6 +266,7 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
+    ...maintenanceSections(),
     {
       id: 'ultrafix',
       category: 'ultrafix',

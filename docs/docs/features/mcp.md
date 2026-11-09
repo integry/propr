@@ -48,6 +48,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
 | Turn on the [assignment gate](./assignment.md#the-assignment-gate) | `update_execution_settings` with `followup_requires_assignment: true` (default `false`); `get_execution_settings` reads it |
 | [Automatic pull request assignment](./pr-followup.md#automatic-pull-request-assignment) for a repository | `update_repository_configuration` with `autoAssignPullRequests`, `autoAssignDefaultAssignee` and `autoAssignRequestReview`; `get_repository_configuration` reads them |
+| A pull request where every command waits behind an earlier, held follow-up | `list_followup_handoffs`, `get_followup_handoff`, then `resume_followup_handoff` or `release_followup_handoff` (administrators; see [Maintenance](../operations/maintenance.md#stuck-follow-ups-settle-themselves)) |
 | Product docs and where a setting lives | `search_docs`, `get_doc`, `find_setting` |
 | Find and read code in a granted repository without cloning it | `search_repository_files` (`mode: "semantic"` ranks paths from the index; `mode: "literal"` greps exact text with line previews), then `read_repository_file` in bounded line ranges |
 

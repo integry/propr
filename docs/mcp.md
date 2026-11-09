@@ -345,6 +345,16 @@ require the existing `instance.manage_settings`, `instance.manage_agents`,
 Ordinary repository task history follows the existing shared repository model;
 native goal tasks remain private and can only be mutated through goal controls.
 
+Instance administrators with `instance.manage_runtime` also get the
+maintenance tools: `list_followup_handoffs` and `get_followup_handoff` show the
+pull request follow-ups whose publication is still owed, including holds that
+wait for an operator and block every later command on their pull request;
+`resume_followup_handoff` re-arms one and runs its recovery pass, and
+`release_followup_handoff` stops tracking it so the next command can run (the
+branch is freed, files and commits are never deleted; a worktree that still
+holds unpublished work is released only with force set to true). The same
+decisions are in Settings → Workflow & PR Rules → Maintenance.
+
 Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates
 a draft; `publish_plan` creates GitHub issues with the non-executing

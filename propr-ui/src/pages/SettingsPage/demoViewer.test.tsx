@@ -45,7 +45,7 @@ vi.mock('./DesktopNotificationSettingsSection', () => stub('DesktopNotificationS
 vi.mock('./VoiceSettingsSection', () => stub('VoiceSettingsSection'));
 vi.mock('./ExperimentalSettingsSection', () => stub('ExperimentalSettingsSection'));
 vi.mock('./McpServerSection', () => stub('McpServerSection'));
-vi.mock('./settingsDataSections', () => ({ agentExtensionSections: () => [], settingsDataSections: () => [] }));
+vi.mock('./settingsDataSections', () => ({ agentExtensionSections: () => [], maintenanceSections: () => [], settingsDataSections: () => [] }));
 
 vi.mock('../../api/instanceMembersApi', () => ({
   getInstanceMembers: async () => ({ bootstrapAdmins: [], members: [{
