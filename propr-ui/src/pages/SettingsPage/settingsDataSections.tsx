@@ -3,6 +3,7 @@ import AgentRuntimePackagesSection from './AgentRuntimePackagesSection';
 import InstanceStorageSection from './InstanceStorageSection';
 import VisualPreviewAuthSection from './VisualPreviewAuthSection';
 import ManagedPreviewStorageSection from './ManagedPreviewStorageSection';
+import MaintenanceSection from './MaintenanceSection';
 import type { SettingsNavigationSection } from './SettingsNavigation';
 
 /** MCP tools, skills and system packages that agents can use inside their containers. */
@@ -36,6 +37,18 @@ export function settingsDataSections(): SettingsNavigationSection[] {
           <ManagedPreviewStorageSection />
         </div>
       )
+    },
+  ];
+}
+
+/** Operator maintenance: follow-up handoffs held for a decision. Renders nothing for non-administrators. */
+export function maintenanceSections(): SettingsNavigationSection[] {
+  return [
+    {
+      id: 'maintenance',
+      category: 'workflow',
+      searchText: 'maintenance held follow-up handoff hold release resume operator blocked pull request fork publication stuck command',
+      content: <MaintenanceSection />
     },
   ];
 }
