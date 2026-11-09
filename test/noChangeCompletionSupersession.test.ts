@@ -9,13 +9,13 @@ import { createNoChangeCompletionStoreDouble } from './fixtures/noChangeCompleti
  * an older settlement never removes its trigger labels.
  */
 const redisClient = createNoChangeCompletionStoreDouble();
-const requestKey = 'issue:no-change-request:acme/repo#10';
+const requestKey = 'issue:no-change-request:acme/repo#10:AI';
 
 let liveLabels: string[] = [];
 /** Runs once GitHub has applied the matching label mutation, before its response resumes the caller. */
 let afterLabelMutation: ((route: string, label: string) => Promise<void>) | undefined;
-/** Runs while the status finalization awaits one of its plan lookups. */
-let duringPlanLookup: ((lookup: 'plan-issue' | 'queue') => Promise<void>) | undefined;
+/** Runs while the status finalization awaits one of its plan lookups, including the writer's own. */
+let duringPlanLookup: ((lookup: 'plan-issue' | 'queue' | 'status-writer') => Promise<void>) | undefined;
 const comments: string[] = [];
 const statusWrites: Array<[string, number, string]> = [];
 const octokit = {
@@ -48,7 +48,11 @@ await mock.module('@propr/core', {
         }),
         logger: { debug() {}, info() {}, warn() {}, error() {} },
         safeUpdateLabels,
-        updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string) => {
+        // Mirrors the real writer: it awaits its own lookup, then evaluates the caller's guard before updating.
+        updatePlanIssueStatus: mock.fn(async (repository: string, issueNumber: number, status: string,
+            { stillApplies }: { stillApplies?: () => Promise<boolean> } = {}) => {
+            await duringPlanLookup?.('status-writer');
+            if (stillApplies && !await stillApplies()) return false;
             statusWrites.push([repository, issueNumber, status]);
             return true;
         }),
@@ -75,7 +79,7 @@ const retain = (requestId: string, comment: string | undefined = 'No code change
 /** The user removes the done marker and reapplies the trigger; the worker admits request B, which marks itself processing. */
 async function renewAsRequestB() {
     liveLabels = [...liveLabels.filter(label => label !== 'AI-done' && label !== 'AI'), 'AI'];
-    await obligations.admitNoChangeRequest(issue, 'request-b', store);
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-b', triggeringLabel: 'AI' }, store);
     if (!liveLabels.includes('AI-processing')) liveLabels.push('AI-processing');
 }
 
@@ -88,13 +92,13 @@ test('an admission overtaken while reading never deletes the newer request\'s co
         hgetall: async (key: string) => {
             if (!interleaved) {
                 interleaved = true;
-                await obligations.admitNoChangeRequest(issue, 'request-b', store);
+                await obligations.admitNoChangeRequest(issue, { requestId: 'request-b', triggeringLabel: 'AI' }, store);
                 await retain('request-b');
             }
             return redisClient.hgetall(key);
         },
     };
-    assert.equal(await obligations.admitNoChangeRequest(issue, 'request-a', pausingStore as never), 0);
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-a', triggeringLabel: 'AI' }, pausingStore as never), 0);
     assert.equal(redisClient.strings.get(requestKey), 'request-b');
     assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-b'],
         'B\'s owed completion survives; the old one was dropped by B\'s own admission');
@@ -103,7 +107,7 @@ test('an admission overtaken while reading never deletes the newer request\'s co
 test('admission still drops completions of older requests while it owns the request key', async () => {
     await retain('request-old');
     await retain('request-a');
-    assert.equal(await obligations.admitNoChangeRequest(issue, 'request-a', store), 1);
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-a', triggeringLabel: 'AI' }, store), 1);
     assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-a']);
 });
 
@@ -151,7 +155,7 @@ test('a replay whose record admission dropped before the comment claim abandons 
 });
 
 test('an initial no-change settlement superseded after publishing keeps its hands off the renewed trigger', async () => {
-    await obligations.admitNoChangeRequest(issue, 'request-old', store);
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-old', triggeringLabel: 'AI' }, store);
     afterLabelMutation = async (route, label) => {
         if (route.endsWith('/labels') && label === 'AI-done') { afterLabelMutation = undefined; await renewAsRequestB(); }
     };
@@ -164,7 +168,7 @@ test('an initial no-change settlement superseded after publishing keeps its hand
 });
 
 test('an unsuperseded settlement still releases both trigger labels and finishes', async () => {
-    await obligations.admitNoChangeRequest(issue, 'request-old', store);
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-old', triggeringLabel: 'AI' }, store);
     await completeNoChangeIssue({ octokit: octokit as never, issueRef: { ...(issue as object), correlationId: 'request-old' } as never,
         labels: ['AI', 'auto-merge'], comment: 'old report', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', correlatedLogger: log });
     assert.deepEqual(liveLabels, ['AI-done']);
@@ -173,7 +177,7 @@ test('an unsuperseded settlement still releases both trigger labels and finishes
     assert.equal(redisClient.records().length, 0);
 });
 
-for (const lookup of ['plan-issue', 'queue'] as const) {
+for (const lookup of ['plan-issue', 'queue', 'status-writer'] as const) {
     test(`renewed work admitted during the ${lookup} lookup is never marked merged by the older completion`, async () => {
         await redisClient.set(requestKey, 'request-old');
         // The labels are already settled; the replay delivers the comment, then reaches the status write.
@@ -188,3 +192,41 @@ for (const lookup of ['plan-issue', 'queue'] as const) {
         assert.equal(redisClient.records().length, 0, 'the superseded completion owes nothing further');
     });
 }
+
+test('queued work under another trigger keeps the interrupted completion of an independent trigger', async () => {
+    // AI published AI-done and released its trigger, but its comment failed: the comment and status write stay owed.
+    const owed = await retain('request-ai');
+    liveLabels = ['AI-done', 'Assistant', 'auto-merge'];
+    // The already-queued Assistant worker passes its own label check and is admitted under a different request.
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-assistant', triggeringLabel: 'Assistant' }, store), 0);
+    assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-ai'], 'the AI completion survives');
+    assert.equal(redisClient.strings.get(requestKey), undefined, 'the AI request generation is untouched');
+    assert.equal(redisClient.strings.get('issue:no-change-request:acme/repo#10:Assistant'), 'request-assistant');
+
+    // Recovery still delivers the AI report and settles its status obligation.
+    await replayNoChangeCompletion({ octokit: octokit as never, issueRef: issue, currentLabels: [...liveLabels], held: owed,
+        correlatedLogger: log, store });
+    assert.deepEqual(comments.map(body => body.split('\n')[0]), ['No code changes needed']);
+    assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']]);
+    assert.deepEqual(liveLabels.sort(), ['AI-done', 'Assistant', 'auto-merge'], 'the Assistant trigger stays with its own work');
+    assert.equal(redisClient.records().length, 0);
+});
+
+test('an independent trigger\'s completion keeps answering its own request after another trigger is admitted', async () => {
+    await redisClient.set(requestKey, 'request-ai');
+    const owed = await retain('request-ai');
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-assistant', triggeringLabel: 'Assistant' }, store);
+    assert.equal(await obligations.isCurrentNoChangeRequest(issue, owed.record, store), true);
+    assert.equal(await obligations.noChangeCompletionStillApplies(issue, owed, store), true);
+});
+
+test('a legacy completion without a trigger is superseded only by its fallback trigger\'s renewed work', async () => {
+    // Jobs without triggeringLabel derive their tags from the configured fallback trigger.
+    await obligations.retainNoChangeCompletion(issue, {
+        retainedAt: 0, requestId: 'request-legacy', processingTag: 'AI-processing', doneTag: 'AI-done', labels: ['AI'], comment: 'x',
+    }, store);
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-assistant', triggeringLabel: 'Assistant' }, store), 0);
+    assert.equal(redisClient.records().length, 1);
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-renewed', triggeringLabel: 'AI' }, store), 1);
+    assert.equal(redisClient.records().length, 0);
+});

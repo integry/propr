@@ -246,7 +246,7 @@ async function processIssueWithAdmission(
   /** The policy is a snapshot from an earlier attempt, not read from the base branch by this one. */
   reusedWorkflowSnapshot: boolean,
 ): Promise<JobResult> {
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG, AI_PRIMARY_TAG } = context;
   // A withdrawn or skipped issue ends before admission, so it never holds
   // repository capacity; deferred attempts repeat these checks on re-entry.
   let currentIssueData: CurrentIssueData;
@@ -274,9 +274,10 @@ async function processIssueWithAdmission(
       await terminalizeSkippedTask(context, ownTask, labelCheck.terminalReason ?? 'skipped_issue_done');
       return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
     }
-    // Admitted work answers a newer request: an older request's retained no-change
-    // completion must no longer mark the plan issue merged or publish its marker.
-    await admitNoChangeRequest(issueRef, noChangeRequestId(issueRef));
+    // Admitted work answers a newer request of its trigger: an older request's retained
+    // no-change completion for that trigger must no longer mark the plan issue merged or
+    // publish its marker. Another trigger's owed completion is independent and kept.
+    await admitNoChangeRequest(issueRef, { requestId: noChangeRequestId(issueRef), triggeringLabel: AI_PRIMARY_TAG });
   } catch (error) {
     return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
   }

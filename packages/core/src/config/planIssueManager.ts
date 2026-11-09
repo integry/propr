@@ -334,27 +334,27 @@ export async function findPlanIssueByRepoAndPR(
 /**
  * Updates the status of a plan issue by repository and issue number.
  * Failures are logged rather than thrown.
+ * @param stillApplies - Evaluated after the plan-issue lookup, immediately
+ * before the update; when it answers false the update and the epic queue
+ * notification are abandoned, because the caller no longer owns the issue.
  * @returns whether the status update was persisted; the follow-on draft sync
  * and activity publication stay best-effort and do not affect the result.
  */
 export async function updatePlanIssueStatus(
-    repository: string, issueNumber: number, status: PlanIssueStatus
+    repository: string, issueNumber: number, status: PlanIssueStatus,
+    { stillApplies }: { stillApplies?: () => Promise<boolean> } = {},
 ): Promise<boolean> {
     let persisted = false;
     try {
         // Fetch the plan issue to get the draft_id for status sync
-        const planIssue = await db('plan_issues')
-            .where({ repository, issue_number: issueNumber })
-            .select('draft_id', 'issue_number')
-            .orderBy('id', 'desc')
-            .first();
+        const planIssue = await db('plan_issues').where({ repository, issue_number: issueNumber })
+            .select('draft_id', 'issue_number').orderBy('id', 'desc').first();
 
-        await db('plan_issues')
-            .where({ repository, issue_number: issueNumber })
-            .update({
-                status,
-                updated_at: db.fn.now()
-            });
+        if (stillApplies && !await stillApplies()) {
+            logger.info({ repository, issueNumber, status }, 'Abandoned a plan issue status update that no longer applies');
+            return false;
+        }
+        await db('plan_issues').where({ repository, issue_number: issueNumber }).update({ status, updated_at: db.fn.now() });
         persisted = true;
 
         if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);

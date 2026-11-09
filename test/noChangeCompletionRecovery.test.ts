@@ -246,7 +246,7 @@ test('a completion superseded by renewed work never finishes the newer request',
 
     // The user removes AI-done and reapplies AI; the worker admits the new request.
     liveLabels = ['AI', 'auto-merge'];
-    assert.equal(await obligations.admitNoChangeRequest(issue, 'new-request', redisClient as never), 1);
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'new-request', triggeringLabel: 'AI' }, redisClient as never), 1);
     assert.equal(owedCount(), 0, 'admission drops the superseded completion');
 
     // The new run opens a PR and publishes AI-done; recovery has nothing old to replay.
@@ -258,7 +258,7 @@ test('a completion superseded by renewed work never finishes the newer request',
 test('replay re-checks the request generation before writing status', async () => {
     // A record read before admission: its request was superseded after the read.
     const held = await retainPublished(0, { requestId: 'old-request', comment: undefined });
-    await redisClient.set('issue:no-change-request:acme/repo#10', 'new-request');
+    await redisClient.set('issue:no-change-request:acme/repo#10:AI', 'new-request');
     liveLabels = ['AI', 'AI-done'];
     assert.equal(await recoverNoChangeCompletions({ store: redisClient as never, now: () => Date.now(), log }), 1);
     assert.deepEqual(statusWrites, [], 'the old completion must not mark the newer work merged');

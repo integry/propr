@@ -27,8 +27,9 @@ type StatusOutcome = 'settled' | 'owed' | 'superseded';
 /**
  * Records a no-change auto-merge completion. The status write notifies the plan's
  * execution queue, which alone selects and starts any successor. Ownership is
- * rechecked after the plan and queue lookups, immediately before the write, so
- * renewed work admitted meanwhile is never marked merged by this older result.
+ * rechecked after the plan and queue lookups, and again inside the writer after
+ * its own lookup, immediately before the update, so renewed work admitted
+ * meanwhile is never marked merged by this older result.
  */
 async function markNoChangePlanIssueMerged(
     issueRef: IssueJobData, labels: string[], stillApplies: () => Promise<boolean>, log: Logger,
@@ -50,8 +51,14 @@ async function markNoChangePlanIssueMerged(
         }
 
         if (!await stillApplies()) return 'superseded';
+        // The writer awaits its own lookup before updating, so it rechecks ownership
+        // immediately before the update; a lost check abandons the update and notification.
+        let superseded = false;
+        const ownsIssue = async () => { superseded = !await stillApplies(); return !superseded; };
         // The writer logs and swallows its own failures; only its result says the status persisted.
-        if (!await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED)) {
+        const persisted = await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED, { stillApplies: ownsIssue });
+        if (superseded) return 'superseded';
+        if (!persisted) {
             log.warn({ issueNumber: issueRef.number }, 'The no-change plan-status write did not persist; it stays owed');
             return 'owed';
         }
@@ -165,7 +172,7 @@ async function settleNoChangeCompletion(
     );
     if (outcome === 'superseded') {
         log.info({ issueNumber: issueRef.number, requestId: record.requestId },
-            'Abandoning a no-change status write that stopped applying while the plan was being looked up');
+            'Abandoning a no-change status write that stopped applying before the update');
         await dropIfSuperseded(issueRef, finalizing, options);
     } else if (outcome === 'settled') {
         await replaceNoChangeCompletion(finalizing, null, store);

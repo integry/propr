@@ -20,7 +20,8 @@ export interface NoChangeCompletion {
     retainedAt?: number;
     /**
      * The request (job correlation ID) that produced this completion. Renewed
-     * work admitted for the issue under another request supersedes it.
+     * work admitted for the issue under another request of the same trigger
+     * supersedes it; work under another configured trigger is independent.
      */
     requestId?: string;
     triggeringLabel?: string;
@@ -51,7 +52,18 @@ export const NO_CHANGE_COMPLETION_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 const issuePath = (issue: IssueCoordinates) => `${issue.repoOwner}/${issue.repoName}#${issue.number}`;
 const completionKey = (issue: IssueCoordinates) => `${NO_CHANGE_COMPLETION_KEY_PREFIX}${issuePath(issue)}`;
-const requestKey = (issue: IssueCoordinates) => `${NO_CHANGE_REQUEST_KEY_PREFIX}${issuePath(issue)}`;
+/** Request generations are tracked per trigger: each configured trigger's work owes its own completion. */
+const requestKey = (issue: IssueCoordinates, triggeringLabel: string) =>
+    `${NO_CHANGE_REQUEST_KEY_PREFIX}${issuePath(issue)}:${triggeringLabel}`;
+
+/**
+ * The trigger whose request a completion answers. Older jobs lack
+ * `triggeringLabel`; their processing tag was derived from the same fallback
+ * trigger the job context uses, as `releasedTriggerLabels` also assumes.
+ */
+export function noChangeCompletionTrigger(record: Pick<NoChangeCompletion, 'triggeringLabel' | 'processingTag'>): string {
+    return record.triggeringLabel ?? record.processingTag.replace(/-processing$/u, '');
+}
 
 /** The issue a completion key belongs to; `null` for a key this module did not write. */
 export function issueForCompletionKey(key: string): IssueCoordinates | null {
@@ -118,15 +130,16 @@ export async function replaceNoChangeCompletion(
 }
 
 /**
- * Whether the request that produced this completion is still the issue's
- * newest admitted request. A record or job without a request ID predates
- * this binding and cannot be told apart, so it is treated as current.
+ * Whether the request that produced this completion is still the newest
+ * request admitted for the issue under the completion's trigger. A record or
+ * job without a request ID predates this binding and cannot be told apart, so
+ * it is treated as current.
  */
 export async function isCurrentNoChangeRequest(
     issue: IssueCoordinates, record: NoChangeCompletion, store: NoChangeCompletionStore = redisClient,
 ): Promise<boolean> {
     if (!record.requestId) return true;
-    const current = await store.get(requestKey(issue));
+    const current = await store.get(requestKey(issue, noChangeCompletionTrigger(record)));
     return !current || current === record.requestId;
 }
 
@@ -141,22 +154,28 @@ redis.call('HDEL', KEYS[1], ARGV[1])
 return 1`;
 
 /**
- * Records that `requestId` is the issue's newest admitted request and drops
- * completions retained by older requests: their done marker and plan-status
- * write described work the user has since asked to be redone. Cleanup stops
- * as soon as a newer admission takes over the request key.
+ * Records that `requestId` is the newest request admitted for the issue under
+ * `triggeringLabel` (the job's effective trigger, including the configured
+ * fallback for jobs without one) and drops completions that older requests of
+ * that trigger retained: their done marker and plan-status write described
+ * work the user has since asked to be redone. Completions owed under another
+ * trigger answer independent work and are kept. Cleanup stops as soon as a
+ * newer admission takes over the trigger's request key.
  * @returns the number of superseded completions dropped.
  */
 export async function admitNoChangeRequest(
-    issue: IssueCoordinates, requestId: string | undefined, store: NoChangeCompletionStore = redisClient,
+    issue: IssueCoordinates, { requestId, triggeringLabel }: { requestId: string | undefined; triggeringLabel: string },
+    store: NoChangeCompletionStore = redisClient,
 ): Promise<number> {
     if (!requestId) return 0;
-    await store.set(requestKey(issue), requestId, 'EX', NO_CHANGE_COMPLETION_TTL_SECONDS);
+    const key = requestKey(issue, triggeringLabel);
+    await store.set(key, requestId, 'EX', NO_CHANGE_COMPLETION_TTL_SECONDS);
     let dropped = 0;
     for (const held of await readNoChangeCompletions(issue, store)) {
         if (!held.record.requestId || held.record.requestId === requestId) continue;
+        if (noChangeCompletionTrigger(held.record) !== triggeringLabel) continue;
         const outcome = Number(await store.eval(
-            DROP_SUPERSEDED_NO_CHANGE_COMPLETION, 2, held.key, requestKey(issue), held.record.id, held.raw, requestId,
+            DROP_SUPERSEDED_NO_CHANGE_COMPLETION, 2, held.key, key, held.record.id, held.raw, requestId,
         ));
         // A newer admission owns the issue now; what remains is its to judge.
         if (outcome === -1) break;
@@ -166,8 +185,8 @@ export async function admitNoChangeRequest(
 }
 
 /**
- * Whether the held completion is still retained and still answers the issue's
- * newest request. Settlers check it before every label mutation, so a
+ * Whether the held completion is still retained and still answers the newest
+ * request of its trigger. Settlers check it before every label mutation, so a
  * completion superseded mid-settlement stops instead of removing labels that
  * now belong to renewed work.
  */
