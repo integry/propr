@@ -230,3 +230,40 @@ test('a legacy completion without a trigger is superseded only by its fallback t
     assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-renewed', triggeringLabel: 'AI' }, store), 1);
     assert.equal(redisClient.records().length, 0);
 });
+
+test('an older request admitted after a newer one keeps neither the generation nor the newer request\'s completion', async () => {
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-a', triggeringLabel: 'AI' }, store);
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-b', triggeringLabel: 'AI' }, store);
+    const owedByB = await retain('request-b');
+    // A's delayed sibling, or a retry of it under the same correlation ID, is admitted again.
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-a', triggeringLabel: 'AI' }, store), 0);
+    assert.equal(redisClient.strings.get(requestKey), 'request-b');
+    assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-b']);
+    assert.equal(await obligations.noChangeCompletionStillApplies(issue, owedByB, store), true);
+    // The newer request's own siblings are still admitted and still drop truly older completions.
+    await retain('request-a');
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-b', triggeringLabel: 'AI' }, store), 1);
+    assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-b']);
+});
+
+test('a request ordered at dispatch stays older even when all its jobs are admitted after a newer request', async () => {
+    assert.equal(await obligations.registerNoChangeRequest(issue, 'request-a', store), 1);
+    assert.equal(await obligations.registerNoChangeRequest(issue, 'request-b', store), 2);
+    assert.equal(await obligations.registerNoChangeRequest(issue, 'request-a', store), 1, 'a retried dispatch keeps its place');
+    await obligations.admitNoChangeRequest(issue, { requestId: 'request-b', triggeringLabel: 'AI' }, store);
+    await retain('request-b');
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-a', triggeringLabel: 'AI' }, store), 0);
+    assert.equal(redisClient.strings.get(requestKey), 'request-b');
+    assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-b']);
+});
+
+test('admission cleanup never drops a completion of a request ordered after the admitting one', async () => {
+    // A legacy generation holder without an ordinal is replaced by A; B was dispatched later and already retained a record.
+    await redisClient.set(requestKey, 'request-legacy');
+    await obligations.registerNoChangeRequest(issue, 'request-a', store);
+    await obligations.registerNoChangeRequest(issue, 'request-b', store);
+    await retain('request-b');
+    await retain('request-legacy');
+    assert.equal(await obligations.admitNoChangeRequest(issue, { requestId: 'request-a', triggeringLabel: 'AI' }, store), 1);
+    assert.deepEqual(redisClient.records().map(record => record.requestId), ['request-b'], 'only the unordered legacy record is dropped');
+});

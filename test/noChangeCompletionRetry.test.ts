@@ -20,6 +20,8 @@ const tasks = new Map<string, { state: string; terminalReason?: string }>();
 let liveLabels: string[] = [];
 let rejectPrimaryRemoval = false;
 let failStatusWrite = false;
+/** Jobs whose implementation run fails before completing. */
+const failingRuns = new Set<string>();
 const ran: string[] = [];
 const comments: string[] = [];
 const statusWrites: Array<[string, number, string]> = [];
@@ -110,6 +112,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   // The agent finds the work already done, so post-processing takes the real no-change path.
   executeWorktreeOperations: async ({ job, currentIssueData }: { job: Job<IssueJobData>; currentIssueData: { data: { labels: Array<{ name: string }> } } }) => {
     ran.push(String(job.id));
+    if (failingRuns.has(String(job.id))) throw new Error('agent run failed');
     const postProcessingResult = await handleNoCodeChanges({
       octokit: octokit as never, issueRef: job.data, claudeResult: { success: true } as never, currentIssueData,
       AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', correlatedLogger: log as never,
@@ -124,11 +127,11 @@ const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJo
 after(core.closeConnection);
 
 /** A model job outside any dispatch, so the sibling exemption never applies to it. */
-function issueJob(id: string, correlationId = 'submission'): Job<IssueJobData> {
+function issueJob(id: string, correlationId = 'submission', dispatch: Partial<IssueJobData> = {}): Job<IssueJobData> {
   const job = {
     id, name: 'processGitHubIssue',
     data: { repoOwner: 'o', repoName: 'r', number: 7, isChildJob: true, agentAlias: 'claude', modelName: 'model', correlationId,
-      baseBranch: 'main', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' } } as IssueJobData,
+      baseBranch: 'main', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' }, ...dispatch } as IssueJobData,
     updateData: async (data: IssueJobData) => { job.data = data; },
     updateProgress: async () => undefined,
   };
@@ -137,7 +140,7 @@ function issueJob(id: string, correlationId = 'submission'): Job<IssueJobData> {
 
 beforeEach(() => {
   tasks.clear(); store.clear(); ran.length = 0; comments.length = 0; statusWrites.length = 0;
-  liveLabels = ['AI', 'auto-merge']; rejectPrimaryRemoval = false; failStatusWrite = false;
+  liveLabels = ['AI', 'auto-merge']; rejectPrimaryRemoval = false; failStatusWrite = false; failingRuns.clear();
 });
 
 test('a non-sibling retry finishes a no-change completion whose trigger cleanup failed', async () => {
@@ -187,4 +190,31 @@ test('admitting renewed work drops an older request\'s owed no-change completion
   assert.deepEqual(statusWrites, [['o/r', 7, 'merged']], 'only the renewed run\'s own completion writes status');
   assert.equal(store.size, 0, 'the superseded completion is no longer owed');
   assert.equal(comments.length, 2);
+});
+
+test('a delayed sibling of an older request neither takes over nor drops a newer request\'s owed completion', async () => {
+  // Request A dispatches two models; the first finishes, the second is delayed.
+  const siblingOfA = { dispatchId: 'dispatch-a', dispatchIssueLabels: ['AI', 'auto-merge'] };
+  await processGitHubIssueJob(issueJob('a-first', 'request-a', siblingOfA));
+  assert.deepEqual(statusWrites, [['o/r', 7, 'merged']]);
+
+  // The user reapplies the trigger: request B is admitted and completes without changes, but its status write fails.
+  liveLabels = ['AI', 'auto-merge'];
+  failStatusWrite = true;
+  await processGitHubIssueJob(issueJob('b', 'request-b'));
+  assert.deepEqual(liveLabels.sort(), ['AI-done', 'auto-merge']);
+  assert.deepEqual(redisDouble.records().map(record => record.requestId), ['request-b'], 'B\'s status write is owed');
+
+  // A's delayed sibling resumes while B's write still fails, passes the sibling exemption, then fails before completing.
+  failingRuns.add('a-second');
+  await assert.rejects(processGitHubIssueJob(issueJob('a-second', 'request-a', siblingOfA)), /agent run failed/);
+  assert.deepEqual(ran, ['a-first', 'b', 'a-second']);
+  assert.equal(redisDouble.strings.get('issue:no-change-request:o/r#7:AI'), 'request-b', 'B keeps its request generation');
+  assert.deepEqual(redisDouble.records().map(record => record.requestId), ['request-b'], 'B\'s completion is still owed');
+
+  // Once the plan store recovers, the next delivery finishes B's completion and the plan advances.
+  failStatusWrite = false;
+  assert.equal((await processGitHubIssueJob(issueJob('later', 'request-b'))).status, 'skipped');
+  assert.deepEqual(statusWrites, [['o/r', 7, 'merged'], ['o/r', 7, 'merged']]);
+  assert.equal(store.size, 0);
 });

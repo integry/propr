@@ -43,6 +43,9 @@ export type IssueCoordinates = Pick<IssueJobData, 'repoOwner' | 'repoName' | 'nu
 
 export const NO_CHANGE_COMPLETION_KEY_PREFIX = 'issue:no-change-completions:';
 export const NO_CHANGE_REQUEST_KEY_PREFIX = 'issue:no-change-request:';
+export const NO_CHANGE_REQUEST_ORDER_KEY_PREFIX = 'issue:no-change-request-order:';
+/** The order hash's counter; request IDs are correlation IDs, which never take this form. */
+export const NO_CHANGE_REQUEST_SEQUENCE_FIELD = '#sequence';
 /**
  * A record whose marker was never published, or whose issue never sees another
  * job or recovery pass, must not live forever. Recovery replays owed records
@@ -143,11 +146,56 @@ export async function isCurrentNoChangeRequest(
     return !current || current === record.requestId;
 }
 
+/**
+ * Requests are ordered per issue by an ordinal each is assigned once, when it
+ * is first dispatched or, failing that, first admitted. Every sibling and
+ * retry of a request carries its request ID, so it finds the ordinal already
+ * assigned: an older request whose job runs late stays older.
+ */
+const requestOrderKey = (issue: IssueCoordinates) => `${NO_CHANGE_REQUEST_ORDER_KEY_PREFIX}${issuePath(issue)}`;
+const assignOrdinal = (orderKey: string, request: string, ttl: string) => `local ordinal = redis.call('HGET', ${orderKey}, ${request})
+if not ordinal then ordinal = redis.call('HINCRBY', ${orderKey}, '${NO_CHANGE_REQUEST_SEQUENCE_FIELD}', 1) redis.call('HSET', ${orderKey}, ${request}, ordinal) end
+redis.call('EXPIRE', ${orderKey}, ${ttl})`;
+
+// KEYS: the issue's request order. ARGV: request, TTL. Returns the request's ordinal.
+export const REGISTER_NO_CHANGE_REQUEST = `${assignOrdinal('KEYS[1]', 'ARGV[1]', 'ARGV[2]')}
+return tonumber(ordinal)`;
+
+// KEYS: the trigger's request generation, the issue's request order. ARGV: request, TTL.
+// Takes the generation unless a request ordered after this one holds it; returns 1 when taken.
+// A holder without an ordinal predates ordering and cannot be told apart, so it is replaced.
+export const ADMIT_NO_CHANGE_REQUEST = `${assignOrdinal('KEYS[2]', 'ARGV[1]', 'ARGV[2]')}
+local holder = redis.call('GET', KEYS[1])
+if holder and holder ~= ARGV[1] then
+local newest = redis.call('HGET', KEYS[2], holder)
+if newest and tonumber(newest) > tonumber(ordinal) then return 0 end
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+return 1`;
+
+/**
+ * Assigns the request its place in the issue's request order unless it already
+ * has one. The dispatcher calls it before enqueueing a request's children, so a
+ * request whose children all run after a later request's still orders first.
+ * @returns the request's ordinal, or `null` for a job without a request ID.
+ */
+export async function registerNoChangeRequest(
+    issue: IssueCoordinates, requestId: string | undefined, store: NoChangeCompletionStore = redisClient,
+): Promise<number | null> {
+    if (!requestId) return null;
+    return Number(await store.eval(REGISTER_NO_CHANGE_REQUEST, 1, requestOrderKey(issue), requestId, NO_CHANGE_COMPLETION_TTL_SECONDS));
+}
+
 // Drops one superseded completion only while the admitting request still owns
 // the issue's request key, checked atomically with the record comparison, so an
 // admission overtaken by a newer one never deletes that newer request's record.
+// A record of a request ordered after the admitting one is never dropped.
+// KEYS: completion hash, request generation, request order. ARGV: field, expected, admitting request, record's request.
 // Returns -1 once the admitting request no longer owns the key.
 export const DROP_SUPERSEDED_NO_CHANGE_COMPLETION = `if redis.call('GET', KEYS[2]) ~= ARGV[3] then return -1 end
+local admitting = redis.call('HGET', KEYS[3], ARGV[3])
+local recorded = redis.call('HGET', KEYS[3], ARGV[4])
+if admitting and recorded and tonumber(recorded) > tonumber(admitting) then return 0 end
 local current = redis.call('HGET', KEYS[1], ARGV[1]) or ''
 if current ~= ARGV[2] then return 0 end
 redis.call('HDEL', KEYS[1], ARGV[1])
@@ -161,7 +209,11 @@ return 1`;
  * work the user has since asked to be redone. Completions owed under another
  * trigger answer independent work and are kept. Cleanup stops as soon as a
  * newer admission takes over the trigger's request key.
- * @returns the number of superseded completions dropped.
+ *
+ * A job of an older request that runs after a newer request was admitted, such
+ * as a delayed matrix sibling or a retry, keeps its own work but takes nothing
+ * over: the newer request keeps the generation and every completion it owes.
+ * @returns the number of superseded completions dropped (0 for such a job).
  */
 export async function admitNoChangeRequest(
     issue: IssueCoordinates, { requestId, triggeringLabel }: { requestId: string | undefined; triggeringLabel: string },
@@ -169,13 +221,15 @@ export async function admitNoChangeRequest(
 ): Promise<number> {
     if (!requestId) return 0;
     const key = requestKey(issue, triggeringLabel);
-    await store.set(key, requestId, 'EX', NO_CHANGE_COMPLETION_TTL_SECONDS);
+    const orderKey = requestOrderKey(issue);
+    const admitted = Number(await store.eval(ADMIT_NO_CHANGE_REQUEST, 2, key, orderKey, requestId, NO_CHANGE_COMPLETION_TTL_SECONDS));
+    if (admitted !== 1) return 0;
     let dropped = 0;
     for (const held of await readNoChangeCompletions(issue, store)) {
         if (!held.record.requestId || held.record.requestId === requestId) continue;
         if (noChangeCompletionTrigger(held.record) !== triggeringLabel) continue;
         const outcome = Number(await store.eval(
-            DROP_SUPERSEDED_NO_CHANGE_COMPLETION, 2, held.key, key, held.record.id, held.raw, requestId,
+            DROP_SUPERSEDED_NO_CHANGE_COMPLETION, 3, held.key, key, orderKey, held.record.id, held.raw, requestId, held.record.requestId,
         ));
         // A newer admission owns the issue now; what remains is its to judge.
         if (outcome === -1) break;

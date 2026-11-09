@@ -85,6 +85,11 @@ export interface DispatcherDeps {
     retryRequests?: RetryRequestStore;
     /** Durably stores the dispatch job's data, so a retry of the job reads what its first attempt saved. */
     saveDispatchData?: (job: Job<IssueJobData>, data: IssueJobData) => Promise<void>;
+    /**
+     * Places the children's request in the issue's request order, once, before any is enqueued,
+     * so a child that runs after a later request's children is still known to be older.
+     */
+    registerRequest?: (issueRef: IssueJobData) => Promise<void>;
 }
 
 async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promise<{ agentAlias: string; modelToUse: string | undefined }> {
@@ -136,6 +141,11 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         getAllCustomLabels,
         resolveDefaultAgentForDispatcher,
         saveDispatchData: (dispatchJob, data) => dispatchJob.updateData(data),
+        // Loaded on use: the obligation module opens the worker's Redis connection.
+        registerRequest: async issue => {
+            const { registerNoChangeRequest, noChangeRequestId } = await import('./noChangeCompletionObligation.js');
+            await registerNoChangeRequest(issue, noChangeRequestId(issue));
+        },
         retryRequests: {
             select: (issue, { submission }) => selectRetryRun(issue, submission
                 ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id, runs: request => retryRuns.read(request) }
@@ -369,6 +379,8 @@ async function enqueueChildren(
     issueRef: IssueJobData, { request, receiptEventId }: { request: IssueRetryRequest | null; receiptEventId: string | undefined },
     children: RetryRunChild[], deps: DispatcherDeps,
 ): Promise<boolean> {
+    // Ordered before any child exists; a request already ordered keeps its place.
+    await deps.registerRequest?.(issueRef);
     if (request && deps.retryRequests) return deps.retryRequests.enqueue(issueRef, request, children, receiptEventId ?? null);
     for (const child of children) await deps.issueQueue.add(child.name, child.data, child.opts);
     return true;
