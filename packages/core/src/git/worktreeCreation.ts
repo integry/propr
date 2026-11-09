@@ -197,6 +197,10 @@ async function detachMissingWorktreeRegistration(git: SimpleGit, branchName: str
         const gitdir = (await fs.readFile(path.join(admin, 'gitdir'), 'utf8').catch(() => '')).trim();
         if (!gitdir || await canonicalMissingPath(gitdir) !== await canonicalMissingPath(path.join(holderPath, '.git'))) continue;
         const head = (await fs.readFile(path.join(admin, 'HEAD'), 'utf8').catch(() => '')).trim();
+        // Already detached (by failure cleanup or an earlier release): the branch
+        // is free, which is all a release needs. Refusing here stranded operator
+        // releases behind "unpublished work" that did not exist.
+        if (/^[0-9a-f]{40}$/.test(head)) return true;
         if (head !== `ref: refs/heads/${branchName}`) return false;
         const commit = (await git.raw(['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`])).trim();
         await git.raw(['update-ref', '--no-deref', `worktrees/${id}/HEAD`, commit]);
