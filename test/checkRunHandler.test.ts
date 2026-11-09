@@ -155,6 +155,7 @@ const {
     findPRsForCommitCached,
     COMMIT_PRS_CACHE_TTL_SECONDS,
     COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS,
+    OPEN_PRS_HEAD_LOOKUP_MAX_PAGES,
     resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
@@ -1460,15 +1461,49 @@ describe('handleCheckRunEvent', () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint.includes('/commits/{commit_sha}/pulls')) return { data: [{ number: 9, state: 'closed' }] };
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls') return { data: [{ number: 10, head: { sha: 'other-sha' } }] };
             throw new Error(`Unexpected GitHub request: ${endpoint}`);
         });
 
         const payload = createMockCheckRunPayload({ pullRequests: [] });
         await handleCheckRunEvent(payload, 'test-correlation-id');
 
+        // The commit lists no open PR, so the open PRs are scanned for the head SHA (fork PRs) before giving up.
         assert.deepStrictEqual(
             mockOctokit.request.mock.calls.map(call => call.arguments[0]),
-            ['GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls'],
+            ['GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls', 'GET /repos/{owner}/{repo}/pulls'],
+        );
+    });
+
+    test('resolves a fork pull request by head SHA when GitHub lists no PR for the commit', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, params?: Record<string, unknown>) => {
+            // GitHub never associates a fork's head commit with a PR of the base repository.
+            if (endpoint.includes('/commits/{commit_sha}/pulls')) return { data: [] };
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls') {
+                assert.strictEqual(params?.state, 'open');
+                return { data: [
+                    { number: 54, head: { sha: 'other-sha' } },
+                    { number: 55, head: { sha: 'FORK-SHA' } },
+                ] };
+            }
+            if (endpoint.includes('/pulls/{pull_number}')) {
+                assert.strictEqual(params?.pull_number, 55);
+                return { data: { head: { sha: 'newer-sha' } } };
+            }
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
+
+        const payload = createMockCheckRunPayload({ conclusion: 'failure', headSha: 'fork-sha', pullRequests: [] });
+        await handleCheckRunEvent(payload, 'test-correlation-id');
+
+        assert.deepStrictEqual(
+            mockOctokit.request.mock.calls.map(call => call.arguments[0]),
+            [
+                'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                'GET /repos/{owner}/{repo}/pulls',
+                'GET /repos/{owner}/{repo}/pulls/{pull_number}',
+            ],
         );
     });
 
@@ -2653,6 +2688,51 @@ describe('commit to PR lookup cache', () => {
         mockOctokit.request.mock.mockImplementation(async () => ({ data: [] }));
         await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
         assert.strictEqual(cache.set.mock.calls.at(-1)!.arguments[3], COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS);
+    });
+
+    test('a fork PR is found by head SHA, scanning open PRs page by page until a short page', async () => {
+        resetMocks();
+        const pages: Record<number, Array<{ number: number; head: { sha: string } }>> = {
+            1: Array.from({ length: 100 }, (_, i) => ({ number: i + 1, head: { sha: `sha-${i + 1}` } })),
+            2: [{ number: 101, head: { sha: 'other' } }, { number: 102, head: { sha: 'fork-head' } }],
+        };
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, params?: Record<string, unknown>) => {
+            if (endpoint.includes('/commits/{commit_sha}/pulls')) return { data: [] };
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls') {
+                assert.deepStrictEqual(
+                    { state: params?.state, per_page: params?.per_page, owner: params?.owner, repo: params?.repo },
+                    { state: 'open', per_page: 100, owner: 'test-owner', repo: 'test-repo' },
+                );
+                return { data: pages[Number(params?.page)] ?? [] };
+            }
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
+        const cache = memoryCache();
+
+        const prs = await findPRsForCommitCached('test-owner', 'test-repo', 'fork-head', cache as never);
+
+        assert.deepStrictEqual(prs, [{ number: 102 }]);
+        const listPages = mockOctokit.request.mock.calls
+            .filter(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/pulls')
+            .map(call => (call.arguments[1] as { page: number }).page);
+        assert.deepStrictEqual(listPages, [1, 2]);
+        // A found PR is cached like one listed for the commit itself.
+        assert.deepStrictEqual(cache.set.mock.calls[0].arguments.slice(2), ['EX', COMMIT_PRS_CACHE_TTL_SECONDS]);
+    });
+
+    test('the open PR scan for a commit is bounded', async () => {
+        resetMocks();
+        const fullPage = Array.from({ length: 100 }, (_, i) => ({ number: i + 1, head: { sha: `sha-${i + 1}` } }));
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('/commits/{commit_sha}/pulls')) return { data: [] };
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls') return { data: fullPage };
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
+        const cache = memoryCache();
+
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'missing', cache as never), []);
+        const listCalls = mockOctokit.request.mock.calls.filter(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/pulls');
+        assert.strictEqual(listCalls.length, OPEN_PRS_HEAD_LOOKUP_MAX_PAGES);
     });
 
     test('a failed lookup is not cached', async () => {

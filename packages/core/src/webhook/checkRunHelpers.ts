@@ -960,9 +960,53 @@ async function requestOpenPRsForCommit(
         'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
         { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
     );
-    return pulls
+    const openPRs = pulls
         .filter((pr: { state: string }) => pr.state === 'open')
         .map((pr: { number: number }) => ({ number: pr.number }));
+    if (openPRs.length > 0) return openPRs;
+    return requestOpenPRsWithHead(octokit, owner, repoName, commitSha);
+}
+
+/**
+ * Upper bound on the open pull requests scanned when matching a commit to a
+ * fork pull request by head SHA (pages of 100, most recently updated first).
+ */
+export const OPEN_PRS_HEAD_LOOKUP_MAX_PAGES = 5;
+
+/**
+ * The head commit of a fork pull request lives in the fork, so GitHub lists no
+ * pull request for it in this repository and delivers its check runs with an
+ * empty `pull_requests` array. The open pull requests themselves still carry
+ * that head SHA, so they are scanned for it. A commit with no open pull request
+ * at all (a default-branch push) pays this listing once per cached lookup.
+ */
+async function requestOpenPRsWithHead(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    owner: string,
+    repoName: string,
+    commitSha: string
+): Promise<Array<{ number: number }>> {
+    const wanted = commitSha.toLowerCase();
+    const matches: Array<{ number: number }> = [];
+    for (let page = 1; page <= OPEN_PRS_HEAD_LOOKUP_MAX_PAGES; page++) {
+        const { data: pulls } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+            owner,
+            repo: repoName,
+            state: 'open',
+            sort: 'updated',
+            direction: 'desc',
+            per_page: 100,
+            page,
+        });
+        const pagePulls = Array.isArray(pulls)
+            ? pulls as Array<{ number: number; head?: { sha?: string | null } | null }>
+            : [];
+        for (const pr of pagePulls) {
+            if (pr.head?.sha?.toLowerCase() === wanted) matches.push({ number: pr.number });
+        }
+        if (pagePulls.length < 100) break;
+    }
+    return matches;
 }
 
 /**
