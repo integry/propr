@@ -51,8 +51,10 @@ if [ -f ".propr/package.json" ]; then
   else
     npm install
   fi
+  cd "$PROPR_WORKSPACE"
 fi
 
+# The steps below run in the repository root, not in .propr.
 # Each run starts from a fresh worktree, so git-ignored files are missing.
 # Create local env files from a committed example (never commit secrets):
 # if [ ! -f .env ] && [ -f .env.example ]; then

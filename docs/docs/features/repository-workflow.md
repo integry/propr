@@ -112,6 +112,13 @@ A multi-line hook is one `bash -c` script whose exit status is that of its last 
 
 ```bash
 # In .propr/setup.sh, after creating .env
+# One connection for creation, the application and cleanup. libpq tools
+# (createdb, dropdb) read these variables; before_remove reloads them.
+cat >"$PROPR_CACHE_DIR/pg.env" <<'PG'
+export PGHOST=db.internal.example.com PGPORT=5432 PGUSER=app
+PG
+. "$PROPR_CACHE_DIR/pg.env"
+
 run_id="${PROPR_AGENT_TYPE}_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 echo "$run_id" >"$PROPR_CACHE_DIR/run-id"
 
@@ -120,12 +127,14 @@ createdb "$db"
 port="$(node -e 'const s=require("net").createServer().listen(0,()=>{console.log(s.address().port);s.close()})')"
 
 {
-  echo "DATABASE_URL=postgres://app@db.internal.example.com/$db"
+  echo "DATABASE_URL=postgres://$PGUSER@$PGHOST:$PGPORT/$db"
   echo "PORT=$port"
   echo "COMPOSE_PROJECT_NAME=propr_$run_id"   # prefixes Compose volumes and networks
   echo "SQLITE_PATH=$PROPR_CACHE_DIR/app.sqlite"
 } >>.env
 ```
+
+The `app` role needs permission to create databases on that server, and its password must reach the hooks and the application without a prompt, for example from a `PGPASSWORD` or `~/.pgpass` your agent image provides (libpq and most drivers read both). Never write the password into `.env.example`.
 
 Keep SQLite files and other local state in `PROPR_CACHE_DIR` or a git-ignored path in the worktree, never at a fixed path on a shared mount. In restricted [network mode](#network), add any database or service host the hooks reach to `network.allow`.
 
@@ -136,6 +145,7 @@ hooks:
   after_create: bash .propr/setup.sh
   before_remove: |
     run_id="$(cat "$PROPR_CACHE_DIR/run-id" 2>/dev/null)" || exit 0
+    . "$PROPR_CACHE_DIR/pg.env"   # same server and user as createdb
     dropdb --if-exists "app_test_$run_id"
     docker compose -p "propr_$run_id" down --volumes || true
 ```
