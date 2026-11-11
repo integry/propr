@@ -4,7 +4,12 @@ Find corrections that reviewers keep making across pull requests and propose sho
 
 1. The current instructions, for each repository in scope: `AGENTS.md` at the repository root, `.propr/instructions.md`, and the file named by `instructions` in `.propr/workflow.yml` if it names another file. Note which of them exist and the size of each (lines and characters).
 2. Pull requests merged or closed in the last 30 days, with the ProPR MCP tool `list_pull_requests` (state `merged`, then `closed`), and the open ones still under review.
-3. For each of those pull requests, its discussion with `get_pull_request_discussion`: human review comments, ProPR AI reviews and their findings, and follow-up requests. Use `list_tasks` and `get_task_events` to see which follow-ups and fixes a ProPR task made after a review, and what the reviewer asked for.
+3. For each of those pull requests, all three parts of its review with `get_pull_request_discussion`, reading every page of each (follow `nextPage` until it is null):
+   - the conversation (the default source): ProPR AI reviews and their findings, follow-up requests and other conversation comments;
+   - submitted GitHub reviews with `source: "reviews"`: each review's state and summary body;
+   - inline review comments with `source: "review_comments"`: the comments on specific lines, with their file, line and reply thread. Most human code-review corrections are here, so never skip this source.
+
+   Use `list_tasks` and `get_task_events` to see which follow-ups and fixes a ProPR task made after a review, and what the reviewer asked for. If a source cannot be read, say which one in the Summary instead of treating it as having no corrections.
 
 If a previous report is included below, skip candidates it already proposed unless there is new evidence, and say which earlier candidates now appear in the instruction files.
 

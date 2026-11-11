@@ -49,6 +49,14 @@ test('instruction learning loop prompt keeps its key rules', () => {
   assert.deepEqual([...positions].sort((a, b) => a - b), positions, 'report sections are in order');
 });
 
+test('instruction learning loop collects submitted reviews and inline review comments, not only the conversation', () => {
+  // The default discussion source is the issue conversation, which never contains
+  // GitHub code review. Without these sources most human corrections are missed.
+  assert.ok(template.prompt.includes('submitted GitHub reviews with `source: "reviews"`'));
+  assert.ok(template.prompt.includes('inline review comments with `source: "review_comments"`'));
+  assert.ok(template.prompt.includes('reading every page of each (follow `nextPage` until it is null)'));
+});
+
 test('the template prompt reaches both the report run and the acting step fenced as the task', () => {
   const definition = { name: template.name, description: template.description, prompt: template.prompt, repositories: ['acme/web'] };
   const report = buildAgentReportPrompt({

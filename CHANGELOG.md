@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warns when the instruction files grow too long. With autonomy raised, the
   acting step creates one ProPR task that opens a pull request with the cited
   changes for review.
+- **MCP `get_pull_request_discussion` review sources**: `source: "reviews"`
+  pages a pull request's submitted GitHub reviews and
+  `source: "review_comments"` its inline review comments (file, line, reply
+  thread). The default conversation read never included either, so the
+  Instruction learning loop now reads all three.
 
 ### Fixed
 
