@@ -4,9 +4,11 @@ import { getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOw
 import { claudeConfigSeedScript } from '../claude/docker/claudeConfigSeed.js';
 import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
-import { redactSecrets } from '../utils/secretRedaction.js';
+import { buildRepositoryValidation } from './repositoryValidationResult.js';
 import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
 import logger from '../utils/logger.js';
+
+export { buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from './repositoryValidationResult.js';
 
 /**
  * Hook exit codes, and validation exit codes, `timeout`, or `skipped` when the execution
@@ -130,41 +132,13 @@ export async function executeWithRepositoryWorkflow(
         result.terminationReason = undefined;
         result.error = `Repository workflow ${fatalHook} failed with exit code ${observed.hooks.get(fatalHook)}`;
     }
-    const validation = workflow.config.validation ?? [];
-    if (validation.length) {
-        const unverified = observed.unverified ? ' (unverified: container wrapper was not running as root)' : '';
-        result.repositoryValidation = buildRepositoryValidationReport(validation.map((command, index) => {
-            const code = observed.validation.get(index);
-            const status = unobserved ? 'Not observed (agent transport did not capture container output)'
-                : code === undefined ? 'Not run (execution ended before validation)' : code === 'skipped' ? 'Not run (execution time limit reached)'
-                : code === '0' ? 'Passed' : code === 'timeout' ? 'Timed out' : code === '137' ? 'Killed (exit 137)' : `Failed (exit ${code})`;
-            return { command, status: `${status}${unverified}` };
-        }));
+    // The markdown report is rendered from the structured result, so the two always agree.
+    const validation = buildRepositoryValidation(workflow.config.validation ?? [], observed, unobserved);
+    if (validation) {
+        result.repositoryValidation = validation.report;
+        result.repositoryValidationResult = validation.result;
     }
     return result;
-}
-
-// Completion comments share GitHub's 65,536-character body limit with summaries and logs.
-export const REPOSITORY_VALIDATION_REPORT_MAX_LENGTH = 12_000;
-const VALIDATION_LABEL_MAX_LENGTH = 200;
-const ELLIPSIS = '…';
-
-/**
- * Valid commands may be far longer than a comment can hold. Labels are redacted
- * before shortening so a cut can never leave an unrecognisable secret prefix,
- * and every command keeps its index and status within the aggregate budget.
- */
-export function buildRepositoryValidationReport(entries: Array<{ command: string; status: string }>): string {
-    const header = '### Repository validation\n\n';
-    const prefixes = entries.map((entry, index) => ({ prefix: `- [${index + 1}] `, suffix: `: ${entry.status}` }));
-    const fixed = header.length + prefixes.reduce((total, { prefix, suffix }) => total + prefix.length + suffix.length + 1, 0);
-    const labelBudget = Math.min(VALIDATION_LABEL_MAX_LENGTH, Math.floor((REPOSITORY_VALIDATION_REPORT_MAX_LENGTH - fixed) / Math.max(entries.length, 1)));
-    const lines = entries.map((entry, index) => {
-        const label = redactSecrets(entry.command).replace(/\s+/g, ' ').trim();
-        const shown = label.length <= labelBudget ? label : `${label.slice(0, Math.max(labelBudget - ELLIPSIS.length, 0)).trimEnd()}${ELLIPSIS}`;
-        return `${prefixes[index].prefix}${shown}${prefixes[index].suffix}`;
-    });
-    return `${header}${lines.join('\n')}`;
 }
 
 // Below Linux's 128 KiB per-argument ceiling (including its terminating NUL).

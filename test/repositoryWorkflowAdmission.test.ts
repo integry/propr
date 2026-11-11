@@ -425,6 +425,30 @@ test('the capacity slot ends when the agent container exits, not when publicatio
     }
 });
 
+test('issue runs keep the structured validation result on the task timeline after the container exits', async () => {
+    const calls: string[] = [];
+    const recorded: unknown[] = [];
+    const repositoryValidationResult = { overall: 'failed' as const, commands: [{ index: 0, command: 'npm test', status: 'failed' as const, exitCode: 1, verified: true }] };
+    const redisClient = { eval: async (script: string) => { calls.push(script === ACQUIRE_WORKFLOW_SLOT ? 'acquire' : 'release'); return 1; } };
+    const options = { repoOwner: 'owner', repoName: 'repo', taskId: 'task', correlatedLogger: log as never, redisClient: redisClient as never,
+        stateManager: { getTaskState: async () => ({ state: 'processing' }) } as never,
+        recordValidation: async (taskId: string, result: unknown, _logger: unknown, deps?: { currentState?: (id: string) => Promise<string | undefined> }) => {
+            calls.push('record');
+            recorded.push({ taskId, result, state: await deps?.currentState?.(taskId) });
+        } };
+    for (const validation of [repositoryValidationResult, undefined]) {
+        calls.length = 0;
+        recorded.length = 0;
+        const result = await withRepositoryWorkflowAdmission(options, () => runRepositoryWorkflow(options, async () => {
+            calls.push('agent');
+            return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1, ...(validation && { repositoryValidationResult: validation }) };
+        }));
+        assert.equal(result.repositoryValidationResult, validation);
+        assert.deepEqual(calls, ['acquire', 'agent', 'release', 'record'], 'recorded after the capacity slot is released');
+        assert.deepEqual(recorded, [{ taskId: 'task', result: validation, state: 'processing' }], 'the recorder skips an absent result itself');
+    }
+});
+
 const binary = process.env.PROPR_TEST_REDIS_SERVER || 'redis-server';
 const available = spawnSync(binary, ['--version']).status === 0;
 test('one configured main worker admits N of N+1 runnable jobs at Hosted 2/6/12', {

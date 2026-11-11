@@ -22,6 +22,15 @@ mock.module('../src/jobs/networkEgress.js', {
         },
     },
 });
+// The structured validation outcome is recorded here instead of in the task timeline database.
+const validationEvents: Array<{ taskId: string; result: unknown }> = [];
+mock.module('../src/jobs/repositoryValidationEvent.js', {
+    namedExports: {
+        recordRepositoryValidationEvent: async (taskId: string, result: unknown) => {
+            if (result) validationEvents.push({ taskId, result });
+        },
+    },
+});
 const { generateSummaryTitle, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
 const { buildCompletionComment } = await import('../src/jobs/prCompletionComment.js');
 const { AgentRegistry } = await import('@propr/core');
@@ -345,6 +354,32 @@ describe('PR follow-up repository validation reports', () => {
     });
 });
 
+
+test('PR follow-ups carry the structured validation result and record it on the task timeline', async (t) => {
+    const registry = AgentRegistry.getInstance();
+    const repositoryValidationResult = {
+        overall: 'failed', commands: [{ index: 0, command: 'npm test', status: 'failed', exitCode: 1, verified: true }],
+    };
+    const agent = {
+        config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+        executeTask: async () => ({
+            success: true, modelUsed: 'claude-sonnet-test', executionTimeMs: 1, summary: 'done', conversationLog: [],
+            repositoryValidation: '### Repository validation\n\n- [1] npm test: Failed (exit 1)', repositoryValidationResult,
+        }),
+    };
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getDefaultAgent', () => agent);
+    t.mock.method(registry, 'getAgentByAlias', () => agent);
+    validationEvents.length = 0;
+    const { claudeResult } = await resolveAndExecuteAgent({
+        llm: null, worktreePath: '/tmp/worktree', branchName: 'feature', prompt: 'Fix the PR',
+        pullRequestNumber: 2663, repoOwner: 'integry', repoName: 'propr', taskId: 'task-pr-structured', applyRepositoryWorkflow: true,
+        stateManager: { updateTaskState: async () => undefined, getTaskState: async () => ({ state: 'processing' }) } as never,
+        correlatedLogger: logger as never, githubToken: 'token', redisClient: { eval: async () => 1 } as never,
+    });
+    assert.deepStrictEqual(claudeResult.repositoryValidationResult, repositoryValidationResult);
+    assert.deepStrictEqual(validationEvents, [{ taskId: 'task-pr-structured', result: repositoryValidationResult }]);
+});
 
 test('out-of-scope executions with terminal task IDs bypass workflow admission and cancellation', async (t) => {
     const registry = AgentRegistry.getInstance();
