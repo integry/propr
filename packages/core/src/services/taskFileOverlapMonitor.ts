@@ -19,6 +19,8 @@ export const ACTIVE_TASK_STALE_MS = 120_000;
 /** At most one comparison per repository in this window. */
 export const OVERLAP_CHECK_INTERVAL_SECONDS = 30;
 const PAIR_TTL_SECONDS = 30 * 86400;
+/** Holds a pair while one comparison delivers its events, so concurrent comparisons do not both write. */
+const PAIR_DELIVERY_LOCK_SECONDS = 60;
 const OVERLAPS_TTL_SECONDS = 86400;
 const REGISTRY_TTL_SECONDS = 3600;
 
@@ -104,14 +106,31 @@ export function describeTask(taskId: string, row?: { issue_number?: number | nul
     return `task ${taskId} (${kind} #${row.issue_number})`;
 }
 
-async function appendTimelineEvent(database: Knex, taskId: string, reason: string, metadata: Record<string, unknown>): Promise<void> {
+/** Durable receipt stored in the timeline entry's metadata: one entry per recipient and task pair. */
+const pairReceipt = (repository: string, [a, b]: [string, string]) => `${repositoryKey(repository)}:${a}:${b}`;
+const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${match}`);
+
+/**
+ * Writes the overlap entry on one task's timeline unless that task already has it. The receipt
+ * check and the insert share one transaction, so a retry after a partial delivery only writes
+ * the missing entries. Returns whether an entry was written.
+ */
+interface OverlapTimelineEntry { taskId: string; receipt: string; reason: string; metadata: Record<string, unknown> }
+
+async function appendOverlapTimelineEvent(database: Knex, { taskId, receipt, reason, metadata }: OverlapTimelineEntry): Promise<boolean> {
     // Repeat the latest state so the entry never changes the task's derived state.
-    await database.transaction(async trx => {
+    return database.transaction(async trx => {
+        const marker = `"fileOverlapReceipt":${JSON.stringify(receipt)}`;
+        const existing = await trx('task_history').where({ task_id: taskId })
+            .andWhereRaw("metadata LIKE ? ESCAPE '\\'", [`%${escapeLike(marker)}%`]).first('history_id');
+        if (existing) return false;
         const latest = await trx('task_history').where({ task_id: taskId }).orderBy('history_id', 'desc').first('state');
-        if (!latest) return;
+        if (!latest) return false;
         await trx('task_history').insert({
-            task_id: taskId, state: latest.state, timestamp: new Date().toISOString(), reason, metadata: JSON.stringify(metadata),
+            task_id: taskId, state: latest.state, timestamp: new Date().toISOString(), reason,
+            metadata: JSON.stringify({ ...metadata, fileOverlapReceipt: receipt }),
         });
+        return true;
     }, replayableTransaction());
 }
 
@@ -121,11 +140,14 @@ export interface CheckRepositoryFileOverlapsOptions {
     database?: Knex;
     hotPaths?: readonly string[];
     now?: number;
+    /** Skip the 30-second throttle: the final comparison of a run that is about to stop. */
+    force?: boolean;
 }
 
 /**
  * Compares the live changes of every active task on the repository. Skipped when fewer
- * than two tasks are active and throttled to one run per repository every 30 seconds.
+ * than two tasks are active and throttled to one run per repository every 30 seconds
+ * (unless forced).
  */
 export async function checkRepositoryFileOverlaps(options: CheckRepositoryFileOverlapsOptions): Promise<OverlapCheckResult> {
     const { redis, repository } = options;
@@ -133,8 +155,10 @@ export async function checkRepositoryFileOverlaps(options: CheckRepositoryFileOv
     const database = options.database ?? (await import('../db/connection.js')).db;
     const active = await listActiveFileChangesTasks(redis, repository, options.now);
     if (active.length < 2) return { status: 'single_task', newPairs: [] };
-    const acquired = await redis.set(throttleKey(repository), String(options.now ?? Date.now()), 'EX', OVERLAP_CHECK_INTERVAL_SECONDS, 'NX');
-    if (acquired !== 'OK') return { status: 'throttled', newPairs: [] };
+    if (!options.force) {
+        const acquired = await redis.set(throttleKey(repository), String(options.now ?? Date.now()), 'EX', OVERLAP_CHECK_INTERVAL_SECONDS, 'NX');
+        if (acquired !== 'OK') return { status: 'throttled', newPairs: [] };
+    }
 
     const changed = await readChangedPaths(redis, active);
     const overlaps = computeFileOverlaps(active.map(taskId => ({ taskId, paths: changed.get(taskId) ?? [] })), { hotPaths: options.hotPaths ?? configuredHotPaths() });
@@ -154,20 +178,33 @@ export async function checkRepositoryFileOverlaps(options: CheckRepositoryFileOv
 
     const newPairs: Array<[string, string]> = [];
     for (const overlap of overlaps) {
-        const first = await redis.set(pairKey(repository, overlap.taskIds), computedAt, 'EX', PAIR_TTL_SECONDS, 'NX');
-        if (first !== 'OK') continue;
-        newPairs.push(overlap.taskIds);
-        const bounded = boundOverlapPaths(overlap.paths);
-        for (const [taskId, otherTaskId] of [overlap.taskIds, [overlap.taskIds[1], overlap.taskIds[0]]]) {
-            const reason = `Also being changed by ${describeTask(otherTaskId, rows.get(otherTaskId))}: ${describeOverlapPaths(bounded.paths, bounded.totalPaths)}`;
-            try {
-                await appendTimelineEvent(database, taskId, reason, {
-                    description: reason,
-                    fileOverlap: { otherTaskId, repository, issueNumber: rows.get(otherTaskId)?.issue_number ?? null, ...bounded },
-                });
-            } catch (error) {
-                logger.warn({ taskId, otherTaskId, error: (error as Error).message }, 'Could not record file overlap timeline event');
+        // The pair marker is set only once both timelines hold the entry; until then later
+        // comparisons retry, and the per-recipient receipt keeps the retry from duplicating.
+        const deliveredKey = pairKey(repository, overlap.taskIds);
+        if (await redis.get(deliveredKey) !== null) continue;
+        const lockKey = `${deliveredKey}:delivering`;
+        if (await redis.set(lockKey, computedAt, 'EX', PAIR_DELIVERY_LOCK_SECONDS, 'NX') !== 'OK') continue;
+        try {
+            const bounded = boundOverlapPaths(overlap.paths);
+            const receipt = pairReceipt(repository, overlap.taskIds);
+            let delivered = true;
+            let wrote = false;
+            for (const [taskId, otherTaskId] of [overlap.taskIds, [overlap.taskIds[1], overlap.taskIds[0]]]) {
+                const reason = `Also being changed by ${describeTask(otherTaskId, rows.get(otherTaskId))}: ${describeOverlapPaths(bounded.paths, bounded.totalPaths)}`;
+                try {
+                    wrote = await appendOverlapTimelineEvent(database, {
+                        taskId, receipt, reason,
+                        metadata: { description: reason, fileOverlap: { otherTaskId, repository, issueNumber: rows.get(otherTaskId)?.issue_number ?? null, ...bounded } },
+                    }) || wrote;
+                } catch (error) {
+                    delivered = false;
+                    logger.warn({ taskId, otherTaskId, error: (error as Error).message }, 'Could not record file overlap timeline event; will retry');
+                }
             }
+            if (wrote) newPairs.push(overlap.taskIds);
+            if (delivered) await redis.set(deliveredKey, computedAt, 'EX', PAIR_TTL_SECONDS);
+        } finally {
+            await redis.del(lockKey).catch(() => undefined);
         }
     }
     return { status: 'checked', newPairs };
@@ -206,7 +243,7 @@ export interface LiveFileChangesCaptureOptions {
     repository: string;
     redis: Redis;
     intervalMs?: number;
-    log?: { debug: (obj: object, msg: string) => void };
+    log?: { debug: (obj: object, msg: string) => void; warn?: (obj: object, msg: string) => void };
     /** Seams for tests. */
     capture?: (taskId: string, worktreePath: string) => Promise<unknown>;
     checkOverlaps?: (options: CheckRepositoryFileOverlapsOptions) => Promise<OverlapCheckResult>;
@@ -217,7 +254,17 @@ export interface LiveFileChangesCaptureOptions {
  * `/fix` runs: writes `task:file-changes:<taskId>`, keeps the run registered as active on
  * its repository and runs the (throttled) overlap comparison. Failures are logged only.
  */
-export function startLiveFileChangesCapture(options: LiveFileChangesCaptureOptions): { tick: () => Promise<void>; stop: () => Promise<void> } {
+export interface LiveFileChangesCaptureHandle {
+    tick: () => Promise<void>;
+    /**
+     * Ends the capture. While the run is still registered it optionally records the worktree
+     * once more (`finalCapture`), then runs an unthrottled comparison so an overlap that arose
+     * during a throttled window is not lost, and only then unregisters the run.
+     */
+    stop: (options?: { finalCapture?: boolean }) => Promise<void>;
+}
+
+export function startLiveFileChangesCapture(options: LiveFileChangesCaptureOptions): LiveFileChangesCaptureHandle {
     const { taskId, worktreePath, repository, redis } = options;
     const capture = options.capture ?? updateFileChangesFromWorktree;
     const checkOverlaps = options.checkOverlaps ?? checkRepositoryFileOverlaps;
@@ -237,10 +284,23 @@ export function startLiveFileChangesCapture(options: LiveFileChangesCaptureOptio
     interval.unref?.();
     return {
         tick,
-        stop: async () => {
+        stop: async ({ finalCapture = false } = {}) => {
             stopped = true;
             clearInterval(interval);
             await running?.catch(() => undefined);
+            if (finalCapture) {
+                try {
+                    await capture(taskId, worktreePath);
+                } catch (error) {
+                    (options.log?.warn ?? options.log?.debug)?.call(options.log, { taskId, error: (error as Error).message }, 'Failed to capture file changes');
+                }
+            }
+            try {
+                await registerActiveFileChangesTask(redis, repository, taskId);
+                await checkOverlaps({ redis, repository, force: true });
+            } catch (error) {
+                options.log?.debug({ taskId, error: (error as Error).message }, 'Final file overlap check failed');
+            }
             await unregisterActiveFileChangesTask(redis, repository, taskId).catch(() => undefined);
         },
     };

@@ -129,6 +129,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
 
   // Execute task via agent abstraction
   let agentResult;
+  let completed = false;
   try {
     const extensionSubmission = await findIssueSubmission(issueRef);
     const extensions = submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, issueNumber: issueRef.number });
@@ -148,8 +149,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId
     }).catch(error => { throw markAgentExecutionFailure(error); }));
+    completed = true;
   } finally {
-    await fileChangesCapture.stop();
+    // A completed run records its final changed files and compares them before leaving the active set.
+    await fileChangesCapture.stop({ finalCapture: completed });
   }
 
   // Convert to ClaudeCodeResponse for backwards compatibility

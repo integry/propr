@@ -26,6 +26,7 @@ class FakeRedis {
         this.strings.set(key, value);
         return 'OK';
     }
+    async del(key: string) { return this.strings.delete(key) ? 1 : 0; }
     async expire() { return 1; }
     async zadd(key: string, score: number, member: string) { this.zset(key).set(member, score); return 1; }
     async zrem(key: string, member: string) { return this.zset(key).delete(member) ? 1 : 0; }
@@ -153,5 +154,102 @@ test('the live capture writes changes, registers the run as active, compares, an
     assert.deepEqual(checks, ['acme/app']);
     assert.ok(await redis.zscore(activeFileChangesTasksKey('acme/app'), 'followup-1'));
     await capture.stop();
+    // Without a final capture, the run is still compared once more before it unregisters.
+    assert.deepEqual(captured, ['followup-1@/tmp/worktree']);
+    assert.deepEqual(checks, ['acme/app', 'acme/app']);
     assert.equal(await redis.zscore(activeFileChangesTasksKey('acme/app'), 'followup-1'), null);
+});
+
+test('a timeline write that fails is retried on a later comparison without duplicating the delivered side', async () => {
+    const redis = new FakeRedis();
+    const client = redis as unknown as Redis;
+    const repository = 'acme/retry';
+    const now = 2_000_000;
+    await database('tasks').insert([
+        { task_id: 'r1', repository, issue_number: 41, task_type: 'issue' },
+        { task_id: 'r2', repository, issue_number: 42, task_type: 'issue' },
+    ]);
+    await database('task_history').insert([{ task_id: 'r1', state: 'claude_execution' }, { task_id: 'r2', state: 'claude_execution' }]);
+    await database.schema.createTable('history_write_failure', table => { table.string('task_id'); });
+    await database.raw(`CREATE TRIGGER fail_history_write BEFORE INSERT ON task_history
+        WHEN EXISTS (SELECT 1 FROM history_write_failure WHERE task_id = NEW.task_id)
+        BEGIN SELECT RAISE(ABORT, 'attempt to write a readonly database'); END`);
+    await database('history_write_failure').insert({ task_id: 'r2' });
+    redis.strings.set('task:file-changes:r1', files('src/shared.ts'));
+    redis.strings.set('task:file-changes:r2', files('src/shared.ts'));
+    await registerActiveFileChangesTask(client, repository, 'r1', now);
+    await registerActiveFileChangesTask(client, repository, 'r2', now);
+    const overlapEvents = async () => (await database('task_history').whereIn('task_id', ['r1', 'r2']).whereNotNull('metadata').orderBy('history_id'))
+        .map(event => [event.task_id, JSON.parse(event.metadata).fileOverlap.otherTaskId]);
+
+    try {
+        assert.deepEqual(await checkRepositoryFileOverlaps({ redis: client, repository, database, now, hotPaths: [] }), { status: 'checked', newPairs: [['r1', 'r2']] });
+        assert.deepEqual(await overlapEvents(), [['r1', 'r2']]);
+        // Neither the delivered marker nor the in-flight hold survives a partial delivery.
+        assert.equal(redis.strings.has('task:file-overlap:pair:{acme/retry}:r1:r2'), false);
+        assert.equal(redis.strings.has('task:file-overlap:pair:{acme/retry}:r1:r2:delivering'), false);
+
+        await database('history_write_failure').delete();
+        redis.strings.delete('task:file-overlap:throttle:{acme/retry}');
+        assert.deepEqual(await checkRepositoryFileOverlaps({ redis: client, repository, database, now, hotPaths: [] }), { status: 'checked', newPairs: [['r1', 'r2']] });
+        assert.deepEqual(await overlapEvents(), [['r1', 'r2'], ['r2', 'r1']]);
+        assert.ok(redis.strings.has('task:file-overlap:pair:{acme/retry}:r1:r2'));
+
+        // Delivered: later comparisons write nothing, even if the Redis marker is lost.
+        redis.strings.delete('task:file-overlap:throttle:{acme/retry}');
+        assert.deepEqual(await checkRepositoryFileOverlaps({ redis: client, repository, database, now, hotPaths: [] }), { status: 'checked', newPairs: [] });
+        redis.strings.delete('task:file-overlap:pair:{acme/retry}:r1:r2');
+        redis.strings.delete('task:file-overlap:throttle:{acme/retry}');
+        assert.deepEqual(await checkRepositoryFileOverlaps({ redis: client, repository, database, now, hotPaths: [] }), { status: 'checked', newPairs: [] });
+        assert.deepEqual(await overlapEvents(), [['r1', 'r2'], ['r2', 'r1']]);
+    } finally {
+        await database.raw('DROP TRIGGER fail_history_write');
+        await database.schema.dropTable('history_write_failure');
+    }
+});
+
+test('an overlap that arose while comparisons were throttled is recorded when a run stops', async () => {
+    const redis = new FakeRedis();
+    const client = redis as unknown as Redis;
+    const repository = 'acme/throttled';
+    await database('tasks').insert([
+        { task_id: 'h1', repository, issue_number: 51, task_type: 'issue' },
+        { task_id: 'h2', repository, issue_number: 52, task_type: 'pr_comment' },
+    ]);
+    await database('task_history').insert([{ task_id: 'h1', state: 'claude_execution' }, { task_id: 'h2', state: 'processing' }]);
+    redis.strings.set('task:file-changes:h1', files('src/a.ts'));
+    redis.strings.set('task:file-changes:h2', files('src/b.ts'));
+    await registerActiveFileChangesTask(client, repository, 'h2');
+    const order: string[] = [];
+    const capture = startLiveFileChangesCapture({
+        taskId: 'h1', worktreePath: '/tmp/h1', repository, redis: client, intervalMs: 60_000,
+        capture: async taskId => { order.push(`capture:${taskId}`); },
+        checkOverlaps: async options => {
+            order.push(options.force ? 'check:forced' : 'check');
+            return checkRepositoryFileOverlaps({ ...options, database, hotPaths: [] });
+        },
+    });
+    // Disjoint at first; this comparison takes the repository's throttle.
+    await capture.tick();
+    // Both runs now change the same file, but every ordinary comparison is throttled.
+    redis.strings.set('task:file-changes:h2', files('src/b.ts', 'src/a.ts'));
+    assert.equal((await checkRepositoryFileOverlaps({ redis: client, repository, database, hotPaths: [] })).status, 'throttled');
+    assert.equal(await database('task_history').whereIn('task_id', ['h1', 'h2']).whereNotNull('metadata').count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+
+    // The final capture and an unthrottled comparison run while h1 is still registered.
+    const forcedSawRegistered: boolean[] = [];
+    const zrem = redis.zrem.bind(redis);
+    redis.zrem = async (key, member) => { forcedSawRegistered.push(order.at(-1) === 'check:forced'); return zrem(key, member); };
+    await capture.stop({ finalCapture: true });
+    assert.deepEqual(order, ['capture:h1', 'check', 'capture:h1', 'check:forced']);
+    assert.deepEqual(forcedSawRegistered, [true]);
+    const events = await database('task_history').whereIn('task_id', ['h1', 'h2']).whereNotNull('metadata').orderBy('history_id');
+    assert.deepEqual(events.map(event => [event.task_id, JSON.parse(event.metadata).fileOverlap.otherTaskId]), [['h1', 'h2'], ['h2', 'h1']]);
+    assert.equal(events[0].reason, 'Also being changed by task h2 (PR #52): `src/a.ts`');
+    assert.equal(await redis.zscore(activeFileChangesTasksKey(repository), 'h1'), null);
+
+    // The pair stays deduplicated against the run that is still active.
+    redis.strings.delete('task:file-overlap:throttle:{acme/throttled}');
+    await registerActiveFileChangesTask(client, repository, 'h1');
+    assert.deepEqual(await checkRepositoryFileOverlaps({ redis: client, repository, database, hotPaths: [] }), { status: 'checked', newPairs: [] });
 });

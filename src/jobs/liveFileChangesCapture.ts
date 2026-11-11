@@ -2,7 +2,10 @@ import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 
 export interface TaskFileChangesCapture {
-    /** Ends the periodic capture; `finalCapture` records the worktree once more after the agent exits. */
+    /**
+     * Ends the periodic capture. `finalCapture` records the worktree once more after the agent exits;
+     * either way the run is compared once more, unthrottled, before it leaves the active set.
+     */
     stop(options?: { finalCapture?: boolean }): Promise<void>;
 }
 
@@ -26,17 +29,8 @@ export async function startTaskFileChangesCapture(options: TaskFileChangesCaptur
         const core = await import('@propr/core');
         if (typeof core.startLiveFileChangesCapture !== 'function') return NOOP_CAPTURE;
         const live = core.startLiveFileChangesCapture(options);
-        return {
-            stop: async ({ finalCapture = false } = {}) => {
-                await live.stop();
-                if (!finalCapture || typeof core.updateFileChangesFromWorktree !== 'function') return;
-                try {
-                    await core.updateFileChangesFromWorktree(options.taskId, options.worktreePath);
-                } catch (error) {
-                    options.log.warn({ error: (error as Error).message }, 'Failed to capture file changes');
-                }
-            },
-        };
+        // The final capture and an unthrottled overlap comparison run before the task unregisters.
+        return { stop: async ({ finalCapture = false } = {}) => live.stop({ finalCapture }) };
     } catch (error) {
         options.log.debug({ error: (error as Error).message }, 'Live file changes capture unavailable');
         return NOOP_CAPTURE;
