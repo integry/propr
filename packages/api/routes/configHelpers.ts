@@ -23,6 +23,7 @@ export const SPECIALIZED_SETTING_NAMES = [
   'default_max_cost_usd',
   'agent_run_usage_pause_percent',
   'ultrafix_ci_wait_timeout_ms',
+  'goal_question_max_wait_ms',
   'agent_stall_timeout_ms',
   'agent_tool_stall_timeout_ms',
   'agent_degenerate_output_limit',

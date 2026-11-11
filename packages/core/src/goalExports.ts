@@ -85,3 +85,8 @@ export {
     type GoalBlockerOwner,
     type GoalBlockerResolution,
 } from './goals/goalBlockerStore.js';
+export {
+    boundGoalQuestionMaxWaitMs,
+    isValidGoalQuestionMaxWaitMs,
+    loadGoalQuestionMaxWaitMs,
+} from './config/goalQuestionSettings.js';

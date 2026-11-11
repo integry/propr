@@ -1,3 +1,4 @@
+import { goalProviderAnswersQuestions } from '@propr/shared';
 import { executeDockerCommand, type ExecutionResult } from '../claude/docker/dockerExecutor.js';
 import { parseAntigravityJsonl } from './impl/utils/antigravityOutputParser.js';
 import { hasNativeGoalControl } from '../goals.js';
@@ -18,6 +19,12 @@ export interface GoalCapability {
         inputAtBoundary: boolean;
         modelAtBoundary: boolean;
         pauseAtBoundary: boolean;
+        /**
+         * The running goal can ask the operator a question that is shown under
+         * "Needs you" and answered with goal input (Codex `requestUserInput`,
+         * Claude's injected `ask_operator` tool).
+         */
+        operatorQuestions: boolean;
     };
     reason?: string;
 }
@@ -36,9 +43,10 @@ const REQUIRED_CODEX_GOAL_METHODS = [
 const FAILURE_CACHE_TTL_MS = 30_000;
 
 function controlsFor(agent: Agent): GoalCapability['controls'] {
+    const operatorQuestions = goalProviderAnswersQuestions(agent.config.type);
     return hasNativeGoalControl(agent.config.type)
-        ? { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true }
-        : { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true };
+        ? { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true, operatorQuestions }
+        : { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true, operatorQuestions };
 }
 
 function lifecycleFor(agent: Agent): NonNullable<GoalCapability['lifecycle']> {
@@ -195,7 +203,7 @@ function unsupportedCapability(agent: Agent, reason: string): GoalCapability {
         agentType: agent.config.type,
         goalCapable: false,
         lifecycle: null,
-        controls: { liveInput: false, inputAtBoundary: false, modelAtBoundary: false, pauseAtBoundary: false },
+        controls: { liveInput: false, inputAtBoundary: false, modelAtBoundary: false, pauseAtBoundary: false, operatorQuestions: false },
         reason,
     };
 }

@@ -34,6 +34,10 @@ export interface GoalBlockerOwner {
 /** Why a blocker stopped waiting. Stored verbatim for audit. */
 export type GoalBlockerResolution =
     | 'provider_resolved'
+    /** ProPR delivered the operator's input as the answer (Claude `ask_operator`). */
+    | 'answered'
+    /** The question waited its maximum and the agent was told nobody answered. */
+    | 'question_timed_out'
     | 'turn_ended'
     | 'attempt_ended'
     | 'superseded_by_attempt'
@@ -123,8 +127,9 @@ export async function closeGoalBlockers(
     const query = database('goal_blockers').where({ goal_id: goalId, status: 'open' });
     if (scope.claim) query.where('run_claim', scope.claim);
     if (scope.exceptClaim) query.whereNot('run_claim', scope.exceptClaim);
+    const resolved: GoalBlockerResolution[] = ['provider_resolved', 'answered', 'question_timed_out', 'turn_ended'];
     return await query.update({
-        status: resolution === 'provider_resolved' || resolution === 'turn_ended' ? 'resolved' : 'superseded',
+        status: resolved.includes(resolution) ? 'resolved' : 'superseded',
         resolution,
         resolved_at: database.fn.now(),
     });
