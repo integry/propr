@@ -18,16 +18,21 @@ import { rowToAgentRun, type AgentRunRow, type AgentRunStoreDependencies, type S
 
 export type AgentRunProductivity = 'productive' | 'unproductive' | 'pending';
 
-/** States in which the report is stored but the acting step may still change the verdict. */
-const UNDECIDED_STATES = new Set<StoredAgentRun['state']>(['report_ready', 'acting']);
+/**
+ * States in which the report is stored but an acting step may still run and
+ * change the verdict: an acting step waiting for approval (preview, or an auto
+ * run held by the cost gate) can still make the run productive once approved.
+ */
+const UNDECIDED_STATES = new Set<StoredAgentRun['state']>(['report_ready', 'awaiting_approval', 'acting']);
 
 /**
- * The run's verdict. `pending` runs have no flags yet, or an acting step that
- * may still change something; they neither extend nor break a streak.
+ * The run's verdict. A known acting count is final on its own: more than zero
+ * makes the run productive and zero is a no-op acting step, whether or not the
+ * report could be compared. Otherwise the report novelty decides once no acting
+ * step can still run. `pending` runs neither extend nor break a streak.
  */
 export function agentRunProductivity(run: Pick<StoredAgentRun, 'state' | 'reportNovelty' | 'actingMutations'>): AgentRunProductivity {
-  if (run.reportNovelty == null) return 'pending';
-  if (run.actingMutations == null && UNDECIDED_STATES.has(run.state)) return 'pending';
+  if (run.actingMutations == null && (run.reportNovelty == null || UNDECIDED_STATES.has(run.state))) return 'pending';
   return automationRunNoChangeReason(run) ? 'unproductive' : 'productive';
 }
 
@@ -45,22 +50,29 @@ export async function loadUnproductiveRunThreshold(
   return DEFAULT_AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD;
 }
 
-/** Pending runs a streak look-back tolerates beyond the threshold before it gives up. */
-const STREAK_LOOKBACK_SLACK = 10;
+/** Rows read per page while walking back through a definition's scheduled runs. */
+const STREAK_PAGE_SIZE = 100;
+/** Rows a streak walk reads at most; a streak longer than this is identified by the oldest run read. */
+const STREAK_SCAN_LIMIT = 1000;
 
 export interface UnproductiveStreak {
-  /** The unproductive scheduled runs of the current streak, newest first (at most `threshold + 1`). */
+  /** The unproductive scheduled runs of the current streak, newest first. */
   runs: StoredAgentRun[];
-  /** True when the streak reached exactly `threshold` runs: the moment to tell the owner, once. */
+  /** True when the streak has at least `threshold` runs, so the owner should have been told. */
   reachedThreshold: boolean;
+  /**
+   * Stable identity of the streak: the productive scheduled run that ended the
+   * previous streak (`start` when there is none). Runs added to the streak, or
+   * older pending runs that later turn unproductive, keep the same identity.
+   */
+  streakKey: string;
 }
 
 /**
  * The definition's current streak of unproductive scheduled runs, newest
  * first. Pending runs are skipped; the first productive one ends the streak.
- * Counting stops one past the threshold, so `reachedThreshold` is true only
- * for the run that completed the streak, and a longer streak is not reported
- * again until a productive run resets it.
+ * Rows count when either flag is known, so a run whose report could not be
+ * compared still counts through its acting step.
  */
 export async function findUnproductiveScheduledStreak(
   definitionId: string,
@@ -68,16 +80,36 @@ export async function findUnproductiveScheduledStreak(
   { database = db }: AgentRunStoreDependencies = {},
 ): Promise<UnproductiveStreak> {
   const limit = Math.max(Math.trunc(threshold), 1);
-  const rows = await database('agent_runs').where({ definition_id: definitionId, trigger: 'schedule' })
-    .whereNotNull('report_novelty')
-    .orderBy([{ column: 'created_at', order: 'desc' }, { column: 'id', order: 'desc' }])
-    .limit(limit + 1 + STREAK_LOOKBACK_SLACK).select<AgentRunRow[]>();
   const runs: StoredAgentRun[] = [];
-  for (const run of rows.map(rowToAgentRun)) {
-    const verdict = agentRunProductivity(run);
-    if (verdict === 'pending') continue;
-    if (verdict === 'productive' || runs.length > limit) break;
-    runs.push(run);
+  let breaker: string | null = null;
+  let oldestRead: AgentRunRow | null = null;
+  for (let read = 0; read < STREAK_SCAN_LIMIT && breaker === null; read += STREAK_PAGE_SIZE) {
+    const after = oldestRead;
+    const rows = await database('agent_runs').where({ definition_id: definitionId, trigger: 'schedule' })
+      .where(flagged => flagged.whereNotNull('report_novelty').orWhereNotNull('acting_mutations'))
+      .modify(page => {
+        // Keyset paging: a run created while the walk is under way cannot shift a page.
+        if (after) page.where(older => older.where('created_at', '<', after.created_at)
+          .orWhere(tied => tied.where('created_at', after.created_at).andWhere('id', '<', after.id)));
+      })
+      .orderBy([{ column: 'created_at', order: 'desc' }, { column: 'id', order: 'desc' }])
+      .limit(STREAK_PAGE_SIZE).select<AgentRunRow[]>();
+    for (const row of rows) {
+      oldestRead = row;
+      const run = rowToAgentRun(row);
+      const verdict = agentRunProductivity(run);
+      if (verdict === 'productive') { breaker = run.id; break; }
+      if (verdict === 'unproductive') runs.push(run);
+    }
+    if (rows.length < STREAK_PAGE_SIZE) { breaker ??= 'start'; break; }
   }
-  return { runs, reachedThreshold: runs.length === limit };
+  return { runs, reachedThreshold: runs.length >= limit, streakKey: breaker ?? `scan:${oldestRead?.id ?? 'start'}` };
+}
+
+/** True when an Inbox item with this deduplication key was persisted. */
+export async function hasNotificationEvent(
+  deduplicationKey: string,
+  { database = db }: AgentRunStoreDependencies = {},
+): Promise<boolean> {
+  return Boolean(await database('notification_events').where({ deduplication_key: deduplicationKey }).first('event_id'));
 }

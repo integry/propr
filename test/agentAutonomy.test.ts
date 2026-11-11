@@ -387,6 +387,26 @@ describe('approve and reject routes', () => {
     assert.equal((await call(routes.approveRun, 'alice', run.id)).status, 409);
   });
 
+  test('reject hands the rejected run to the unproductive-streak check, whose failure never fails the request', async () => {
+    const evaluated: StoredAgentRun[] = [];
+    routes = createAutomationDefinitionRoutes({
+      db: database,
+      services: {
+        now: () => NOW,
+        startActing: async run => run,
+        evaluateStreak: async run => { evaluated.push(run); },
+      },
+    });
+    const run = await runIn('awaiting_approval');
+    assert.equal((await call(routes.rejectRun, 'alice', run.id)).status, 200);
+    assert.deepEqual(evaluated.map(({ id, state }) => ({ id, state })), [{ id: run.id, state: 'rejected' }]);
+
+    // The default check runs against the route's database and swallows its own errors.
+    routes = createAutomationDefinitionRoutes({ db: database, services: { now: () => NOW, startActing: async acting => acting } });
+    const second = await runIn('awaiting_approval');
+    assert.equal((await call(routes.rejectRun, 'alice', second.id)).status, 200);
+  });
+
   for (const state of ['queued', 'report_ready', 'acting', 'completed'] as const) {
     test(`approve and reject answer 409 for a ${state} run`, async () => {
       const run = await runIn(state);

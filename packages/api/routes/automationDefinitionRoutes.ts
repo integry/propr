@@ -11,10 +11,13 @@ import {
   createAgentDefinition,
   createAgentRunCostGate,
   deleteAgentDefinitionUnlessRunInStates,
+  disableAgentDefinitionSchedule,
   enqueueAgentRunActionOrFail,
   evaluateProviderCapacity,
+  findUnproductiveScheduledStreak,
   getAgentDefinition,
   getAgentRun,
+  hasNotificationEvent,
   listAgentDefinitions,
   listAgentRuns,
   loadUsagePauseThreshold,
@@ -50,6 +53,7 @@ import {
   verifyGitHubRepositoryAccess,
 } from '../githubMetadataAuth.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
+import { evaluateUnproductiveStreakQuietly } from '../../../src/jobs/agentRuns/unproductiveStreak.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { publicGoalAttachments, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
 import { attachCreator, projectCreator, rememberCreator } from '../services/creatorProjection.js';
@@ -93,6 +97,8 @@ export interface AutomationDefinitionRouteServices {
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
   /** Enqueues the acting step of an approved run, failing the run when that is impossible. */
   startActing?: (run: StoredAgentRun, operatorNote: string | null) => Promise<StoredAgentRun>;
+  /** Unproductive-streak check once a rejection makes a run's verdict final; never throws. */
+  evaluateStreak?: (run: StoredAgentRun) => Promise<void>;
   now?: () => number;
 }
 
@@ -295,6 +301,12 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
   });
   const startActing = services.startActing
     ?? ((run: StoredAgentRun, note: string | null) => enqueueAgentRunActionOrFail(run, { ...storeDeps, operatorNote: note }));
+  const evaluateStreak = services.evaluateStreak ?? ((run: StoredAgentRun) => evaluateUnproductiveStreakQuietly(run, {
+    findStreak: (definitionId, threshold) => findUnproductiveScheduledStreak(definitionId, threshold, storeDeps),
+    getDefinition: (definitionId, owner) => getAgentDefinition(definitionId, owner, storeDeps),
+    disableSchedule: definitionId => disableAgentDefinitionSchedule(definitionId, storeDeps),
+    hasNotification: key => hasNotificationEvent(key, storeDeps),
+  }));
 
   /**
    * The user's GitHub grant must be able to read every repository, exactly
@@ -620,6 +632,8 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
 
   const rejectRun = handler('Failed to reject automation run', async (req, res) => {
     const rejected = await decideRun(req, requireOwner(req), 'rejected');
+    // A rejected acting step can no longer change anything, so the run's verdict is final now.
+    await evaluateStreak(rejected);
     res.json({ run: publicAutomationRun(rejected, { includeReport: true }) });
   });
 
