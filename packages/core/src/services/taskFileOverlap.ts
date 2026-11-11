@@ -28,10 +28,16 @@ function normalizePath(path: string): string {
     return path.trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '');
 }
 
+function trimTrailingSlashes(path: string): string {
+    let end = path.length;
+    while (end > 0 && path[end - 1] === '/') end -= 1;
+    return path.slice(0, end);
+}
+
 /** Hot path prefixes as directory prefixes ending in `/`; blanks dropped, duplicates removed. */
 export function normalizeHotPaths(hotPaths: readonly string[] | string | undefined): string[] {
     const list = typeof hotPaths === 'string' ? hotPaths.split(',') : hotPaths ?? [];
-    const normalized = list.map(normalizePath).map(path => path.replace(/\/+$/, '')).filter(Boolean).map(path => `${path}/`);
+    const normalized = list.map(normalizePath).map(trimTrailingSlashes).filter(Boolean).map(path => `${path}/`);
     return [...new Set(normalized)];
 }
 
