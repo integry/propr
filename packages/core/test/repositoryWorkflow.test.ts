@@ -202,12 +202,21 @@ test('a blocker marker inside a list item continuation or nested container is no
         `- Outer\n  \`\`\`\n  ${BLOCKER_MARKER} fenced inside the item\n  \`\`\`\nDone.`,
         `-   Wide item\n    ${BLOCKER_MARKER} continuation at the wider content column`,
         `- Tab item\n\t${BLOCKER_MARKER} tab-indented continuation`,
+        `- ~~~text\n  ${BLOCKER_MARKER} inside a fence opened on the item line\n  ~~~\nDone.`,
+        `- ~~~text\n  log\n  ~~~\n- next\n  ${BLOCKER_MARKER} continuation after the item fence`,
     ]) assert.equal(parseBlockerReport(absent), null, JSON.stringify(absent));
 
     // A top-level line after the list ends it, so a real blocker still counts.
     assert.deepEqual(parseBlockerReport(`- Checked the config\n- Checked the docs\n\n${BLOCKER_MARKER} The API key is missing.`), { explanation: 'The API key is missing.' });
     assert.deepEqual(parseBlockerReport(`- Checked the config\n${BLOCKER_MARKER} No sandbox.`), { explanation: 'No sandbox.' });
     assert.deepEqual(parseBlockerReport(`1. Tried it\n\n ${BLOCKER_MARKER} Indented less than the item content.`), { explanation: 'Indented less than the item content.' });
+    // A fence opened on the list-marker line is tracked, so its closing delimiter does not open a new fence.
+    assert.deepEqual(parseBlockerReport(`- ~~~text\n  diagnostic output\n  ~~~\n\n${BLOCKER_MARKER} Missing credentials.`), { explanation: 'Missing credentials.' });
+    assert.deepEqual(parseBlockerReport(`1. \`\`\`\n   log\n   \`\`\`\n${BLOCKER_MARKER} Ordered item fence.`), { explanation: 'Ordered item fence.' });
+    assert.deepEqual(parseBlockerReport(`- Outer\n  - ~~~\n    log\n    ~~~\n${BLOCKER_MARKER} Nested item fence.`), { explanation: 'Nested item fence.' });
+    assert.deepEqual(parseBlockerReport(`- - ~~~\n    log\n    ~~~\n${BLOCKER_MARKER} Same-line nested item fence.`), { explanation: 'Same-line nested item fence.' });
+    // A fence inside an item ends with the item, so an unclosed one does not hide a later top-level marker.
+    assert.deepEqual(parseBlockerReport(`- ~~~\n  log\n${BLOCKER_MARKER} Item ended.`), { explanation: 'Item ended.' });
     // A list after the marker does not hide it: the explanation keeps the list.
     assert.deepEqual(parseBlockerReport(`${BLOCKER_MARKER} Needed:\n- a key\n- a sandbox`), { explanation: 'Needed:\n- a key\n- a sandbox' });
 });

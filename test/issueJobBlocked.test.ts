@@ -126,6 +126,17 @@ test('a reported blocker publishes nothing and comments with the explanation', a
     assert.deepEqual(recipients, [{ userId: '42', pushEnabled: true }]);
 });
 
+test('a top-level blocker after a fence opened on a list-marker line is still a blocker', async () => {
+    const summary = `- ~~~text\n  diagnostic output\n  ~~~\n\n${BLOCKER_MARKER} Missing credentials.`;
+    const { commitResult, postProcessingResult } = await run(summary, true);
+
+    assert.equal(commitResult, null);
+    assert.equal(commitChanges.mock.callCount(), 0);
+    assert.equal(handleNoCodeChanges.mock.callCount(), 0, 'not reported as complete');
+    assert.deepEqual(postProcessingResult?.blocked, { explanation: 'Missing credentials.', uncommittedFiles: [] });
+    assert.match(comments[0], /stopped on a blocker/);
+});
+
 test('changes left behind with a blocker are not committed and the comment says so', async () => {
     worktreeFiles = ['src/payments.ts', '.propr/previews/shot.png'];
     const { postProcessingResult } = await run(BLOCKED_SUMMARY, true);
