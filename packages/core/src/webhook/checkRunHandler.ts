@@ -30,7 +30,7 @@ import {
     evaluatePullRequestAutoMerge, resolveDirectMergeMethod, withdrawNativeAutoMergeForUpToDate, withdrawNativeAutoMergeIfUpToDateRequired,
 } from '../services/autoMergeGate.js';
 import type { AutoMergeDecision, AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
-import { mergeWhenUpToDate, noteCiWaitAfterBranchUpdate } from './autoMergeUpToDate.js';
+import { mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, type MergeOwnershipCheck } from './autoMergeUpToDate.js';
 
 export interface StatusEventPayload {
     sha: string;
@@ -145,9 +145,10 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
 }
 
 /**
- * Performs the actual merge of a PR and post-merge actions.
+ * Performs the actual merge of a PR and post-merge actions. `stillOwned` (`require_up_to_date`) is checked right
+ * before the merge request: an attempt that lost the merge ownership must not merge on a stale comparison.
  */
-async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string): Promise<void> {
+async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string, stillOwned?: MergeOwnershipCheck): Promise<void> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
     let commitTitle: string | undefined;
     let commitMessage: string | undefined;
@@ -161,6 +162,7 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
         }
     }
 
+    if (stillOwned && !await stillOwned()) return log.info({ owner, repoName, prNumber }, 'Auto-merge ownership was lost before the merge request, not merging');
     const mergeResult = await mergePR({ owner, repoName, prNumber, mergeMethod, commitTitle, commitMessage, sha: expectedHeadSha });
 
     if (mergeResult.success && mergeResult.merged) {
@@ -199,11 +201,12 @@ function passesMergeabilityGate(ctx: PRContext, prInfo: PRAutoMergeInfo): boolea
  * latest base commit; otherwise ProPR updates the branch and the updated head
  * merges only after its own CI passes. The comparison and the merge run under
  * the repository's merge ownership, so a second candidate compares against the
- * base this merge produced. A head GitHub still reports as behind never merges.
+ * base this merge produced; the ownership is confirmed right before the merge
+ * request. A head GitHub still reports as behind never merges.
  */
 async function mergeEvaluatedHead(ctx: PRMergeContext, decision: AutoMergeDecision, baseRef: string, ciReason: string): Promise<void> {
     const { owner, repoName, prNumber, headSha, prInfo, log } = ctx;
-    const merge = async (): Promise<void> => {
+    const merge = async (stillOwned?: MergeOwnershipCheck): Promise<void> => {
         if (prInfo.mergeableState !== 'clean') {
             log.debug({ owner, repoName, prNumber, mergeableState: prInfo.mergeableState }, 'GitHub reports the PR as behind its base, skipping merge');
             return;
@@ -213,7 +216,7 @@ async function mergeEvaluatedHead(ctx: PRMergeContext, decision: AutoMergeDecisi
         const mergeMethod = await resolveDirectMergeMethod({ owner, repo: repoName, method: decision.method });
         log.info({ owner, repoName, prNumber, headSha, ci: ciReason, mergeMethod }, 'CI allows merging the auto-merge PR, attempting to merge');
         // GitHub refuses the merge if the head moved after the evaluation.
-        await performMergeAndPostActions(ctx, mergeMethod, headSha);
+        await performMergeAndPostActions(ctx, mergeMethod, headSha, stillOwned);
     };
     if (!decision.upToDate) {
         await merge();

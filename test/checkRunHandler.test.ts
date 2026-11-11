@@ -42,9 +42,17 @@ await mock.module('ioredis', {
                     (redisSortedSets.get(key) ?? redisSortedSets.set(key, new Map()).get(key)!).set(member, score);
                     return 1;
                 }),
-                zrange: mock.fn(async (key: string) => [...(redisSortedSets.get(key) ?? new Map<string, number>()).entries()]
-                    .sort((a, b) => a[1] - b[1]).map(([member]) => member)),
+                zrange: mock.fn(async (key: string, _start?: number, _stop?: number, withScores?: string) => {
+                    const sorted = [...(redisSortedSets.get(key) ?? new Map<string, number>()).entries()].sort((a, b) => a[1] - b[1]);
+                    return withScores ? sorted.flatMap(([member, score]) => [member, String(score)]) : sorted.map(([member]) => member);
+                }),
                 zrem: mock.fn(async (key: string, member: string) => (redisSortedSets.get(key)?.delete(member) ? 1 : 0)),
+                // The up-to-date gate's token-checked renew/release scripts; TTLs are not simulated.
+                eval: mock.fn(async (script: string, _keys: number, key: string, token: string) => {
+                    if (redisValues.get(key) !== token) return 0;
+                    if (script.includes("'del'")) redisValues.delete(key);
+                    return 1;
+                }),
                 quit: mock.fn(async () => {}),
                 disconnect: mock.fn(),
             };
@@ -2889,6 +2897,22 @@ describe('auto_merge.require_up_to_date', () => {
         assert.equal(redisValues.has(MERGE_OWNERSHIP_KEY), false, 'released after the merge attempt');
     });
 
+    test('an attempt that lost the merge ownership while resolving the merge method does not merge', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        mockBehindPR({ behindBy: 0, mergeableState: 'clean' });
+        // The ownership expires while awaiting the merge method, and PR 41 takes it over and merges.
+        mockResolveDirectMergeMethod.mock.mockImplementation(async () => {
+            redisValues.set(MERGE_OWNERSHIP_KEY, '41:other-token');
+            return 'squash';
+        });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 0, 'the stale comparison does not merge');
+        assert.equal(redisValues.get(MERGE_OWNERSHIP_KEY), '41:other-token', 'the other holder keeps its ownership');
+        assert.deepEqual(recordedReasons(), [['waiting_branch_update_serialized', 'waiting']]);
+        assert.ok(redisSortedSets.get('auto-merge:up-to-date:deferred')?.has('test-owner/test-repo#42'), 'retried by the sweep');
+    });
+
     test('a current head waits while another PR in the repository owns the comparison-through-merge', async () => {
         resetMocks();
         useUpToDatePolicy();
@@ -2899,6 +2923,7 @@ describe('auto_merge.require_up_to_date', () => {
         assert.equal(mergeCalls().length, 0);
         assert.deepEqual(recordedReasons(), [['waiting_branch_update_serialized', 'waiting']]);
         assert.equal(redisValues.get(MERGE_OWNERSHIP_KEY), '41:other-token');
+        assert.ok(redisSortedSets.get('auto-merge:up-to-date:deferred')?.has('test-owner/test-repo#42'), 'retried by the sweep without another check event');
     });
 
     test('a natively armed PR has its native auto-merge withdrawn on the guarded merge path', async () => {

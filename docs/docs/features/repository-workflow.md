@@ -118,7 +118,9 @@ GitHub only reports a PR as cleanly mergeable for its current head, and a PR tha
 2. A behind head is not merged. ProPR updates the branch through GitHub's update-branch API, passing the head SHA it evaluated so a concurrent push is never overwritten.
 3. The updated head runs CI. The check-run webhooks and the auto-merge sweep evaluate it again, and it merges only once its own CI has passed (and the base has not moved again).
 
-ProPR's comparison and the merge that follows run one at a time per repository, so two PRs that are each current against the same base cannot both merge: the second one is compared again against the base the first merge produced, and is updated instead of merged.
+ProPR's comparison and the merge that follows run one at a time per repository, so two PRs that are each current against the same base cannot both merge: the second one is compared again against the base the first merge produced, and is updated instead of merged. ProPR renews that ownership while the merge is in progress and checks it again just before merging. If it was lost (for example, the process stalled past its five-minute expiry), the PR is not merged and is compared again later.
+
+A PR that is waiting (for another PR's turn or merge, for its own branch update, or for its update rate limit) is recorded for retry. The auto-merge sweep then re-evaluates it about once a minute, even if no further check event arrives and the PR is not part of a plan.
 
 GitHub's own auto-merge would merge a behind head without this comparison, so ProPR does not arm it under `require_up_to_date`. The `auto-merge` label keeps the merge intent, and ProPR merges the PR itself from check events and the auto-merge sweep. A GitHub auto-merge request ProPR armed earlier (for example before the option was enabled) is withdrawn with a comment the next time ProPR evaluates the PR; a request a person or another App armed is left alone.
 

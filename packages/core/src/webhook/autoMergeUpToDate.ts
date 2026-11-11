@@ -12,13 +12,21 @@
  *
  * Independently of the update turn, {@link mergeWhenUpToDate} serialises
  * ProPR's comparison-through-merge per repository, so two current heads cannot
- * both be found up to date against the same base and then merge together.
+ * both be found up to date against the same base and then merge together. The
+ * ownership is renewed while its holder works and checked again right before
+ * the merge; a holder that lost it does not merge and compares again later.
+ *
+ * A candidate this feature defers (waiting for a turn, for the ownership, for an
+ * update or its rate limit) is recorded for retry, so the auto-merge sweep
+ * re-evaluates it even when no further check event arrives and the PR is not a
+ * plan PR (see `autoMergeUpToDateRetry.ts`).
  */
 import { randomUUID } from 'node:crypto';
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getCheckRunsStatusForRepo, getUltrafixStateRedis } from './checkRunHelpers.js';
 import { recordAutoMergeDecisionEvent } from '../services/autoMergeGate.js';
+import { deferForRetry } from './autoMergeUpToDateRetry.js';
 import { describeAutoMergeDecision, type AutoMergeDecision, type AutoMergeUpToDateReason } from '../workflow/autoMergePolicy.js';
 
 type Log = Pick<typeof logger, 'info' | 'warn' | 'debug'>;
@@ -29,8 +37,9 @@ export interface UpToDateRedis {
     del(key: string): Promise<unknown>;
     expire(key: string, seconds: number): Promise<unknown>;
     zadd(key: string, score: number, member: string): Promise<unknown>;
-    zrange(key: string, start: number, stop: number): Promise<string[]>;
+    zrange(key: string, start: number, stop: number, withScores?: 'WITHSCORES'): Promise<string[]>;
     zrem(key: string, member: string): Promise<unknown>;
+    eval(script: string, numberOfKeys: number, ...args: Array<string | number>): Promise<unknown>;
 }
 
 export interface UpToDateOctokit {
@@ -46,6 +55,8 @@ export interface UpToDateDependencies {
     queueConflictResolution?: (input: { owner: string; repo: string; prNumber: number }) => Promise<{ queued: boolean; reason?: string }>;
     /** Whether blocking checks failed on a head; defaults to the repository-aware check summary. */
     checksFailed?: (owner: string, repo: string, ref: string) => Promise<boolean>;
+    /** How often a live holder renews its merge ownership; defaults to a third of its TTL. */
+    ownershipRenewIntervalMs?: number;
 }
 
 export interface UpToDateTarget {
@@ -86,6 +97,21 @@ interface BranchUpdateMarker {
     baseSha?: string;
     requestedAt: number;
 }
+
+/** Renew the key's TTL only while it still holds the caller's token. */
+const RENEW_IF_OWNER_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+`;
+/** Delete the key only while it still holds the caller's token. */
+const RELEASE_IF_OWNER_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+`;
 
 const repoKey = (owner: string, repo: string) => `${owner}/${repo}`.toLowerCase();
 const keys = (owner: string, repo: string, prNumber?: number) => {
@@ -257,8 +283,9 @@ async function claimTurn(
 }
 
 async function handleUpdateFailure(
-    error: unknown, target: UpToDateTarget, baseSha: string | undefined, deps: UpToDateDependencies,
+    error: unknown, target: UpToDateTarget, seen: { baseSha?: string; now: number }, deps: UpToDateDependencies,
 ): Promise<UpToDateOutcome> {
+    const { baseSha, now } = seen;
     const log = target.log ?? logger;
     const redis = defaultRedis(deps);
     const err = error as { status?: number; message?: string; response?: { data?: { message?: string } } };
@@ -267,6 +294,7 @@ async function handleUpdateFailure(
     if (err.status === 422 && /expected head sha|head ref/i.test(message)) {
         // The head moved; its own CI and the sweep re-evaluate the new head.
         log.info({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, error: message }, 'PR head moved before the branch update; skipping');
+        await deferForRetry(redis, target, now);
         return 'waiting';
     }
     if (err.status === 422 && /conflict/i.test(message)) {
@@ -283,6 +311,7 @@ async function handleUpdateFailure(
         return 'waiting';
     }
     await recordDecision(target, 'waiting_branch_update_failed', { action: 'waiting', detail: message, baseSha }, deps);
+    await deferForRetry(redis, target, now);
     return 'waiting';
 }
 
@@ -308,6 +337,7 @@ export async function ensureUpToDateBeforeMerge(
         comparison = await compareWithBase(octokit, target);
     } catch (error) {
         await recordDecision(target, 'waiting_base_comparison_unavailable', { action: 'waiting', detail: (error as Error).message }, deps);
+        await deferForRetry(redis, target, now);
         return 'waiting';
     }
     const { baseSha } = comparison;
@@ -320,6 +350,7 @@ export async function ensureUpToDateBeforeMerge(
     const marker = await readMarker(redis, k.marker);
     if (marker && marker.fromHead === headSha && now - marker.requestedAt < BRANCH_UPDATE_PENDING_MS) {
         await recordDecision(target, 'waiting_branch_update_pending', { action: 'waiting', baseSha: marker.baseSha }, deps);
+        await deferForRetry(redis, target, now);
         return 'waiting';
     }
 
@@ -329,6 +360,7 @@ export async function ensureUpToDateBeforeMerge(
         await recordDecision(target, 'waiting_branch_update_rate_limited', {
             action: 'waiting', baseSha, detail: `at most ${settings.maxBranchUpdatesPerHour} branch update(s) per hour`,
         }, deps);
+        await deferForRetry(redis, target, now);
         return 'waiting';
     }
 
@@ -337,6 +369,8 @@ export async function ensureUpToDateBeforeMerge(
     const turn = await claimTurn(redis, octokit, target);
     if (!turn.claimed) {
         await recordDecision(target, 'waiting_branch_update_serialized', { action: 'waiting', baseSha, detail: `waiting for ${turn.waitingFor}` }, deps);
+        // The holder's progress produces no event for this PR: the sweep retries it.
+        await deferForRetry(redis, target, now);
         return 'waiting';
     }
 
@@ -346,7 +380,7 @@ export async function ensureUpToDateBeforeMerge(
         });
     } catch (error) {
         await countUpdate(redis, k.updates, now);
-        return handleUpdateFailure(error, target, baseSha, deps);
+        return handleUpdateFailure(error, target, { baseSha, now }, deps);
     }
     await countUpdate(redis, k.updates, now);
     // Progress: the turn now lasts an hour from this update. A turn that already
@@ -356,45 +390,100 @@ export async function ensureUpToDateBeforeMerge(
     await recordDecision(target, 'updated_branch', {
         action: 'branch_updated', baseSha, detail: `head was ${comparison.behindBy} commit(s) behind ${target.baseRef}`,
     }, deps);
+    // A repository without CI produces no check event for the updated head.
+    await deferForRetry(redis, target, now);
     return 'updated';
 }
+
+/**
+ * Asks whether the caller still owns the repository's merge ownership, renewing
+ * it when it does. A merge callback calls it right before the merge request.
+ */
+export type MergeOwnershipCheck = () => Promise<boolean>;
 
 /**
  * Compare the head with the latest base and, when it is current, run `merge`,
  * all while holding the repository's merge ownership: another ProPR candidate
  * in this repository can neither compare nor merge until this merge attempt
- * finished, so it compares against the base this merge produced. A candidate
- * that finds the ownership taken waits for the next check event or sweep.
- * Returns `up_to_date` only when `merge` ran.
+ * finished, so it compares against the base this merge produced. The ownership
+ * is renewed (token-checked) while the attempt runs; `merge` receives a check
+ * it must pass right before merging. When the ownership was lost (it expired
+ * and may have been taken over, so the comparison may be stale) nothing merges:
+ * the candidate is deferred and a later evaluation reacquires the ownership and
+ * compares again. A candidate that finds the ownership taken is deferred too.
+ * Returns `up_to_date` when `merge` ran without its ownership check refusing.
+ * The retry entry of a merged PR is settled by the sweep, which finds it closed.
  */
 export async function mergeWhenUpToDate(
     target: UpToDateTarget,
     settings: { maxBranchUpdatesPerHour: number },
-    merge: () => Promise<void>,
+    merge: (stillOwned: MergeOwnershipCheck) => Promise<void>,
     deps: UpToDateDependencies = {},
 ): Promise<UpToDateOutcome> {
+    const log = target.log ?? logger;
     const redis = defaultRedis(deps);
+    const now = deps.now ?? Date.now;
     const k = keys(target.owner, target.repo, target.prNumber);
     const token = `${target.prNumber}:${randomUUID()}`;
     if (!await redis.set(k.merging, token, 'EX', MERGE_OWNERSHIP_TTL_SECONDS, 'NX')) {
         const holder = (await redis.get(k.merging))?.split(':')[0];
-        (target.log ?? logger).debug({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, holder },
+        log.debug({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, holder },
             'Another auto-merge in this repository is comparing or merging; waiting');
         await recordDecision(target, 'waiting_branch_update_serialized', {
             action: 'waiting', detail: `waiting for the auto-merge of ${holder ? `PR #${holder}` : 'another PR'} to finish`,
         }, deps);
+        // The holder's merge produces no event for this PR: the sweep retries it.
+        await deferForRetry(redis, target, now());
         return 'waiting';
     }
+
+    let lost = false;
+    const stillOwned: MergeOwnershipCheck = async () => {
+        if (lost) return false;
+        try {
+            lost = Number(await redis.eval(RENEW_IF_OWNER_SCRIPT, 1, k.merging, token, MERGE_OWNERSHIP_TTL_SECONDS)) !== 1;
+        } catch (error) {
+            // Unknown ownership is treated as lost: the merge must not rely on a stale comparison.
+            log.warn({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, error: (error as Error).message },
+                'Failed to confirm auto-merge ownership');
+            lost = true;
+        }
+        return !lost;
+    };
+    // Renew while the comparison and the merge are in flight; a failed renewal only marks the ownership lost.
+    const renewal = setInterval(() => { void stillOwned(); }, deps.ownershipRenewIntervalMs ?? MERGE_OWNERSHIP_TTL_SECONDS * 1000 / 3);
+    renewal.unref?.();
     try {
-        const outcome = await ensureUpToDateBeforeMerge(target, settings, deps);
-        if (outcome === 'up_to_date') await merge();
+        let outcome = await ensureUpToDateBeforeMerge(target, settings, deps);
+        if (outcome === 'up_to_date') {
+            // The comparison is valid only while nobody else could have merged since.
+            let refused = !await stillOwned();
+            if (!refused) {
+                // The callback's own last check decides; a renewal failing after it confirmed does not undo a sent merge.
+                await merge(async () => {
+                    const owned = await stillOwned();
+                    refused = !owned;
+                    return owned;
+                });
+            }
+            if (refused) {
+                outcome = 'waiting';
+                log.warn({ owner: target.owner, repo: target.repo, prNumber: target.prNumber },
+                    'Auto-merge ownership was lost before the merge; not merging, the PR is compared again later');
+                await recordDecision(target, 'waiting_branch_update_serialized', {
+                    action: 'waiting', detail: 'the merge ownership expired before the merge; comparing again with the latest base',
+                }, deps);
+                await deferForRetry(redis, target, now());
+            }
+        }
         return outcome;
     } finally {
-        // Only our own ownership is released; an expired one may have been taken over.
+        clearInterval(renewal);
         try {
-            if (await redis.get(k.merging) === token) await redis.del(k.merging);
+            // Only our own ownership is released; an expired one may have been taken over.
+            await redis.eval(RELEASE_IF_OWNER_SCRIPT, 1, k.merging, token);
         } catch (error) {
-            (target.log ?? logger).warn({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, error: (error as Error).message },
+            log.warn({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, error: (error as Error).message },
                 'Failed to release auto-merge ownership; it expires on its own');
         }
     }

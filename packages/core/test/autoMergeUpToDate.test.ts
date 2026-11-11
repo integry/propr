@@ -7,8 +7,9 @@ await mock.module('../src/db/connection.js', { namedExports: { db: () => { throw
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => { throw new Error('use the fake client'); } } });
 
 const {
-    ensureUpToDateBeforeMerge, mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, BRANCH_UPDATE_PENDING_MS, UPDATE_TURN_TTL_SECONDS,
+    ensureUpToDateBeforeMerge, mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, BRANCH_UPDATE_PENDING_MS, UPDATE_TURN_TTL_SECONDS, MERGE_OWNERSHIP_TTL_SECONDS,
 } = await import('../src/webhook/autoMergeUpToDate.js');
+const { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, DEFERRED_RETRY_MAX_AGE_MS } = await import('../src/webhook/autoMergeUpToDateRetry.js');
 type Deps = import('../src/webhook/autoMergeUpToDate.js').UpToDateDependencies;
 
 /**
@@ -42,8 +43,22 @@ function fakeRedis(options: { expiring?: boolean } = {}) {
             return 1;
         },
         async zadd(key: string, score: number, member: string) { (sets.get(key) ?? sets.set(key, new Map()).get(key)!).set(member, score); return 1; },
-        async zrange(key: string) { return [...(sets.get(key) ?? new Map()).entries()].sort((a, b) => a[1] - b[1]).map(([member]) => member); },
+        async zrange(key: string, _start: number, _stop: number, withScores?: 'WITHSCORES') {
+            const sorted = [...(sets.get(key) ?? new Map<string, number>()).entries()].sort((a, b) => a[1] - b[1]);
+            return withScores ? sorted.flatMap(([member, score]) => [member, String(score)]) : sorted.map(([member]) => member);
+        },
         async zrem(key: string, member: string) { return sets.get(key)?.delete(member) ? 1 : 0; },
+        /** The token-checked renew/release and the deferred-settle scripts, by their commands. */
+        async eval(script: string, _keys: number, key: string, ...args: Array<string | number>) {
+            if (script.includes('zscore')) {
+                const score = sets.get(key)?.get(String(args[0]));
+                return score !== undefined && score <= Number(args[1]) && sets.get(key)!.delete(String(args[0])) ? 1 : 0;
+            }
+            if (!live(key) || values.get(key) !== String(args[0])) return 0;
+            if (script.includes("'expire'")) { expiresAt.set(key, clock + Number(args[1]) * 1000); return 1; }
+            if (script.includes("'del'")) { expiresAt.delete(key); values.delete(key); return 1; }
+            throw new Error('unexpected script');
+        },
     };
 }
 
@@ -322,4 +337,123 @@ test('merge ownership is released after a failed merge, and never released on an
     const ownership = 'auto-merge:up-to-date:merging:org/repo';
     await mergeWhenUpToDate(target(7), settings, async () => { redis.values.set(ownership, '8:other'); }, deps(github));
     assert.equal(redis.values.get(ownership), '8:other');
+});
+
+// ---- F5: deferred candidates are retried without another webhook ----
+
+const deferred = () => loadDeferredUpToDateCandidates({ redis, now: () => clock });
+
+test('a candidate deferred behind another PR\'s turn is recorded for retry, plan PR or not, and merges on the retry', async () => {
+    const prs: Record<number, FakePR> = { 5: { behindBy: 1 }, 10: { behindBy: 1 } };
+    const github = fakeGitHub(prs);
+    const merged: number[] = [];
+    const merge = (prNumber: number) => async () => { merged.push(prNumber); };
+    assert.equal(await mergeWhenUpToDate(target(5), settings, merge(5), deps(github)), 'updated');
+    // PR 10's last green check arrives while PR 5 holds the turn: it waits and gets no further event.
+    assert.equal(await mergeWhenUpToDate(target(10), settings, merge(10), deps(github)), 'waiting');
+    assert.equal(decisions.at(-1)?.reason, 'waiting_branch_update_serialized');
+    const retries = await deferred();
+    assert.deepEqual(retries.map(r => [r.repository, r.prNumber]), [['Org/Repo', 5], ['Org/Repo', 10]]);
+
+    // PR 5 merges (outside this PR's evaluation) and leaves the turn.
+    prs[5].behindBy = 0;
+    clock += 60_000;
+    assert.equal(await mergeWhenUpToDate(target(5, 'updated-5'), settings, merge(5), deps(github)), 'up_to_date');
+    github.octokit.request = (original => async (route: string, params: Record<string, unknown> = {}) =>
+        route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}' && params.pull_number === 5 ? { data: { state: 'closed' } } : original(route, params))(github.octokit.request);
+
+    // The sweep's retry of PR 10 is the guarded merge path again: PR 10 is updated now, then merges once current.
+    clock += 60_000;
+    const pr10 = (await deferred()).find(r => r.prNumber === 10)!;
+    assert.equal(await mergeWhenUpToDate(target(10), settings, merge(10), deps(github)), 'updated');
+    await settleDeferredUpToDateCandidate(pr10, { redis });
+    assert.ok((await deferred()).some(r => r.prNumber === 10), 'deferred again by the retry, so it stays for the next sweep');
+    prs[10].behindBy = 0;
+    clock += 60_000;
+    const again = (await deferred()).find(r => r.prNumber === 10)!;
+    assert.equal(await mergeWhenUpToDate(target(10, 'updated-10'), settings, merge(10), deps(github)), 'up_to_date');
+    await settleDeferredUpToDateCandidate(again, { redis });
+    assert.deepEqual(merged, [5, 10]);
+    assert.equal((await deferred()).some(r => r.prNumber === 10), false, 'settled once a retry did not defer it again');
+});
+
+test('a candidate that found the merge ownership taken is recorded for retry', async () => {
+    const github = fakeGitHub({ 8: { behindBy: 0 } });
+    redis.values.set('auto-merge:up-to-date:merging:org/repo', '7:other');
+    assert.equal(await mergeWhenUpToDate(target(8), settings, async () => { throw new Error('must not merge'); }, deps(github)), 'waiting');
+    assert.deepEqual((await deferred()).map(r => r.prNumber), [8]);
+});
+
+test('a conflicting update is not retried by the sweep; stale retry entries age out', async () => {
+    const github = fakeGitHub({ 7: { behindBy: 1, updateError: { status: 422, message: 'merge conflict between base and head' } }, 8: { behindBy: 1 } });
+    assert.equal(await ensureUpToDateBeforeMerge(target(7), settings, deps(github)), 'waiting');
+    assert.deepEqual(await deferred(), []);
+    assert.equal(await ensureUpToDateBeforeMerge(target(8), settings, deps(github)), 'updated');
+    assert.deepEqual((await deferred()).map(r => r.prNumber), [8]);
+    clock += DEFERRED_RETRY_MAX_AGE_MS + 1;
+    assert.deepEqual(await deferred(), []);
+});
+
+// ---- F6: a holder that lost its merge ownership does not merge ----
+
+test('an attempt whose ownership expired after the comparison does not merge; it compares again on the retry', async () => {
+    redis = fakeRedis({ expiring: true });
+    const prs: Record<number, FakePR> = { 7: { behindBy: 0 }, 8: { behindBy: 0 } };
+    const github = fakeGitHub(prs);
+    const merged: number[] = [];
+    let resumeA!: () => void;
+    const suspendedA = new Promise<void>(resolve => { resumeA = resolve; });
+    const advanceBase = (prNumber: number) => { for (const other of Object.keys(prs)) if (Number(other) !== prNumber) prs[Number(other)].behindBy = 1; };
+
+    // PR 7 compares against base X, then is suspended (e.g. resolving the merge method) beyond the ownership TTL.
+    const first = mergeWhenUpToDate(target(7), settings, async stillOwned => {
+        await suspendedA;
+        if (!await stillOwned()) return;
+        merged.push(7);
+        advanceBase(7);
+    }, deps(github, { ownershipRenewIntervalMs: 60 * 60_000 }));
+    await new Promise(resolve => setImmediate(resolve));
+    clock += MERGE_OWNERSHIP_TTL_SECONDS * 1000 + 1;
+
+    // PR 8 takes the expired ownership, compares against X and merges, advancing the base.
+    assert.equal(await mergeWhenUpToDate(target(8), settings, async stillOwned => {
+        assert.equal(await stillOwned(), true);
+        merged.push(8);
+        advanceBase(8);
+    }, deps(github)), 'up_to_date');
+
+    resumeA();
+    assert.equal(await first, 'waiting', 'PR 7 lost the ownership and does not merge on its stale comparison');
+    assert.deepEqual(merged, [8]);
+    assert.match(decisions.at(-1)?.detail ?? '', /ownership expired/);
+    assert.ok((await deferred()).some(r => r.prNumber === 7), 'PR 7 is retried');
+
+    // The retry reacquires the ownership, compares again against the new base, and updates instead of merging.
+    assert.equal(await mergeWhenUpToDate(target(7), settings, async () => { merged.push(7); }, deps(github)), 'updated');
+    assert.deepEqual(merged, [8]);
+    assert.deepEqual(github.updates, [{ pull_number: 7, expected_head_sha: 'head-7' }]);
+});
+
+test('a live holder renews its ownership with its token while it works', async () => {
+    redis = fakeRedis({ expiring: true });
+    const github = fakeGitHub({ 7: { behindBy: 0 }, 8: { behindBy: 0 } });
+    const ownership = 'auto-merge:up-to-date:merging:org/repo';
+    let release!: () => void;
+    const working = new Promise<void>(resolve => { release = resolve; });
+    let ownedAtMerge: boolean | undefined;
+    const first = mergeWhenUpToDate(target(7), settings, async stillOwned => {
+        await working;
+        ownedAtMerge = await stillOwned();
+    }, deps(github, { ownershipRenewIntervalMs: 5 }));
+    await new Promise(resolve => setImmediate(resolve));
+    // Most of the TTL passes; the renewal timer extends it from the current clock.
+    clock += (MERGE_OWNERSHIP_TTL_SECONDS - 1) * 1000;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    clock += 2 * 1000;
+    assert.match(await redis.get(ownership) ?? '', /^7:/, 'still owned past the original expiry');
+    assert.equal(await mergeWhenUpToDate(target(8), settings, async () => { throw new Error('must not merge'); }, deps(github)), 'waiting');
+    release();
+    assert.equal(await first, 'up_to_date');
+    assert.equal(ownedAtMerge, true);
+    assert.equal(await redis.get(ownership), null, 'released with its token');
 });
