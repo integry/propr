@@ -4,6 +4,7 @@ import { db } from '../db/connection.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
+import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, type StageClaim } from './llmMetricsExecutionClaim.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -242,18 +243,18 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<void> {
+/** Writes the execution row and its details; true once the row is inserted, even if its details then fail. */
+async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<boolean> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId, reasoningLevel } = metrics;
-
-    // Check if taskId exists in tasks table (drafts won't exist)
-    // Use null for task_id if it doesn't exist (FK allows null now)
-    let effectiveTaskId: string | null = null;
-    if (taskId) {
-        const taskExists = await db('tasks').where({ task_id: taskId }).first();
-        effectiveTaskId = taskExists ? taskId : null;
-    }
-
+    let rowInserted = false;
     try {
+        // Check if taskId exists in tasks table (drafts won't exist)
+        // Use null for task_id if it doesn't exist (FK allows null now)
+        let effectiveTaskId: string | null = null;
+        if (taskId) {
+            const taskExists = await db('tasks').where({ task_id: taskId }).first();
+            effectiveTaskId = taskExists ? taskId : null;
+        }
         const executionData = {
             task_id: effectiveTaskId, session_id: sessionId, conversation_id: conversationId,
             start_time: new Date(Date.now() - executionTimeMs).toISOString(),
@@ -271,6 +272,7 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             reasoning_level: normalizeStoredReasoningLevel(reasoningLevel)
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
+        rowInserted = true;
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
@@ -278,6 +280,7 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
+    return rowInserted;
 }
 async function storeMetricsToRedis(metricsRedis: InstanceType<typeof Redis>, llmMetrics: LLMMetricsData, correlationId?: string): Promise<void> { await metricsRedis.setex(`llm:metrics:${correlationId}`, 30 * 24 * 3600, JSON.stringify(llmMetrics)); }
 async function storeTimeSeriesEntry(metricsRedis: InstanceType<typeof Redis>, entry: Record<string, unknown>): Promise<void> { await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(entry)); await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999); }
@@ -290,17 +293,25 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
         }, 'DEBUG: ConversationLog structure');
     }
 }
-export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
-    const { jobType = 'issue', correlationId, taskId = null, executionType, reasoningLevel } = options;
-    const metricsRedis = new Redis(connectionOptions);
+function logRecordCall(claudeResult: ClaudeResult | null, correlationId?: string, taskId?: string | null): void {
     logger.info({
         correlationId, taskId, hasClaudeResult: !!claudeResult,
         hasConversationLog: !!claudeResult?.conversationLog,
         conversationLogType: Array.isArray(claudeResult?.conversationLog) ? 'array' : typeof claudeResult?.conversationLog,
         conversationLogLength: claudeResult?.conversationLog?.length ?? 0
     }, 'DEBUG: recordLLMMetrics called');
+}
+export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
+    const { jobType = 'issue', taskId = null, executionType, reasoningLevel } = options;
+    const correlationId = metricsCorrelationId(claudeResult, options.correlationId);
+    const metricsRedis = new Redis(connectionOptions);
+    logRecordCall(claudeResult, correlationId, taskId);
 
+    const claimContext = { correlationId, taskId };
+    let countersClaim: StageClaim | null = null;
+    let countingStarted = false;
     try {
+        countersClaim = await claimExecutionStage(metricsRedis, claudeResult, 'counters', claimContext);
         const timestamp = new Date().toISOString();
         const dateKey = timestamp.split('T')[0];
         const extracted = extractMetricsFromClaudeResult(claudeResult);
@@ -309,27 +320,33 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         const costUsd = await calculateCost(model, cumulativeTokens, claudeResult);
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
-        const llmMetrics: LLMMetricsData = {
-            correlationId, timestamp, issueNumber: issueRef.number, repository, jobType,
-            model, success, executionTimeMs, executionTimeSec, numTurns, costUsd,
-            sessionId, conversationId, error: claudeResult?.error ?? null,
-            failureReason: !success ? (claudeResult?.error ?? 'unknown') : null
-        };
-        await storeMetricsToRedis(metricsRedis, llmMetrics, correlationId);
-        await updateAggregatedMetrics(metricsRedis, { model, success, costUsd, numTurns, executionTimeMs, dateKey });
-        await storeTimeSeriesEntry(metricsRedis, { timestamp, correlationId, model, success, costUsd, executionTimeSec, numTurns, repository });
-        await checkCostThreshold(metricsRedis, { timestamp, correlationId, costUsd, model, numTurns }, issueRef);
-
-        logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
+        if (countersClaim) {
+            const llmMetrics: LLMMetricsData = {
+                correlationId, timestamp, issueNumber: issueRef.number, repository, jobType,
+                model, success, executionTimeMs, executionTimeSec, numTurns, costUsd,
+                sessionId, conversationId, error: claudeResult?.error ?? null,
+                failureReason: !success ? (claudeResult?.error ?? 'unknown') : null
+            };
+            await storeMetricsToRedis(metricsRedis, llmMetrics, correlationId);
+            // From here a failure may leave some counters incremented, so the claim is kept.
+            countingStarted = true;
+            await updateAggregatedMetrics(metricsRedis, { model, success, costUsd, numTurns, executionTimeMs, dateKey });
+            await storeTimeSeriesEntry(metricsRedis, { timestamp, correlationId, model, success, costUsd, executionTimeSec, numTurns, repository });
+            await checkCostThreshold(metricsRedis, { timestamp, correlationId, costUsd, model, numTurns }, issueRef);
+            logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
+        }
         logConversationDebug(claudeResult, correlationId, taskId);
-        if (claudeResult) {
-            await persistToDatabase(claudeResult, taskId, {
+        const rowClaim = claudeResult ? await claimExecutionStage(metricsRedis, claudeResult, 'row', claimContext) : null;
+        if (claudeResult && rowClaim) {
+            const rowInserted = await persistToDatabase(claudeResult, taskId, {
                 sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd,
                 tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType, reasoningLevel,
             });
+            if (!rowInserted) await releaseExecutionStage(metricsRedis, rowClaim, claimContext);
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');
+        if (countersClaim && !countingStarted) await releaseExecutionStage(metricsRedis, countersClaim, claimContext);
     } finally {
         await metricsRedis.quit();
     }

@@ -211,15 +211,44 @@ export function activityDays(
   return days.map(day => ({ date: day.date, count: day.count, runs: dailyRuns.get(day.date) ?? 0 }));
 }
 
+export interface RecordedSpend {
+  /** Every recorded cost in the window, whatever the execution's outcome. */
+  total: number;
+  /** Of that, executions that succeeded. */
+  successful: number;
+  /**
+   * Of that, executions that failed: an error, a usage limit, a timeout. The
+   * tokens were spent even though the attempt delivered nothing.
+   */
+  failed: number;
+}
+
 /**
- * Spend recorded against executions started in the window.
+ * SQL summing the cost and the count of failed executions over the
+ * `llm_executions as e` rows a query selects. A missing outcome is not a
+ * failure; a table without the column (an old schema) has none.
+ */
+export async function failedExecutionSums(db: Knex): Promise<{ cost: Knex.Raw; runs: Knex.Raw }> {
+  if (!await hasColumn(db, 'llm_executions', 'success')) return { cost: db.raw('0'), runs: db.raw('0') };
+  return {
+    cost: db.raw('sum(CASE WHEN e.success = ? THEN e.cost_usd ELSE 0 END)', [false]),
+    runs: db.raw('sum(CASE WHEN e.success = ? THEN 1 ELSE 0 END)', [false]),
+  };
+}
+
+const usd = (value: number | string | null | undefined, digits: number): number => Number(Number(value ?? 0).toFixed(digits));
+
+/**
+ * Spend recorded against executions started in the window, and how it splits
+ * between executions that succeeded and those that failed. `successful` and
+ * `failed` sum to `total`, give or take rounding.
  *
  * Null when no execution recorded a cost at all: an instance that never
  * records cost has not spent $0.
  */
 export async function loadRecordedSpend(
   db: Knex, window: AnalyticsWindow | null, repository = 'all',
-): Promise<number | null> {
+): Promise<RecordedSpend | null> {
   const query = db('llm_executions as e').whereNotNull('e.cost_usd');
   whereCreatedWithin(query, 'e.start_time', window);
   if (repository && repository !== 'all') {
@@ -228,9 +257,12 @@ export async function loadRecordedSpend(
   const row = await query
     .sum({ cost: 'e.cost_usd' })
     .count({ recorded: 'e.cost_usd' })
-    .first() as { cost?: number | string | null; recorded?: number | string | null } | undefined;
+    .select(db.raw('? as failed_cost', [(await failedExecutionSums(db)).cost]))
+    .first() as { cost?: number | string | null; recorded?: number | string | null; failed_cost?: number | string | null } | undefined;
   if (!row || Number(row.recorded ?? 0) === 0) return null;
-  return Number(Number(row.cost ?? 0).toFixed(4));
+  const total = Number(row.cost ?? 0);
+  const failed = Number(row.failed_cost ?? 0);
+  return { total: usd(total, 4), successful: usd(total - failed, 4), failed: usd(failed, 4) };
 }
 
 export interface RunVolume {
