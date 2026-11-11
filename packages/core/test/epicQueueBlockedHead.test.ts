@@ -186,3 +186,39 @@ test('a blocked parallel child keeps the execution active with the same reason',
   assert.equal(queue?.blockedReason, null);
   assert.deepEqual(finalizations, ['draft']);
 });
+
+test('clearing one parallel child keeps the blocker of another child that is still blocked', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository, issues: [10, 30], parallel: true });
+  await finishHeadRun(10, BLOCKED_HISTORY);
+  assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), true);
+  await finishHeadRun(30, BLOCKED_HISTORY);
+  assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 30 }), true);
+  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, agentBlockedHeadReason(30));
+
+  // #30 is processed again and opens a PR; its normal completion clears its own blocker.
+  await database('plan_issues').where({ issue_number: 30 }).update({ status: S.UNDER_REVIEW, pr_number: 31, task_id: 'task-30b' });
+  await database('task_history').insert({ task_id: 'task-30b', state: 'completed', timestamp: 2,
+    metadata: JSON.stringify({ pr: 31, prResult: { status: 'success', prCreated: true, prNumber: 31 } }) });
+  assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 30 }), true);
+  let queue = await getEpicExecutionQueue('draft');
+  assert.equal(queue?.status, 'active');
+  assert.equal(queue?.blockedReason, agentBlockedHeadReason(10), 'the other blocked child still explains the epic');
+
+  // Once #10 also settles normally, nothing blocks the execution any more.
+  await database('task_history').insert({ task_id: 'task-10', state: 'processing', timestamp: 3, metadata: null });
+  assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), true);
+  queue = await getEpicExecutionQueue('draft');
+  assert.equal(queue?.blockedReason, null);
+});
+
+test('clearing a parallel child ignores siblings that are merged or whose latest run was not blocked', async () => {
+  await database('plan_issues').insert({ draft_id: 'draft', repository, issue_number: 50, status: 'pending' });
+  await createEpicExecutionQueue({ draftId: 'draft', repository, issues: [10, 30, 50], parallel: true });
+  await finishHeadRun(10, BLOCKED_HISTORY);
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: S.MERGED });
+  await finishHeadRun(30, NO_PR_HISTORY);
+  await finishHeadRun(50, BLOCKED_HISTORY);
+  await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 50 });
+  assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 50 }), true);
+  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null);
+});
