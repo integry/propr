@@ -26,9 +26,9 @@ import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 import { isActedCheckRunAction, isActedCheckSuiteAction, isPassingCheckSuiteConclusion, STATUS_SUCCESS_STATE } from './webhookEventGates.js';
 import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
 import { isNonBlockingCheck } from './nonBlockingChecks.js';
-import { evaluatePullRequestAutoMerge, resolveDirectMergeMethod } from '../services/autoMergeGate.js';
+import { evaluatePullRequestAutoMerge, resolveDirectMergeMethod, withdrawNativeAutoMergeForUpToDate } from '../services/autoMergeGate.js';
 import type { AutoMergeDecision, AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
-import { ensureUpToDateBeforeMerge, noteCiWaitAfterBranchUpdate } from './autoMergeUpToDate.js';
+import { mergeWhenUpToDate, noteCiWaitAfterBranchUpdate } from './autoMergeUpToDate.js';
 
 export interface StatusEventPayload {
     sha: string;
@@ -193,19 +193,31 @@ function passesMergeabilityGate(ctx: PRContext, prInfo: PRAutoMergeInfo): boolea
 }
 
 /**
- * With `require_up_to_date`, the head must contain the latest base commit;
- * otherwise ProPR updates the branch and the updated head merges only after its
- * own CI passes. A head GitHub still reports as behind never merges.
+ * Merge an evaluated head. With `require_up_to_date`, the head must contain the
+ * latest base commit; otherwise ProPR updates the branch and the updated head
+ * merges only after its own CI passes. The comparison and the merge run under
+ * the repository's merge ownership, so a second candidate compares against the
+ * base this merge produced. A head GitHub still reports as behind never merges.
  */
-async function headMayMerge(ctx: PRMergeContext, upToDate: AutoMergeDecision['upToDate'], baseRef: string): Promise<boolean> {
+async function mergeEvaluatedHead(ctx: PRMergeContext, decision: AutoMergeDecision, baseRef: string, ciReason: string): Promise<void> {
     const { owner, repoName, prNumber, headSha, prInfo, log } = ctx;
-    if (upToDate) {
-        const outcome = await ensureUpToDateBeforeMerge({ owner, repo: repoName, prNumber, headSha, baseRef, log }, upToDate);
-        if (outcome !== 'up_to_date') return false;
+    const merge = async (): Promise<void> => {
+        if (prInfo.mergeableState !== 'clean') {
+            log.debug({ owner, repoName, prNumber, mergeableState: prInfo.mergeableState }, 'GitHub reports the PR as behind its base, skipping merge');
+            return;
+        }
+        // A policy without a method merges like the arming gate would arm: squash,
+        // unless the repository disallows it.
+        const mergeMethod = await resolveDirectMergeMethod({ owner, repo: repoName, method: decision.method });
+        log.info({ owner, repoName, prNumber, headSha, ci: ciReason, mergeMethod }, 'CI allows merging the auto-merge PR, attempting to merge');
+        // GitHub refuses the merge if the head moved after the evaluation.
+        await performMergeAndPostActions(ctx, mergeMethod, headSha);
+    };
+    if (!decision.upToDate) {
+        await merge();
+        return;
     }
-    if (prInfo.mergeableState === 'clean') return true;
-    log.debug({ owner, repoName, prNumber, mergeableState: prInfo.mergeableState }, 'GitHub reports the PR as behind its base, skipping merge');
-    return false;
+    await mergeWhenUpToDate({ owner, repo: repoName, prNumber, headSha, baseRef, log }, decision.upToDate, merge);
 }
 
 /**
@@ -276,14 +288,13 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
         return;
     }
 
-    if (!await headMayMerge({ ...ctx, headSha, prInfo }, decision.upToDate, pullRequest.baseRef || prInfo.baseBranch)) return;
+    // `require_up_to_date` keeps GitHub's own auto-merge off: it would merge a
+    // behind head without the comparison below. Withdraw ProPR's own request.
+    if (decision.upToDate && pullRequest.autoMergeArmed) {
+        await withdrawNativeAutoMergeForUpToDate({ owner, repo: repoName, prNumber, pullRequest, opportunity: 'check_merge', log });
+    }
 
-    // A policy without a method merges like the arming gate would arm: squash,
-    // unless the repository disallows it.
-    const mergeMethod = await resolveDirectMergeMethod({ owner, repo: repoName, method: decision.method });
-    log.info({ owner, repoName, prNumber, headSha, ci: ci.reason, mergeMethod }, 'CI allows merging the auto-merge PR, attempting to merge');
-    // GitHub refuses the merge if the head moved after the evaluation.
-    await performMergeAndPostActions(mergeCtx, mergeMethod, pullRequest.headSha);
+    await mergeEvaluatedHead(mergeCtx, decision, pullRequest.baseRef || prInfo.baseBranch, ci.reason);
 }
 
 export interface AutoMergeReevaluationOptions {

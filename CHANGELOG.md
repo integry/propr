@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes on the updated head. One PR per repository (the oldest eligible) is
   updated at a time, each PR gets at most `max_branch_updates_per_hour`
   (default 3) updates, and conflicts use the opt-in automatic conflict
-  resolution or leave an explaining comment. Every decision is recorded with
-  the auto-merge timeline event.
+  resolution or leave an explaining comment. The comparison and the merge are
+  serialised per repository, so two current PRs cannot merge together, and
+  GitHub's native auto-merge is not armed under the option (ProPR withdraws
+  its own earlier request). Every decision is recorded with the auto-merge
+  timeline event.
 
 ### Fixed
 

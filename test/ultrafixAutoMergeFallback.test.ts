@@ -17,11 +17,13 @@ const octokit = {
 const reevaluatePRAutoMerge = mock.fn(async (..._args: unknown[]) => undefined);
 let armResult: Record<string, unknown> = { success: true, autoMergeEnabled: true };
 const enableAutoMerge = mock.fn(async () => armResult);
+const nativeGate = { arm: true, mergeMethod: 'SQUASH', pullRequest: { headSha: 'head', baseRef: 'epic' } };
+let gateResult: Record<string, unknown> = nativeGate;
 
 await mock.module('@propr/core', {
     namedExports: {
         findPlanIssueByRepoAndPR: async () => ({ issue_number: 23 }),
-        gateAutoMergeArming: async () => ({ arm: true, mergeMethod: 'SQUASH', pullRequest: { headSha: 'head', baseRef: 'epic' } }),
+        gateAutoMergeArming: async () => gateResult,
         getAuthenticatedOctokit: async () => octokit,
         reevaluatePRAutoMerge,
         retryConfigs: { githubApi: {} },
@@ -39,6 +41,8 @@ const comments = () => requests.filter(r => r.route.startsWith('POST /repos/{own
 beforeEach(() => {
     requests.length = 0;
     reevaluatePRAutoMerge.mock.resetCalls();
+    enableAutoMerge.mock.resetCalls();
+    gateResult = nativeGate;
 });
 
 test('a repository with auto-merge disabled gets a suggestion and a direct merge', async () => {
@@ -62,5 +66,13 @@ test('armed auto-merge and other failures do not merge directly', async () => {
     armResult = { success: false, headChanged: true, error: 'Pull request head or base changed' };
     await maybeEnableAutoMerge(pr, log);
     assert.equal(reevaluatePRAutoMerge.mock.callCount(), 0);
+    assert.equal(comments().length, 0);
+});
+
+test('require_up_to_date never arms GitHub auto-merge and merges through ProPR\'s guarded path', async () => {
+    gateResult = { arm: true, directMergeOnly: true, pullRequest: { headSha: 'head', baseRef: 'epic' } };
+    await maybeEnableAutoMerge({ ...pr, correlationId: 'corr', currentJobId: 'job' }, log);
+    assert.equal(enableAutoMerge.mock.callCount(), 0);
+    assert.deepEqual(reevaluatePRAutoMerge.mock.calls[0].arguments, ['integry', 'agent-tank-website', 43, { correlationId: 'corr', ignoreWorkIds: ['job'] }]);
     assert.equal(comments().length, 0);
 });

@@ -333,6 +333,12 @@ export async function handleCreatedPlanIssuePR(options: {
         correlatedLogger.info({ prNumber, reason: gate.reason, matchedPaths: gate.matchedPaths }, 'Auto-merge not armed by repository policy');
         return;
     }
+    if (gate.directMergeOnly) {
+        // `require_up_to_date`: GitHub's auto-merge would merge a behind head. ProPR
+        // merges it itself (check events and the sweep) once it is current and green.
+        correlatedLogger.info({ prNumber }, 'require_up_to_date: not arming GitHub auto-merge; ProPR merges this PR itself');
+        return;
+    }
     // Arm only the head the policy evaluated; a newer head needs its own decision.
     const autoMergeResult = await enableAutoMerge({
         owner: issueRef.repoOwner,

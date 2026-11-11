@@ -6,7 +6,7 @@ await mock.module('../src/utils/logger.js', { defaultExport: log });
 await mock.module('../src/db/connection.js', { namedExports: { db: () => { throw new Error('no database in this suite'); }, closeConnection: async () => {} } });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => { throw new Error('use the fake client'); } } });
 
-const { ensureUpToDateBeforeMerge, noteCiWaitAfterBranchUpdate, BRANCH_UPDATE_PENDING_MS } = await import('../src/webhook/autoMergeUpToDate.js');
+const { ensureUpToDateBeforeMerge, mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, BRANCH_UPDATE_PENDING_MS } = await import('../src/webhook/autoMergeUpToDate.js');
 type Deps = import('../src/webhook/autoMergeUpToDate.js').UpToDateDependencies;
 
 /** In-memory Redis with the commands the up-to-date gate uses (TTLs are not simulated). */
@@ -217,4 +217,58 @@ test('another update failure is recorded and releases the turn', async () => {
     assert.equal(await ensureUpToDateBeforeMerge(target(7), settings, deps(github)), 'waiting');
     assert.equal(decisions.at(-1)?.reason, 'waiting_branch_update_failed');
     assert.equal(await ensureUpToDateBeforeMerge(target(8), settings, deps(github)), 'updated');
+});
+
+test('overlapping current heads are serialised from comparison through merge; the later one compares against the merged base', async () => {
+    const prs: Record<number, FakePR> = { 7: { behindBy: 0 }, 8: { behindBy: 0 } };
+    const github = fakeGitHub(prs);
+    const compared: number[] = [];
+    let releaseCompare!: () => void;
+    const compareInFlight = new Promise<void>(resolve => { releaseCompare = resolve; });
+    const request = github.octokit.request.bind(github.octokit);
+    github.octokit.request = async (route: string, params: Record<string, unknown> = {}) => {
+        if (route.startsWith('GET /repos/{owner}/{repo}/compare/')) {
+            const prNumber = Number(/\d+/.exec(String(params.basehead).split('...')[1])?.[0]);
+            compared.push(prNumber);
+            // PR 7's comparison is still awaiting GitHub while PR 8 is evaluated.
+            if (prNumber === 7) await compareInFlight;
+        }
+        return request(route, params);
+    };
+    const merged: number[] = [];
+    const merge = (prNumber: number) => async () => {
+        merged.push(prNumber);
+        // Merging advances the base: the other PR no longer contains it.
+        for (const other of Object.keys(prs)) if (Number(other) !== prNumber) prs[Number(other)].behindBy = 1;
+    };
+
+    const first = mergeWhenUpToDate(target(7), settings, merge(7), deps(github));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(compared, [7]);
+    assert.equal(await mergeWhenUpToDate(target(8), settings, merge(8), deps(github)), 'waiting');
+    assert.deepEqual(compared, [7], 'PR 8 is not compared while PR 7 owns the comparison-through-merge');
+    assert.equal(decisions.at(-1)?.reason, 'waiting_branch_update_serialized');
+    assert.match(decisions.at(-1)?.detail ?? '', /PR #7/);
+    releaseCompare();
+    assert.equal(await first, 'up_to_date');
+    assert.deepEqual(merged, [7]);
+
+    // The next evaluation of PR 8 compares against the base PR 7's merge produced.
+    assert.equal(await mergeWhenUpToDate(target(8), settings, merge(8), deps(github)), 'updated');
+    assert.deepEqual(compared, [7, 8]);
+    assert.deepEqual(merged, [7], 'PR 8 is updated, not merged, after the base moved');
+    assert.deepEqual(github.updates, [{ pull_number: 8, expected_head_sha: 'head-8' }]);
+});
+
+test('merge ownership is released after a failed merge, and never released on another holder\'s behalf', async () => {
+    const github = fakeGitHub({ 7: { behindBy: 0 }, 8: { behindBy: 0 } });
+    await assert.rejects(mergeWhenUpToDate(target(7), settings, async () => { throw new Error('merge refused'); }, deps(github)), /merge refused/);
+    let merged = 0;
+    assert.equal(await mergeWhenUpToDate(target(8), settings, async () => { merged++; }, deps(github)), 'up_to_date');
+    assert.equal(merged, 1);
+
+    // PR 7's ownership expired mid-merge and PR 8 took it over: PR 7 must not release PR 8's.
+    const ownership = 'auto-merge:up-to-date:merging:org/repo';
+    await mergeWhenUpToDate(target(7), settings, async () => { redis.values.set(ownership, '8:other'); }, deps(github));
+    assert.equal(redis.values.get(ownership), '8:other');
 });

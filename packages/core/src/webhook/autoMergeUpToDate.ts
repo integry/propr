@@ -9,6 +9,10 @@
  * eligible one holds a turn until its updated head merges, fails CI or the
  * turn expires), and each PR gets at most `max_branch_updates_per_hour`
  * updates per hour, so a busy base branch cannot cause an update loop.
+ *
+ * Independently of the update turn, {@link mergeWhenUpToDate} serialises
+ * ProPR's comparison-through-merge per repository, so two current heads cannot
+ * both be found up to date against the same base and then merge together.
  */
 import { randomUUID } from 'node:crypto';
 import logger from '../utils/logger.js';
@@ -64,6 +68,12 @@ export const BRANCH_UPDATE_PENDING_MS = 10 * 60_000;
 export const UPDATE_TURN_TTL_SECONDS = 60 * 60;
 /** How long a behind PR stays eligible for the turn without being re-evaluated. */
 export const ELIGIBLE_TTL_SECONDS = 10 * 60;
+/**
+ * How long the repository's comparison-through-merge ownership survives when
+ * its holder dies mid-operation; a live holder releases it when the merge
+ * attempt finishes.
+ */
+export const MERGE_OWNERSHIP_TTL_SECONDS = 5 * 60;
 const MARKER_TTL_SECONDS = 24 * 60 * 60;
 const LAST_DECISION_TTL_SECONDS = 24 * 60 * 60;
 
@@ -78,6 +88,7 @@ const keys = (owner: string, repo: string, prNumber?: number) => {
     const scope = repoKey(owner, repo);
     return {
         turn: `${KEY_PREFIX}:turn:${scope}`,
+        merging: `${KEY_PREFIX}:merging:${scope}`,
         eligible: `${KEY_PREFIX}:eligible:${scope}`,
         seen: (pr: number | string) => `${KEY_PREFIX}:seen:${scope}#${pr}`,
         updates: `${KEY_PREFIX}:updates:${scope}#${prNumber}`,
@@ -276,6 +287,8 @@ async function handleUpdateFailure(
 /**
  * Called when an auto-merge candidate passed every other gate and the policy
  * requires an up-to-date branch. Only `up_to_date` allows merging this head.
+ * The comparison is only as fresh as the base it saw: callers that go on to
+ * merge must hold the repository's merge ownership, as {@link mergeWhenUpToDate} does.
  */
 export async function ensureUpToDateBeforeMerge(
     target: UpToDateTarget,
@@ -339,6 +352,47 @@ export async function ensureUpToDateBeforeMerge(
         action: 'branch_updated', baseSha, detail: `head was ${comparison.behindBy} commit(s) behind ${target.baseRef}`,
     }, deps);
     return 'updated';
+}
+
+/**
+ * Compare the head with the latest base and, when it is current, run `merge`,
+ * all while holding the repository's merge ownership: another ProPR candidate
+ * in this repository can neither compare nor merge until this merge attempt
+ * finished, so it compares against the base this merge produced. A candidate
+ * that finds the ownership taken waits for the next check event or sweep.
+ * Returns `up_to_date` only when `merge` ran.
+ */
+export async function mergeWhenUpToDate(
+    target: UpToDateTarget,
+    settings: { maxBranchUpdatesPerHour: number },
+    merge: () => Promise<void>,
+    deps: UpToDateDependencies = {},
+): Promise<UpToDateOutcome> {
+    const redis = defaultRedis(deps);
+    const k = keys(target.owner, target.repo, target.prNumber);
+    const token = `${target.prNumber}:${randomUUID()}`;
+    if (!await redis.set(k.merging, token, 'EX', MERGE_OWNERSHIP_TTL_SECONDS, 'NX')) {
+        const holder = (await redis.get(k.merging))?.split(':')[0];
+        (target.log ?? logger).debug({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, holder },
+            'Another auto-merge in this repository is comparing or merging; waiting');
+        await recordDecision(target, 'waiting_branch_update_serialized', {
+            action: 'waiting', detail: `waiting for the auto-merge of ${holder ? `PR #${holder}` : 'another PR'} to finish`,
+        }, deps);
+        return 'waiting';
+    }
+    try {
+        const outcome = await ensureUpToDateBeforeMerge(target, settings, deps);
+        if (outcome === 'up_to_date') await merge();
+        return outcome;
+    } finally {
+        // Only our own ownership is released; an expired one may have been taken over.
+        try {
+            if (await redis.get(k.merging) === token) await redis.del(k.merging);
+        } catch (error) {
+            (target.log ?? logger).warn({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, error: (error as Error).message },
+                'Failed to release auto-merge ownership; it expires on its own');
+        }
+    }
 }
 
 /**

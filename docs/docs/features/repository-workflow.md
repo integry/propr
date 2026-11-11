@@ -118,6 +118,10 @@ GitHub only reports a PR as cleanly mergeable for its current head, and a PR tha
 2. A behind head is not merged. ProPR updates the branch through GitHub's update-branch API, passing the head SHA it evaluated so a concurrent push is never overwritten.
 3. The updated head runs CI. The check-run webhooks and the auto-merge sweep evaluate it again, and it merges only once its own CI has passed (and the base has not moved again).
 
+ProPR's comparison and the merge that follows run one at a time per repository, so two PRs that are each current against the same base cannot both merge: the second one is compared again against the base the first merge produced, and is updated instead of merged.
+
+GitHub's own auto-merge would merge a behind head without this comparison, so ProPR does not arm it under `require_up_to_date`. The `auto-merge` label keeps the merge intent, and ProPR merges the PR itself from check events and the auto-merge sweep. A GitHub auto-merge request ProPR armed earlier (for example before the option was enabled) is withdrawn with a comment the next time ProPR evaluates the PR; a request a person or another App armed is left alone.
+
 Only one PR per repository is brought up to date at a time: the oldest eligible PR (lowest number) holds the repository's turn until its updated head merges, its CI fails, it is closed, or an hour passes without progress. Each PR gets at most `max_branch_updates_per_hour` updates per hour; a PR that reaches the limit gives up its turn so a busy base branch cannot cause an update loop, and is updated again once the hour has passed.
 
 If GitHub cannot update the branch because of merge conflicts, ProPR queues [automatic merge-conflict resolution](./pr-followup.md#automatic-merge-conflict-resolution) when it is enabled for the repository; otherwise it comments on the PR explaining why auto-merge is waiting. Without the option, a behind PR is skipped exactly as before.
@@ -129,7 +133,7 @@ Each decision is recorded with the same auto-merge timeline event, at most once 
 | `updated_branch` | The head was behind; ProPR requested a branch update. |
 | `waiting_for_ci_updated_head` | CI has not passed yet on the updated head (or failed on it, which ends the PR's turn). |
 | `waiting_branch_update_pending` | The requested update has not produced a new head yet. |
-| `waiting_branch_update_serialized` | Another PR in the repository holds the turn, or an older PR is eligible. |
+| `waiting_branch_update_serialized` | Another PR in the repository holds the turn, an older PR is eligible, or another PR's comparison and merge are in progress. |
 | `waiting_branch_update_rate_limited` | The PR reached `max_branch_updates_per_hour`. |
 | `waiting_branch_update_conflict` | The update failed because of conflicts; the event says whether automatic resolution was queued. |
 | `waiting_branch_update_failed` | GitHub refused the update for another reason. |
