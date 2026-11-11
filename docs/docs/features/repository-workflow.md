@@ -63,7 +63,84 @@ Each invocation (including provider retries with a new container) has its own li
 
 `hooks.timeout_ms` applies separately to each hook and validation command. It defaults to 600,000 ms and cannot exceed that ceiling. Timeout sends TERM to the command process group, followed by KILL after a five-second grace period. The instance's overall agent execution timeout still applies to the entire container, including hooks.
 
-When `after_create` is omitted, `.propr/setup.sh` remains implicit if present and keeps its existing nonfatal failure behavior (`PROPR_REPO_SETUP_STRICT=1` makes failures fatal). An explicit `after_create` replaces it. Repositories **without a workflow file keep the existing setup execution unchanged**, including its timeout behavior.
+When `after_create` is omitted, `.propr/setup.sh` remains implicit if present and keeps its existing nonfatal failure behavior (`PROPR_REPO_SETUP_STRICT=1` makes failures fatal). A multi-line hook is one `bash -c` script whose exit status is that of its last command, so start it with `set -euo pipefail` to make every step count. An explicit `after_create` replaces it. Repositories **without a workflow file keep the existing setup execution unchanged**, including its timeout behavior.
+
+### Fresh worktrees
+
+Every attempt starts from a fresh worktree of the base commit in a new container. Anything that is not committed is absent: `.env` files, generated clients, build outputs and installed dependencies. Anything an earlier container created inside itself is gone too. Several runs of one repository can be active at once (see `limits.max_parallel_tasks`), so anything outside the container that is addressed by a fixed name, such as a test database on a shared server, a Docker volume or a host path, collides across runs. Use `after_create` to rebuild the worktree's ignored state and to name shared resources per run, and `before_remove` to remove them.
+
+Hooks receive this environment:
+
+| Variable | Value | Unique per run? |
+| --- | --- | --- |
+| `PROPR_WORKSPACE` | The repository checkout inside the container (`/home/node/workspace`); hooks start in it | No, same path in every container |
+| `PROPR_CACHE_DIR` | A writable directory outside the repository, created for the container | Private to the container; discarded with it |
+| `PROPR_AGENT_TYPE` | `claude`, `codex`, `antigravity`, `opencode` or `vibe` | No, parallel runs often share it |
+
+None of these values identifies a run, so generate an ID in `after_create` and keep it in `PROPR_CACHE_DIR`, where `before_remove` in the same container can read it.
+
+**What the cache directory is for.** `PROPR_CACHE_DIR` is for package-manager caches (`npm_config_cache`, `PIP_CACHE_DIR`), tool downloads and state handed from one hook to the next. It lives outside the worktree, so nothing in it is committed, but it does not survive the container: do not use it to share data between runs. Anything a hook writes inside the worktree must be git-ignored. ProPR commits the workspace after the run, so un-ignored env files or generated output would end up in the pull request.
+
+**Create env files from an example.** Commit a `.env.example` with safe local defaults, git-ignore `.env`, and copy it in `.propr/setup.sh` (or in an explicit `after_create`):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$PROPR_WORKSPACE"
+
+# .env is git-ignored; never commit real secrets to the example.
+if [ ! -f .env ]; then
+  cp .env.example .env
+fi
+```
+
+**Run code generation before the agent starts.** Generate clients, types and other ignored artifacts in `after_create`, so the agent sees a project that builds. The hook fails the attempt if generation fails, instead of leaving the agent to work against missing files:
+
+```yaml
+hooks:
+  after_create: |
+    set -euo pipefail
+    [ -f .env ] || cp .env.example .env
+    export npm_config_cache="$PROPR_CACHE_DIR/npm"
+    npm ci
+    npm run codegen --if-present
+```
+
+A multi-line hook is one `bash -c` script whose exit status is that of its last command, so start it with `set -euo pipefail` to make every step count. An explicit `after_create` replaces the implicit `.propr/setup.sh`; call it from the hook (`bash .propr/setup.sh`) if you still need both. Use `before_run` for steps that must run last, such as a build that depends on the generated code. Do not regenerate in `validation`: validation commands must not modify files.
+
+**Name databases, ports and volumes per run.** Derive every shared name from one run ID and write it to the git-ignored `.env`, so the application, the tests and the agent all pick it up. Ports bound inside the container are private to it (containers have their own network namespace), but a free port avoids clashing with services the agent itself starts:
+
+```bash
+# In .propr/setup.sh, after creating .env
+run_id="${PROPR_AGENT_TYPE}_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+echo "$run_id" >"$PROPR_CACHE_DIR/run-id"
+
+db="app_test_$run_id"
+createdb "$db"
+port="$(node -e 'const s=require("net").createServer().listen(0,()=>{console.log(s.address().port);s.close()})')"
+
+{
+  echo "DATABASE_URL=postgres://app@db.internal.example.com/$db"
+  echo "PORT=$port"
+  echo "COMPOSE_PROJECT_NAME=propr_$run_id"   # prefixes Compose volumes and networks
+  echo "SQLITE_PATH=$PROPR_CACHE_DIR/app.sqlite"
+} >>.env
+```
+
+Keep SQLite files and other local state in `PROPR_CACHE_DIR` or a git-ignored path in the worktree, never at a fixed path on a shared mount. In restricted [network mode](#network), add any database or service host the hooks reach to `network.allow`.
+
+**Clean up in `before_remove`.** It runs before the container exits, including after setup or `before_run` failures, so it must tolerate a run that never got as far as creating its resources:
+
+```yaml
+hooks:
+  after_create: bash .propr/setup.sh
+  before_remove: |
+    run_id="$(cat "$PROPR_CACHE_DIR/run-id" 2>/dev/null)" || exit 0
+    dropdb --if-exists "app_test_$run_id"
+    docker compose -p "propr_$run_id" down --volumes || true
+```
+
+Cleanup is best effort: a failing `before_remove` is logged and ignored, and forced container removal after a cancellation can interrupt it. Use a recognisable prefix (`app_test_`, `propr_`) so a periodic job can remove resources whose runs never cleaned up.
 
 ## Instructions and validation
 

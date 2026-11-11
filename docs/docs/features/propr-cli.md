@@ -194,7 +194,7 @@ Configuration is stored in `~/.propr/config.json`.
 
 ## Repository Setup Files
 
-Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution; use it for repository-local setup such as installing npm helper packages from `.propr/package.json`.
+Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution; use it for repository-local setup such as installing npm helper packages from `.propr/package.json`. It also contains commented examples for recreating a git-ignored `.env` from `.env.example` and running code generation, and the scaffolded `.propr/workflow.yml` shows the same steps as an inline `after_create` hook. Every run starts from a fresh worktree; see [Fresh worktrees](./repository-workflow.md#fresh-worktrees) for these and the per-run resource recipes.
 
 The scaffold also includes a commented `.propr/pr-template.md` for shaping pull request titles and descriptions. Run `propr repo validate` in the checkout to report unknown sections and placeholders; see [Pull request templates](./pr-templates.md).
 
