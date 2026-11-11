@@ -198,8 +198,16 @@ async function resolveDecisionTaskId(database: Knex, repository: string, numbers
 
 interface AutoMergeDecisionEventInput {
     repository: string; prNumber: number; issueNumber?: number; taskId?: string;
-    opportunity: AutoMergeOpportunity; decision: AutoMergeDecision; headSha?: string; baseRef?: string; action?: 'disarmed';
+    opportunity: AutoMergeOpportunity; decision: AutoMergeDecision; headSha?: string; baseRef?: string;
+    /** `branch_updated`/`waiting` are `require_up_to_date` decisions taken instead of a merge. */
+    action?: 'disarmed' | 'branch_updated' | 'waiting';
+    /** Base commit the head was compared with (`require_up_to_date`). */
+    baseSha?: string;
 }
+
+const DECISION_VERBS: Record<NonNullable<AutoMergeDecisionEventInput['action']>, string> = {
+    disarmed: 'disarmed', branch_updated: 'updated the branch', waiting: 'waiting',
+};
 
 function decisionEventMetadata(input: AutoMergeDecisionEventInput): Record<string, unknown> {
     const { decision } = input;
@@ -211,6 +219,7 @@ function decisionEventMetadata(input: AutoMergeDecisionEventInput): Record<strin
         ...(decision.detail ? { detail: decision.detail } : {}),
         ...(input.headSha ? { headSha: input.headSha } : {}),
         ...(input.baseRef ? { baseRef: input.baseRef, policyPath: WORKFLOW_PATH } : {}),
+        ...(input.baseSha ? { baseSha: input.baseSha } : {}),
     };
 }
 
@@ -227,7 +236,7 @@ export async function recordAutoMergeDecisionEvent(input: AutoMergeDecisionEvent
             log.info({ repository: input.repository, prNumber: input.prNumber, reason: decision.reason }, 'No task found for auto-merge decision event');
             return false;
         }
-        const verb = input.action === 'disarmed' ? 'disarmed' : decision.arm ? 'armed' : 'not armed';
+        const verb = input.action ? DECISION_VERBS[input.action] : decision.arm ? 'armed' : 'not armed';
         // Repeat the latest lifecycle state so the event never changes the task's derived state.
         // The read and the append share one write transaction (SQLite opens it with BEGIN
         // IMMEDIATE), so a lifecycle transition cannot land between them; "latest" uses the

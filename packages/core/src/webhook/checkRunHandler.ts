@@ -27,7 +27,8 @@ import { isActedCheckRunAction, isActedCheckSuiteAction, isPassingCheckSuiteConc
 import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
 import { isNonBlockingCheck } from './nonBlockingChecks.js';
 import { evaluatePullRequestAutoMerge, resolveDirectMergeMethod } from '../services/autoMergeGate.js';
-import type { AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
+import type { AutoMergeDecision, AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
+import { ensureUpToDateBeforeMerge, noteCiWaitAfterBranchUpdate } from './autoMergeUpToDate.js';
 
 export interface StatusEventPayload {
     sha: string;
@@ -176,6 +177,38 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
 }
 
 /**
+ * GitHub's PR mergeability result accounts for required checks that may not
+ * have registered a check run yet, branch protection, and merge conflicts.
+ * Requiring the authoritative clean state prevents an unrelated fast check
+ * from opening a premature merge window for an App that can bypass rules.
+ * `behind` (branch protection requires an up-to-date branch) passes this gate
+ * only so `require_up_to_date` can update the branch; it never merges.
+ */
+function passesMergeabilityGate(ctx: PRContext, prInfo: PRAutoMergeInfo): boolean {
+    const { mergeable, mergeableState } = prInfo;
+    if (mergeable === true && (mergeableState === 'clean' || mergeableState === 'behind')) return true;
+    ctx.log.debug({ owner: ctx.owner, repoName: ctx.repoName, prNumber: ctx.prNumber, mergeable, mergeableState },
+        'GitHub does not report the PR as cleanly mergeable yet, skipping merge');
+    return false;
+}
+
+/**
+ * With `require_up_to_date`, the head must contain the latest base commit;
+ * otherwise ProPR updates the branch and the updated head merges only after its
+ * own CI passes. A head GitHub still reports as behind never merges.
+ */
+async function headMayMerge(ctx: PRMergeContext, upToDate: AutoMergeDecision['upToDate'], baseRef: string): Promise<boolean> {
+    const { owner, repoName, prNumber, headSha, prInfo, log } = ctx;
+    if (upToDate) {
+        const outcome = await ensureUpToDateBeforeMerge({ owner, repo: repoName, prNumber, headSha, baseRef, log }, upToDate);
+        if (outcome !== 'up_to_date') return false;
+    }
+    if (prInfo.mergeableState === 'clean') return true;
+    log.debug({ owner, repoName, prNumber, mergeableState: prInfo.mergeableState }, 'GitHub reports the PR as behind its base, skipping merge');
+    return false;
+}
+
+/**
  * Processes a single PR for potential auto-merge.
  */
 async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ignoreWorkIds?: readonly string[] } = {}): Promise<void> {
@@ -207,23 +240,12 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
     const ci = await getCiMergeReadiness(owner, repoName, headSha, { prNumber });
     if (!ci.ready) {
         log.debug({ owner, repoName, prNumber, reason: ci.reason }, 'CI does not allow merging yet, skipping merge');
+        // A head ProPR produced by updating the branch records that it waits for CI.
+        if (ci.reason !== 'unavailable') await noteCiWaitAfterBranchUpdate({ owner, repo: repoName, prNumber, headSha, log });
         return;
     }
 
-    // GitHub's PR mergeability result accounts for required checks that may not
-    // have registered a check run yet, branch protection, and merge conflicts.
-    // Requiring the authoritative clean state prevents an unrelated fast check
-    // from opening a premature merge window for an App that can bypass rules.
-    if (prInfo.mergeable !== true || prInfo.mergeableState !== 'clean') {
-        log.debug({
-            owner,
-            repoName,
-            prNumber,
-            mergeable: prInfo.mergeable,
-            mergeableState: prInfo.mergeableState,
-        }, 'GitHub does not report the PR as cleanly mergeable yet, skipping merge');
-        return;
-    }
+    if (!passesMergeabilityGate(ctx, prInfo)) return;
 
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
@@ -253,6 +275,8 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
             'PR head changed while evaluating the auto-merge policy, skipping merge');
         return;
     }
+
+    if (!await headMayMerge({ ...ctx, headSha, prInfo }, decision.upToDate, pullRequest.baseRef || prInfo.baseBranch)) return;
 
     // A policy without a method merges like the arming gate would arm: squash,
     // unless the repository disallows it.

@@ -117,6 +117,8 @@ hooks:
 #   method: squash
 #   protected_paths:
 #     - ".github/workflows/**"
+#   require_up_to_date: false
+#   max_branch_updates_per_hour: 3
 `;
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [

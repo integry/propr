@@ -125,6 +125,9 @@ test('published editor schema agrees with runtime on supported fields and reject
         ...['example', 'localhost', '-bad.example.com', 'bad-.example.com', 'example.com:70000', 'example.com:0', 'a*.example.com', 'bad_host.example.com',
             'example..com', `${'a'.repeat(64)}.example.com`, '[::1]:70000', ':::'].map(entry => ({ network: { allow: [entry] } })),
         ...['10.0.0.5', '[::1]:8080', 'fe80::1', 'Example.COM.', 'example.com:65535', '*.example.com:8443', ' registry.example.com '].map(entry => ({ network: { allow: [entry] } })),
+        { auto_merge: { require_up_to_date: true, max_branch_updates_per_hour: 3 } }, { auto_merge: { require_up_to_date: false } },
+        { auto_merge: { require_up_to_date: 'yes' } }, { auto_merge: { max_branch_updates_per_hour: 0 } }, { auto_merge: { max_branch_updates_per_hour: 31 } },
+        { auto_merge: { max_branch_updates_per_hour: 2.5 } },
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.

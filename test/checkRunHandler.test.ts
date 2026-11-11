@@ -8,7 +8,10 @@ const mockOctokit = {
 };
 
 const mockRedisGet = mock.fn(async () => null);
-const mockRedisDel = mock.fn(async () => 0);
+const mockRedisDel = mock.fn(async (_key?: string) => 0);
+// Backing store for the `require_up_to_date` tests, which route mockRedisGet to it.
+const redisValues = new Map<string, string>();
+const redisSortedSets = new Map<string, Map<string, number>>();
 const redisConstructorCalls: unknown[][] = [];
 
 // Mock simple-git (transitive dependency)
@@ -29,6 +32,19 @@ await mock.module('ioredis', {
                 get: mockRedisGet,
                 mget: mock.fn(async (...keys: string[]) => Promise.all(keys.map(key => mockRedisGet(key)))),
                 del: mockRedisDel,
+                set: mock.fn(async (key: string, value: string, _ex?: string, _ttl?: number, nx?: string) => {
+                    if (nx === 'NX' && redisValues.has(key)) return null;
+                    redisValues.set(key, value);
+                    return 'OK';
+                }),
+                expire: mock.fn(async () => 1),
+                zadd: mock.fn(async (key: string, score: number, member: string) => {
+                    (redisSortedSets.get(key) ?? redisSortedSets.set(key, new Map()).get(key)!).set(member, score);
+                    return 1;
+                }),
+                zrange: mock.fn(async (key: string) => [...(redisSortedSets.get(key) ?? new Map<string, number>()).entries()]
+                    .sort((a, b) => a[1] - b[1]).map(([member]) => member)),
+                zrem: mock.fn(async (key: string, member: string) => (redisSortedSets.get(key)?.delete(member) ? 1 : 0)),
                 quit: mock.fn(async () => {}),
                 disconnect: mock.fn(),
             };
@@ -135,8 +151,14 @@ const mockEvaluatePullRequestAutoMerge = mock.fn(evaluateCurrentHead);
 // Like the real resolver: the policy's method, else the repository default (squash here).
 const resolveWithPolicyMethod = async (input: { method?: 'merge' | 'squash' | 'rebase' }) => input.method ?? 'squash';
 const mockResolveDirectMergeMethod = mock.fn(resolveWithPolicyMethod);
+// `require_up_to_date` decisions recorded through the gate's timeline event.
+const mockRecordAutoMergeDecisionEvent = mock.fn(async (_input: { prNumber: number; action?: string; decision: { reason: string } }) => true);
 await mock.module('../packages/core/src/services/autoMergeGate.js', {
-    namedExports: { evaluatePullRequestAutoMerge: mockEvaluatePullRequestAutoMerge, resolveDirectMergeMethod: mockResolveDirectMergeMethod }
+    namedExports: {
+        evaluatePullRequestAutoMerge: mockEvaluatePullRequestAutoMerge,
+        resolveDirectMergeMethod: mockResolveDirectMergeMethod,
+        recordAutoMergeDecisionEvent: mockRecordAutoMergeDecisionEvent,
+    }
 });
 
 // Import the modules under test
@@ -183,6 +205,10 @@ function resetMocks(): void {
     mockRedisGet.mock.resetCalls();
     mockRedisGet.mock.mockImplementation(async () => null);
     mockRedisDel.mock.resetCalls();
+    mockRedisDel.mock.mockImplementation(async () => 0);
+    redisValues.clear();
+    redisSortedSets.clear();
+    mockRecordAutoMergeDecisionEvent.mock.resetCalls();
     redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
@@ -2754,5 +2780,107 @@ describe('commit to PR lookup cache', () => {
             set: async () => { throw new Error('redis down'); },
         };
         assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'no-cache-sha', broken as never), [{ number: 77 }]);
+    });
+});
+
+// ============= auto_merge.require_up_to_date =============
+
+describe('auto_merge.require_up_to_date', () => {
+    const upToDateDecision = { arm: true, reason: 'armed', upToDate: { maxBranchUpdatesPerHour: 3 } };
+    /** An auto-merge PR whose checks passed; `behindBy` is how far its head is behind `main`. */
+    function mockBehindPR(options: { behindBy: number; mergeableState?: string; checks?: string; prNumber?: number }) {
+        const { behindBy, mergeableState = 'behind', checks = 'success' } = options;
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch') return { data: { message: 'Updating pull request branch.' } };
+            if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge') return { data: { merged: true, sha: 'merge123' } };
+            if (endpoint === 'GET /repos/{owner}/{repo}/compare/{basehead}') return { data: { behind_by: behindBy, base_commit: { sha: 'base-tip' } } };
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: {
+                    state: 'open', labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: mergeableState, body: '',
+                    base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                } };
+            }
+            if (endpoint.includes('check-runs')) {
+                return { data: { check_runs: [{ name: 'CI', status: checks === 'pending' ? 'in_progress' : 'completed', conclusion: checks === 'pending' ? null : checks }] } };
+            }
+            return { data: {} };
+        });
+    }
+    const calls = (route: string) => mockOctokit.request.mock.calls.filter((call: { arguments: unknown[] }) => call.arguments[0] === route);
+    const updateCalls = () => calls('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch');
+    const mergeCalls = () => calls('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge');
+    const recordedReasons = () => mockRecordAutoMergeDecisionEvent.mock.calls.map(call => [call.arguments[0].decision.reason, call.arguments[0].action]);
+    function useUpToDatePolicy(): void {
+        mockRedisGet.mock.mockImplementation((async (key: string) => redisValues.get(key) ?? null) as never);
+        mockRedisDel.mock.mockImplementation(async (key?: string) => (redisValues.delete(key ?? '') ? 1 : 0));
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async input => ({
+            decision: upToDateDecision as PolicyDecision,
+            pullRequest: { headSha: await getCurrentPRHead(input.owner, input.repo, input.prNumber), baseRef: 'main' } as { headSha: string | null } | null,
+        }));
+    }
+
+    test('option off: a behind PR is skipped as before, without a branch update', async () => {
+        resetMocks();
+        mockBehindPR({ behindBy: 2 });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(updateCalls().length, 0);
+        assert.equal(mergeCalls().length, 0);
+        assert.equal(calls('GET /repos/{owner}/{repo}/compare/{basehead}').length, 0, 'the base is not compared without the option');
+        assert.equal(mockRecordAutoMergeDecisionEvent.mock.callCount(), 0);
+    });
+
+    test('option off: a clean PR still merges without comparing the base', async () => {
+        resetMocks();
+        mockBehindPR({ behindBy: 2, mergeableState: 'clean' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 1);
+        assert.equal(calls('GET /repos/{owner}/{repo}/compare/{basehead}').length, 0);
+    });
+
+    test('a behind PR that passes every other gate is updated with its expected head instead of merged', async () => {
+        for (const mergeableState of ['behind', 'clean']) {
+            resetMocks();
+            useUpToDatePolicy();
+            mockBehindPR({ behindBy: 2, mergeableState });
+            await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+            assert.equal(mergeCalls().length, 0, `${mergeableState}: the behind head is never merged`);
+            assert.equal(updateCalls().length, 1, mergeableState);
+            assert.equal((updateCalls()[0].arguments[1] as { expected_head_sha?: string }).expected_head_sha, 'abc123sha');
+            assert.deepEqual(recordedReasons(), [['updated_branch', 'branch_updated']]);
+
+            // A second green check for the same head does not update again or merge.
+            await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+            assert.equal(updateCalls().length, 1);
+            assert.equal(mergeCalls().length, 0);
+        }
+    });
+
+    test('an up-to-date head merges', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        mockBehindPR({ behindBy: 0, mergeableState: 'clean' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(updateCalls().length, 0);
+        assert.equal(mergeCalls().length, 1);
+        assert.equal((mergeCalls()[0].arguments[1] as { sha?: string }).sha, 'abc123sha');
+    });
+
+    test('a head GitHub still reports as behind does not merge even when the comparison says it is current', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        mockBehindPR({ behindBy: 0, mergeableState: 'behind' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(updateCalls().length, 0);
+        assert.equal(mergeCalls().length, 0);
+    });
+
+    test('the updated head records that it waits for CI instead of merging', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        redisValues.set('auto-merge:up-to-date:marker:test-owner/test-repo#42', JSON.stringify({ fromHead: 'old-head', baseSha: 'base-tip', requestedAt: Date.now() }));
+        mockBehindPR({ behindBy: 0, mergeableState: 'clean', checks: 'pending' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 0);
+        assert.deepEqual(recordedReasons(), [['waiting_for_ci_updated_head', 'waiting']]);
     });
 });

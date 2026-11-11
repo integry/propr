@@ -38,7 +38,8 @@ export type ConflictSkipReason =
     | 'already_queued'
     | 'attempt_limit';
 
-export type ConflictTrigger = Exclude<MergeConflictJobData['triggerSource'], 'auto_merge'>;
+/** `auto_merge`: a branch update requested by `auto_merge.require_up_to_date` hit conflicts. */
+export type ConflictTrigger = MergeConflictJobData['triggerSource'];
 
 export interface ConflictDetectionResult {
     outcome: 'queued' | 'skipped';
