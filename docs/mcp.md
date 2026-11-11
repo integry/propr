@@ -116,7 +116,9 @@ Automations are saved, reusable definitions that run on demand or on a schedule 
 produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
 `repository` filter) and `get_automation_definition` show your automations, including the
 schedule, next run, capabilities and autonomy mode;
-`get_automation_definition_contract` returns the shared field contract.
+`get_automation_definition_contract` returns the shared field contract, and
+`list_automation_templates` returns the shipped template catalog (for example daily
+issue triage). A template creates nothing; it is a starting point for a new automation.
 `list_automation_runs` lists a definition's runs newest first without report bodies,
 and `get_automation_run` returns one run with its report. A report over 200 KB is
 truncated with `reportTruncated: true`; the full report is at the run's `url`.

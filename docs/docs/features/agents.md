@@ -28,7 +28,7 @@ Automations are personal: every definition and run belongs to the user who creat
 
 ## Create an automation
 
-Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/automation-definitions`) accepts the same fields; `GET /api/automation-definitions/contract` and the MCP tool `get_automation_definition_contract` return the authoritative limits.
+Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form, or [start from a template](#templates), and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/automation-definitions`) accepts the same fields; `GET /api/automation-definitions/contract` and the MCP tool `get_automation_definition_contract` return the authoritative limits.
 
 ### Scope
 
@@ -98,6 +98,25 @@ The autonomy mode decides what happens after the report is stored:
 | `auto` | The acting step starts straight away, subject to the [cost gate](#cost-control). |
 
 The mode is captured when a run is queued. Editing the definition later does not change a run that already exists.
+
+## Templates
+
+ProPR ships a small catalog of automation templates for common recurring jobs. A template fills in the new-automation form. It creates nothing: the automation exists only once you choose **Create automation**.
+
+- On the **Automations** page, open **New Automation** and choose a card under **Start from a template**. When you have no automations yet, the empty list shows the same templates; choosing one opens the form already filled in.
+- The template sets the name, description, prompt, capabilities, a suggested schedule and the number of previous reports. Repositories you already picked and the coding agent stay as they are.
+- Every template starts in `dry_run` (**Dry run**), so its runs only write a report. To have an agent act on the report, raise the [autonomy](#autonomy) mode yourself before saving.
+- A **Review before saving** note lists what the template cannot choose for you, at least the repositories, the schedule and the autonomy mode.
+
+| Template | What the report contains | Suggested schedule |
+| --- | --- | --- |
+| **Daily issue triage** (`daily-issue-triage`) | Issues that need a human today, likely duplicates (including repeats of recently closed issues), proposed severity labels, proposed security labels and stale issues with a suggested next step. It only reads issues and never comments on, labels or closes them. | `0 7 * * 1-5` (weekdays at 07:00 UTC), with the previous report included so each run focuses on what changed |
+
+The triage template needs `repository_read`, which gives the run a read-only GitHub token for the repositories in scope. With `preview` or `auto`, the acting step can turn the report into TODOs, tasks or plans through ProPR's MCP tools (see [Acting on a report](#acting-on-a-report)).
+
+The catalog is also available outside the UI: `GET /api/automation-definitions/templates`, the MCP read tool `list_automation_templates` and `propr automation templates` (add `--json` for the versioned document). Each entry has an `id`, `name`, `description`, `category`, `prompt`, `capabilities`, `schedule`, `autonomy`, `previousReportCount` and `reviewBeforeSaving`, and the document carries a catalog `version`. To start an automation from a template through the API, send its fields to `POST /api/automation-definitions` together with your own `repositories`.
+
+Templates live in `packages/shared/automation-templates/<id>/` (`template.json` plus `prompt.md`). `npm run automation-templates:generate` builds `packages/shared/src/automationTemplates.catalog.json`, and CI checks that the committed catalog is current and that every template satisfies the automation definition contract and defaults to `dry_run`.
 
 ## Triggers
 
@@ -308,7 +327,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 ## Naming and compatibility
 
 Use `list_automation_definitions`, `get_automation_definition`,
-`get_automation_definition_contract`, `list_automation_runs`, `get_automation_run`,
+`get_automation_definition_contract`, `list_automation_templates`, `list_automation_runs`, `get_automation_run`,
 `trigger_automation_run`, `approve_automation_run` and `reject_automation_run`.
 Their former `*_agent_*` names remain callable as deprecated aliases with the
 same scopes, repository authorization, recursion guard and input schemas.

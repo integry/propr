@@ -36,6 +36,7 @@ import {
 import {
   AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AUTOMATION_DEFINITION_CONTRACT,
+  AUTOMATION_TEMPLATE_CATALOG,
   DEFAULT_AUTOMATION_PREVIOUS_REPORTS,
   MAX_AUTOMATION_ATTACHMENTS,
   validateAutomationDefinitionInput,
@@ -339,6 +340,12 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     res.json(AUTOMATION_DEFINITION_CONTRACT);
   });
 
+  /** The shipped template catalog; a template only prefills the new-automation form and creates nothing. */
+  const templates = handler('Failed to load the automation template catalog', async (req, res) => {
+    requireOwner(req);
+    res.json(AUTOMATION_TEMPLATE_CATALOG);
+  });
+
   const create = handler('Failed to create automation definition', async (req, res) => {
     const owner = requireOwner(req);
     const body = requestBody(req);
@@ -616,7 +623,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
   });
 
   return {
-    list, contract, create, get, update, remove,
+    list, contract, templates, create, get, update, remove,
     uploadAttachments, deleteAttachment,
     triggerRun, capacity, listRuns, getRun, cancelRun, approveRun, rejectRun,
   };
