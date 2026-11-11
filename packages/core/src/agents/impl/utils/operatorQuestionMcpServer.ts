@@ -27,6 +27,14 @@ export const OPERATOR_QUESTION_MIN_OPTIONS = 2;
  * also closes the blocker) normally decides; the server's covers a lost worker.
  */
 export const OPERATOR_QUESTION_SERVER_GRACE_MS = 30_000;
+/**
+ * Questions stop waiting this long before the attempt's own deadline (at most a
+ * tenth of the attempt), so Claude still receives the no-answer result and can
+ * continue or stop deliberately before the attempt is killed.
+ */
+export const OPERATOR_QUESTION_ATTEMPT_RESERVE_MS = 5 * 60 * 1000;
+/** A new question is declined when less than this is left before questions close. */
+export const OPERATOR_QUESTION_MIN_REMAINING_MS = 60_000;
 /** Claude's MCP tool-call limit must outlast both deadlines. */
 const CLAUDE_TOOL_TIMEOUT_MARGIN_MS = 5 * 60 * 1000;
 /** Node timers cannot wait longer than this. */
@@ -72,6 +80,10 @@ export const CLAUDE_OPERATOR_QUESTION_POLICY = [
     'Never ask for credentials or other secrets.',
 ].join(' ');
 
+/** No-answer reasons when the attempt's remaining time, not the setting, bounds the wait. */
+export const OPERATOR_QUESTION_TOO_LATE = 'Too little time is left in this goal attempt to wait for the operator';
+export const OPERATOR_QUESTION_ATTEMPT_ENDING = 'No answer from the operator before this goal attempt runs out of time';
+
 export const OPERATOR_QUESTION_MCP_SERVER_SOURCE = String.raw`
 'use strict';
 
@@ -86,11 +98,15 @@ const maxWaitMs = Number(process.env.PROPR_OPERATOR_MAX_WAIT_MS);
 const graceMs = Number(process.env.PROPR_OPERATOR_GRACE_MS) || 0;
 const description = process.env.PROPR_OPERATOR_TOOL_DESCRIPTION || 'Ask the ProPR operator a question.';
 const waitLabel = process.env.PROPR_OPERATOR_WAIT_LABEL || 'the maximum wait';
+const closeAt = Number(process.env.PROPR_OPERATOR_CLOSE_AT) || Infinity;
+const minRemainingMs = ${OPERATOR_QUESTION_MIN_REMAINING_MS};
 const questionLimit = ${GOAL_BLOCKER_QUESTION_LIMIT};
 const optionLimit = ${GOAL_BLOCKER_OPTION_LIMIT};
 const minOptions = ${OPERATOR_QUESTION_MIN_OPTIONS};
 const maxOptions = ${GOAL_BLOCKER_MAX_OPTIONS};
 const pollMs = 500;
+const tooLate = '${OPERATOR_QUESTION_TOO_LATE}';
+const attemptEnding = '${OPERATOR_QUESTION_ATTEMPT_ENDING}';
 const waits = new Map();
 
 const tools = [{
@@ -149,15 +165,17 @@ function text(value, isError) {
     return { content: [{ type: 'text', text: value }], ...(isError ? { isError: true } : {}) };
 }
 
-function noAnswer() {
-    return text('No answer from the operator within ' + waitLabel + '. Continue with a clearly stated assumption, or stop if the decision cannot be made safely.');
+function noAnswer(reason) {
+    return text((reason || 'No answer from the operator within ' + waitLabel) + '. Continue with a clearly stated assumption, or stop if the decision cannot be made safely.');
 }
 
 async function ask(requestId, args) {
     const { question, options } = validate(args);
+    if (closeAt - Date.now() < minRemainingMs) return noAnswer(tooLate);
     const id = crypto.randomUUID();
     await writeAtomic(path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '.json'), { id, question, options });
-    const deadline = Date.now() + maxWaitMs + graceMs;
+    // Never wait past the attempt's question close time, however long the setting allows.
+    const deadline = Math.min(Date.now() + maxWaitMs, closeAt) + graceMs;
     const wait = { cancelled: false };
     waits.set(requestId, wait);
     try {
@@ -166,11 +184,11 @@ async function ask(requestId, args) {
             if (response && response.status === 'answered' && typeof response.answer === 'string') {
                 return text('The operator answered:\n' + response.answer);
             }
-            if (response && response.status === 'no_answer') return noAnswer();
+            if (response && response.status === 'no_answer') return noAnswer(typeof response.message === 'string' ? response.message : '');
             if (response && response.status === 'closed') {
                 return text('The question was closed without an answer: ' + (response.message || 'the goal stopped waiting') + '.', true);
             }
-            if (Date.now() >= deadline) return noAnswer();
+            if (Date.now() >= deadline) return noAnswer(Date.now() >= closeAt ? attemptEnding : '');
             await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
         }
         return text('The question was cancelled.', true);
@@ -240,6 +258,27 @@ export interface OperatorQuestionLaunch {
     exchangeDir: string;
     /** How long one question may wait for the operator. */
     maxWaitMs: number;
+    /**
+     * Epoch milliseconds after which no question waits: the attempt's deadline
+     * less the reserve. Absent until the attempt's deadline is known.
+     */
+    closeAt?: number;
+}
+
+/**
+ * Bind a launch to the attempt that runs it. `attemptDeadlineAt` must not be
+ * later than the moment the attempt is killed; questions close before it with
+ * time left for Claude to act on the no-answer result.
+ */
+export function boundOperatorQuestionLaunch(
+    launch: OperatorQuestionLaunch,
+    attemptDeadlineAt: number,
+    attemptTimeoutMs: number,
+    now: number = Date.now(),
+): OperatorQuestionLaunch {
+    const reserveMs = Math.min(OPERATOR_QUESTION_ATTEMPT_RESERVE_MS, Math.floor(attemptTimeoutMs / 10));
+    const closeAt = Math.min(launch.closeAt ?? Infinity, attemptDeadlineAt - reserveMs);
+    return { ...launch, closeAt, maxWaitMs: Math.max(1_000, Math.min(launch.maxWaitMs, closeAt - now)) };
 }
 
 /** Claude's per-server MCP tool-call limit; it also raises the idle limit for this server. */
@@ -263,6 +302,7 @@ export function buildOperatorQuestionMcpConfig(launch: OperatorQuestionLaunch): 
                     PROPR_OPERATOR_GRACE_MS: String(OPERATOR_QUESTION_SERVER_GRACE_MS),
                     PROPR_OPERATOR_TOOL_DESCRIPTION: operatorQuestionToolDescription(launch.maxWaitMs),
                     PROPR_OPERATOR_WAIT_LABEL: formatQuestionWait(launch.maxWaitMs),
+                    ...(launch.closeAt !== undefined ? { PROPR_OPERATOR_CLOSE_AT: String(launch.closeAt) } : {}),
                 },
                 timeout: operatorQuestionToolTimeoutMs(launch.maxWaitMs),
             },

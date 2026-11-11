@@ -29,7 +29,11 @@ import { LiveAgentOutput } from './utils/liveAgentOutput.js';
 import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { processDockerResult } from './utils/dockerResultProcessor.js';
 import { ClaudeOperatorQuestions, type ClaudeOperatorQuestionChannel } from './claudeOperatorQuestions.js';
-import { CLAUDE_OPERATOR_QUESTION_POLICY, type OperatorQuestionLaunch } from './utils/operatorQuestionMcpServer.js';
+import {
+    boundOperatorQuestionLaunch,
+    CLAUDE_OPERATOR_QUESTION_POLICY,
+    type OperatorQuestionLaunch,
+} from './utils/operatorQuestionMcpServer.js';
 
 const execFileAsync = promisify(execFile);
 const CONTROL_POLL_MS = 400;
@@ -725,7 +729,8 @@ async function detectContainer(
 
 export interface ClaudeNativeGoalLaunch {
     diagnostics?: DiagnosticAgent;
-    buildDockerArgs(): Promise<string[]>;
+    /** Receives the question launch bound to this attempt's deadline, when the session has the tool. */
+    buildDockerArgs(operatorQuestions?: OperatorQuestionLaunch): Promise<string[]>;
     sessionId: string;
     transcriptPath: string;
     model: string;
@@ -755,7 +760,12 @@ export async function executeClaudeNativeGoal(
     const ownership = getExecutionOwnershipContext();
     // The identity is assigned up front, so persist it before any provider work.
     await options.onSessionId?.(launch.sessionId);
-    const dockerArgs = await launch.buildDockerArgs();
+    // The kill timer below starts later than `start`, so questions measured
+    // from `start + timeoutMs` always close before the attempt is killed.
+    const operatorQuestions = launch.operatorQuestions
+        ? boundOperatorQuestionLaunch(launch.operatorQuestions, start + launch.timeoutMs, launch.timeoutMs, start)
+        : undefined;
+    const dockerArgs = await launch.buildDockerArgs(operatorQuestions);
     if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     assertNativeLogAdmission(launch.diagnostics);
@@ -770,8 +780,8 @@ export async function executeClaudeNativeGoal(
     const stream = new ClaudeGoalStream(child, options.taskId, records => control.appendOutput(records));
     void detectContainer(getDockerRunContainerName(args), options.onContainerId);
     const deadline = setTimeout(() => child.kill('SIGTERM'), launch.timeoutMs);
-    const questions = launch.operatorQuestions
-        ? new ClaudeOperatorQuestions(launch.operatorQuestions, control, launch.sessionId)
+    const questions = operatorQuestions
+        ? new ClaudeOperatorQuestions(operatorQuestions, control, launch.sessionId)
         : undefined;
     let completion: ClaudeGoalCompletion;
     try {

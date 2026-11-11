@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question shows under "Needs you", and the next goal input you send is
   returned to Claude as the answer. Pause and cancel still work while it
   waits. After the new `goal_question_max_wait_ms` instance setting (default
-  24 hours, never longer than the agent timeout), Claude is told nobody
-  answered. The tool runs inside the container and needs no network access or
+  24 hours), or shortly before the attempt's agent timeout if that comes
+  first, Claude is told nobody answered. The tool runs inside the container and needs no network access or
   new credentials. Ordinary task runs never get it.
   `get_goal_capabilities` reports question support as
   `controls.operatorQuestions`.

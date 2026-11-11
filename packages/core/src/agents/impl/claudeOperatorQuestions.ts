@@ -12,9 +12,12 @@ import { redactSecrets } from '../../utils/github/secretRedaction.js';
 import type { GoalBlockerReport, GoalControlInput, GoalExecutionControl } from '../types.js';
 import {
     formatQuestionWait,
+    OPERATOR_QUESTION_ATTEMPT_ENDING,
     OPERATOR_QUESTION_EXCHANGE_ROOT,
+    OPERATOR_QUESTION_MIN_REMAINING_MS,
     OPERATOR_QUESTION_REQUESTS_DIR,
     OPERATOR_QUESTION_RESPONSES_DIR,
+    OPERATOR_QUESTION_TOO_LATE,
     OPERATOR_QUESTION_TOOL_NAME,
     type OperatorQuestionLaunch,
     type OperatorQuestionResponseFile,
@@ -41,7 +44,10 @@ interface OpenQuestion {
     requestKey: string;
     /** Highest input sequence recorded before the blocker was opened. */
     inputBoundary: number;
-    openedAt: number;
+    /** When the question stops waiting: its own maximum wait, or the attempt's close time if sooner. */
+    expiresAt: number;
+    /** The attempt's close time, not the setting, ends the wait. */
+    endsWithAttempt: boolean;
 }
 
 /** Create a private per-attempt exchange directory the container user can write requests into. */
@@ -171,22 +177,34 @@ export class ClaudeOperatorQuestions implements ClaudeOperatorQuestionChannel {
                 await this.decline(request.id, 'questions are accepted once the goal is running');
                 continue;
             }
+            const closeAt = this.launch.closeAt ?? Infinity;
+            if (closeAt - this.now() < OPERATOR_QUESTION_MIN_REMAINING_MS) {
+                // No blocker: the attempt ends before the operator could usefully answer.
+                await this.respond(request.id, { status: 'no_answer', message: OPERATOR_QUESTION_TOO_LATE }).catch(error => {
+                    logger.warn({ id: request.id, error: (error as Error).message }, 'Could not decline a late operator question');
+                });
+                continue;
+            }
             // The boundary is stored by the write that makes the blocker visible.
             const boundary = await this.control.reportBlocker?.(this.report(request.id, request.question, request.options, turnId));
             if (typeof boundary !== 'number') {
                 await this.decline(request.id, 'ProPR could not record the question for this goal attempt');
                 continue;
             }
+            const ownExpiry = this.now() + this.launch.maxWaitMs;
             this.open.set(request.id, {
-                id: request.id, requestKey: this.requestKey(request.id), inputBoundary: boundary, openedAt: this.now(),
+                id: request.id, requestKey: this.requestKey(request.id), inputBoundary: boundary,
+                expiresAt: Math.min(ownExpiry, closeAt), endsWithAttempt: closeAt < ownExpiry,
             });
         }
         for (const question of [...this.open.values()]) {
-            if (this.now() - question.openedAt < this.launch.maxWaitMs) continue;
+            if (this.now() < question.expiresAt) continue;
             this.open.delete(question.id);
             await this.respond(question.id, {
                 status: 'no_answer',
-                message: `No answer within ${formatQuestionWait(this.launch.maxWaitMs)}`,
+                message: question.endsWithAttempt
+                    ? OPERATOR_QUESTION_ATTEMPT_ENDING
+                    : `No answer from the operator within ${formatQuestionWait(this.launch.maxWaitMs)}`,
             });
             await this.control.resolveBlocker?.(question.requestKey, 'question_timed_out');
         }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -12,6 +12,7 @@ import {
   removeOperatorQuestionExchange,
 } from '../packages/core/src/agents/impl/claudeOperatorQuestions.ts';
 import {
+  boundOperatorQuestionLaunch,
   buildOperatorQuestionMcpConfig,
   OPERATOR_QUESTION_EXCHANGE_ROOT,
   OPERATOR_QUESTION_SERVER_NAME,
@@ -236,6 +237,59 @@ describe('ask_operator tool', () => {
     assert.equal(await questions.answer({ id: 'late', message: 'Yes', sequence: 9 }, 'turn-1'), false);
   });
 
+  test('a question opened partway through an attempt gets its no-answer result before the attempt is killed', async () => {
+    const hour = 3_600_000;
+    const start = 10_000_000;
+    // Default 24-hour setting, already capped by a one-hour agent timeout.
+    const created = await createOperatorQuestionExchange(boundGoalQuestionMaxWaitMs(86_400_000, hour), root);
+    const launch = boundOperatorQuestionLaunch(created, start + hour, hour, start);
+    const killAt = start + hour;
+    assert.equal(launch.closeAt, killAt - 5 * 60_000);
+    const { ask } = startServer(launch);
+    const control = recordingControl();
+    let now = start + 10 * 60_000;
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-mid', () => now);
+    const result = ask({ question: 'Which region?' });
+    const report = await reported(questions, control);
+    now = launch.closeAt! - 1;
+    await questions.sync('turn-1');
+    assert.equal(questions.waiting, 1);
+    now = launch.closeAt!;
+    await questions.sync('turn-1');
+    assert.equal(questions.waiting, 0);
+    assert.ok(now < killAt);
+    const timedOut = await result;
+    assert.equal(timedOut.isError, undefined);
+    assert.match(timedOut.content[0].text, /^No answer from the operator before this goal attempt runs out of time\. Continue with a clearly stated assumption, or stop/);
+    assert.deepEqual(control.resolved, [{ requestKey: report.requestKey, resolution: 'question_timed_out' }]);
+  });
+
+  test('a question asked with too little attempt time left is answered at once without a blocker', async () => {
+    const created = await createOperatorQuestionExchange(86_400_000, root);
+    const launch = boundOperatorQuestionLaunch(created, 3_600_000, 3_600_000, 0);
+    const { ask } = startServer(launch);
+    const control = recordingControl();
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-late', () => launch.closeAt! - 59_999);
+    const result = ask({ question: 'Last call?' });
+    const declined = await until(async () => {
+      await questions.sync('turn-1');
+      return Promise.race([result, new Promise<undefined>(resolve => setTimeout(resolve, 20))]);
+    });
+    assert.equal(declined.isError, undefined);
+    assert.match(declined.content[0].text, /^Too little time is left in this goal attempt/);
+    assert.equal(control.reports.length, 0);
+    assert.equal(questions.waiting, 0);
+  });
+
+  test('the server declines on its own when the attempt close time is near', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { ask } = startServer(launch, { PROPR_OPERATOR_CLOSE_AT: String(Date.now() + 30_000) });
+    const result = await ask({ question: 'Anyone?' });
+    assert.equal(result.isError, undefined);
+    assert.match(result.content[0].text, /^Too little time is left in this goal attempt/);
+    assert.equal(existsSync(path.join(launch.exchangeDir, 'requests')) && readdirSync(path.join(launch.exchangeDir, 'requests')).length, 0);
+  });
+
   test('the server stops waiting on its own when no worker answers', async () => {
     const launch = await createOperatorQuestionExchange(60_000, root);
     const { ask } = startServer(launch, { PROPR_OPERATOR_MAX_WAIT_MS: '150', PROPR_OPERATOR_GRACE_MS: '0' });
@@ -327,6 +381,18 @@ describe('ask_operator launch wiring', () => {
 
   test('the exchange must live in the shared log directory', () => {
     assert.throws(() => buildOperatorQuestionMcpConfig({ exchangeDir: '/home/node/elsewhere', maxWaitMs: 60_000 }), /shared Claude log directory/);
+  });
+
+  test('the attempt bound caps the wait and reaches the server env', () => {
+    const bound = boundOperatorQuestionLaunch(launch, 5_000_000 + 600_000, 600_000, 5_000_000);
+    // A ten-minute attempt keeps a tenth of it in reserve.
+    assert.equal(bound.closeAt, 5_000_000 + 540_000);
+    assert.equal(bound.maxWaitMs, 540_000);
+    assert.equal(launch.closeAt, undefined);
+    const env = JSON.parse(buildOperatorQuestionMcpConfig(bound)).mcpServers[OPERATOR_QUESTION_SERVER_NAME].env;
+    assert.equal(env.PROPR_OPERATOR_CLOSE_AT, String(bound.closeAt));
+    assert.equal(env.PROPR_OPERATOR_MAX_WAIT_MS, '540000');
+    assert.equal(JSON.parse(buildOperatorQuestionMcpConfig(launch)).mcpServers[OPERATOR_QUESTION_SERVER_NAME].env.PROPR_OPERATOR_CLOSE_AT, undefined);
   });
 
   test('the maximum wait instance setting is validated on save', async () => {

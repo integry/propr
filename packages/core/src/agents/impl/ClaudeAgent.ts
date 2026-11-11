@@ -250,14 +250,15 @@ export class ClaudeAgent implements Agent {
             // transcript record has nothing to resume; start it under that id.
             const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
             const operatorQuestions = await this.prepareOperatorQuestions(options);
-            const buildGoalDockerArgs = async () => {
+            // The attempt binds the question launch to its own deadline before building the container.
+            const buildGoalDockerArgs = async (boundQuestions?: OperatorQuestionLaunch) => {
                 const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
                 return buildDockerArgs(this.config, this.maxTurns, {
                     worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number,
                     systemPrompt, tools, environment, taskId,
                     reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
                     ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
-                    ...(operatorQuestions ? { operatorQuestions } : {}),
+                    ...(boundQuestions ? { operatorQuestions: boundQuestions } : {}),
                 });
             };
             const response = await executeClaudeNativeGoal(
