@@ -37,6 +37,7 @@ export {
 } from './claudeOutputHelpers.js';
 
 export { buildAnalysisSafetySuffix } from './analysisPromptSafety.js';
+export { analysisReasoningLevelField } from './analysisReasoningLevel.js';
 
 export {
     parseAntigravityJsonl,

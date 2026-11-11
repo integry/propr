@@ -174,7 +174,7 @@ export async function createAgentConflictResolver(options: AgentConflictResolver
         });
 
         const claudeResult: ClaudeCodeResponse = agentResultToClaudeResponse(agentResult);
-        await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'merge_conflict', correlationId, taskId });
+        await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'merge_conflict', correlationId, taskId, reasoningLevel: claudeResult.reasoningLevel });
         await createLogFiles(claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
         await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
             reason: `${agent.config.type} agent execution completed for merge conflict resolution`,

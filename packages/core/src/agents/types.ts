@@ -264,6 +264,8 @@ export interface AnalysisResult {
     tokenUsage?: TokenUsage;
     /** Optional session ID */
     sessionId?: string;
+    /** Effective reasoning level passed to the agent runtime, when configured. */
+    reasoningLevel?: ReasoningLevel;
     /** Optional error message if failed */
     error?: string;
 }

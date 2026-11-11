@@ -175,7 +175,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
   });
 
-  await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
+  await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId, reasoningLevel: agentResult.reasoningLevel });
 
   correlatedLogger.info({
     agentAlias,

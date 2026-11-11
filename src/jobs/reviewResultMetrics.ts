@@ -38,7 +38,7 @@ export async function recordReviewMetrics(
         await recordLLMMetrics(
             metricsResult,
             { number: pullRequestNumber, repoOwner, repoName },
-            { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' },
+            { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review', reasoningLevel: result.analysisResult.reasoningLevel },
         );
     }
 }

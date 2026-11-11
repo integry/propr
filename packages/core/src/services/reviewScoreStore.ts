@@ -47,6 +47,8 @@ export interface ReviewScoreRow {
     implementation_task_id: string | null;
     implementer_agent: string | null;
     implementer_model: string | null;
+    /** Effective reasoning level of the implementation execution; null when unknown. */
+    implementer_reasoning_level: string | null;
     reviewer_agent: string | null;
     reviewer_model: string | null;
     score: number;
@@ -64,6 +66,8 @@ export interface ImplementationTask {
     taskId: string;
     agent: string | null;
     model: string | null;
+    /** Effective reasoning level the implementation ran with; null when unknown. */
+    reasoningLevel: string | null;
 }
 
 function parseJson(value: unknown): Record<string, unknown> {
@@ -84,7 +88,8 @@ const text = (value: unknown): string | null =>
  * The task that opened the pull request: the earliest task recorded with this
  * PR number that is not itself a PR follow-up. Its model is the one the
  * executions recorded (so it matches the overview's model keys), falling back
- * to the model the task was created with.
+ * to the model the task was created with. Its reasoning level is the one that
+ * same execution recorded; null when that execution did not record one.
  */
 export async function resolveImplementationTask(
     database: Knex, repository: string, prNumber: number,
@@ -101,13 +106,14 @@ export async function resolveImplementationTask(
         .where({ task_id: task.task_id })
         .whereNotNull('model_name')
         .orderBy('start_time', 'asc')
-        .select('model_name')
-        .first() as { model_name: string } | undefined;
+        .select('model_name', 'reasoning_level')
+        .first() as { model_name: string; reasoning_level?: string | null } | undefined;
     const jobData = parseJson(task.initial_job_data);
     return {
         taskId: task.task_id,
         agent: text(jobData.agentAlias) ?? text(jobData.agent),
         model: text(execution?.model_name) ?? text(task.model_name) ?? text(jobData.model),
+        reasoningLevel: text(execution?.reasoning_level),
     };
 }
 
@@ -145,6 +151,7 @@ export async function recordReviewScores(database: Knex, inputs: readonly Review
             implementation_task_id: implementation?.taskId ?? null,
             implementer_agent: implementation?.agent ?? null,
             implementer_model: implementation?.model ?? null,
+            implementer_reasoning_level: implementation?.reasoningLevel ?? null,
             reviewer_agent: input.reviewerAgent,
             reviewer_model: input.reviewerModel,
             score: input.score,

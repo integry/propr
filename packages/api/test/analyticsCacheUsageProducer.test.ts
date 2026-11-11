@@ -13,6 +13,7 @@ import { up as initialSchema } from '../../core/src/db/migrations/20251216000000
 import { up as addTokenUsage } from '../../core/src/db/migrations/20260204000000_add_token_usage_to_llm_executions.js';
 import { up as nullableTaskId } from '../../core/src/db/migrations/20260415000000_make_llm_executions_task_id_nullable.js';
 import { up as cacheReported } from '../../core/src/db/migrations/20261008000000_add_llm_execution_cache_usage_reported.js';
+import { up as reasoningLevels } from '../../core/src/db/migrations/20261111000000_add_reasoning_level_columns.js';
 
 // Imported after NODE_ENV, so core's modules do not decide this process is a
 // misconfigured server.
@@ -45,6 +46,7 @@ before(async () => {
   await addTokenUsage(database);
   await nullableTaskId(database);
   await cacheReported(database);
+  await reasoningLevels(database);
   await database('tasks').insert({ task_id: 'task-1', repository: 'acme/repo', issue_number: 1, task_type: 'issue' });
 });
 after(async () => database.destroy());

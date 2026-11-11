@@ -70,6 +70,30 @@ for (const executionType of [undefined, 'implementation', 'pr-review'] as const)
     });
 }
 
+test('the effective reasoning level is persisted with the execution, and is null without one', async () => {
+    const run = async (reasoningLevel?: string | null) => {
+        persisted.length = 0;
+        await recordLLMMetrics({ model: 'test-model', success: true, sessionId: 'session-effort', executionTime: 1000, conversationLog: [] },
+            { repoOwner: 'integry', repoName: 'propr', number: 3430 }, { taskId: 'task-3430', correlationId: 'correlation-effort', reasoningLevel });
+        assert.deepEqual(errors, []);
+        return (persisted[0].value as Record<string, unknown>).reasoning_level;
+    };
+    assert.equal(await run('xhigh'), 'xhigh');
+    // `auto` is what the agent ran with, so it is stored as-is rather than resolved.
+    assert.equal(await run('auto'), 'auto');
+    assert.equal(await run(undefined), null);
+    assert.equal(await run(null), null);
+    assert.equal(await run(''), null);
+});
+
+test('a failed execution still persists the level it ran with', async () => {
+    await recordLLMMetrics({ model: 'test-model', success: false, error: 'boom', sessionId: 'session-failed', executionTime: 10, conversationLog: [] },
+        { repoOwner: 'integry', repoName: 'propr', number: 3430 }, { taskId: 'task-3430', correlationId: 'correlation-failed', reasoningLevel: 'high' });
+    const execution = persisted[0].value as Record<string, unknown>;
+    assert.equal(execution.success, false);
+    assert.equal(execution.reasoning_level, 'high');
+});
+
 test('a conversation whose prompts all carry a cache breakdown persists it as reported', async () => {
     await recordLLMMetrics({
         model: 'test-model', success: true, sessionId: 'session-cache', executionTime: 1000,

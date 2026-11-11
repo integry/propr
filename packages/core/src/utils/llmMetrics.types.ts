@@ -84,6 +84,12 @@ export interface RecordMetricsOptions {
     correlationId?: string;
     taskId?: string | null;
     executionType?: ExecutionType;
+    /**
+     * Effective reasoning level the agent ran with, after precedence resolution
+     * (job override, per-model agent config, instance setting). Omit or null
+     * when the agent does not take one or it is unknown; it is never guessed.
+     */
+    reasoningLevel?: string | null;
 }
 
 export interface ModelPricing {
@@ -133,6 +139,8 @@ export interface PersistMetrics {
     cacheUsageReported?: boolean;
     correlationId?: string;
     executionType?: ExecutionType;
+    /** Effective reasoning level of the execution; null when none or unknown. */
+    reasoningLevel?: string | null;
 }
 
 export interface ConversationDetailParams {

@@ -17,7 +17,7 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
+import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
@@ -284,7 +284,7 @@ export class CodexAgent implements Agent {
                 taskId,
             }, 'Codex analysis process exited without a usable result');
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
-            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}`, ...analysisReasoningLevelField(effectiveReasoningLevel) };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
@@ -349,7 +349,8 @@ export class CodexAgent implements Agent {
         return {
             response: analysisText, modelUsed: parsedOutput.model || effectiveModel,
             executionTimeMs, success: true,
-            tokenUsage: parsedOutput.tokenUsage, sessionId: parsedOutput.sessionId
+            tokenUsage: parsedOutput.tokenUsage, sessionId: parsedOutput.sessionId,
+            ...analysisReasoningLevelField(effectiveReasoningLevel)
         };
     }
 
