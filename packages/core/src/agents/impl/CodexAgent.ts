@@ -23,6 +23,7 @@ import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
 import { assertToolPolicySupported, codexToolPolicyArgs } from '../agentToolPolicy.js';
 import { executeCodexAppServerGoal } from './codexAppServer.js';
+import { failedExecutionResult, usageLimitExecutionResult, recordUnreturnedFailedExecution, persistFailedExecutionLog } from './utils/failedAgentExecution.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -57,6 +58,9 @@ export class CodexAgent implements Agent {
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, environment, taskId, prNumber, reasoningLevel,
             executionMode = 'task', resumeSessionId, metadata, toolPolicy } = options;
+        // What the run produced before a later step threw, and whether its log row exists.
+        let completed: AgentExecutionResult | undefined;
+        let logsPersisted = false;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -103,20 +107,30 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics });
+            completed = response;
 
             await this.persistTaskLog({
                 response, parsedOutput, executionTime, modelUsed: response.modelUsed, prompt, usageMetrics,
                 issueRef, repo, taskId, prNumber, isRetry, retryReason, metadata
             });
+            logsPersisted = true;
 
             this.handleTaskCompletion({ response, issueNumber: issueRef.number, result, parsedOutput, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
+            const executionTime = Date.now() - startTime;
             if (error instanceof UsageLimitError) {
+                // No caller receives a result for a thrown usage limit: record its one row here.
+                await recordUnreturnedFailedExecution(usageLimitExecutionResult(error, {
+                    model: completed?.modelUsed ?? effectiveModel ?? 'unknown', executionTimeMs: executionTime,
+                }), options, this.config.alias);
                 throw error;
             }
-            return this.handleTaskError({ error: error as Error, executionTime: Date.now() - startTime, issueRef, repo, effectiveModel });
+            const failed = this.handleTaskError({ error: error as Error, executionTime, issueRef, repo, effectiveModel, completed });
+            // The caller records the returned result; its execution id keeps that to one row.
+            if (!logsPersisted) await persistFailedExecutionLog(failed, options, this.config.alias);
+            return failed;
         }
     }
 
@@ -216,19 +230,15 @@ export class CodexAgent implements Agent {
         error: Error; executionTime: number;
         issueRef: AgentTaskOptions['issueRef']; repo: string;
         effectiveModel: string | undefined;
+        completed?: AgentExecutionResult;
     }): AgentExecutionResult {
-        const { error, executionTime, issueRef, repo, effectiveModel } = params;
+        const { error, executionTime, issueRef, repo, effectiveModel, completed } = params;
         logger.error({
             issueNumber: issueRef.number, repository: repo,
             executionTime, error: error.message, agentAlias: this.config.alias
         }, 'Error during Codex agent execution');
 
-        return {
-            success: false, error: error.message, executionTimeMs: executionTime,
-            logs: (error as unknown as { stderr?: string }).stderr || error.message,
-            modifiedFiles: [], commitMessage: null, summary: undefined,
-            modelUsed: effectiveModel || 'unknown'
-        };
+        return failedExecutionResult(error, { completed, model: effectiveModel || 'unknown', executionTimeMs: executionTime });
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {

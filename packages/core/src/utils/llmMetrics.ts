@@ -4,6 +4,7 @@ import { db } from '../db/connection.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
+import { claimExecution, metricsCorrelationId } from './llmMetricsExecutionClaim.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -290,17 +291,22 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
         }, 'DEBUG: ConversationLog structure');
     }
 }
-export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
-    const { jobType = 'issue', correlationId, taskId = null, executionType, reasoningLevel } = options;
-    const metricsRedis = new Redis(connectionOptions);
+function logRecordCall(claudeResult: ClaudeResult | null, correlationId?: string, taskId?: string | null): void {
     logger.info({
         correlationId, taskId, hasClaudeResult: !!claudeResult,
         hasConversationLog: !!claudeResult?.conversationLog,
         conversationLogType: Array.isArray(claudeResult?.conversationLog) ? 'array' : typeof claudeResult?.conversationLog,
         conversationLogLength: claudeResult?.conversationLog?.length ?? 0
     }, 'DEBUG: recordLLMMetrics called');
+}
+export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
+    const { jobType = 'issue', taskId = null, executionType, reasoningLevel } = options;
+    const correlationId = metricsCorrelationId(claudeResult, options.correlationId);
+    const metricsRedis = new Redis(connectionOptions);
+    logRecordCall(claudeResult, correlationId, taskId);
 
     try {
+        if (!await claimExecution(metricsRedis, claudeResult, { correlationId, taskId })) return;
         const timestamp = new Date().toISOString();
         const dateKey = timestamp.split('T')[0];
         const extracted = extractMetricsFromClaudeResult(claudeResult);

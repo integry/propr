@@ -90,6 +90,9 @@ export interface StatsOverviewUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_cost_usd: number;
+  /** Of `total_cost_usd`, executions that succeeded and that failed; absent from servers that predate the split. */
+  successful_cost_usd?: number;
+  failed_cost_usd?: number;
   /**
    * Distinct tasks with at least one execution per model: the legacy figure
    * the Models table falls back to, labelled Tasks, when a server predates
@@ -151,6 +154,10 @@ export interface StatsOverviewModelUsage {
   tasks: number;
   tokens: number;
   cost_usd: number;
+  /** Of `cost_usd`, executions that succeeded and that failed, and the failed runs; absent from older servers. */
+  successful_cost_usd?: number;
+  failed_cost_usd?: number;
+  failed_runs?: number;
   /** Mean final review score of PRs this model implemented; absent from servers without review scores. */
   mean_final_score?: number | null;
   n_scored?: number;

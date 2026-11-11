@@ -58,10 +58,12 @@ test('dashboard stats compare against the previous period and report recorded sp
   await seedTask({ taskId: 'then-1', repository: 'acme/spend', issueNumber: 2, states: [{ state: 'completed', timestamp: daysAgo(9) }] });
   await seedTask({ taskId: 'then-2', repository: 'acme/spend', issueNumber: 3, states: [{ state: 'failed', timestamp: daysAgo(10), reason: 'nope' }] });
   await database('llm_executions').insert([
-    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: 1.25 },
+    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: 1, success: true },
+    // A failed attempt's spend is still spend, reported apart as well as in the total.
+    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: 0.25, success: false },
     // A run with no recorded cost must not be read as $0 spend.
-    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: null },
-    { task_id: 'then-1', start_time: daysAgo(9), cost_usd: 0.5 },
+    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: null, success: false },
+    { task_id: 'then-1', start_time: daysAgo(9), cost_usd: 0.5, success: true },
   ]);
 
   const stats = createStatsRoutes({ db: database, now: () => NOW });
@@ -69,11 +71,16 @@ test('dashboard stats compare against the previous period and report recorded sp
   assert.equal(current.body.completed, 1);
   assert.equal(current.body.successRate, 100);
   assert.equal(current.body.recordedSpend, 1.25);
-  assert.deepEqual(current.body.previous, { tasks: 2, completed: 1, successRate: 50, recordedSpend: 0.5 });
+  assert.equal(current.body.recordedSpendSuccessful, 1);
+  assert.equal(current.body.recordedSpendFailed, 0.25);
+  assert.deepEqual(current.body.previous, {
+    tasks: 2, completed: 1, successRate: 50, recordedSpend: 0.5, recordedSpendSuccessful: 0.5, recordedSpendFailed: 0,
+  });
 
   const empty = await call(stats.getDashboardStats, { repository: 'acme/never-used', period: '30d' });
   assert.equal(empty.body.successRate, null);
   assert.equal(empty.body.recordedSpend, null);
+  assert.equal(empty.body.recordedSpendFailed, null);
   assert.equal(empty.body.tasks, 0);
   assert.equal((empty.body.dailyTasks as unknown[]).length, 30);
 });
@@ -96,7 +103,9 @@ test('the previous period ends exactly where the current one starts', async () =
   assert.equal(response.body.tasks, 1);
   assert.equal(response.body.completed, 1);
   assert.equal(response.body.recordedSpend, 1);
-  assert.deepEqual(response.body.previous, { tasks: 1, completed: 0, successRate: 0, recordedSpend: 2 });
+  assert.deepEqual(response.body.previous, {
+    tasks: 1, completed: 0, successRate: 0, recordedSpend: 2, recordedSpendSuccessful: 2, recordedSpendFailed: 0,
+  });
 });
 
 test('historical stats keep a recorded failure once its retry starts', async () => {

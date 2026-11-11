@@ -66,6 +66,8 @@ export async function createDashboardTestDatabase(): Promise<Knex> {
     table.string('task_id');
     table.timestamp('start_time');
     table.decimal('cost_usd', 10, 6);
+    // Nullable here, unlike the real schema, so seeds that omit an outcome stay terse.
+    table.boolean('success');
     table.text('analysis_report');
     table.string('model_name');
   });

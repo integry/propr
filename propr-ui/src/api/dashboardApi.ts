@@ -144,6 +144,9 @@ export interface DashboardStatsTotals {
   successRate: number | null;
   /** Spend actually recorded against executions; null when none was recorded. */
   recordedSpend: number | null;
+  /** Of `recordedSpend`, executions that succeeded and that failed; absent from servers that predate the split. */
+  recordedSpendSuccessful?: number | null;
+  recordedSpendFailed?: number | null;
 }
 
 export interface DashboardStatsResponse extends DashboardStatsTotals {

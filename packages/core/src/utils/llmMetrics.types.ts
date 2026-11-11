@@ -49,6 +49,12 @@ export interface FinalResult {
 }
 
 export interface ClaudeResult {
+    /**
+     * Identifies this one agent execution for metrics: `recordLLMMetrics` records
+     * an execution id at most once, so a failure path that records the same
+     * result again does not count it twice.
+     */
+    executionId?: string;
     model?: string;
     success?: boolean;
     executionTime?: number;
