@@ -15,6 +15,8 @@ const commitChanges = mock.fn(async () => null);
 const markReviewFindingsProcessed = mock.fn(noOp);
 const createNotificationEvent = mock.fn(async () => ({ id: 'event' }));
 const events: string[] = [];
+let commentUpdateFailure: Error | null = null;
+let checkpointFailure: { error: Error; ownershipLost?: boolean } | null = null;
 
 await mock.module('@propr/core', {
     namedExports: {
@@ -54,7 +56,13 @@ for (const [name, namedExports] of Object.entries({
     prCommentHandoffIntegration: {
         markExecutionHandoffCommitted: async () => { events.push('committed'); },
         markExecutionHandoffPushed: async () => { events.push('pushed'); },
-        markExecutionHandoffCommentPublished: async (_state: unknown, url: string) => { events.push(`comment_published:${url}`); },
+        markExecutionHandoffCommentPublished: async (state: { followupHandoffOwnershipLost?: boolean }, url: string) => {
+            if (checkpointFailure) {
+                if (checkpointFailure.ownershipLost) state.followupHandoffOwnershipLost = true;
+                throw checkpointFailure.error;
+            }
+            events.push(`comment_published:${url}`);
+        },
     },
     runCostCap: {
         repositoryNotificationsEnabled: async () => true,
@@ -77,6 +85,7 @@ async function runFollowUp(summary: string, options: { reportsBlockers?: boolean
     const octokit = {
         async request(route: string, parameters: Record<string, unknown>) {
             if (route.startsWith('PATCH ')) {
+                if (commentUpdateFailure) throw commentUpdateFailure;
                 body = String(parameters.body);
                 return { data: { id: parameters.comment_id, html_url: 'https://github.test/comment/900', body } };
             }
@@ -111,6 +120,8 @@ beforeEach(() => {
     updates.length = 0;
     events.length = 0;
     body = '';
+    commentUpdateFailure = null;
+    checkpointFailure = null;
     for (const fn of [commitChanges, markReviewFindingsProcessed, createNotificationEvent, push]) fn.mock.resetCalls();
 });
 
@@ -166,3 +177,44 @@ for (const [name, summary, reportsBlockers] of [
         assert.equal(createNotificationEvent.mock.callCount(), 0);
     });
 }
+
+test('a blocked follow-up whose comment update GitHub rejects still ends blocked and records the outstanding comment', async () => {
+    commentUpdateFailure = new Error('Validation Failed');
+    const result = await runFollowUp(BLOCKED, { reportsBlockers: true });
+
+    assert.deepEqual(result, { partial: false, blocked: true });
+    assert.equal(commitChanges.mock.callCount(), 0);
+    assert.equal(push.mock.callCount(), 0);
+    assert.deepEqual(events, [], 'no published-comment checkpoint without a published comment');
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].state, 'completed');
+    assert.equal(updates[0].metadata.terminalReason, 'blocked');
+    const history = updates[0].metadata.historyMetadata as Record<string, unknown>;
+    assert.equal(history.githubComment, undefined);
+    assert.deepEqual(history.blocker, { explanation: 'The payments API needs a sandbox key that this environment does not have.', uncommittedFiles: [] });
+    assert.deepEqual(history.blockerDelivery, { completionComment: 'failed', handoffCheckpoint: 'skipped', error: 'Validation Failed' });
+    assert.equal(createNotificationEvent.mock.callCount(), 1, 'the blocked-run warning is still recorded');
+});
+
+test('a blocked follow-up whose comment checkpoint fails after GitHub accepted it still ends blocked', async () => {
+    checkpointFailure = { error: new Error('database unavailable') };
+    const result = await runFollowUp(BLOCKED, { reportsBlockers: true });
+
+    assert.deepEqual(result, { partial: false, blocked: true });
+    assert.match(body, /Stopped on a blocker/);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].metadata.terminalReason, 'blocked');
+    const history = updates[0].metadata.historyMetadata as Record<string, unknown>;
+    assert.deepEqual(history.githubComment, { url: 'https://github.test/comment/900', body });
+    assert.deepEqual(history.blockerDelivery, { completionComment: 'published', handoffCheckpoint: 'failed', error: 'database unavailable' });
+    assert.equal(createNotificationEvent.mock.callCount(), 1);
+});
+
+test('a blocked follow-up that lost handoff ownership at the checkpoint leaves the terminal state to the successor', async () => {
+    const lost = new Error('Follow-up publication handoff ownership was lost (handoff_record_changed)');
+    checkpointFailure = { error: lost, ownershipLost: true };
+    await assert.rejects(runFollowUp(BLOCKED, { reportsBlockers: true }), lost);
+    assert.equal(updates.length, 0);
+    assert.equal(createNotificationEvent.mock.callCount(), 0);
+    assert.equal(commitChanges.mock.callCount(), 0);
+});

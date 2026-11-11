@@ -190,6 +190,28 @@ test('blocker marker is read from the final message only when it starts a top-le
     assert.deepEqual(parseBlockerReport(`\`\`\`\nlog\n\`\`\`\n${BLOCKER_MARKER} Real blocker.`), { explanation: 'Real blocker.' });
 });
 
+test('a blocker marker inside a list item continuation or nested container is not a blocker', () => {
+    for (const absent of [
+        // The reported case: an example quoted on a bullet's continuation line, then completed work.
+        `- Example diagnostic:\n  ${BLOCKER_MARKER} Missing credentials.\n\nImplemented and verified the fix.`,
+        `* Example:\n\n  ${BLOCKER_MARKER} after a blank line, still inside the item`,
+        `1. First step\n   ${BLOCKER_MARKER} continuation of an ordered item`,
+        `2) Step\n\n   ${BLOCKER_MARKER} continuation of a parenthesised ordered item`,
+        `- Outer\n  - Nested\n    ${BLOCKER_MARKER} nested item continuation`,
+        `- Outer\n  > ${BLOCKER_MARKER} quote inside the item`,
+        `- Outer\n  \`\`\`\n  ${BLOCKER_MARKER} fenced inside the item\n  \`\`\`\nDone.`,
+        `-   Wide item\n    ${BLOCKER_MARKER} continuation at the wider content column`,
+        `- Tab item\n\t${BLOCKER_MARKER} tab-indented continuation`,
+    ]) assert.equal(parseBlockerReport(absent), null, JSON.stringify(absent));
+
+    // A top-level line after the list ends it, so a real blocker still counts.
+    assert.deepEqual(parseBlockerReport(`- Checked the config\n- Checked the docs\n\n${BLOCKER_MARKER} The API key is missing.`), { explanation: 'The API key is missing.' });
+    assert.deepEqual(parseBlockerReport(`- Checked the config\n${BLOCKER_MARKER} No sandbox.`), { explanation: 'No sandbox.' });
+    assert.deepEqual(parseBlockerReport(`1. Tried it\n\n ${BLOCKER_MARKER} Indented less than the item content.`), { explanation: 'Indented less than the item content.' });
+    // A list after the marker does not hide it: the explanation keeps the list.
+    assert.deepEqual(parseBlockerReport(`${BLOCKER_MARKER} Needed:\n- a key\n- a sandbox`), { explanation: 'Needed:\n- a key\n- a sandbox' });
+});
+
 test('blocker explanations are redacted and bounded; detection needs the option and a normal end', () => {
     const token = `ghp_${'a'.repeat(36)}`;
     const redacted = parseBlockerReport(`${BLOCKER_MARKER} Token ${token} was rejected.`)!;

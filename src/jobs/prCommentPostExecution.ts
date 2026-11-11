@@ -56,6 +56,8 @@ export interface PostExecutionState {
     startingWorkComment: { data: { id: number; html_url: string } } | null;
     /** Durable publication handoff; advanced as commit, push and comment complete. */
     followupHandoff?: FollowupHandoffRecord | null;
+    /** Set once a checkpoint observed a recovery successor adopt the handoff. */
+    followupHandoffOwnershipLost?: boolean;
 }
 
 export interface ReadyPostExecutionState extends PostExecutionState {
