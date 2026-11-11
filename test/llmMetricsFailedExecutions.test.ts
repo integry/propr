@@ -67,8 +67,9 @@ test('a second record of the same execution id inserts no second row and counts 
 });
 
 test('the claim holds across workers: a record whose id another process claimed is skipped', async () => {
-    // Another worker recorded the execution: its claim is in the shared store, not in this process.
+    // Another worker recorded the execution: its claims are in the shared store, not in this process.
     claimed.add('llm:metrics:recorded:execution-elsewhere');
+    claimed.add('llm:metrics:persisted:execution-elsewhere');
     await recordLLMMetrics({ executionId: 'execution-elsewhere', model: 'test-model', success: false, error: 'boom' }, issueRef, { taskId: 'task-3437' });
     assert.equal(executions.length, 0);
     assert.equal(failedCount(), 0);
