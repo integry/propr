@@ -37,7 +37,7 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, analysisReasoningLevelField, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { assertToolPolicySupported, claudeToolPolicyArgs } from '../agentToolPolicy.js';
 import {
@@ -307,7 +307,7 @@ export class ClaudeAgent implements Agent {
             if (result.timedOut) {
                 return {
                     response: '', modelUsed: effectiveModel, executionTimeMs, success: false,
-                    error: result.stderr
+                    error: result.stderr, ...analysisReasoningLevelField(effectiveReasoningLevel)
                 };
             }
 
@@ -337,13 +337,14 @@ export class ClaudeAgent implements Agent {
                 return {
                     response: analysisText, modelUsed: claudeOutput.model || effectiveModel,
                     executionTimeMs, success: true, tokenUsage: correctedTokenUsage,
-                    sessionId: claudeOutput.sessionId ?? undefined
+                    sessionId: claudeOutput.sessionId ?? undefined,
+                    ...analysisReasoningLevelField(effectiveReasoningLevel)
                 };
             }
 
             return {
                 response: '', modelUsed: effectiveModel, executionTimeMs, success: false,
-                error: `Analysis failed: ${outcome.errorDetail}`
+                error: `Analysis failed: ${outcome.errorDetail}`, ...analysisReasoningLevelField(effectiveReasoningLevel)
             };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;

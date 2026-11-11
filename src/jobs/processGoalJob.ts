@@ -269,7 +269,7 @@ async function recordGoalMetrics(goal: GoalRow, job: GoalJobData, result: AgentE
         executionTime: result.executionTimeMs, model: result.modelUsed,
         conversationLog: result.conversationLog, tokenUsage: result.tokenUsage, error: result.error,
     }, { number: 0, repoOwner, repoName }, {
-        jobType: 'issue', correlationId: goal.goal_id, taskId: goal.current_task_id,
+        jobType: 'issue', correlationId: goal.goal_id, taskId: goal.current_task_id, reasoningLevel: result.reasoningLevel,
     });
 }
 

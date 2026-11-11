@@ -4,6 +4,7 @@ import knex, { type Knex } from 'knex';
 import pino from 'pino';
 import { up as createPullRequestState } from '../packages/core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../packages/core/src/db/migrations/20261006000000_create_review_scores.js';
+import { up as addReasoningLevels } from '../packages/core/src/db/migrations/20261111000000_add_reasoning_level_columns.js';
 
 const { buildReviewScoreInputs, persistReviewScores } = await import('../src/jobs/reviewScorePersistence.js');
 const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
@@ -69,6 +70,7 @@ describe('review score persistence', () => {
         });
         await createPullRequestState(database);
         await createReviewScores(database);
+        await addReasoningLevels(database);
         await database('tasks').insert([
             { task_id: 'issue-12', repository: 'acme/repo', issue_number: 12, pr_number: 40, task_type: 'issue', model_name: 'opus',
                 initial_job_data: JSON.stringify({ agentAlias: 'claude' }), created_at: '2026-10-01T00:00:00.000Z' },
@@ -76,7 +78,7 @@ describe('review score persistence', () => {
             { task_id: 'pr-comment-acme-40', repository: 'acme/repo', issue_number: 40, pr_number: 40, task_type: 'pr-comment',
                 model_name: 'gpt-5.6', initial_job_data: '{}', created_at: '2026-10-02T00:00:00.000Z' },
         ]);
-        await database('llm_executions').insert({ task_id: 'issue-12', model_name: 'claude-opus-5-5', start_time: '2026-10-01T00:01:00.000Z', cost_usd: 1.5 });
+        await database('llm_executions').insert({ task_id: 'issue-12', model_name: 'claude-opus-5-5', start_time: '2026-10-01T00:01:00.000Z', cost_usd: 1.5, reasoning_level: 'xhigh' });
     });
 
     after(async () => {
@@ -100,6 +102,7 @@ describe('review score persistence', () => {
             implementation_task_id: 'issue-12',
             implementer_agent: 'claude',
             implementer_model: 'claude-opus-5-5',
+            implementer_reasoning_level: 'xhigh',
             reviewer_agent: 'codex-pool-1',
             reviewer_model: 'gpt-5.6-2026',
             // A review that still lists blockers is capped at 6, as the
@@ -236,6 +239,17 @@ describe('review score persistence', () => {
         assert.equal(row.implementation_task_id, null);
         assert.equal(row.implementer_model, null);
         assert.equal(row.implementer_agent, null);
+        assert.equal(row.implementer_reasoning_level, null);
+    });
+
+    test('an implementation execution that recorded no reasoning level stores an unknown implementer level', async () => {
+        await database('llm_executions').where({ task_id: 'issue-12' }).update({ reasoning_level: null });
+        await persistReviewScores([result(reviewBody(8, 0, 1))], {
+            repository: 'acme/repo', pullRequestNumber: 40, taskId: 'review-task', headSha: null,
+        }, logger, database);
+        const [row] = await loadPullRequestScoreHistory(database, 'acme/repo', 40);
+        assert.equal(row.implementer_model, 'claude-opus-5-5');
+        assert.equal(row.implementer_reasoning_level, null);
     });
 
     test('a write failure is logged and never fails the review', async () => {

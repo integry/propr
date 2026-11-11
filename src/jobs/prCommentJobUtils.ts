@@ -310,7 +310,7 @@ async function handleGenericError(error: Error, job: Job<CommentJobData>, option
         historyMetadata: { ...ultrafixTerminalMetadata(job, 'failed'), ...(pushFailure ? { pushFailure } : {}), ...automaticRetryFailureMetadata(job, taskId) } });
     if (claudeResult) {
         try {
-            await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
+            await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId, reasoningLevel: claudeResult.reasoningLevel });
         } catch (metricsError) {
             correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
         }

@@ -238,8 +238,12 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         await db('llm_execution_details').insert(detailsArray);
     }
 }
+/** The level exactly as the agent ran it (`auto` included); blank or absent is unknown. */
+function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
+    return typeof level === 'string' && level.trim() ? level.trim() : null;
+}
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<void> {
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId } = metrics;
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId, reasoningLevel } = metrics;
 
     // Check if taskId exists in tasks table (drafts won't exist)
     // Use null for task_id if it doesn't exist (FK allows null now)
@@ -263,7 +267,8 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             // the flag lets a reported zero stay a measured zero.
             cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
             cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null,
-            cache_usage_reported: cacheUsageReported ?? null
+            cache_usage_reported: cacheUsageReported ?? null,
+            reasoning_level: normalizeStoredReasoningLevel(reasoningLevel)
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
@@ -286,7 +291,7 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
     }
 }
 export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
-    const { jobType = 'issue', correlationId, taskId = null, executionType } = options;
+    const { jobType = 'issue', correlationId, taskId = null, executionType, reasoningLevel } = options;
     const metricsRedis = new Redis(connectionOptions);
     logger.info({
         correlationId, taskId, hasClaudeResult: !!claudeResult,
@@ -320,7 +325,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         if (claudeResult) {
             await persistToDatabase(claudeResult, taskId, {
                 sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd,
-                tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType,
+                tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType, reasoningLevel,
             });
         }
     } catch (error) {

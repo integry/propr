@@ -366,7 +366,7 @@ async function executeClaudeAnalysis(
         timeoutMs,
     });
 
-    await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType });
+    await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, resolvedModel), issueRef, { correlationId, taskId, executionType, reasoningLevel: claudeResult.reasoningLevel });
 
     const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
     await persistLlmLog(createLlmLogFromAnalysis({

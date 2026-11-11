@@ -326,7 +326,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
         checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
 
-        await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
+        await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId, reasoningLevel: state.claudeResult.reasoningLevel });
         await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
         await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
             reason: `${agentType} agent execution completed`,
