@@ -7,7 +7,7 @@
  *
  * Per repository only one PR is brought up to date at a time (the oldest
  * eligible one holds a turn until its updated head merges, fails CI or the
- * turn expires), and each PR gets at most `max_branch_updates_per_hour`
+ * turn expires an hour after its last branch update), and each PR gets at most `max_branch_updates_per_hour`
  * updates per hour, so a busy base branch cannot cause an update loop.
  *
  * Independently of the update turn, {@link mergeWhenUpToDate} serialises
@@ -64,7 +64,11 @@ const KEY_PREFIX = 'auto-merge:up-to-date';
 const HOUR_MS = 60 * 60_000;
 /** A requested update that has not produced a new head yet is not requested again for this long. */
 export const BRANCH_UPDATE_PENDING_MS = 10 * 60_000;
-/** How long the repository's update turn survives without being refreshed. */
+/**
+ * How long the repository's update turn survives after its holder's last
+ * successful branch update. Only that progress renews it: observing the same
+ * head still waiting for CI does not, so a stalled PR cannot keep the turn.
+ */
 export const UPDATE_TURN_TTL_SECONDS = 60 * 60;
 /** How long a behind PR stays eligible for the turn without being re-evaluated. */
 export const ELIGIBLE_TTL_SECONDS = 10 * 60;
@@ -234,10 +238,8 @@ async function claimTurn(
     const k = keys(target.owner, target.repo, target.prNumber);
     const me = String(target.prNumber);
     const holder = await redis.get(k.turn);
-    if (holder === me) {
-        await redis.expire(k.turn, UPDATE_TURN_TTL_SECONDS);
-        return { claimed: true };
-    }
+    // Holding the turn already does not renew it; only a successful update does.
+    if (holder === me) return { claimed: true };
     if (holder) {
         if (await isPullRequestOpen(octokit, target.owner, target.repo, Number(holder))) return { claimed: false, waitingFor: `PR #${holder}` };
         // The holder was merged or closed outside ProPR; its turn is over.
@@ -347,6 +349,9 @@ export async function ensureUpToDateBeforeMerge(
         return handleUpdateFailure(error, target, baseSha, deps);
     }
     await countUpdate(redis, k.updates, now);
+    // Progress: the turn now lasts an hour from this update. A turn that already
+    // expired (and may have been taken over) is not renewed.
+    if (await redis.get(k.turn) === String(prNumber)) await redis.expire(k.turn, UPDATE_TURN_TTL_SECONDS);
     await redis.set(k.marker, JSON.stringify({ fromHead: headSha, baseSha, requestedAt: now } satisfies BranchUpdateMarker), 'EX', MARKER_TTL_SECONDS);
     await recordDecision(target, 'updated_branch', {
         action: 'branch_updated', baseSha, detail: `head was ${comparison.behindBy} commit(s) behind ${target.baseRef}`,
@@ -397,7 +402,8 @@ export async function mergeWhenUpToDate(
 
 /**
  * Called when CI does not allow merging yet. For a PR whose branch ProPR
- * updated, records that it waits for CI on the updated head and keeps its turn;
+ * updated, records that it waits for CI on the updated head. The turn is kept but
+ * not renewed, so it still expires an hour after the update if CI never settles;
  * failed blocking checks end the turn so the next PR can be updated.
  */
 export async function noteCiWaitAfterBranchUpdate(
@@ -419,7 +425,6 @@ export async function noteCiWaitAfterBranchUpdate(
             }, deps);
             return;
         }
-        if (await redis.get(k.turn) === String(target.prNumber)) await redis.expire(k.turn, UPDATE_TURN_TTL_SECONDS);
         await recordDecision(target, 'waiting_for_ci_updated_head', { action: 'waiting', baseSha: marker.baseSha }, deps);
     } catch (error) {
         log.warn({ owner: target.owner, repo: target.repo, prNumber: target.prNumber, error: (error as Error).message }, 'Failed to note CI wait after a branch update');

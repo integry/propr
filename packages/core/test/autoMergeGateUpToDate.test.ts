@@ -14,7 +14,9 @@ await mock.module('../src/utils/logger.js', { defaultExport: log });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => { throw new Error('use the fake client'); } } });
 await mock.module('../src/config/planIssueManager.js', { namedExports: { findPlanIssueByRepoAndPR: async () => null } });
 
-const { gateAutoMergeArming, reevaluateArmedAutoMergeOnNewHead, withdrawNativeAutoMergeForUpToDate } = await import('../src/services/autoMergeGate.js');
+const {
+    gateAutoMergeArming, reevaluateArmedAutoMergeOnNewHead, withdrawNativeAutoMergeForUpToDate, withdrawNativeAutoMergeIfUpToDateRequired,
+} = await import('../src/services/autoMergeGate.js');
 type GateOctokit = import('../src/services/autoMergeGate.js').AutoMergeGateOctokit;
 
 await database.schema.createTable('tasks', table => {
@@ -136,4 +138,27 @@ test('a ProPR request on a PR whose policy has no require_up_to_date is kept on 
     const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
     assert.equal(result.disarmed, false);
     assert.equal(github.graphqlCalls.length, 0);
+});
+
+test('the merge path withdraws ProPR\'s native request under require_up_to_date only, before its own gates', async () => {
+    const withdraw = (github: ReturnType<typeof fakeGitHub>) => withdrawNativeAutoMergeIfUpToDateRequired(
+        { owner: 'acme', repo: 'repo', prNumber: 70, opportunity: 'check_merge', log }, { octokit: github.octokit, database, botLogin });
+
+    const armed = fakeGitHub({ policy: UP_TO_DATE_POLICY, autoMerge: PROPR_ARMED });
+    assert.equal(await withdraw(armed), true);
+    assert.equal(armed.graphqlCalls.length, 1);
+    assert.match(armed.graphqlCalls[0], /disablePullRequestAutoMerge/);
+    const [event] = await events();
+    assert.equal(event.action, 'disarmed');
+    assert.equal(event.opportunity, 'check_merge');
+
+    for (const state of [
+        { policy: PLAIN_POLICY, autoMerge: PROPR_ARMED },
+        { policy: UP_TO_DATE_POLICY, autoMerge: MAINTAINER_ARMED },
+        { policy: 'auto_merge:\n  require_up_to_date: true\n  protected_paths: ["src/**"]\n', autoMerge: PROPR_ARMED },
+    ]) {
+        const github = fakeGitHub(state);
+        assert.equal(await withdraw(github), false, JSON.stringify(state));
+        assert.equal(github.graphqlCalls.length, 0);
+    }
 });

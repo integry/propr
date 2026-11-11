@@ -154,12 +154,21 @@ const mockResolveDirectMergeMethod = mock.fn(resolveWithPolicyMethod);
 // `require_up_to_date` decisions recorded through the gate's timeline event.
 const mockRecordAutoMergeDecisionEvent = mock.fn(async (_input: { prNumber: number; action?: string; decision: { reason: string } }) => true);
 const mockWithdrawNativeAutoMergeForUpToDate = mock.fn(async (_input: { prNumber: number; opportunity: string }) => true);
+// Like the real helper: evaluate, then withdraw only an armed request under `require_up_to_date`.
+const mockWithdrawNativeAutoMergeIfUpToDateRequired = mock.fn(async (input: { owner: string; repo: string; prNumber: number; opportunity: string }) => {
+    const { decision, pullRequest } = await mockEvaluatePullRequestAutoMerge(input as never) as unknown as {
+        decision: { arm?: boolean; upToDate?: unknown }; pullRequest: { autoMergeArmed?: boolean } | null;
+    };
+    if (!decision.arm || !decision.upToDate || !pullRequest?.autoMergeArmed) return false;
+    return mockWithdrawNativeAutoMergeForUpToDate({ prNumber: input.prNumber, opportunity: input.opportunity });
+});
 await mock.module('../packages/core/src/services/autoMergeGate.js', {
     namedExports: {
         evaluatePullRequestAutoMerge: mockEvaluatePullRequestAutoMerge,
         resolveDirectMergeMethod: mockResolveDirectMergeMethod,
         recordAutoMergeDecisionEvent: mockRecordAutoMergeDecisionEvent,
         withdrawNativeAutoMergeForUpToDate: mockWithdrawNativeAutoMergeForUpToDate,
+        withdrawNativeAutoMergeIfUpToDateRequired: mockWithdrawNativeAutoMergeIfUpToDateRequired,
     }
 });
 
@@ -212,6 +221,7 @@ function resetMocks(): void {
     redisSortedSets.clear();
     mockRecordAutoMergeDecisionEvent.mock.resetCalls();
     mockWithdrawNativeAutoMergeForUpToDate.mock.resetCalls();
+    mockWithdrawNativeAutoMergeIfUpToDateRequired.mock.resetCalls();
     redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
@@ -2791,7 +2801,9 @@ describe('commit to PR lookup cache', () => {
 describe('auto_merge.require_up_to_date', () => {
     const upToDateDecision = { arm: true, reason: 'armed', upToDate: { maxBranchUpdatesPerHour: 3 } };
     /** An auto-merge PR whose checks passed; `behindBy` is how far its head is behind `main`. */
-    function mockBehindPR(options: { behindBy: number; mergeableState?: string; checks?: string; prNumber?: number; onMerge?: () => void }) {
+    function mockBehindPR(options: {
+        behindBy: number; mergeableState?: string; checks?: string; prNumber?: number; nativeArmed?: boolean; onMerge?: () => void;
+    }) {
         const { behindBy, mergeableState = 'behind', checks = 'success' } = options;
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch') return { data: { message: 'Updating pull request branch.' } };
@@ -2804,6 +2816,7 @@ describe('auto_merge.require_up_to_date', () => {
                 return { data: {
                     state: 'open', labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: mergeableState, body: '',
                     base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                    ...(options.nativeArmed ? { auto_merge: { enabled_by: { login: 'propr-dev[bot]' } } } : {}),
                 } };
             }
             if (endpoint.includes('check-runs')) {
@@ -2902,6 +2915,34 @@ describe('auto_merge.require_up_to_date', () => {
         resetMocks();
         mockBehindPR({ behindBy: 0, mergeableState: 'clean' });
         await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mockWithdrawNativeAutoMergeForUpToDate.mock.callCount(), 0);
+    });
+
+    test('a native request is withdrawn before gates that only hold back ProPR\'s own merge', async () => {
+        // Pending CI and a non-clean mergeable state each return before the policy evaluation; GitHub's armed request would still merge the behind head later.
+        const holdBacks: Array<[string, () => void]> = [
+            ['pending CI', () => mockBehindPR({ behindBy: 2, checks: 'pending', nativeArmed: true })],
+            ['not mergeable', () => mockBehindPR({ behindBy: 2, mergeableState: 'blocked', nativeArmed: true })],
+        ];
+        for (const [label, arrange] of holdBacks) {
+            resetMocks();
+            useUpToDatePolicy({ nativeArmed: true });
+            arrange();
+            await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+            assert.equal(mockWithdrawNativeAutoMergeForUpToDate.mock.callCount(), 1, `${label}: ProPR's native request is withdrawn`);
+            assert.equal(updateCalls().length, 0, `${label}: the branch is not updated past the gate`);
+            assert.equal(mergeCalls().length, 0, label);
+        }
+
+        // Without the option, or without an armed request, nothing is withdrawn.
+        resetMocks();
+        mockBehindPR({ behindBy: 2, checks: 'pending', nativeArmed: true });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        resetMocks();
+        useUpToDatePolicy();
+        mockBehindPR({ behindBy: 2, checks: 'pending' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mockWithdrawNativeAutoMergeIfUpToDateRequired.mock.callCount(), 0, 'no evaluation when GitHub reports no armed request');
         assert.equal(mockWithdrawNativeAutoMergeForUpToDate.mock.callCount(), 0);
     });
 

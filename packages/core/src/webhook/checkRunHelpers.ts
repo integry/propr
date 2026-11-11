@@ -554,6 +554,8 @@ export interface PRAutoMergeInfo {
     headBranch: string;
     mergeable: boolean | null;
     mergeableState: string;
+    /** Whether GitHub's native auto-merge is armed on the PR (by anyone). */
+    autoMergeArmed?: boolean;
     /** GitHub PR state (`open` or `closed`); absent when the PR could not be read. */
     state?: string;
 }
@@ -749,7 +751,8 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             baseBranch,
             headBranch,
             mergeable,
-            mergeableState
+            mergeableState,
+            autoMergeArmed: Boolean((prResponse.data as { auto_merge?: unknown }).auto_merge),
         };
     } catch (error) {
         logger.warn({

@@ -423,6 +423,30 @@ export async function withdrawNativeAutoMergeForUpToDate(input: {
 }
 
 /**
+ * ProPR's direct merge path returns early for pending CI, mergeability, Ultrafix
+ * state or active work, but a native request ProPR armed keeps waiting on GitHub
+ * meanwhile and would merge a behind head once CI passes. Callers use this before
+ * those gates: when the base policy allows the merge only with
+ * `require_up_to_date`, ProPR's native request is withdrawn. Never throws.
+ */
+export async function withdrawNativeAutoMergeIfUpToDateRequired(input: {
+    owner: string; repo: string; prNumber: number; opportunity: AutoMergeOpportunity; log?: Log;
+}, deps: AutoMergeGateDependencies = {}): Promise<boolean> {
+    const { owner, repo, prNumber, opportunity } = input;
+    const log = input.log ?? logger;
+    let evaluation: AutoMergeEvaluation;
+    try {
+        evaluation = await evaluatePullRequestAutoMerge({ owner, repo, prNumber, opportunity }, deps);
+    } catch (error) {
+        log.warn({ owner, repo, prNumber, error: (error as Error).message }, 'Could not evaluate require_up_to_date before withdrawing native auto-merge');
+        return false;
+    }
+    const { decision, pullRequest } = evaluation;
+    if (!decision.arm || !decision.upToDate || !pullRequest?.autoMergeArmed) return false;
+    return withdrawNativeAutoMergeForUpToDate({ owner, repo, prNumber, pullRequest, opportunity, log }, deps);
+}
+
+/**
  * A new head can add protected changes after auto-merge was armed. Re-evaluate
  * the policy and, if it no longer allows auto-merge, disarm it, say why, and
  * surface "waiting for human merge" on an Epic queue. Under

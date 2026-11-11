@@ -6,23 +6,41 @@ await mock.module('../src/utils/logger.js', { defaultExport: log });
 await mock.module('../src/db/connection.js', { namedExports: { db: () => { throw new Error('no database in this suite'); }, closeConnection: async () => {} } });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => { throw new Error('use the fake client'); } } });
 
-const { ensureUpToDateBeforeMerge, mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, BRANCH_UPDATE_PENDING_MS } = await import('../src/webhook/autoMergeUpToDate.js');
+const {
+    ensureUpToDateBeforeMerge, mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, BRANCH_UPDATE_PENDING_MS, UPDATE_TURN_TTL_SECONDS,
+} = await import('../src/webhook/autoMergeUpToDate.js');
 type Deps = import('../src/webhook/autoMergeUpToDate.js').UpToDateDependencies;
 
-/** In-memory Redis with the commands the up-to-date gate uses (TTLs are not simulated). */
-function fakeRedis() {
+/**
+ * In-memory Redis with the commands the up-to-date gate uses. TTLs are simulated
+ * against the test clock only with `expiring`; other tests keep every key.
+ */
+function fakeRedis(options: { expiring?: boolean } = {}) {
     const values = new Map<string, string>();
+    const expiresAt = new Map<string, number>();
     const sets = new Map<string, Map<string, number>>();
+    const live = (key: string) => {
+        if (options.expiring && (expiresAt.get(key) ?? Infinity) <= clock) {
+            values.delete(key);
+            expiresAt.delete(key);
+        }
+        return values.has(key);
+    };
     return {
         values,
-        async get(key: string) { return values.get(key) ?? null; },
-        async set(key: string, value: string, _ex: 'EX', _seconds: number, nx?: 'NX') {
-            if (nx && values.has(key)) return null;
+        async get(key: string) { return live(key) ? values.get(key)! : null; },
+        async set(key: string, value: string, _ex: 'EX', seconds: number, nx?: 'NX') {
+            if (nx && live(key)) return null;
             values.set(key, value);
+            expiresAt.set(key, clock + seconds * 1000);
             return 'OK';
         },
-        async del(key: string) { return values.delete(key) ? 1 : 0; },
-        async expire() { return 1; },
+        async del(key: string) { expiresAt.delete(key); return values.delete(key) ? 1 : 0; },
+        async expire(key: string, seconds: number) {
+            if (!live(key)) return 0;
+            expiresAt.set(key, clock + seconds * 1000);
+            return 1;
+        },
         async zadd(key: string, score: number, member: string) { (sets.get(key) ?? sets.set(key, new Map()).get(key)!).set(member, score); return 1; },
         async zrange(key: string) { return [...(sets.get(key) ?? new Map()).entries()].sort((a, b) => a[1] - b[1]).map(([member]) => member); },
         async zrem(key: string, member: string) { return sets.get(key)?.delete(member) ? 1 : 0; },
@@ -166,6 +184,39 @@ test('updates are rate-limited per PR, and a rate-limited PR gives up its turn',
     clock += 60 * 60_000;
     await noteCiWaitAfterBranchUpdate(target(10, 'updated-10'), deps(github, { checksFailed: async () => true }));
     assert.equal(await ensureUpToDateBeforeMerge(target(5, 'head-5-2'), limit, deps(github)), 'updated');
+});
+
+test('waiting for CI on the same updated head does not renew the turn: it expires an hour after the update', async () => {
+    redis = fakeRedis({ expiring: true });
+    const github = fakeGitHub({ 5: { behindBy: 1 }, 10: { behindBy: 1 } });
+    assert.equal(await ensureUpToDateBeforeMerge(target(5), settings, deps(github)), 'updated');
+    // The sweep sees PR 5's updated head still pending every minute, and PR 10 waits.
+    const minutes = UPDATE_TURN_TTL_SECONDS / 60;
+    for (let minute = 1; minute < minutes; minute++) {
+        clock += 60_000;
+        await noteCiWaitAfterBranchUpdate(target(5, 'updated-5'), deps(github));
+        assert.equal(await ensureUpToDateBeforeMerge(target(10), settings, deps(github)), 'waiting', `minute ${minute}`);
+    }
+    assert.deepEqual(github.updates.map(update => update.pull_number), [5]);
+
+    // An hour after PR 5's last update, polling alone no longer holds the turn.
+    clock += 60_000;
+    await noteCiWaitAfterBranchUpdate(target(5, 'updated-5'), deps(github));
+    assert.equal(await ensureUpToDateBeforeMerge(target(10), settings, deps(github)), 'updated');
+    assert.deepEqual(github.updates.map(update => update.pull_number), [5, 10]);
+});
+
+test('a new branch update by the turn holder is progress and renews its turn', async () => {
+    redis = fakeRedis({ expiring: true });
+    const github = fakeGitHub({ 5: { behindBy: 1 }, 10: { behindBy: 1 } });
+    assert.equal(await ensureUpToDateBeforeMerge(target(5), settings, deps(github)), 'updated');
+    // The base moved again 50 minutes later: PR 5's updated head is updated once more.
+    clock += 50 * 60_000;
+    assert.equal(await ensureUpToDateBeforeMerge(target(5, 'updated-5'), settings, deps(github)), 'updated');
+    clock += 50 * 60_000;
+    assert.equal(await ensureUpToDateBeforeMerge(target(10), settings, deps(github)), 'waiting', 'the turn lasts an hour from the latest update');
+    clock += 10 * 60_000;
+    assert.equal(await ensureUpToDateBeforeMerge(target(10), settings, deps(github)), 'updated');
 });
 
 test('failed CI on the updated head ends the PR\'s turn so the next PR can be updated', async () => {

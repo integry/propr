@@ -26,7 +26,9 @@ import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 import { isActedCheckRunAction, isActedCheckSuiteAction, isPassingCheckSuiteConclusion, STATUS_SUCCESS_STATE } from './webhookEventGates.js';
 import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
 import { isNonBlockingCheck } from './nonBlockingChecks.js';
-import { evaluatePullRequestAutoMerge, resolveDirectMergeMethod, withdrawNativeAutoMergeForUpToDate } from '../services/autoMergeGate.js';
+import {
+    evaluatePullRequestAutoMerge, resolveDirectMergeMethod, withdrawNativeAutoMergeForUpToDate, withdrawNativeAutoMergeIfUpToDateRequired,
+} from '../services/autoMergeGate.js';
 import type { AutoMergeDecision, AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
 import { mergeWhenUpToDate, noteCiWaitAfterBranchUpdate } from './autoMergeUpToDate.js';
 
@@ -237,6 +239,13 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
         return;
     }
 
+    // `require_up_to_date`: GitHub's own auto-merge would merge a behind head once
+    // CI passes, so ProPR's native request is withdrawn before any gate below can
+    // return (pending CI, mergeability, Ultrafix state, active work).
+    if (prInfo.autoMergeArmed) {
+        await withdrawNativeAutoMergeIfUpToDateRequired({ owner, repo: repoName, prNumber, opportunity: 'check_merge', log });
+    }
+
     const mergeCtx: PRMergeContext = { ...ctx, headSha, prInfo };
 
     const shouldMerge = await shouldAutoMergePR(mergeCtx);
@@ -289,7 +298,8 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
     }
 
     // `require_up_to_date` keeps GitHub's own auto-merge off: it would merge a
-    // behind head without the comparison below. Withdraw ProPR's own request.
+    // behind head without the comparison below. Withdraw ProPR's own request if
+    // it was armed after the early withdrawal above read the PR.
     if (decision.upToDate && pullRequest.autoMergeArmed) {
         await withdrawNativeAutoMergeForUpToDate({ owner, repo: repoName, prNumber, pullRequest, opportunity: 'check_merge', log });
     }
