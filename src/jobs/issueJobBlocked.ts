@@ -5,7 +5,10 @@
  * Loaded lazily, only for runs whose workflow enables the option.
  */
 import type { Logger } from 'pino';
-import { detectBlockerReport, safeUpdateLabels, type BlockerReport, type ClaudeCodeResponse, type IssueJobData } from '@propr/core';
+import {
+    clearEpicQueueHeadBlocked, detectBlockerReport, findPlanIssueByRepoAndNumber, markEpicQueueHeadBlocked, safeUpdateLabels,
+    type BlockerReport, type ClaudeCodeResponse, type IssueJobData,
+} from '@propr/core';
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { blockedRunOutcome, describeUncommittedFiles, notifyBlockedRun, quoteBlockerExplanation, type BlockedRunOutcome } from './blockedRun.js';
 
@@ -90,4 +93,32 @@ export async function handleIssueBlocker(options: IssueBlockerOptions): Promise<
         await notifyBlockedRun({ taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number, kind: 'issue' }, outcome, correlatedLogger);
     }
     return { success: false, pr: null, updatedLabels: [], blocked: outcome };
+}
+
+/**
+ * Keeps the plan's epic execution queue in step with the run's outcome. A
+ * blocked run holds its queued issue (the plan issue stays in progress), so the
+ * queue records why the epic stands still; a later run for the issue that
+ * settles without a blocker drops that explanation, and its merge or no-change
+ * completion advances the queue as usual. Best-effort: never throws.
+ */
+export async function syncEpicQueueBlocker({ issueRef, blocked, correlatedLogger }: {
+    issueRef: Pick<IssueJobData, 'repoOwner' | 'repoName' | 'number'>; blocked: boolean; correlatedLogger: Logger;
+}): Promise<void> {
+    const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+    try {
+        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+        if (!planIssue?.draft_id) return;
+        const target = { draftId: planIssue.draft_id, issueNumber: issueRef.number };
+        if (blocked) {
+            if (await markEpicQueueHeadBlocked(target)) {
+                correlatedLogger.info({ repository, ...target }, 'Epic execution queue is held by a blocked issue');
+            }
+        } else if (await clearEpicQueueHeadBlocked(target)) {
+            correlatedLogger.info({ repository, ...target }, 'Cleared the blocker on the epic execution queue after a normal run');
+        }
+    } catch (error) {
+        correlatedLogger.warn({ repository, issueNumber: issueRef.number, error: (error as Error).message },
+            'Could not update the epic execution queue for the run outcome');
+    }
 }

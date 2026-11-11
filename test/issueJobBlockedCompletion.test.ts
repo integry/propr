@@ -24,6 +24,8 @@ await mock.module('@propr/core', {
     },
 });
 await mock.module('../src/jobs/providerReplacement.js', { namedExports: { completeProviderReplacement } });
+const syncEpicQueueBlocker = mock.fn(async () => undefined);
+await mock.module('../src/jobs/issueJobBlocked.js', { namedExports: { syncEpicQueueBlocker } });
 
 const { getTaskCompletionStatus, markTaskComplete } = await import('../src/jobs/issueJob/completion.js');
 
@@ -54,9 +56,44 @@ test('a blocked run is completed with terminal reason blocked and leaves the pla
     assert.equal(completeProviderReplacement.mock.callCount(), 0, 'no provider replacement');
     assert.equal(updatePlanIssueStatus.mock.callCount(), 0, 'the plan issue is neither merged nor closed');
     assert.equal(dbUpdate.mock.callCount(), 0, 'no commit or PR recorded');
+    assert.equal(syncEpicQueueBlocker.mock.callCount(), 1);
+    const [sync] = syncEpicQueueBlocker.mock.calls[0].arguments as unknown as [{ blocked: boolean; issueRef: { number: number } }];
+    assert.equal(sync.blocked, true, 'the epic queue headed by this issue records the blocker');
+    assert.equal(sync.issueRef.number, 12);
+});
+
+test('a run that settles without a blocker releases a blocker recorded on the epic queue', async () => {
+    syncEpicQueueBlocker.mock.resetCalls();
+    const stateManager = { markTaskCompleted: mock.fn(async () => undefined), markTaskFailed: mock.fn(async () => undefined) };
+    await markTaskComplete({
+        stateManager: stateManager as never, taskId: 'task-13', issueRef: { repoOwner: 'acme', repoName: 'widgets', number: 12 } as never,
+        currentIssueLabels: [], claudeResult: { ...claudeResult, summary: 'Done.' } as never,
+        postProcessingResult: { success: true, pr: { number: 5, url: 'https://github.test/pr/5' }, updatedLabels: [] } as never,
+        commitResult: null, correlatedLogger: logger,
+    });
+    assert.equal(syncEpicQueueBlocker.mock.callCount(), 1);
+    assert.equal((syncEpicQueueBlocker.mock.calls[0].arguments as unknown as [{ blocked: boolean }])[0].blocked, false);
 });
 
 test('without a blocker the completion status is unchanged', () => {
     assert.equal(getTaskCompletionStatus(claudeResult as never, { success: true, pr: null, updatedLabels: [] }), 'claude_success_no_changes');
     assert.equal(getTaskCompletionStatus({ ...claudeResult, success: false } as never, { success: false, pr: null, updatedLabels: [], blocked }), 'claude_processing_failed');
+});
+
+test('a genuine no-change completion is not blocked and releases the queue as usual', async () => {
+    syncEpicQueueBlocker.mock.resetCalls();
+    updatePlanIssueStatus.mock.resetCalls();
+    const stateManager = { markTaskCompleted: mock.fn(async () => undefined), markTaskFailed: mock.fn(async () => undefined) };
+    const postProcessingResult = { success: true, pr: null, updatedLabels: ['AI-done'] };
+    assert.equal(getTaskCompletionStatus({ ...claudeResult, summary: 'Already implemented.' } as never, postProcessingResult), 'claude_success_no_changes');
+    await markTaskComplete({
+        stateManager: stateManager as never, taskId: 'task-14', issueRef: { repoOwner: 'acme', repoName: 'widgets', number: 12 } as never,
+        currentIssueLabels: [], claudeResult: { ...claudeResult, summary: 'Already implemented.' } as never, postProcessingResult,
+        commitResult: null, correlatedLogger: logger,
+    });
+    const [, result] = stateManager.markTaskCompleted.mock.calls[0].arguments as unknown as [string, Record<string, unknown>];
+    assert.equal(result.status, 'claude_success_no_changes');
+    assert.equal(result.terminalReason, undefined);
+    assert.equal((syncEpicQueueBlocker.mock.calls[0].arguments as unknown as [{ blocked: boolean }])[0].blocked, false);
+    assert.equal(updatePlanIssueStatus.mock.callCount(), 0, 'the no-change completion, not this step, records the merged status');
 });

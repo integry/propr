@@ -648,6 +648,7 @@ export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
+export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/reviewScoreStore.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login

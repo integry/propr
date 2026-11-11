@@ -15,6 +15,10 @@ const commitChanges = mock.fn(async () => null);
 const safeUpdateLabels = mock.fn(async () => ({ success: true, removed: ['AI-processing'], added: [], errors: [] }));
 const createNotificationEvent = mock.fn(async () => ({ id: 'event' }));
 const handleNoCodeChanges = mock.fn(async () => ({ success: true, pr: null, updatedLabels: ['AI-done'] }));
+let planIssue: { draft_id: string } | null = null;
+const findPlanIssueByRepoAndNumber = mock.fn(async () => planIssue);
+const markEpicQueueHeadBlocked = mock.fn(async () => true);
+const clearEpicQueueHeadBlocked = mock.fn(async () => false);
 const createPullRequest = mock.fn(async () => ({ success: true, pr: { number: 5, url: 'https://github.test/pr/5', title: 'PR' }, updatedLabels: [] }));
 
 await mock.module('@propr/core', {
@@ -39,6 +43,9 @@ await mock.module('@propr/core', {
         isGeneratedRuntimePath,
         createHooklessGit: () => ({ status: async () => ({ files: worktreeFiles.map(path => ({ path })) }) }),
         createNotificationEvent,
+        findPlanIssueByRepoAndNumber,
+        markEpicQueueHeadBlocked,
+        clearEpicQueueHeadBlocked,
     },
 });
 await mock.module('../src/jobs/issueJobHelpers.js', {
@@ -61,6 +68,7 @@ await mock.module('../src/jobs/runCostCap.js', {
 });
 
 const { performPostProcessing } = await import('../src/jobs/issueJobPostProcessing.js');
+const { syncEpicQueueBlocker } = await import('../src/jobs/issueJobBlocked.js');
 
 const logger = { debug: mock.fn(), info: mock.fn(), warn: mock.fn(), error: mock.fn() } as never;
 const comments: string[] = [];
@@ -87,7 +95,9 @@ function run(summary: string, reportsBlockers: boolean | undefined) {
 beforeEach(() => {
     worktreeFiles = [];
     comments.length = 0;
-    for (const fn of [commitChanges, safeUpdateLabels, createNotificationEvent, handleNoCodeChanges, createPullRequest]) fn.mock.resetCalls();
+    planIssue = null;
+    for (const fn of [commitChanges, safeUpdateLabels, createNotificationEvent, handleNoCodeChanges, createPullRequest,
+        findPlanIssueByRepoAndNumber, markEpicQueueHeadBlocked, clearEpicQueueHeadBlocked]) fn.mock.resetCalls();
 });
 
 const BLOCKED_SUMMARY = `I could not finish.\n\n${BLOCKER_MARKER} The payment sandbox credentials are missing.\nA sandbox key is needed.`;
@@ -179,4 +189,26 @@ test('a failed run with a marker keeps the failure handling', async () => {
     } as never).catch(() => undefined);
     assert.equal(createNotificationEvent.mock.callCount(), 0);
     assert.ok(comments.every(comment => !/stopped on a blocker/.test(comment)));
+});
+
+test('a blocked plan issue holds its epic queue; a later normal run releases it', async () => {
+    const issueRef = { repoOwner: 'acme', repoName: 'widgets', number: 12 };
+    await syncEpicQueueBlocker({ issueRef, blocked: true, correlatedLogger: logger });
+    assert.equal(markEpicQueueHeadBlocked.mock.callCount(), 0, 'an issue outside every plan has no queue');
+
+    planIssue = { draft_id: 'draft-1' };
+    await syncEpicQueueBlocker({ issueRef, blocked: true, correlatedLogger: logger });
+    assert.deepEqual(findPlanIssueByRepoAndNumber.mock.calls.at(-1)?.arguments, ['acme/widgets', 12]);
+    assert.deepEqual(markEpicQueueHeadBlocked.mock.calls[0].arguments, [{ draftId: 'draft-1', issueNumber: 12 }]);
+    assert.equal(clearEpicQueueHeadBlocked.mock.callCount(), 0);
+
+    await syncEpicQueueBlocker({ issueRef, blocked: false, correlatedLogger: logger });
+    assert.deepEqual(clearEpicQueueHeadBlocked.mock.calls[0].arguments, [{ draftId: 'draft-1', issueNumber: 12 }]);
+    assert.equal(markEpicQueueHeadBlocked.mock.callCount(), 1);
+});
+
+test('a queue write failure never fails the run', async () => {
+    planIssue = { draft_id: 'draft-1' };
+    markEpicQueueHeadBlocked.mock.mockImplementationOnce(async () => { throw new Error('database down'); });
+    await syncEpicQueueBlocker({ issueRef: { repoOwner: 'acme', repoName: 'widgets', number: 12 }, blocked: true, correlatedLogger: logger });
 });

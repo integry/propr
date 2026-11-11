@@ -93,6 +93,7 @@ ProPR looks for the marker only in the agent's final message, and only when it s
 When the agent reports a blocker:
 
 - **Issues:** nothing is committed and no pull request is opened. The processing label is removed, the done label is not added and a linked plan issue keeps its status. ProPR comments on the issue that the run stopped on a blocker and quotes the explanation.
+- **Epic execution queues:** a blocked issue is not finished, so the plan's queue does not advance past it under either advance policy, and a parallel execution does not complete. The queue's blocked reason (shown on the plan page and in MCP `get_plan`) says that the issue stopped on a blocker. Queue recovery does not restart or close the issue. Once you resolve the blocker and request processing again, a run that ends without a blocker clears the reason, and the queue continues as usual when the issue merges or completes without changes.
 - **Follow-ups and `/fix`:** nothing is committed or pushed and selected review findings stay pending. The completion comment states the blocker instead of the no-change text.
 - **Ultrafix:** a blocked fix step stops the loop with the reason `fix_step_blocked` instead of counting as a completed fix.
 - If the agent left changes in the worktree anyway, they are not committed and the comment lists the files.

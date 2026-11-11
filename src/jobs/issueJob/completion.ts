@@ -169,6 +169,17 @@ async function closeFailedPlanIssue(taskCompletionParams: TaskCompletionParams):
   }, 'Marked plan issue closed after terminal task without PR');
 }
 
+/** A blocked run holds its epic queue with an explanation; a later normal run releases it. */
+async function syncEpicQueueOutcome({ issueRef, claudeResult, postProcessingResult, correlatedLogger }: TaskCompletionParams): Promise<void> {
+  const blocked = getTaskCompletionStatus(claudeResult, postProcessingResult) === 'blocked';
+  try {
+    const { syncEpicQueueBlocker } = await import('../issueJobBlocked.js');
+    await syncEpicQueueBlocker({ issueRef, blocked, correlatedLogger });
+  } catch (error) {
+    correlatedLogger.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Could not update the epic execution queue for the run outcome');
+  }
+}
+
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
   const { taskId, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
@@ -183,6 +194,7 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
+    await syncEpicQueueOutcome(taskCompletionParams);
     await closeFailedPlanIssue(taskCompletionParams);
   } catch (stateError) {
     correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update terminal task state');
