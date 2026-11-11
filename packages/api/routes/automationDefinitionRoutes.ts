@@ -36,6 +36,7 @@ import {
 import {
   AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AUTOMATION_DEFINITION_CONTRACT,
+  automationRunNoChangeReason,
   DEFAULT_AUTOMATION_PREVIOUS_REPORTS,
   MAX_AUTOMATION_ATTACHMENTS,
   validateAutomationDefinitionInput,
@@ -172,6 +173,7 @@ export function automationDefinitionInputToPatch(body: Partial<AutomationDefinit
     patch.scheduleEnabled = body.schedule != null;
   }
   if (has(input, 'enabled')) patch.enabled = body.enabled;
+  if (has(input, 'pauseWhenUnproductive')) patch.pauseWhenUnproductive = body.pauseWhenUnproductive;
   if (has(input, 'agentId')) patch.agentAlias = body.agentId ?? null;
   if (has(input, 'model')) patch.modelName = body.model ?? null;
   if (has(input, 'previousReportCount')) {
@@ -199,11 +201,17 @@ async function attributedAgentDefinition(definition: StoredAgentDefinition) {
   return { ...publicAutomationDefinition(definition), createdBy: await projectCreator(definition.ownerId) };
 }
 
+/**
+ * A run as clients see it. `reportHash`, `reportNovelty` and `actingMutations`
+ * are stored flags; `noChangeReason` derives from them (null when the run
+ * produced something or has no flags) so every client shows the same badge.
+ */
 export function publicAutomationRun(run: StoredAgentRun, { includeReport }: { includeReport: boolean }) {
   const snapshot = run.definitionSnapshot ? publicAutomationDefinition(run.definitionSnapshot) : null;
-  if (includeReport) return { ...run, definitionSnapshot: snapshot };
+  const noChangeReason = automationRunNoChangeReason(run);
+  if (includeReport) return { ...run, noChangeReason, definitionSnapshot: snapshot };
   // History rows stay light: the report and the definition snapshot are only in the run detail.
-  const summary: Partial<StoredAgentRun> = { ...run };
+  const summary: Partial<StoredAgentRun> & { noChangeReason: typeof noChangeReason } = { ...run, noChangeReason };
   delete summary.report;
   delete summary.definitionSnapshot;
   return summary;
@@ -364,7 +372,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       includePreviousReports: input.includePreviousReports, previousReportsLimit: input.previousReportsLimit,
       scheduleCron: input.scheduleCron ?? null, scheduleTimezone: 'UTC', scheduleEnabled: input.scheduleEnabled ?? false,
       nextRunAt: null, autonomyMode: input.autonomyMode ?? AUTOMATION_DEFINITION_CONTRACT.defaultAutonomyMode,
-      extensionProfile: input.extensionProfile,
+      extensionProfile: input.extensionProfile, pauseWhenUnproductive: input.pauseWhenUnproductive ?? false,
       enabled: input.enabled ?? true, revision: 0, createdAt: timestamp, updatedAt: timestamp,
     };
     if (input.extensionProfile && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');

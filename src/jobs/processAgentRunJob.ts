@@ -27,9 +27,11 @@ import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
+import { reportNoveltyPatch } from './agentRuns/reportNovelty.js';
+import { evaluateUnproductiveStreakQuietly } from './agentRuns/unproductiveStreak.js';
 import { definitionReadsRepositories, prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import type { GitHubToken } from './githubTypes.js';
-import { compactNotificationRecap } from './notificationRecap.js';
+import { agentReportRecap } from './agentRuns/reportRecap.js';
 import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { defaultRunCostCapDeps, withRunCostCap, writeTimelineEvent } from './runCostCap.js';
 
@@ -43,6 +45,7 @@ import { defaultRunCostCapDeps, withRunCostCap, writeTimelineEvent } from './run
  */
 
 export { AgentRunPersistenceError, AgentRunSettlementError } from './agentRuns/runErrors.js';
+export { agentReportRecap } from './agentRuns/reportRecap.js';
 export { agentRunToolPolicy, type AgentRunMcpGrant, type AgentRunPhase } from './agentRuns/toolPolicy.js';
 
 export const AGENT_RUN_USAGE_LIMIT_REASON = 'provider usage limit reached; trigger again later';
@@ -80,6 +83,8 @@ export interface AgentRunProcessorDeps {
     resumeActing: (run: StoredAgentRun) => Promise<StoredAgentRun>;
     /** Run-scoped ProPR MCP grant for the agent container, revoked when the phase ends. */
     mcpGrants: { request: typeof requestAgentRunMcpGrant; revoke: typeof revokeAgentRunMcpGrant };
+    /** Unproductive-streak check once a run's flags are final; never throws. */
+    evaluateStreak: (run: StoredAgentRun | null) => Promise<void>;
 }
 
 async function defaultResolveAgent(definition: StoredAgentDefinition, log: Logger): Promise<ResolvedAgentRunAgent> {
@@ -120,6 +125,7 @@ export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
     advanceAfterReport: run => advanceAfterReport(run),
     resumeActing: run => enqueueAgentRunActionOrFail(run),
     mcpGrants: { request: requestAgentRunMcpGrant, revoke: revokeAgentRunMcpGrant },
+    evaluateStreak: run => evaluateUnproductiveStreakQuietly(run),
 };
 
 export function agentRunReportTaskId(runId: string): string {
@@ -139,14 +145,6 @@ export function agentRunIssueRef(definition: StoredAgentDefinition): IssueRef {
     };
 }
 
-/** First line of the report with content, compacted for the Inbox; a bare "Summary" heading is skipped. */
-export function agentReportRecap(report: string): string | undefined {
-    for (const line of report.split(/\r?\n/)) {
-        const recap = compactNotificationRecap(line);
-        if (recap) return recap;
-    }
-    return undefined;
-}
 
 const UNREADABLE_DEFINITION_REASON = 'The agent definition snapshot is unreadable';
 /** States in which the report phase is over and its task is complete. */
@@ -316,6 +314,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         if (task && !TERMINAL_TASK_STATES.has(task.state)) {
             await stateManager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(settled.report ?? run.report ?? '') });
         }
+        await deps.evaluateStreak(settled);
         return settled;
     }
 
@@ -540,7 +539,8 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             // before the report is stored, since a reported run can no longer be cancelled.
             const stoppedBeforeReport = await followCancelledTask({ runId, taskId, stateManager, log }, correlationId, 'before its report was stored');
             if (stoppedBeforeReport) return stoppedBeforeReport;
-            const reported = await deps.transitionRun(runId, ['running'], 'report_ready', { report });
+            const novelty = await reportNoveltyPatch(run, report, { listPrevious: deps.listPreviousReports, log });
+            const reported = await deps.transitionRun(runId, ['running'], 'report_ready', { report, ...novelty });
             if (!reported) {
                 return discardLateReport({ runId, taskId, stateManager, log }, correlationId);
             }

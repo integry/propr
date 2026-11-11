@@ -59,7 +59,7 @@ const SUCCESS = {
 };
 
 /** In-memory run and task stores honouring compare-and-set and terminal task states. */
-function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; task?: string | null; grantScopes?: string[] } = {}) {
+function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; task?: string | null; grantScopes?: string[]; mutatingOperations?: number | null | Error } = {}) {
   let current = options.run ?? actingRun();
   let task: string | null = options.task ?? null;
   const transitions: Array<{ from: readonly AutomationRunState[]; to: AutomationRunState; patch: Record<string, unknown> }> = [];
@@ -87,6 +87,9 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
   const buildPrompt = mock.fn(buildAgentActionPrompt);
   const grants = { requested: [] as string[], revoked: [] as string[] };
   const notified: StoredAgentRun[] = [];
+  /** The run's state each time the grant was revoked, and every run the streak check saw. */
+  const revokedWhile: AutomationRunState[] = [];
+  const evaluated: StoredAgentRun[] = [];
 
   const deps: Partial<AgentActionProcessorDeps> = {
     getRun: async () => current,
@@ -115,8 +118,15 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
         grants.requested.push(phase);
         return { grantId: 'grant-1', phase, url: 'http://api:4000/api/mcp', token: 'mcp-secret', expiresAt: NOW + 60_000, scopes: options.grantScopes ?? ['read', 'plan', 'execute'] };
       },
-      revoke: async (_runId, grant) => { grants.revoked.push(grant.grantId); },
+      revoke: async (_runId, grant) => {
+        grants.revoked.push(grant.grantId);
+        revokedWhile.push(current.state);
+        const counted = options.mutatingOperations;
+        if (counted instanceof Error) throw counted;
+        return { revoked: true, grantId: grant.grantId ?? null, calls: 1, mutatingOperations: counted === undefined ? null : counted };
+      },
     },
+    evaluateStreak: async run => { if (run) evaluated.push(run); },
     gate: async () => ({ action: 'proceed' }),
     pauseAction: async (_runId, skipReason) => {
       if (current.state !== 'acting' || current.actionTaskId !== null || current.approvedBy !== null) return null;
@@ -125,7 +135,7 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
     },
     notifyAwaitingApproval: async waiting => { notified.push(waiting); },
   };
-  return { deps, run: () => current, taskState: () => task, transitions, stateCalls, executeTask, prepareWorkspace, buildPrompt, cleanup, grants, notified };
+  return { deps, run: () => current, taskState: () => task, transitions, stateCalls, executeTask, prepareWorkspace, buildPrompt, cleanup, grants, notified, revokedWhile, evaluated };
 }
 
 describe('processAgentActionJob', () => {
@@ -443,4 +453,41 @@ test('extension automation captures instance restriction before agent.executeTas
   const result = await createAgentActionProcessor(h.deps)(actionJob());
   assert.equal(result.status, 'complete');
   assert.equal(fixture.captures(), 1);
+});
+
+describe('acting-step mutation count', () => {
+  test('the grant is revoked before the run completes, and its mutation count is stored on the run', async () => {
+    const h = harness({ mutatingOperations: 2 });
+    const result = await createAgentActionProcessor(h.deps)(actionJob());
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(h.revokedWhile, ['acting'], 'counted while the run is still acting, and revoked once');
+    assert.equal(h.run().state, 'completed');
+    assert.equal(h.run().actingMutations, 2);
+    assert.deepEqual(h.evaluated.map(run => run.actingMutations), [2], 'the streak check sees the stored count');
+  });
+
+  test('zero mutations is recorded as a no-op acting step; the run still completes', async () => {
+    const h = harness({ mutatingOperations: 0 });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'complete');
+    assert.equal(h.run().state, 'completed');
+    assert.equal(h.run().actingMutations, 0);
+  });
+
+  test('an unknown count stays null rather than reading as a no-op', async () => {
+    for (const mutatingOperations of [null, new Error('API unreachable')]) {
+      const h = harness({ mutatingOperations });
+      assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'complete');
+      assert.equal(h.run().actingMutations, null);
+      assert.equal(h.grants.revoked.length, 1);
+    }
+  });
+
+  test('a failed acting step stores no count', async () => {
+    const h = harness({ mutatingOperations: 0, execute: async () => { throw new Error('agent crashed'); } });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.run().actingMutations, undefined);
+    assert.deepEqual(h.grants.revoked, ['grant-1']);
+    assert.equal(h.evaluated.length, 0);
+  });
 });

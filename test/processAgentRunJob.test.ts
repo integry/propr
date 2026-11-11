@@ -7,6 +7,7 @@ import type { Job } from 'bullmq';
 import type { AutomationRunState } from '@propr/shared';
 import type { AgentRunJobData, AgentTaskOptions, StoredAgentDefinition, StoredAgentRun } from '@propr/core';
 import { UsageLimitError } from '../packages/core/src/claude/claudeHelpers.ts';
+import { hashAgentReport } from '../packages/core/src/services/agents/agentRunNovelty.ts';
 
 // The scratch workspace root is read from the environment at import time.
 const SCRATCH_BASE = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-run-worktrees-'));
@@ -83,6 +84,8 @@ interface Harness {
   /** Runs whose action phase was enqueued, and owners told about a preview report. */
   enqueuedActions: string[];
   notified: string[];
+  /** Runs the unproductive-streak check was given. */
+  evaluated: StoredAgentRun[];
 }
 
 /** In-memory run store honouring the compare-and-set semantics of `transitionAgentRun`. */
@@ -132,12 +135,13 @@ function harness(options: {
 
   const enqueuedActions: string[] = [];
   const notified: string[] = [];
+  const evaluated: StoredAgentRun[] = [];
   const startActing = async (acting: StoredAgentRun) => { enqueuedActions.push(acting.id); return acting; };
 
   return {
     run: () => current,
     taskState: () => task,
-    transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified,
+    transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified, evaluated,
     deps: {
       getRun: async () => current,
       transitionRun,
@@ -162,6 +166,7 @@ function harness(options: {
         notifyAwaitingApproval: async waiting => { notified.push(waiting.ownerId); },
       }),
       resumeActing: startActing,
+      evaluateStreak: async run => { if (run) evaluated.push(run); },
     },
   };
 }
@@ -229,10 +234,13 @@ describe('processAgentRunJob', () => {
     assert.equal(promptInput.run.id, 'run-1');
   });
 
-  test('previous reports are not loaded when the definition does not include them', async () => {
+  test('previous reports are not given to the prompt when the definition does not include them', async () => {
     const h = harness({ run: storedRun({ definitionSnapshot: definition({ includePreviousReports: false }) }) });
     await createAgentRunProcessor(h.deps)(job);
-    assert.equal(h.listPreviousReports.mock.callCount(), 0);
+    const promptInput = h.buildPrompt.mock.calls[0].arguments[0] as { previousReports: unknown };
+    assert.deepEqual(promptInput.previousReports, []);
+    // Only the novelty check reads the previous report, and only the latest one.
+    assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [['def-1', { limit: 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }]]);
   });
 
   for (const state of ['cancelled', 'skipped', 'deferred'] as const) {
@@ -1193,5 +1201,51 @@ describe('report task model identity', () => {
     const execution = h.stateCalls.find(call => call[0] === 'update' && call[2] === 'claude_execution')!;
     assert.deepEqual(execution[3], { reason: 'Running agent codex' });
     assert.deepEqual(reportTaskIdentity(h, run), { modelName: null, agentAlias: null });
+  });
+});
+
+describe('report novelty', () => {
+  const reportWith = (summary: string) => async () => ({ success: true, logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 10, summary });
+  const BODY = '## Summary\nTwo dependencies are outdated: lodash and react, both in acme/web.';
+
+  test('the report is stored with its normalised hash and novelty, then the streak is checked', async () => {
+    const h = harness({ execute: reportWith(`${BODY}\nChecked 2026-11-11.`) });
+    h.listPreviousReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Something else entirely, said at length.' }]);
+    await createAgentRunProcessor(h.deps)(job);
+    const reported = h.transitions.find(t => t.to === 'report_ready');
+    assert.equal(reported?.patch.reportNovelty, 'new');
+    assert.equal(reported?.patch.reportHash, hashAgentReport(`${BODY}\nChecked 2026-11-12.`));
+    assert.equal(h.run().state, 'completed', 'the state machine is unchanged');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['completed', 'new']]);
+  });
+
+  test('the same report as the previous run, apart from its date and run id, is unchanged', async () => {
+    const h = harness({ execute: reportWith(`${BODY}\nRun run-1 on 2026-11-11.`) });
+    h.listPreviousReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: `${BODY}\n\nRun run-0 on 2026-11-10.` }]);
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().reportNovelty, 'unchanged');
+    assert.equal(h.run().state, 'completed');
+  });
+
+  test('a report below the minimum length is empty', async () => {
+    const h = harness({ execute: reportWith('Nothing new.') });
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().reportNovelty, 'empty');
+    assert.equal(h.run().state, 'completed');
+  });
+
+  test('without a previous report the report is new; an unreadable previous report leaves the flags null', async () => {
+    const first = harness({ execute: reportWith(BODY) });
+    first.listPreviousReports.mock.mockImplementation(async () => []);
+    await createAgentRunProcessor(first.deps)(job);
+    assert.equal(first.run().reportNovelty, 'new');
+
+    const unreadable = harness({ execute: reportWith(BODY), run: storedRun({ definitionSnapshot: definition({ includePreviousReports: false }) }) });
+    unreadable.listPreviousReports.mock.mockImplementation(async () => { throw new Error('database unavailable'); });
+    const result = await createAgentRunProcessor(unreadable.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(unreadable.run().state, 'completed');
+    assert.equal(unreadable.run().reportNovelty, undefined);
+    assert.equal(unreadable.run().reportHash, undefined);
   });
 });

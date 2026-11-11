@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { AUTOMATION_RUN_EXIT_CODES, createAutomationCommand } from "./automationCommands.js";
+import { AUTOMATION_RUN_EXIT_CODES, createAutomationCommand, runChangeLabel } from "./automationCommands.js";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleLog = console.log;
@@ -336,4 +336,29 @@ test("list and runs print tables, and the group answers to its alias", async () 
   assert.equal(runs.requests[0].url.searchParams.get("limit"), "5");
   assert.match(runs.stdout, /skipped/);
   assert.match(runs.stdout, /No capacity/);
+});
+
+test("runs and report show whether a run produced anything", async () => {
+  const runs = await run(["runs", "agent-1"], () => ({ body: { runs: [
+    runFixture({ id: "run-3", state: "completed", reportNovelty: "unchanged", actingMutations: null, noChangeReason: "unchanged_report" }),
+    runFixture({ id: "run-2", state: "completed", reportNovelty: "new", actingMutations: 2, noChangeReason: null }),
+    runFixture({ id: "run-1", state: "completed" }),
+  ], total: 3, limit: 20, offset: 0 } }));
+  assert.match(runs.stdout, /Change/);
+  assert.match(runs.stdout, /run-3 .*no change \(same report as the previous run\)/);
+  assert.match(runs.stdout, /run-2 .*new report, 2 changes/);
+
+  const report = await run(["report", "run-1"], () => ({ body: { run: runFixture({ state: "completed", report: "## Summary", reportedAt: 1_790_000_000_000, reportNovelty: "new", actingMutations: 0, noChangeReason: "no_op_action" }) } }));
+  assert.match(report.stderr, /change: no change \(the acting step changed nothing\)/);
+  assert.equal(report.stdout, "## Summary");
+
+  const json = await run(["runs", "agent-1", "--json"], () => ({ body: { runs: [runFixture({ reportNovelty: "empty", reportHash: "a".repeat(64), noChangeReason: "empty_report" })], total: 1, limit: 20, offset: 0 } }));
+  const document = JSON.parse(json.stdout) as { runs: Array<Record<string, unknown>> };
+  assert.equal(document.runs[0].reportNovelty, "empty");
+  assert.equal(document.runs[0].noChangeReason, "empty_report");
+});
+
+test("runChangeLabel is empty for runs without flags", () => {
+  assert.equal(runChangeLabel(runFixture() as never), "");
+  assert.equal(runChangeLabel(runFixture({ actingMutations: 1, reportNovelty: "unchanged", noChangeReason: null }) as never), "1 change");
 });

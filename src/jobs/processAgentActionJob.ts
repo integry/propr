@@ -43,7 +43,7 @@ import {
 export const AGENT_ACTION_ABANDONED_REASON = 'The worker running the acting step stopped before it finished; trigger the agent again';
 
 export interface AgentActionProcessorDeps extends Pick<AgentRunProcessorDeps,
-    'getRun' | 'transitionRun' | 'validateDefinition' | 'stateManager' | 'getGitHubAccess' | 'resolveAgent' | 'withCostCap' | 'mcpGrants'> {
+    'getRun' | 'transitionRun' | 'validateDefinition' | 'stateManager' | 'getGitHubAccess' | 'resolveAgent' | 'withCostCap' | 'mcpGrants' | 'evaluateStreak'> {
     /** Records the action task on an `acting` run; null when another delivery claimed it first. */
     claimAction: (runId: string, actionTaskId: string) => Promise<StoredAgentRun | null>;
     prepareWorkspace: PrepareAgentRunWorkspace;
@@ -68,6 +68,7 @@ export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
     resolveAgent: defaultAgentRunProcessorDeps.resolveAgent,
     withCostCap: defaultAgentRunProcessorDeps.withCostCap,
     mcpGrants: { request: requestAgentRunMcpGrant, revoke: revokeAgentRunMcpGrant },
+    evaluateStreak: defaultAgentRunProcessorDeps.evaluateStreak,
     claimAction: (runId, actionTaskId) => claimAgentRunAction(runId, actionTaskId),
     prepareWorkspace: defaultAgentRunProcessorDeps.prepareWorkspace,
     buildPrompt: buildAgentActionPrompt,
@@ -301,11 +302,17 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             const taskStopped = await followCancelledTask(context, 'while its agent was executing');
             if (taskStopped) return taskStopped;
             const actionSummary = actionSummaryFromResult(result);
-            const completed = await deps.transitionRun(runId, ['acting'], 'completed', { actionSummary });
+            // End the grant before the run, so the count of what it changed is final when stored;
+            // an unknown count (the revoke failed) stays null rather than reading as a no-op.
+            const revoked = await revokeGrantQuietly(deps.mcpGrants.revoke, runId, mcpGrant, log);
+            mcpGrant = null;
+            const actingMutations = revoked?.mutatingOperations ?? null;
+            const completed = await deps.transitionRun(runId, ['acting'], 'completed', { actionSummary, actingMutations });
             if (!completed) return taskFollowsRun(context);
             await settleTask(context, manager => manager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(actionSummary) }));
             actionSucceeded = true;
-            log.info({ runId, taskId, agentAlias: alias, model }, 'Agent run acting step completed');
+            log.info({ runId, taskId, agentAlias: alias, model, actingMutations }, 'Agent run acting step completed');
+            await deps.evaluateStreak(completed);
             return { status: 'complete', runId, taskId, state: 'completed', correlationId };
         } catch (error) {
             if (error instanceof AgentRunSettlementError || error instanceof AgentRunPersistenceError) throw error;

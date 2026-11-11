@@ -166,6 +166,7 @@ test('a report grant is read-only, limited to the run snapshot repositories and 
   assert.equal(revoked.body.revoked, true);
   // The worker warns about a grant that was never used; this one made no MCP call.
   assert.equal(revoked.body.calls, 0);
+  assert.equal(revoked.body.mutatingOperations, 0);
   await assert.rejects(policy.authenticate(token));
   assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), undefined);
   assert.equal((await post('/revoke', signed('report'))).body.revoked, false);
@@ -213,6 +214,36 @@ test('an action grant may plan, execute and review but never merge, deploy or ma
   runs.set('run-1', run({ state: 'failed' }));
   assert.equal((await post('/revoke', signed('action'))).body.revoked, true);
   await assert.rejects(policy.authenticate(response.body.token as string));
+});
+
+test('revoking an acting grant reports the mutating operations it performed', async () => {
+  runs.set('run-1', run({ state: 'acting' }));
+  const issued = await post('', signed('action'));
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const grantId = issued.body.grantId as string;
+  let sequence = 0;
+  const receipt = (grant: string, state: string, lifecycle = state) => {
+    sequence += 1;
+    return { id: `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`, owner_id: OWNER, grant_id: grant, idempotency_key: `key-${sequence}-abcdef`,
+      tool: 'create_todo', payload_hash: 'x'.repeat(64), state, lifecycle, created_at: Date.now(), updated_at: Date.now(), accepted_at: Date.now() };
+  };
+  await db('mcp_operations').insert([
+    receipt(grantId, 'completed'),
+    receipt(grantId, 'posted', 'accepted'),
+    receipt(grantId, 'unknown'), // the outcome is unknown, so it may have changed something
+    receipt(grantId, 'failed'),
+    receipt(grantId, 'completed', 'failed'),
+    receipt(grantId, 'browser_required', 'accepted'),
+    receipt('another-grant', 'completed'),
+  ]);
+  const revoked = await post('/revoke', { ...signed('action'), grantId });
+  assert.equal(revoked.status, 200);
+  assert.equal(revoked.body.revoked, true);
+  assert.equal(revoked.body.mutatingOperations, 3);
+  // A grant that is already gone reports no count rather than a no-op.
+  const again = await post('/revoke', { ...signed('action'), grantId });
+  assert.equal(again.body.revoked, false);
+  assert.equal(again.body.mutatingOperations, null);
 });
 
 test('a retried phase replaces its grant and revokes the previous token', async () => {

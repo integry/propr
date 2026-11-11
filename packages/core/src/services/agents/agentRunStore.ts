@@ -4,9 +4,11 @@ import {
   AUTOMATION_REPORT_MAX_CHARS,
   DEFAULT_AUTOMATION_AUTONOMY_MODE,
   isAutomationAutonomyMode,
+  isAutomationReportNovelty,
   isAutomationRunState,
   isTerminalAutomationRunState,
   type AutomationAutonomyMode,
+  type AutomationReportNovelty,
   type AutomationRunState,
   type AutomationRunTrigger,
 } from '@propr/shared';
@@ -87,6 +89,12 @@ export interface StoredAgentRun {
   operatorNote: string | null;
   deferredUntil: number | null;
   deferrals: number;
+  /** Normalised SHA-256 of the stored report (`agentRunNovelty`); null before a report and for older runs. */
+  reportHash: string | null;
+  /** new, unchanged (same hash as the previous reported run) or empty; null before a report and for older runs. */
+  reportNovelty: AutomationReportNovelty | null;
+  /** Mutating MCP operations the acting step's grant performed; 0 is a no-op acting step, null when unknown or not acted. */
+  actingMutations: number | null;
   createdAt: number;
   startedAt: number | null;
   reportedAt: number | null;
@@ -100,6 +108,7 @@ export interface AgentRunRow {
   report_task_id: string | null; action_task_id: string | null; report: string | null;
   report_truncated: boolean | number; action_summary: string | null; skip_reason: string | null;
   failure_reason: string | null; approved_by: string | null; operator_note: string | null; deferred_until: number | null; deferrals: number;
+  report_hash?: string | null; report_novelty?: string | null; acting_mutations?: number | string | null;
   created_at: number; started_at: number | null; reported_at: number | null; finished_at: number | null;
   updated_at: number;
 }
@@ -147,6 +156,9 @@ export function rowToAgentRun(row: AgentRunRow): StoredAgentRun {
     operatorNote: row.operator_note ?? null,
     deferredUntil: toNumberOrNull(row.deferred_until),
     deferrals: Number(row.deferrals ?? 0),
+    reportHash: row.report_hash ?? null,
+    reportNovelty: isAutomationReportNovelty(row.report_novelty) ? row.report_novelty : null,
+    actingMutations: toNumberOrNull(row.acting_mutations),
     createdAt: Number(row.created_at),
     startedAt: toNumberOrNull(row.started_at),
     reportedAt: toNumberOrNull(row.reported_at),
@@ -216,6 +228,9 @@ export async function createAgentRun(
     operator_note: null,
     deferred_until: state === 'deferred' ? input.deferredUntil ?? null : null,
     deferrals: state === 'deferred' ? 1 : 0,
+    report_hash: null,
+    report_novelty: null,
+    acting_mutations: null,
     created_at: timestamp,
     started_at: null,
     reported_at: null,
@@ -260,6 +275,9 @@ export interface AgentRunTransitionPatch {
   operatorNote?: string | null;
   /** Required when moving to `deferred`. */
   deferredUntil?: number | null;
+  reportHash?: string | null;
+  reportNovelty?: AutomationReportNovelty | null;
+  actingMutations?: number | null;
 }
 
 function patchToRowChanges(patch: AgentRunTransitionPatch): Record<string, unknown> {
@@ -277,6 +295,9 @@ function patchToRowChanges(patch: AgentRunTransitionPatch): Record<string, unkno
   if (patch.approvedBy !== undefined) changes.approved_by = patch.approvedBy;
   if (patch.operatorNote !== undefined) changes.operator_note = patch.operatorNote;
   if (patch.deferredUntil !== undefined) changes.deferred_until = patch.deferredUntil;
+  if (patch.reportHash !== undefined) changes.report_hash = patch.reportHash;
+  if (patch.reportNovelty !== undefined) changes.report_novelty = patch.reportNovelty;
+  if (patch.actingMutations !== undefined) changes.acting_mutations = patch.actingMutations;
   return changes;
 }
 

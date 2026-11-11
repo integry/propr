@@ -572,6 +572,7 @@ export * from './prTemplate.js';
 // Agents: definition/run contract and the UTC cron evaluator shared by the
 // API, MCP, CLI, UI, worker and scheduler.
 export * from './automationDefinitions.js';
+export * from './automationRunProductivity.js';
 // Deprecated names remain available to existing clients.
 export * from './agentDefinitions.js';
 export * from './cronSchedule.js';

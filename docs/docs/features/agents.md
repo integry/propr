@@ -243,6 +243,19 @@ An automation without repositories can only create TODOs.
 
 Only one autonomy mode applies to every action. Per-action-kind autonomy (for example "create TODOs automatically, but ask before starting tasks") is deferred beyond v1.
 
+## Runs that change nothing
+
+A scheduled automation can finish every night with an empty report, the same report as last time, or an acting step that did nothing. Such runs still end as `completed`, but ProPR flags them:
+
+- **Report novelty.** When a report is stored, ProPR saves a SHA-256 hash of its normalised text (`reportHash`: whitespace collapsed; dates, times, weekdays, relative times like "3 hours ago" and run ids replaced) and compares it with the previous reported run of the same automation. `reportNovelty` is `new`, `unchanged` (same hash) or `empty` (fewer than 40 characters after normalisation).
+- **Acting-step changes.** When the acting step ends, ProPR counts the mutating MCP operations its grant performed before revoking the grant, and stores the count as `actingMutations`. Calls that definitely failed are not counted. `0` marks a no-op acting step. If the count cannot be read, it stays `null`, which is not treated as a no-op.
+
+A run is shown as **No change** in the run history and run detail when its report is `empty` or `unchanged`, or its acting step changed nothing. An acting step that changed something counts as productive whatever its report said. The REST run payload, MCP `get_automation_run` and `list_automation_runs`, and the CLI (`propr automation runs`, `propr automation report`) also carry the flags, plus a derived `noChangeReason` (`empty_report`, `unchanged_report`, `no_op_action` or `null`). Runs recorded before this version have `null` flags.
+
+**Streak notification.** After 3 consecutive unproductive **scheduled** runs, the owner gets one Inbox notification naming the automation. It is not repeated while the streak continues; the next productive scheduled run resets it. Manual and other non-scheduled runs are flagged but neither count toward the streak nor reset it. Change the number with the instance setting `automation_unproductive_run_threshold` (1–50, default 3), for example `propr setting update automation_unproductive_run_threshold 5` or MCP `update_execution_settings`. It is not in the Settings UI.
+
+**Pausing the schedule.** Turn on **Pause the schedule when scheduled runs keep producing no change** under the automation's schedule (`pauseWhenUnproductive: true` over the API) to have ProPR turn the schedule off when the notification fires. It uses the same path as other automatic schedule disables, logs the reason, and says so in the notification. It is off by default. Turn the schedule back on once the prompt is fixed.
+
 ## Cost control
 
 Unattended runs (`schedule`, `api`, `cli`, `mcp`) start while nobody is watching. Before one is queued, before a deferred run is retried and before an `auto` acting step starts, ProPR compares the provider's subscription usage from [Agent Tank](../operations/agent-tank.md) with the instance's **pause threshold**.
@@ -288,6 +301,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 - **`MCP_DISABLED`.** The grant request failed because ProPR's MCP server is not enabled on this instance. An administrator enables it under **Settings → Integrations & MCP → MCP Server** (see [MCP](./mcp.md)). Until then, use `dry_run` automations without `propr_mcp`.
 - **`SYSTEM_TASK_SECRET_MISSING` or "ProPR API unreachable".** The worker could not request the grant. `SYSTEM_TASK_SECRET` must be set, and identical, on the API and worker. The worker must reach the API at `PROPR_INTERNAL_API_URL` (default `http://api:4000`). Agent containers must reach the MCP endpoint at `PROPR_AGENT_MCP_URL`. See [execution safety](./execution-safety.md#agent-runs).
 - **The report says the `propr` MCP tools were unavailable.** The grant was issued but the agent container never reached the MCP endpoint; the worker log carries "Agent run MCP grant ended without a single recorded call" with the URL and Docker network it used. A container with a grant joins the worker's Compose network so the default `http://api:4000/api/mcp` resolves. If the worker runs outside Compose, set `PROPR_AGENT_DOCKER_NETWORK` to the API's network, or point `PROPR_AGENT_MCP_URL` at an address the default bridge can reach.
+- **The schedule turned itself off after an Inbox item about runs with no change.** The automation has **Pause the schedule when scheduled runs keep producing no change** turned on, and its last scheduled runs produced nothing new (see [Runs that change nothing](#runs-that-change-nothing)). Review the prompt, then turn the schedule back on.
 - **The schedule turned itself off.** When the owner is no longer an instance member, the daemon skips the slot and disables the automation's schedule. The definition and its history stay. A new owner has to recreate the automation: definitions cannot be transferred in v1.
 - **The schedule cannot be evaluated.** A stored expression that no longer parses disables the schedule with that reason. Edit and save a valid one.
 - **`REPOSITORY_FORBIDDEN` or a repository access error on trigger.** Your GitHub account, or the MCP grant you are using, lost access to one of the automation's repositories. MCP hides such automations from `list_automation_definitions`.
