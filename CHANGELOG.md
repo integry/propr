@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Automation templates**: a versioned catalog of automation templates ships
+  in `@propr/shared`, generated from `packages/shared/automation-templates/`
+  and checked in CI against the automation definition contract
+  (`npm run automation-templates:check`). The new-automation form offers
+  **Start from a template**, and the empty Automations list shows the
+  templates; choosing one only fills the form, always in `dry_run`, with a
+  note on what to review (repositories, schedule, autonomy) before saving.
+  The first template is **Daily issue triage**: a report of issues that need
+  a human, likely duplicates, proposed severity and security labels and stale
+  issues. The catalog is also served by
+  `GET /api/automation-definitions/templates`, the MCP read tool
+  `list_automation_templates` and `propr automation templates`.
+
 ### Fixed
 
 - **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
