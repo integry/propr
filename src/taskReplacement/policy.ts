@@ -15,6 +15,8 @@ export type ReplacementSkipReason =
     | 'issue_closed'
     | 'watchdog_stop'
     | 'cost_cap_stop'
+    /** The agent reported a blocker; another provider would hit the same one. */
+    | 'blocked_stop'
     | 'goal_task'
     | 'unsupported_task'
     /** The claimed replacement was finalized by reconciliation before any worker ran it. */
@@ -31,6 +33,7 @@ const SKIP_REASON_TEXT: Record<ReplacementSkipReason, string> = {
     issue_closed: 'the issue was closed',
     watchdog_stop: 'the task was stopped by the stall watchdog or its run timeout',
     cost_cap_stop: 'the task was stopped by its cost cap',
+    blocked_stop: 'the agent stopped and reported a blocker',
     goal_task: 'goal tasks use goal recovery instead',
     unsupported_task: 'this task type cannot be replaced automatically',
     replacement_not_started: 'the replacement attempt was ended by reconciliation before it started',
@@ -60,6 +63,7 @@ export function stopReasonExclusion(terminalReason: unknown): ReplacementSkipRea
     if (terminalReason.startsWith('cancelled_') || terminalReason === 'user_cancelled') return 'user_cancelled';
     if (/watchdog|stall|timed_out/i.test(terminalReason)) return 'watchdog_stop';
     if (/(cost|spend|budget)_?cap|budget_exceeded|cost_limit/i.test(terminalReason)) return 'cost_cap_stop';
+    if (terminalReason === 'blocked') return 'blocked_stop';
     return null;
 }
 

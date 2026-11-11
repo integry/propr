@@ -579,6 +579,8 @@ test('replacement configuration resolves the saved setting, then the environment
     assert.equal(stopReasonExclusion('cancelled_issue_closed'), 'user_cancelled');
     assert.equal(stopReasonExclusion('pr_merged'), null);
     assert.equal(stopReasonExclusion('cost_cap_exceeded'), 'cost_cap_stop', 'a run stopped at its cost cap is never replaced');
+    assert.equal(stopReasonExclusion('blocked'), 'blocked_stop', 'a run that reported a blocker is never replaced');
+    assert.equal(isTransientProviderError(new Error('503 Service Unavailable'), 'blocked'), false);
 });
 
 /** Captures the original's replacement state at the moment each failure alert is published. */

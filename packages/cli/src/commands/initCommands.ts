@@ -117,6 +117,8 @@ hooks:
 #   method: squash
 #   protected_paths:
 #     - ".github/workflows/**"
+# Stop and report a blocker (no commit, no PR) instead of delivering a reduced version.
+# on_blocker: report
 `;
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [

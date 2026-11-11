@@ -47,7 +47,7 @@ import { buildWorkNotificationRecap, fullNotificationSummary } from './notificat
 import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 
-interface PostExecutionState {
+export interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     worktreeInfo: WorktreeInfo | undefined;
     claudeResult: ClaudeCodeResponse | null;
@@ -58,13 +58,13 @@ interface PostExecutionState {
     followupHandoff?: FollowupHandoffRecord | null;
 }
 
-interface ReadyPostExecutionState extends PostExecutionState {
+export interface ReadyPostExecutionState extends PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
     claudeResult: ClaudeCodeResponse;
     startingWorkComment: { data: { id: number; html_url: string } };
 }
 
-interface PostExecutionContext {
+export interface PostExecutionContext {
     pullRequestNumber: number;
     repoOwner: string;
     repoName: string;
@@ -91,7 +91,7 @@ export interface PublicationCompletion {
     commitMessage: string;
 }
 
-interface PostExecutionParams {
+export interface PostExecutionParams {
     recoveredCompletion?: PublicationCompletion;
     state: PostExecutionState;
     job: Job<CommentJobData>;
@@ -107,6 +107,8 @@ interface PostExecutionParams {
     visualPreviewSettings?: VisualPreviewSettings;
     /** The source issue the pull request closes, for auto-assignment. */
     linkedIssue?: LinkedIssueReference | null;
+    /** `on_blocker: report` in the run's workflow snapshot: a reported blocker ends the run without publishing. */
+    reportsBlockers?: boolean;
 }
 
 interface UndoContextParams {
@@ -335,7 +337,15 @@ function conflictIntegrator(params: PostExecutionParams) {
     }, worktreePath);
 }
 
-export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
+export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean; blocked?: boolean }> {
+    // `on_blocker: report`: a run whose agent reported a blocker commits and pushes nothing.
+    if (params.reportsBlockers && await (await import('./prCommentBlocked.js')).settleReportedFollowUpBlocker(params, taskUrl, updateCompletionComment)) {
+        return { partial: false, blocked: true };
+    }
+    return publishPostExecution(params, taskUrl);
+}
+
+async function publishPostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
     const {
         state,
         job,

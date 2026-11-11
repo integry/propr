@@ -32,6 +32,16 @@ const CANCELLATION_REASONS = new Set([
   'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged',
 ]);
 
+/**
+ * A worker can finish after deferring a review without running it: its
+ * activity stays terminal, but no result is advertised in Inbox or push. A
+ * run that stopped on a reported blocker is not a success either; the worker
+ * records its own warning-severity notification for it.
+ */
+function withholdsCompletedNotification(reviewDeferred: boolean | undefined, payload: TaskUpdatePayload): boolean {
+  return Boolean(reviewDeferred) || payload.metadata?.terminalReason === 'blocked';
+}
+
 function isNotifiableCancellation(payload: TaskUpdatePayload): boolean {
   const terminalReason = payload.metadata?.terminalReason;
   return payload.state === 'cancelled'
@@ -674,9 +684,7 @@ export class NotificationProjectionService {
       return;
     }
     if (payload.state !== 'completed') return;
-    // A worker can finish after deferring a review without running it. Keep
-    // its activity terminal, but do not advertise a result in Inbox or push.
-    if (context.reviewDeferred) return;
+    if (withholdsCompletedNotification(context.reviewDeferred, payload)) return;
 
     if (context.isReview && context.prNumber !== undefined) {
       await this.projectCompletedReview(
