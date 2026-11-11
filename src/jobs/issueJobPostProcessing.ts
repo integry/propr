@@ -276,7 +276,9 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueTitle: currentIssueData.data.title,
                 visualPreview: { evidence: preparedVisualPreview.evidence, worktreePath: worktreeInfo.worktreePath },
                 taskId,
-                stateManager
+                stateManager,
+                // Lazily loaded: the worker's Redis client module pulls in configuration readers.
+                redis: await import('./issueJob/config.js').then(config => config.redisClient, () => null)
             }
         );
 

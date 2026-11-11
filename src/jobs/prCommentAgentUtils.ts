@@ -8,6 +8,7 @@ import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './prCommentJobHelpers.js';
+import { startTaskFileChangesCapture } from './liveFileChangesCapture.js';
 import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
 import { isGenericPrTitleText, selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
@@ -282,6 +283,8 @@ export interface AgentExecutionParams {
     repositoryWorkflow?: ResolvedRepositoryWorkflow;
     /** Only implementation follow-ups participate in repository workflow policy. */
     applyRepositoryWorkflow?: boolean;
+    /** Capture live changed files (`task:file-changes:<taskId>`) while the agent runs, as issue runs do. */
+    captureFileChanges?: boolean;
     /** Extra durable sink for the started container's identity, beyond task state. */
     onContainerInfo?: (containerId: string, containerName: string) => Promise<void>;
 }
@@ -344,10 +347,21 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
             reasoningLevel,
         });
     };
-    const agentResult = await (params.applyRepositoryWorkflow ? runRepositoryWorkflow({
-        workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
-    // Outside the workflow the agent still runs under the run's network policy (and its timeline record).
-    }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
+    // Follow-up and /fix runs own their task, so they capture live changes exactly like issue runs.
+    const fileChangesCapture = params.captureFileChanges && params.applyRepositoryWorkflow && worktreePath
+        ? await startTaskFileChangesCapture({ taskId, worktreePath, repository: `${repoOwner}/${repoName}`, redis: redisClient, log: correlatedLogger })
+        : null;
+    let agentResult;
+    let completed = false;
+    try {
+        agentResult = await (params.applyRepositoryWorkflow ? runRepositoryWorkflow({
+            workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
+        // Outside the workflow the agent still runs under the run's network policy (and its timeline record).
+        }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
+        completed = true;
+    } finally {
+        await fileChangesCapture?.stop({ finalCapture: completed });
+    }
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
 }

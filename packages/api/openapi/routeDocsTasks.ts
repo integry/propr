@@ -57,7 +57,8 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     summary: 'List the files a task changed',
     tags: ['Tasks'],
     pathParams: { taskId: TASK_ID },
-    responses: { 200: { description: 'Changed files with their diffs.', schema: JsonObject } },
+    description: 'Also returns `overlaps`: other active tasks on the same repository whose live changes currently touch the same files (each with the other task id and a bounded list of shared paths). Empty when there are none.',
+    responses: { 200: { description: 'Changed files with their diffs, and current overlaps with other active tasks.', schema: JsonObject } },
   },
   'GET /api/task/:taskId/assignees': {
     operationId: 'getTaskAssignees',

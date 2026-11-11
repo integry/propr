@@ -400,7 +400,7 @@ export function setupRoutes(): void {
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
-  const fileChangesRoutes = createFileChangesRoutes({ db });
+  const fileChangesRoutes = createFileChangesRoutes({ db, redisClient });
   const taskAssignmentRoutes = createTaskAssignmentRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
   const executionRoutes = createExecutionRoutes({ redisClient, db });

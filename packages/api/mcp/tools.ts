@@ -136,7 +136,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const goals = createGoalRoutes({ ...deps.goalServices, db, taskQueue, redisClient });
   const tasks = createTaskRoutes({ db, taskQueue });
   const docker = createDockerRoutes({ redisClient, stopTaskExecution: (id, options) => stopTaskExecution(id, { ...options, exactTaskId: true }) });
-  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false });
+  const changes = createFileChangesRoutes({ db, redisClient, normalizeJobReferences: false });
   const todos = createRepoTodoRoutes();
   const notifications = createNotificationRoutes({ webPushDispatcherConfigured: false });
   const config = createConfigRoutes({ redisClient });
@@ -256,7 +256,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
       offset: args.offset, limit: args.limit, assignee });
     return ok({ tasks: taskSummaries, nextOffset: taskSummaries.length === args.limit ? args.offset + args.limit : null });
   } });
-  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts and linked pull request. changesSummary is null when no file-change data is persisted; it never reports zero for unknown.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
+  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts, current file overlaps with other active tasks and linked pull request. changesSummary is null when no file-change data is persisted; it never reports zero for unknown. fileOverlaps lists other active tasks on the repository changing the same files.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
     ...await db('tasks').where({ task_id: args.taskId }).first(taskColumns),
     latestEvent: await db('task_history').where({ task_id: args.taskId }).orderBy('history_id', 'desc').first('state', 'reason', 'timestamp'),
     ...await taskDetail({ db, redisClient }, { repository: args.repository, taskId: args.taskId }, principal.user.id,

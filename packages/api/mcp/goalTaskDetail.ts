@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { isGoalPausedAwaitingOperator, type GoalAttention } from '@propr/shared';
+import { getCurrentFileOverlaps } from '@propr/core';
 import { stripGoalAttachmentSection } from '../services/goalAttachmentService.js';
 import { goalAttention, whereGoalPausedAwaitingOperator } from '../services/goalAttention.js';
 import { orderByNewest } from './activityDigest.js';
@@ -334,6 +335,11 @@ export async function taskDetail(
       elapsedSeconds: typeof summary?.elapsed_ms === 'number' ? Math.round(summary.elapsed_ms / 1000) : null,
     },
     changesSummary: await changesSummary(deps, target.taskId),
+    // Other active tasks currently changing the same files; empty when none.
+    fileOverlaps: await getCurrentFileOverlaps({
+      get: key => deps.redisClient.get(key),
+      zscore: (key, member) => deps.redisClient.zScore(key, member),
+    }, target.taskId),
     pullRequest: pullRequests[0] ?? null,
   };
 }

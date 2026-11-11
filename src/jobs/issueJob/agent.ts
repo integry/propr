@@ -13,6 +13,7 @@ import { createSessionIdCallback, createContainerIdCallback } from '../issueJobC
 import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { markAgentExecutionFailure } from '../providerReplacement.js';
 import { redisClient } from './config.js';
+import { startTaskFileChangesCapture } from '../liveFileChangesCapture.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
   return {
@@ -120,15 +121,11 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
 
   const workflowPrompt = repositoryWorkflowPrompt(repositoryWorkflow);
 
-  // Start periodic file changes updates during agent execution
-  const FILE_CHANGES_INTERVAL_MS = 2000;
-  const fileChangesInterval = setInterval(async () => {
-    try {
-      await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
-    } catch (err) {
-      correlatedLogger.debug({ error: (err as Error).message }, 'Periodic file changes update failed');
-    }
-  }, FILE_CHANGES_INTERVAL_MS);
+  // Periodic live file changes during agent execution, compared with other active tasks on the repository.
+  const fileChangesCapture = await startTaskFileChangesCapture({
+    taskId, worktreePath: worktreeInfo.worktreePath, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+    redis: redisClient, log: correlatedLogger,
+  });
 
   // Execute task via agent abstraction
   let agentResult;
@@ -152,7 +149,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       taskId
     }).catch(error => { throw markAgentExecutionFailure(error); }));
   } finally {
-    clearInterval(fileChangesInterval);
+    await fileChangesCapture.stop();
   }
 
   // Convert to ClaudeCodeResponse for backwards compatibility

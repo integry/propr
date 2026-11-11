@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useId } from 'react';
 import { RefreshCw, AlertTriangle, Plus, Minus, File, FilePlus, FileSymlink, FileX } from 'lucide-react';
 import DiffViewer from './DiffViewer';
-import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
+import { FileChange, FileChangesResponse, FileOverlap, getFileChanges } from '../../api/fileChangesApi';
+import FileOverlapNotice from './FileOverlapNotice';
 import { useSocket } from '../../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
 import { useLiveRefreshScheduler } from '../../hooks/useLiveRefreshScheduler';
@@ -36,6 +37,7 @@ const fileHeadingClass = (error: string | null, fileCount: number) =>
 
 const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumber }) => {
   const [fileChanges, setFileChanges] = useState<FileChange[]>([]);
+  const [overlaps, setOverlaps] = useState<FileOverlap[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +57,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
       const response: FileChangesResponse = await getFileChanges(taskId);
       if (activeRequestScopeRef.current !== requestedScope) return;
       setFileChanges(response.files);
+      setOverlaps(Array.isArray(response.overlaps) ? response.overlaps : []);
       setError(null);
     } catch (err) {
       if (activeRequestScopeRef.current !== requestedScope) return;
@@ -88,6 +91,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
   useEffect(() => {
     setIsLoading(true);
     setError(null);
+    setOverlaps([]);
     setSelectedFilePath(null);
     void scheduleFileChangesRefresh.refreshNow();
   }, [requestScopeKey, taskId, scheduleFileChangesRefresh]);
@@ -192,6 +196,8 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
           </div>
         )}
       </div>
+
+      {isActive && <FileOverlapNotice overlaps={overlaps} />}
 
       {/* Content */}
       {isLoading && fileChanges.length === 0 ? (

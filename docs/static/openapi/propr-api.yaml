@@ -7641,7 +7641,10 @@ paths:
     get:
       operationId: getTaskFileChanges
       summary: List the files a task changed
-      description: "When the task, session or correlation id belongs to a goal, only the goal owner can use this route (others get `404`), and only for reads: other methods answer `409` and the goal controls must be used instead."
+      description: |-
+        Also returns `overlaps`: other active tasks on the same repository whose live changes currently touch the same files (each with the other task id and a bounded list of shared paths). Empty when there are none.
+
+        When the task, session or correlation id belongs to a goal, only the goal owner can use this route (others get `404`), and only for reads: other methods answer `409` and the goal controls must be used instead.
       tags:
         - Tasks
       security:
@@ -7656,7 +7659,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Changed files with their diffs.
+          description: Changed files with their diffs, and current overlaps with other active tasks.
           content:
             application/json:
               schema:

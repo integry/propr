@@ -8,16 +8,33 @@ import {
   ensureRepoCloned,
   getGitHubInstallationToken,
   isValidCommitHash,
+  getCurrentFileOverlaps,
   FileChangesData
 } from '@propr/core';
+import type { TaskFileOverlap } from '@propr/core';
+import type { RedisClientType } from 'redis';
 
 interface FileChangesRoutesDeps {
   db: Knex;
   normalizeJobReferences?: boolean;
+  /** Reads the task's current overlaps with other active tasks; none are reported without it. */
+  redisClient?: RedisClientType;
 }
+
+/** File changes plus the other active tasks currently changing the same files. */
+export type FileChangesResponse = FileChangesData & { overlaps: TaskFileOverlap[] };
 
 export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
   const { db } = deps;
+
+  async function currentOverlaps(taskId: string): Promise<TaskFileOverlap[]> {
+    const client = deps.redisClient;
+    if (!client) return [];
+    return getCurrentFileOverlaps({
+      get: key => client.get(key),
+      zscore: (key, member) => client.zScore(key, member),
+    }, taskId);
+  }
 
   async function getFileChanges(req: FlatRequest, res: Response): Promise<void> {
     try {
@@ -31,7 +48,7 @@ export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
 
       if (fileChangesData) {
         console.log(`[file-changes] Found ${fileChangesData.files.length} files in cache for taskId: ${taskId}`);
-        res.json(fileChangesData);
+        res.json({ ...fileChangesData, overlaps: await currentOverlaps(taskId) } satisfies FileChangesResponse);
         return;
       }
 
@@ -40,7 +57,7 @@ export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
       const commitChanges = await getCommitChangesFromRepo(db, taskId);
       if (commitChanges) {
         console.log(`[file-changes] Retrieved ${commitChanges.files.length} file changes from commit hash`);
-        res.json(commitChanges);
+        res.json({ ...commitChanges, overlaps: await currentOverlaps(taskId) } satisfies FileChangesResponse);
         return;
       }
 
@@ -49,8 +66,9 @@ export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
       res.json({
         files: [],
         lastUpdated: new Date().toISOString(),
-        taskId
-      } as FileChangesData);
+        taskId,
+        overlaps: await currentOverlaps(taskId),
+      } satisfies FileChangesResponse);
     } catch (error) {
       console.error(`Error in /api/task/:taskId/file-changes:`, error);
       res.status(500).json({ error: 'Internal server error' });

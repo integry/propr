@@ -29,6 +29,7 @@ export {
 import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts, PushFailureRecord } from '@propr/core';
 import { PR_BODY_MAX_LENGTH, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
+import { changedPathsForOverlap, withPullRequestOverlapNote, type PullRequestOverlapNoteOptions } from './prFileOverlapNote.js';
 import {
     isVisualPreviewUploadAuthenticationError,
     publishPullRequestVisualPreviews,
@@ -74,6 +75,8 @@ interface CreatePROptions {
     /** Timeline that records a pull request template that could not be applied. */
     taskId?: string;
     stateManager?: WorkerStateManager;
+    /** Active-task registry read to note other work changing the same files. */
+    redis?: PullRequestOverlapNoteOptions['redis'];
 }
 
 export function buildIssueReference(
@@ -236,7 +239,7 @@ export async function createPullRequest(
             toolSuggestions: visualPreview.evidence.toolSuggestions
         }, {})
         : '';
-    const { title: prTitle, body: basePrBody } = await describePullRequest({
+    const { title: prTitle, body: describedPrBody } = await describePullRequest({
         pieces: buildIssuePullRequestBodyPieces({ issueRef, worktreeInfo, commitResult, claudeResult, completion }),
         defaultTitle: '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle,
         values: buildPrTemplateValues({
@@ -251,6 +254,12 @@ export async function createPullRequest(
         maxBodyLength: templateBodyLengthBudget(visualPreviewSection),
         onError: message => recordPullRequestTemplateError({ stateManager: options.stateManager, taskId: options.taskId, message, correlatedLogger }),
         context: { jobId, issueNumber: issueRef.number },
+    });
+    // Non-blocking: notes other active tasks and open ProPR PRs changing the same files.
+    const basePrBody = await withPullRequestOverlapNote(describedPrBody, templateBodyLengthBudget(visualPreviewSection), {
+        octokit: octokit as unknown as PullRequestOverlapNoteOptions['octokit'], redis: options.redis,
+        repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, taskId: options.taskId, branchName: worktreeInfo.branchName,
+        prLabel: PR_LABEL, paths: changedPathsForOverlap(commitResult, claudeResult), correlatedLogger,
     });
     const prBody = appendVisualPreviewSection(basePrBody, visualPreviewSection);
 

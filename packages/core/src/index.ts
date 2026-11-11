@@ -216,6 +216,10 @@ export type { PlanIssueStatus as StatusMachinePlanIssueStatus } from './webhook/
 
 export { getModelPricing, getOfficialModelPricing } from './services/pricingService.js';
 export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree, getCommitChanges, isValidCommitHash } from './services/worktreeMonitorService.js';
+export { computeFileOverlaps, overlapsForTask, boundOverlapPaths, describeOverlapPaths, normalizeHotPaths, MAX_OVERLAP_PATHS } from './services/taskFileOverlap.js';
+export type { TaskChangedPaths, TaskPairOverlap, FileOverlapOptions } from './services/taskFileOverlap.js';
+export { startLiveFileChangesCapture, checkRepositoryFileOverlaps, getCurrentFileOverlaps, listActiveFileChangesTasks, readChangedPaths, registerActiveFileChangesTask, unregisterActiveFileChangesTask, configuredHotPaths, describeTask, activeFileChangesTasksKey, ACTIVE_TASK_STALE_MS, OVERLAP_CHECK_INTERVAL_SECONDS } from './services/taskFileOverlapMonitor.js';
+export type { TaskFileOverlap, FileOverlapReader, OverlapCheckResult, LiveFileChangesCaptureOptions, CheckRepositoryFileOverlapsOptions } from './services/taskFileOverlapMonitor.js';
 export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
 export { generateContext, generateAdditionalContext, ContextTokenLimitError, SecurityException } from './services/context/index.js';
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/context/index.js';

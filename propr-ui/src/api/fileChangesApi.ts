@@ -9,10 +9,23 @@ export interface FileChange {
   status: 'modified' | 'added' | 'deleted' | 'renamed';
 }
 
+/** Another active task on the same repository whose live changes touch the same files. */
+export interface FileOverlap {
+  taskId: string;
+  /** Shared paths (a trailing `/` marks a shared hot directory), at most ten. */
+  paths: string[];
+  totalPaths: number;
+  repository: string;
+  issueNumber: number | null;
+  taskType: string | null;
+}
+
 export interface FileChangesResponse {
   files: FileChange[];
   lastUpdated: string;
   taskId: string;
+  /** Absent from servers that predate overlap detection. */
+  overlaps?: FileOverlap[];
 }
 
 export const getFileChanges = async (taskId: string): Promise<FileChangesResponse> => {
