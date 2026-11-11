@@ -2,6 +2,7 @@ import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
 import type { AgentType as SharedAgentType, ReasoningLevel } from '@propr/shared';
+import type { RepositoryValidationResult } from '../workflow/repositoryValidationResult.js';
 
 export { AGENT_TYPES } from '@propr/shared';
 
@@ -316,6 +317,8 @@ export interface AnalyzeOptions {
 export interface AgentExecutionResult {
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
+    /** Structured per-command outcome the `repositoryValidation` report is rendered from. */
+    repositoryValidationResult?: RepositoryValidationResult;
     success: boolean;
     logs: string;           // Full stderr/stdout logs
     summary?: string;       // Extracted summary of work

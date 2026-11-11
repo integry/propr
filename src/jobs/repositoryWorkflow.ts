@@ -8,6 +8,7 @@ import type { getAuthenticatedOctokit, ResolvedRepositoryWorkflow, WorkerStateMa
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { runWithNetworkPolicy } from './networkEgress.js';
+import { recordRepositoryValidationEvent } from './repositoryValidationEvent.js';
 import { resolveWorkerConcurrency } from '../workerConcurrency.js';
 
 type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -337,6 +338,7 @@ export async function deferRepositoryWorkflowJob<T>(job: Pick<Job<RepositoryWork
 export async function runRepositoryWorkflow(options: {
     workflow?: ResolvedRepositoryWorkflow; repoOwner: string; repoName: string;
     redisClient: Redis; taskId: string; stateManager: WorkerStateManager; correlatedLogger: Logger;
+    recordValidation?: typeof recordRepositoryValidationEvent;
 }, execute: () => Promise<AgentExecutionResult>): Promise<AgentExecutionResult> {
     // Preparation awaits GitHub and worktree operations after admission. Keep the
     // final cancellation check immediately before starting the implementation agent.
@@ -355,5 +357,9 @@ export async function runRepositoryWorkflow(options: {
     // longer fail work that has already finished. A lease lost while the
     // container ran still fails the attempt here, before anything is published.
     await releaseRepositoryWorkflowSlot();
+    // Issue runs and PR follow-ups both keep the structured outcome on the task timeline.
+    await (options.recordValidation ?? recordRepositoryValidationEvent)(options.taskId, result.repositoryValidationResult, options.correlatedLogger, {
+        currentState: async taskId => (await options.stateManager.getTaskState(taskId))?.state,
+    });
     return result;
 }

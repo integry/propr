@@ -31,6 +31,7 @@ import { loadSummarizationSettings } from '../config/configManager.js';
 import { resolveConfiguredModel } from '../config/configuredModel.js';
 import { resolveAgentTerminationReason } from '../agents/termination.js';
 import type { SyntheticRoutingSession } from '../services/syntheticRoutingService.js';
+import type { RepositoryValidationResult } from '../workflow/repositoryValidationResult.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -60,6 +61,8 @@ export interface ExecuteClaudeCodeOptions {
 export interface ClaudeCodeResponse {
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
+    /** Structured per-command outcome the `repositoryValidation` report is rendered from. */
+    repositoryValidationResult?: RepositoryValidationResult;
     success: boolean;
     executionTime: number;
     output: ClaudeOutput | null;

@@ -131,6 +131,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     return {
         success: result.success,
         repositoryValidation: result.repositoryValidation,
+        ...(result.repositoryValidationResult && { repositoryValidationResult: result.repositoryValidationResult }),
         model: result.modelUsed,
         ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
         executionTime: result.executionTimeMs,
