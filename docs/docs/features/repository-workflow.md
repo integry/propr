@@ -136,7 +136,9 @@ port="$(node -e 'const s=require("net").createServer().listen(0,()=>{console.log
 
 The `app` role needs permission to create databases on that server, and its password must reach the hooks and the application without a prompt, for example from a `PGPASSWORD` or `~/.pgpass` your agent image provides (libpq and most drivers read both). Never write the password into `.env.example`.
 
-Keep SQLite files and other local state in `PROPR_CACHE_DIR` or a git-ignored path in the worktree, never at a fixed path on a shared mount. In restricted [network mode](#network), add any database or service host the hooks reach to `network.allow`.
+This recipe connects to PostgreSQL directly, so it needs ordinary outbound networking (`network.mode: open`, the default) and a database server the agent container can reach. A restricted run has no network interface and only an HTTP(S) proxy as its route out, so `createdb` cannot connect there and the failed `after_create` aborts the attempt; adding the database host to `network.allow` does not change that. For restricted runs, use a database server installed in the agent image and listening on loopback, or skip database setup.
+
+Keep SQLite files and other local state in `PROPR_CACHE_DIR` or a git-ignored path in the worktree, never at a fixed path on a shared mount. In restricted [network mode](#network), `network.allow` admits only HTTP(S) traffic that goes through the proxy (package registries, HTTP APIs), not direct database or other raw TCP connections. An entry without a port allows only ports 80 and 443, so write `host:port` for a service on any other port, and remember that repository entries never reach private addresses (see [Restricted network mode](./execution-safety.md#restricted-network-mode)).
 
 **Clean up in `before_remove`.** It runs before the container exits, including after setup or `before_run` failures, so it must tolerate a run that never got as far as creating its resources:
 

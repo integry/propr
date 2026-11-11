@@ -131,3 +131,16 @@ test("docs database recipe creates, configures and drops the database on one ser
     assert.match(dotenv, new RegExp(`^DATABASE_URL=postgres://app@db\\.internal\\.example\\.com:5432/${db}$`, "m"));
   });
 });
+
+test("docs database recipe states its network requirement instead of relying on network.allow", async () => {
+  const doc = await readFile(workflowDoc, "utf-8");
+  const section = doc.slice(doc.indexOf("### Fresh worktrees"), doc.indexOf("## Instructions and validation"));
+  assert.ok(section.includes("### Fresh worktrees"), "Fresh worktrees section not found");
+  // The direct PostgreSQL recipe needs ordinary outbound networking.
+  assert.match(section, /needs ordinary outbound networking \(`network\.mode: open`/);
+  assert.match(section, /adding the database host to `network\.allow` does not change that/);
+  // network.allow covers only proxied HTTP(S); non-default ports need host:port.
+  assert.match(section, /admits only HTTP\(S\) traffic that goes through the proxy/);
+  assert.match(section, /write `host:port` for a service on any other port/);
+  assert.doesNotMatch(section, /add any database or service host the hooks reach to `network\.allow`/);
+});
