@@ -97,7 +97,7 @@ export interface AutomationDefinitionRouteServices {
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
   /** Enqueues the acting step of an approved run, failing the run when that is impossible. */
   startActing?: (run: StoredAgentRun, operatorNote: string | null) => Promise<StoredAgentRun>;
-  /** Unproductive-streak check once a rejection makes a run's verdict final; never throws. */
+  /** Unproductive-streak check once a rejection or a cancellation makes a run's verdict final; never throws. */
   evaluateStreak?: (run: StoredAgentRun) => Promise<void>;
   now?: () => number;
 }
@@ -590,6 +590,11 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
         logger.warn({ runId: run.id, taskId, err: error }, 'Automation run was cancelled but its task could not be stopped');
       }
     }
+    // A run cancelled with its report stored and no acting step under way (awaiting approval,
+    // say) has no worker left to evaluate it, so its final verdict is evaluated here. A run
+    // whose claimed acting step still holds its grant stays pending until that worker settles
+    // the count and evaluates it.
+    await evaluateStreak(cancelled);
     res.json({ run: publicAutomationRun(cancelled, { includeReport: true }) });
   });
 
