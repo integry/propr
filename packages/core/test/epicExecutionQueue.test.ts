@@ -1,3 +1,4 @@
+import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import { up as epicQueueRecovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
@@ -55,6 +56,7 @@ await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
 await epicQueueParallel(database);
 await epicQueueRecovery(database);
+await epicQueueIssueStates(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('task_drafts').delete();
@@ -115,6 +117,7 @@ test('terminal policy skips closed and merged entries and finalizes after last e
   assert.deepEqual(starts, []);
   assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), {
     issues: [10, 30, 40], cursor: 3, head: null, status: 'completed', advanceOn: 'terminal', blockedReason: null,
+    issueStates: [10, 30, 40].map(issue => ({ issue, state: 'done', blockedKind: null, blockedReason: null })),
   });
   assert.deepEqual(finalizations, ['draft']);
 });
@@ -333,6 +336,7 @@ test('finalization migration preserves existing queues and rolls back without de
     await oldDatabase('epic_execution_queues').insert({ draft_id: 'old', execution_id: 'execution',
       repository: 'acme/repo', issues: '[10]', cursor: 1, status: 'completed', created_at: 100, updated_at: 100 });
     await epicQueueFinalization(oldDatabase);
+    await epicQueueIssueStates(oldDatabase);
     const upgraded = await getEpicExecutionQueue('old', { database: oldDatabase });
     assert.equal(upgraded?.status, 'completed');
     assert.equal(upgraded?.finalizedAt, null);
@@ -367,6 +371,7 @@ test('use_epic migration keeps existing queues on the epic branch and rolls back
     await oldDatabase('epic_execution_queues').insert({ draft_id: 'old', execution_id: 'execution',
       repository: 'acme/repo', issues: '[10]', cursor: 0, status: 'active', created_at: 100, updated_at: 100 });
     await epicQueueUseEpic(oldDatabase);
+    await epicQueueIssueStates(oldDatabase);
     assert.equal((await getEpicExecutionQueue('old', { database: oldDatabase }))?.useEpic, true);
     await removeEpicQueueUseEpic(oldDatabase);
     assert.equal(Object.hasOwn(await oldDatabase('epic_execution_queues').where({ draft_id: 'old' }).first(), 'use_epic'), false);

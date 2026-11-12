@@ -1,3 +1,4 @@
+import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
@@ -61,6 +62,7 @@ await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
 await epicQueueParallel(database);
 await epicQueueRecovery(database);
+await epicQueueIssueStates(database);
 after(async () => database.destroy());
 
 const repository = 'acme/repo';

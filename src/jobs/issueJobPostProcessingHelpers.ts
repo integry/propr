@@ -319,7 +319,9 @@ export async function handleCreatedPlanIssuePR(options: {
     correlatedLogger.info({ prNumber }, 'Auto-merge label detected, evaluating the repository auto-merge policy');
     // An active Epic queue arms each head's PR as the queue advances.
     const epicQueue = planIssue?.draft_id ? await getEpicExecutionQueue(planIssue.draft_id) : null;
-    const queueHead = epicQueue?.status === 'active' && epicQueue.issues[epicQueue.cursor] === issueRef.number;
+    // The sequential head is the first issue that is neither done nor skipped; a parallel execution has none.
+    const queueHead = epicQueue?.status === 'active' && !epicQueue.parallel
+        && epicQueue.items.find(item => item.state !== 'done' && item.state !== 'skipped')?.issueNumber === issueRef.number;
     const gate = await gateAutoMergeArming({
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
