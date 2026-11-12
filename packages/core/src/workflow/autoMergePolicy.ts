@@ -91,24 +91,25 @@ export function validateAutoMergeConfig(value: unknown): string | null {
     if (record.method !== undefined && !AUTO_MERGE_METHODS.includes(record.method as AutoMergePolicyMethod)) {
         return 'auto_merge.method must be one of merge, squash or rebase';
     }
-    return record.protected_paths === undefined ? null : validateProtectedPaths(record.protected_paths);
+    if (record.protected_paths !== undefined) return validatePathGlobList(record.protected_paths, 'auto_merge.protected_paths', AUTO_MERGE_MAX_PROTECTED_PATHS);
+    return null;
 }
 
-function validateProtectedPaths(paths: unknown): string | null {
-    if (!Array.isArray(paths) || paths.length > AUTO_MERGE_MAX_PROTECTED_PATHS) {
-        return `auto_merge.protected_paths must be an array of at most ${AUTO_MERGE_MAX_PROTECTED_PATHS} globs`;
-    }
+/**
+ * Validate a list of repository-root-anchored globs (`auto_merge.protected_paths`,
+ * `review.risk_paths`); returns an error message or null.
+ */
+export function validatePathGlobList(paths: unknown, field: string, maxItems: number): string | null {
+    if (!Array.isArray(paths) || paths.length > maxItems) return `${field} must be an array of at most ${maxItems} globs`;
     for (const [index, pattern] of paths.entries()) {
         if (typeof pattern !== 'string' || !pattern.trim() || pattern.includes('\0')) {
-            return `auto_merge.protected_paths[${index}] must be a nonempty string without NUL bytes`;
+            return `${field}[${index}] must be a nonempty string without NUL bytes`;
         }
-        if (normalizePath(pattern).split('/').some(part => part === '..')) {
-            return `auto_merge.protected_paths[${index}] must not contain '..' segments`;
-        }
+        if (normalizePath(pattern).split('/').some(part => part === '..')) return `${field}[${index}] must not contain '..' segments`;
         try {
             compileProtectedPathGlob(pattern);
         } catch {
-            return `auto_merge.protected_paths[${index}] is not a valid glob`;
+            return `${field}[${index}] is not a valid glob`;
         }
     }
     return null;

@@ -61,7 +61,7 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
   }
 
   const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger, taskId, stateManager, visualPreviewSettings,
-    reportsBlockers: workflowReportsBlockers(context.repositoryWorkflow) });
+    reportsBlockers: workflowReportsBlockers(context.repositoryWorkflow), diffBase: fileChangesBase, review: context.repositoryWorkflow?.config.review });
   const commitResult = postProcessResult.commitResult;
   const postProcessingResult = postProcessResult.postProcessingResult;
 

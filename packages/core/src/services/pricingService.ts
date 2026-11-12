@@ -55,6 +55,11 @@ const perMillion = (price: number): number => price / 1_000_000;
  * OpenAI: https://developers.openai.com/api/docs/models/compare
  */
 const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
+    // Fable 5.2 cached reads cost 2.5% of input, like Fable 5.1.
+    'anthropic/claude-fable-5.2': {
+        prompt: perMillion(8), completion: perMillion(40),
+        cacheCreation: perMillion(10), cacheRead: perMillion(0.2)
+    },
     'anthropic/claude-fable-5.1': {
         prompt: perMillion(10), completion: perMillion(50),
         cacheCreation: perMillion(12.5), cacheRead: perMillion(0.25)
@@ -123,6 +128,11 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     'openai/gpt-6.1-sol': {
         prompt: perMillion(2), completion: perMillion(10),
         cacheCreation: perMillion(2.5), cacheRead: perMillion(0.1)
+    },
+    // Terra 6.1 cached reads cost $0.05/M (5% of input).
+    'openai/gpt-6.1-terra': {
+        prompt: perMillion(1), completion: perMillion(5),
+        cacheCreation: perMillion(1.25), cacheRead: perMillion(0.05)
     },
     'openai/gpt-6-sol': {
         prompt: perMillion(2), completion: perMillion(10),

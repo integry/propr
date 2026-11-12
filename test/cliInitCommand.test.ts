@@ -81,6 +81,17 @@ describe("scaffoldProprDirectory", () => {
     });
   });
 
+  test("workflow scaffold documents review.risk_paths commented out, and uncommenting it is valid", async () => {
+    await withTempDir(async (dir) => {
+      await scaffoldProprDirectory({ cwd: dir });
+      const workflow = await readFile(path.join(dir, ".propr", "workflow.yml"), "utf-8");
+      assert.match(workflow, /^# review:\n#   risk_paths:\n#     - "src\/billing\/\*\*"$/m);
+      assert.strictEqual(parseRepositoryWorkflow(workflow).review, undefined);
+      const enabled = workflow.replace(/^# (review:|  risk_paths:|    - "src\/billing)/gm, "$1");
+      assert.deepStrictEqual(parseRepositoryWorkflow(enabled).review, { risk_paths: ["src/billing/**"] });
+    });
+  });
+
   test("does not overwrite existing files by default", async () => {
     await withTempDir(async (dir) => {
       await scaffoldProprDirectory({ cwd: dir });
