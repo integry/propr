@@ -259,12 +259,14 @@ export function createCostExportRoutes({ db, now = () => new Date() }: { db: Kne
   async function readExport(req: Request, res: Response): Promise<CostExport | null> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
     if (analyticsWindow === false) return null;
-    const repository = typeof req.query.repository === 'string' && req.query.repository ? req.query.repository : 'all';
-    const validation = validateRepositoryFilter(repository);
+    // Validate what was sent: repeated or nested parameters are not a string,
+    // and defaulting them to `all` would widen the export to every repository.
+    const validation = validateRepositoryFilter(req.query.repository);
     if (!validation.valid) {
       res.status(400).json({ error: validation.error });
       return null;
     }
+    const repository = typeof req.query.repository === 'string' && req.query.repository ? req.query.repository : 'all';
     const groupBy = parseCostGroupBy(req.query.group_by);
     if ('invalid' in groupBy) {
       res.status(400).json({ error: `group_by must be a comma-separated list of: ${COST_GROUP_KEYS.join(', ')}` });

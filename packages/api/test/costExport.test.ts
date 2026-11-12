@@ -266,6 +266,18 @@ test('the routes read the analytics window, repository filter and group_by, and 
   assert.equal((await call('getCostCsv', { repository: 'not a repo' })).statusCode, 400);
 });
 
+test('repeated or nested repository parameters are rejected rather than widened to every repository', async () => {
+  const routes = createCostExportRoutes({ db, now: () => NOW });
+  for (const handler of ['getCost', 'getCostCsv'] as const) {
+    for (const repository of [['acme/alpha', 'acme/beta'], ['acme/alpha'], { name: 'acme/alpha' }]) {
+      const { res, response } = fakeResponse();
+      await routes[handler]({ query: { period: '7d', repository } } as unknown as Request, res);
+      assert.equal(response.statusCode, 400, `${handler} ${JSON.stringify(repository)}`);
+      assert.deepEqual(response.body, { error: 'Repository must be a string' });
+    }
+  }
+});
+
 test('the MCP tool scopes to the grant without a repository, and to the exact repository with one', async () => {
   const tools: McpTool[] = [];
   addStatsTools(tools, { db } as ToolDeps, async () => ['acme/beta'], () => NOW);
