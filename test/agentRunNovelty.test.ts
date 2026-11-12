@@ -38,9 +38,11 @@ describe('normalizeAgentReport', () => {
     for (const [input, expected] of cases) assert.equal(normalizeAgentReport(input), expected, input);
   });
 
-  test('replaces the run ids given, and any UUID', () => {
-    assert.equal(normalizeAgentReport(`Run run-42 (see ${RUN_A})`, { runIds: ['run-42'] }), 'Run <run> (see <id>)');
+  test('replaces only the run ids given, ignoring case, and keeps other UUIDs', () => {
+    assert.equal(normalizeAgentReport(`Run run-42 (see ${RUN_A})`, { runIds: ['run-42'] }), `Run <run> (see ${RUN_A})`);
+    assert.equal(normalizeAgentReport(`Run ${RUN_A.toUpperCase()}`, { runIds: [RUN_A] }), 'Run <run>');
     assert.equal(normalizeAgentReport('a.b+c', { runIds: ['a.b+c'] }), '<run>', 'ids are matched literally, not as patterns');
+    assert.equal(normalizeAgentReport('run-42-b and run-42', { runIds: ['run-42', 'run-42-b'] }), '<run> and <run>', 'a longer id is replaced whole');
   });
 
   test('keeps meaningful numbers and wording', () => {
@@ -50,9 +52,9 @@ describe('normalizeAgentReport', () => {
 
 describe('hashAgentReport', () => {
   test('is a stable SHA-256 hex of the normalised text', () => {
-    const hash = hashAgentReport(`${BODY}\nGenerated 2026-11-11 for ${RUN_A}`);
+    const hash = hashAgentReport(`${BODY}\nGenerated 2026-11-11 for ${RUN_A}`, { runIds: [RUN_A, RUN_B] });
     assert.match(hash, /^[0-9a-f]{64}$/);
-    assert.equal(hashAgentReport(`${BODY}   \n\nGenerated 2026-11-12 for ${RUN_B}`), hash);
+    assert.equal(hashAgentReport(`${BODY}   \n\nGenerated 2026-11-12 for ${RUN_B}`, { runIds: [RUN_A, RUN_B] }), hash);
     assert.notEqual(hashAgentReport(`${BODY.replace('lodash', 'react')}\nGenerated 2026-11-11 for ${RUN_A}`), hash);
   });
 });
@@ -68,6 +70,25 @@ describe('classifyAgentReportNovelty', () => {
     const previous = { runId: 'legacy-run-7', report: `# Nightly 2026-11-10 (run legacy-run-7)\n\n${BODY}` };
     const result = classifyAgentReportNovelty({ runId: RUN_B, report: `# Nightly   2026-11-11 (run ${RUN_B})\n${BODY}\n`, previous });
     assert.equal(result.reportNovelty, 'unchanged');
+  });
+
+  test('a report about another incident or task is new; one that only quotes another run id is unchanged', () => {
+    const INCIDENT_A = '9b2f6c1e-5d4a-4e8b-9f3c-2a1d7e6b5c40';
+    const INCIDENT_B = '6e0a3d7f-1b2c-4d5e-8f9a-0b1c2d3e4f5a';
+    const incident = (id: string, runId: string) => `Unresolved incident ${id} requires investigation and escalation to the owner (run ${runId}).`;
+    const previous = { runId: RUN_A, report: incident(INCIDENT_A, RUN_A) };
+    assert.equal(classifyAgentReportNovelty({ runId: RUN_B, report: incident(INCIDENT_B, RUN_B), previous }).reportNovelty, 'new');
+    const task = (id: string) => `Task ${id} is still blocked on review; nothing else changed in acme/web since the last run.`;
+    assert.equal(classifyAgentReportNovelty({ runId: RUN_B, report: task(INCIDENT_B), previous: { runId: RUN_A, report: task(INCIDENT_A) } }).reportNovelty, 'new');
+    assert.equal(classifyAgentReportNovelty({ runId: RUN_B, report: incident(INCIDENT_A, RUN_B), previous }).reportNovelty, 'unchanged');
+  });
+
+  test('run ids named as known count as volatile in both reports', () => {
+    const OLDER = '0c4e1f2a-7b3d-4c5e-9a6f-1d2e3f4a5b6c';
+    const since = (runId: string) => `${BODY} Compared with run ${runId}.`;
+    const previous = { runId: RUN_A, report: since(OLDER) };
+    assert.equal(classifyAgentReportNovelty({ runId: RUN_B, report: since(RUN_A), previous }).reportNovelty, 'new', 'an unnamed run id is kept');
+    assert.equal(classifyAgentReportNovelty({ runId: RUN_B, report: since(RUN_A), previous, knownRunIds: [RUN_A, OLDER] }).reportNovelty, 'unchanged');
   });
 
   test('a report that says something different is new', () => {

@@ -5,14 +5,14 @@ import { AUTOMATION_REPORT_MIN_NOVEL_CHARS, type AutomationReportNovelty } from 
  * Report novelty: whether a run's report says anything the previous reported
  * run of the same definition did not. Reports are compared by a hash of their
  * normalised text, so a nightly report that differs only in its date, the run
- * id it quotes or its line wrapping still counts as unchanged.
+ * id it quotes or its line wrapping still counts as unchanged. Only the run ids
+ * the caller names are treated as volatile: any other identifier (an incident,
+ * task or issue UUID) is what the report is about, so a change to it is news.
  */
 
-const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
-/** Normalisations applied in order: ids first, then full timestamps before their date and time parts. */
+/** Normalisations applied in order: full timestamps before their date and time parts. */
 const VOLATILE_PATTERNS: ReadonlyArray<[RegExp, string]> = [
-  [UUID, '<id>'],
   // ISO 8601 dates and timestamps, e.g. 2026-11-11, 2026-11-11T22:00:00.123Z, 2026-11-11 22:00 UTC.
   [/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:\s?(?:Z|UTC|GMT|[+-]\d{2}:?\d{2})\b)?)?/gi, '<date>'],
   // Numeric dates: 11/11/2026, 11/11/26, 2026/11/11, 11.11.2026. Dotted forms need a
@@ -36,13 +36,15 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * The report text with whitespace, dates, times and run ids normalised.
- * `runIds` are replaced verbatim first, so ids that are not UUIDs are covered too.
+ * The report text with whitespace, dates, times and the given run ids normalised.
+ * `runIds` are matched literally (ignoring case, as UUIDs are) before anything
+ * else; other identifiers are kept.
  */
 export function normalizeAgentReport(report: string, { runIds = [] }: { runIds?: readonly string[] } = {}): string {
   let text = report.normalize('NFKC');
-  for (const runId of runIds) {
-    if (runId) text = text.replace(new RegExp(escapeRegExp(runId), 'g'), '<run>');
+  // Longest first, so an id that contains another is replaced whole.
+  for (const runId of [...new Set(runIds)].filter(Boolean).sort((a, b) => b.length - a.length)) {
+    text = text.replace(new RegExp(escapeRegExp(runId.normalize('NFKC')), 'gi'), '<run>');
   }
   for (const [pattern, replacement] of VOLATILE_PATTERNS) text = text.replace(pattern, replacement);
   return text.replace(/\s+/g, ' ').trim();
@@ -59,6 +61,11 @@ export interface AgentReportNoveltyInput {
   report: string;
   /** The previous reported run of the definition, or null when there is none. */
   previous: { runId: string; report: string } | null;
+  /**
+   * Further run ids of the definition either report may quote, such as the
+   * earlier runs listed in their prompts. `runId` and `previous.runId` are always included.
+   */
+  knownRunIds?: readonly string[];
   minCharacters?: number;
 }
 
@@ -72,8 +79,8 @@ export interface AgentReportNovelty {
  * re-hashed rather than trusting its stored hash, so runs recorded before the
  * flag existed (or under an older normalisation) still compare correctly.
  */
-export function classifyAgentReportNovelty({ runId, report, previous, minCharacters = AUTOMATION_REPORT_MIN_NOVEL_CHARS }: AgentReportNoveltyInput): AgentReportNovelty {
-  const runIds = previous ? [runId, previous.runId] : [runId];
+export function classifyAgentReportNovelty({ runId, report, previous, knownRunIds = [], minCharacters = AUTOMATION_REPORT_MIN_NOVEL_CHARS }: AgentReportNoveltyInput): AgentReportNovelty {
+  const runIds = [runId, ...(previous ? [previous.runId] : []), ...knownRunIds];
   const normalized = normalizeAgentReport(report, { runIds });
   const reportHash = createHash('sha256').update(normalized, 'utf8').digest('hex');
   if (normalized.length < minCharacters) return { reportHash, reportNovelty: 'empty' };

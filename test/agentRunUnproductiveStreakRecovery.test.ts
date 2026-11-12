@@ -160,9 +160,10 @@ describe('unfinished schedule pause (F4)', () => {
     return (await transitionAgentRun(run.id, ['report_ready'], 'completed', {}, deps()))!;
   }
 
-  async function realInbox() {
+  async function realInbox({ onAnnounce = async () => undefined }: { onAnnounce?: () => Promise<unknown> } = {}) {
     const { NotificationService } = await import('../packages/core/src/services/notificationService.ts');
-    const inbox = new NotificationService({ database, publishUpdate: async () => undefined });
+    // Announcements go out after the item is persisted, while the evaluation awaits them.
+    const inbox = new NotificationService({ database, publishUpdate: async () => { await onAnnounce(); } });
     let pauseFailures = 0;
     const pauseCalls: string[] = [];
     const evaluate = {
@@ -245,6 +246,57 @@ describe('unfinished schedule pause (F4)', () => {
     assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), evaluate), null);
     assert.equal(await scheduleEnabled(), true);
     assert.deepEqual(pauseCalls, []);
+  });
+
+  const optOut = async () => updateAgentDefinition(definition.id, 'alice', { pauseWhenUnproductive: false }, deps());
+  const pauseRecord = async () => (await database('agent_definitions').where({ id: definition.id })
+    .first('pending_schedule_slot', 'unproductive_paused_streak', 'schedule_enabled'));
+
+  test('an owner who turns pausing off while the Inbox item is delivered keeps the schedule (F7)', async () => {
+    await database('agent_definitions').where({ id: definition.id }).update({ pending_schedule_slot: NOW + 86_400_000 });
+    let optedOut = 0;
+    const { evaluate, pauseCalls } = await realInbox({ onAnnounce: async () => { optedOut += 1; assert.ok(await optOut()); } });
+    await unproductiveRun();
+    assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), evaluate), 'notified');
+    assert.equal(optedOut, 1, 'the opt-out committed during notification creation');
+    assert.equal(pauseCalls.length, 1, 'the evaluation still tried the pause it had decided on');
+    assert.equal(await scheduleEnabled(), true);
+    const record = await pauseRecord();
+    assert.equal(record.unproductive_paused_streak, null, 'the streak is not claimed');
+    assert.equal(Number(record.pending_schedule_slot), NOW + 86_400_000, 'the pending slot is kept');
+  });
+
+  test('an owner who turns pausing off after the recovery run read the definition keeps the schedule (F7)', async () => {
+    const { evaluate, failNextPause } = await realInbox();
+    await unproductiveRun();
+    failNextPause();
+    await assert.rejects(evaluateUnproductiveStreak(await unproductiveRun(), evaluate), /database unavailable/);
+    const racing = {
+      ...evaluate,
+      getDefinition: async (definitionId: string, ownerId: string) => {
+        const read = await evaluate.getDefinition(definitionId, ownerId);
+        await optOut();
+        return read;
+      },
+    };
+    assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), racing), null);
+    assert.equal(await scheduleEnabled(), true);
+    assert.equal((await pauseRecord()).unproductive_paused_streak, null);
+  });
+
+  test('the pause transaction reads the opt-in itself (F7)', async () => {
+    await database('agent_definitions').where({ id: definition.id }).update({ pending_schedule_slot: NOW });
+    await optOut();
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, key(), deps()), 'opted_out');
+    const record = await pauseRecord();
+    assert.equal(Boolean(record.schedule_enabled), true);
+    assert.equal(Number(record.pending_schedule_slot), NOW);
+    assert.equal(record.unproductive_paused_streak, null);
+    // Opting back in lets the same streak's pause be made; once made it stays made.
+    await updateAgentDefinition(definition.id, 'alice', { pauseWhenUnproductive: true }, deps());
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, key(), deps()), 'disabled');
+    await optOut();
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, key(), deps()), 'done_before');
   });
 
   test('the pause record is written with the schedule change, once per streak', async () => {

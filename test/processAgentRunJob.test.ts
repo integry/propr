@@ -4,7 +4,7 @@ import path from 'node:path';
 import { after, describe, mock, test } from 'node:test';
 import fs from 'fs-extra';
 import type { Job } from 'bullmq';
-import type { AutomationRunState } from '@propr/shared';
+import { MAX_AUTOMATION_PREVIOUS_REPORTS, type AutomationRunState } from '@propr/shared';
 import type { AgentRunJobData, AgentTaskOptions, StoredAgentDefinition, StoredAgentRun } from '@propr/core';
 import { UsageLimitError } from '../packages/core/src/claude/claudeHelpers.ts';
 import { hashAgentReport } from '../packages/core/src/services/agents/agentRunNovelty.ts';
@@ -239,8 +239,9 @@ describe('processAgentRunJob', () => {
     await createAgentRunProcessor(h.deps)(job);
     const promptInput = h.buildPrompt.mock.calls[0].arguments[0] as { previousReports: unknown };
     assert.deepEqual(promptInput.previousReports, []);
-    // Only the novelty check reads the previous report, and only the latest one.
-    assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [['def-1', { limit: 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }]]);
+    // Only the novelty check reads previous reports: the latest to compare with, and the
+    // run ids either report's prompt could have listed.
+    assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }]]);
   });
 
   for (const state of ['cancelled', 'skipped', 'deferred'] as const) {
@@ -1225,6 +1226,27 @@ describe('report novelty', () => {
     await createAgentRunProcessor(h.deps)(job);
     assert.equal(h.run().reportNovelty, 'unchanged');
     assert.equal(h.run().state, 'completed');
+  });
+
+  test('run ids quoted from earlier reports count as volatile; other ids, such as an incident, do not', async () => {
+    const INCIDENT_A = '3d934921-c7ae-4cb4-add8-b82d109ed330';
+    const INCIDENT_B = '1f731cb6-c2ad-4aa4-b8c4-ad5fcbf92f1c';
+    const incident = (id: string, since: string) => `Unresolved incident ${id} requires investigation and escalation to the owner. Compared with run ${since}.`;
+    const earlier = [
+      { runId: 'run-0', reportedAt: NOW - 1000, report: incident(INCIDENT_A, 'run-00') },
+      { runId: 'run-00', reportedAt: NOW - 2000, report: incident(INCIDENT_A, 'run-000') },
+    ];
+    // Each report quotes the run before it; the previous report's predecessor is still known.
+    const listEarlier = async (_definitionId: string, { limit }: { limit: number }) => earlier.slice(0, limit);
+    const same = harness({ execute: reportWith(incident(INCIDENT_A, 'run-0')) });
+    same.listPreviousReports.mock.mockImplementation(listEarlier);
+    await createAgentRunProcessor(same.deps)(job);
+    assert.equal(same.run().reportNovelty, 'unchanged');
+
+    const otherIncident = harness({ execute: reportWith(incident(INCIDENT_B, 'run-0')) });
+    otherIncident.listPreviousReports.mock.mockImplementation(listEarlier);
+    await createAgentRunProcessor(otherIncident.deps)(job);
+    assert.equal(otherIncident.run().reportNovelty, 'new');
   });
 
   test('a report below the minimum length is empty', async () => {

@@ -153,15 +153,22 @@ export async function findUnproductiveStreakNotification(
   return { schedulePaused };
 }
 
-/** `disabled` turned the schedule off; `already_off` found it off; `done_before` found this streak's pause already carried out. */
-export type UnproductiveStreakPauseResult = 'disabled' | 'already_off' | 'done_before';
+/**
+ * `disabled` turned the schedule off; `already_off` found it off; `done_before`
+ * found this streak's pause already carried out; `opted_out` found the
+ * definition no longer set to pause when unproductive, and changed nothing.
+ */
+export type UnproductiveStreakPauseResult = 'disabled' | 'already_off' | 'done_before' | 'opted_out';
 
 /**
  * Turns the schedule off for one streak and records that streak's pause in the
  * same transaction. The record is what separates a pause still owed from one
  * already made: once it is stored, an owner who turns the schedule back on is
- * not overridden by later runs of the same streak. Like
- * `disableAgentDefinitionSchedule`, the schedule change counts as an edit.
+ * not overridden by later runs of the same streak. The opt-in is read inside
+ * the transaction, not taken from the caller: an owner who turns
+ * `pauseWhenUnproductive` off while the evaluation is under way (say, while the
+ * Inbox item is delivered) is respected. Like `disableAgentDefinitionSchedule`,
+ * the schedule change counts as an edit.
  */
 export async function pauseScheduleForUnproductiveStreak(
   definitionId: string,
@@ -169,11 +176,19 @@ export async function pauseScheduleForUnproductiveStreak(
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<UnproductiveStreakPauseResult> {
   return database.transaction(async trx => {
-    // A conditional write, so of two concurrent evaluations only one carries out the pause.
-    const claimed = await trx('agent_definitions').where({ id: definitionId })
+    // A conditional write, so of two concurrent evaluations only one carries out the pause,
+    // and only while the definition still opts in.
+    const claimed = await trx('agent_definitions').where({ id: definitionId, pause_when_unproductive: true })
       .where(owed => owed.whereNull('unproductive_paused_streak').orWhereNot('unproductive_paused_streak', streakDeduplicationKey))
       .update({ unproductive_paused_streak: streakDeduplicationKey });
-    if (Number(claimed) === 0) return 'done_before';
+    if (Number(claimed) === 0) {
+      const current = await trx('agent_definitions').where({ id: definitionId })
+        .first<{ pause_when_unproductive: boolean | number | null; unproductive_paused_streak: string | null } | undefined>(
+          'pause_when_unproductive', 'unproductive_paused_streak');
+      // A pause already made stays recorded as made, whatever the opt-in says now.
+      if (current?.unproductive_paused_streak === streakDeduplicationKey) return 'done_before';
+      return current && !current.pause_when_unproductive ? 'opted_out' : 'done_before';
+    }
     await trx('agent_definitions').where({ id: definitionId }).whereNotNull('pending_schedule_slot')
       .update({ pending_schedule_slot: null, pending_schedule_attempted_at: null });
     const updated = await trx('agent_definitions').where({ id: definitionId, schedule_enabled: true })

@@ -10,6 +10,8 @@
  * has its own evidence, recorded with the schedule change: an item that says
  * the schedule was paused does not stop a later run from finishing a pause
  * that failed or was interrupted, and a pause once made is never repeated.
+ * The opt-in is rechecked where the schedule is changed, so turning it off at
+ * any point before then keeps the schedule on.
  *
  * Runs still complete as before: this only reads the flags stored on them.
  * Manual and other non-scheduled runs are flagged but never counted.
@@ -77,12 +79,27 @@ async function carryOutPause(
     pauseSchedule: Required<UnproductiveStreakDeps>['pauseSchedule'],
 ): Promise<UnproductiveStreakPauseResult> {
     const result = await pauseSchedule(run.definitionId, deduplicationKey);
-    if (result !== 'done_before') {
+    if (result === 'opted_out') {
+        logger.info({ definitionId: run.definitionId, ownerId: run.ownerId, decision: 'schedule_kept' },
+            'Did not pause unproductive automation schedule: the owner turned pausing off');
+    } else if (result !== 'done_before') {
         logger.warn({ definitionId: run.definitionId, ownerId: run.ownerId, decision: 'schedule_disabled', reason, disabled: result === 'disabled' },
             'Paused unproductive automation schedule');
     }
     return result;
 }
+
+/**
+ * The outcome of a pause attempt. After a new item, a pause another evaluation
+ * already made still leaves the schedule paused; finishing a stored item's pause
+ * reports only a pause made now. Either way an owner who opted out keeps the schedule.
+ */
+const OUTCOME_AFTER_NEW_ITEM: Record<UnproductiveStreakPauseResult, UnproductiveStreakOutcome> = {
+    disabled: 'paused', already_off: 'paused', done_before: 'paused', opted_out: 'notified',
+};
+const OUTCOME_AFTER_STORED_ITEM: Record<UnproductiveStreakPauseResult, UnproductiveStreakOutcome> = {
+    disabled: 'paused', already_off: 'paused', done_before: null, opted_out: null,
+};
 
 /** One Inbox item per streak, keyed by the streak's stable identity. */
 export function unproductiveStreakDeduplicationKey(definitionId: string, streakKey: string): string {
@@ -127,8 +144,7 @@ export async function evaluateUnproductiveStreak(run: StoredAgentRun, overrides:
         // interrupted after the item was stored, unless the owner has since turned pausing off;
         // a pause already made is not repeated, so a schedule turned back on stays on.
         if (!pause) return null;
-        const result = await carryOutPause(run, deduplicationKey, unproductivePauseReason(name, streak.runs.length), pauseSchedule);
-        return result === 'done_before' ? null : 'paused';
+        return OUTCOME_AFTER_STORED_ITEM[await carryOutPause(run, deduplicationKey, unproductivePauseReason(name, streak.runs.length), pauseSchedule)];
     }
     const { kind, target } = notificationTarget(run, definition);
     await createEvent({
@@ -148,9 +164,11 @@ export async function evaluateUnproductiveStreak(run: StoredAgentRun, overrides:
         },
     } as Parameters<typeof createNotificationEvent>[0], [{ userId: run.ownerId, pushEnabled: true }]);
     // Paused only once the owner is told: a paused schedule has no later run to retry a lost item.
-    // A pause that fails here is retried by the next run of the streak (see above).
-    if (pause) await carryOutPause(run, deduplicationKey, unproductivePauseReason(name, streak.runs.length), pauseSchedule);
-    return pause ? 'paused' : 'notified';
+    // A pause that fails here is retried by the next run of the streak (see above). `pause` was
+    // read before the item was delivered; the pause itself rechecks the opt-in, so an owner who
+    // turned pausing off meanwhile keeps the schedule.
+    if (!pause) return 'notified';
+    return OUTCOME_AFTER_NEW_ITEM[await carryOutPause(run, deduplicationKey, unproductivePauseReason(name, streak.runs.length), pauseSchedule)];
 }
 
 /** Never lets a lost Inbox item or a failed read change how the run itself ended. */
