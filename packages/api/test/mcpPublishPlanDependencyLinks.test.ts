@@ -32,6 +32,8 @@ interface FakeOptions {
   /** Issue creation returns the REST id unless this is false; ids are number * 1000. */
   returnIds?: boolean;
   links?: Record<number, number[]>;
+  /** Extra listed blockers per dependant, e.g. issues from another repository. */
+  foreign?: Record<number, Array<{ id: number; number: number; repository_url: string }>>;
   fail?: (route: string, args: Record<string, unknown>) => Error | undefined;
 }
 
@@ -56,7 +58,9 @@ function fakeGitHub(options: FakeOptions = {}) {
     }
     if (route === 'GET /repos/{owner}/{repo}/issues') return { data: [...remote].reverse() };
     if (route === LOOKUP) return { data: remote.find(issue => issue.number === number) };
-    if (route === LIST) return { data: (links.get(number) ?? []).map(blocker => ({ id: blocker * 1000, number: blocker })) };
+    if (route === LIST) {
+      return { data: [...options.foreign?.[number] ?? [], ...(links.get(number) ?? []).map(blocker => ({ id: blocker * 1000, number: blocker }))] };
+    }
     if (route === ADD) {
       links.set(number, [...links.get(number) ?? [], Number(args.issue_id) / 1000]);
       return { data: {} };
@@ -150,6 +154,26 @@ test('a resume that finds links already on GitHub does not add them again', asyn
   assert.deepEqual(resumed.dependencyLinks?.links, [{ issue: 202, blockedBy: 201, status: 'existing' }]);
   assert.equal(github.calls.includes(ADD), false);
   assert.deepEqual(github.links.get(202), [201]);
+});
+
+test('a resume links the prerequisite despite an unrelated cross-repository blocker with the same number', async t => {
+  const id = '30000000-0000-4000-8000-000000000006';
+  const db = await setup(t, id, [task('a'), task('b', ['a'])]);
+  // a = 201, b = 202. Before the resume, b gets a blocker from another repository that is also #201.
+  const foreign = { id: 987_654, number: 201, repository_url: 'https://api.github.com/repos/other/elsewhere' };
+  let posts = 0;
+  const github = fakeGitHub({ returnIds: false, foreign: { 202: [foreign] }, fail: route => {
+    if (route !== 'POST /repos/{owner}/{repo}/issues') return undefined;
+    posts += 1;
+    return posts === 2 ? Object.assign(new Error('socket closed after upload'), { code: 'ECONNRESET' }) : undefined;
+  } });
+  const { callPublish } = tools(db, github.request);
+  await assert.rejects(callPublish(id, await revision(db, id), 'first'), error => error instanceof McpError && error.code === 'PUBLISH_PARTIAL');
+
+  const resumed = (await callPublish(id, await revision(db, id), 'second', true)).data as PublishResult;
+  assert.deepEqual(resumed.issues.map(issue => issue.number), [201, 202]);
+  assert.deepEqual(resumed.dependencyLinks?.links, [{ issue: 202, blockedBy: 201, status: 'created' }]);
+  assert.deepEqual(github.links.get(202), [201], 'the plan prerequisite itself is linked by its REST id');
 });
 
 test('a GitHub dependency API failure leaves the publication successful and get_plan shows the missing links', async t => {

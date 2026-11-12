@@ -13,7 +13,10 @@ import { resolvePlanItemIssueDependencies } from '@propr/shared';
  *
  * The documentation does not describe re-adding an existing link, so the
  * existing blockers are listed first and only missing ones are added; a 422 on
- * the add is re-checked against the list. Repeating the step therefore never
+ * the add is re-checked against the list. Blockers are compared by REST `id`:
+ * issue numbers are repository-local and a blocker may live in another
+ * repository, so an unrelated issue sharing the prerequisite's number never
+ * counts as the link. Repeating the step therefore never
  * duplicates a link. Every failure is recorded on its link and logged; nothing
  * here throws, so linking never fails a publication.
  *
@@ -66,27 +69,29 @@ function errorMessage(error: unknown): string {
   return typeof status === 'number' ? `${status}: ${message}` : message;
 }
 
-function issueNumbersOf(data: unknown): number[] {
-  return Array.isArray(data)
-    ? data.map(entry => (entry as { number?: unknown })?.number).filter((value): value is number => typeof value === 'number')
-    : [];
+/** The REST ids of the listed blockers; the page length counts every entry, with or without an id. */
+function blockerIdsOf(data: unknown): { ids: number[]; entries: number } {
+  if (!Array.isArray(data)) return { ids: [], entries: 0 };
+  const ids = data.map(entry => (entry as { id?: unknown })?.id).filter((value): value is number => typeof value === 'number');
+  return { ids, entries: data.length };
 }
 
+/** The REST ids of the issues `issue` is blocked by, in any repository. */
 async function listBlockedBy(request: GitHubRequest, owner: string, repo: string, issue: number): Promise<Set<number>> {
   const blockers = new Set<number>();
   for (let page = 1; page <= BLOCKED_BY_MAX_PAGES; page++) {
     const response = await request('GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
       { owner, repo, issue_number: issue, per_page: BLOCKED_BY_PAGE_SIZE, page });
-    const numbers = issueNumbersOf(response.data);
-    numbers.forEach(number => blockers.add(number));
-    if (numbers.length < BLOCKED_BY_PAGE_SIZE) break;
+    const { ids, entries } = blockerIdsOf(response.data);
+    ids.forEach(id => blockers.add(id));
+    if (entries < BLOCKED_BY_PAGE_SIZE) break;
   }
   return blockers;
 }
 
 interface Repository { request: GitHubRequest; owner: string; repo: string }
 
-async function addBlockedBy({ request, owner, repo }: Repository, issue: number, blockedBy: number,
+async function addBlockedBy({ request, owner, repo }: Repository, issue: number,
   blockedById: number): Promise<'created' | 'existing'> {
   try {
     await request('POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
@@ -96,7 +101,7 @@ async function addBlockedBy({ request, owner, repo }: Repository, issue: number,
     // A concurrent attempt may have added the link since it was listed.
     if ((error as { status?: unknown })?.status !== 422) throw error;
     const recheck = await listBlockedBy(request, owner, repo, issue).catch(() => new Set<number>());
-    if (!recheck.has(blockedBy)) throw error;
+    if (!recheck.has(blockedById)) throw error;
     return 'existing';
   }
 }
@@ -142,12 +147,12 @@ export async function syncPlanDependencyLinks(options: SyncPlanDependencyLinksOp
       continue;
     }
     for (const blockedBy of edge.blockedBy) {
-      if (existing.has(blockedBy)) {
-        links.push({ issue: edge.issue, blockedBy, status: 'existing' });
-        continue;
-      }
       try {
-        const status = await addBlockedBy({ request, owner, repo }, edge.issue, blockedBy, await issueId(blockedBy));
+        // The prerequisite's own id identifies the link; its number alone could
+        // match a blocker from another repository.
+        const blockedById = await issueId(blockedBy);
+        const status = existing.has(blockedById) ? 'existing'
+          : await addBlockedBy({ request, owner, repo }, edge.issue, blockedById);
         links.push({ issue: edge.issue, blockedBy, status });
       } catch (error) {
         links.push({ issue: edge.issue, blockedBy, status: 'failed', error: errorMessage(error) });

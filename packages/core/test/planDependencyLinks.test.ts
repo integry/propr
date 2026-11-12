@@ -7,7 +7,9 @@ const ADD = 'POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/block
 const ISSUE = 'GET /repos/{owner}/{repo}/issues/{issue_number}';
 
 /** A fake GitHub holding blocked-by links as dependant → blocker numbers; issue ids are number * 1000. */
-function fakeGitHub(options: { links?: Record<number, number[]>; fail?: (route: string, args: Record<string, unknown>) => unknown } = {}) {
+function fakeGitHub(options: { links?: Record<number, number[]>; fail?: (route: string, args: Record<string, unknown>) => unknown;
+  /** Extra listed blockers per dependant, e.g. issues from another repository. */
+  foreign?: Record<number, Array<{ id: number; number: number; repository_url: string }>> } = {}) {
   const links = new Map<number, number[]>(Object.entries(options.links ?? {}).map(([issue, blockers]) => [Number(issue), [...blockers]]));
   const calls: Array<{ route: string; args: Record<string, unknown> }> = [];
   const request: GitHubRequest = async (route, args) => {
@@ -15,7 +17,9 @@ function fakeGitHub(options: { links?: Record<number, number[]>; fail?: (route: 
     const failure = options.fail?.(route, args);
     if (failure) throw failure;
     const issue = Number(args.issue_number);
-    if (route === LIST) return { data: (links.get(issue) ?? []).map(number => ({ id: number * 1000, number })) };
+    if (route === LIST) {
+      return { data: [...options.foreign?.[issue] ?? [], ...(links.get(issue) ?? []).map(number => ({ id: number * 1000, number }))] };
+    }
     if (route === ISSUE) return { data: { id: issue * 1000, number: issue } };
     if (route === ADD) {
       const blocker = Number(args.issue_id) / 1000;
@@ -81,6 +85,33 @@ test('a 422 on add counts as existing when the link is now listed', async () => 
   };
   const result = await syncPlanDependencyLinks({ ...base, request: raceRequest, plan: [item('a'), item('b', ['a'])], issueNumbers: [40, 41] });
   assert.deepEqual(result?.links, [{ issue: 41, blockedBy: 40, status: 'existing' }]);
+});
+
+// Issue numbers are repository-local: #70 in another repository is not the plan's #70.
+const otherRepoBlocker = { id: 987_654, number: 70, repository_url: 'https://api.github.com/repos/other/elsewhere' };
+
+test('an unrelated cross-repository blocker sharing the prerequisite number does not count as the link', async () => {
+  const github = fakeGitHub({ foreign: { 71: [otherRepoBlocker] } });
+  const result = await syncPlanDependencyLinks({ ...base, request: github.request, plan: [item('a'), item('b', ['a'])], issueNumbers: [70, 71] });
+
+  assert.deepEqual(result?.links, [{ issue: 71, blockedBy: 70, status: 'created' }]);
+  assert.deepEqual(github.calls.filter(call => call.route === ADD).map(call => call.args),
+    [{ owner: 'acme', repo: 'repo', issue_number: 71, issue_id: 70_000 }]);
+
+  // Once the real link exists it is recognised by id, so a repeat adds nothing.
+  const repeat = await syncPlanDependencyLinks({ ...base, request: github.request, plan: [item('a'), item('b', ['a'])], issueNumbers: [70, 71] });
+  assert.deepEqual(repeat?.links, [{ issue: 71, blockedBy: 70, status: 'existing' }]);
+  assert.equal(github.calls.filter(call => call.route === ADD).length, 1);
+});
+
+test('a 422 is not confirmed by an unrelated cross-repository blocker sharing the prerequisite number', async () => {
+  const github = fakeGitHub({ foreign: { 71: [otherRepoBlocker] },
+    fail: route => route === ADD ? Object.assign(new Error('Validation Failed'), { status: 422 }) : undefined });
+  const result = await syncPlanDependencyLinks({ ...base, request: github.request, plan: [item('a'), item('b', ['a'])], issueNumbers: [70, 71],
+    issueIds: new Map([[70, 70_000]]) });
+
+  assert.deepEqual(result?.links, [{ issue: 71, blockedBy: 70, status: 'failed', error: '422: Validation Failed' }]);
+  assert.equal(github.calls.filter(call => call.route === LIST).length, 2, 'the 422 is re-checked against the list');
 });
 
 test('API failures are recorded per link and never thrown', async () => {
