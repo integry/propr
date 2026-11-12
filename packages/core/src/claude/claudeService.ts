@@ -144,7 +144,10 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
                 worktreePath,
                 stdinData: prompt, // Always pass prompt via stdin
                 preserveOutputOnTimeout: true,
-                model: modelName
+                model: modelName,
+                // No registered direct agent runs here (ENV-configured Claude, used only
+                // when the requested alias is not registered): global admission limit only.
+                agentAdmissionExemption: 'legacy-claude-analysis',
             })
         );
 

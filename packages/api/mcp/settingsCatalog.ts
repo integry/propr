@@ -178,6 +178,8 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
   environment('security.system_tasks', 'System task signing policy', ['SYSTEM_TASK_SECRET', 'SYSTEM_TASK_TOKEN_MAX_AGE_MS'], ['revert token', 'system task token']),
   { ...environment('agents.run_internal_urls', 'Agent run internal API and MCP URLs', ['PROPR_INTERNAL_API_URL', 'PROPR_AGENT_MCP_URL'], ['agent run MCP grant', 'internal API URL', 'agent MCP URL']),
     description: 'Where the worker requests run-scoped MCP grants for agent runs (PROPR_INTERNAL_API_URL, default http://api:4000) and the MCP URL agent containers use (PROPR_AGENT_MCP_URL, default <internal API URL>/api/mcp). Set both on the API and worker when the services are not on the default Docker network names.' },
+  { ...environment('agents.run_admission', 'Physical agent-run admission limits', ['PROPR_AGENT_RUN_LIMIT', 'PROPR_AGENT_RUN_ALIAS_LIMITS', 'PROPR_AGENT_RUN_GENERATION'], ['agent run limit', 'per-agent concurrency ceiling', 'local inference one job at a time']),
+    description: 'Self-hosted opt-in instance-wide cap on simultaneous agent containers (PROPR_AGENT_RUN_LIMIT, with PROPR_INSTANCE_ID; Hosted uses its WORKER_CONCURRENCY entitlement) and optional per-direct-agent ceilings inside it (PROPR_AGENT_RUN_ALIAS_LIMITS, e.g. local-llama=1,claude-prod=3). Set the same values on the API and every worker.' },
   environment('git.workspace_paths', 'Git clone and worktree paths', ['GIT_CLONES_BASE_PATH', 'GIT_WORKTREES_BASE_PATH'], ['clone directory', 'worktree directory']),
   environment('git.default_branch', 'Default Git branch', ['GIT_DEFAULT_BRANCH'], ['base branch']),
   environment('git.shallow_clone', 'Git shallow-clone depth', ['GIT_SHALLOW_CLONE_DEPTH'], ['clone depth']),

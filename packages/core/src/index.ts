@@ -677,3 +677,6 @@ export * from './extensions/extensionProfileStore.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';
+
+export { validateAgentRunAdmissionPolicy, revalidateAgentRunAdmissionPolicy } from './agents/agentRunAdmissionPolicy.js';
+export { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, agentRunAliasLimitProblems } from './agents/agentRunAliasLimits.js';

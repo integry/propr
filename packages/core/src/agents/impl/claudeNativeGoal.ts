@@ -702,6 +702,8 @@ async function detectContainer(
 }
 
 export interface ClaudeNativeGoalLaunch {
+    /** Direct agent alias charged by physical admission. */
+    agentAlias: string;
     diagnostics?: DiagnosticAgent;
     buildDockerArgs(): Promise<string[]>;
     sessionId: string;
@@ -740,7 +742,7 @@ export async function executeClaudeNativeGoal(
         const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
         attachProviderCapture(spawned, capture);
         return spawned;
-    });
+    }, { agentAlias: launch.agentAlias });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
     const stream = new ClaudeGoalStream(child, options.taskId, records => control.appendOutput(records));

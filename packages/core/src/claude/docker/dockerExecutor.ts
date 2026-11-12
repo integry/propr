@@ -3,7 +3,7 @@ import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { currentExtensionLaunch, extensionLaunchForDockerRun } from '../../extensions/extensionLaunch.js';
 import { assertNativeLogAdmission, prepareCommandCapture, finishDiagnosticOutput, scheduleProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
 import { createExecutionDeadline, type ExecutionDeadline } from './dockerExecutionDeadline.js';
-import { prepareAdmittedAgent, type AdmittedAgent } from '../../agents/agentRunAdmission.js';
+import { prepareAdmittedAgent, type AdmittedAgent, type AgentAdmissionExemption } from '../../agents/agentRunAdmission.js';
 import { captureWorkflowMarkers, withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
 import { spawn, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -77,6 +77,10 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     costCapExempt?: boolean;
     /** Explicitly identifies the selected agent launch, excluding helper containers. */
     extensionAgentLaunch?: boolean;
+    /** Direct agent alias charged by physical admission (never a synthetic alias). */
+    agentAlias?: string;
+    /** Documented agent launch without a registered alias: charged to the global admission limit only. */
+    agentAdmissionExemption?: AgentAdmissionExemption;
 }
 
 /**
@@ -243,6 +247,7 @@ async function startDockerCommand(
                 return withWorkflowExecutionDeadline(command, executionArgs, deadline.remaining());
             },
             signal: executionSignal, taskId: options.taskId, extraEnvVars: options.extraEnvVars,
+            agentAlias: options.agentAlias, exemption: options.agentAdmissionExemption,
             cwd: options.cwd && fs.existsSync(options.cwd) ? options.cwd : undefined,
         })
         : null;

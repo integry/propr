@@ -364,6 +364,8 @@ export function sumAntigravitySegmentUsage(segments: ReadonlyArray<Pick<Antigrav
 }
 
 export interface AntigravityNativeGoalLaunch {
+    /** Direct agent alias charged by physical admission. */
+    agentAlias: string;
     diagnostics?: DiagnosticAgent;
     /** Docker args for one invocation; `launch` keeps slash commands enabled for `/goal`. */
     buildDockerArgs(options: { conversationId?: string; launch: boolean }): string[] | Promise<string[]>;
@@ -403,7 +405,7 @@ export async function executeAntigravityNativeGoal(
             const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
             attachProviderCapture(spawned, capture);
             return spawned;
-        });
+        }, { agentAlias: launch.agentAlias });
         current = child;
         // Print mode reads the prompt from non-TTY stdin, avoiding argv limits.
         child.stdin?.end(message);

@@ -14,6 +14,31 @@ Self-hosted installations retain their execution behavior unless `PROPR_AGENT_RU
 
 PR [#2989](https://github.com/integry/propr/pull/2989), following #2987, merged at `9fbca5e587ad1fb94e41de8c89be3af31177d59b`, which this PR base already contains. Its resolver controls **per-worker job** and repository-workflow ceilings; this patch does not copy or replace it. The physical entitlement resolver intentionally has stricter semantics: it recognizes Hosted by the existing Fleet boundary and never accepts a config-repository override. Existing repository semaphores and lower repository limits remain in place.
 
+## Per-agent ceilings
+
+`PROPR_AGENT_RUN_ALIAS_LIMITS` adds optional ceilings keyed by **direct agent alias**, for example `local-llama=1,claude-prod=3` for a local inference server that runs one job at a time next to cloud agents. They are ceilings, not reserved shares: an alias below its ceiling still needs a free global slot, and capacity an alias does not use is available to every other agent.
+
+- **Format and rules.** Comma-separated `alias=N` entries; each alias at most once; `N` is a positive integer **no greater than the global limit** (`PROPR_AGENT_RUN_LIMIT`, or the Hosted `WORKER_CONCURRENCY` entitlement). A larger ceiling could never bind, so it is rejected as a mistake. An unset or blank value means no per-agent policy.
+- **Who is charged.** Every admitted launch carries the alias of the direct agent that actually runs: provider `executeTask`/`analyze` pass it to `executeDockerCommand`, and native goal sessions pass it to `spawnWithNetworkPolicy`. Models that run under one alias share its ceiling; different aliases are independent; an alias without an entry is limited only by the global limit. A synthetic agent is never charged: each physical attempt is charged to the direct agent it routed to, so naming a synthetic alias in the policy is an error.
+- **Startup validation.** The worker (`startWorker`) and the API (`start()`) refuse to start when the value is malformed, a ceiling exceeds the global limit, an entry names a synthetic agent or an alias that is not a configured direct agent (disabled agents count as configured), or the policy is set while admission is off. With no direct agent configured, the implicit default agent's alias `default` is accepted. Aliases can change at runtime: on `agents_update` / `synthetic_agents_update` both re-validate and log an error rather than crash; a renamed agent is then limited only by the global limit until the policy is corrected.
+- **Atomicity.** The ceiling is checked in the same Lua `acquire` as the global count, by counting the holders whose record carries the alias. The holder record stores the alias; every other operation (attach, renew, fence, expiry, release) keeps it. The reserve → attach → fence → recover lifecycle is unchanged, so alias capacity is never reused while an old execution can still run: a `recovering` holder keeps counting against its alias, and blocks every acquire, until removal is confirmed.
+- **Not fenced.** Per-alias ceilings are not part of the stored configuration identity. Each acquire passes the caller's current ceiling, so raising or lowering one needs no generation bump and no drain. Raising is always safe; lowering stops new admissions for that alias until its running holders finish, and never stops running work. The global limit keeps its generation fencing. Processes of one instance should carry the same value; while they differ (for example mid-restart), each admits by its own value.
+- **Why an acquire waits.** `acquire` distinguishes `global_limit`, `alias_limit` and `recovering`. The wait loop logs each change of reason with the alias and reports it through `AdmissionOptions.onWaiting`. A launch on a saturated alias waits in the existing acquire loop (deferring such jobs before they reach the boundary is a separate change). `agentAdmissionAliasHolders(client, instanceId)` returns the holder count per alias.
+
+### Launches without a registered alias
+
+With a per-agent policy configured, an admitted launch that names no direct agent fails before acquiring with `Agent admission cannot identify the direct agent for this launch`; it never bypasses the policy. Without a policy, such a launch keeps today's global-only behaviour. The paths that previously launched without a registered alias:
+
+| Path | Identity |
+| --- | --- |
+| Legacy Claude analysis (`executeClaudeCode`, used by `runLightweightLLMAnalysis` only when the requested alias is not registered) | **Exemption** `legacy-claude-analysis`: no registered agent runs (ENV-configured Claude), so it counts toward the global limit only. |
+| Agent health checks (`POST /api/agents/:id/health`) | The saved agent's alias: the probe runs the saved configuration with only its execution image resolved. |
+| Implicit default agent (no direct agents configured) | Alias `default`. |
+
+### Upgrade and rolling restarts
+
+Holder records written before this change carry no alias. They count toward the global limit only and never cause an error; they leave the hash through the normal release or recovery path. Records written by new processes add only the `alias` field, which the previous script ignores and preserves. During a rolling restart old and new processes share the keys safely for the global limit, but old processes neither send an alias nor check ceilings: their launches count toward the global limit only, and they may admit work on an alias that is already at its ceiling. Per-agent ceilings are enforced once every launching process (API and workers) runs the new version. With `PROPR_AGENT_RUN_ALIAS_LIMITS` unset, the script's decisions are unchanged.
+
 ## Covered execution paths
 
 | Entry point | Physical boundary |
@@ -64,6 +89,8 @@ Run with a local Redis server binary:
 PROPR_TEST_REDIS_SERVER=/path/to/redis-server NODE_ENV=test \
   node --import tsx --test test/agentRunAdmission.test.ts
 ```
+
+The per-agent ceiling suite `test/agentRunAliasAdmission.test.ts` spawns `redis-server` when available and otherwise uses the Redis at `REDIS_HOST` / `REDIS_PORT` (CI starts one with `scripts/ci-redis.sh`), with run-unique instance keys. With `PROPR_REQUIRE_REDIS_INTEGRATION=1`, as CI sets, an unavailable Redis fails the suite instead of skipping it.
 
 The tests use real Redis scripts and separate Node processes through both production Docker wrappers, with a Docker lifecycle simulator. They saturate 2/6/12, prove N+1 cannot create/start, and prove one release admits one waiter. Additional cases cover renewal, waiting/running cancellation, nested logical calls, fallback, holder-process death, delayed creation, stale release, blocked physical removal, configuration/daemon conflicts, Redis loss, generation-based upgrades/downgrades, suspended old-generation creation, repeated-tier stale launchers, and Docker caller-environment isolation. The wrapper fixture simulates an installed absolute Docker binary and refuses non-PATH spawns before contacting a daemon. These are not live Docker/provider or end-to-end planner/chat acceptance tests; the following Fleet checks are still required.
 
