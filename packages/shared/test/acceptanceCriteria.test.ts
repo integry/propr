@@ -53,7 +53,9 @@ test('keeps sibling items apart however their markers are indented', () => {
   // A marker left of the previous item's content column starts a sibling, not a child.
   assert.deepEqual(texts('## Acceptance criteria\n- Backend works\n - Documents usage'), ['Backend works', 'Documents usage']);
   assert.deepEqual(texts('## Acceptance criteria\n  - First\n - Second\n- Third\n   - Child of third'), ['First', 'Second', 'Third; Child of third']);
-  assert.deepEqual(texts('## Acceptance criteria\n1. First\n  2. Second\n   3. Third\n      4. Child of third'), ['First', 'Second', 'Third; Child of third']);
+  assert.deepEqual(texts('## Acceptance criteria\n1. First\n  2. Second\n   3. Third\n      1. Child of third'), ['First', 'Second', 'Third; Child of third']);
+  // An ordered list starting at another number cannot interrupt a paragraph, so `4.` continues the text, as GitHub renders it.
+  assert.deepEqual(texts('## Acceptance criteria\n1. First\n  2. Second\n   3. Third\n      4. Child of third'), ['First', 'Second', 'Third 4. Child of third']);
   // The same holds after the first item's children.
   assert.deepEqual(texts('## Acceptance criteria\n- Parent\n  - child\n - Sibling\n   - its child'), ['Parent; child', 'Sibling; its child']);
   assert.deepEqual(extractAcceptanceCriteria('## Acceptance criteria\n- Backend works\n - Documents usage').map(criterion => criterion.id), ['AC1', 'AC2']);
@@ -213,8 +215,10 @@ test('starts a new top-level list after a sub-heading or paragraph ends the prev
 test('ignores HTML comments spanning headings and list items', () => {
   const hidden = '<!--\n## Acceptance criteria\n- Obsolete requirement\n-->\n\n## Acceptance criteria\n- Actual requirement\n';
   assert.deepEqual(extractAcceptanceCriteria(hidden), [{ id: 'AC1', text: 'Actual requirement' }]);
-  const inside = '## Acceptance criteria\n- First <!-- hidden\n- Not an item\n## Not a heading\n--> still first\n- Second\n<!-- - hidden item -->\n- Third\n';
-  assert.deepEqual(texts(inside), ['First still first', 'Second', 'Third']);
+  const inside = '## Acceptance criteria\n- First <!-- hidden -->\n<!--\n- Not an item\n## Not a heading\n-->\n- Second\n<!-- - hidden item -->\n- Third\n';
+  assert.deepEqual(texts(inside), ['First', 'Second', 'Third']);
+  // An inline `<!--` with no `-->` in its paragraph is not a comment, so GitHub shows it, and the lines after it.
+  assert.deepEqual(texts('## Acceptance criteria\n- First <!-- hidden\n- Not an item\n## Not a heading\n--> still first\n- Second\n'), ['First <!-- hidden', 'Not an item']);
   assert.deepEqual(texts('## Acceptance criteria\n- Kept\n<!-- unclosed\n- Hidden\n'), ['Kept']);
   // Comment delimiters inside fenced code are literal and hide nothing.
   assert.deepEqual(texts('```\n<!--\n```\n## Acceptance criteria\n- Visible\n```\n-->\n```\n- Also visible\n'), ['Visible', 'Also visible']);
@@ -333,16 +337,50 @@ test('ignores statements in fenced examples inside block quotes', () => {
   ]) {
     assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), [real, 'Report each criterion like this:', ...example].join('\n')), [notMet], example.join('\n'));
   }
-  // A blank or unquoted line ends the quote and its fence, so a statement after it counts, as does a quoted
-  // statement outside a fence, and one in a new top-level quote after a quote inside a list item.
+  // A blank or unquoted line ends the quote and its fence, so a statement after it counts.
   for (const after of [
     ['> ```md', '', '- AC2: met — `src/b.ts`'],
     ['> ```md', '- AC2: met — `src/b.ts`'],
-    ['> ```md', '> - AC1: met — example', '> ```', '> - AC2: met — `src/b.ts`'],
-    ['- Notes:', '  > ```md', '> - AC2: met — `src/b.ts`'],
   ]) {
     assert.deepEqual(evaluateAcceptanceCriteria(criteria, [real, ...after].join('\n')), [
       notMet, { id: 'AC2', text: 'B', status: 'met', evidence: '`src/b.ts`' },
     ], after.join('\n'));
   }
+  // A statement in a block quote is quoted, not the agent's report, even outside a fence.
+  for (const quoted of [
+    ['> ```md', '> - AC1: met — example', '> ```', '> - AC2: met — `src/b.ts`'],
+    ['- Notes:', '  > ```md', '> - AC2: met — `src/b.ts`'],
+  ]) {
+    assert.deepEqual(evaluateAcceptanceCriteria(criteria, [real, ...quoted].join('\n')).map(result => result.status), ['not_met', 'not_addressed'], quoted.join('\n'));
+  }
+});
+
+test('reads criteria and statements from the Markdown syntax tree', () => {
+  // Wording is sliced from the source, as written; indented code, block quotes and quoted headings are never criteria.
+  const body = [
+    '> ## Acceptance criteria', '> - Quoted, not this', '',
+    '## Acceptance criteria', '- Uses **bold**, `code` and [a link](https://example.com)', '',
+    '      - indented code', '',
+    '> - Quoted requirement', '',
+    '---', '- After a thematic break',
+  ].join('\n');
+  assert.deepEqual(texts(body), ['Uses **bold**, `code` and [a link](https://example.com)', 'After a thematic break']);
+  assert.deepEqual(texts('## Acceptance criteria\n- - - - - - - - - -\n- Kept\n'), ['Kept']);
+  // Statements in a real GFM table count, row by row; indented code does not.
+  const criteria = [{ id: 'AC1', text: 'A' }, { id: 'AC2', text: 'B' }];
+  const report = ['| Criterion | Status | Evidence |', '| --- | --- | --- |', '| AC1 | met | `src/a.ts` |', '', '    AC2: met — example'].join('\n');
+  assert.deepEqual(evaluateAcceptanceCriteria(criteria, report).map(result => [result.status, result.evidence]), [['met', '`src/a.ts`'], ['not_addressed', undefined]]);
+});
+
+test('bounds the input that slow Markdown constructs can make expensive', () => {
+  const started = Date.now();
+  // Many lazy continuation lines and table rows are quadratic in micromark; only the first lines are parsed.
+  const lazy = texts(`## Acceptance criteria\n- First\n${'lazy\n'.repeat(30_000)}- Too late\n`);
+  assert.equal(lazy.length, 1);
+  assert.ok(lazy[0].startsWith('First lazy lazy'));
+  evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `| a | b |\n| - | - |\n${'| x | y |\n'.repeat(20_000)}`);
+  // A line nested too deep is not parsed, nor anything after it.
+  assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(9)}deep\n- Dropped\n`), ['Kept']);
+  assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(4)}nested\n- Also kept\n`).length, 2);
+  assert.ok(Date.now() - started < 2000);
 });

@@ -1,8 +1,15 @@
 /**
  * Acceptance criteria as a checklist. Pure: parses the criteria list out of an
  * issue or plan-item body, and the agent's per-criterion statements out of its
- * final report. No heading means no criteria.
+ * final report. Both are read from a CommonMark/GFM syntax tree, so code, HTML
+ * and block quotes are told apart by the parser. No heading means no criteria.
  */
+
+import type { Heading, List, ListItem, Nodes, Parent, Root, RootContent } from 'mdast';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { toString } from 'mdast-util-to-string';
+import { gfm } from 'micromark-extension-gfm';
 
 export interface AcceptanceCriterion {
     /** Stable id by position: AC1, AC2, ... */
@@ -21,8 +28,19 @@ export interface AcceptanceCriterionResult extends AcceptanceCriterion {
 export const MAX_ACCEPTANCE_CRITERIA = 20;
 export const MAX_ACCEPTANCE_CRITERION_LENGTH = 300;
 export const MAX_ACCEPTANCE_EVIDENCE_LENGTH = 300;
-/** Longest body scanned; longer bodies are cut, never parsed slowly. */
-const MAX_SCANNED_LENGTH = 200_000;
+/**
+ * Input bounds that keep parsing fast: micromark is quadratic in some inputs,
+ * such as many lazy continuation lines or table rows, and in containers nested
+ * on one line (`- - - …`, `> > …`), which also overflow the stack when deep
+ * enough. Only the text before the first line past a bound is parsed.
+ * 65,536 characters is GitHub's limit for an issue body.
+ */
+const MAX_PARSED_LENGTH = 65_536;
+const MAX_PARSED_LINES = 2_000;
+/** A line opening more block quotes and list items than this, as in `- > - > …`. */
+const TOO_DEEP = /^[ \t]*(?:(?:>[ \t]*|(?:[-*+]|\d{1,9}[.)])[ \t]+)){9}/;
+/** `- - - -` and the like are a thematic break, not nested lists. */
+const THEMATIC_BREAK = /^[ \t]*([-*_])(?:[ \t]*\1)*[ \t]*$/;
 
 export const ACCEPTANCE_CRITERION_STATUS_LABEL: Record<AcceptanceCriterionStatus, string> = {
     met: 'met',
@@ -31,409 +49,135 @@ export const ACCEPTANCE_CRITERION_STATUS_LABEL: Record<AcceptanceCriterionStatus
     not_addressed: 'not addressed',
 };
 
-interface Heading { level: number; text: string }
+/** Nodes that are never a source of criteria or statements. */
+const HIDDEN = new Set<string>(['code', 'html', 'blockquote']);
 
-function atxHeading(line: string): Heading | null {
-    const match = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/.exec(line);
-    if (!match) return null;
-    return { level: match[1].length, text: withoutClosingHashes((match[2] ?? '').trim()) };
+/** A parsed document with its source, which node positions index into. */
+interface Document { source: string; tree: Root }
+
+/** `markdown` up to the first line past the parse bounds. */
+function parsedSource(markdown: string): string {
+    const source = markdown.slice(0, MAX_PARSED_LENGTH);
+    let start = 0;
+    for (let line = 0; start < source.length; line++) {
+        const newline = source.indexOf('\n', start);
+        const end = newline < 0 ? source.length : newline;
+        const text = source.slice(start, end);
+        if (line >= MAX_PARSED_LINES || (TOO_DEEP.test(text) && !THEMATIC_BREAK.test(text))) return source.slice(0, start);
+        start = end + 1;
+    }
+    return source;
 }
 
-/** Drops an ATX heading's optional closing sequence of #s. */
-function withoutClosingHashes(text: string): string {
-    let end = text.length;
-    while (end > 0 && text[end - 1] === '#') end--;
-    if (end === 0) return '';
-    return end < text.length && /[ \t]/.test(text[end - 1]) ? text.slice(0, end).trim() : text;
-}
-
-function trimTrailing(text: string, characters: string): string {
-    let end = text.length;
-    while (end > 0 && characters.includes(text[end - 1])) end--;
-    return text.slice(0, end);
-}
-
-function setextLevel(line: string): number {
-    if (/^ {0,3}=+[ \t]*$/.test(line)) return 1;
-    if (/^ {0,3}-+[ \t]*$/.test(line)) return 2;
-    return 0;
-}
-
-/** `Acceptance criteria`, optionally emphasised and followed by a colon. */
-function isAcceptanceHeading(text: string): boolean {
-    const plain = text.replace(/[*_`]/g, '').replace(/:\s*$/, '').trim().replace(/\s+/g, ' ');
-    return plain.toLowerCase() === 'acceptance criteria';
-}
-
-const LIST_ITEM = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])(?:[ \t]+(.*))?$/;
-
-function cleanItemText(text: string): string {
-    return text
-        .replace(/^\s*\[[ xX]\]\s*/, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+function parse(markdown: string): Document {
+    const source = parsedSource(markdown);
+    return { source, tree: fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) };
 }
 
 function bound(text: string, max: number): string {
     return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-/**
- * A line inside the criteria section: text, with whether a list item that opened
- * inside the section holds it (so it is a nested item or a continuation, never a
- * criterion of its own); a heading held by such an item, which is a part of it;
- * or null for a break, such as a sub-heading or a top-level code fence, that
- * ends the current item.
- */
-type SectionLine = { text: string; inItem: boolean } | { heading: string } | null;
-
-const LEADING_WHITESPACE = /^[ \t]*/;
-/** Most list items one line is read as opening, as in `- 1. text`; keeps long marker runs linear. */
-const MAX_ITEMS_PER_LINE = 8;
-/** Most block quotes read as nested, as in `> > text`; deeper ones read as fenced code, keeping each line's scan linear. */
-const MAX_QUOTE_DEPTH = 8;
-const LIST_MARKER = /^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]*)/;
-const QUOTE_MARKER = /^[ \t]*>[ \t]?/;
-
-/** Width of `text` in columns, with tab stops every four columns. */
-function columnWidth(text: string): number {
-    let width = 0;
-    for (const char of text) width += char === '\t' ? 4 - (width % 4) : 1;
-    return width;
-}
-
-/** The column where a list item's content starts, or -1 when `line` is not a list item. */
-function listContentColumn(line: string): number {
-    const match = LIST_MARKER.exec(line);
-    if (!match || !LIST_ITEM.test(line)) return -1;
-    const markerEnd = columnWidth(match[1]);
-    const spacing = columnWidth(match[1] + match[2]) - markerEnd;
-    // An empty item, or one followed by 5+ columns (indented code), starts content one column on.
-    return spacing < 1 || spacing > 4 || !line.slice(match[0].length).trim() ? markerEnd + 1 : markerEnd + spacing;
+function hasChildren(node: Nodes): node is Nodes & Parent {
+    return 'children' in node;
 }
 
 /**
- * The list item's content as a line of its own, padded to its content column,
- * when the content starts on the item's line; otherwise null.
+ * The source of `node`'s inline content, as written, without its inline HTML
+ * (such as `<!-- comments -->`): from its first child to its last, so a
+ * heading's `#`s and a task item's checkbox are not part of it.
  */
-function itemContentLine(line: string, column: number): string | null {
-    const match = LIST_MARKER.exec(line) as RegExpExecArray;
-    const text = line.slice(match[0].length);
-    return text.trim() && column === columnWidth(match[0]) ? ' '.repeat(column) + text : null;
-}
-
-/** The fence run `text` opens with; a backtick run followed by another backtick is inline code. */
-function fenceRun(text: string): string | null {
-    const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(text);
-    return match && !(match[1][0] === '`' && match[2].includes('`')) ? match[1] : null;
-}
-
-/** The fence run of a closing delimiter, which only whitespace may follow: `~~~ text` is fenced code. */
-function closingFenceRun(text: string): string | null {
-    return /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(text)?.[1] ?? null;
-}
-
-/** A block quote line's content, after its `>` and one optional space; null when `text` is not quoted. */
-function quotedText(text: string): string | null {
-    const match = QUOTE_MARKER.exec(text);
-    return match ? text.slice(match[0].length) : null;
-}
-
-interface OpenFence {
-    marker: string;
-    /** Content column of the list item holding the fence; 0 at top level. */
-    column: number;
-}
-
-interface OpenQuote {
-    /** Reads the quote's content, without its `>` markers, as a document of its own. */
-    content: FenceTracker;
-    /** Content column of the list item holding the quote; 0 at top level. */
-    column: number;
-}
-
-/** How a line relates to the list items holding it and to fenced code. */
-interface TrackedLine {
-    /** Content column of the list item holding the line; 0 at top level. */
-    column: number;
-    /** A code fence delimiter or a line inside fenced code, including fenced code in a block quote. */
-    fenced: boolean;
-    /**
-     * Set when the fence opens on a list item's own line, as in `- \`\`\`md`
-     * or `- > \`\`\`md`: the item's marker, which starts the item although its
-     * content is fenced.
-     */
-    itemMarker?: string;
-}
-
-/**
- * Tracks the list items holding each line, and fenced code, including fences
- * inside list items, whose indentation is relative to the item's content column
- * rather than the line start, and fences inside block quotes, whose lines start
- * with the quote's `>` markers.
- */
-class FenceTracker {
-    private containers: number[] = [];
-    private fence: OpenFence | null = null;
-    private quote: OpenQuote | null = null;
-    /** True after a line that no paragraph text continues lazily: a blank line or a heading. */
-    private previousBlank = true;
-    /** Content column of the list item holding the current line. */
-    private column = 0;
-
-    constructor(private readonly quoteDepth = 0) {}
-
-    /** How `line`, the next line of the document, relates to its list items and to fenced code. */
-    track(line: string): TrackedLine {
-        const blank = !line.trim();
-        const indent = columnWidth(LEADING_WHITESPACE.exec(line)?.[0] ?? '');
-        const fenced = this.fence ? this.continueFence(line, blank, indent) : this.openFence(line, blank, indent);
-        this.previousBlank = blank || (!fenced && atxHeading(line) !== null);
-        const tracked: TrackedLine = { column: this.column, fenced: fenced !== false };
-        if (typeof fenced === 'string') tracked.itemMarker = fenced;
-        return tracked;
-    }
-
-    private continueFence(line: string, blank: boolean, indent: number): boolean | string {
-        const fence = this.fence as OpenFence;
-        // A line indented less than the holding list item ends the item and its fence.
-        if (!blank && indent < fence.column) {
-            this.fence = null;
-            return this.openFence(line, blank, indent);
+function inlineSource(document: Document, node: Parent): string {
+    const first = node.children[0]?.position?.start.offset;
+    const last = node.children.at(-1)?.position?.end.offset;
+    if (first === undefined || last === undefined) return '';
+    const cuts: Array<[number, number]> = [];
+    const collectHtml = (parent: Parent) => {
+        for (const child of parent.children) {
+            if (child.type === 'html' && child.position?.start.offset !== undefined && child.position.end.offset !== undefined) {
+                cuts.push([child.position.start.offset, child.position.end.offset]);
+            } else if (hasChildren(child)) collectHtml(child);
         }
-        this.column = fence.column;
-        const run = this.startAt(line, indent, fence.column, closingFenceRun);
-        if (run && run[0] === fence.marker[0] && run.length >= fence.marker.length) this.fence = null;
-        return true;
-    }
-
-    /**
-     * True when `line` opens a fence, or is fenced code in a block quote; the
-     * item marker when that starts on a list item's line.
-     */
-    private openFence(line: string, blank: boolean, indent: number): boolean | string {
-        if (blank) {
-            // A blank line ends a block quote, and any fence inside it.
-            this.quote = null;
-            return false;
-        }
-        // The list items this line can still belong to: those it is indented into.
-        let depth = this.containers.length;
-        while (depth && this.containers[depth - 1] > indent) depth--;
-        const content = listContentColumn(line);
-        const column = depth ? this.containers[depth - 1] : 0;
-        this.column = column;
-        const quoted = content < 0 ? this.startAt(line, indent, column, quotedText) : null;
-        const marker = content < 0 && quoted === null ? this.startAt(line, indent, column, fenceRun) : null;
-        // Only paragraph text continues a less-indented item lazily; a list item, block quote, fence or heading ends it.
-        if (content >= 0 || quoted !== null || marker || this.previousBlank || atxHeading(line)) this.containers.length = depth;
-        if (quoted !== null) return this.quoteLine(quoted, column);
-        this.quote = null;
-        if (content >= 0) return this.openItems(line, content);
-        if (!marker) return false;
-        this.fence = { marker, column };
-        return true;
-    }
-
-    /**
-     * Records the list items starting on `line`, such as `- 1. text`, and opens
-     * the fence, or the block quote, that their content starts with, if any.
-     */
-    private openItems(line: string, firstColumn: number): boolean | string {
-        let itemLine: string | null = line;
-        let column = firstColumn;
-        for (let opened = 0; itemLine !== null && column >= 0 && opened < MAX_ITEMS_PER_LINE; opened++) {
-            this.containers.push(column);
-            itemLine = itemContentLine(itemLine, column);
-            if (itemLine === null) return false;
-            const quoted = this.startAt(itemLine, column, column, quotedText);
-            const marker = quoted === null ? fenceRun(itemLine.slice(column)) : null;
-            if (marker) this.fence = { marker, column };
-            if (marker || (quoted !== null && this.quoteLine(quoted, column))) return (LIST_MARKER.exec(line) as RegExpExecArray)[0];
-            if (quoted !== null) return false;
-            column = listContentColumn(itemLine);
-        }
-        return false;
-    }
-
-    /**
-     * Reads a block quote line's content with the quote's own tracker; true when
-     * that content is fenced code, or is nested too deep to read.
-     */
-    private quoteLine(text: string, column: number): boolean {
-        if (this.quoteDepth >= MAX_QUOTE_DEPTH) return true;
-        if (this.quote?.column !== column) this.quote = { content: new FenceTracker(this.quoteDepth + 1), column };
-        return this.quote.content.track(text).fenced;
-    }
-
-    /**
-     * What `start` reads from `line` (a fence run, or a block quote's content),
-     * when its indentation is within three columns of `column`.
-     */
-    private startAt(line: string, indent: number, column: number, start: (text: string) => string | null): string | null {
-        return indent < column || indent - column > 3 ? null : start(line);
-    }
-}
-
-interface VisibleLine {
-    text: string;
-    /** A code fence delimiter or a line inside fenced code, including fenced code in a block quote. */
-    fenced: boolean;
-    /** Content column of the list item holding the line; 0 at top level and inside HTML comments. */
-    column: number;
-}
-
-/** Removes `<!-- ... -->` comments from one line, given whether a comment is already open at its start. */
-function stripLineComments(line: string, inComment: boolean): { text: string; inComment: boolean } {
+    };
+    collectHtml(node);
     let text = '';
-    let position = 0;
-    let open = inComment;
-    for (;;) {
-        if (open) {
-            const end = line.indexOf('-->', position);
-            if (end < 0) return { text, inComment: true };
-            position = end + 3;
-            open = false;
-            text += ' ';
-        }
-        const start = line.indexOf('<!--', position);
-        if (start < 0) return { text: text + line.slice(position), inComment: false };
-        text += line.slice(position, start);
-        position = start + 4;
-        open = true;
+    let position = first;
+    for (const [start, end] of cuts) {
+        text += `${document.source.slice(position, start)} `;
+        position = end;
     }
+    return text + document.source.slice(position, last);
 }
 
-/**
- * The lines as rendered: HTML comment contents, including comments spanning
- * lines, are dropped (each line kept, so line boundaries hold), and fenced code
- * is marked. Comment delimiters inside fenced code are literal text.
- */
-function visibleLines(lines: readonly string[]): VisibleLine[] {
-    const visible: VisibleLine[] = [];
-    const tracker = new FenceTracker();
-    let inComment = false;
-    for (const line of lines) {
-        const tracked = inComment ? null : tracker.track(line);
-        if (tracked?.itemMarker !== undefined) {
-            // The item starts here, but its content is the fence's opening delimiter.
-            visible.push({ text: tracked.itemMarker, fenced: false, column: tracked.column });
-            continue;
+/** `Acceptance criteria`, optionally emphasised and followed by a colon. */
+function isAcceptanceHeading(heading: Heading): boolean {
+    const plain = toString(heading).replace(/:\s*$/, '').trim().replace(/\s+/g, ' ');
+    return plain.toLowerCase() === 'acceptance criteria';
+}
+
+/** The first "Acceptance criteria" heading in document order, at top level or in a list item, with the parent holding it. */
+function findAcceptanceHeading(parent: Parent): { parent: Parent; index: number } | null {
+    for (let index = 0; index < parent.children.length; index++) {
+        const child = parent.children[index] as Nodes;
+        if (child.type === 'heading' && isAcceptanceHeading(child)) return { parent, index };
+        if (child.type === 'list' || child.type === 'listItem') {
+            const found = findAcceptanceHeading(child);
+            if (found) return found;
         }
-        if (tracked?.fenced) {
-            visible.push({ text: line, fenced: true, column: tracked.column });
-            continue;
-        }
-        const stripped = stripLineComments(line, inComment);
-        inComment = stripped.inComment;
-        // A line that was only comment reads as blank, like the rendered output.
-        visible.push({ text: stripped.text.trim() ? stripped.text : '', fenced: false, column: tracked?.column ?? 0 });
     }
-    return visible;
+    return null;
 }
 
-/** The heading `lines[index]` starts, and how many lines it spans. */
-function headingAt(lines: readonly string[], index: number): { heading: Heading; span: number } | null {
-    const line = lines[index];
-    const atx = atxHeading(line);
-    if (atx) return { heading: atx, span: 1 };
-    const previousBlank = index === 0 || !lines[index - 1].trim();
-    const level = line.trim() && previousBlank && !LIST_ITEM.test(line) ? setextLevel(lines[index + 1] ?? '') : 0;
-    return level ? { heading: { level, text: line.trim() }, span: 2 } : null;
-}
-
-/**
- * The lines under the first "Acceptance criteria" heading, up to the next
- * heading of the same or a higher level. A top-level code fence is a break; a
- * fence inside a list item reads as blank lines, so the item continues after it.
- * A heading inside a list item is part of that item, and never ends the section.
- */
-function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
-    const lines = visible.map(line => line.text);
-    const section: SectionLine[] = [];
-    let sectionLevel = 0;
-    // Content column of the list item holding the section's heading; 0 at top level.
-    let sectionColumn = 0;
-    for (let index = 0; index < lines.length; index++) {
-        // Held by a list item that opened inside the section, so part of a criterion.
-        const inItem = sectionLevel > 0 && visible[index].column > sectionColumn;
-        if (visible[index].fenced) {
-            if (sectionLevel) section.push(inItem ? { text: '', inItem } : null);
-            continue;
-        }
-        const found = headingAt(lines, index);
-        if (found) {
-            if (inItem) section.push({ heading: found.heading.text });
-            else if (sectionLevel && found.heading.level <= sectionLevel) break;
-            else if (sectionLevel) section.push(null);
-            else if (isAcceptanceHeading(found.heading.text)) [sectionLevel, sectionColumn] = [found.heading.level, visible[index].column];
-            index += found.span - 1;
-            continue;
-        }
-        if (sectionLevel) section.push({ text: lines[index], inItem });
+/** The nodes after the heading, up to the next heading of the same or a higher level among them. */
+function criteriaSection(parent: Parent, index: number): RootContent[] {
+    const level = (parent.children[index] as Heading).depth;
+    const section: RootContent[] = [];
+    for (const node of parent.children.slice(index + 1)) {
+        if (node.type === 'heading' && node.depth <= level) break;
+        section.push(node);
     }
     return section;
 }
 
-/**
- * Groups section lines into items: each list item not held by another item
- * opened in the section starts one, items and headings held by one become
- * further parts, and continuation lines extend the last part. Whether an item
- * holds a line follows the list structure: a marker left of the previous item's
- * content column starts a sibling, however the two markers are indented.
- */
-function listItems(section: readonly SectionLine[]): string[][] {
-    const items: string[][] = [];
-    let current: string[] | null = null;
-    let previousBlank = true;
-    for (const line of section) {
-        if (line !== null && 'heading' in line) {
-            // As after a blank line, nothing continues the heading lazily.
-            current?.push(line.heading);
-            previousBlank = true;
-            continue;
-        }
-        if (line === null || !line.text.trim()) {
-            if (line === null) current = null;
-            previousBlank = true;
-            continue;
-        }
-        const item = LIST_ITEM.exec(line.text);
-        if (item) {
-            if (line.inItem) current?.push(item[2] ?? '');
-            else {
-                if (items.length >= MAX_ACCEPTANCE_CRITERIA) break;
-                current = [item[2] ?? ''];
-                items.push(current);
-            }
-        } else if (current && (/^[ \t]/.test(line.text) || !previousBlank)) {
-            // Indented or lazy continuation; a plain paragraph after a blank line ends the item.
-            current[current.length - 1] += ` ${line.text.trim()}`;
-        } else current = null;
-        previousBlank = false;
+/** The text of an item's paragraphs and headings, including those of nested items, in order. */
+function itemParts(document: Document, item: ListItem | List, parts: string[] = []): string[] {
+    for (const child of item.children as Nodes[]) {
+        if (child.type === 'paragraph' || child.type === 'heading') parts.push(inlineSource(document, child));
+        else if (child.type === 'list' || child.type === 'listItem') itemParts(document, child, parts);
     }
-    return items;
+    return parts;
 }
+
+const EMPTY_TASK = /^\[[ xX]\]$/;
 
 function joinParts(parts: readonly string[]): string {
-    return parts.map(cleanItemText).filter(Boolean).reduce((text, part) => (text ? `${text}${/[:;,.]$/.test(text) ? ' ' : '; '}${part}` : part), '');
+    return parts
+        .map(part => part.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .reduce((text, part) => (text ? `${text}${/[:;,.]$/.test(text) ? ' ' : '; '}${part}` : part), '');
 }
 
 /**
- * The list items under the first heading matching "Acceptance criteria"
- * (case-insensitive, any ATX or setext level), up to the next heading of the
- * same or a higher level outside a list item. Each top-level item is one
- * criterion; nested items, headings inside the item and continuation lines are
- * folded into it. Checkboxes, HTML comments and fenced code, including fenced
- * code in a block quote, are dropped. At most
+ * The top-level list items under the first heading matching "Acceptance
+ * criteria" (case-insensitive, any ATX or setext level), up to the next heading
+ * of the same or a higher level. Each item is one criterion, worded as in the
+ * source; nested items and headings inside the item are folded into it. Code,
+ * HTML (including comments) and block quotes are dropped. At most
  * MAX_ACCEPTANCE_CRITERIA criteria of at most MAX_ACCEPTANCE_CRITERION_LENGTH
  * characters each.
  */
 export function extractAcceptanceCriteria(body: string | null | undefined): AcceptanceCriterion[] {
     if (!body) return [];
-    return listItems(criteriaSection(visibleLines(body.slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/))))
-        .map(joinParts)
+    const document = parse(body);
+    const heading = findAcceptanceHeading(document.tree);
+    if (!heading) return [];
+    const items = criteriaSection(heading.parent, heading.index).flatMap(node => (node.type === 'list' ? node.children : []));
+    return items
+        .map(item => joinParts(itemParts(document, item)))
+        // GitHub renders `- [ ]` alone as an empty checkbox; micromark reads it as the text `[ ]`.
+        .filter(text => !EMPTY_TASK.test(text))
         .filter(Boolean)
+        .slice(0, MAX_ACCEPTANCE_CRITERIA)
         .map((text, index) => ({ id: `AC${index + 1}`, text: bound(text, MAX_ACCEPTANCE_CRITERION_LENGTH) }));
 }
 
@@ -448,8 +192,14 @@ const STATUS_PATTERNS: ReadonlyArray<[AcceptanceCriterionStatus, RegExp]> = [
     ['met', /^met\b/i],
 ];
 
+function trimTrailing(text: string, characters: string): string {
+    let end = text.length;
+    while (end > 0 && characters.includes(text[end - 1])) end--;
+    return text.slice(0, end);
+}
+
 /**
- * One per-criterion statement, e.g. `- **AC2:** met — \`src/a.ts\``,
+ * One per-criterion statement, e.g. `**AC2:** met — \`src/a.ts\``,
  * `AC2 - not met: reason` or `| AC2 | met | test/a.test.ts |`.
  */
 function parseStatementLine(line: string): { id: string; status: AcceptanceCriterionStatus; evidence: string } | null {
@@ -472,10 +222,26 @@ function parseStatementLine(line: string): { id: string; status: AcceptanceCrite
 }
 
 /**
+ * The report's visible text lines in document order: each line of each
+ * paragraph and heading, and each table row, outside code, HTML and block quotes.
+ */
+function statementLines(document: Document, parent: Parent, lines: string[] = []): string[] {
+    for (const child of parent.children as Nodes[]) {
+        if (HIDDEN.has(child.type)) continue;
+        if (child.type === 'paragraph' || child.type === 'heading') lines.push(...inlineSource(document, child).split(/\r?\n/));
+        else if (child.type === 'tableRow') {
+            const { start, end } = child.position ?? {};
+            if (start?.offset !== undefined && end?.offset !== undefined) lines.push(document.source.slice(start.offset, end.offset));
+        } else if (hasChildren(child)) statementLines(document, child, lines);
+    }
+    return lines;
+}
+
+/**
  * Pair each criterion with the agent's last statement about it. A criterion
- * without a statement is `not_addressed`. Statements inside fenced code (such
- * as a format example, including one in a block quote) or HTML comments are
- * not the agent's report and are ignored.
+ * without a statement is `not_addressed`. Statements in code (such as a format
+ * example), HTML comments or block quotes are not the agent's report and are
+ * ignored.
  */
 export function evaluateAcceptanceCriteria(
     criteria: readonly AcceptanceCriterion[],
@@ -483,10 +249,12 @@ export function evaluateAcceptanceCriteria(
 ): AcceptanceCriterionResult[] {
     const statements = new Map<string, { status: AcceptanceCriterionStatus; evidence: string }>();
     const known = new Set(criteria.map(criterion => criterion.id));
-    for (const line of visibleLines((agentReport ?? '').slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/))) {
-        if (line.fenced) continue;
-        const statement = parseStatementLine(line.text);
-        if (statement && known.has(statement.id)) statements.set(statement.id, statement);
+    if (agentReport && known.size) {
+        const document = parse(agentReport);
+        for (const line of statementLines(document, document.tree)) {
+            const statement = parseStatementLine(line);
+            if (statement && known.has(statement.id)) statements.set(statement.id, statement);
+        }
     }
     return criteria.map(criterion => {
         const statement = statements.get(criterion.id);
