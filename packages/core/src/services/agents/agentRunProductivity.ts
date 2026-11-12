@@ -37,6 +37,25 @@ export function agentRunProductivity(run: Pick<StoredAgentRun, 'state' | 'report
   return automationRunNoChangeReason(run) ? 'unproductive' : 'productive';
 }
 
+/**
+ * Stores the mutation count of an acting step whose run another writer ended
+ * (a cancel, or a redelivery that took the step for abandoned) while the step
+ * still held its MCP grant. Only onto the run the step claimed, once it has
+ * failed or been cancelled, and never over a count already stored. Returns the
+ * updated run, or null when no such run matched.
+ */
+export async function recordAgentRunActingMutations(
+  id: string,
+  { actionTaskId, actingMutations }: { actionTaskId: string; actingMutations: number },
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const [updated] = await database('agent_runs').where({ id, action_task_id: actionTaskId }).whereIn('state', ['failed', 'cancelled'])
+    .whereNull('acting_mutations')
+    .update({ acting_mutations: actingMutations, updated_at: now() })
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
 /** Instance setting `automation_unproductive_run_threshold`; an unreadable or invalid value uses the default. */
 export async function loadUnproductiveRunThreshold(
   { readConfig = getConfig }: { readConfig?: <T>(key: string, fallback: T) => Promise<T> } = {},

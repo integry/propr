@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
 import { createAgentRun, transitionAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
-import { listLatestStoredReports, listPreviousReports } from '../packages/core/src/services/agents/agentRunReports.ts';
+import { listLatestStoredReports, listPreviousReports, storeAgentRunReport } from '../packages/core/src/services/agents/agentRunReports.ts';
 
-const { reportNoveltyPatch } = await import('../src/jobs/agentRuns/reportNovelty.ts');
+const { reportNoveltyPatch, storeReportWithNovelty } = await import('../src/jobs/agentRuns/reportNovelty.ts');
+type ReportNoveltyStore = import('../src/jobs/agentRuns/reportNovelty.ts').ReportNoveltyStore;
 
 /**
  * F8: report novelty compares with the previous reported run of the definition,
@@ -109,5 +110,109 @@ describe('report novelty against the previous reported run (F8)', () => {
     const expected = [one.id, two.id].sort().reverse();
     assert.deepEqual((await listLatestStoredReports(definition.id, { limit: 5 }, deps())).map(entry => entry.runId), expected);
     assert.deepEqual(await listLatestStoredReports(definition.id, { limit: 0 }, deps()), []);
+  });
+});
+
+/** The processor's report store against the real store, on a clock that moves with every write. */
+function realStore(overrides: Partial<ReportNoveltyStore> = {}): ReportNoveltyStore {
+  const ticking = () => ({ database, now: () => (clock += 1) });
+  return {
+    listLatestReports: (definitionId, options) => listLatestStoredReports(definitionId, options, ticking()),
+    listPreviousReports: (definitionId, options) => listPreviousReports(definitionId, options, ticking()),
+    storeReport: (run, input) => storeAgentRunReport(run, input, ticking()),
+    transitionRun: (id, from, to, patch) => transitionAgentRun(id, from, to, patch, ticking()),
+    ...overrides,
+  };
+}
+
+/** Resolves for every caller once `parties` callers are waiting, then lets everyone through. */
+function barrier(parties: number): () => Promise<void> {
+  let waiting = 0;
+  let release!: () => void;
+  const all = new Promise<void>(resolve => { release = resolve; });
+  return async () => {
+    waiting += 1;
+    if (waiting >= parties) release();
+    await all;
+  };
+}
+
+describe('comparing and storing a report are one step per definition (F11)', () => {
+  test('of two runs storing the same report at once, only the first counts it as new', async () => {
+    const first = await startRun();
+    await report(first, REPORT_A);
+    const one = await startRun();
+    const two = await startRun();
+    // Both read the latest report, A, before either stores B.
+    const bothRead = barrier(2);
+    const store = realStore({
+      listLatestReports: async (definitionId, options) => {
+        const latest = await listLatestStoredReports(definitionId, options, deps());
+        await bothRead();
+        return latest;
+      },
+    });
+    const stored = await Promise.all([storeReportWithNovelty(one, REPORT_B, store, silent), storeReportWithNovelty(two, REPORT_B, store, silent)]);
+    assert.deepEqual(stored.map(run => run?.state), ['report_ready', 'report_ready']);
+    assert.deepEqual(stored.map(run => run?.reportNovelty).sort(), ['new', 'unchanged']);
+    // The one stored second compared with the one stored first, and is the latest report now.
+    const [newer] = await listLatestStoredReports(definition.id, { limit: 1 }, deps());
+    assert.equal(stored.find(run => run?.id === newer.runId)?.reportNovelty, 'unchanged');
+    assert.equal((await storeReportWithNovelty(await startRun(), REPORT_B, realStore(), silent))?.reportNovelty, 'unchanged');
+  });
+
+  test('a report is stored only while the report its flags were classified against is still the latest', async () => {
+    const first = await startRun();
+    await report(first, REPORT_A);
+    const current = await startRun();
+    const flags = { reportHash: 'f'.repeat(64), reportNovelty: 'new' as const };
+    // Another run stored a report since `current` compared with `first`.
+    await report(await startRun(), REPORT_B);
+    assert.deepEqual(await storeAgentRunReport(current, { patch: { report: REPORT_B, ...flags }, previousRunId: first.id }, deps()), { outcome: 'previous_changed' });
+    const untouched = await database('agent_runs').where({ id: current.id }).first('state', 'report', 'report_novelty');
+    assert.deepEqual(untouched, { state: 'running', report: null, report_novelty: null }, 'nothing was stored');
+    // With no predecessor expected, any stored report is a change too.
+    assert.equal((await storeAgentRunReport(current, { patch: { report: REPORT_B, ...flags }, previousRunId: null }, deps())).outcome, 'previous_changed');
+
+    const [latest] = await listLatestStoredReports(definition.id, { limit: 1, excludeRunId: current.id }, deps());
+    const stored = await storeAgentRunReport(current, { patch: { report: REPORT_B, ...flags }, previousRunId: latest.runId }, deps());
+    assert.equal(stored.outcome, 'stored');
+    assert.equal(stored.outcome === 'stored' && stored.run.reportNovelty, 'new');
+
+    const cancelled = await startRun();
+    await transitionAgentRun(cancelled.id, ['running'], 'cancelled', {}, deps());
+    assert.deepEqual(await storeAgentRunReport(cancelled, { patch: { report: REPORT_B, ...flags }, previousRunId: current.id }, deps()), { outcome: 'not_running' });
+  });
+
+  test('the first report of a definition is stored as new', async () => {
+    const stored = await storeReportWithNovelty(await startRun(), REPORT_A, realStore(), silent);
+    assert.equal(stored?.reportNovelty, 'new');
+  });
+
+  test('a run that left running before its report was stored stores nothing', async () => {
+    const run = await startRun();
+    await transitionAgentRun(run.id, ['running'], 'cancelled', {}, deps());
+    assert.equal(await storeReportWithNovelty(run, REPORT_A, realStore(), silent), null);
+    assert.equal((await database('agent_runs').where({ id: run.id }).first('report'))?.report, null);
+  });
+
+  test('when other reports keep landing in between, the report is stored without flags', async () => {
+    const run = await startRun();
+    let attempts = 0;
+    const store = realStore({ storeReport: async () => { attempts += 1; return { outcome: 'previous_changed' }; } });
+    const stored = await storeReportWithNovelty(run, REPORT_A, store, silent);
+    assert.equal(attempts, 3);
+    assert.equal(stored?.state, 'report_ready');
+    assert.equal(stored?.report, REPORT_A);
+    assert.equal(stored?.reportNovelty, null);
+    assert.equal(stored?.reportHash, null);
+  });
+
+  test('an unreadable previous report stores the report without flags', async () => {
+    const run = await startRun();
+    const store = realStore({ listLatestReports: async () => { throw new Error('database unavailable'); } });
+    const stored = await storeReportWithNovelty(run, REPORT_A, store, silent);
+    assert.equal(stored?.state, 'report_ready');
+    assert.equal(stored?.reportNovelty, null);
   });
 });

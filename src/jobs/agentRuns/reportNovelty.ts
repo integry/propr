@@ -5,8 +5,10 @@ import {
     truncateAgentReport,
     listLatestStoredReports,
     listPreviousReports,
+    storeAgentRunReport,
     type AgentReportNovelty,
     type StoredAgentRun,
+    type transitionAgentRun,
 } from '@propr/core';
 
 /**
@@ -41,25 +43,80 @@ export const defaultReportNoveltyLookups: ReportNoveltyLookups = {
     listPreviousReports,
 };
 
-export async function reportNoveltyPatch(
-    run: Pick<StoredAgentRun, 'id' | 'definitionId' | 'createdAt'>,
+type NoveltyRun = Pick<StoredAgentRun, 'id' | 'definitionId' | 'createdAt'>;
+
+/** A report's flags and the previous reported run they were classified against. */
+interface ReportClassification {
+    /** Null when the previous report could not be read. */
+    novelty: AgentReportNovelty | null;
+    /** The previous reported run compared with; null when there was none. */
+    previousRunId: string | null;
+}
+
+async function classifyReport(
+    run: NoveltyRun,
     report: string,
     { listLatestReports, listPreviousReports: listPromptHistory }: ReportNoveltyLookups,
     log: Pick<Logger, 'warn'>,
-): Promise<AgentReportNovelty | Record<string, never>> {
+): Promise<ReportClassification> {
     try {
         const [latest, promptHistory] = await Promise.all([
             listLatestReports(run.definitionId, { limit: KNOWN_RUN_WINDOW, excludeRunId: run.id }),
             listPromptHistory(run.definitionId, { limit: KNOWN_RUN_WINDOW, beforeCreatedAt: run.createdAt, excludeRunId: run.id }),
         ]);
-        return classifyAgentReportNovelty({
+        const previous = latest[0] ?? null;
+        const novelty = classifyAgentReportNovelty({
             runId: run.id,
             report: truncateAgentReport(report).report,
-            previous: latest[0] ?? null,
+            previous,
             knownRunIds: [...new Set([...latest, ...promptHistory].map(earlier => earlier.runId))],
         });
+        return { novelty, previousRunId: previous?.runId ?? null };
     } catch (error) {
         log.warn({ runId: run.id, err: error }, 'Could not compare the agent report with the previous one');
-        return {};
+        return { novelty: null, previousRunId: null };
     }
+}
+
+export async function reportNoveltyPatch(
+    run: NoveltyRun,
+    report: string,
+    lookups: ReportNoveltyLookups,
+    log: Pick<Logger, 'warn'>,
+): Promise<AgentReportNovelty | Record<string, never>> {
+    return (await classifyReport(run, report, lookups, log)).novelty ?? {};
+}
+
+export interface ReportNoveltyStore extends ReportNoveltyLookups {
+    /** Stores the report with its flags while the report they were classified against is still the latest. */
+    storeReport: typeof storeAgentRunReport;
+    /** Stores the report without flags, when none could be classified. */
+    transitionRun: typeof transitionAgentRun;
+}
+
+/** Comparisons made before the flags are given up, when other runs keep storing reports in between. */
+const STORE_REPORT_ATTEMPTS = 3;
+
+/**
+ * Stores the report (running → report_ready) with its flags. They are
+ * committed only while the report they were classified against is still the
+ * definition's latest, so two runs storing the same report at once cannot both
+ * count it as new; a report another run stored in between is compared with
+ * again. Returns the reported run, or null when the run left `running` first.
+ */
+export async function storeReportWithNovelty(
+    run: NoveltyRun,
+    report: string,
+    deps: ReportNoveltyStore,
+    log: Pick<Logger, 'warn'>,
+): Promise<StoredAgentRun | null> {
+    for (let attempt = 0; attempt < STORE_REPORT_ATTEMPTS; attempt += 1) {
+        const { novelty, previousRunId } = await classifyReport(run, report, deps, log);
+        if (!novelty) break;
+        const stored = await deps.storeReport(run, { patch: { report, ...novelty }, previousRunId });
+        if (stored.outcome === 'stored') return stored.run;
+        if (stored.outcome === 'not_running') return null;
+    }
+    // Unknown flags stay null rather than a classification that may already be stale.
+    return deps.transitionRun(run.id, ['running'], 'report_ready', { report });
 }

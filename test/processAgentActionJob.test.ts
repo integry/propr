@@ -90,6 +90,8 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
   /** The run's state each time the grant was revoked, and every run the streak check saw. */
   const revokedWhile: AutomationRunState[] = [];
   const evaluated: StoredAgentRun[] = [];
+  /** Counts the processor tried to store on a run another writer ended. */
+  const recorded: number[] = [];
 
   const deps: Partial<AgentActionProcessorDeps> = {
     getRun: async () => current,
@@ -134,8 +136,15 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
       return current;
     },
     notifyAwaitingApproval: async waiting => { notified.push(waiting); },
+    // Mirrors recordAgentRunActingMutations: only a failed or cancelled run the step claimed, never over a count.
+    recordMutations: async (_runId, { actionTaskId, actingMutations }) => {
+      recorded.push(actingMutations);
+      if (!['failed', 'cancelled'].includes(current.state) || current.actionTaskId !== actionTaskId || current.actingMutations != null) return null;
+      current = { ...current, actingMutations };
+      return current;
+    },
   };
-  return { deps, run: () => current, taskState: () => task, transitions, stateCalls, executeTask, prepareWorkspace, buildPrompt, cleanup, grants, notified, revokedWhile, evaluated };
+  return { deps, run: () => current, taskState: () => task, transitions, stateCalls, executeTask, prepareWorkspace, buildPrompt, cleanup, grants, notified, revokedWhile, evaluated, recorded };
 }
 
 describe('processAgentActionJob', () => {
@@ -482,12 +491,84 @@ describe('acting-step mutation count', () => {
     }
   });
 
-  test('a failed acting step stores no count', async () => {
-    const h = harness({ mutatingOperations: 0, execute: async () => { throw new Error('agent crashed'); } });
+  test('an acting step that changed something and then failed keeps its count on the failed run (F12)', async () => {
+    const failures = {
+      thrown: async () => { throw new Error('agent crashed'); },
+      unsuccessful: async () => ({ success: false, error: 'container exited', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+    };
+    for (const [name, execute] of Object.entries(failures)) {
+      const h = harness({ mutatingOperations: 2, execute });
+      assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed', name);
+      assert.equal(h.run().state, 'failed', 'the terminal state is unchanged');
+      assert.equal(h.run().actingMutations, 2, name);
+      assert.deepEqual(h.transitions.filter(t => t.to === 'failed').map(t => t.patch.actingMutations), [2], 'stored with the failure itself');
+      assert.deepEqual(h.revokedWhile, ['acting'], 'counted before the run failed, and revoked once');
+      assert.equal(h.taskState(), 'failed');
+      assert.equal(h.evaluated.length, 0, 'a failed run is not evaluated; later runs read its count');
+    }
+  });
+
+  test('a failed acting step that changed nothing is a no-op acting step; an unknown count stays unset', async () => {
+    const execute = async () => { throw new Error('agent crashed'); };
+    const none = harness({ mutatingOperations: 0, execute });
+    await createAgentActionProcessor(none.deps)(actionJob());
+    assert.equal(none.run().state, 'failed');
+    assert.equal(none.run().actingMutations, 0);
+    for (const mutatingOperations of [null, new Error('API unreachable')]) {
+      const unknown = harness({ mutatingOperations, execute });
+      await createAgentActionProcessor(unknown.deps)(actionJob());
+      assert.equal(unknown.run().state, 'failed');
+      assert.equal(unknown.run().actingMutations, undefined);
+      assert.equal(unknown.grants.revoked.length, 1);
+    }
+  });
+
+  test('a step that fails before its grant is issued stores no count', async () => {
+    const h = harness({ mutatingOperations: 2 });
+    h.deps.mcpGrants!.request = async () => { throw new Error('grant refused'); };
     assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed');
-    assert.equal(h.run().state, 'failed');
     assert.equal(h.run().actingMutations, undefined);
-    assert.deepEqual(h.grants.revoked, ['grant-1']);
-    assert.equal(h.evaluated.length, 0);
+    assert.deepEqual(h.grants.revoked, []);
+    assert.deepEqual(h.recorded, []);
+  });
+
+  test('a task stopped during execution cancels the run with the count of what it changed (F12)', async () => {
+    const h = harness({ mutatingOperations: 1 });
+    const stateManager = h.deps.stateManager!;
+    h.executeTask.mock.mockImplementation(async () => {
+      await stateManager().markTaskCancelled(TASK_ID, 'user', {});
+      return SUCCESS;
+    });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.run().actingMutations, 1);
+    assert.deepEqual(h.revokedWhile, ['acting']);
+  });
+
+  test('a run another writer cancels during execution still gets the count of what the step changed (F12)', async () => {
+    for (const result of [async () => SUCCESS, async () => { throw new Error('stopped'); }]) {
+      const h = harness({ mutatingOperations: 3 });
+      h.executeTask.mock.mockImplementation(async () => {
+        await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+        return result();
+      });
+      assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+      assert.equal(h.run().state, 'cancelled');
+      assert.equal(h.run().actingMutations, 3);
+      assert.equal(h.run().actionSummary, null);
+      assert.deepEqual(h.recorded, [3], 'recorded once');
+      assert.deepEqual(h.grants.revoked, ['grant-1']);
+    }
+  });
+
+  test('a lost count write does not change how the run ended', async () => {
+    const h = harness({ mutatingOperations: 3 });
+    h.deps.recordMutations = async () => { throw new Error('database unavailable'); };
+    h.executeTask.mock.mockImplementation(async () => {
+      await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+      return SUCCESS;
+    });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+    assert.equal(h.taskState(), 'cancelled');
   });
 });

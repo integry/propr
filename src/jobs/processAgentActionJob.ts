@@ -6,11 +6,13 @@ import {
     createAgentRunCostGate,
     logger,
     pauseUnclaimedAgentRunAction,
+    recordAgentRunActingMutations,
     TaskStates,
     transitionAgentRun,
     UsageLimitError,
     type AgentRunGate,
     type AgentRunJobData,
+    type AgentRunTransitionPatch,
     type IssueRef,
     type JobResult,
     type StoredAgentDefinition,
@@ -57,6 +59,11 @@ export interface AgentActionProcessorDeps extends Pick<AgentRunProcessorDeps,
     pauseAction: (runId: string, skipReason: string) => Promise<StoredAgentRun | null>;
     /** Tells the owner a held-back run waits for approval; best-effort. */
     notifyAwaitingApproval: (run: StoredAgentRun) => Promise<void>;
+    /**
+     * Stores the grant's mutation count on a run another writer failed or cancelled
+     * while this acting step held the grant; null when no such run matched.
+     */
+    recordMutations: (runId: string, record: { actionTaskId: string; actingMutations: number }) => Promise<StoredAgentRun | null>;
 }
 
 export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
@@ -75,6 +82,7 @@ export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
     gate: createAgentRunCostGate(),
     pauseAction: (runId, skipReason) => pauseUnclaimedAgentRunAction(runId, skipReason),
     notifyAwaitingApproval: run => notifyAgentReportAwaitingApproval(run),
+    recordMutations: (runId, record) => recordAgentRunActingMutations(runId, record),
 };
 
 /**
@@ -103,7 +111,19 @@ const UNREADABLE_DEFINITION_REASON = 'The agent definition snapshot is unreadabl
 const MISSING_REPORT_REASON = 'The run has no stored report to act on';
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
-interface ActionContext { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger; correlationId: string }
+interface ActionContext {
+    runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger; correlationId: string;
+    /**
+     * Mutating operations the acting grant performed, set once the grant has ended
+     * (null when that count is unknown), so whichever state ends the run keeps it.
+     */
+    actingMutations?: number | null;
+}
+
+/** The ended grant's count as a transition patch; nothing while it is held or unknown. */
+function mutationsPatch(context: ActionContext): AgentRunTransitionPatch {
+    return typeof context.actingMutations === 'number' ? { actingMutations: context.actingMutations } : {};
+}
 
 export function createAgentActionProcessor(overrides: Partial<AgentActionProcessorDeps> = {}) {
     const deps: AgentActionProcessorDeps = { ...defaultAgentActionProcessorDeps, ...overrides };
@@ -112,9 +132,9 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
     const activeRuns = new Set<string>();
 
     /** acting → failed; false when the run already left `acting`. Persistence errors are retried. */
-    async function failActingRun(runId: string, reason: string, log: Logger): Promise<boolean> {
+    async function failActingRun(runId: string, reason: string, log: Logger, patch: AgentRunTransitionPatch = {}): Promise<boolean> {
         try {
-            return await deps.transitionRun(runId, ['acting'], 'failed', { failureReason: reason }) !== null;
+            return await deps.transitionRun(runId, ['acting'], 'failed', { ...patch, failureReason: reason }) !== null;
         } catch (error) {
             log.error({ runId, err: error }, 'Could not mark agent run failed');
             throw new AgentRunPersistenceError(runId, error);
@@ -132,11 +152,24 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
     }
 
     /**
+     * A run another writer failed or cancelled while this acting step held its grant
+     * still keeps what the grant changed. Best effort: the run has already ended.
+     */
+    async function keepMutationsOfEndedRun(context: ActionContext): Promise<void> {
+        const { runId, taskId, log, actingMutations } = context;
+        if (typeof actingMutations !== 'number') return;
+        await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations }).catch(error => {
+            log.warn({ runId, taskId, actingMutations, err: error }, 'Could not store the acting step mutation count on its ended run');
+        });
+    }
+
+    /**
      * Ends a still-open action task to match a run another writer ended
      * (cancel endpoint, a failure stored by an earlier attempt).
      */
     async function taskFollowsRun(context: ActionContext): Promise<JobResult> {
         const { runId, taskId, correlationId } = context;
+        await keepMutationsOfEndedRun(context);
         const current = await deps.getRun(runId);
         const task = await context.stateManager.getTaskState(taskId);
         if (task && !TERMINAL_TASK_STATES.has(task.state)) {
@@ -159,7 +192,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         const usageLimit = error instanceof UsageLimitError;
         const reason = usageLimit ? AGENT_RUN_USAGE_LIMIT_REASON : (error as Error).message;
         log[error instanceof AgentRunReportError ? 'warn' : 'error']({ runId, taskId, err: error }, 'Agent run acting step failed');
-        if (!await failActingRun(runId, reason, log)) return taskFollowsRun(context);
+        if (!await failActingRun(runId, reason, log, mutationsPatch(context))) return taskFollowsRun(context);
         await settleTask(context, manager => manager.markTaskFailed(taskId, usageLimit ? new Error(reason) : error as Error));
         return { status: 'failed', runId, taskId, reason, correlationId };
     }
@@ -170,7 +203,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         const task = await context.stateManager.getTaskState(taskId);
         if (task?.state !== TaskStates.CANCELLED) return null;
         log.info({ runId, taskId }, `Agent run action task was cancelled ${when}`);
-        const cancelled = await deps.transitionRun(runId, ['acting'], 'cancelled');
+        const cancelled = await deps.transitionRun(runId, ['acting'], 'cancelled', mutationsPatch(context));
         if (!cancelled) return taskFollowsRun(context);
         return { status: 'cancelled', runId, taskId, correlationId };
     }
@@ -271,6 +304,18 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         let workspace: AgentRunWorkspace | undefined;
         let actionSucceeded = false;
         let mcpGrant: IssuedAgentRunMcpGrant | null = null;
+        /**
+         * Ends the grant once, before the run's final state is written, so the count of what
+         * it changed is final and stored with that state, whichever it is: completed, failed
+         * or cancelled. An unknown count (the revoke failed) stays null rather than reading as a no-op.
+         */
+        const endGrant = async (): Promise<void> => {
+            if (!mcpGrant) return;
+            const grant = mcpGrant;
+            mcpGrant = null;
+            const revoked = await revokeGrantQuietly(deps.mcpGrants.revoke, runId, grant, log);
+            context.actingMutations = revoked?.mutatingOperations ?? null;
+        };
         try {
             await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Preparing agent workspace' });
             const { token, octokit } = await gitHubAccessFor(definition);
@@ -298,15 +343,13 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
                     : agent.executeTask(options),
             );
 
-            // 6. A task stopped during execution cancels the run; otherwise store the summary.
+            // 6. The agent is done, so its grant ends. A task stopped during execution
+            //    cancels the run; otherwise store the summary.
+            await endGrant();
             const taskStopped = await followCancelledTask(context, 'while its agent was executing');
             if (taskStopped) return taskStopped;
             const actionSummary = actionSummaryFromResult(result);
-            // End the grant before the run, so the count of what it changed is final when stored;
-            // an unknown count (the revoke failed) stays null rather than reading as a no-op.
-            const revoked = await revokeGrantQuietly(deps.mcpGrants.revoke, runId, mcpGrant, log);
-            mcpGrant = null;
-            const actingMutations = revoked?.mutatingOperations ?? null;
+            const actingMutations = context.actingMutations ?? null;
             const completed = await deps.transitionRun(runId, ['acting'], 'completed', { actionSummary, actingMutations });
             if (!completed) return taskFollowsRun(context);
             await settleTask(context, manager => manager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(actionSummary) }));
@@ -316,13 +359,15 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             return { status: 'complete', runId, taskId, state: 'completed', correlationId };
         } catch (error) {
             if (error instanceof AgentRunSettlementError || error instanceof AgentRunPersistenceError) throw error;
+            // A step that changed something before it failed keeps that count on the failed run.
+            await endGrant();
             const stopped = await followCancelledTask(context, 'before its run failed').catch(() => null);
             if (stopped) return stopped;
             return failRunAndTask(context, error);
         } finally {
             // 7. The grant ends with the phase, whether the agent succeeded or not.
             activeRuns.delete(runId);
-            await revokeGrantQuietly(deps.mcpGrants.revoke, runId, mcpGrant, log);
+            await endGrant();
             await workspace?.cleanup(actionSucceeded);
         }
     };

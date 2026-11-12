@@ -147,6 +147,11 @@ function harness(options: {
     deps: {
       getRun: async () => current,
       transitionRun,
+      // The real store also checks the predecessor under a definition lock; see agentRunReportNoveltyPrevious.test.ts.
+      storeReport: (async (run, { patch }) => {
+        const stored = await transitionRun(run.id, ['running'], 'report_ready', patch);
+        return stored ? { outcome: 'stored', run: stored } : { outcome: 'not_running' };
+      }) as AgentRunProcessorDeps['storeReport'],
       validateDefinition: async () => options.invalid ?? null,
       listPreviousReports: listPreviousReports as unknown as AgentRunProcessorDeps['listPreviousReports'],
       listLatestReports: listLatestReports as unknown as AgentRunProcessorDeps['listLatestReports'],
@@ -1264,6 +1269,39 @@ describe('report novelty', () => {
     otherIncident.listLatestReports.mock.mockImplementation(listEarlier);
     await createAgentRunProcessor(otherIncident.deps)(job);
     assert.equal(otherIncident.run().reportNovelty, 'new');
+  });
+
+  test('a report another run stored between comparing and storing is compared with again (F11)', async () => {
+    const h = harness({ execute: reportWith(`${BODY}\nRun run-1.`) });
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Something else entirely, said at length.' }]);
+    const stores: Array<string | null> = [];
+    const storeReport = h.deps.storeReport!;
+    h.deps.storeReport = async (run, input) => {
+      stores.push(input.previousRunId);
+      if (stores.length > 1) return storeReport(run, input);
+      // run-2 stored the same report while this one was being compared.
+      h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-2', reportedAt: NOW, report: `${BODY}\nRun run-2.` }]);
+      return { outcome: 'previous_changed' };
+    };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(stores, ['run-0', 'run-2']);
+    assert.equal(h.run().reportNovelty, 'unchanged');
+    assert.deepEqual(h.evaluated.map(run => run.reportNovelty), ['unchanged']);
+  });
+
+  test('a run that left running while its report was compared discards the report (F11)', async () => {
+    const h = harness();
+    h.deps.storeReport = async () => {
+      await h.deps.transitionRun!('run-1', ['running'], 'cancelled');
+      return { outcome: 'not_running' };
+    };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.run().report, null, 'nothing was stored');
+    assert.equal(h.transitions.some(t => t.to === 'report_ready'), false);
+    assert.deepEqual(h.evaluated, []);
   });
 
   test('a report below the minimum length is empty', async () => {
