@@ -2,7 +2,8 @@ import { isScalar, parseDocument } from 'yaml';
 import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE } from './workflowExecution.js';
 import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
-import { validateAutoMergeConfig, type AutoMergeConfig } from './autoMergePolicy.js';
+import { validateAutoMergeConfig, validatePathGlobList, type AutoMergeConfig } from './autoMergePolicy.js';
+import type { ReviewConfig } from './reviewDigest.js';
 import { parseCostCapUsd } from '../budget/runCostCap.js';
 import { validateEgressAllowlist } from '../network/egressAllowlist.js';
 import { AGENT_NETWORK_MODES, type RepositoryNetworkConfig } from '../network/networkPolicy.js';
@@ -29,7 +30,11 @@ export interface RepositoryWorkflow {
     network?: RepositoryNetworkConfig;
     /** What a run does when it cannot complete its task as specified. */
     on_blocker?: OnBlockerMode;
+    /** Review digest settings: `risk_paths` marks more changed paths high risk. */
+    review?: ReviewConfig;
 }
+/** Most `review.risk_paths` globs a policy may list, like `auto_merge.protected_paths`. */
+export const REVIEW_MAX_RISK_PATHS = 200;
 export interface ResolvedRepositoryWorkflow {
     revision: string;
     baseBranch: string;
@@ -75,6 +80,20 @@ function validateNetwork(value: unknown): void {
     }
 }
 
+function validateHooks(value: unknown): void {
+    const hooks = object(value, ['after_create', 'before_run', 'after_run', 'before_remove', 'timeout_ms'], 'hooks');
+    for (const [key, entry] of Object.entries(hooks)) {
+        if (key === 'timeout_ms') positiveInteger(entry, 'hooks.timeout_ms');
+        else string(entry, `hooks.${key}`);
+    }
+}
+
+function validateReview(value: unknown): void {
+    const review = object(value, ['risk_paths'], 'review');
+    const error = review.risk_paths === undefined ? null : validatePathGlobList(review.risk_paths, 'review.risk_paths', REVIEW_MAX_RISK_PATHS);
+    if (error) invalid(error);
+}
+
 function parseWorkflowDocument(source: string): unknown {
     try {
         const document = parseDocument(source, { uniqueKeys: true });
@@ -90,14 +109,8 @@ function parseWorkflowDocument(source: string): unknown {
 export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
     if (Buffer.byteLength(source) > WORKFLOW_MAX_BYTES) invalid('file exceeds 128 KiB');
     const value = parseWorkflowDocument(source);
-    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge', 'network', 'on_blocker'], 'workflow');
-    if (config.hooks !== undefined) {
-        const hooks = object(config.hooks, ['after_create', 'before_run', 'after_run', 'before_remove', 'timeout_ms'], 'hooks');
-        for (const [key, value] of Object.entries(hooks)) {
-            if (key === 'timeout_ms') positiveInteger(value, 'hooks.timeout_ms');
-            else string(value, `hooks.${key}`);
-        }
-    }
+    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge', 'network', 'on_blocker', 'review'], 'workflow');
+    if (config.hooks !== undefined) validateHooks(config.hooks);
     if (config.instructions !== undefined) {
         string(config.instructions, 'instructions');
         const path = config.instructions as string;
@@ -120,6 +133,7 @@ export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
         const error = validateAutoMergeConfig(config.auto_merge);
         if (error) invalid(error);
     }
+    if (config.review !== undefined) validateReview(config.review);
     return config as RepositoryWorkflow;
 }
 

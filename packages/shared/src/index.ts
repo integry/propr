@@ -568,6 +568,7 @@ export * from './text.js';
 
 // Repository pull request templates (.propr/pr-template.md), parsed identically by workers and the CLI.
 export * from './prTemplate.js';
+export * from './changedFileKinds.js';
 
 // Agents: definition/run contract and the UTC cron evaluator shared by the
 // API, MCP, CLI, UI, worker and scheduler.
