@@ -500,6 +500,8 @@ export async function observePRHead(
 export interface CiMergeReadiness {
     ready: boolean;
     reason: 'checks_passing' | 'checks_not_passing' | 'no_ci' | 'waiting_for_ci' | 'unavailable';
+    /** With `checks_not_passing`: whether a blocking check failed (otherwise blocking checks are still running). */
+    checksFailed?: boolean;
 }
 
 /**
@@ -533,7 +535,9 @@ export async function getCiMergeReadiness(
             // a later return to that earlier head must wait out a fresh grace period.
             await (options.observations ?? getUltrafixStateRedis()).del(headObservationKey(owner, repoName, prNumber));
             const summary = summarizeCheckSignals(checkRuns, commitStatus, await loadNonBlockingChecks(owner, repoName));
-            return summary.allPassing ? { ready: true, reason: 'checks_passing' } : { ready: false, reason: 'checks_not_passing' };
+            return summary.allPassing
+                ? { ready: true, reason: 'checks_passing' }
+                : { ready: false, reason: 'checks_not_passing', checksFailed: summary.anyFailed };
         }
         const observedAt = await observePRHead(options.observations ?? getUltrafixStateRedis(), { owner, repoName, prNumber, headSha: ref }, now);
         return now - observedAt >= NO_CI_GRACE_MS ? { ready: true, reason: 'no_ci' } : { ready: false, reason: 'waiting_for_ci' };

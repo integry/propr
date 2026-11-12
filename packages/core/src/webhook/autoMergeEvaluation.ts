@@ -11,10 +11,10 @@ import { readLinkedIssueAutoMergeLabel, type CiMergeReadiness, type PRAutoMergeI
 
 /**
  * `resolved`: the PR merged, is no longer open, or waits on something that
- * produces its own event (a human, a new head, a check that is still running or
- * failed). `inconclusive`: a read was unavailable or a transient gate (unknown
- * mergeability, CI not yet registered, active work, a refused or failed merge,
- * a deferral) held the merge back; the PR stays in the sweep's retry set.
+ * produces its own event (a human, a new head, a failed check). `inconclusive`:
+ * a read was unavailable or a transient gate (unknown mergeability, CI not yet
+ * registered or still running, active work, a refused or failed merge, a
+ * deferral) held the merge back; the PR stays in the sweep's retry set.
  */
 export type AutoMergeEvaluationOutcome = 'resolved' | 'inconclusive';
 
@@ -86,12 +86,15 @@ export function eligibilityRefusalOutcome(eligibility: Exclude<AutoMergeEligibil
 }
 
 /**
- * Running or failed checks produce a check event, so they resolve the
- * evaluation; unreadable CI and a head whose CI has not registered (or a
- * repository without CI, inside its grace period) may produce none.
+ * A failed blocking check waits on a new head (or a re-run), which produces its
+ * own event, so it resolves the evaluation. Checks that are still running do
+ * not: the green event they produce may itself meet a transient refusal (unknown
+ * mergeability, active work) that no further event follows, so the retry entry
+ * must outlive them. Unreadable CI and a head whose CI has not registered (or a
+ * repository without CI, inside its grace period) may produce no event either.
  */
-export function ciRefusalOutcome(ci: Pick<CiMergeReadiness, 'reason'>): AutoMergeEvaluationOutcome {
-    return ci.reason === 'checks_not_passing' ? 'resolved' : 'inconclusive';
+export function ciRefusalOutcome(ci: Pick<CiMergeReadiness, 'reason' | 'checksFailed'>): AutoMergeEvaluationOutcome {
+    return ci.reason === 'checks_not_passing' && ci.checksFailed === true ? 'resolved' : 'inconclusive';
 }
 
 /** A mergeability GitHub has not computed yet is inconclusive; any other refusal waits on a change to the PR. */
