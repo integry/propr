@@ -43,6 +43,8 @@ export interface CommentContext {
     /** Review records this /fix run acted on; absent for non-fix workflows. */
     addressedFeedback?: ReviewFeedbackSelection;
     visualPreviewSection?: string;
+    /** Rendered review digest of the follow-up commit; empty or absent without a diff. */
+    reviewDigestSection?: string;
 }
 
 export interface UndoLinkContext {
@@ -164,6 +166,14 @@ function buildAddressedFeedbackLine(addressed: ReviewFeedbackSelection | undefin
     return `> Addressed ${describeReviewFeedbackSelection(addressed)}\n\n`;
 }
 
+/** The follow-up commit's review digest, then what a partial run left undone. */
+function buildDigestAndRemainingWork(reviewDigestSection: string | undefined, partial: boolean): string {
+    const remaining = partial
+        ? '## Remaining Work\n\nThe agent stopped before validating every request. Review this partial commit against the follow-up instructions and complete any unaddressed implementation, tests, or documentation.\n\n'
+        : '';
+    return `${reviewDigestSection ?? ''}${remaining}`;
+}
+
 function buildRepositoryValidationSection(report: string | undefined): string {
     return report ? `${redactSecrets(report)}\n\n` : '';
 }
@@ -225,9 +235,7 @@ export async function buildCompletionComment(
             prCommentBody += `## Work Completed Before Interruption\n\n${claudeResult.modifiedFiles.slice(0, 20).map(file => `- \`${file}\``).join('\n')}\n\n`;
         }
 
-        if (partial) {
-            prCommentBody += '## Remaining Work\n\nThe agent stopped before validating every request. Review this partial commit against the follow-up instructions and complete any unaddressed implementation, tests, or documentation.\n\n';
-        }
+        prCommentBody += buildDigestAndRemainingWork(commentContext.reviewDigestSection, partial);
 
         if (visualPreviewSection) {
             prCommentBody += `${visualPreviewSection}\n\n`;
