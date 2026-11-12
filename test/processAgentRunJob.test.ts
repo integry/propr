@@ -719,6 +719,30 @@ describe('processAgentRunJob', () => {
     assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['failed', 'new']]);
   });
 
+  test('a run that fails right after its report is stored and loses its task write is evaluated by the retry (F21)', async () => {
+    const h = harness();
+    const transitionRun = h.deps.transitionRun!;
+    h.deps.advanceAfterReport = async run => transitionRun(run.id, ['report_ready'], 'failed', { failureReason: 'queue unavailable' });
+    failTaskCallOnce(h, 'markTaskFailed');
+    const order: string[] = [];
+    h.deps.evaluateStreak = async run => {
+      if (!run) return;
+      order.push(`evaluate:${run.state}:${h.taskState()}`);
+      h.evaluated.push(run);
+    };
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunSettlementError, 'the delivery fails so BullMQ retries it');
+    assert.equal(h.run().state, 'failed');
+    assert.deepEqual(order, [], 'the check comes after the task write, so it has not run');
+
+    // The retry only has the task left to end, but the run's report flags are final, so it is evaluated.
+    assert.equal((await processor(job)).status, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['failed', 'new']]);
+    assert.deepEqual(order, ['evaluate:failed:failed'], 'evaluated once the task follows the run');
+    assert.equal(h.executeTask.mock.callCount(), 1, 'the agent is not run again');
+  });
+
   test('a finalization error after the report is stored keeps the report and is retried by the next delivery', async () => {
     const h = harness();
     const advance = h.deps.advanceAfterReport!;

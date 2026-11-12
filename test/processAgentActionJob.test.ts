@@ -99,9 +99,10 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
   const deps: Partial<AgentActionProcessorDeps> = {
     getRun: async () => current,
     transitionRun,
+    // Like claimAgentRunAction: the claimed step's count is outstanding until a write settles it.
     claimAction: async (_runId, actionTaskId) => {
       if (current.state !== 'acting' || current.actionTaskId !== null) return null;
-      current = { ...current, actionTaskId };
+      current = { ...current, actionTaskId, actingMutationsPending: true };
       return current;
     },
     validateDefinition: async () => null,
@@ -143,7 +144,8 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
     recordMutations: async (_runId, { actionTaskId, actingMutations }) => {
       recorded.push(actingMutations);
       if (!['failed', 'cancelled'].includes(current.state) || current.actionTaskId !== actionTaskId || current.actingMutations != null) return null;
-      current = { ...current, actingMutations };
+      if (actingMutations === null && !current.actingMutationsPending) return null;
+      current = { ...current, actingMutations, actingMutationsPending: false };
       return current;
     },
   };
@@ -551,7 +553,7 @@ describe('acting-step mutation count', () => {
     assert.deepEqual(h.recorded, [0]);
     assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 0]]);
 
-    // No count recorded (already stored, or the write failed): nothing final happened here, so no evaluation.
+    // No count recorded (the write matched nothing or failed), so it is still outstanding: nothing is final yet.
     for (const recordMutations of [async () => null, async () => { throw new Error('database unavailable'); }]) {
       const other = harness({ mutatingOperations: 0 });
       other.deps.recordMutations = recordMutations;
@@ -681,5 +683,117 @@ describe('acting-step mutation count', () => {
     assert.equal(h.run().actingMutations, 2, 'what the step changed is not lost with the grant');
     assert.equal(h.run().actingMutationsPending, false);
     assert.deepEqual(h.grants.revoked, ['grant-1']);
+  });
+});
+
+/** Makes one task-store write fail once, as a Redis outage would; set before the processor is created. */
+function failTaskWriteOnce(h: ReturnType<typeof harness>, name: 'markTaskCompleted' | 'markTaskFailed'): void {
+  const stateManager = h.deps.stateManager!;
+  let failed = false;
+  h.deps.stateManager = () => {
+    const manager = stateManager();
+    return {
+      ...manager,
+      [name]: async (...args: unknown[]) => {
+        if (!failed) { failed = true; throw new Error('redis unavailable'); }
+        return (manager[name] as (...callArgs: unknown[]) => Promise<unknown>)(...args);
+      },
+    } as typeof manager;
+  };
+}
+
+describe('a task write that fails after the run ended leaves the streak check to the retry (F21)', () => {
+  /** Records each streak check with the task state it saw, so the order is visible. */
+  function traceEvaluations(h: ReturnType<typeof harness>): string[] {
+    const order: string[] = [];
+    h.deps.evaluateStreak = async run => {
+      if (!run) return;
+      order.push(`evaluate:${run.state}:${h.taskState()}`);
+      h.evaluated.push(run);
+    };
+    return order;
+  }
+
+  const ended = {
+    completed: { execute: async () => SUCCESS, write: 'markTaskCompleted', status: 'complete' },
+    failed: { execute: async () => { throw new Error('agent crashed'); }, write: 'markTaskFailed', status: 'failed' },
+  } as const;
+
+  for (const [state, { execute, write, status }] of Object.entries(ended)) {
+    test(`a ${state} run whose task write failed is evaluated by the retry, once its task follows`, async () => {
+      const h = harness({ mutatingOperations: 0, execute });
+      failTaskWriteOnce(h, write);
+      const order = traceEvaluations(h);
+      const job = actionJob();
+      const processAction = createAgentActionProcessor(h.deps);
+
+      await assert.rejects(processAction(job), { name: 'AgentRunSettlementError' }, 'the delivery fails so BullMQ retries it');
+      assert.equal(h.run().state, state, 'the run keeps the end it stored');
+      assert.equal(h.run().actingMutations, 0);
+      assert.equal(h.run().actingMutationsPending, false, 'the count is settled with that end');
+      assert.notEqual(h.taskState(), state);
+      assert.deepEqual(order, [], 'the check comes after the task write, so it has not run');
+      assert.deepEqual(job.data.actingMutationsOwed, { actingMutations: 0 });
+
+      // The retry records nothing new (a completed run takes no count, a stored one is
+      // never replaced), yet the run it reconciles is final and is evaluated.
+      assert.equal((await processAction(job)).status, status);
+      assert.deepEqual(h.recorded, [0]);
+      assert.equal(h.taskState(), state);
+      assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [[state, 0]]);
+      assert.deepEqual(order, [`evaluate:${state}:${state}`], 'evaluated once the task follows the run');
+      assert.equal(h.executeTask.mock.callCount(), 1, 'the step is not run again');
+    });
+  }
+
+  test('a retry that could not keep the count with its job still evaluates the run it ends the task of', async () => {
+    const h = harness({ mutatingOperations: 0 });
+    failTaskWriteOnce(h, 'markTaskCompleted');
+    const job = actionJob();
+    (job as unknown as { updateData?: unknown }).updateData = undefined;
+    const processAction = createAgentActionProcessor(h.deps);
+    await assert.rejects(processAction(job), { name: 'AgentRunSettlementError' });
+    assert.equal(job.data.actingMutationsOwed, undefined);
+
+    assert.equal((await processAction(job)).status, 'complete');
+    assert.deepEqual(h.recorded, [], 'it owns no claim, so it records nothing');
+    assert.equal(h.taskState(), 'completed');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['completed', 0]]);
+  });
+
+  test('a run whose claimed count is still outstanding is not evaluated by a delivery that does not hold it', async () => {
+    // Cancelled elsewhere while another delivery's step holds the grant: that delivery settles and evaluates it.
+    const h = harness({ run: actingRun({ state: 'cancelled', actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution' });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+    assert.equal(h.taskState(), 'cancelled', 'the task still follows the run');
+    assert.deepEqual(h.recorded, []);
+    assert.deepEqual(h.evaluated, []);
+  });
+
+  test('a lost task write after a recorded count does not delay that count\'s check; the retry repeats it', async () => {
+    const h = harness({ mutatingOperations: 0 });
+    h.executeTask.mock.mockImplementation(async () => {
+      await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+      return SUCCESS;
+    });
+    const stateManager = h.deps.stateManager!;
+    let lost = 1;
+    h.deps.stateManager = () => {
+      const manager = stateManager();
+      return { ...manager, markTaskCancelled: async (...args: Parameters<typeof manager.markTaskCancelled>) => {
+        if (lost-- > 0) throw new Error('redis unavailable');
+        return manager.markTaskCancelled(...args);
+      } } as typeof manager;
+    };
+    const order = traceEvaluations(h);
+    const job = actionJob();
+    const processAction = createAgentActionProcessor(h.deps);
+    await assert.rejects(processAction(job), { name: 'AgentRunSettlementError' });
+    assert.equal(h.run().actingMutations, 0, 'the count was recorded');
+    assert.deepEqual(order, ['evaluate:cancelled:claude_execution'], 'evaluated as soon as the count made the run final');
+
+    // The retry records nothing new, so it checks the final run again once its task follows; the evaluation deduplicates.
+    assert.equal((await processAction(job)).status, 'cancelled');
+    assert.deepEqual(order, ['evaluate:cancelled:claude_execution', 'evaluate:cancelled:cancelled']);
   });
 });

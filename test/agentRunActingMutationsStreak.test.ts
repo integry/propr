@@ -67,8 +67,12 @@ async function unchangedRun(next: 'completed' | 'acting'): Promise<StoredAgentRu
 
 interface Inbox { events: Array<{ deduplicationKey: string }> }
 
+/** The items each inbox has stored, so like the real store a later evaluation finds the item an earlier one stored. */
+const storedItems = new WeakMap<Inbox, Map<string, { pauseIntended: boolean }>>();
+
 function streakDeps(inbox: Inbox): UnproductiveStreakDeps {
-  const stored = new Map<string, { pauseIntended: boolean }>();
+  const stored = storedItems.get(inbox) ?? new Map<string, { pauseIntended: boolean }>();
+  storedItems.set(inbox, stored);
   return {
     loadThreshold: async () => THRESHOLD,
     findStreak: (definitionId, threshold) => findUnproductiveScheduledStreak(definitionId, threshold, { database }),
@@ -83,25 +87,35 @@ function streakDeps(inbox: Inbox): UnproductiveStreakDeps {
   };
 }
 
-/** The production acting-step processor on the real run store; the agent and its MCP grant are stand-ins. */
-function actionProcessor(execute: () => Promise<unknown>, grant: { performed: number; uncounted?: boolean }, inbox: Inbox, extra: Partial<AgentActionProcessorDeps> = {}) {
+/** An in-memory task store honouring terminal task states; `lostWrites` names writes that fail once, as a Redis outage would. */
+function taskStore(lostWrites: ReadonlyArray<'markTaskCompleted' | 'markTaskFailed'> = []): AgentActionProcessorDeps['stateManager'] {
   const taskStates = new Map<string, string>();
   const terminal = new Set(['completed', 'failed', 'cancelled']);
+  const pendingLoss = new Set<string>(lostWrites);
   const setTask = (taskId: string, state: string) => { if (!terminal.has(taskStates.get(taskId) ?? '')) taskStates.set(taskId, state); };
+  const end = (write: string, state: string) => async (taskId: string) => {
+    if (pendingLoss.delete(write)) throw new Error('redis unavailable');
+    setTask(taskId, state);
+  };
+  return () => ({
+    createTaskStateIfAbsent: async (taskId: string) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'pending'); },
+    getTaskState: async (taskId: string) => (taskStates.has(taskId) ? { state: taskStates.get(taskId) } : null),
+    updateTaskState: async (taskId: string, state: string) => setTask(taskId, state),
+    markTaskCompleted: end('markTaskCompleted', 'completed'),
+    markTaskFailed: end('markTaskFailed', 'failed'),
+    markTaskCancelled: end('markTaskCancelled', 'cancelled'),
+  }) as unknown as ReturnType<AgentActionProcessorDeps['stateManager']>;
+}
+
+/** The production acting-step processor on the real run store; the agent and its MCP grant are stand-ins. */
+function actionProcessor(execute: () => Promise<unknown>, grant: { performed: number; uncounted?: boolean }, inbox: Inbox, extra: Partial<AgentActionProcessorDeps> = {}) {
   const overrides: Partial<AgentActionProcessorDeps> = {
     getRun: runId => getAgentRunById(runId, deps()),
     transitionRun: (id, from, to, patch) => transitionAgentRun(id, from, to, patch, deps()),
     claimAction: (runId, actionTaskId) => claimAgentRunAction(runId, actionTaskId, deps()),
     recordMutations: (runId, record) => recordAgentRunActingMutations(runId, record, deps()),
     validateDefinition: async () => null,
-    stateManager: () => ({
-      createTaskStateIfAbsent: async (taskId: string) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'pending'); },
-      getTaskState: async (taskId: string) => (taskStates.has(taskId) ? { state: taskStates.get(taskId) } : null),
-      updateTaskState: async (taskId: string, state: string) => setTask(taskId, state),
-      markTaskCompleted: async (taskId: string) => setTask(taskId, 'completed'),
-      markTaskFailed: async (taskId: string) => setTask(taskId, 'failed'),
-      markTaskCancelled: async (taskId: string) => setTask(taskId, 'cancelled'),
-    }) as unknown as ReturnType<AgentActionProcessorDeps['stateManager']>,
+    stateManager: taskStore(),
     getGitHubAccess: async () => ({ token: 'ghs_token', octokit: {} }),
     prepareWorkspace: (async () => ({
       worktreePath: '/tmp/action', branchName: 'agent-run/action',
@@ -345,4 +359,41 @@ describe('a count whose settlement write failed is settled by the retry, not lef
     assert.deepEqual(inbox.events, []);
     assert.equal(await scheduleEnabled(), true);
   });
+});
+
+describe('a task write lost after the third unproductive run ended is retried with its streak check (F21)', () => {
+  const ended = {
+    completed: { execute: async () => ({ success: true, summary: 'Nothing to do', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }), write: 'markTaskCompleted' },
+    failed: { execute: async () => { throw new Error('agent crashed'); }, write: 'markTaskFailed' },
+  } as const;
+
+  for (const [state, { execute, write }] of Object.entries(ended)) {
+    test(`a ${state} run that changed nothing still tells the owner and pauses the schedule on the retry`, async () => {
+      const inbox: Inbox = { events: [] };
+      await unchangedRun('completed');
+      await unchangedRun('completed');
+      const acting = await unchangedRun('acting');
+      const processAction = actionProcessor(execute, { performed: 0 }, inbox, { stateManager: taskStore([write]) });
+      const job = actionJob(acting);
+
+      await assert.rejects(processAction(job), { name: 'AgentRunSettlementError' }, 'the delivery fails, so BullMQ retries it');
+      const stored = await getAgentRunById(acting.id, deps());
+      assert.equal(stored?.state, state, 'the run keeps the end it stored');
+      assert.equal(stored?.actingMutations, 0);
+      assert.equal(stored?.actingMutationsPending, false);
+      assert.equal(agentRunProductivity(stored!), 'unproductive');
+      assert.equal(inbox.events.length, 0, 'the check comes after the task write, so the owner is not told yet');
+      assert.equal(await scheduleEnabled(), true);
+
+      // The retry stores no new count (none is taken by a completed run, a stored one is never replaced),
+      // but its run is final: the streak reached the threshold, so the owner is told and the schedule paused.
+      await processAction(job);
+      assert.deepEqual(inbox.events.map(event => event.deduplicationKey.split(':')[0]), ['automation-unproductive', 'automation-unproductive-paused']);
+      assert.equal(await scheduleEnabled(), false, 'the opted-in schedule is paused without waiting for another run');
+
+      // A further delivery repeats the check without repeating the Inbox item or the pause.
+      await processAction(job);
+      assert.equal(inbox.events.length, 2);
+    });
+  }
 });

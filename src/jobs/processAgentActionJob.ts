@@ -116,6 +116,15 @@ export function agentRunActionIssueRef(definition: StoredAgentDefinition): Issue
 const UNREADABLE_DEFINITION_REASON = 'The agent definition snapshot is unreadable';
 const MISSING_REPORT_REASON = 'The run has no stored report to act on';
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
+const ENDED_RUN_STATES = new Set<StoredAgentRun['state']>(['completed', 'failed', 'cancelled']);
+
+/**
+ * The run when its flags are final: it ended and no claimed step's count is still
+ * outstanding (the delivery holding that count evaluates the run once it settles it).
+ */
+function withFinalFlags(run: StoredAgentRun | undefined): StoredAgentRun | null {
+    return run && ENDED_RUN_STATES.has(run.state) && !run.actingMutationsPending ? run : null;
+}
 
 interface ActionContext {
     runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger; correlationId: string;
@@ -214,31 +223,34 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
      * left the count to), and only once its grant has ended. A write that fails is
      * returned rather than dropped: the run keeps its end, but the obligation stays
      * open, so the delivery fails and its retry settles the count kept with the job.
+     * `recorded` is the run this settled the count on, null when none matched.
      */
-    async function keepMutationsOfEndedRun(context: ActionContext): Promise<AgentRunMutationsSettlementError | null> {
+    async function keepMutationsOfEndedRun(context: ActionContext): Promise<{ recorded: StoredAgentRun | null; unsettled: AgentRunMutationsSettlementError | null }> {
         const { runId, taskId, log } = context;
-        if (!context.ownsClaim) return null;
+        if (!context.ownsClaim) return { recorded: null, unsettled: null };
         const actingMutations = typeof context.actingMutations === 'number' ? context.actingMutations : null;
         let recorded: StoredAgentRun | null;
         try {
             recorded = await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations });
         } catch (error) {
             log.error({ runId, taskId, actingMutations, err: error }, 'Could not store the acting step mutation count on its ended run; retrying');
-            return new AgentRunMutationsSettlementError(runId, error);
+            return { recorded: null, unsettled: new AgentRunMutationsSettlementError(runId, error) };
         }
         // Settling the count made the run's flags final, so this is where its streak is evaluated.
         await evaluateEndedRun(recorded);
-        return null;
+        return { recorded, unsettled: null };
     }
 
     /**
-     * Ends a still-open action task to match a run another writer ended
-     * (cancel endpoint, a failure stored by an earlier attempt). The task follows
-     * the run even when the count could not be settled; the delivery then fails.
+     * Ends a still-open action task to match a run that already ended: another
+     * writer ended it (cancel endpoint, a failure stored by an earlier attempt), or
+     * an earlier delivery of this job stored the run's end and count and then failed
+     * on the task write. The task follows the run even when the count could not be
+     * settled; the delivery then fails.
      */
     async function taskFollowsRun(context: ActionContext): Promise<JobResult> {
         const { runId, taskId, correlationId } = context;
-        const unsettled = await keepMutationsOfEndedRun(context);
+        const { recorded, unsettled } = await keepMutationsOfEndedRun(context);
         const current = await deps.getRun(runId);
         const task = await context.stateManager.getTaskState(taskId);
         if (task && !TERMINAL_TASK_STATES.has(task.state)) {
@@ -251,6 +263,11 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             }
         }
         if (unsettled) throw unsettled;
+        // Nothing was settled here, yet the run may be final and unevaluated: an earlier delivery
+        // stored its end and count, then failed on the task write before its own check, and its
+        // retry records nothing new (a completed run takes no count, a stored one is never
+        // replaced). A repeated check is harmless: the streak's Inbox item and pause are each made once.
+        if (!recorded) await evaluateEndedRun(withFinalFlags(current));
         const state = current?.state ?? null;
         const status = state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : state === 'completed' ? 'complete' : 'skipped';
         return { status, runId, taskId, correlationId };

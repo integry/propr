@@ -363,16 +363,19 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
      * A redelivered job whose run already failed or was cancelled. An earlier
      * attempt may have stored the run's end and stopped before its task
      * followed; the task is ended now. A run that never got a task is skipped.
+     * Once the task follows, the run's streak is evaluated: an attempt that stored
+     * the end of a reported run (failed right after its report was stored, say) and
+     * then failed on the task write stopped before its own check. A repeated check
+     * is harmless, since the streak's Inbox item and pause are each made once.
      */
     async function reconcileEndedRun(run: StoredAgentRun, correlationId: string, log: Logger): Promise<JobResult> {
         const runId = run.id;
         const taskId = run.reportTaskId ?? agentRunReportTaskId(runId);
         const settled = await settleExistingTask({ runId, taskId, stateManager: deps.stateManager(), log });
-        if (settled === undefined) {
-            log.info({ runId, state: run.state }, 'Agent run is not queued; skipping');
-            return { status: 'skipped', runId, correlationId };
-        }
-        return { status: settled === 'failed' ? 'failed' : settled === 'cancelled' ? 'cancelled' : 'skipped', runId, taskId, correlationId };
+        await deps.evaluateStreak(run);
+        if (settled !== undefined) return { status: settled === 'failed' ? 'failed' : settled === 'cancelled' ? 'cancelled' : 'skipped', runId, taskId, correlationId };
+        log.info({ runId, state: run.state }, 'Agent run is not queued; skipping');
+        return { status: 'skipped', runId, correlationId };
     }
 
     /**
