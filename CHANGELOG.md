@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **LLM cost export**: `GET /api/stats/cost` (JSON) and `GET /api/stats/cost.csv`
+  group recorded agent executions by any of day, repository, agent, model,
+  reasoning level, execution type and outcome, with executions, tasks,
+  input/output/cache tokens and cost in USD per row. They take the Analytics
+  `period` and `repository` filters and are in the OpenAPI spec and
+  `@propr/client` types. `propr stats cost [--period] [--repository]
+  [--group-by] [--json|--csv]` and the MCP read tool `get_cost_breakdown`
+  return the same data. See the Cost export section of the metrics docs.
+
 ### Fixed
 
 - **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted

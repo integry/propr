@@ -1,0 +1,266 @@
+/**
+ * The LLM cost export: recorded agent executions grouped by any of day,
+ * repository, agent, model, reasoning level, execution type and outcome.
+ *
+ * An execution is one `llm_executions` row. Its repository comes from its
+ * task; its agent and execution type from the `llm_logs` call that recorded
+ * the same run (same task, preferring the same session, then the same model,
+ * then the nearest start). A dimension that was never recorded is null, never
+ * a guess, and a group none of whose executions recorded a cost has a null
+ * cost rather than $0.
+ */
+
+import type { Request, Response } from 'express';
+import type { Knex } from 'knex';
+import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { hasColumn, hasTable } from './analyticsSchema.js';
+import { csvCell } from './reviewScoreStats.js';
+import { validateRepositoryFilter } from './validation.js';
+
+/** Grouping dimensions, in the order their columns appear. */
+export const COST_GROUP_KEYS = ['day', 'repository', 'agent', 'model', 'reasoning_level', 'execution_type', 'outcome'] as const;
+export type CostGroupKey = typeof COST_GROUP_KEYS[number];
+export const DEFAULT_COST_GROUP_BY: readonly CostGroupKey[] = ['day'];
+
+export interface CostFigures {
+  executions: number;
+  /** Distinct tasks with at least one execution in the row. */
+  tasks: number;
+  /** Cache-inclusive input tokens, as each execution's cost was priced from. */
+  input_tokens: number;
+  output_tokens: number;
+  /** Of `input_tokens`, prompt-cache writes. */
+  cache_creation_input_tokens: number;
+  /** Of `input_tokens`, prompt-cache reads. */
+  cache_read_input_tokens: number;
+  /** Recorded cost; null when no execution in the row recorded one. */
+  cost_usd: number | null;
+}
+
+export type CostRow = Partial<Record<CostGroupKey, string | null>> & CostFigures;
+
+export interface CostExport {
+  period: string | null;
+  /** `all` or `owner/repo`; `granted` when scoped to a list of repositories. */
+  repository: string;
+  group_by: CostGroupKey[];
+  rows: CostRow[];
+  totals: CostFigures;
+}
+
+export interface CostExportScope {
+  /** `all`, or one `owner/repo`. */
+  repository?: string;
+  /** Limits the export to these repositories (MCP grants); an empty list exports nothing. */
+  repositories?: string[];
+}
+
+/**
+ * Reads `group_by` as a comma-separated list, repeated parameters, or both.
+ * Returns the keys in column order without duplicates, or the first unknown key.
+ */
+export function parseCostGroupBy(value: unknown): { keys: CostGroupKey[] } | { invalid: string } {
+  if (value === undefined || value === '') return { keys: [...DEFAULT_COST_GROUP_BY] };
+  const parts = (Array.isArray(value) ? value : [value]).flatMap(part => String(part).split(','))
+    .map(part => part.trim()).filter(Boolean);
+  const unknown = parts.find(part => !(COST_GROUP_KEYS as readonly string[]).includes(part));
+  if (unknown !== undefined) return { invalid: unknown };
+  return { keys: COST_GROUP_KEYS.filter(key => parts.includes(key)) };
+}
+
+/** A column of the `llm_logs` call that recorded the same run as execution `e`. */
+function loggedRunColumn(column: 'agent_alias' | 'execution_type', byTask: boolean): string {
+  const nearest = `abs(julianday(l.start_time) - julianday(e.start_time))`;
+  const viaTask = `(select l.${column} from llm_logs l where l.task_id = e.task_id and l.${column} is not null
+    order by (case when l.session_id = e.session_id then 0 else 1 end),
+      (case when l.model_name = e.model_name then 0 else 1 end), ${nearest}, l.log_id limit 1)`;
+  const viaSession = `(select l.${column} from llm_logs l where l.session_id = e.session_id and l.${column} is not null
+    order by ${nearest}, l.log_id limit 1)`;
+  // Only task-less executions fall back to the unindexed session lookup.
+  return byTask
+    ? `CASE WHEN e.task_id IS NOT NULL THEN ${viaTask} WHEN e.session_id IS NOT NULL THEN ${viaSession} END`
+    : `CASE WHEN e.session_id IS NOT NULL THEN ${viaSession} END`;
+}
+
+interface ExecutionSchema { hasLogs: boolean; logsHaveTask: boolean; hasReasoning: boolean; hasCache: boolean }
+
+async function probeExecutionSchema(db: Knex): Promise<ExecutionSchema> {
+  const [hasLogs, logsHaveTask, hasReasoning, hasCache] = await Promise.all([
+    hasTable(db, 'llm_logs'),
+    hasColumn(db, 'llm_logs', 'task_id'),
+    hasColumn(db, 'llm_executions', 'reasoning_level'),
+    hasColumn(db, 'llm_executions', 'cache_read_input_tokens'),
+  ]);
+  return { hasLogs, logsHaveTask, hasReasoning, hasCache };
+}
+
+/**
+ * One row per execution in the window and scope, with every requested dimension.
+ * Synchronous on purpose: a query builder is a thenable, so returning one from
+ * an async function would run it.
+ */
+function executionRows(
+  db: Knex, schema: ExecutionSchema, groupBy: CostGroupKey[], { window, ...scope }: CostExportScope & { window: AnalyticsWindow | null },
+): Knex.QueryBuilder {
+  const { hasLogs, logsHaveTask, hasReasoning, hasCache } = schema;
+  const detailSum = (executionColumn: string, detailColumn: string) => db.raw(`coalesce(e.${executionColumn}, (
+    select sum(d.${detailColumn}) from llm_execution_details d where d.execution_id = e.execution_id
+  ), 0) as ${executionColumn}`);
+  const dimensions: Record<CostGroupKey, string> = {
+    day: 'date(e.start_time)',
+    repository: 't.repository',
+    agent: hasLogs ? loggedRunColumn('agent_alias', logsHaveTask) : 'NULL',
+    model: `NULLIF(e.model_name, '')`,
+    reasoning_level: hasReasoning ? `NULLIF(e.reasoning_level, '')` : 'NULL',
+    execution_type: hasLogs ? loggedRunColumn('execution_type', logsHaveTask) : 'NULL',
+    outcome: `CASE WHEN e.success = ? THEN 'failed' ELSE 'success' END`,
+  };
+  const query = db('llm_executions as e')
+    .leftJoin('tasks as t', 't.task_id', 'e.task_id')
+    .select('e.task_id', 'e.cost_usd', detailSum('input_tokens', 'token_count_input'), detailSum('output_tokens', 'token_count_output'))
+    .select(db.raw(hasCache
+      ? 'coalesce(e.cache_creation_input_tokens, 0) as cache_creation_input_tokens, coalesce(e.cache_read_input_tokens, 0) as cache_read_input_tokens'
+      : '0 as cache_creation_input_tokens, 0 as cache_read_input_tokens'));
+  for (const key of groupBy) {
+    query.select(db.raw(`${dimensions[key]} as ${key}`, key === 'outcome' ? [false] : []));
+  }
+  whereCreatedWithin(query, 'e.start_time', window);
+  if (scope.repositories) query.whereIn('t.repository', scope.repositories);
+  if (scope.repository && scope.repository !== 'all') query.where('t.repository', scope.repository);
+  return query;
+}
+
+interface AggregateRow {
+  executions?: number | string;
+  tasks?: number | string;
+  input_tokens?: number | string | null;
+  output_tokens?: number | string | null;
+  cache_creation_input_tokens?: number | string | null;
+  cache_read_input_tokens?: number | string | null;
+  cost_usd?: number | string | null;
+  costed?: number | string;
+  [key: string]: unknown;
+}
+
+function aggregate(db: Knex, rows: Knex.QueryBuilder): Knex.QueryBuilder {
+  return db.from(rows.as('x'))
+    .count('* as executions')
+    .countDistinct('x.task_id as tasks')
+    .sum('x.input_tokens as input_tokens')
+    .sum('x.output_tokens as output_tokens')
+    .sum('x.cache_creation_input_tokens as cache_creation_input_tokens')
+    .sum('x.cache_read_input_tokens as cache_read_input_tokens')
+    .sum('x.cost_usd as cost_usd')
+    .count('x.cost_usd as costed');
+}
+
+function figures(row: AggregateRow | undefined): CostFigures {
+  const count = (value: unknown) => Number(value ?? 0) || 0;
+  return {
+    executions: count(row?.executions),
+    tasks: count(row?.tasks),
+    input_tokens: count(row?.input_tokens),
+    output_tokens: count(row?.output_tokens),
+    cache_creation_input_tokens: count(row?.cache_creation_input_tokens),
+    cache_read_input_tokens: count(row?.cache_read_input_tokens),
+    cost_usd: count(row?.costed) > 0 ? Number(Number(row?.cost_usd ?? 0).toFixed(6)) : null,
+  };
+}
+
+const dimensionValue = (value: unknown): string | null =>
+  value === null || value === undefined || value === '' ? null : String(value);
+
+/** Ascending by each dimension in column order; unknown values last. */
+function compareRows(groupBy: CostGroupKey[]) {
+  return (left: CostRow, right: CostRow): number => {
+    for (const key of groupBy) {
+      const [a, b] = [left[key] ?? null, right[key] ?? null];
+      if (a === b) continue;
+      if (a === null) return 1;
+      if (b === null) return -1;
+      return a < b ? -1 : 1;
+    }
+    return 0;
+  };
+}
+
+/** Recorded executions in the window, grouped by `groupBy`, with totals over every row. */
+export async function loadCostExport(
+  db: Knex, window: AnalyticsWindow | null, groupBy: CostGroupKey[], scope: CostExportScope = {},
+): Promise<CostExport> {
+  const keys = COST_GROUP_KEYS.filter(key => groupBy.includes(key));
+  const schema = await probeExecutionSchema(db);
+  const grouped = aggregate(db, executionRows(db, schema, keys, { ...scope, window })).select(keys.map(key => `x.${key}`));
+  if (keys.length) grouped.groupBy(keys.map(key => `x.${key}`));
+  const [groups, total] = await Promise.all([
+    grouped as unknown as Promise<AggregateRow[]>,
+    aggregate(db, executionRows(db, schema, [], { ...scope, window })).first() as unknown as Promise<AggregateRow | undefined>,
+  ]);
+  const rows = groups
+    .map(row => ({ ...Object.fromEntries(keys.map(key => [key, dimensionValue(row[key])])), ...figures(row) }) as CostRow)
+    .filter(row => row.executions > 0)
+    .sort(compareRows(keys));
+  return {
+    period: window?.timeframe ?? null,
+    repository: scope.repositories ? 'granted' : scope.repository || 'all',
+    group_by: keys,
+    rows,
+    totals: figures(total),
+  };
+}
+
+const FIGURE_COLUMNS: Array<keyof CostFigures> = [
+  'executions', 'tasks', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
+];
+
+/** Header row, then one row per group: the grouped dimensions in column order, then the figures. */
+export function costExportCsv(costExport: CostExport): string {
+  const columns: Array<keyof CostRow> = [...costExport.group_by, ...FIGURE_COLUMNS];
+  const lines = [columns.join(',')];
+  for (const row of costExport.rows) lines.push(columns.map(column => csvCell(row[column] ?? null)).join(','));
+  return `${lines.join('\r\n')}\r\n`;
+}
+
+export function createCostExportRoutes({ db, now = () => new Date() }: { db: Knex; now?: () => Date }) {
+  async function readExport(req: Request, res: Response): Promise<CostExport | null> {
+    const analyticsWindow = readAnalyticsWindow(req, res, now());
+    if (analyticsWindow === false) return null;
+    const repository = typeof req.query.repository === 'string' && req.query.repository ? req.query.repository : 'all';
+    const validation = validateRepositoryFilter(repository);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error });
+      return null;
+    }
+    const groupBy = parseCostGroupBy(req.query.group_by);
+    if ('invalid' in groupBy) {
+      res.status(400).json({ error: `group_by must be a comma-separated list of: ${COST_GROUP_KEYS.join(', ')}` });
+      return null;
+    }
+    return await loadCostExport(db, analyticsWindow, groupBy.keys, { repository: repository === 'all' ? 'all' : repository.trim() });
+  }
+
+  async function getCost(req: Request, res: Response): Promise<void> {
+    try {
+      const costExport = await readExport(req, res);
+      if (costExport) res.json(costExport);
+    } catch (error) {
+      console.error('Error in /api/stats/cost:', error);
+      res.status(500).json({ error: 'Failed to fetch cost statistics' });
+    }
+  }
+
+  async function getCostCsv(req: Request, res: Response): Promise<void> {
+    try {
+      const costExport = await readExport(req, res);
+      if (!costExport) return;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="cost-${costExport.period ?? 'all'}.csv"`);
+      res.send(costExportCsv(costExport));
+    } catch (error) {
+      console.error('Error in /api/stats/cost.csv:', error);
+      res.status(500).json({ error: 'Failed to export cost statistics' });
+    }
+  }
+
+  return { getCost, getCostCsv };
+}

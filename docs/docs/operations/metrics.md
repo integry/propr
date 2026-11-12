@@ -24,6 +24,7 @@ The analytics page (`/analytics`) and the rest of the UI continue to read the ag
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
 - `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split and, as `usage.cache`, the prompt cache hit rate and estimated savings), total cost, and runs and tasks per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores). The older `usage.models` map is a different figure under a similar name — distinct tasks with at least one execution per model, not runs — kept for clients that predate `model_usage`, which the Models table labels Tasks when it has to fall back to it. It also reports run volume (`runs`), delivery (`delivery`) and autonomy (`autonomy`) — see [Delivery metrics](#delivery-metrics). The delivery, autonomy and review-quality aggregations read PR and task history, so the server reuses them between the page's refreshes: for up to ten seconds for a day period, and for up to a minute for `period=all` (or no period), which reads every PR's history
 - `GET /api/stats/review-scores` — review quality per implementer model (see [Review scores](#review-scores))
+- `GET /api/stats/cost` and `GET /api/stats/cost.csv` — recorded LLM cost grouped by day, repository, agent, model, effort, execution type and outcome (see [Cost export](#cost-export))
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
@@ -179,6 +180,40 @@ A cost spike should lead to an action: smaller task scope, a different model, or
 | 3 | Instance: `default_max_cost_usd` (Settings → Workflow & PR Rules, `propr setting update default_max_cost_usd`) | USD; empty or `0` = no cap |
 
 The cap covers implementations, PR follow-ups, `/fix`, ultrafix cycles and reviews. Spend counts the task's recorded LLM calls plus the usage its running agent containers have streamed so far. A malformed or negative value is ignored with a warning (treated as no cap at that level). Retries share the budget: a re-queued attempt (provider usage-limit re-queue or BullMQ retry) may only spend what earlier attempts of the task left. A run stopped at its cap gets the terminal reason `cost_cap_exceeded`, a `budget.exceeded` timeline event, an Inbox notification and a short issue/PR comment; task details and `propr task get --json` show the cap, the spend and the percentage. See [Spend caps](../features/execution-safety.md#spend-caps).
+
+### Cost export
+
+For a finance breakdown, export the recorded spend instead of reading it off the Analytics page:
+
+- `GET /api/stats/cost?period=&repository=&group_by=` — JSON: `period`, `repository`, `group_by`, `rows` and `totals`.
+- `GET /api/stats/cost.csv?period=&repository=&group_by=` — the same rows as CSV, downloaded as `cost-<period>.csv`.
+
+`period` takes the Analytics timeframes (`24h`, `7d`, `30d`, `90d`, `1y`, `all`) and bounds executions by when they started; without it the export covers all time. `repository` is `all` (the default) or `owner/repo`. Both routes use the same authentication as the other `/api/stats/*` routes, and an invalid `period`, `repository` or `group_by` returns `400`.
+
+`group_by` is a comma-separated list (or repeated parameter) of these dimensions; the default is `day`:
+
+| Dimension | Source |
+|---|---|
+| `day` | UTC day the execution started, `YYYY-MM-DD` |
+| `repository` | The execution's task (`tasks.repository`) |
+| `agent` | Agent alias of the LLM log call that recorded the same run |
+| `model` | `llm_executions.model_name` |
+| `reasoning_level` | The effective reasoning level (effort) the execution ran with |
+| `execution_type` | Execution type of the matching LLM log call, for example `implementation`, `review` or `plan-generation` |
+| `outcome` | `success` or `failed` |
+
+Every row is one group of agent executions (`llm_executions`) and carries `executions`, `tasks` (distinct tasks), `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `cost_usd`. `input_tokens` includes cache reads and writes, as each execution's cost was priced; the two cache columns are the part of it that was cache traffic. `totals` gives the same figures over the whole export, so the rows' `executions` and `cost_usd` sum to it.
+
+The agent and execution type come from `llm_logs`: the log call on the same task, preferring the same session, then the same model, then the nearest start. An execution without a task (a plan generation, for example) is matched by its session. A dimension that was never recorded — an execution from before effort was recorded, or one with no matching log call — is `null` (an empty CSV cell) rather than a guess. A group none of whose executions recorded a cost has a `null` cost, not `0`. Executions without a task have no repository; filtering by repository leaves them out.
+
+Rows are ordered by each dimension in column order, unknown values last. The CSV follows the review-scores CSV: a header row, the grouped dimensions in the canonical order above whatever order `group_by` lists them in, then the figure columns in the order listed; RFC 4180 quoting, and text that would start a spreadsheet formula is prefixed with `'`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://propr.example.com/api/stats/cost.csv?period=30d&group_by=day,repository,model,outcome"
+```
+
+From the CLI, `propr stats cost [--period 30d] [--repository owner/repo] [--group-by day,model] [--json|--csv]` prints the table, the JSON or the CSV. Over MCP, the read tool `get_cost_breakdown` (`period`, default `30d`; optional `repository`; `groupBy`, default `["day"]`) returns the same rows, limited to the repositories in the grant when `repository` is omitted.
 
 ### Provider capacity (Agent Tank)
 

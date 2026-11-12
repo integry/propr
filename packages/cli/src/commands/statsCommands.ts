@@ -2,7 +2,8 @@
  * Stats Commands
  *
  * Read-only analytics from the ProPR backend. `propr stats review-scores`
- * reports review quality per implementer model.
+ * reports review quality per implementer model; `propr stats cost` exports
+ * recorded LLM cost.
  */
 
 import { Command, Option } from "commander";
@@ -10,6 +11,7 @@ import { ANALYTICS_TIMEFRAMES } from "@propr/shared";
 import { getReviewScoreSummary, type ReviewScoreModelSummary, type ReviewScoreSummary } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
+import { createStatsCostCommand } from "./statsCostCommand.js";
 
 const UNKNOWN = "—";
 
@@ -76,5 +78,6 @@ Examples:
         process.exit(1);
       }
     }));
+  stats.addCommand(createStatsCostCommand());
   return stats;
 }
