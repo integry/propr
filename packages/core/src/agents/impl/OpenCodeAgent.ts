@@ -55,9 +55,8 @@ export class OpenCodeAgent implements Agent {
         this.timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
-    // eslint-disable-next-line complexity -- runtime admission, execution and cleanup share one task lifecycle
+     
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        if (options.extensionProfile) throw new Error('Extension profiles require Claude or Codex task execution');
         const { worktreePath, issueRef, prompt: rawCustomPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         // No native web switch: the restriction is best effort through the prompt.
         const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);

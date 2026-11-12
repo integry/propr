@@ -36,6 +36,12 @@ export interface AuthenticatedUser {
   authorizationSource: "bootstrap" | "local" | "managed" | "implicit" | "demo";
 }
 
+/** Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings. */
+export interface AutomationExtensions {
+  servers: string[];
+  skills: string[];
+}
+
 /** Version and capability metadata used for client compatibility negotiation. */
 export interface Compatibility {
   /** ProPR release version of the API server. */
@@ -170,14 +176,21 @@ export interface ErrorEnvelope {
   hint?: string;
 }
 
-/** Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
-export interface ExtensionProfileInput {
-  version: 1;
-  name: string;
+export interface ExtensionItemEnabledRequest {
+  item: {
+    kind: "server";
+    name: string;
+  } | {
+    kind: "skill";
+    bundleId: string;
+  };
   enabled: boolean;
-  agentScope: string[];
-  repositoryScope: string[];
-  mcpServers: Array<{
+}
+
+/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
+export interface ExtensionLibraryInput {
+  version: 1;
+  servers: Array<{
     kind: "https";
     name: string;
     url: string;
@@ -185,6 +198,9 @@ export interface ExtensionProfileInput {
     tools: string[];
     capability: "read" | "write";
     authentication: "none" | "bearer";
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   } | {
     kind: "catalog";
     name: string;
@@ -193,18 +209,102 @@ export interface ExtensionProfileInput {
     enabled: boolean;
     tools: string[];
     capability: "read" | "write";
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   }>;
-  skillBundleIds: string[];
+  skills: {
+    bundleId: string;
+    enabled: boolean;
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
+  }[];
 }
 
-export interface ExtensionProfileSave {
-  input: ExtensionProfileInput;
-  expected?: ExtensionSelection;
+export interface ExtensionLibraryRead {
+  contract: {
+    [key: string]: unknown;
+  };
+  instanceId: string;
+  library: {
+    version: 1;
+    instanceId: string;
+    /** 0 before the first save. */
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+    auditActor: string;
+    servers: {
+      [key: string]: unknown;
+    }[];
+    skills: {
+      [key: string]: unknown;
+    }[];
+    /** Presence markers only; secret values are never returned. */
+    secrets: {
+      [key: string]: {
+        configured: boolean;
+        [key: string]: unknown;
+      };
+    };
+    skillBundles: {
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+  bundles: {
+    [key: string]: unknown;
+  }[];
+  catalog: {
+    [key: string]: unknown;
+  }[];
+}
+
+export interface ExtensionLibraryRevisionResponse {
+  library: {
+    version: 1;
+    instanceId: string;
+    /** 0 before the first save. */
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+    auditActor: string;
+    servers: {
+      [key: string]: unknown;
+    }[];
+    skills: {
+      [key: string]: unknown;
+    }[];
+    /** Presence markers only; secret values are never returned. */
+    secrets: {
+      [key: string]: {
+        configured: boolean;
+        [key: string]: unknown;
+      };
+    };
+    skillBundles: {
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+}
+
+export interface ExtensionLibrarySave {
+  input: ExtensionLibraryInput;
+  expectedRevision: number;
   secrets?: {
     [key: string]: string | null;
   };
 }
 
+export interface ExtensionSecretReplaceRequest {
+  name: string;
+  secret: string | null;
+  expectedRevision?: number;
+}
+
+/** Legacy profile selection; no longer accepted for new submissions. */
 export interface ExtensionSelection {
   instanceId: string;
   profileId: string;
@@ -604,8 +704,9 @@ export interface TaskSubmission {
 
 /** A request to open a GitHub issue and start an implementation run for it. */
 export interface TaskSubmissionRequest {
+  /** Removed: extension profiles were replaced by the instance extension library. A non-null value is refused. */
   extensionProfile?: ExtensionSelection | null;
-  /** Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries. */
+  /** Legacy write opt-in that accompanied a profile selection; true without one is refused. */
   extensionAllowWrite?: boolean;
   /** `owner/name` of an enabled repository you can push to. */
   repository: string;

@@ -8,6 +8,9 @@ import {
   nextCronOccurrence,
   type AutomationAutonomyMode,
   type AutomationCapability,
+  parseAutomationExtensions,
+  serializeAutomationExtensions,
+  type AutomationExtensions,
 } from '@propr/shared';
 import { db } from '../../db/connection.js';
 import type { Attachment } from '../attachmentService.js';
@@ -28,7 +31,8 @@ export const DEFAULT_AGENT_DEFINITION_PAGE_SIZE = 50;
 export const MAX_AGENT_DEFINITION_PAGE_SIZE = 200;
 
 export interface StoredAgentDefinition {
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+  /** Extension library items added on top of what applies automatically; absent from run snapshots recorded before the field. */
+  extensions?: AutomationExtensions;
   id: string;
   ownerId: string;
   name: string;
@@ -57,7 +61,9 @@ export interface StoredAgentDefinition {
 }
 
 export interface AgentDefinitionRow {
+  /** Pre-library profile selection; read only by the startup library migration. */
   extension_profile?: string | null;
+  extensions?: string | null;
   id: string; owner_id: string; name: string; description: string | null; repositories: string | null;
   prompt: string; attachments: string | null; agent_alias: string | null; model_name: string | null;
   capabilities: string | null; include_previous_reports: boolean | number; previous_reports_limit: number;
@@ -72,7 +78,7 @@ export interface AgentDefinitionRow {
 }
 
 export interface CreateAgentDefinitionInput {
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+  extensions?: AutomationExtensions | null;
   ownerId: string;
   name: string;
   prompt: string;
@@ -131,7 +137,7 @@ function isAttachment(value: unknown): value is Attachment {
 /** Pure row mapper; corrupt JSON columns fall back to empty arrays so list pages never crash. */
 export function rowToAgentDefinition(row: AgentDefinitionRow): StoredAgentDefinition {
   return {
-    extensionProfile: row.extension_profile ? JSON.parse(row.extension_profile) : null,
+    extensions: parseAutomationExtensions(row.extensions),
     id: row.id,
     ownerId: row.owner_id,
     name: row.name,
@@ -184,7 +190,7 @@ export async function createAgentDefinition(
   const row: AgentDefinitionRow = {
     id: randomUUID(),
     owner_id: input.ownerId,
-    extension_profile: input.extensionProfile ? JSON.stringify(input.extensionProfile) : null,
+    extensions: serializeAutomationExtensions(input.extensions),
     name: input.name,
     description: input.description ?? null,
     repositories: JSON.stringify(input.repositories ?? []),
@@ -248,7 +254,7 @@ function patchToRowChanges(patch: AgentDefinitionPatch): Partial<AgentDefinition
   if (patch.repositories !== undefined) changes.repositories = JSON.stringify(patch.repositories);
   if (patch.agentAlias !== undefined) changes.agent_alias = patch.agentAlias;
   if (patch.modelName !== undefined) changes.model_name = patch.modelName;
-  if (patch.extensionProfile !== undefined) changes.extension_profile = patch.extensionProfile ? JSON.stringify(patch.extensionProfile) : null;
+  if (patch.extensions !== undefined) changes.extensions = serializeAutomationExtensions(patch.extensions);
   if (patch.capabilities !== undefined) changes.capabilities = JSON.stringify(patch.capabilities);
   if (patch.includePreviousReports !== undefined) changes.include_previous_reports = patch.includePreviousReports;
   if (patch.previousReportsLimit !== undefined) changes.previous_reports_limit = patch.previousReportsLimit;

@@ -1,48 +1,44 @@
-/* eslint-disable max-lines -- profile editing and discovery share the same editor state and callbacks */
-import { useEffect, useId, useState, type Dispatch, type SetStateAction } from 'react';
-import type {
-  InstanceCatalogResponse,
-  ExtensionCatalogEntry,
-  ExtensionMcpDescriptor,
-  ExtensionProfileInput,
-  ExtensionProfileRevision,
-  ExtensionSelection,
-  ExtensionSkillBundle,
+/* eslint-disable max-lines -- library editing and discovery share the same editor state and callbacks */
+import { useEffect, useId, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import {
+  EXTENSION_LIBRARY_LIMITS,
+  type InstanceCatalogResponse,
+  type ExtensionCatalogEntry,
+  type ExtensionLibraryRevision,
+  type ExtensionLibraryServer,
+  type ExtensionLibrarySkill,
+  type ExtensionSecretStatus,
+  type ExtensionSkillBundle,
 } from '@propr/shared';
 import {
   discoverExtensionTools,
   listGithubSkillRefs,
   resolveGithubSkillRef,
+  type ExtensionItemRef,
   type GithubSkillRef,
-  deleteExtensionProfile,
-  extensionProfileHistory,
+  extensionLibraryHistory,
+  getExtensionLibrary,
   importArchiveSkill,
   importGithubSkill,
-  listExtensionProfiles,
-  saveExtensionProfile,
-  validateExtensionProfile,
+  saveExtensionLibrary,
+  setExtensionItemEnabled,
+  validateExtensionLibrary,
 } from '../../api/extensionProfilesApi';
 import { getInstanceCatalog } from '../../api/proprApi';
 import { SettingsSection } from './SettingsLayout';
 import { AgentExtensionsDescription } from './AgentExtensionsGuide';
-const nextServerName = (servers: ExtensionMcpDescriptor[]) => {
+const nextServerName = (servers: ExtensionLibraryServer[]) => {
   let number = 1;
   while (servers.some((server) => server.name === `server-${number}`)) number++;
   return `server-${number}`;
 };
-const blank = (): ExtensionProfileInput => ({
-  version: 1,
-  name: '',
-  enabled: true,
-  agentScope: [],
-  repositoryScope: [],
-  mcpServers: [],
-  skillBundleIds: [],
-});
-const selection = (profile: ExtensionProfileRevision): ExtensionSelection => ({
-  instanceId: profile.instanceId,
-  profileId: profile.profileId,
-  revision: profile.revision,
+type LibraryDraft = { servers: ExtensionLibraryServer[]; skills: ExtensionLibrarySkill[] };
+type ItemLimitFields = Pick<ExtensionLibrarySkill, 'repositories' | 'agents' | 'autoApply'>;
+/** New library items apply everywhere and automatically until limited. */
+const NEW_ITEM_LIMITS: ItemLimitFields = { repositories: [], agents: [], autoApply: true };
+const draftFrom = (library?: ExtensionLibraryRevision): LibraryDraft => ({
+  servers: library?.servers.map((server) => ({ ...server })) ?? [],
+  skills: library?.skills.map((skill) => ({ ...skill })) ?? [],
 });
 const inputClass =
   'mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm';
@@ -93,25 +89,61 @@ function ItemPicker({ label, options, selected, onChange, hint, allowManual = fa
   );
 }
 
-// eslint-disable-next-line complexity -- profile editing and discovery share the same editor state and callbacks
+/** Where one library item applies: repositories, agents (advanced) and automatic use. */
+function ItemLimits({ item, agents, repositories, onChange }: {
+  item: ItemLimitFields;
+  agents: string[];
+  repositories: string[];
+  onChange: (patch: Partial<ItemLimitFields>) => void;
+}) {
+  // Opened for an item that already has agent limits; afterwards the user's choice.
+  const [agentsOpen] = useState(item.agents.length > 0);
+  return (
+    <div className="space-y-3">
+      <ItemPicker label="Repositories" options={repositories} selected={item.repositories}
+        onChange={(values) => onChange({ repositories: values })}
+        hint="Leave all unchecked to allow every repository." allowManual />
+      <label className="flex items-start gap-2 text-sm">
+        <input type="checkbox" className="mt-1" checked={item.autoApply} onChange={(e) => onChange({ autoApply: e.target.checked })} />
+        <span>Apply automatically
+          <span className="block text-xs text-slate-500">When off, this applies only where an automation adds it.</span>
+        </span>
+      </label>
+      <details className="text-sm" open={agentsOpen || undefined}>
+        <summary className="cursor-pointer text-slate-600">Advanced: limit to agents</summary>
+        <div className="mt-2">
+          <ItemPicker label="Agents" options={agents} selected={item.agents}
+            onChange={(values) => onChange({ agents: values })}
+            hint="Leave all unchecked to allow every agent." allowManual />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+// eslint-disable-next-line complexity -- server editing and discovery share the same editor state and callbacks
 function ServerEditor({
   server,
   catalog,
   knownTools,
   endpoints,
-  current,
+  secrets,
   secret,
+  limits,
   onChange,
+  onEnabled,
   onSecret,
   onRemove,
 }: {
-  server: ExtensionMcpDescriptor;
+  server: ExtensionLibraryServer;
   catalog: ExtensionCatalogEntry[];
   knownTools: string[];
   endpoints: string[];
-  current?: ExtensionProfileRevision;
+  secrets?: Record<string, ExtensionSecretStatus>;
   secret: string | null | undefined;
-  onChange: (patch: Partial<ExtensionMcpDescriptor>) => void;
+  limits: ReactNode;
+  onChange: (patch: Partial<ExtensionLibraryServer>) => void;
+  onEnabled: (enabled: boolean) => void;
   onSecret: (value: string) => void;
   onRemove: () => void;
 }) {
@@ -130,7 +162,7 @@ function ServerEditor({
     return () => { active = false; };
   }, [probe, url]);
   return (
-    <div className="space-y-3 rounded-md border border-slate-200 bg-white p-4">
+    <div data-testid="extension-server" className="space-y-3 rounded-md border border-slate-200 bg-white p-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-sm">
           Stable server name
@@ -168,7 +200,7 @@ function ServerEditor({
             <p>
               Operator secrets:{' '}
               {(
-                current?.secrets[server.name] ??
+                secrets?.[server.name] ??
                 catalog.find((c) => c.id === server.catalogId)?.secrets
               )?.configured
                 ? 'configured'
@@ -227,7 +259,7 @@ function ServerEditor({
           <input
             type="checkbox"
             checked={server.enabled}
-            onChange={(e) => onChange({ enabled: e.target.checked })}
+            onChange={(e) => onEnabled(e.target.checked)}
           />
           Enabled
         </label>
@@ -236,7 +268,7 @@ function ServerEditor({
         <label className="block text-sm">
           Replace bearer token{' '}
           <span className="text-xs text-slate-500">
-            ({current?.secrets[server.name]?.configured ? 'configured' : 'not configured'};
+            ({secrets?.[server.name]?.configured ? 'configured' : 'not configured'};
             write-only)
           </span>
           <input
@@ -249,6 +281,7 @@ function ServerEditor({
           />
         </label>
       )}
+      {limits}
       <button type="button" className="text-sm text-red-700" onClick={onRemove}>
         Remove server
       </button>
@@ -289,6 +322,7 @@ function SkillsEditor({
   setGithub,
   action,
   addBundle,
+  renderSkill,
   onRemove,
 }: {
   bundles: ExtensionSkillBundle[];
@@ -298,6 +332,8 @@ function SkillsEditor({
   setGithub: Dispatch<SetStateAction<GithubSkillSource>>;
   action: (run: () => Promise<void>) => Promise<void>;
   addBundle: (bundle: ExtensionSkillBundle) => void;
+  /** Enabled switch and limits of one library skill. */
+  renderSkill: (id: string) => ReactNode;
   onRemove: (id: string) => void;
 }) {
   const repositoryId = useId();
@@ -338,7 +374,7 @@ function SkillsEditor({
         </select>
       </label>
       {bundles.map((b) => (
-        <div key={b.id} className="rounded-md border border-slate-200 bg-white p-3 text-xs">
+        <div key={b.id} data-testid="extension-skill" className="rounded-md border border-slate-200 bg-white p-3 text-xs">
           <p className="font-semibold">
             {b.name} · {b.files} files · <span title={`${b.bytes} bytes`}>{formatSkillSize(b.bytes)}</span>
           </p>
@@ -348,6 +384,7 @@ function SkillsEditor({
             Declared requirements: {b.requirements.join(', ') || 'none'}. Authorize capabilities
             separately.
           </p>
+          <div className="mt-3 text-sm">{renderSkill(b.id)}</div>
           <button type="button" className="mt-2 text-red-700" onClick={() => onRemove(b.id)}>
             Remove skill
           </button>
@@ -431,6 +468,10 @@ function SkillsEditor({
   );
 }
 
+const describeValidation = (results: Awaited<ReturnType<typeof validateExtensionLibrary>>['results']) =>
+  results.map((r) => `${r.name}: ${r.status === 'not_validated' || r.reachable === null ? 'not validated' : r.reachable ? 'reachable' : 'unavailable'}`)
+    .join(' · ') || 'No enabled MCP servers.';
+
 export default function AgentExtensionsSection() {
   const [github, setGithub] = useState({
     repository: '',
@@ -440,21 +481,25 @@ export default function AgentExtensionsSection() {
   const [instanceCatalog, setInstanceCatalog] = useState<InstanceCatalogResponse>({ agents: [], repositories: [] });
   const [catalogError, setCatalogError] = useState(false);
   const [catalog, setCatalog] = useState<ExtensionCatalogEntry[]>([]);
-  const [profiles, setProfiles] = useState<ExtensionProfileRevision[]>([]);
-  const [current, setCurrent] = useState<ExtensionProfileRevision>();
-  const [draft, setDraft] = useState<ExtensionProfileInput>(blank);
+  const [library, setLibrary] = useState<ExtensionLibraryRevision>();
+  const [draft, setDraft] = useState<LibraryDraft>(draftFrom);
   const [editorVersion, setEditorVersion] = useState(0);
-  const [editing, setEditing] = useState(false);
   const [secrets, setSecrets] = useState<Record<number, string | null>>({});
   const [availableBundles, setAvailableBundles] = useState<ExtensionSkillBundle[]>([]);
-  const [bundles, setBundles] = useState<ExtensionSkillBundle[]>([]);
-  const [history, setHistory] = useState<ExtensionProfileRevision[]>([]);
+  const [history, setHistory] = useState<ExtensionLibraryRevision[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  /** Show a saved library and start editing from it, dropping unsaved changes. */
+  const load = (next: ExtensionLibraryRevision) => {
+    setLibrary(next);
+    setDraft(draftFrom(next));
+    setSecrets({});
+    setEditorVersion((v) => v + 1);
+  };
   const refresh = async () => {
-    const result = await listExtensionProfiles();
-    setProfiles(result.profiles);
+    const result = await getExtensionLibrary();
+    load(result.library);
     setCatalog(result.catalog ?? []);
     setAvailableBundles(result.bundles ?? []);
   };
@@ -463,13 +508,13 @@ export default function AgentExtensionsSection() {
     void getInstanceCatalog().then((result) => {
       if (active) setInstanceCatalog(result);
     }).catch(() => { if (active) setCatalogError(true); });
-    void listExtensionProfiles()
+    void getExtensionLibrary()
       .then((result) => {
-        if (active) {
-          setProfiles(result.profiles);
-          setCatalog(result.catalog ?? []);
-          setAvailableBundles(result.bundles ?? []);
-        }
+        if (!active) return;
+        setLibrary(result.library);
+        setDraft(draftFrom(result.library));
+        setCatalog(result.catalog ?? []);
+        setAvailableBundles(result.bundles ?? []);
       })
       .catch((e) => {
         if (active) setError((e as Error).message);
@@ -490,30 +535,8 @@ export default function AgentExtensionsSection() {
       setBusy(false);
     }
   };
-  const open = (profile?: ExtensionProfileRevision) => {
-    setEditorVersion((v) => v + 1);
-    setCurrent(profile);
-    setDraft(
-      profile
-        ? {
-            version: 1,
-            name: profile.name,
-            enabled: profile.enabled,
-            agentScope: profile.agentScope,
-            repositoryScope: profile.repositoryScope,
-            mcpServers: profile.mcpServers,
-            skillBundleIds: profile.skillBundleIds,
-          }
-        : blank(),
-    );
-    setBundles(profile?.skillBundles ?? []);
-    setSecrets({});
-    setHistory([]);
-    setNotice('');
-    setEditing(true);
-  };
-  const changeServer = (index: number, patch: Partial<ExtensionMcpDescriptor>) => {
-    const server = draft.mcpServers[index];
+  const changeServer = (index: number, patch: Partial<ExtensionLibraryServer>) => {
+    const server = draft.servers[index];
     if (('authentication' in patch && patch.authentication === 'none') || ('url' in patch && patch.url !== undefined && server?.kind === 'https' && patch.url !== server.url)) {
       setSecrets((values) => {
         const next = { ...values };
@@ -523,20 +546,39 @@ export default function AgentExtensionsSection() {
     }
     setDraft((d) => ({
       ...d,
-      mcpServers: d.mcpServers.map((s, i) =>
-        i === index ? ({ ...s, ...patch } as ExtensionMcpDescriptor) : s,
-      ),
+      servers: d.servers.map((s, i) => (i === index ? ({ ...s, ...patch } as ExtensionLibraryServer) : s)),
     }));
   };
+  const changeSkill = (bundleId: string, patch: Partial<ExtensionLibrarySkill>) =>
+    setDraft((d) => ({ ...d, skills: d.skills.map((s) => (s.bundleId === bundleId ? { ...s, ...patch } : s)) }));
+  /**
+   * A saved item is switched on or off at once, in its own revision, so
+   * disabling never waits on the rest of the draft. A new item changes only
+   * in the draft until the library is saved.
+   */
+  const toggle = (item: ExtensionItemRef, saved: boolean, enabled: boolean, applyDraft: () => void) => {
+    if (!saved) { applyDraft(); return; }
+    void action(async () => {
+      const result = await setExtensionItemEnabled(item, enabled);
+      setLibrary(result.library);
+      applyDraft();
+      setNotice(enabled ? 'Enabled for new runs.' : 'Disabled for new runs.');
+    });
+  };
+  const bundleInfo = [...new Map([...availableBundles, ...(library?.skillBundles ?? [])].map((b) => [b.id, b])).values()];
   const addBundle = (bundle: ExtensionSkillBundle) => {
     setAvailableBundles((items) => [...items.filter((existing) => existing.id !== bundle.id), bundle]);
-    setBundles((b) => [...b.filter((existing) => existing.id !== bundle.id), bundle]);
-    setDraft((d) => ({
+    setDraft((d) => (d.skills.some((s) => s.bundleId === bundle.id) ? d : {
       ...d,
-      skillBundleIds: [...new Set([...d.skillBundleIds, bundle.id])],
+      skills: [...d.skills, { bundleId: bundle.id, enabled: true, ...NEW_ITEM_LIMITS }],
     }));
-    setNotice('Validated skill bundle added. Save the profile to select it.');
+    setNotice('Validated skill bundle added. Save the library to use it.');
   };
+  const addServer = (server: ExtensionLibraryServer) => setDraft((d) => ({ ...d, servers: [...d.servers, server] }));
+  const agentOptions = instanceCatalog.agents.filter((a) => a.enabled && a.kind !== 'synthetic' && (a.type === 'claude' || a.type === 'codex') && /^[A-Za-z0-9_-]{1,100}$/.test(a.alias)).map((a) => a.alias);
+  const repositoryOptions = instanceCatalog.repositories.map((r) => r.name);
+  const savedServers = library?.servers ?? [];
+  const serversFull = draft.servers.length >= EXTENSION_LIBRARY_LIMITS.servers;
   return (
     <SettingsSection
       title="Skills & MCP servers"
@@ -553,106 +595,40 @@ export default function AgentExtensionsSection() {
             {notice}
           </p>
         )}
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800">Extension profiles</h3>
-          <button type="button" className={buttonClass} disabled={busy} onClick={() => open()}>
-            New profile
-          </button>
-        </div>
-        {profiles.length === 0 && (
-          <p className="text-sm text-slate-500">
-            No profiles configured. Create a profile to authorize tools and attach validated skills.
-          </p>
-        )}
-        <ul className="divide-y rounded-lg border border-slate-200">
-          {profiles.map((p) => (
-            <li
-              key={p.profileId}
-              className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
-            >
-              <div>
-                <p className="text-sm font-medium text-slate-900">{p.name}</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Revision {p.revision} · {p.enabled ? 'Enabled' : 'Disabled'} ·{' '}
-                  {p.mcpServers.filter((s) => s.enabled).length} MCP servers ·{' '}
-                  {p.skillBundles.length} skill bundles
-                </p>
-              </div>
-              <button type="button" className={buttonClass} disabled={busy} onClick={() => open(p)}>
-                Edit profile
-              </button>
-            </li>
-          ))}
-        </ul>
-        {editing && (
+        {!library && !error && <p className="text-sm text-slate-500">Loading the extension library…</p>}
+        {library && (
           <fieldset
             key={editorVersion}
             disabled={busy}
             className="space-y-5 rounded-lg border border-slate-200 bg-slate-50/50 p-4 sm:p-5"
           >
-            <div className="flex justify-between gap-3">
-              <h3 className="font-semibold text-slate-900">
-                {current ? `Edit ${current.name}` : 'New extension profile'}
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setSecrets({});
-                  setEditing(false);
-                }}
-                className="text-sm text-slate-500"
-              >
-                Close
-              </button>
+            <div>
+              <h3 className="font-semibold text-slate-900">Extension library</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                {library.revision > 0
+                  ? `Revision ${library.revision} · updated ${new Date(library.updatedAt).toLocaleString()}`
+                  : 'Not saved yet.'}{' '}
+                Each item applies to the repositories and agents it is limited to.
+              </p>
             </div>
-            <label className="block text-sm font-medium">
-              Profile name
-              <input
-                className={inputClass}
-                value={draft.name}
-                onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                maxLength={100}
-              />
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={draft.enabled}
-                onChange={(e) => setDraft((d) => ({ ...d, enabled: e.target.checked }))}
-              />
-              Enabled for new launches
-            </label>
             {catalogError && <p role="status" className="text-sm text-amber-800">Agent and repository choices could not be loaded. Reopen Settings to retry, or use Advanced to add an unlisted item.</p>}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <ItemPicker label="Agents" options={instanceCatalog.agents.filter((a) => a.enabled && a.kind !== 'synthetic' && (a.type === 'claude' || a.type === 'codex') && /^[A-Za-z0-9_-]{1,100}$/.test(a.alias)).map((a) => a.alias)}
-                selected={draft.agentScope} onChange={(agentScope) => setDraft((d) => ({ ...d, agentScope }))}
-                hint="Leave all unchecked to allow any agent." allowManual />
-              <ItemPicker label="Repositories" options={instanceCatalog.repositories.map((r) => r.name)}
-                selected={draft.repositoryScope} onChange={(repositoryScope) => setDraft((d) => ({ ...d, repositoryScope }))}
-                hint="Leave all unchecked to allow any repository." allowManual />
-            </div>
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-semibold">MCP servers</h4>
               <button
                 type="button"
                 className={buttonClass}
-                disabled={draft.mcpServers.length >= 8}
+                disabled={serversFull}
                 onClick={() =>
-                  setDraft((d) => ({
-                    ...d,
-                    mcpServers: [
-                      ...d.mcpServers,
-                      {
-                        kind: 'https',
-                        name: nextServerName(d.mcpServers),
-                        url: '',
-                        enabled: true,
-                        tools: [],
-                        capability: 'read',
-                        authentication: 'none',
-                      },
-                    ],
-                  }))
+                  addServer({
+                    kind: 'https',
+                    name: nextServerName(draft.servers),
+                    url: '',
+                    enabled: true,
+                    tools: [],
+                    capability: 'read',
+                    authentication: 'none',
+                    ...NEW_ITEM_LIMITS,
+                  })
                 }
               >
                 Add HTTPS server
@@ -663,25 +639,20 @@ export default function AgentExtensionsSection() {
               <select
                 className={inputClass}
                 value=""
-                disabled={draft.mcpServers.length >= 8 || !catalog.length}
+                disabled={serversFull || !catalog.length}
                 onChange={(e) => {
                   const entry = catalog.find((c) => c.id === e.target.value);
                   if (entry)
-                    setDraft((d) => ({
-                      ...d,
-                      mcpServers: [
-                        ...d.mcpServers,
-                        {
-                          kind: 'catalog',
-                          name: nextServerName(d.mcpServers),
-                          catalogId: entry.id,
-                          digest: entry.digest,
-                          enabled: true,
-                          tools: [...entry.tools],
-                          capability: entry.capability,
-                        },
-                      ],
-                    }));
+                    addServer({
+                      kind: 'catalog',
+                      name: nextServerName(draft.servers),
+                      catalogId: entry.id,
+                      digest: entry.digest,
+                      enabled: true,
+                      tools: [...entry.tools],
+                      capability: entry.capability,
+                      ...NEW_ITEM_LIMITS,
+                    });
                 }}
               >
                 <option value="">Select an installed entry</option>
@@ -692,17 +663,24 @@ export default function AgentExtensionsSection() {
                 ))}
               </select>
             </label>
-            {draft.mcpServers.map((server, index) => (
+            {draft.servers.length === 0 && <p className="text-sm text-slate-500">No MCP servers in the library yet.</p>}
+            {draft.servers.map((server, index) => (
               <ServerEditor
                 key={index}
                 server={server}
                 catalog={catalog}
-                endpoints={[...new Set(profiles.flatMap((p) => p.mcpServers.flatMap((s) => s.kind === 'https' ? [s.url] : [])))]}
-                knownTools={server.kind === 'https' ? profiles.flatMap((p) => p.mcpServers.flatMap((s) =>
-                  s.kind === 'https' && s.url === server.url ? s.tools : [])) : []}
-                current={current}
+                endpoints={[...new Set(savedServers.flatMap((s) => (s.kind === 'https' && s.url ? [s.url] : [])))]}
+                knownTools={server.kind === 'https' ? savedServers.flatMap((s) => (s.kind === 'https' && s.url === server.url ? s.tools : [])) : []}
+                secrets={library.secrets}
                 secret={secrets[index]}
+                limits={<ItemLimits item={server} agents={agentOptions} repositories={repositoryOptions} onChange={(patch) => changeServer(index, patch)} />}
                 onChange={(patch) => changeServer(index, patch)}
+                onEnabled={(enabled) => toggle(
+                  { kind: 'server', name: server.name },
+                  savedServers.some((s) => s.name === server.name && s.kind === server.kind),
+                  enabled,
+                  () => changeServer(index, { enabled }),
+                )}
                 onSecret={(value) =>
                   setSecrets((values) => {
                     const next = { ...values };
@@ -715,7 +693,7 @@ export default function AgentExtensionsSection() {
                   setEditorVersion((v) => v + 1);
                   setDraft((d) => ({
                     ...d,
-                    mcpServers: d.mcpServers.filter((_, i) => i !== index),
+                    servers: d.servers.filter((_, i) => i !== index),
                   }));
                   setSecrets((values) => {
                     return Object.fromEntries(Object.entries(values)
@@ -726,24 +704,39 @@ export default function AgentExtensionsSection() {
               />
             ))}
             <SkillsEditor
-              bundles={bundles.filter((b) => draft.skillBundleIds.includes(b.id))}
-              availableBundles={[...new Map(availableBundles.concat(profiles.flatMap((p) => p.skillBundles), bundles).map((b) => [b.id, b])).values()].filter((b) => !draft.skillBundleIds.includes(b.id))}
-              repositories={instanceCatalog.repositories.map((r) => r.name)}
+              bundles={draft.skills.flatMap((s) => bundleInfo.filter((b) => b.id === s.bundleId))}
+              availableBundles={draft.skills.length >= EXTENSION_LIBRARY_LIMITS.bundles ? [] : bundleInfo.filter((b) => !draft.skills.some((s) => s.bundleId === b.id))}
+              repositories={repositoryOptions}
               github={github}
               setGithub={setGithub}
               action={action}
               addBundle={addBundle}
+              renderSkill={(id) => {
+                const skill = draft.skills.find((s) => s.bundleId === id);
+                if (!skill) return null;
+                return (
+                  <div className="space-y-3">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={skill.enabled} onChange={(e) => {
+                        const enabled = e.target.checked;
+                        toggle({ kind: 'skill', bundleId: id }, Boolean(library.skills.some((s) => s.bundleId === id)), enabled, () => changeSkill(id, { enabled }));
+                      }} />
+                      Enabled
+                    </label>
+                    <ItemLimits item={skill} agents={agentOptions} repositories={repositoryOptions} onChange={(patch) => changeSkill(id, patch)} />
+                  </div>
+                );
+              }}
               onRemove={(id) =>
                 setDraft((d) => ({
                   ...d,
-                  skillBundleIds: d.skillBundleIds.filter((selected) => selected !== id),
+                  skills: d.skills.filter((s) => s.bundleId !== id),
                 }))
               }
             />
             <p className="text-xs leading-5 text-slate-500">
-              Saving creates an immutable revision. Secret replacement invalidates older launches.
-              Disabling or deleting blocks new launches; running snapshots keep their selected
-              revision.
+              Saving creates an immutable library revision. Secret replacement invalidates older launches.
+              Turning an item off applies to new runs at once; running tasks keep the items they started with.
             </p>
             <div className="flex flex-wrap gap-2">
               <button
@@ -751,80 +744,49 @@ export default function AgentExtensionsSection() {
                 className={`${buttonClass} bg-teal-700 text-white hover:bg-teal-800`}
                 onClick={() =>
                   void action(async () => {
-                    const result = await saveExtensionProfile(
-                      draft,
-                      Object.fromEntries(draft.mcpServers.flatMap((server, index) =>
+                    const result = await saveExtensionLibrary(
+                      { version: 1, servers: draft.servers, skills: draft.skills },
+                      library.revision,
+                      Object.fromEntries(draft.servers.flatMap((server, index) =>
                         server.kind === 'https' && server.authentication === 'bearer' && Object.prototype.hasOwnProperty.call(secrets, index)
                           ? [[server.name, secrets[index]]] : [])),
-                      current ? selection(current) : undefined,
                     );
-                    setSecrets({});
-                    open(result.profile);
-                    await refresh();
-                    setNotice('Profile revision saved.');
+                    load(result.library);
+                    setHistory([]);
+                    setNotice('Extension library saved.');
                   })
                 }
               >
-                Save revision
+                Save library
               </button>
-              {current && (
+              <button type="button" className={buttonClass} onClick={() => void action(async () => { await refresh(); setHistory([]); setNotice('Saved library reloaded.'); })}>
+                Discard changes
+              </button>
+              {library.revision > 0 && (
                 <>
                   <button
                     type="button"
                     className={buttonClass}
-                    onClick={() =>
-                      void action(async () => {
-                        const result = await validateExtensionProfile(selection(current));
-                        setNotice(
-                          result.results
-                            .map(
-                              (r) =>
-                                `${r.name}: ${r.status === 'not_validated' || r.reachable === null ? 'not validated' : r.reachable ? 'reachable' : 'unavailable'}`,
-                            )
-                            .join(' · ') || 'No enabled MCP servers.',
-                        );
-                      })
-                    }
+                    onClick={() => void action(async () => setNotice(describeValidation((await validateExtensionLibrary()).results)))}
                   >
                     Validate saved MCP connectivity
                   </button>
                   <button
                     type="button"
                     className={buttonClass}
-                    onClick={() =>
-                      void action(async () =>
-                        setHistory((await extensionProfileHistory(current.profileId)).revisions),
-                      )
-                    }
+                    onClick={() => void action(async () => setHistory((await extensionLibraryHistory()).revisions))}
                   >
                     Revision history
-                  </button>
-                  <button
-                    type="button"
-                    className={`${buttonClass} text-red-700`}
-                    onClick={() =>
-                      void action(async () => {
-                        await deleteExtensionProfile(selection(current));
-                        setCurrent(undefined);
-                        setSecrets({});
-                        setEditing(false);
-                        await refresh();
-                        setNotice('Profile deleted for new launches.');
-                      })
-                    }
-                  >
-                    Delete profile
                   </button>
                 </>
               )}
             </div>
             {history.length > 0 && (
               <ul className="space-y-2 text-xs text-slate-600">
-                {history.map((p) => (
-                  <li key={p.revision}>
-                    Revision {p.revision} · {new Date(p.updatedAt).toLocaleString()} · administrator{' '}
-                    {p.auditActor} · {p.enabled ? 'enabled' : 'disabled'} · {p.mcpServers.length}{' '}
-                    servers · {p.skillBundles.length} bundles
+                {history.map((revision) => (
+                  <li key={revision.revision}>
+                    Revision {revision.revision} · {new Date(revision.updatedAt).toLocaleString()} · administrator{' '}
+                    {revision.auditActor} · {revision.servers.length} servers · {revision.skills.length} skills
                   </li>
                 ))}
               </ul>

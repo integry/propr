@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import knex from 'knex';
 import { db } from '@propr/core';
-import { ExtensionProfileStore, extensionTokenHash } from '../../packages/core/src/extensions/extensionProfileStore.js';
+import { ExtensionLibraryStore, extensionTokenHash } from '../../packages/core/src/extensions/extensionProfileStore.js';
 import { executeWithExtensions, currentExtensionLaunch } from '../../packages/core/src/extensions/extensionLaunch.js';
 import { up } from '../../packages/core/src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../../packages/core/src/db/migrations/20261013220000_extension_grant_network.js';
+import { up as libraryMigration } from '../../packages/core/src/db/migrations/20261113000000_extension_library.js';
 import type { AgentTaskOptions, AgentConfig } from '@propr/core';
 
 /** Real policy resolution and grant capture; only external execution is replaced. */
@@ -18,15 +19,22 @@ export async function extensionLaunchIntegrationFixture() {
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await database.schema.createTable('config', c => { c.string('key').primary(); c.text('value'); });
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
-  await database.schema.createTable('agent_definitions', c => c.string('id').primary());
+  await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
-  await up(database); await grantMigration(database);
-  const store = new ExtensionProfileStore(database, { SYSTEM_TASK_SECRET: 'synthetic-integration-custody' });
-  const profile = await store.save('1', { version: 1, name: 'Integration docs', enabled: true, agentScope: [], repositoryScope: [], skillBundleIds: [], mcpServers: [{ kind: 'https', name: 'docs', url: 'https://8.8.8.8/mcp', authentication: 'none', enabled: true, tools: ['lookup'], capability: 'read' }] }, {});
-  const selection = { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision };
+  await up(database); await grantMigration(database); await libraryMigration(database);
+  const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-integration-custody' });
+  // Added explicitly by automations and legacy submissions; it never applies automatically.
+  await store.saveLibrary('1', { version: 1, skills: [], servers: [{ kind: 'https', name: 'docs', url: 'https://8.8.8.8/mcp', authentication: 'none', enabled: true, tools: ['lookup'], capability: 'read', autoApply: false }] }, {}, 0);
+  const extensions = { servers: ['docs'], skills: [] };
+  /** A pre-library profile selection whose legacy mapping names the migrated item. */
+  const legacyProfileId = '00000000-0000-4000-8000-000000000001';
+  const selection = { instanceId: await store.instanceId(), profileId: legacyProfileId, revision: 1 };
+  await database('extension_legacy_profile_items').insert({ profile_id: legacyProfileId, servers: JSON.stringify(['docs']), skills: '[]' });
   let captures = 0;
   return {
     selection,
+    extensions,
+    store,
     database,
     captures: () => captures,
     execute: (options: AgentTaskOptions, { inspect, networkMode = 'restricted' }: { inspect?: (prepared: AgentTaskOptions) => void; networkMode?: 'open' | 'restricted' } = {}) => executeWithExtensions({ type: 'claude', alias: 'claude' } as AgentConfig, options, async prepared => {

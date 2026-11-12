@@ -8,8 +8,6 @@ export interface TaskSubmission {
   error: string | null;
 }
 export interface TaskRequest {
-  extensionAllowWrite?: boolean;
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   repository: string;
   instruction: string;
   agentAlias?: string;
@@ -22,11 +20,15 @@ async function request(path: string, options?: RequestInit): Promise<TaskSubmiss
   catch (error) { throw Object.assign(error as Error, { status: response.status }); }
   return response.json();
 }
+/** Fields of drafts saved before extension profiles were replaced by the extension library. */
+const LEGACY_PAYLOAD_FIELDS = ['extensionProfile', 'extensionAllowWrite'];
 export async function submitTask(key: string, payload: TaskRequest, files: File[]): Promise<TaskSubmission> {
   const form = new FormData();
-  form.append('payload', JSON.stringify(payload));
+  // A restored older draft may still carry a profile selection the API no longer accepts.
+  const current = Object.fromEntries(Object.entries(payload).filter(([field]) => !LEGACY_PAYLOAD_FIELDS.includes(field)));
+  form.append('payload', JSON.stringify(current));
   files.forEach(file => form.append('files', file));
-  return request('', { method: 'POST', headers: { 'Idempotency-Key': key, ...(payload.extensionProfile ? { 'X-ProPR-Extensions': '1' } : {}) }, body: form });
+  return request('', { method: 'POST', headers: { 'Idempotency-Key': key }, body: form });
 }
 export const getTaskSubmission = (key: string) => request(`/${encodeURIComponent(key)}`);
 export const retryTaskSubmission = (key: string) => request(`/${encodeURIComponent(key)}/retry`, { method: 'POST' });

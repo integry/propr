@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
-import { agentSupportsSavedModel, agentTypeSupportsProprMcp, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
+import { agentSupportsSavedModel, agentTypeSupportsProprMcp, hasAutomationExtensions, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
 import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
@@ -274,10 +274,11 @@ export async function validateAgentDefinitionRuntime(
   const needsProprMcp = definition.capabilities.includes('propr_mcp') || definition.autonomyMode !== 'dry_run';
   if (alias === null) {
     if (modelName !== null) return 'A model requires an agent';
-    if (!needsProprMcp && !definition.extensionProfile) return null;
+    const explicitExtensions = hasAutomationExtensions(definition.extensions);
+    if (!needsProprMcp && !explicitExtensions) return null;
     const [agents, configuredAlias] = await Promise.all([loadDirectAgents(), loadDefaultAgentAlias()]);
     const type = defaultAgentType(agents, configuredAlias);
-    if (definition.extensionProfile && (!type || !['claude', 'codex'].includes(type))) return 'Extension profiles require a Claude or Codex task runtime';
+    if (explicitExtensions && (!type || !['claude', 'codex'].includes(type))) return 'Added extensions require a Claude or Codex task runtime';
     if (!needsProprMcp) return null;
     if (type === null) return 'No default agent is configured; choose an agent that supports propr_mcp';
     if (!agentTypeSupportsProprMcp(type)) {
@@ -292,7 +293,7 @@ export async function validateAgentDefinitionRuntime(
     : synthetic.find(agent => agent.alias === alias && syntheticAgentSupportsModel(agent, modelName));
   if (!direct && !syntheticAgent) return 'Choose an enabled agent and a model it supports';
 
-  if (definition.extensionProfile && (!direct || !['claude', 'codex'].includes(direct.type))) return 'Extension profiles require a direct Claude or Codex task runtime';
+  if (hasAutomationExtensions(definition.extensions) && (!direct || !['claude', 'codex'].includes(direct.type))) return 'Added extensions require a direct Claude or Codex task runtime';
   if (needsProprMcp) {
     const supported = direct ? agentTypeSupportsProprMcp(direct.type)
       : syntheticAgentSupportsProprMcp(syntheticAgent!, modelName, agents);

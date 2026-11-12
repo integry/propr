@@ -1,4 +1,4 @@
-import { extensionSelectionSchema, type ExtensionSelection } from './extensionProfiles.js';
+import { automationExtensionsSchema, type AutomationExtensions } from './extensionLibrary.js';
 /**
  * Authoritative automation definition contract shared by the REST API, MCP, web UI,
  * CLI, worker and daemon scheduler. An automation is a saved, reusable definition
@@ -85,7 +85,8 @@ export const AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS = 2_000;
 export const AUTOMATION_ACTION_SUMMARY_MAX_CHARS = 20_000;
 
 export interface AutomationDefinitionInput {
-  extensionProfile?: ExtensionSelection | null;
+  /** Library servers (names) and skill bundles (ids) added on top of what applies automatically; null clears them. */
+  extensions?: AutomationExtensions | null;
   name: string;
   description?: string | null;
   prompt: string;
@@ -117,6 +118,8 @@ export interface AutomationDefinition {
   model: string | null;
   previousReportCount: number;
   pauseWhenUnproductive: boolean;
+  /** Library items this automation adds explicitly. */
+  extensions: AutomationExtensions;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -168,6 +171,13 @@ export const AUTOMATION_DEFINITION_CONTRACT = {
   autonomyModes: AUTOMATION_AUTONOMY_MODES,
   defaultAutonomyMode: DEFAULT_AUTOMATION_AUTONOMY_MODE,
   actingStepCapabilities: ['propr_mcp'],
+  extensions: {
+    fields: ['servers', 'skills'],
+    servers: 'extension library server names',
+    skills: 'extension library skill bundle ids',
+    permission: 'instance.manage_settings',
+    runtimes: ['claude', 'codex'],
+  },
   runTriggers: AUTOMATION_RUN_TRIGGERS,
   runStates: AUTOMATION_RUN_STATES,
   terminalRunStates: TERMINAL_AUTOMATION_RUN_STATES,
@@ -246,7 +256,8 @@ function validateOptionalText(value: unknown, field: string, maxLength: number):
 export function validateAutomationDefinitionInput(input: unknown, options: { partial?: boolean } = {}): string | null {
   if (input == null || typeof input !== 'object' || Array.isArray(input)) return 'automation definition must be an object';
   const body = input as Record<string, unknown>;
-  if (body.extensionProfile != null && !extensionSelectionSchema.safeParse(body.extensionProfile).success) return 'Invalid extension profile selection';
+  if ('extensionProfile' in body) return 'extensionProfile was replaced by extensions: { servers, skills }';
+  if (body.extensions != null && !automationExtensionsSchema.safeParse(body.extensions).success) return 'extensions must be { servers: library server names, skills: skill bundle ids } without duplicates';
   const partial = options.partial === true;
 
   if (!partial || has(body, 'name')) {

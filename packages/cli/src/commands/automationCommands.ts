@@ -134,6 +134,10 @@ function printAutomation(automation: Automation): void {
   if (automation.nextRunAt) console.log(`Next run:     ${formatTimestamp(automation.nextRunAt)}`);
   console.log(`Previous reports: ${automation.includePreviousReports ? automation.previousReportsLimit : 0}`);
   if (automation.pauseWhenUnproductive) console.log("Pause when unproductive: yes");
+  const extensions = automation.extensions;
+  if (extensions && (extensions.servers.length > 0 || extensions.skills.length > 0)) {
+    console.log(`Extensions:   ${[...extensions.servers.map((name) => `server ${name}`), ...extensions.skills.map((id) => `skill ${id}`)].join(", ")}`);
+  }
   if (automation.attachments.length > 0) console.log(`Input files:  ${automation.attachments.length}`);
   console.log(`Updated:      ${formatTimestamp(automation.updatedAt)}`);
   console.log("");

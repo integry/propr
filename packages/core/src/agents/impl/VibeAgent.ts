@@ -63,9 +63,8 @@ export class VibeAgent implements Agent {
         this.timeoutMs = parseInt(process.env.VIBE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
-    // eslint-disable-next-line complexity -- runtime admission, execution and cleanup share one task lifecycle
+     
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        if (options.extensionProfile) throw new Error('Extension profiles require Claude or Codex task execution');
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;

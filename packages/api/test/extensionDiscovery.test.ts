@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import { createApiRequestRateLimiter } from '../requestRateLimits.js';
-import { ExtensionProfileStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
 import { up } from '../../core/src/db/migrations/20261013210000_extension_profiles.js';
 
 type ProbeResponse = Readable & { statusCode: number; headers: Record<string, string> };
@@ -32,7 +32,7 @@ await mock.module('@octokit/core', { namedExports: { Octokit: class {
     return { data: route.endsWith('/branches') ? [{ name: 'main' }] : route.endsWith('/tags') ? [{ name: 'v1' }] : { sha } };
   }
 } } });
-const { createExtensionProfileRoutes } = await import('../routes/extensionProfileRoutes.js');
+const { createExtensionLibraryRoutes } = await import('../routes/extensionProfileRoutes.js');
 const { requestExtensionMcp } = await import('../../core/src/extensions/endpointPolicy.js');
 after(closeConnection);
 
@@ -42,7 +42,7 @@ test('admin discovery is secret-free and bounded; Git refs resolve separately fr
   await database.schema.createTable('instance_members', c => { c.string('github_user_id'); c.string('role'); });
   await database.schema.createTable('agent_definitions', c => c.string('id').primary());
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' }); await up(database);
-  const store = new ExtensionProfileStore(database); const routes = createExtensionProfileRoutes(store);
+  const store = new ExtensionLibraryStore(database); const routes = createExtensionLibraryRoutes(store);
   const app = express();
   // Match production: bound requests before parsing and authorization.
   app.use(createApiRequestRateLimiter({ PROPR_API_RATE_LIMIT_MAX: '15' }));

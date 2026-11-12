@@ -1,8 +1,8 @@
 import type { Request, RequestHandler } from 'express';
 import { Octokit } from '@octokit/core';
 import { db } from '@propr/core';
-import { EXTENSION_PROFILE_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle } from '@propr/shared';
-import { ExtensionError, ExtensionProfileStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { EXTENSION_LIBRARY_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle } from '@propr/shared';
+import { ExtensionError, ExtensionLibraryStore, type ExtensionLibraryItemRef } from '../../core/src/extensions/extensionProfileStore.js';
 import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
 import { requestExtensionMcp } from '../../core/src/extensions/endpointPolicy.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
@@ -10,9 +10,9 @@ import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../git
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
 
-export function createExtensionProfileRoutes(store = new ExtensionProfileStore(db)) {
+export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(db)) {
   const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
-    // Profiles hold sealed per-installation secrets; the demo explains instead of reading them.
+    // The library holds sealed per-installation secrets; the demo explains instead of reading them.
     if (isDemoViewer(req.authorization)) return refuseDemoViewer(req, res, next);
     try {
       if (!req.user?.id) throw new ExtensionError(401, 'Authentication required');
@@ -25,18 +25,24 @@ export function createExtensionProfileRoutes(store = new ExtensionProfileStore(d
   const exact = (req: Request, keys: string[]) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(k => !keys.includes(k))) throw new ExtensionError(400, 'Invalid extension request');
   };
+  const itemRef = (value: unknown): ExtensionLibraryItemRef => {
+    const ref = value as Record<string, unknown> | null;
+    if (ref?.kind === 'server' && typeof ref.name === 'string' && Object.keys(ref).length === 2) return { kind: 'server', name: ref.name };
+    if (ref?.kind === 'skill' && typeof ref.bundleId === 'string' && Object.keys(ref).length === 2) return { kind: 'skill', bundleId: ref.bundleId };
+    throw new ExtensionError(400, 'Invalid extension item');
+  };
   return {
-    list: handle(async (_req, actor) => ({ contract: EXTENSION_PROFILE_CONTRACT, instanceId: await store.instanceId(), profiles: await store.list(actor), bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries() })),
-    save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expected']); return { profile: await store.save(actor, req.body.input, req.body.secrets, req.body.expected) }; }),
-    history: handle(async (req, actor) => ({ revisions: await store.history(actor, String(req.params.profileId)) })),
-    remove: handle(async (req, actor) => { exact(req, ['selection']); await store.delete(actor, req.body.selection); return { deleted: true }; }),
+    // The library, the skill bundles it can reference and the operator catalog in one read.
+    list: handle(async (_req, actor) => ({ contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library: await store.readLibrary(actor), bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries() })),
+    save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expectedRevision']); return { library: await store.saveLibrary(actor, req.body.input, req.body.secrets, req.body.expectedRevision) }; }),
+    setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
+    replaceSecret: handle(async (req, actor) => { exact(req, ['name', 'secret', 'expectedRevision']); return { library: await store.replaceSecret(actor, req.body.name, req.body.secret, req.body.expectedRevision) }; }),
+    history: handle(async (_req, actor) => ({ revisions: await store.history(actor) })),
     validate: handle(async (req, actor) => {
-      exact(req, ['selection']); const profile = await store.read(actor, req.body.selection);
-      const row = await store.database('extension_profile_revisions').where({ profile_id: profile.profileId, revision: profile.revision }).first();
-      const { unsealExtensionSecrets } = await import('../../core/src/extensions/privateSecrets.js');
-      const secrets = row.secrets_encrypted === '' ? {} : unsealExtensionSecrets(row.secrets_encrypted, `${profile.instanceId}/${profile.profileId}/${profile.revision}`, store.environment);
+      exact(req, []);
+      const { servers, secrets } = await store.validationTargets(actor);
       const results = [];
-      for (const server of profile.mcpServers.filter(s => s.enabled)) {
+      for (const server of servers) {
         let reachable = false;
         if (server.kind === 'catalog') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
         try {

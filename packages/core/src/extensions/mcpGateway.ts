@@ -1,11 +1,11 @@
 import { EXTENSION_LIMITS } from '@propr/shared';
-import { ExtensionError, ExtensionProfileStore, extensionTokenHash } from './extensionProfileStore.js';
+import { ExtensionError, ExtensionLibraryStore, extensionTokenHash } from './extensionProfileStore.js';
 import { requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint } from './endpointPolicy.js';
 import { redactExtensionOutput } from './extensionOutput.js';
 export { redactExtensionOutput } from './extensionOutput.js';
 
 // eslint-disable-next-line max-params, complexity -- protocol validation, policy enforcement and budget release share one gateway boundary
-export async function extensionGatewayCall(store: ExtensionProfileStore, token: string, serverName: string, body: unknown, send = requestExtensionMcp): Promise<unknown> {
+export async function extensionGatewayCall(store: ExtensionLibraryStore, token: string, serverName: string, body: unknown, send = requestExtensionMcp): Promise<unknown> {
   const { snapshot, secrets, network, allowWrite } = await store.grantSnapshot(token);
   // Failed/oversized requests consume the full reservation, so failures cannot
   // bypass the run budget. Successful responses charge actual wire bytes,
@@ -14,7 +14,7 @@ export async function extensionGatewayCall(store: ExtensionProfileStore, token: 
   let recordedDecision = false;
   let decision: { host: string; allowed: boolean } | undefined;
   try {
-  const server = snapshot.mcpServers.find(s => s.enabled && s.name === serverName);
+  const server = snapshot.servers.find(s => s.enabled && s.name === serverName);
   if (!server || !body || typeof body !== 'object' || Array.isArray(body)) throw new ExtensionError(403, 'MCP capability unavailable');
   if (server.capability === 'write' && !allowWrite) throw new ExtensionError(403, 'Run write grant unavailable');
   const rpc = body as Record<string, unknown>;

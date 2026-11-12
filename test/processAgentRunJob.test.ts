@@ -94,6 +94,7 @@ function harness(options: {
   run?: StoredAgentRun;
   invalid?: string | null;
   execute?: (options: AgentTaskOptions) => Promise<unknown>;
+  extensionsApply?: AgentRunProcessorDeps['extensionsApply'];
   prepare?: () => Promise<AgentRunWorkspace>;
   onRunning?: (current: StoredAgentRun) => StoredAgentRun;
   /** Stored state of the report task before the delivery; null when it does not exist. */
@@ -169,6 +170,7 @@ function harness(options: {
       resolveAgent: async () => ({ agent: { executeTask } as never, alias: 'claude', model: 'opus' }),
       buildPrompt: buildPrompt as unknown as AgentRunProcessorDeps['buildPrompt'],
       withCostCap: async (_target, operation) => operation(),
+      extensionsApply: options.extensionsApply ?? (async () => false),
       advanceAfterReport: run => advanceAfterReport(run, {
         transitionRun,
         startActing,
@@ -1199,7 +1201,7 @@ describe('agent run workspace', () => {
 test('extension automation captures instance restriction before agent.executeTask', async t => {
   const { extensionLaunchIntegrationFixture } = await import('./fixtures/extensionLaunchIntegration.js');
   const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
-  const h = harness({ run: storedRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensionProfile: fixture.selection }) }), execute: fixture.execute });
+  const h = harness({ run: storedRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensions: fixture.extensions }) }), execute: fixture.execute, extensionsApply: async () => true });
   const result = await createAgentRunProcessor(h.deps)(job);
   assert.equal(result.status, 'complete');
   assert.equal(fixture.captures(), 1);

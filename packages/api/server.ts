@@ -1,4 +1,4 @@
-import { createExtensionProfileRoutes } from './routes/extensionProfileRoutes.js';
+import { createExtensionLibraryRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
 import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
@@ -373,7 +373,7 @@ export function setupRoutes(): void {
     operationalStatus: statusRoutes.readStatusSnapshot,
     queueStatus: queueRoutes.collectQueueStats
   });
-  const extensionRoutes = createExtensionProfileRoutes();
+  const extensionRoutes = createExtensionLibraryRoutes();
   app.post('/api/extensions/mcp/:serverName', extensionRoutes.gateway);
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
@@ -512,9 +512,10 @@ export function setupRoutes(): void {
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
   app.get('/api/instance/extensions/v1', extensionRoutes.list);
-  app.post('/api/instance/extensions/v1/profiles', extensionRoutes.save);
-  app.get('/api/instance/extensions/v1/profiles/:profileId/history', extensionRoutes.history);
-  app.post('/api/instance/extensions/v1/delete', extensionRoutes.remove);
+  app.post('/api/instance/extensions/v1/library', extensionRoutes.save);
+  app.post('/api/instance/extensions/v1/items/enabled', extensionRoutes.setEnabled);
+  app.post('/api/instance/extensions/v1/secrets', extensionRoutes.replaceSecret);
+  app.get('/api/instance/extensions/v1/history', extensionRoutes.history);
   app.post('/api/instance/extensions/v1/validate', extensionRoutes.validate);
   app.post('/api/instance/extensions/v1/skills/archive', express.json({ limit: '7mb' }), extensionRoutes.importArchive);
   app.post('/api/instance/extensions/v1/skills/github', extensionRoutes.importGithub);
@@ -639,6 +640,13 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     await runMigrations();
+    // Copy extension profiles into the extension library once; never blocks startup.
+    try {
+      const core = await import('@propr/core');
+      if (typeof core.migrateExtensionProfilesToLibrary === 'function') await core.migrateExtensionProfilesToLibrary(db);
+    } catch (error) {
+      console.warn('Extension library migration skipped; it will retry at the next start:', (error as Error).message);
+    }
     dashboardReads = await startDashboardReadService(db);
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();

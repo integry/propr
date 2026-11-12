@@ -51,6 +51,8 @@ export interface Automation {
   autonomyMode: AutomationAutonomyMode;
   /** Turn the schedule off when the unproductive-run notification fires; absent from older servers. */
   pauseWhenUnproductive?: boolean;
+  /** Extension library servers (names) and skill bundles (ids) the automation adds explicitly; absent from older servers. */
+  extensions?: { servers: string[]; skills: string[] };
   enabled: boolean;
   revision: number;
   createdAt: number;

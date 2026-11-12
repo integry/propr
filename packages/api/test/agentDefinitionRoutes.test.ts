@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /* eslint-disable max-lines -- one suite covers every automation definition and run route, including their race regressions */
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
@@ -30,6 +31,7 @@ interface RequestOptions {
   headers?: Record<string, string>;
   files?: MulterFile[];
   authenticationMethod?: 'session' | 'instance_token' | 'github_bearer';
+  authorization?: { role: string; permissions: string[] };
 }
 
 function request(userId: string | null, options: RequestOptions = {}): Request {
@@ -37,6 +39,7 @@ function request(userId: string | null, options: RequestOptions = {}): Request {
   return {
     user: userId ? { id: userId, username: userId, accessToken: `token-${userId}` } : undefined,
     authenticationMethod: options.authenticationMethod ?? 'session',
+    authorization: options.authorization,
     params: options.params ?? {},
     body: options.body ?? {},
     query: options.query ?? {},
@@ -126,25 +129,44 @@ describe('automation definition routes', () => {
     return created.body.definition as { id: string; revision: number; [key: string]: unknown };
   }
 
-  test('demoted owners can edit or clear a stored profile but cannot select a new revision', async () => {
-    const { ExtensionProfileStore } = await import('../../core/src/extensions/extensionProfileStore.js');
+  test('extensions round-trip and adding items needs the extension administrator while removing them does not', async () => {
+    const { ExtensionLibraryStore } = await import('../../core/src/extensions/extensionProfileStore.js');
     await database('instance_members').insert({ github_user_id: '1', github_username: '1', role: 'admin', source: 'local', created_at: NOW, updated_at: NOW });
-    const store = new ExtensionProfileStore(database, { SYSTEM_TASK_SECRET: 'synthetic-profile-test-key' });
-    const profile = await store.save('1', { version: 1, name: 'Tools', enabled: true, agentScope: [], repositoryScope: [], mcpServers: [], skillBundleIds: [] }, {});
-    const selection = { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision };
-    const definition = await createDefinition('1');
-    await database('agent_definitions').where({ id: definition.id }).update({ extension_profile: JSON.stringify(selection) });
-    await database('instance_members').where({ github_user_id: '1' }).update({ role: 'member' });
-    for (const patch of [{ prompt: 'Updated prompt', extensionProfile: { ...selection } }, { scheduleCron: '0 9 * * *', extensionProfile: selection }]) {
-      const result = await call(routes.update, request('1', { params: { id: definition.id }, body: patch }));
-      assert.equal(result.status, 200, JSON.stringify(result.body));
-      assert.deepEqual(result.body.definition.extensionProfile, selection);
+    const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-library-test-key' });
+    await store.saveLibrary('1', { version: 1, skills: [], servers: ['docs', 'search'].map(name => ({ kind: 'https' as const, name, url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read' as const, authentication: 'none' as const, autoApply: false })) }, {}, 0);
+    const admin = { role: 'admin', permissions: ['instance.manage_settings'] };
+    const extensions = { servers: ['docs'], skills: [] };
+    // Creating with extensions needs the preflight header and the administrator permission.
+    for (const options of [{ authorization: admin }, { headers: { 'X-ProPR-Extensions': '1' } }, { headers: { 'X-ProPR-Extensions': '1' }, authorization: { role: 'member', permissions: [] } }]) {
+      const refused = await call(routes.create, request('1', { ...options, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions } }));
+      assert.equal(refused.status, 403, JSON.stringify(options));
     }
-    const changed = { ...selection, revision: 2 };
-    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, body: { extensionProfile: changed } }))).status, 403);
-    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, body: { extensionProfile: changed } }))).status, 403);
-    const cleared = await call(routes.update, request('1', { params: { id: definition.id }, body: { extensionProfile: null } }));
-    assert.equal(cleared.status, 200); assert.equal(cleared.body.definition.extensionProfile, null);
+    const missing = await call(routes.create, request('1', { headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['missing'], skills: [] } } }));
+    assert.equal(missing.status, 400); assert.match(JSON.stringify(missing.body), /missing/);
+    const legacy = await call(routes.create, request('1', { body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensionProfile: null } }));
+    assert.equal(legacy.status, 400);
+    const created = await call(routes.create, request('1', { headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions } }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const definition = (created.body as { definition: { id: string; extensions: unknown } }).definition;
+    assert.deepEqual(definition.extensions, extensions);
+    assert.deepEqual((await call(routes.get, request('1', { params: { id: definition.id } }))).body.definition.extensions, extensions);
+    // Unrelated edits and repeating the same items need no extension authority.
+    for (const patch of [{ prompt: 'Updated prompt' }, { prompt: 'Again', extensions: { servers: ['docs'], skills: [] } }]) {
+      const result = await call(routes.update, request('1', { params: { id: definition.id }, body: patch }));
+      assert.equal(result.status, 200, JSON.stringify(result.body)); assert.deepEqual(result.body.definition.extensions, extensions);
+    }
+    const added = { servers: ['docs', 'search'], skills: [] };
+    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, body: { extensions: added } }))).status, 403);
+    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, body: { extensions: added } }))).status, 403);
+    const grown = await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { extensions: added } }));
+    assert.equal(grown.status, 200, JSON.stringify(grown.body)); assert.deepEqual(grown.body.definition.extensions, added);
+    // A demoted owner can still remove items.
+    await database('instance_members').where({ github_user_id: '1' }).update({ role: 'member' });
+    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { extensions: { servers: ['docs', 'search'], skills: [randomUUID()] } } }))).status, 403);
+    const reduced = await call(routes.update, request('1', { params: { id: definition.id }, body: { extensions: { servers: ['search'], skills: [] } } }));
+    assert.equal(reduced.status, 200); assert.deepEqual(reduced.body.definition.extensions, { servers: ['search'], skills: [] });
+    const cleared = await call(routes.update, request('1', { params: { id: definition.id }, body: { extensions: null } }));
+    assert.equal(cleared.status, 200); assert.deepEqual(cleared.body.definition.extensions, { servers: [], skills: [] });
   });
 
   /** Run `action` as soon as a matching query has answered, before the waiting caller resumes. */

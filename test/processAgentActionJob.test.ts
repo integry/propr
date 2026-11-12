@@ -62,7 +62,7 @@ const SUCCESS = {
 };
 
 /** In-memory run and task stores honouring compare-and-set and terminal task states. */
-function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; task?: string | null; grantScopes?: string[]; mutatingOperations?: number | null | Error } = {}) {
+function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; extensionsApply?: () => Promise<boolean>; task?: string | null; grantScopes?: string[]; mutatingOperations?: number | null | Error } = {}) {
   let current = options.run ?? actingRun();
   let task: string | null = options.task ?? null;
   const transitions: Array<{ from: readonly AutomationRunState[]; to: AutomationRunState; patch: Record<string, unknown> }> = [];
@@ -119,6 +119,7 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
     resolveAgent: async () => ({ agent: { executeTask } as never, alias: 'claude', model: 'opus' }),
     buildPrompt: buildPrompt as unknown as AgentActionProcessorDeps['buildPrompt'],
     withCostCap: async (_target, operation) => operation(),
+    extensionsApply: options.extensionsApply ?? (async () => false),
     mcpGrants: {
       request: async (_runId, phase) => {
         grants.requested.push(phase);
@@ -467,7 +468,7 @@ describe('buildAgentActionPrompt', () => {
 test('extension automation captures instance restriction before agent.executeTask', async t => {
   const { extensionLaunchIntegrationFixture } = await import('./fixtures/extensionLaunchIntegration.js');
   const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
-  const h = harness({ run: actingRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensionProfile: fixture.selection }) }), execute: fixture.execute });
+  const h = harness({ run: actingRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensions: fixture.extensions }) }), execute: fixture.execute, extensionsApply: async () => true });
   const result = await createAgentActionProcessor(h.deps)(actionJob());
   assert.equal(result.status, 'complete');
   assert.equal(fixture.captures(), 1);

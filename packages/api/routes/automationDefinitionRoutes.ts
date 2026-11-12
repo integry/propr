@@ -1,4 +1,4 @@
-import { ExtensionProfileStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
 /* eslint-disable max-lines -- automation definitions, their input files and their runs share one owner-scoped HTTP boundary */
 import path from 'node:path';
 import fs from 'fs-extra';
@@ -40,6 +40,8 @@ import {
   AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AUTOMATION_DEFINITION_CONTRACT,
   automationRunNoChangeReason,
+  hasAutomationExtensions,
+  type AutomationExtensions,
   DEFAULT_AUTOMATION_PREVIOUS_REPORTS,
   MAX_AUTOMATION_ATTACHMENTS,
   validateAutomationDefinitionInput,
@@ -134,6 +136,32 @@ function requireOwner(req: Request): string {
   return owner;
 }
 
+const sameExtensions = (left: AutomationExtensions | undefined, right: AutomationExtensions | undefined) => {
+  const normalize = (value: AutomationExtensions | undefined) => JSON.stringify({ servers: [...(value?.servers ?? [])].sort(), skills: [...(value?.skills ?? [])].sort() });
+  return normalize(left) === normalize(right);
+};
+
+const addsExtensions = (next: AutomationExtensions, current: AutomationExtensions | undefined) =>
+  next.servers.some(name => !current?.servers.includes(name)) || next.skills.some(id => !current?.skills.includes(id));
+
+/**
+ * Adding library items to an automation is instance extension administration:
+ * the same durable administrator with instance.manage_settings that manages the
+ * library, over the preflight-protected JSON contract. Every named item must exist.
+ */
+async function authorizeAutomationExtensions(req: Request, database: Knex, extensions: AutomationExtensions): Promise<void> {
+  if (req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension changes require a preflight-protected request');
+  if (req.authorization?.role !== 'admin' || !req.authorization.permissions.includes('instance.manage_settings')) throw new RouteError(403, 'Instance settings administration is required to change automation extensions');
+  const store = new ExtensionLibraryStore(database);
+  try {
+    await store.authorize(requireOwner(req));
+    await store.assertItemsExist(extensions);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    throw new RouteError(typeof status === 'number' && status < 500 ? status : 400, (error as Error).message);
+  }
+}
+
 function sendError(res: Response, error: unknown, fallback: string): void {
   const status = (error as { status?: unknown })?.status;
   if (typeof status === 'number' && status >= 400 && status < 500) {
@@ -167,7 +195,7 @@ function has(body: Record<string, unknown>, key: string): boolean {
 export function automationDefinitionInputToPatch(body: Partial<AutomationDefinitionInput>): AgentDefinitionPatch {
   const input = body as Record<string, unknown>;
   const patch: AgentDefinitionPatch = {};
-  if (has(input, 'extensionProfile')) patch.extensionProfile = body.extensionProfile ?? null;
+  if (Object.prototype.hasOwnProperty.call(input, 'extensions')) patch.extensions = body.extensions ?? { servers: [], skills: [] };
   if (has(input, 'name')) patch.name = body.name!.trim();
   if (has(input, 'description')) patch.description = body.description?.trim() || null;
   if (has(input, 'prompt')) patch.prompt = body.prompt;
@@ -190,7 +218,7 @@ export function automationDefinitionInputToPatch(body: Partial<AutomationDefinit
 }
 
 /** Fields that change whether the definition can run against the live configuration. */
-const RUNTIME_FIELDS: readonly (keyof AgentDefinitionPatch)[] = ['repositories', 'agentAlias', 'modelName', 'capabilities', 'autonomyMode', 'enabled', 'extensionProfile'];
+const RUNTIME_FIELDS: readonly (keyof AgentDefinitionPatch)[] = ['repositories', 'agentAlias', 'modelName', 'capabilities', 'autonomyMode', 'enabled', 'extensions'];
 
 function sameRepositories(left: readonly string[], right: readonly string[]): boolean {
   const normalize = (repositories: readonly string[]) => [...new Set(repositories.map(repository => repository.toLowerCase()))].sort();
@@ -387,11 +415,10 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       includePreviousReports: input.includePreviousReports, previousReportsLimit: input.previousReportsLimit,
       scheduleCron: input.scheduleCron ?? null, scheduleTimezone: 'UTC', scheduleEnabled: input.scheduleEnabled ?? false,
       nextRunAt: null, autonomyMode: input.autonomyMode ?? AUTOMATION_DEFINITION_CONTRACT.defaultAutonomyMode,
-      extensionProfile: input.extensionProfile, pauseWhenUnproductive: input.pauseWhenUnproductive ?? false,
+      extensions: input.extensions ?? { servers: [], skills: [] }, pauseWhenUnproductive: input.pauseWhenUnproductive ?? false,
       enabled: input.enabled ?? true, revision: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    if (input.extensionProfile && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');
-    if (input.extensionProfile) await new ExtensionProfileStore(database).read(requireOwner(req), input.extensionProfile);
+    if (hasAutomationExtensions(input.extensions)) await authorizeAutomationExtensions(req, database, input.extensions!);
     await requireRuntimeValid(candidate);
     if (!await verifyRepositories(req, res, candidate.repositories)) return;
 
@@ -416,9 +443,8 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     if (validationError) throw new RouteError(400, validationError);
     const current = await requireDefinition(req, owner);
     const patch = automationDefinitionInputToPatch(body as Partial<AutomationDefinitionInput>);
-    const selectionChanged = patch.extensionProfile && (patch.extensionProfile.instanceId !== current.extensionProfile?.instanceId || patch.extensionProfile.profileId !== current.extensionProfile?.profileId || patch.extensionProfile.revision !== current.extensionProfile?.revision);
-    if (selectionChanged && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');
-    if (selectionChanged) await new ExtensionProfileStore(database).read(owner, patch.extensionProfile!);
+    // Adding items needs the extension administrator; removing some or all of them grants nothing new.
+    if (patch.extensions != null && !sameExtensions(patch.extensions, current.extensions) && addsExtensions(patch.extensions, current.extensions)) await authorizeAutomationExtensions(req, database, patch.extensions);
 
     if (RUNTIME_FIELDS.some(field => patch[field] !== undefined)) {
       await requireRuntimeValid({ ...current, ...patch } as StoredAgentDefinition);

@@ -202,7 +202,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     validateAttachmentBaseUrlConfig();
 
     // No jobs may be claimed against a partially migrated schema.
-    await runMigrations();
+    // Then copy extension profiles into the extension library once (never blocks startup).
+    await runMigrations().then(async () => (await import('./extensionLibraryStartup.js')).migrateExtensionLibrary());
 
     try {
         if (process.env.CONFIG_REPO) {

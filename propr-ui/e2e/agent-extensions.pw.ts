@@ -3,34 +3,38 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { installSettingsFixture } from './settings-layout.fixture';
 
-test('instance extension editor describes skills and MCP servers, shows immutable provenance and write-only authentication', async ({ page }) => {
+const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289';
+const allowAll = { repositories: [] as string[], agents: [] as string[], autoApply: true };
+const emptyLibrary = { version: 1, instanceId, revision: 0, servers: [], skills: [], secrets: {}, skillBundles: [], createdAt: 0, updatedAt: 0, auditActor: '' };
+
+test('instance extension library describes skills and MCP servers, shows immutable provenance and write-only authentication', async ({ page }) => {
   await installSettingsFixture(page);
-  const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289'; const profileId = '5b14d6d6-9357-4b56-9eb3-31e5f921d125';
-  const profile = {
-    version: 1, instanceId, profileId, revision: 3, name: 'Documentation assistant', enabled: true,
-    agentScope: ['claude-main', 'codex-main'], repositoryScope: ['example/docs'],
-    mcpServers: [{ kind: 'https', name: 'documentation', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'bearer' }],
-    skillBundleIds: ['075bb20e-4156-4f6c-a7e2-20fd6c8ba84e'],
+  const library = {
+    version: 1, instanceId, revision: 3,
+    servers: [{ kind: 'https', name: 'documentation', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'bearer', repositories: ['example/docs'], agents: ['claude-main', 'codex-main'], autoApply: true }],
+    skills: [{ bundleId: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', enabled: true, ...allowAll }],
     secrets: { documentation: { fields: ['bearerToken'], configured: true } },
     skillBundles: [{ id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId, name: 'documentation-review', digest: 'd853bea9e15d14bc3881f84dd19a2cb940624fda943e677e6b6ac9cc31ff1009', files: 3, bytes: 8120, requirements: ['documentation.search'], source: { kind: 'github', repository: 'example/skills', commit: 'd66d0ad62a789374f81f7e1c4f5dbcc43319e1a6', directory: 'skills/documentation-review' }, createdAt: 1791907200000, auditActor: '1' }],
     createdAt: 1791907200000, updatedAt: 1791907200000, auditActor: '1',
   };
   await page.route('**/api/instance/extensions/v1**', route => {
     const request = route.request(); const url = new URL(request.url());
-    if (url.pathname.endsWith('/history')) return route.fulfill({ json: { revisions: [profile] } });
+    if (url.pathname.endsWith('/history')) return route.fulfill({ json: { revisions: [library] } });
     if (url.pathname.endsWith('/validate')) return route.fulfill({ json: { results: [{ name: 'documentation', reachable: true, status: 'reachable' }, { name: 'operator-documentation', reachable: null, status: 'not_validated' }] } });
     if (request.method() === 'POST') {
       expect(request.headers()['x-propr-extensions']).toBe('1');
-      return route.fulfill({ json: { profile: { ...profile, ...request.postDataJSON().input, revision: 4 } } });
+      expect(url.pathname.endsWith('/library')).toBe(true);
+      expect(request.postDataJSON().expectedRevision).toBe(3);
+      return route.fulfill({ json: { library: { ...library, ...request.postDataJSON().input, revision: 4 } } });
     }
-    return route.fulfill({ json: { instanceId, profiles: [profile], catalog: [{ id: 'operator-documentation', digest: 'a'.repeat(64), tools: ['lookup', 'update_document'], capability: 'write', secrets: { count: 1, configured: true } }] } });
+    return route.fulfill({ json: { instanceId, library, bundles: [], catalog: [{ id: 'operator-documentation', digest: 'a'.repeat(64), tools: ['lookup', 'update_document'], capability: 'write', secrets: { count: 1, configured: true } }] } });
   });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/settings?tab=agent-extensions');
   const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
   await expect(section).toBeVisible();
-  await expect(section.getByText(/Give agents extra tools for a task/)).toContainText('Only Claude and Codex task runs can use profiles.');
-  await section.getByRole('button', { name: 'Edit profile' }).click();
+  await expect(section.getByText(/Give agents extra tools for a task/)).toContainText('Only Claude and Codex runs can use extensions.');
+  await expect(section.getByText(/Revision 3 · updated/)).toBeVisible();
   const password = section.getByLabel(/Replace bearer token/);
   await expect(password).toHaveValue('');
   await expect(section.getByText('(configured; write-only)', { exact: true })).toBeVisible();
@@ -42,17 +46,19 @@ test('instance extension editor describes skills and MCP servers, shows immutabl
   await section.getByLabel('Add operator catalog entry').selectOption('operator-documentation');
   await expect(section.getByText('Operator catalog entry: operator-documentation')).toBeVisible();
   await expect(section.getByText('Operator secrets: configured', { exact: true })).toBeVisible();
-  const catalogServer = section.getByText('Operator catalog entry: operator-documentation').locator('..').locator('..').locator('..');
+  const catalogServer = section.getByTestId('extension-server').nth(1);
+  await expect(catalogServer.getByRole('checkbox', { name: /Apply automatically/ })).toBeChecked();
   await expect(catalogServer.getByLabel('lookup', { exact: true })).toBeChecked();
   await expect(catalogServer.getByLabel('update_document', { exact: true })).toBeChecked();
   await expect(catalogServer.getByLabel(/^Capability/)).toHaveValue('write');
   await expect(catalogServer.getByLabel(/^Capability/)).toBeDisabled();
   await catalogServer.getByLabel('update_document', { exact: true }).uncheck();
   const saveRequest = page.waitForRequest(r => r.method() === 'POST' && r.url().includes('/api/instance/extensions/v1'));
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  const descriptor = (await saveRequest).postDataJSON().input.mcpServers[1];
-  expect(descriptor).toEqual({ kind: 'catalog', name: 'server-1', catalogId: 'operator-documentation', digest: 'a'.repeat(64), enabled: true, tools: ['lookup'], capability: 'write' });
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
+  await section.getByRole('button', { name: 'Save library' }).click();
+  const descriptor = (await saveRequest).postDataJSON().input.servers[1];
+  expect(descriptor).toEqual({ kind: 'catalog', name: 'server-1', catalogId: 'operator-documentation', digest: 'a'.repeat(64), enabled: true, tools: ['lookup'], capability: 'write', ...allowAll });
+  await expect(section.getByRole('status')).toHaveText('Extension library saved.');
+  await expect(section.getByText(/Revision 4 · updated/)).toBeVisible();
   expect(await section.textContent()).not.toMatch(/API_KEY|OPERATOR_DOCS_KEY|UNMISTAKABLE|CATALOG_ARGUMENT_SENTINEL|CATALOG_PATH_SENTINEL|\/usr\/bin\/env/);
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await page.setViewportSize({ width: 1280, height: 1900 });
@@ -68,86 +74,75 @@ test('instance extension editor describes skills and MCP servers, shows immutabl
 });
 
 
-test('New Task makes write authority an explicit per-run choice and resets it on reselection', async ({ page }) => {
+test('New Task offers no extension selection', async ({ page }) => {
   await installSettingsFixture(page);
-  const selection = { instanceId: 'c63a25da-fd5e-4a46-8fe1-566136e12289', profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: 3 };
+  let libraryRequests = 0;
   await page.route('**/api/instance/catalog', route => route.fulfill({ json: { agents: [{ id: 'claude', kind: 'direct', alias: 'claude', enabled: true, supportedModels: ['claude-sonnet-5-5'], defaultModel: 'claude-sonnet-5-5' }], repositories: [{ name: 'example/docs', enabled: true }] } }));
-  await page.route('**/api/instance/extensions/v1', route => route.fulfill({ json: { profiles: [{ ...selection, name: 'Documentation tools', enabled: true }] } }));
+  await page.route('**/api/instance/extensions/v1**', route => { libraryRequests++; return route.fulfill({ json: { instanceId, library: emptyLibrary } }); });
   await page.goto('/tasks/new');
-  await page.getByRole('button', { name: 'Select a repository' }).click();
-  await page.getByRole('button', { name: 'example/docs' }).click();
-  await page.getByLabel('Prompt').fill('Review and update the selected documentation.');
-  await page.getByLabel('Agent extension profile').selectOption(selection.profileId);
-  const grant = page.getByLabel('Allow selected MCP write capabilities for this run');
-  await expect(grant).not.toBeChecked();
-  await grant.check(); await expect(grant).toBeChecked();
-  await page.getByLabel('Agent extension profile').selectOption(''); await expect(grant).toHaveCount(0);
-  await page.getByLabel('Agent extension profile').selectOption(selection.profileId); await expect(grant).not.toBeChecked();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    await page.getByRole('dialog', { name: 'New task' }).screenshot({ path: path.join(directory, 'extension-write-grant.png'), animations: 'disabled' });
-    const { readFile } = await import('node:fs/promises');
-    const manifest = JSON.parse(await readFile(path.join(directory, 'manifest.json'), 'utf8'));
-    manifest.previews.push({ path: '.propr/previews/extension-write-grant.png', title: 'Explicit write grant', description: 'Selected extension profile with write capability opt-in unchecked by default and reset on reselection.' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
-  }
+  const dialog = page.getByRole('dialog', { name: 'New task' });
+  await expect(dialog.getByLabel('Prompt')).toBeVisible();
+  await expect(dialog.getByText(/extension/i)).toHaveCount(0);
+  await expect(dialog.getByLabel(/MCP write capabilities/)).toHaveCount(0);
+  expect(libraryRequests).toBe(0);
 });
 
 
-test('extension profile configuration uses selections and keeps unlisted values editable', async ({ page }) => {
+test('extension library item limits use selections and keep unlisted values editable', async ({ page }) => {
   await installSettingsFixture(page);
   await page.route('**/api/instance/catalog', route => route.fulfill({ json: {
     agents: [{ alias: 'claude-main', kind: 'direct', type: 'claude', enabled: true, supportedModels: [] }, { alias: 'codex-main', kind: 'direct', type: 'codex', enabled: true, supportedModels: [] }],
     repositories: [{ name: 'example/docs', enabled: true }, { name: 'example/app', enabled: true }],
   } }));
-  const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289';
   const bundle = { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId, name: 'Documentation review', digest: 'd'.repeat(64), files: 3, bytes: 8120, requirements: [], source: { kind: 'archive', filename: 'review.tar.gz' }, createdAt: 1791907200000, auditActor: '1' };
-  const profile = {
-    version: 1, instanceId, profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: 1,
-    name: 'Documentation assistant', enabled: true, agentScope: ['claude-main', 'retired-agent'], repositoryScope: ['example/docs'],
-    mcpServers: [{ kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'none' }],
-    skillBundleIds: [bundle.id], skillBundles: [bundle], secrets: {}, createdAt: 1791907200000, updatedAt: 1791907200000, auditActor: '1',
+  const library = {
+    version: 1, instanceId, revision: 1,
+    servers: [{ kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'none', repositories: ['example/docs'], agents: ['claude-main', 'retired-agent'], autoApply: true }],
+    skills: [] as unknown[], skillBundles: [] as unknown[], secrets: {}, createdAt: 1791907200000, updatedAt: 1791907200000, auditActor: '1',
   };
-  let saved: typeof profile;
+  let saved: typeof library;
   await page.route('**/api/instance/extensions/v1**', route => {
     if (route.request().url().endsWith('/skills/github-source')) return route.fulfill({ json: { refs: [] } });
     if (route.request().method() === 'POST') {
-      saved = { ...profile, ...route.request().postDataJSON().input };
-      return route.fulfill({ json: { profile: saved } });
+      const body = route.request().postDataJSON();
+      expect(body.expectedRevision).toBe(saved ? saved.revision : 1);
+      saved = { ...library, ...body.input, revision: body.expectedRevision + 1, skillBundles: body.input.skills.length ? [bundle] : [] };
+      return route.fulfill({ json: { library: saved } });
     }
-    return route.fulfill({ json: { profiles: [profile], catalog: [] } });
+    return route.fulfill({ json: { instanceId, library, bundles: [bundle], catalog: [] } });
   });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/settings?tab=agent-extensions');
   const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await section.getByRole('button', { name: 'Edit profile' }).click();
-  await expect(section.getByLabel('retired-agent', { exact: true })).toBeChecked();
-  await section.getByLabel('retired-agent', { exact: true }).uncheck();
-  await section.getByLabel('codex-main', { exact: true }).check();
-  await section.getByLabel('example/app', { exact: true }).check();
-  await section.getByLabel('read_document', { exact: true }).uncheck();
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
-  expect(saved!.agentScope).toEqual(['claude-main', 'codex-main']);
-  expect(saved!.repositoryScope).toEqual(['example/docs', 'example/app']);
-  expect(saved!.mcpServers[0].tools).toEqual(['search']);
-  await section.getByRole('button', { name: 'New profile' }).click();
-  await section.getByLabel('Profile name', { exact: true }).fill('Selected tools and skills');
-  await section.getByLabel('claude-main', { exact: true }).check();
-  await section.getByLabel('example/docs', { exact: true }).check();
+  const docs = section.getByTestId('extension-server').first();
+  // A saved agent limit opens the advanced disclosure.
+  await expect(docs.getByLabel('retired-agent', { exact: true })).toBeChecked();
+  await docs.getByLabel('retired-agent', { exact: true }).uncheck();
+  await docs.getByLabel('codex-main', { exact: true }).check();
+  await docs.getByLabel('example/app', { exact: true }).check();
+  await docs.getByLabel('read_document', { exact: true }).uncheck();
+  await docs.getByRole('checkbox', { name: /Apply automatically/ }).uncheck();
+  await section.getByRole('button', { name: 'Save library' }).click();
+  await expect(section.getByRole('status')).toHaveText('Extension library saved.');
+  expect(saved!.servers[0]).toMatchObject({ agents: ['claude-main', 'codex-main'], repositories: ['example/docs', 'example/app'], tools: ['search'], autoApply: false });
   await section.getByLabel('Add an existing validated skill').selectOption(bundle.id);
+  const skill = section.getByTestId('extension-skill');
+  await skill.getByLabel('example/docs', { exact: true }).check();
+  await skill.getByText('Advanced: limit to agents', { exact: true }).click();
+  await skill.getByLabel('claude-main', { exact: true }).check();
   await expect(section.getByText('Documentation review · 3 files · 7.9 KiB')).toBeVisible();
   await expect(section.getByText('7.9 KiB', { exact: true })).toHaveAttribute('title', '8120 bytes');
   await expect(section.getByLabel('Add an existing validated skill')).toBeDisabled();
   await section.getByRole('button', { name: 'Add HTTPS server' }).click();
-  await section.getByLabel('Use a saved HTTPS endpoint').selectOption('https://tools.example.com/mcp');
-  await expect(section.getByLabel('search', { exact: true })).not.toBeChecked();
-  await section.getByLabel('search', { exact: true }).check();
-  const tools = section.getByRole('group', { name: 'Allowed tools', exact: true });
+  const added = section.getByTestId('extension-server').nth(1);
+  await added.getByLabel('Use a saved HTTPS endpoint').selectOption('https://tools.example.com/mcp');
+  await expect(added.getByLabel('search', { exact: true })).not.toBeChecked();
+  await added.getByLabel('search', { exact: true }).check();
+  const tools = added.getByRole('group', { name: 'Allowed tools', exact: true });
   await tools.getByText('Advanced: add an unlisted item', { exact: true }).click();
   await tools.getByLabel('Unlisted allowed tools item').fill('read_document');
   await tools.getByRole('button', { name: 'Add item' }).click();
-  await expect(section.getByLabel('read_document', { exact: true })).toBeChecked();
+  await expect(added.getByLabel('read_document', { exact: true })).toBeChecked();
   await tools.getByText('Advanced: add an unlisted item', { exact: true }).click();
   await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
   await section.getByLabel('Repository', { exact: true }).selectOption('example/docs');
@@ -155,18 +150,17 @@ test('extension profile configuration uses selections and keeps unlisted values 
   await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    const scopes = section.getByRole('group', { name: 'Agents', exact: true }).locator('..');
-    await scopes.screenshot({ path: path.join(directory, 'extension-scope-selections.png'), animations: 'disabled' });
+    await skill.screenshot({ path: path.join(directory, 'extension-scope-selections.png'), animations: 'disabled' });
     await tools.screenshot({ path: path.join(directory, 'extension-tool-selections.png'), animations: 'disabled' });
     await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
-      { path: '.propr/previews/extension-scope-selections.png', title: 'Select profile scope', description: 'Agent and repository scopes can be configured with checkboxes, with manual entry available under Advanced.' },
+      { path: '.propr/previews/extension-scope-selections.png', title: 'Limit a library skill', description: 'Each library item has repository limits, Apply automatically and agent limits under Advanced, with manual entry available.' },
       { path: '.propr/previews/extension-tool-selections.png', title: 'Select allowed tools', description: 'Known HTTPS tool names can be selected with checkboxes rather than entered as a comma-separated list.' },
     ], toolSuggestions: [] }));
   }
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
-  expect(saved!.skillBundleIds).toEqual([bundle.id]);
-  expect(saved!.mcpServers[0].tools).toEqual(['search', 'read_document']);
+  await section.getByRole('button', { name: 'Save library' }).click();
+  await expect(section.getByRole('status')).toHaveText('Extension library saved.');
+  expect(saved!.skills).toEqual([{ bundleId: bundle.id, enabled: true, repositories: ['example/docs'], agents: ['claude-main'], autoApply: true }]);
+  expect((saved!.servers[1] as { tools: string[] }).tools).toEqual(['search', 'read_document']);
 });
 
 
@@ -184,27 +178,27 @@ test('extension editor keeps server names and pending tokens attached to rows an
       { alias: 'invalid.alias', kind: 'direct', type: 'codex', enabled: true, supportedModels: [] },
     ], repositories: [],
   } }));
-  const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289';
   const bundle = { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId, name: 'Previously imported review', digest: 'd'.repeat(64), files: 1, bytes: 120, requirements: [], source: { kind: 'archive', filename: 'review.tar' }, createdAt: 1791907200000, auditActor: '1' };
-  const saves: Array<{ input: { mcpServers: Array<{ name: string }>; skillBundleIds: string[] }; secrets: Record<string, string> }> = [];
+  const saves: Array<{ input: { servers: Array<{ name: string }>; skills: Array<{ bundleId: string; agents: string[] }> }; expectedRevision: number; secrets: Record<string, string> }> = [];
   await page.route('**/api/instance/extensions/v1**', route => {
     if (route.request().url().endsWith('/skills/archive')) return route.fulfill({ json: { bundle: { ...bundle, id: '175bb20e-4156-4f6c-a7e2-20fd6c8ba84e', name: 'Session import' } } });
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON(); saves.push(body);
-      return route.fulfill({ json: { profile: { ...body.input, instanceId, profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: saves.length, secrets: {}, skillBundles: [bundle] } } });
+      return route.fulfill({ json: { library: { ...emptyLibrary, ...body.input, revision: saves.length, updatedAt: 1791907200000, skillBundles: [bundle] } } });
     }
-    return route.fulfill({ json: { profiles: [], bundles: [bundle], catalog: [{ id: 'docs', digest: 'a'.repeat(64), tools: ['lookup'], capability: 'read', secrets: { count: 0, configured: true } }] } });
+    return route.fulfill({ json: { instanceId, library: emptyLibrary, bundles: [bundle], catalog: [{ id: 'docs', digest: 'a'.repeat(64), tools: ['lookup'], capability: 'read', secrets: { count: 0, configured: true } }] } });
   });
   await page.goto('/settings?tab=agent-extensions');
   const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await section.getByRole('button', { name: 'New profile' }).click();
-  const agents = section.getByRole('group', { name: 'Agents', exact: true });
+  await expect(section.getByText('Not saved yet.', { exact: false })).toBeVisible();
+  await section.getByLabel('Add an existing validated skill').selectOption(bundle.id);
+  await expect(section.getByText('Previously imported review · 1 files · 120 bytes')).toBeVisible();
+  const skill = section.getByTestId('extension-skill');
+  await skill.getByText('Advanced: limit to agents', { exact: true }).click();
+  const agents = skill.getByRole('group', { name: 'Agents', exact: true });
   await expect(agents.getByRole('checkbox')).toHaveCount(2);
   await agents.getByLabel('claude-main', { exact: true }).check();
   await expect(agents.getByLabel('codex-main', { exact: true })).toBeVisible();
-  await section.getByLabel('Profile name', { exact: true }).fill('Documentation profile');
-  await section.getByLabel('Add an existing validated skill').selectOption(bundle.id);
-  await expect(section.getByText('Previously imported review · 1 files · 120 bytes')).toBeVisible();
   for (let i = 0; i < 3; i++) await section.getByRole('button', { name: 'Add HTTPS server' }).click();
   const names = section.getByLabel('Stable server name', { exact: true });
   await section.getByRole('button', { name: 'Remove server' }).nth(1).click();
@@ -222,11 +216,12 @@ test('extension editor keeps server names and pending tokens attached to rows an
   await names.nth(1).fill('renamed');
   await section.getByRole('button', { name: 'Remove server' }).nth(0).click();
   await expect(section.getByLabel(/Replace bearer token/)).toHaveValue('synthetic-test-token');
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
+  await section.getByRole('button', { name: 'Save library' }).click();
+  await expect(section.getByRole('status')).toHaveText('Extension library saved.');
+  expect(saves[0].expectedRevision).toBe(0);
   expect(saves[0].secrets).toEqual({ renamed: 'synthetic-test-token' });
-  expect(saves[0].input.mcpServers.map(s => s.name)).toEqual(['renamed', 'server-2']);
-  expect(saves[0].input.skillBundleIds).toEqual([bundle.id]);
+  expect(saves[0].input.servers.map(s => s.name)).toEqual(['renamed', 'server-2']);
+  expect(saves[0].input.skills.map(s => [s.bundleId, s.agents])).toEqual([[bundle.id, ['claude-main']]]);
   await section.getByLabel(/Replace bearer token/).fill('discarded-token');
   await section.getByRole('combobox', { name: 'Authentication', exact: true }).selectOption('none');
   await section.getByRole('combobox', { name: 'Authentication', exact: true }).selectOption('bearer');
@@ -234,8 +229,9 @@ test('extension editor keeps server names and pending tokens attached to rows an
   await section.getByLabel(/Replace bearer token/).fill('endpoint-token');
   await section.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tools.example.com/changed');
   await expect(section.getByLabel(/Replace bearer token/)).toHaveValue('');
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
+  await section.getByRole('button', { name: 'Save library' }).click();
+  await expect(section.getByRole('status')).toHaveText('Extension library saved.');
+  expect(saves[1].expectedRevision).toBe(1);
   expect(saves[1].secrets).toEqual({});
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await page.setViewportSize({ width: 1280, height: 1900 });
@@ -243,18 +239,14 @@ test('extension editor keeps server names and pending tokens attached to rows an
     await agents.screenshot({ path: path.join(directory, 'extension-eligible-agents.png'), animations: 'disabled' });
     await section.getByText('Previously imported review · 1 files · 120 bytes').locator('..').screenshot({ path: path.join(directory, 'extension-imported-skill.png'), animations: 'disabled' });
     await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
-      { path: '.propr/previews/extension-eligible-agents.png', title: 'Eligible profile agents', description: 'The scope picker offers enabled direct Claude and Codex agents with valid aliases.' },
-      { path: '.propr/previews/extension-imported-skill.png', title: 'Previously imported skill', description: 'A validated skill imported earlier without being attached to any profile is selected from the instance inventory.' },
+      { path: '.propr/previews/extension-eligible-agents.png', title: 'Eligible item agents', description: 'The agent limit offers enabled direct Claude and Codex agents with valid aliases.' },
+      { path: '.propr/previews/extension-imported-skill.png', title: 'Previously imported skill', description: 'A validated skill imported earlier without being in the library is added from the instance inventory.' },
     ], toolSuggestions: [] }));
   }
   await section.locator('input[type="file"]').setInputFiles({ name: 'session.tar', mimeType: 'application/x-tar', buffer: Buffer.from('synthetic archive fixture') });
-  await expect(section.getByRole('status')).toHaveText('Validated skill bundle added. Save the profile to select it.');
-  await section.getByRole('button', { name: 'Close', exact: true }).click();
-  await section.getByRole('button', { name: 'New profile' }).click();
-  await section.getByLabel('Add an existing validated skill').selectOption('175bb20e-4156-4f6c-a7e2-20fd6c8ba84e');
+  await expect(section.getByRole('status')).toHaveText('Validated skill bundle added. Save the library to use it.');
   await expect(section.getByText('Session import · 1 files · 120 bytes')).toBeVisible();
-  await section.getByLabel('Profile name', { exact: true }).fill('Imported skills');
-
+  await expect(section.getByTestId('extension-skill').nth(1).getByRole('checkbox', { name: /Apply automatically/ })).toBeChecked();
 });
 
 test('new HTTPS tools and GitHub branch imports can be selected with immutable confirmation', async ({ page }) => {
@@ -282,13 +274,11 @@ test('new HTTPS tools and GitHub branch imports can be selected with immutable c
       imported = route.request().postDataJSON();
       return route.fulfill({ json: { bundle: { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', name: 'Review skill', digest: 'd'.repeat(64), files: 1, bytes: 512, source: { kind: 'github', repository: 'example/docs', commit: sha, directory: 'skills/review' }, requirements: [] } } });
     }
-    return route.fulfill({ json: { profiles: [], bundles: [], catalog: [] } });
+    return route.fulfill({ json: { instanceId, library: emptyLibrary, bundles: [], catalog: [] } });
   });
   await page.setViewportSize({ width: 1280, height: 1500 });
   await page.goto('/settings?tab=agent-extensions');
   const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await section.getByRole('button', { name: 'New profile' }).click();
-  await section.getByLabel('Profile name', { exact: true }).fill('Documentation assistant');
   await section.getByRole('button', { name: 'Add HTTPS server' }).click();
   const endpoint = section.getByLabel('HTTPS endpoint', { exact: true });
   await endpoint.fill('https://tools.example.com/slow');

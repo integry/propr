@@ -22,10 +22,15 @@ export function agentTaskOptions(input: {
     // Web and MCP are enforced by the runtime; repository access through `repositoryAccess`.
     const toolPolicy = agentRunToolPolicy({ phase, capabilities: definition.capabilities, mcpGrant });
     return {
-        extensionProfile: definition.extensionProfile,
-        extensionActorId: definition.ownerId,
-        extensionRepositories: definition.repositories,
-        extensionAllowWrite: phase === 'action',
+        // Library items that apply automatically plus the automation's added ones,
+        // resolved against the current library revision at launch.
+        extensions: {
+            autoApply: true,
+            servers: [...(definition.extensions?.servers ?? [])],
+            skills: [...(definition.extensions?.skills ?? [])],
+            repositories: definition.repositories,
+            allowWrite: phase === 'action',
+        },
         worktreePath: workspace.worktreePath,
         issueRef,
         prompt,
@@ -50,4 +55,17 @@ export function agentRunExecutionUpdate(alias: string, model: string | undefined
     const reason = `Running agent ${alias}`;
     if (!model) return { reason };
     return { reason, historyMetadata: { model, executionRouting: { model, agentAlias: alias } } };
+}
+
+/**
+ * Whether extension library items apply to this launch, so the run executes
+ * under the network-policy scope they need. Agents without a configuration
+ * (and runs without an extension request) never carry extensions.
+ */
+export async function launchCarriesExtensions(resolved: { agent: unknown }, options: AgentTaskOptions): Promise<boolean> {
+    const config = (resolved.agent as { config?: { alias: string; type: string } }).config;
+    if (!config || !options.extensions) return false;
+    // Lazily loaded: the extension launch module is only needed for runs that can carry extensions.
+    const { extensionsApply } = await import('@propr/core');
+    return extensionsApply(config as Parameters<typeof extensionsApply>[0], options);
 }
