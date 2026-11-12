@@ -25,6 +25,9 @@ interface Fixture {
     reviewsError?: boolean;
     reviewDecision: string | null;
     issueLabels: Record<number, string[]>;
+    issueError?: boolean;
+    /** PR fields every read after the first one returns, as if another actor pushed meanwhile. */
+    prAfterFirstRead?: Record<string, unknown>;
     workflow?: string;
     files: Array<{ filename: string }>;
 }
@@ -52,17 +55,24 @@ function fakeGitHub(state: Fixture) {
     const calls: string[] = [];
     const octokit = {
         async request(route: string, params: Record<string, unknown> = {}) {
+            const prReads = calls.filter(call => call === 'GET /repos/{owner}/{repo}/pulls/{pull_number}').length;
             calls.push(route);
             switch (route) {
-                case 'GET /repos/{owner}/{repo}/pulls/{pull_number}': return { data: state.pr };
-                case 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews':
+                case 'GET /repos/{owner}/{repo}/pulls/{pull_number}':
+                    return { data: prReads > 0 && state.prAfterFirstRead ? { ...state.pr, ...state.prAfterFirstRead } : state.pr };
+                case 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews': {
                     if (state.reviewsError) throw Object.assign(new Error('reviews down'), { status: 502 });
-                    return { data: state.reviews };
+                    const perPage = Number(params.per_page ?? 30);
+                    const page = Number(params.page ?? 1);
+                    return { data: state.reviews.slice((page - 1) * perPage, page * perPage) };
+                }
                 case 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs':
                     if (state.checkRunsError) throw Object.assign(new Error('checks down'), { status: 502 });
                     return { data: { check_runs: state.checkRuns } };
                 case 'GET /repos/{owner}/{repo}/commits/{ref}/status': return { data: state.status };
-                case 'GET /repos/{owner}/{repo}/issues/{issue_number}': return { data: { labels: (state.issueLabels[Number(params.issue_number)] ?? []).map(name => ({ name })) } };
+                case 'GET /repos/{owner}/{repo}/issues/{issue_number}':
+                    if (state.issueError) throw Object.assign(new Error('issues down'), { status: 502 });
+                    return { data: { labels: (state.issueLabels[Number(params.issue_number)] ?? []).map(name => ({ name })) } };
                 case 'GET /repos/{owner}/{repo}/contents/{path}':
                     if (state.workflow === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
                     return { data: { type: 'file', encoding: 'base64', size: state.workflow.length, content: Buffer.from(state.workflow).toString('base64') } };
@@ -236,6 +246,22 @@ test('human_review gate: changes requested, review required and unreadable revie
     assert.equal(gateOf(unreadable, 'human_review').status, 'unknown');
 });
 
+test('human_review gate: a change request on page one is superseded by the same reviewer\'s approval on page two', async () => {
+    const filler = Array.from({ length: 99 }, (_, index) => ({ state: 'COMMENTED', user: { login: `c${index}` } }));
+    const reviews = [{ state: 'CHANGES_REQUESTED', user: { login: 'b' } }, ...filler, { state: 'APPROVED', user: { login: 'b' } }];
+    const { result, github } = await evaluate(fixture({ reviews }));
+    assert.equal(github.calls.filter(call => call.endsWith('/reviews')).length, 2, 'both pages are read');
+    assert.deepEqual(gateOf(result, 'human_review'), { gate: 'human_review', status: 'pass', reason: 'approved' });
+    assert.equal(result.verdict, 'ready');
+
+    // A history longer than the page bound is reported unavailable, never judged from a prefix.
+    const { MAX_REVIEW_PAGES } = await import('../src/webhook/pullRequestReadiness.js');
+    const endless = Array.from({ length: MAX_REVIEW_PAGES * 100 }, () => ({ state: 'COMMENTED', user: { login: 'c' } }));
+    const truncated = (await evaluate(fixture({ reviews: endless }))).result;
+    assert.deepEqual(gateOf(truncated, 'human_review'), { gate: 'human_review', status: 'unknown', reason: 'review_state_unavailable' });
+    assert.notEqual(truncated.verdict, 'ready');
+});
+
 test('ai_review gate: no review, stale head, below goal and goal reached', async () => {
     const none = (await evaluate(fixture(), { loadReviewScores: async () => [] })).result;
     assert.deepEqual(gateOf(none, 'ai_review'), { gate: 'ai_review', status: 'not_applicable', reason: 'no_review' });
@@ -331,6 +357,33 @@ test('policy gate: reported with AutoMergeReason codes only when auto-merge is r
     const unrequested = (await evaluate(fixture({ workflow: 'auto_merge:\n  enabled: false\n' }))).result;
     assert.equal(unrequested.verdict, 'ready');
     assert.equal(unrequested.autoMerge.policy, null);
+});
+
+test('policy gate: an unreadable linked issue leaves the auto-merge request unknown, never absent', async () => {
+    const { result } = await evaluate(fixture({ pr: { body: 'Fixes #12' }, issueError: true, workflow: 'auto_merge:\n  enabled: false\n' }));
+    assert.equal(result.autoMerge.reason, 'linked_issue_unavailable');
+    assert.equal(gateOf(result, 'policy').status, 'unknown');
+    assert.equal(gateOf(result, 'policy').reason, 'auto_merge_request_unavailable');
+    assert.ok(result.waitingReasons.includes('auto_merge_request_unavailable'));
+    assert.notEqual(result.verdict, 'ready');
+});
+
+test('policy gate: a policy decision for another head than the reported one is unknown', async () => {
+    // H1 changes a protected path; H2, pushed while the signals are read, does not, so its policy would arm.
+    const { result } = await evaluate(fixture({
+        pr: { labels: [{ name: 'auto-merge' }] },
+        prAfterFirstRead: { head: { sha: OLD_HEAD, ref: 'feature' } },
+        workflow: 'auto_merge:\n  protected_paths:\n    - "src/**"\n',
+        files: [{ filename: 'docs/readme.md' }],
+    }));
+    assert.equal(result.head, HEAD);
+    assert.equal(gateOf(result, 'policy').status, 'unknown');
+    assert.equal(gateOf(result, 'policy').reason, 'pull_request_changed');
+    assert.equal(result.autoMerge.policy, null, 'another head\'s policy reason is not reported');
+    assert.notEqual(result.verdict, 'ready');
+
+    const rebased = (await evaluate(fixture({ pr: { labels: [{ name: 'auto-merge' }] }, prAfterFirstRead: { base: { ref: 'release' } } }))).result;
+    assert.equal(gateOf(rebased, 'policy').reason, 'pull_request_changed');
 });
 
 test('an unreadable pull request throws instead of guessing a verdict', async () => {

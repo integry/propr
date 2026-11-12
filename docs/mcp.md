@@ -993,7 +993,7 @@ or `not_applicable`), `reason` and an optional `detail`:
 | `ai_review` | pass: `goal_reached`. fail: `score_below_goal`. waiting: `review_stale_head` (the latest review is of another head). `no_review` is not applicable, or waiting when the PR has the `ultrafix` label. unknown: `review_scores_unavailable` |
 | `ultrafix` | pass: `ultrafix_succeeded`. fail: `ultrafix_failed`. waiting: `ultrafix_active`, `ultrafix_pending` (label present, no loop has completed). unknown: `ultrafix_state_unavailable`. not applicable: `ultrafix_not_requested` |
 | `active_work` | pass: `no_active_work`. waiting: `propr_work_active`. unknown: `active_work_unavailable`. An unreadable queue is never reported as idle |
-| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`. not applicable: `auto_merge_not_requested` |
+| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`, `auto_merge_request_unavailable` (no direct label and the linked issue could not be read), `pull_request_changed` (the head or base moved while the policy was evaluated). not applicable: `auto_merge_not_requested` |
 
 `ai_review` never holds a PR that ProPR is not reviewing. The newest score of
 the latest review job counts. `review` reports its `score`, its `goal` (the

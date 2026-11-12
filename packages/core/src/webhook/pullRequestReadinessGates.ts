@@ -160,9 +160,22 @@ export function activeWorkGate(work: { activeTasks: unknown[]; queuedJobs: unkno
 
 const UNREADABLE_POLICY_REASONS: ReadonlySet<AutoMergeReason> = new Set(['skipped_diff_unavailable', 'skipped_policy_invalid']);
 
-/** `decision` is null when auto-merge is not requested; the policy is then not read at all. */
-export function policyGate(decision: Pick<AutoMergeDecision, 'arm' | 'reason' | 'detail' | 'matchedPaths'> | null): ReadinessGate {
+/**
+ * `decision` is null when auto-merge is not requested; the policy is then not read at all.
+ * `request_unavailable`: no direct label and the linked issue could not be read, so whether the
+ * policy applies is unknown. `head_changed`: the policy was evaluated on another head or base
+ * than the one this verdict reports, so its decision says nothing about that snapshot.
+ */
+export function policyGate(
+    decision: Pick<AutoMergeDecision, 'arm' | 'reason' | 'detail' | 'matchedPaths'> | 'request_unavailable' | 'head_changed' | null,
+): ReadinessGate {
     if (!decision) return gate('policy', 'not_applicable', 'auto_merge_not_requested');
+    if (decision === 'request_unavailable') {
+        return gate('policy', 'unknown', 'auto_merge_request_unavailable', 'The linked issue could not be read to tell whether auto-merge is requested.');
+    }
+    if (decision === 'head_changed') {
+        return gate('policy', 'unknown', 'pull_request_changed', 'The head or base changed while the auto-merge policy was evaluated.');
+    }
     if (decision.arm) return gate('policy', 'pass', decision.reason);
     const detail = decision.matchedPaths?.length ? `Protected paths: ${decision.matchedPaths.join(', ')}` : decision.detail;
     return gate('policy', UNREADABLE_POLICY_REASONS.has(decision.reason) ? 'unknown' : 'fail', decision.reason, detail);

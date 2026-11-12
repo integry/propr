@@ -88,7 +88,7 @@ The verdict is `merged` or `closed` when the PR state says so. Otherwise it is `
 | `ai_review` | pass: `goal_reached`. fail: `score_below_goal`. waiting: `review_stale_head`. `no_review` is not applicable, or waiting with the `ultrafix` label. unknown: `review_scores_unavailable` |
 | `ultrafix` | pass: `ultrafix_succeeded`. fail: `ultrafix_failed`. waiting: `ultrafix_active`, `ultrafix_pending`. unknown: `ultrafix_state_unavailable`. not applicable: `ultrafix_not_requested` |
 | `active_work` | pass: `no_active_work`. waiting: `propr_work_active`. unknown: `active_work_unavailable` |
-| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`. not applicable: `auto_merge_not_requested` |
+| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`, `auto_merge_request_unavailable`, `pull_request_changed`. not applicable: `auto_merge_not_requested` |
 
 `ai_review` never holds a PR that ProPR is not reviewing. Its goal is the Ultrafix cycle's goal, or the instance `ultrafix_rating_goal` for a plain `/review`. The policy is read, and can change the verdict, only when the PR or its linked issue carries the `auto-merge` label. `autoMerge` reports eligibility (`eligible`, `ineligible` or `transient`), its reason (`pr_label`, `linked_issue_label`, `no_auto_merge_label`, `epic_without_label`, `ultrafix_active`, `ultrafix_failed`, `ultrafix_not_succeeded`, `ultrafix_state_unavailable`, `linked_issue_unavailable`) and the policy reason.
 

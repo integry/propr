@@ -336,7 +336,7 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'no_review', 'review_stale_head', 'score_below_goal', 'review_scores_unavailable',
     'ultrafix_active', 'ultrafix_pending', 'ultrafix_failed', 'ultrafix_succeeded', 'ultrafix_state_unavailable', 'ultrafix_not_requested',
     'no_active_work', 'propr_work_active', 'active_work_unavailable',
-    'armed', 'skipped_protected_path', 'skipped_disabled', 'skipped_empty_diff', 'skipped_policy_invalid', 'skipped_diff_unavailable', 'auto_merge_not_requested',
+    'armed', 'skipped_protected_path', 'skipped_disabled', 'skipped_empty_diff', 'skipped_policy_invalid', 'skipped_diff_unavailable', 'auto_merge_not_requested', 'auto_merge_request_unavailable', 'pull_request_changed',
     'eligible', 'ineligible', 'transient', 'pr_label', 'linked_issue_label', 'no_auto_merge_label', 'epic_without_label',
     'ultrafix_not_succeeded', 'linked_issue_unavailable',
   ]);

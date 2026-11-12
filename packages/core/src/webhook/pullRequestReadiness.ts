@@ -113,17 +113,37 @@ async function readPullRequest(octokit: ReadinessOctokit, owner: string, repo: s
 }
 
 const REVIEW_DECISION_QUERY = 'query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewDecision}}}';
+const REVIEWS_PER_PAGE = 100;
+/** GitHub lists reviews oldest first; past this many pages the history is reported unavailable rather than truncated. */
+export const MAX_REVIEW_PAGES = 30;
+
+type ReviewRecord = { state?: string; user?: { login?: string } | null };
+
+/** The full review history, oldest first. Throws when a page is malformed or the history exceeds {@link MAX_REVIEW_PAGES}. */
+async function readAllReviews(octokit: ReadinessOctokit, owner: string, repo: string, prNumber: number): Promise<ReviewRecord[]> {
+    const reviews: ReviewRecord[] = [];
+    for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
+        const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+            owner, repo, pull_number: prNumber, per_page: REVIEWS_PER_PAGE, page,
+        });
+        if (!Array.isArray(data)) throw new Error(`reviews page ${page} is not a list`);
+        reviews.push(...(data as ReviewRecord[]));
+        if (data.length < REVIEWS_PER_PAGE) return reviews;
+    }
+    // A later page could hold the verdict that supersedes one already read.
+    throw new Error(`review history exceeds ${MAX_REVIEW_PAGES} pages`);
+}
 
 /** Latest review per reviewer, and GitHub's review decision when the client speaks GraphQL. Null when unreadable. */
 async function readHumanReviews(octokit: ReadinessOctokit, owner: string, repo: string, prNumber: number): Promise<HumanReviewFacts | null> {
     try {
         const [reviews, decision] = await Promise.all([
-            octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', { owner, repo, pull_number: prNumber, per_page: 100 }),
+            readAllReviews(octokit, owner, repo, prNumber),
             octokit.graphql?.<{ repository?: { pullRequest?: { reviewDecision?: string | null } | null } | null }>(
                 REVIEW_DECISION_QUERY, { owner, repo, number: prNumber }),
         ]);
         const latest = new Map<string, string>();
-        for (const review of (Array.isArray(reviews.data) ? reviews.data : []) as Array<{ state?: string; user?: { login?: string } | null }>) {
+        for (const review of reviews) {
             const login = review.user?.login;
             // Comments neither approve nor request changes, so they do not replace a reviewer's verdict.
             if (!login || !review.state || review.state === 'COMMENTED' || review.state === 'PENDING') continue;
@@ -178,6 +198,27 @@ function reviewFacts(scores: readonly ReviewScoreFact[] | null, ratingGoal: numb
     return { review: summarizeReview(scores, head, ratingGoal), scoresUnavailable: false };
 }
 
+/**
+ * The auto-merge policy for the snapshot this verdict reports. `requested` is three-state: the PR or a linked
+ * issue carries `auto-merge` (true), neither does (false), or the linked issue could not be read (null), which
+ * leaves the request unknown, never absent. Only a request reads the policy, and only then can it change the verdict.
+ */
+async function readPolicy(
+    target: { owner: string; repo: string; prNumber: number; octokit: ReadinessOctokit }, pr: PullRequestFacts, requested: boolean | null,
+): Promise<{ gate: ReadinessGate; reason: AutoMergeReason | null }> {
+    const { owner, repo, prNumber, octokit } = target;
+    if (requested === null) return { gate: policyGate('request_unavailable'), reason: null };
+    if (!requested) return { gate: policyGate(null), reason: null };
+    const { decision, pullRequest } = await evaluatePullRequestAutoMerge(
+        { owner, repo, prNumber, opportunity: 'check_merge' }, { octokit: octokit as AutoMergeGateOctokit });
+    // The policy reads the PR again; its decision applies here only when it saw the same head and base.
+    // A missing snapshot already yields an unreadable-policy decision, which the gate reports as unknown.
+    if (pullRequest && (pullRequest.headSha !== pr.head || pullRequest.baseRef !== pr.base)) {
+        return { gate: policyGate('head_changed'), reason: null };
+    }
+    return { gate: policyGate(decision), reason: decision.reason };
+}
+
 const isUnsettled = (item: ReadinessGate) => item.status === 'waiting' || item.status === 'unknown';
 
 /**
@@ -217,12 +258,7 @@ export async function evaluatePullRequestReadiness(
     const { review, scoresUnavailable } = reviewFacts(scores, ratingGoal, pr.head);
     const prInfo = autoMergeInfo(pr, ultrafixState);
     const eligibility = await evaluateAutoMergeEligibilityWithReason({ owner, repoName: repo, prNumber, prInfo, log: quietLog, readLinkedIssueLabel });
-    // Requested: the PR or a linked issue carries `auto-merge`. Only then is the policy read, and only then can it change the verdict.
-    const requested = hasLabel || issueLabel === true;
-    const decision = requested
-        ? (await evaluatePullRequestAutoMerge({ owner, repo, prNumber, opportunity: 'check_merge' }, { octokit: octokit as AutoMergeGateOctokit })).decision
-        : null;
-
+    const policy = await readPolicy({ owner, repo, prNumber, octokit }, pr, hasLabel || issueLabel === true ? true : issueLabel === null ? null : false);
     const checks = checksGate(ci);
     const human = humanReviewGate(humanReviews);
     const gates: ReadinessGate[] = [
@@ -234,7 +270,7 @@ export async function evaluatePullRequestReadiness(
         aiReviewGate({ review, scoresUnavailable, ultrafixLabel }),
         ultrafixGate({ labelPresent: ultrafixLabel, state: ultrafixState }),
         activeWorkGate(activeWork),
-        policyGate(decision),
+        policy.gate,
     ];
     return {
         repository, number: prNumber, head: pr.head, base: pr.base, state: pr.state, draft: pr.draft,
@@ -245,7 +281,7 @@ export async function evaluatePullRequestReadiness(
         review,
         ultrafix: ultrafixProjection(ultrafixState, ultrafixLabel),
         checks: checksProjection(ci),
-        autoMerge: { eligible: eligibility.eligibility, reason: eligibility.reason, policy: decision?.reason ?? null },
+        autoMerge: { eligible: eligibility.eligibility, reason: eligibility.reason, policy: policy.reason },
         evaluatedAt: new Date(now).toISOString(),
     };
 }
