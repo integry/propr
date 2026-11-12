@@ -1033,3 +1033,85 @@ test('Queue Remaining defers to the row start when nothing runs, and needs auto-
   assert.equal(queue?.useEpic, false);
   assert.deepEqual(issueLabels.get(30)?.sort(), ['auto-merge', 'llm-model']);
 });
+
+// Graph epics: 30 depends on 10; 20 depends on 40 (published after it); 10 and 40 are independent.
+async function recordGraph() {
+  await database('plan_issues').where({ draft_id: planId, issue_number: 30 }).update({ depends_on_issues: JSON.stringify([10]) });
+  await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).update({ depends_on_issues: JSON.stringify([40]) });
+}
+const startedByQueue = () => labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number);
+
+test('pure policy validates graph combinations and heads a graph with its first ready issue', () => {
+  const input = { issues: [40, 10, 30], planOrder: [10, 20, 30, 40], useEpic: true, modelCount: 1, epicExecution: 'graph' as const };
+  const invalid = (extra: Record<string, unknown>) => assert.throws(() => planEpicDispatch({ ...input, ...extra }),
+    error => error instanceof McpError && error.code === 'INVALID_INPUT');
+  invalid({ useEpic: false });
+  invalid({ modelCount: 2 });
+  invalid({ epicAdvanceOn: 'terminal' });
+  invalid({ epicExecution: 'sequential', maxParallel: 2 });
+  invalid({ epicExecution: 'parallel', maxParallel: 2 });
+  invalid({ epicExecution: undefined, maxParallel: 2 });
+  const dependencies = new Map([[10, [99]], [30, [10]]]);
+  assert.deepEqual(planEpicDispatch({ ...input, maxParallel: 2, dependencies }),
+    { mode: 'graph', advanceOn: 'merged', dispatchNow: [40], queued: [10, 30], maxParallel: 2,
+      dependsOn: new Map([[10, [99]], [30, [10]], [40, []]]) });
+  assert.deepEqual(planEpicDispatch({ ...input, dependencies, mergedIssues: new Set([99]) }).dispatchNow, [10]);
+  assert.throws(() => planEpicDispatch({ ...input, issues: [10, 30], dependencies }),
+    error => error instanceof McpError && error.code === 'PRECONDITION_FAILED' && /#10 waits for #99/.test(error.message));
+  // A plan without dependsOn started without a limit keeps today's default.
+  assert.equal(planEpicDispatch({ ...input, epicExecution: undefined }).mode, 'sequential');
+});
+
+test('graph MCP dispatches its head, starts ready issues within maxParallel and replenishes as prerequisites merge', async () => {
+  epicPR = { number: 999, labels: [] };
+  await recordGraph();
+  const result = await run({ issues: [10, 20, 30, 40], epicExecution: 'graph', maxParallel: 2 });
+  const data = result.data as Record<string, unknown>;
+  assert.deepEqual([data.executionMode, data.maxParallel, data.started, data.queued], ['graph', 2, [10, 40], [20, 30]]);
+  assert.deepEqual(dispatches, [10], 'only the head goes through the implementation handler');
+  assert.deepEqual(startedByQueue(), [40], 'the queue starts the other ready issue on the epic branch');
+  assert.deepEqual(labelCalls.find(call => call.number === 40 && call.labels.includes('AI'))?.labels, ['AI', 'base-epic']);
+  const plan = await getPlan.run({ principal, args: { repository, planId } } as never);
+  const epicQueue = (plan.data as { epicQueue: ReturnType<typeof core.summarizeEpicQueue> }).epicQueue!;
+  assert.deepEqual([epicQueue.executionMode, epicQueue.maxParallel, epicQueue.head], ['graph', 2, null]);
+  assert.deepEqual(epicQueue.issueStates.map(state => [state.issue, state.schedule, state.waitingOn]),
+    [[10, 'in_flight', []], [20, 'waiting', [40]], [30, 'waiting', [10]], [40, 'in_flight', []]]);
+  await completePlanIssue(10);
+  assert.deepEqual(startedByQueue(), [40, 30]);
+  await completePlanIssue(40);
+  assert.deepEqual(startedByQueue(), [40, 30, 20]);
+  await completePlanIssue(30);
+  await completePlanIssue(20);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.status, 'completed');
+  assert.ok(queue?.finalizedAt);
+  await core.reconcileEpicExecutionQueues();
+  assert.equal(labelCalls.filter(call => call.number === 999).length, 1, 'finalization runs once');
+});
+
+test('graph MCP rejects invalid combinations before claiming anything', async () => {
+  for (const extra of [{ epicExecution: 'graph', models: [...models, ...models] }, { epicExecution: 'graph', useEpic: false },
+    { epicExecution: 'sequential', maxParallel: 2 }, { epicExecution: 'graph', epicAdvanceOn: 'terminal' }]) {
+    await assert.rejects(run(extra), error => error instanceof McpError && error.code === 'INVALID_INPUT');
+  }
+  assert.throws(() => args({ epicExecution: 'graph', maxParallel: 0 }));
+  assert.deepEqual(dispatches, []);
+  assert.equal((await database('mcp_records').where({ kind: 'issue_execution' })).length, 0);
+  assert.equal(await core.getEpicExecutionQueue(planId), null);
+});
+
+test('REST implement accepts graph mode with maxParallel and rejects invalid combinations', async () => {
+  await recordGraph();
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  for (const extra of [{ epicExecution: 'parallel' }, { maxParallel: 2 }, { epicExecution: 'graph', maxParallel: 21 }]) {
+    assert.equal((await startFromUI(10, false, true, extra)).status, 400);
+  }
+  assert.equal((await startFromUI(10, false, false, { epicExecution: 'graph' })).status, 400);
+  // 20 waits for 40, so the first pending issue whose prerequisites are merged is 10.
+  assert.equal((await startFromUI(10, false, true, { epicExecution: 'graph', maxParallel: 1 })).status, 200);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.deepEqual([queue?.mode, queue?.maxParallel, queue?.advanceOn, queue?.issues], ['graph', 1, 'merged', [10, 20, 30, 40]]);
+  assert.deepEqual(startedByQueue(), [10], 'the limit of one holds the other ready issue');
+  await completePlanIssue(10);
+  assert.deepEqual(startedByQueue(), [10, 30], 'issues start in publication order once ready');
+});

@@ -59,6 +59,10 @@ export interface ImplementIssueOptions {
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */
   autoMerge?: boolean;
+  /** Epic scheduling: a chain in publication order (default) or the plan's dependsOn graph. */
+  epicExecution?: 'sequential' | 'graph';
+  /** A graph epic's in-flight limit (1-20); omitted is unbounded. */
+  maxParallel?: number;
 }
 
 /**
@@ -160,6 +164,9 @@ export type PlanExecutionQueueIssueState = 'pending' | 'dispatched' | 'done' | '
 export type PlanExecutionQueueBlockedKind = 'closed_unmerged' | 'missing_from_plan' | 'dispatch_failed' | 'agent_blocked'
   | 'awaiting_human_merge' | 'label_handoff' | 'setup_not_ready';
 
+export type PlanExecutionMode = 'sequential' | 'parallel' | 'graph';
+export type PlanExecutionScheduleState = 'waiting' | 'ready' | 'in_flight' | 'done' | 'skipped' | 'blocked';
+
 export interface PlanExecutionQueue {
   issues: number[];
   cursor: number;
@@ -167,15 +174,26 @@ export interface PlanExecutionQueue {
   status: 'active' | 'completed' | 'cancelled';
   advanceOn?: 'merged' | 'terminal';
   blockedReason: string | null;
-  executionMode?: 'parallel';
+  /** sequential: a chain with a limit of one; parallel: no edges; graph: the plan's dependsOn edges. Older servers omit it for sequential. */
+  executionMode?: PlanExecutionMode;
+  /** Most issues in flight at once (1 for sequential, null when unbounded). */
+  maxParallel?: number | null;
   /** Per-issue state in queue order; blocked issues carry a structured reason kind. */
   issueStates?: Array<{
     issue: number;
     state: PlanExecutionQueueIssueState;
     blockedKind: PlanExecutionQueueBlockedKind | null;
     blockedReason: string | null;
+    /** How the issue stands in the schedule; `waitingOn` lists the prerequisites it still waits for. */
+    schedule?: PlanExecutionScheduleState;
+    dependsOn?: number[];
+    waitingOn?: number[];
   }>;
 }
+
+/** Only a sequential execution is a chain; the other modes have no "first unmerged issue" ordering. */
+export const isChainExecution = (queue: PlanExecutionQueue | null | undefined): boolean =>
+  queue?.status !== 'active' || (queue.executionMode ?? 'sequential') === 'sequential';
 
 /** Fetches the plan's execution queue, or null when the plan never queued work. */
 export const getPlanExecutionQueue = async (draftId: string): Promise<PlanExecutionQueue | null> => {

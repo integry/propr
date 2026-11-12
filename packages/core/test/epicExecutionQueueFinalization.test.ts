@@ -72,8 +72,9 @@ async function finish(issueNumber: number, status: 'merged' | 'closed') {
 test('parallel epics finalize once after their last child finishes in any order, without dispatching', async () => {
   await createEpicExecutionQueue(parallel);
   assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), { issues: [10, 20, 30], cursor: 0, head: null,
-    status: 'active', advanceOn: 'merged', blockedReason: null, executionMode: 'parallel',
-    issueStates: [10, 20, 30].map(issue => ({ issue, state: 'dispatched', blockedKind: null, blockedReason: null })) });
+    status: 'active', advanceOn: 'merged', blockedReason: null, executionMode: 'parallel', maxParallel: null,
+    issueStates: [10, 20, 30].map(issue => ({ issue, state: 'dispatched', blockedKind: null, blockedReason: null,
+      schedule: 'in_flight', dependsOn: [], waitingOn: [] })) });
   await startEpicQueueHead('draft');
   await finish(30, 'merged');
   await finish(10, 'closed');

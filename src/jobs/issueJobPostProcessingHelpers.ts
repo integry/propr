@@ -320,8 +320,11 @@ export async function handleCreatedPlanIssuePR(options: {
     // An active Epic queue arms each head's PR as the queue advances.
     const epicQueue = planIssue?.draft_id ? await getEpicExecutionQueue(planIssue.draft_id) : null;
     // The sequential head is the first issue that is neither done nor skipped; a parallel execution has none.
-    const queueHead = epicQueue?.status === 'active' && !epicQueue.parallel
-        && epicQueue.items.find(item => item.state !== 'done' && item.state !== 'skipped')?.issueNumber === issueRef.number;
+    // A graph execution advances through every claimed issue it has in flight.
+    const unsettled = (item: { state: string }) => item.state !== 'done' && item.state !== 'skipped';
+    const queueHead = epicQueue?.status === 'active' && !epicQueue.parallel && (epicQueue.mode === 'graph'
+        ? epicQueue.items.some(item => item.issueNumber === issueRef.number && unsettled(item) && item.dispatchedAt !== null)
+        : epicQueue.items.find(unsettled)?.issueNumber === issueRef.number);
     const gate = await gateAutoMergeArming({
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,

@@ -435,6 +435,34 @@ labels the epic PR for completion, like a sequential epic. A parallel epic is
 rejected while a non-epic queue runs for the plan. Non-epic calls keep fan-out and
 ignore these epic execution options.
 
+`epicExecution: "graph"` schedules the selected issues by the dependencies the
+plan recorded for them (`dependsOn`, stored on each published issue). An issue
+is ready when every prerequisite is merged into the epic branch; a prerequisite
+that is not part of the execution counts as satisfied only once it is merged.
+The first ready issue in publication order starts immediately and establishes
+the epic branch; the queue then starts every other ready issue, at most
+`maxParallel` (1–20, unbounded when omitted) in flight at once, in publication
+order, and starts more as issues merge. The limit is stored on the execution
+and enforced where the queue claims issues: each claim runs under a lock on the
+execution row and is a compare-and-set on the issue's own row, so concurrent
+advances, the reconcile sweep and a restart never exceed it or start an issue
+twice. An issue holds its slot from its claim until it merges (a blocked issue
+keeps its slot), and an issue someone started by hand also counts. Downstream
+issues branch from the epic branch, so they contain their prerequisites' merged
+work; stacked PRs are not used. A prerequisite that is blocked or closed without
+merge keeps its dependents pending, reported as waiting on it, while other
+branches keep running; reopening, fixing and merging it releases them. The
+execution completes, and finalizes the epic PR once, when every issue is done.
+Graph mode requires `useEpic: true` and one model, and advances only on merge;
+`maxParallel` is accepted only with `"graph"`. Other combinations, and a
+selection in which no issue is ready, are rejected before anything is claimed.
+Sequential and parallel are the two edge cases of the same scheduler: a chain
+with a limit of one, and a graph without edges and without a limit; their
+behaviour is unchanged. The repository-level `limits.max_parallel_tasks`
+admission stays an independent cap. An orchestrating goal's `maxParallelTasks`
+is not enforced through this queue yet (goals and plans are not linked); that
+is a planned follow-up.
+
 `epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
 successor. A closed head (including a failed task reconciled to closed) leaves
 the queue active and records a human-readable `blockedReason`. If the head was
@@ -461,8 +489,13 @@ Epic** for an epic).
 The implementation result includes `executionMode`, `advanceOn`, `started`
 and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
 expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
-(null when no queue exists). A parallel epic's queue also reports
-`executionMode: "parallel"` and has a null `head`. Sequential receipts remain `accepted` until the
+(null when no queue exists), plus `executionMode` (`sequential`, `parallel` or
+`graph`) and `maxParallel` (1 for sequential, null when unbounded). A parallel or
+graph queue has a null `head`. Each `issueStates` entry reports `schedule`
+(`waiting`, `ready`, `in_flight`, `done`, `skipped` or `blocked`), the issue's
+`dependsOn` (for sequential, the issue before it) and `waitingOn`, the
+prerequisites it still waits for. A graph result also reports `maxParallel`,
+and `started` lists every issue the queue started at once. Sequential receipts remain `accepted` until the
 queue is completed; dispatching the first issue or opening its PR does not
 complete the operation. Queue status is `active`, `completed` or `cancelled`.
 Both new arguments are optional, so omitting them preserves existing
