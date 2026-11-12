@@ -47,10 +47,13 @@ function actingRun(overrides: Partial<StoredAgentRun> = {}): StoredAgentRun {
 }
 
 function actionJob(data: Partial<AgentRunJobData> = {}): Job<AgentRunJobData> {
-  return {
+  // Like BullMQ: updateData replaces the stored data, which a retry of the same job is handed.
+  const job = {
     id: TASK_ID,
     data: { runId: 'run-1', definitionId: 'def-1', ownerId: 'user-1', phase: 'action', correlationId: 'corr-1', ...data },
-  } as Job<AgentRunJobData>;
+    updateData: async (next: AgentRunJobData) => { job.data = next; },
+  };
+  return job as unknown as Job<AgentRunJobData>;
 }
 
 const SUCCESS = {
@@ -556,7 +559,9 @@ describe('acting-step mutation count', () => {
         await other.deps.transitionRun!('run-1', ['acting'], 'cancelled');
         return SUCCESS;
       });
-      assert.equal((await createAgentActionProcessor(other.deps)(actionJob())).status, 'cancelled');
+      // A failed write fails the delivery so it is retried (F20); either way the run stays cancelled.
+      await createAgentActionProcessor(other.deps)(actionJob()).catch(() => null);
+      assert.equal(other.run().state, 'cancelled');
       assert.deepEqual(other.evaluated, []);
     }
   });
@@ -614,14 +619,67 @@ describe('acting-step mutation count', () => {
     }
   });
 
-  test('a lost count write does not change how the run ended', async () => {
+  test('a lost count write does not change how the run ended, and is retried with the count kept on the job (F20)', async () => {
     const h = harness({ mutatingOperations: 3 });
-    h.deps.recordMutations = async () => { throw new Error('database unavailable'); };
+    const recordMutations = h.deps.recordMutations!;
+    let failures = 1;
+    h.deps.recordMutations = async (runId, record) => {
+      if (failures-- > 0) { h.recorded.push(record.actingMutations); throw new Error('database unavailable'); }
+      return recordMutations(runId, record);
+    };
     h.executeTask.mock.mockImplementation(async () => {
       await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
       return SUCCESS;
     });
+    const job = actionJob();
+    const processAction = createAgentActionProcessor(h.deps);
+    await assert.rejects(processAction(job), { name: 'AgentRunMutationsSettlementError' }, 'the delivery fails so BullMQ retries it');
+    assert.equal(h.run().state, 'cancelled', 'the run keeps its end');
+    assert.equal(h.taskState(), 'cancelled', 'the task still follows the run');
+    assert.equal(h.run().actingMutations, undefined);
+    assert.deepEqual(job.data.actingMutationsOwed, { actingMutations: 3 }, 'the known count is kept with the job');
+    assert.deepEqual(h.evaluated, [], 'nothing final yet');
+    assert.deepEqual(h.grants.revoked, ['grant-1']);
+
+    // The retry has no grant to count again: it settles the count the job kept, and only now evaluates.
+    assert.equal((await processAction(job)).status, 'cancelled');
+    assert.equal(h.run().actingMutations, 3);
+    assert.deepEqual(h.recorded, [3, 3]);
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 3]]);
+    assert.deepEqual(h.grants.revoked, ['grant-1'], 'the retry does not run the step again');
+    assert.equal(h.executeTask.mock.callCount(), 1);
+  });
+
+  test('another delivery of the run without the kept count does not settle it (F20)', async () => {
+    const h = harness({ mutatingOperations: 3 });
+    h.deps.recordMutations = async (_runId, record) => { h.recorded.push(record.actingMutations); throw new Error('database unavailable'); };
+    h.executeTask.mock.mockImplementation(async () => {
+      await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+      return SUCCESS;
+    });
+    await assert.rejects(createAgentActionProcessor(h.deps)(actionJob()), { name: 'AgentRunMutationsSettlementError' });
     assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
-    assert.equal(h.taskState(), 'cancelled');
+    assert.deepEqual(h.recorded, [3], 'only the claimant or its retry settles the count');
+  });
+
+  test('a run whose final write failed after its grant ended keeps the count on the retry that fails it (F20)', async () => {
+    const h = harness({ mutatingOperations: 2 });
+    const transitionRun = h.deps.transitionRun!;
+    let failures = 2;
+    h.deps.transitionRun = (async (id, from, to, patch) => {
+      if (to !== 'cancelled' && failures-- > 0) throw new Error('database unavailable');
+      return transitionRun(id, from, to, patch);
+    }) as AgentActionProcessorDeps['transitionRun'];
+    const job = actionJob();
+    const processAction = createAgentActionProcessor(h.deps);
+    await assert.rejects(processAction(job), { name: 'AgentRunPersistenceError' });
+    assert.equal(h.run().state, 'acting');
+    assert.deepEqual(job.data.actingMutationsOwed, { actingMutations: 2 });
+
+    assert.equal((await processAction(job)).status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.run().actingMutations, 2, 'what the step changed is not lost with the grant');
+    assert.equal(h.run().actingMutationsPending, false);
+    assert.deepEqual(h.grants.revoked, ['grant-1']);
   });
 });

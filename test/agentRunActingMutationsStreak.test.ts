@@ -84,7 +84,7 @@ function streakDeps(inbox: Inbox): UnproductiveStreakDeps {
 }
 
 /** The production acting-step processor on the real run store; the agent and its MCP grant are stand-ins. */
-function actionProcessor(execute: () => Promise<unknown>, grant: { performed: number; uncounted?: boolean }, inbox: Inbox) {
+function actionProcessor(execute: () => Promise<unknown>, grant: { performed: number; uncounted?: boolean }, inbox: Inbox, extra: Partial<AgentActionProcessorDeps> = {}) {
   const taskStates = new Map<string, string>();
   const terminal = new Set(['completed', 'failed', 'cancelled']);
   const setTask = (taskId: string, state: string) => { if (!terminal.has(taskStates.get(taskId) ?? '')) taskStates.set(taskId, state); };
@@ -116,12 +116,19 @@ function actionProcessor(execute: () => Promise<unknown>, grant: { performed: nu
     },
     evaluateStreak: async run => { if (run) await evaluateUnproductiveStreak(run, streakDeps(inbox)); },
     gate: async () => ({ action: 'proceed' }),
+    ...extra,
   };
   return createAgentActionProcessor(overrides);
 }
 
 function actionJob(run: StoredAgentRun): Job<AgentRunJobData> {
-  return { id: `agent-run-${run.id}-action`, data: { runId: run.id, definitionId: run.definitionId, ownerId: run.ownerId, phase: 'action', correlationId: 'corr-1' } } as Job<AgentRunJobData>;
+  // Like BullMQ: updateData replaces the stored data, which a retry of the same job is handed.
+  const job = {
+    id: `agent-run-${run.id}-action`,
+    data: { runId: run.id, definitionId: run.definitionId, ownerId: run.ownerId, phase: 'action', correlationId: 'corr-1' },
+    updateData: async (next: AgentRunJobData) => { job.data = next; },
+  };
+  return job as unknown as Job<AgentRunJobData>;
 }
 
 async function scheduleEnabled(): Promise<boolean | undefined> {
@@ -293,5 +300,49 @@ describe('a run cancelled while its acting step runs stays pending until the ste
     assert.equal((await getAgentRunById(acting.id, deps()))?.actingMutationsPending, true, 'another writer ending the run leaves it outstanding');
     assert.equal((await recordAgentRunActingMutations(acting.id, { actionTaskId: taskId, actingMutations: null }, deps()))?.actingMutationsPending, false);
     assert.equal(await recordAgentRunActingMutations(acting.id, { actionTaskId: taskId, actingMutations: null }, deps()), null, 'already settled');
+  });
+});
+
+describe('a count whose settlement write failed is settled by the retry, not left outstanding (F20)', () => {
+  test('the retry stores the kept count, so the next unchanged run is not joined across the productive cancelled one', async () => {
+    const inbox: Inbox = { events: [] };
+    await unchangedRun('completed');
+    await unchangedRun('completed');
+    const acting = await unchangedRun('acting');
+    const grant = { performed: 0 };
+    let lostWrites = 1;
+    const processAction = actionProcessor(async () => {
+      grant.performed += 1;
+      // The owner cancels the run while its agent is still running.
+      await transitionAgentRun(acting.id, ['acting'], 'cancelled', {}, deps());
+      return { success: true, summary: 'Created a TODO', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+    }, grant, inbox, {
+      recordMutations: async (runId, record) => {
+        if (lostWrites-- > 0) throw new Error('database is locked');
+        return recordAgentRunActingMutations(runId, record, deps());
+      },
+    });
+    const job = actionJob(acting);
+    await assert.rejects(processAction(job), { name: 'AgentRunMutationsSettlementError' }, 'the delivery fails, so BullMQ retries it');
+    const outstanding = await getAgentRunById(acting.id, deps());
+    assert.equal(outstanding?.state, 'cancelled', 'the run stays cancelled');
+    assert.equal(outstanding?.actingMutationsPending, true, 'the obligation is not treated as settled');
+    assert.equal(outstanding?.actingMutations, null);
+
+    // The retry: its grant is long revoked, so only the count kept with the job can settle the run.
+    assert.equal((await processAction(job)).status, 'cancelled');
+    const settled = await getAgentRunById(acting.id, deps());
+    assert.equal(settled?.state, 'cancelled');
+    assert.equal(settled?.actingMutations, 1);
+    assert.equal(settled?.actingMutationsPending, false);
+    assert.equal(agentRunProductivity(settled!), 'productive');
+
+    const next = await unchangedRun('completed');
+    assert.equal(await evaluateUnproductiveStreak(next, streakDeps(inbox)), null);
+    const streak = await findUnproductiveScheduledStreak(definition.id, THRESHOLD, { database });
+    assert.deepEqual(streak.runs.map(run => run.id), [next.id]);
+    assert.equal(streak.streakKey, acting.id, 'the cancelled run that changed something ended the previous streak');
+    assert.deepEqual(inbox.events, []);
+    assert.equal(await scheduleEnabled(), true);
   });
 });

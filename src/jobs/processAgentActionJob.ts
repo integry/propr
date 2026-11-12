@@ -22,7 +22,13 @@ import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
 import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
-import { actionSummaryFromResult, AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError } from './agentRuns/runErrors.js';
+import {
+    actionSummaryFromResult,
+    AgentRunMutationsSettlementError,
+    AgentRunPersistenceError,
+    AgentRunReportError,
+    AgentRunSettlementError,
+} from './agentRuns/runErrors.js';
 import { definitionReadsRepositories, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import {
     AGENT_RUN_USAGE_LIMIT_REASON,
@@ -119,10 +125,39 @@ interface ActionContext {
      */
     actingMutations?: number | null;
     /**
-     * True once this delivery claimed the acting step: it then owes the run the
+     * True once this delivery claimed the acting step (or is the retry of one that
+     * kept the count it still owed with the job): it then owes the run the
      * settlement of the step's count, even when another writer ended the run.
      */
     ownsClaim?: boolean;
+}
+
+/** The context of a delivery; a retry takes over the claim and count an earlier delivery of the job still owed. */
+function actionContext(job: Job<AgentRunJobData>, stateManager: AgentRunStateManager, log: Logger): ActionContext {
+    const { runId, correlationId, actingMutationsOwed: owed } = job.data;
+    const context: ActionContext = { runId, taskId: agentRunActionTaskId(runId), stateManager, log, correlationId };
+    return owed ? { ...context, ownsClaim: true, actingMutations: owed.actingMutations } : context;
+}
+
+/**
+ * A delivery that claimed the step and is about to fail (so BullMQ retries) keeps
+ * the step's count with the job: the grant that counted it is revoked, so nothing
+ * else could tell the retry what it changed. Never throws; the delivery's own error wins.
+ */
+async function keepOwedMutationsWithJob(job: Job<AgentRunJobData>, context: ActionContext): Promise<void> {
+    if (!context.ownsClaim || typeof job.updateData !== 'function') return;
+    const actingMutations = typeof context.actingMutations === 'number' ? context.actingMutations : null;
+    if (job.data.actingMutationsOwed?.actingMutations === actingMutations) return;
+    try {
+        await job.updateData({ ...job.data, actingMutationsOwed: { actingMutations } });
+    } catch (error) {
+        context.log.error({ runId: context.runId, actingMutations, err: error }, 'Could not keep the acting step mutation count with its job for the retry');
+    }
+}
+
+/** Errors that fail the delivery so BullMQ retries it, instead of failing the run. */
+function isRetriedDeliveryError(error: unknown): boolean {
+    return error instanceof AgentRunSettlementError || error instanceof AgentRunPersistenceError || error instanceof AgentRunMutationsSettlementError;
 }
 
 /**
@@ -175,28 +210,35 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
      * A run another writer failed or cancelled while this acting step held its grant
      * still keeps what the grant changed. Until this settles the count (known, or
      * unknown when the revoke failed or no grant was issued), the run stays out of
-     * streaks. Only the delivery that claimed the step settles it, and only once its
-     * grant has ended. Best effort: the run has already ended.
+     * streaks. Only the delivery that claimed the step settles it (or the retry it
+     * left the count to), and only once its grant has ended. A write that fails is
+     * returned rather than dropped: the run keeps its end, but the obligation stays
+     * open, so the delivery fails and its retry settles the count kept with the job.
      */
-    async function keepMutationsOfEndedRun(context: ActionContext): Promise<void> {
+    async function keepMutationsOfEndedRun(context: ActionContext): Promise<AgentRunMutationsSettlementError | null> {
         const { runId, taskId, log } = context;
-        if (!context.ownsClaim) return;
+        if (!context.ownsClaim) return null;
         const actingMutations = typeof context.actingMutations === 'number' ? context.actingMutations : null;
-        const recorded = await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations }).catch(error => {
-            log.warn({ runId, taskId, actingMutations, err: error }, 'Could not store the acting step mutation count on its ended run');
-            return null;
-        });
+        let recorded: StoredAgentRun | null;
+        try {
+            recorded = await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations });
+        } catch (error) {
+            log.error({ runId, taskId, actingMutations, err: error }, 'Could not store the acting step mutation count on its ended run; retrying');
+            return new AgentRunMutationsSettlementError(runId, error);
+        }
         // Settling the count made the run's flags final, so this is where its streak is evaluated.
         await evaluateEndedRun(recorded);
+        return null;
     }
 
     /**
      * Ends a still-open action task to match a run another writer ended
-     * (cancel endpoint, a failure stored by an earlier attempt).
+     * (cancel endpoint, a failure stored by an earlier attempt). The task follows
+     * the run even when the count could not be settled; the delivery then fails.
      */
     async function taskFollowsRun(context: ActionContext): Promise<JobResult> {
         const { runId, taskId, correlationId } = context;
-        await keepMutationsOfEndedRun(context);
+        const unsettled = await keepMutationsOfEndedRun(context);
         const current = await deps.getRun(runId);
         const task = await context.stateManager.getTaskState(taskId);
         if (task && !TERMINAL_TASK_STATES.has(task.state)) {
@@ -208,6 +250,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
                 await settleTask(context, manager => manager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(current.actionSummary ?? '') }));
             }
         }
+        if (unsettled) throw unsettled;
         const state = current?.state ?? null;
         const status = state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : state === 'completed' ? 'complete' : 'skipped';
         return { status, runId, taskId, correlationId };
@@ -293,12 +336,8 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
     }
 
     // eslint-disable-next-line complexity -- one linear lifecycle: preflight, claim, execute, settle
-    return async function processAgentAction(job: Job<AgentRunJobData>): Promise<JobResult> {
-        const { runId, correlationId } = job.data;
-        const log: Logger = logger.withCorrelation(correlationId);
-        const taskId = agentRunActionTaskId(runId);
-        const stateManager = deps.stateManager();
-        const context: ActionContext = { runId, taskId, stateManager, log, correlationId };
+    async function runAction(job: Job<AgentRunJobData>, context: ActionContext): Promise<JobResult> {
+        const { runId, taskId, stateManager, log, correlationId } = context;
 
         // 1. Only an `acting` run is acted on: dry runs, rejections and cancels never get here.
         const run = await deps.getRun(runId);
@@ -390,7 +429,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             await deps.evaluateStreak(completed);
             return { status: 'complete', runId, taskId, state: 'completed', correlationId };
         } catch (error) {
-            if (error instanceof AgentRunSettlementError || error instanceof AgentRunPersistenceError) throw error;
+            if (isRetriedDeliveryError(error)) throw error;
             // A step that changed something before it failed keeps that count on the failed run.
             await endGrant();
             const stopped = await followCancelledTask(context, 'before its run failed').catch(() => null);
@@ -401,6 +440,18 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             activeRuns.delete(runId);
             await endGrant();
             await workspace?.cleanup(actionSucceeded);
+        }
+    }
+
+    return async function processAgentAction(job: Job<AgentRunJobData>): Promise<JobResult> {
+        const log: Logger = logger.withCorrelation(job.data.correlationId);
+        const context = actionContext(job, deps.stateManager(), log);
+        try {
+            return await runAction(job, context);
+        } catch (error) {
+            // Runs after the step's `finally`, so the grant has ended and its count is final.
+            await keepOwedMutationsWithJob(job, context);
+            throw error;
         }
     };
 }
