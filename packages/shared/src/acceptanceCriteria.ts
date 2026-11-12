@@ -66,13 +66,6 @@ function isAcceptanceHeading(text: string): boolean {
 }
 
 const LIST_ITEM = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])(?:[ \t]+(.*))?$/;
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-
-function indentWidth(whitespace: string): number {
-    let width = 0;
-    for (const char of whitespace) width += char === '\t' ? 4 - (width % 4) : 1;
-    return width;
-}
 
 function cleanItemText(text: string): string {
     return text
@@ -88,11 +81,83 @@ function bound(text: string, max: number): string {
 /** A line inside the criteria section; null marks a break such as a code fence that ends the current item. */
 type SectionLine = string | null;
 
-/** Whether `line` opens or closes a fence; returns the fence still open after it. */
-function nextFence(line: string, fence: string | null): { fence: string | null; isFence: boolean } {
-    const match = FENCE.exec(line);
-    if (fence) return { fence: match && match[1][0] === fence[0] && match[1].length >= fence.length ? null : fence, isFence: true };
-    return match ? { fence: match[1], isFence: true } : { fence: null, isFence: false };
+const LEADING_WHITESPACE = /^[ \t]*/;
+const LIST_MARKER = /^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]*)/;
+
+/** Width of `text` in columns, with tab stops every four columns. */
+function columnWidth(text: string): number {
+    let width = 0;
+    for (const char of text) width += char === '\t' ? 4 - (width % 4) : 1;
+    return width;
+}
+
+/** The column where a list item's content starts, or -1 when `line` is not a list item. */
+function listContentColumn(line: string): number {
+    const match = LIST_MARKER.exec(line);
+    if (!match || !LIST_ITEM.test(line)) return -1;
+    const markerEnd = columnWidth(match[1]);
+    const spacing = columnWidth(match[1] + match[2]) - markerEnd;
+    // An empty item, or one followed by 5+ columns (indented code), starts content one column on.
+    return spacing < 1 || spacing > 4 || !line.slice(match[0].length).trim() ? markerEnd + 1 : markerEnd + spacing;
+}
+
+interface OpenFence {
+    marker: string;
+    /** Content column of the list item holding the fence; 0 at top level. */
+    column: number;
+}
+
+/**
+ * Tracks fenced code, including fences inside list items, whose indentation is
+ * relative to the item's content column rather than the line start.
+ */
+class FenceTracker {
+    private containers: number[] = [];
+    private fence: OpenFence | null = null;
+    private previousBlank = true;
+
+    /** Whether `line` is a fence delimiter or fenced code. */
+    isFenced(line: string): boolean {
+        const blank = !line.trim();
+        const indent = columnWidth(LEADING_WHITESPACE.exec(line)?.[0] ?? '');
+        const fenced = this.fence ? this.continueFence(line, blank, indent) : this.openFence(line, blank, indent);
+        this.previousBlank = blank;
+        return fenced;
+    }
+
+    private continueFence(line: string, blank: boolean, indent: number): boolean {
+        const fence = this.fence as OpenFence;
+        // A line indented less than the holding list item ends the item and its fence.
+        if (!blank && indent < fence.column) {
+            this.fence = null;
+            return this.openFence(line, blank, indent);
+        }
+        const run = this.delimiterAt(line, indent, fence.column);
+        if (run && run[0] === fence.marker[0] && run.length >= fence.marker.length) this.fence = null;
+        return true;
+    }
+
+    private openFence(line: string, blank: boolean, indent: number): boolean {
+        if (blank) return false;
+        // The list items this line can still belong to: those it is indented into.
+        let depth = this.containers.length;
+        while (depth && this.containers[depth - 1] > indent) depth--;
+        const content = listContentColumn(line);
+        const column = depth ? this.containers[depth - 1] : 0;
+        const marker = content < 0 ? this.delimiterAt(line, indent, column) : null;
+        // Only paragraph text continues a less-indented item lazily; a list item or fence ends it.
+        if (content >= 0 || marker || this.previousBlank) this.containers.length = depth;
+        if (content >= 0) this.containers.push(content);
+        if (!marker) return false;
+        this.fence = { marker, column };
+        return true;
+    }
+
+    /** The fence run starting `line`, when its indentation is within three columns of `column`. */
+    private delimiterAt(line: string, indent: number, column: number): string | null {
+        if (indent < column || indent - column > 3) return null;
+        return /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+    }
 }
 
 interface VisibleLine {
@@ -129,16 +194,12 @@ function stripLineComments(line: string, inComment: boolean): { text: string; in
  */
 function visibleLines(lines: readonly string[]): VisibleLine[] {
     const visible: VisibleLine[] = [];
-    let fence: string | null = null;
+    const fences = new FenceTracker();
     let inComment = false;
     for (const line of lines) {
-        if (!inComment) {
-            const fenced = nextFence(line, fence);
-            fence = fenced.fence;
-            if (fenced.isFence) {
-                visible.push({ text: line, fenced: true });
-                continue;
-            }
+        if (!inComment && fences.isFenced(line)) {
+            visible.push({ text: line, fenced: true });
+            continue;
         }
         const stripped = stripLineComments(line, inComment);
         inComment = stripped.inComment;
@@ -162,14 +223,12 @@ function headingAt(lines: readonly string[], index: number): { heading: Heading;
  * The lines under the first "Acceptance criteria" heading, up to the next
  * heading of the same or a higher level. Fenced code becomes one break.
  */
-function criteriaSection(lines: readonly string[]): SectionLine[] {
+function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
+    const lines = visible.map(line => line.text);
     const section: SectionLine[] = [];
     let sectionLevel = 0;
-    let fence: string | null = null;
     for (let index = 0; index < lines.length; index++) {
-        const fenced = nextFence(lines[index], fence);
-        fence = fenced.fence;
-        if (fenced.isFence) {
+        if (visible[index].fenced) {
             if (sectionLevel) section.push(null);
             continue;
         }
@@ -203,7 +262,7 @@ function listItems(section: readonly SectionLine[]): string[][] {
         }
         const item = LIST_ITEM.exec(line);
         if (item) {
-            const indent = indentWidth(item[1]);
+            const indent = columnWidth(item[1]);
             if (topIndent < 0) topIndent = indent;
             if (indent <= topIndent) {
                 if (items.length >= MAX_ACCEPTANCE_CRITERIA) break;
@@ -233,8 +292,7 @@ function joinParts(parts: readonly string[]): string {
  */
 export function extractAcceptanceCriteria(body: string | null | undefined): AcceptanceCriterion[] {
     if (!body) return [];
-    const lines = visibleLines(body.slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/)).map(line => line.text);
-    return listItems(criteriaSection(lines))
+    return listItems(criteriaSection(visibleLines(body.slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/))))
         .map(joinParts)
         .filter(Boolean)
         .map((text, index) => ({ id: `AC${index + 1}`, text: bound(text, MAX_ACCEPTANCE_CRITERION_LENGTH) }));

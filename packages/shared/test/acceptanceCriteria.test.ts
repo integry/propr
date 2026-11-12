@@ -55,6 +55,27 @@ test('drops checkboxes, HTML comments and list items inside code fences', () => 
   assert.deepEqual(texts('```\n## Acceptance criteria\n- fenced\n```\n'), []);
 });
 
+test('ignores fenced examples inside nested list items', () => {
+  const body = [
+    '## Acceptance criteria',
+    '- Validate input:',
+    '  - Reject malformed input, including this example:',
+    '    ```text',
+    '    - Accept malformed input.',
+    '    ```',
+    '- Document usage.',
+  ].join('\n');
+  assert.deepEqual(extractAcceptanceCriteria(body), [
+    { id: 'AC1', text: 'Validate input: Reject malformed input, including this example:' },
+    { id: 'AC2', text: 'Document usage.' },
+  ]);
+  // A fence in a top-level item, and one a less-indented line ends with its list item.
+  assert.deepEqual(texts('## Acceptance criteria\n1. First\n   ~~~\n   - example\n   ~~~\n2. Second\n'), ['First', 'Second']);
+  assert.deepEqual(texts('## Acceptance criteria\n- First\n  ```\n  - example\n- Second\n'), ['First', 'Second']);
+  // Outside a list, four spaces of indentation is still not a fence.
+  assert.deepEqual(texts('## Acceptance criteria\n\n    ```\n- Kept\n'), ['Kept']);
+});
+
 test('ignores HTML comments spanning headings and list items', () => {
   const hidden = '<!--\n## Acceptance criteria\n- Obsolete requirement\n-->\n\n## Acceptance criteria\n- Actual requirement\n';
   assert.deepEqual(extractAcceptanceCriteria(hidden), [{ id: 'AC1', text: 'Actual requirement' }]);
@@ -134,4 +155,7 @@ test('ignores statements in fenced examples and HTML comments, keeping the last 
     { id: 'AC2', text: 'B', status: 'met', evidence: '`src/b.ts`' },
   ]);
   assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), `${report}\n- AC1: met — src/a.ts`)[0].status, 'met');
+  const nested = ['- Notes:', '  - Example format:', '    ```md', '    - AC1: met — example', '    ```', '- AC1: not met — missing'].join('\n');
+  assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), nested)[0].status, 'not_met');
+  assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), nested.split('\n').slice(0, 5).join('\n'))[0].status, 'not_addressed');
 });
