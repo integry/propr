@@ -6,6 +6,7 @@ import {
   type SyntheticRoutingSession,
 } from '../services/syntheticRoutingService.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
+import { takeAgentCapacityPin } from './agentCapacity.js';
 
 /** Agent facade that keeps the requested virtual identity while routing calls centrally. */
 export class SyntheticAgent implements Agent {
@@ -40,10 +41,13 @@ export class SyntheticAgent implements Agent {
   }
 
   executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+    const requestedModel = options.model || this.config.defaultModel;
     const session = this.routing.begin({
       requestedAgentAlias: this.config.alias,
-      requestedModel: options.model || this.config.defaultModel,
+      requestedModel,
       requiredTokens: estimateTaskRequiredTokens(options),
+      // The member the job's capacity pre-check chose (and charged), if any.
+      pinnedMemberId: takeAgentCapacityPin(this.config.alias, options.model) ?? takeAgentCapacityPin(this.config.alias, requestedModel),
     });
     return session.executeTask(options);
   }

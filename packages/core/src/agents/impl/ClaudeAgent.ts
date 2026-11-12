@@ -3,6 +3,7 @@ import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAcce
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import {
     Agent,
     AgentConfig,
@@ -189,7 +190,8 @@ export class ClaudeAgent implements Agent {
             if (usageMetrics) response.usageMetrics = usageMetrics;
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) throw error;
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
 
             const executionTime = Date.now() - startTime;
             logger.error({
@@ -249,7 +251,8 @@ export class ClaudeAgent implements Agent {
             }, 'Claude native goal attempt finished');
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) throw error;
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
             logger.error({ taskId, error: (error as Error).message, agentAlias: this.config.alias }, 'Claude native goal attempt failed');
             return {
                 success: false, error: (error as Error).message, executionTimeMs: Date.now() - startTime,

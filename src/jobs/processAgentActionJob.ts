@@ -22,6 +22,9 @@ import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRu
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { actionSummaryFromResult, AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError } from './agentRuns/runErrors.js';
 import { definitionReadsRepositories, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
+import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
+import { runWithJobAgentCapacity } from './agentCapacityDeferral.js';
+import { checkAgentRunCapacityBeforeClaim } from './agentRuns/capacity.js';
 import {
     AGENT_RUN_USAGE_LIMIT_REASON,
     agentReportRecap,
@@ -43,7 +46,7 @@ import {
 export const AGENT_ACTION_ABANDONED_REASON = 'The worker running the acting step stopped before it finished; trigger the agent again';
 
 export interface AgentActionProcessorDeps extends Pick<AgentRunProcessorDeps,
-    'getRun' | 'transitionRun' | 'validateDefinition' | 'stateManager' | 'getGitHubAccess' | 'resolveAgent' | 'withCostCap' | 'mcpGrants'> {
+    'getRun' | 'transitionRun' | 'validateDefinition' | 'stateManager' | 'getGitHubAccess' | 'resolveAgent' | 'withCostCap' | 'mcpGrants' | 'checkAgentCapacity'> {
     /** Records the action task on an `acting` run; null when another delivery claimed it first. */
     claimAction: (runId: string, actionTaskId: string) => Promise<StoredAgentRun | null>;
     prepareWorkspace: PrepareAgentRunWorkspace;
@@ -68,6 +71,7 @@ export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
     resolveAgent: defaultAgentRunProcessorDeps.resolveAgent,
     withCostCap: defaultAgentRunProcessorDeps.withCostCap,
     mcpGrants: { request: requestAgentRunMcpGrant, revoke: revokeAgentRunMcpGrant },
+    checkAgentCapacity: defaultAgentRunProcessorDeps.checkAgentCapacity,
     claimAction: (runId, actionTaskId) => claimAgentRunAction(runId, actionTaskId),
     prepareWorkspace: defaultAgentRunProcessorDeps.prepareWorkspace,
     buildPrompt: buildAgentActionPrompt,
@@ -228,8 +232,11 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         return definitionReadsRepositories(definition) ? deps.getGitHubAccess() : { token: '', octokit: undefined };
     }
 
+    // A saturated agent delays this same job (no attempt consumed) with the acting step still unclaimed.
+    return (job: Job<AgentRunJobData>): Promise<JobResult> => deferCapacityJob(job, () => processAgentAction(job));
+
     // eslint-disable-next-line complexity -- one linear lifecycle: preflight, claim, execute, settle
-    return async function processAgentAction(job: Job<AgentRunJobData>): Promise<JobResult> {
+    async function processAgentAction(job: Job<AgentRunJobData>): Promise<JobResult> {
         const { runId, correlationId } = job.data;
         const log: Logger = logger.withCorrelation(correlationId);
         const taskId = agentRunActionTaskId(runId);
@@ -260,6 +267,10 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         // 3. The receipt in the Tasks UI, then the claim.
         const issueRef = agentRunActionIssueRef(definition);
         await stateManager.createTaskStateIfAbsent(taskId, issueRef, correlationId, job.id === undefined ? null : String(job.id));
+        // The direct agent must have capacity before the claim, which cannot be handed back.
+        const agentCapacity = await checkAgentRunCapacityBeforeClaim({
+            job, definition, taskId, log, stateManager, resolveAgent: deps.resolveAgent, check: deps.checkAgentCapacity,
+        });
         const claimed = await deps.claimAction(runId, taskId);
         if (!claimed) {
             log.info({ runId, taskId }, 'Agent run acting step was claimed or ended by another writer');
@@ -292,9 +303,9 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => options.extensionProfile
+                () => runWithJobAgentCapacity(agentCapacity, () => options.extensionProfile
                     ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
-                    : agent.executeTask(options),
+                    : agent.executeTask(options)),
             );
 
             // 6. A task stopped during execution cancels the run; otherwise store the summary.
@@ -318,7 +329,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             await revokeGrantQuietly(deps.mcpGrants.revoke, runId, mcpGrant, log);
             await workspace?.cleanup(actionSucceeded);
         }
-    };
+    }
 }
 
 export const processAgentActionJob = createAgentActionProcessor();

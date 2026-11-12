@@ -220,7 +220,7 @@ export async function executeDockerCommand(command: string, args: string[], opti
             if (refusal) return await refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
         }
         return await startWithNetworkPolicy(command, args, { executionSignal, networkPolicyExempt: options.networkPolicyExempt },
-            runArgs => startDockerCommand(command, runArgs, options, { ownershipContext, executionSignal, deadline }));
+            runArgs => startDockerCommand(command, runArgs, options, { ownershipContext, executionSignal, deadline, timeoutError }));
     } catch (error) {
         if (error !== timeoutError) throw error;
         return await new Promise<ExecutionResult>((resolve, reject) => settleTimeoutStop(timeout,
@@ -233,7 +233,7 @@ export async function executeDockerCommand(command: string, args: string[], opti
 
 async function startDockerCommand(
     command: string, args: string[], options: DockerCommandOptions,
-    { ownershipContext, executionSignal, deadline }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined; deadline: ExecutionDeadline },
+    { ownershipContext, executionSignal, deadline, timeoutError }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined; deadline: ExecutionDeadline; timeoutError: Error },
 ): Promise<ExecutionResult> {
     if (command === 'docker' && args[0] === 'run') assertNativeLogAdmission(options.diagnostics);
     const executionArgs = resolveExecutionArgs(command, args, options.taskId, ownershipContext?.attemptGeneration);
@@ -247,7 +247,7 @@ async function startDockerCommand(
                 return withWorkflowExecutionDeadline(command, executionArgs, deadline.remaining());
             },
             signal: executionSignal, taskId: options.taskId, extraEnvVars: options.extraEnvVars,
-            agentAlias: options.agentAlias, exemption: options.agentAdmissionExemption,
+            agentAlias: options.agentAlias, exemption: options.agentAdmissionExemption, timeoutReason: timeoutError,
             cwd: options.cwd && fs.existsSync(options.cwd) ? options.cwd : undefined,
         })
         : null;

@@ -11,6 +11,8 @@ import { estimateTokens } from '../utils/tokenCalculation.js';
 import { SyntheticPoolExhaustedError, isNonRetryableSyntheticFailure } from './syntheticRoutingTypes.js';
 import type { BeginSyntheticRoutingOptions, SyntheticMemberDiagnostic, SyntheticPhysicalSelection, SyntheticRoutingServiceOptions, SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
 import { AliasSpecificAgentTankSnapshotProvider } from './syntheticUsageSnapshotProvider.js';
+import { AgentCapacityError, agentAliasHasCapacity } from '../agents/agentCapacity.js';
+import { chooseMemberWithCapacity, type CapacityCandidate } from './syntheticCapacitySelection.js';
 
 export * from './syntheticRoutingTypes.js';
 export { AliasSpecificAgentTankSnapshotProvider } from './syntheticUsageSnapshotProvider.js';
@@ -44,7 +46,7 @@ export function estimateTaskRequiredTokens(options: AgentTaskOptions): number {
   return estimateTokens(inputParts.join('\n')) + DEFAULT_OUTPUT_RESERVE_TOKENS;
 }
 
-interface EligibleMember {
+interface EligibleMember extends CapacityCandidate {
   member: SyntheticModelMember;
   agent: Agent;
   headroom: number;
@@ -65,6 +67,8 @@ export class SyntheticRoutingSession {
   private readonly attemptFailures = new Map<string, string>();
   private executionAttemptCount = 0;
   private readonly physicalAgentEligibility?: (agent: Agent) => boolean;
+  private pinnedMemberId?: string;
+  private deferOnCapacity: boolean; // Failover after a provider failure waits at admission instead.
 
   public readonly requestedAgentAlias: string;
   public readonly requestedModel: string;
@@ -74,8 +78,9 @@ export class SyntheticRoutingSession {
   constructor(
     private readonly service: SyntheticRoutingService,
     options: Required<Pick<BeginSyntheticRoutingOptions, 'requestedAgentAlias' | 'requestedModel' | 'requiredTokens' | 'callId'>>
-      & Pick<BeginSyntheticRoutingOptions, 'physicalAgentEligibility'>,
+      & Pick<BeginSyntheticRoutingOptions, 'physicalAgentEligibility' | 'pinnedMemberId' | 'deferOnCapacity'>,
   ) {
+    [this.pinnedMemberId, this.deferOnCapacity] = [options.pinnedMemberId, options.deferOnCapacity ?? false];
     this.requestedAgentAlias = options.requestedAgentAlias;
     this.requestedModel = options.requestedModel;
     this._requiredTokens = options.requiredTokens;
@@ -96,9 +101,14 @@ export class SyntheticRoutingSession {
 
   isPhysicalAgentEligible(agent: Agent): boolean { return this.physicalAgentEligibility?.(agent) ?? true; }
 
+  /** The pre-selected member to reuse, and whether a saturated agent throws AgentCapacityError; both apply to the first selection only. */
+  get pinnedMember(): string | undefined { return this.pinnedMemberId; }
+  get defersOnCapacity(): boolean { return this.deferOnCapacity; }
+
   async select(): Promise<SyntheticPhysicalSelection> {
     if (this.current) return this.current;
-    this.current = await this.service.select(this);
+    try { this.current = await this.service.select(this); }
+    finally { this.pinnedMemberId = undefined; this.deferOnCapacity = false; }
     if (this.current.memberId) this.attemptedMemberIds.add(this.current.memberId);
     return this.current;
   }
@@ -208,8 +218,10 @@ export class SyntheticRoutingService {
   private readonly loadConfigs: () => Promise<SyntheticAgentConfig[]>;
   private readonly getDirectAgent: (alias: string) => Agent | undefined;
   private readonly usageProvider: SyntheticUsageSnapshotProvider;
+  private readonly aliasCapacity: (directAgentAlias: string) => Promise<boolean>;
 
   constructor(options: SyntheticRoutingServiceOptions) {
+    this.aliasCapacity = options.aliasCapacity ?? (alias => agentAliasHasCapacity(alias));
     this.database = options.database ?? db;
     this.loadConfigs = options.loadSyntheticConfigs ?? loadSyntheticAgents;
     this.getDirectAgent = options.getDirectAgent;
@@ -225,6 +237,8 @@ export class SyntheticRoutingService {
       requiredTokens,
       callId: options.callId || randomUUID(),
       physicalAgentEligibility: options.physicalAgentEligibility,
+      pinnedMemberId: options.pinnedMemberId,
+      deferOnCapacity: options.deferOnCapacity,
     });
   }
 
@@ -305,6 +319,7 @@ export class SyntheticRoutingService {
       }
       const physicalModel = session.requestedModel || agent.config.defaultModel;
       if (!physicalModel) throw new Error(`No model configured for direct agent '${session.requestedAgentAlias}'`);
+      if (session.defersOnCapacity && !await this.aliasCapacity(agent.config.alias)) throw new AgentCapacityError([agent.config.alias]);
       return {
         virtualAgentAlias: session.requestedAgentAlias, virtualModel: physicalModel,
         physicalAgent: agent, physicalAgentAlias: agent.config.alias, physicalModel,
@@ -329,16 +344,11 @@ export class SyntheticRoutingService {
 
     const highestPriority = Math.max(...eligible.map(item => item.member.priority));
     const tier = eligible.filter(item => item.member.priority === highestPriority);
-    let chosen: EligibleMember;
-    let selectionReason: string;
-    if (synthetic.model.strategy === 'usage_based') {
-      chosen = [...tier].sort((a, b) => b.headroom - a.headroom || a.member.id.localeCompare(b.member.id))[0];
-      selectionReason = `usage_based: priority ${highestPriority}, normalized headroom ${chosen.headroom.toFixed(4)}`;
-    } else {
-      const cursor = await this.nextCursor(`${synthetic.agent.id}:${synthetic.model.id}`);
-      chosen = tier[cursor % tier.length];
-      selectionReason = `round_robin: priority ${highestPriority}, cursor ${cursor}`;
-    }
+    const { chosen, selectionReason } = await chooseMemberWithCapacity({
+      pinnedMemberId: session.pinnedMember, defersOnCapacity: session.defersOnCapacity, strategy: synthetic.model.strategy,
+      eligible, tier, highestPriority, aliasCapacity: this.aliasCapacity,
+      nextCursor: () => this.nextCursor(`${synthetic.agent.id}:${synthetic.model.id}`),
+    });
 
     return {
       virtualAgentAlias: synthetic.agent.alias,

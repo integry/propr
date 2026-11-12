@@ -29,7 +29,8 @@ export function parseAgentRunAliasLimits(raw: string | undefined, globalLimit: n
     if (globalLimit === null) {
         throw new AgentRunAliasLimitsError('per-agent ceilings require agent-run admission; set PROPR_AGENT_RUN_LIMIT and PROPR_INSTANCE_ID (Hosted: the Fleet entitlement), or unset this variable');
     }
-    const limits: Record<string, number> = {};
+    // A Map, so an alias that names an Object.prototype member (`constructor`) is just an alias.
+    const limits = new Map<string, number>();
     for (const entry of raw.split(',')) {
         const separator = entry.indexOf('=');
         const alias = separator < 0 ? entry.trim() : entry.slice(0, separator).trim();
@@ -40,10 +41,17 @@ export function parseAgentRunAliasLimits(raw: string | undefined, globalLimit: n
         const limit = Number(value);
         if (!Number.isSafeInteger(limit) || limit < 1) throw new AgentRunAliasLimitsError(`ceiling for '${alias}' must be a positive integer`);
         if (limit > globalLimit) throw new AgentRunAliasLimitsError(`ceiling ${limit} for '${alias}' exceeds the global agent-run limit ${globalLimit}; a ceiling can only lower an agent's share`);
-        if (Object.hasOwn(limits, alias)) throw new AgentRunAliasLimitsError(`alias '${alias}' is listed more than once`);
-        limits[alias] = limit;
+        if (limits.has(alias)) throw new AgentRunAliasLimitsError(`alias '${alias}' is listed more than once`);
+        limits.set(alias, limit);
     }
-    return Object.freeze(limits);
+    return Object.freeze(Object.fromEntries(limits));
+}
+
+/** The ceiling configured for `alias`. Reads only listed entries: a direct
+ * agent named `constructor` without a ceiling must not resolve to the
+ * inherited `Object.prototype.constructor`. */
+export function agentRunAliasCeiling(limits: AgentRunAliasLimits | undefined, alias: string): number | undefined {
+    return alias && limits && Object.hasOwn(limits, alias) ? limits[alias] : undefined;
 }
 
 /** The implicit agent registered when no direct agent is configured. */

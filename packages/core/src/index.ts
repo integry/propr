@@ -139,6 +139,7 @@ export {
 } from './queue/taskQueue.js';
 export type {
     IssueJobData,
+    AgentCapacityDeferralData,
     CommentJobData,
     TaskImportJobData,
     SystemTaskJobData,
@@ -679,4 +680,10 @@ export { runningContainerMountSources, probeWorktreeReclamationDocker } from './
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';
 
 export { validateAgentRunAdmissionPolicy, revalidateAgentRunAdmissionPolicy } from './agents/agentRunAdmissionPolicy.js';
+export {
+    AgentCapacityError, AgentCapacityWaitTimeoutError, isAgentCapacityError, agentAliasHasCapacity, assertAgentAliasCapacity,
+    agentCapacityPolicyConfigured, registerAgentCapacityWaiter, forgetAgentCapacityWaiter, wakeAgentCapacityWaiters, agentCapacityWaitersKey,
+    configureAgentCapacityRedis, runWithAgentCapacityContext, reserveAgentCapacity, agentCapacityPins,
+    type AgentCapacityReservation, type AgentCapacityJobContext,
+} from './agents/agentCapacity.js';
 export { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, agentRunAliasLimitProblems } from './agents/agentRunAliasLimits.js';

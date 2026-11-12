@@ -1195,3 +1195,49 @@ describe('report task model identity', () => {
     assert.deepEqual(reportTaskIdentity(h, run), { modelName: null, agentAlias: null });
   });
 });
+
+describe('per-agent capacity', () => {
+  /** A queue job that records the deferral calls BullMQ would receive. */
+  function deferrableJob() {
+    const calls: { delayedUntil?: number; data: Array<Record<string, unknown>> } = { data: [] };
+    const deferrable = {
+      ...job, data: { ...job.data }, queueName: 'issues', token: 'lock-token',
+      updateData: async (data: Record<string, unknown>) => { calls.data.push(data); deferrable.data = data as never; },
+      moveToDelayed: async (until: number) => { calls.delayedUntil = until; },
+    };
+    return { job: deferrable as unknown as Job<AgentRunJobData> & { data: AgentRunJobData }, calls };
+  }
+
+  test('a saturated agent defers the report run before its claim; the run stays queued and nothing executes', async () => {
+    const { DelayedError } = await import('bullmq');
+    const { AgentCapacityError } = await import('../packages/core/src/agents/agentCapacity.ts');
+    const h = harness();
+    const checked: Array<{ alias: string; model?: string }> = [];
+    const deferrable = deferrableJob();
+    await assert.rejects(createAgentRunProcessor({
+      ...h.deps, checkAgentCapacity: async (_job, agent) => { checked.push(agent); throw new AgentCapacityError(['claude'], { claude: 1 }); },
+    })(deferrable.job), DelayedError);
+    assert.deepEqual(checked.map(({ alias, model }) => ({ alias, model })), [{ alias: 'claude', model: 'opus' }], 'the resolved direct agent is checked');
+    assert.equal(h.run().state, 'queued', 'the run is not claimed');
+    assert.ok(!h.transitions.some(transition => transition.to === 'running'));
+    assert.equal(h.executeTask.mock.callCount(), 0);
+    assert.equal(h.prepareWorkspace.mock.callCount(), 0);
+    assert.equal(deferrable.calls.data.at(-1)?.agentCapacityDeferrals, 1);
+    assert.ok(deferrable.calls.delayedUntil! > Date.now() - 1_000);
+    // The next delivery finds capacity, claims and runs with the job's capacity context.
+    const ran = await createAgentRunProcessor({ ...h.deps, checkAgentCapacity: async () => ({ pins: new Map() }) })(deferrable.job);
+    assert.equal(ran.status, 'complete');
+    assert.equal(h.executeTask.mock.callCount(), 1);
+  });
+
+  test('an unresolvable agent is not deferred: the post-claim path fails the run as before', async () => {
+    const h = harness();
+    let checks = 0;
+    const result = await createAgentRunProcessor({
+      ...h.deps, resolveAgent: async () => { throw new Error('Agent not found: claude'); }, checkAgentCapacity: async () => { checks++; return undefined; },
+    })(job);
+    assert.equal(checks, 0);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+  });
+});

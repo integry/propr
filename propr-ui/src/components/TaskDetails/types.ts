@@ -83,6 +83,12 @@ export interface HistoryItemMetadata {
   repositoryWorkflowDeferrals?: number;
   /** ISO timestamp of the next admission attempt. */
   repositoryWorkflowRetryAt?: string;
+  /** Deferrals so far for a task waiting for its direct agent's per-agent ceiling. */
+  agentCapacityDeferrals?: number;
+  /** ISO timestamp of the next agent capacity check. */
+  agentCapacityRetryAt?: string;
+  /** Direct agent aliases the task is waiting for. */
+  agentCapacityAliases?: string[];
   terminalReason?: string;
   /** Timeline event that repeats the current state, e.g. `budget.exceeded` or `replacement.dispatched`. */
   event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | 'pull_request.auto_assignment' | string;

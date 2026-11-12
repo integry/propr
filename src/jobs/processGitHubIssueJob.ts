@@ -27,6 +27,7 @@ import {
   withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError, nonRetryableRepositoryWorkflowError,
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
+import { admitAgentCapacity, checkJobAgentCapacity, isAgentCapacityRefusal, persistAgentCapacityDeferral, runWithJobAgentCapacity } from './agentCapacityDeferral.js';
 import { recordReplayableIssueTask } from '../taskReplacement/store.js';
 import { admitNoChangeRequest, noChangeRequestId, readNoChangeCompletions } from './noChangeCompletionObligation.js';
 
@@ -199,6 +200,14 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
           octokit, claudeResult: null, worktreeInfo: undefined, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG,
         }),
       });
+    } else if (isAgentCapacityRefusal(error)) {
+      // Deferred before the start comment, worktree and branch push: nothing user-visible to undo.
+      await persistAgentCapacityDeferral({
+        job, error, stateManager, taskId, correlatedLogger,
+        onPersistFailure: persistError => handleGenericError(persistError, job, issueRef, {
+          octokit, claudeResult: null, worktreeInfo: undefined, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG,
+        }),
+      });
     }
     throw error;
   } finally {
@@ -281,15 +290,27 @@ async function processIssueWithAdmission(
   } catch (error) {
     return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
   }
-  return withRepositoryWorkflowAdmission({
+  // The direct agent is known (a synthetic request selects its member now): a
+  // saturated agent defers the job here, before it takes a repository slot or
+  // does any user-visible work. The chosen member is kept on the job until it runs.
+  let agentCapacity: Awaited<ReturnType<typeof checkJobAgentCapacity>>;
+  try {
+    agentCapacity = await checkJobAgentCapacity(job, [{ agentAlias: context.agentAlias, model: context.modelName }]);
+    await admitAgentCapacity(job, { keepSelections: true });
+  } catch (error) {
+    if (isAgentCapacityRefusal(error)) throw error;
+    return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
+  }
+  return runWithJobAgentCapacity(agentCapacity, () => withRepositoryWorkflowAdmission({
     workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
     redisClient, taskId, stateManager, correlatedLogger, job,
   }, async (): Promise<JobResult> => withIssueRunCostCap(job, context, octokit, async (costGuard): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
     // retain the existing ordinary retry behavior and reload the base policy.
     const refreshWorkflow = !!job.data.repositoryWorkflowDeferred && reusedWorkflowSnapshot;
-    if (job.data.repositoryWorkflowDeferred) {
-      await job.updateData({ ...job.data, repositoryWorkflowDeferred: false, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
+    if (job.data.repositoryWorkflowDeferred || job.data.agentCapacitySelections) {
+      // The pinned synthetic member now runs; a later ordinary retry selects afresh.
+      await job.updateData({ ...job.data, repositoryWorkflowDeferred: false, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL, agentCapacitySelections: undefined });
     }
     // Handle retry from rate limit - swap AI-waiting back to AI-processing
     if (job.data.isRetryFromRateLimit) {
@@ -369,10 +390,10 @@ async function processIssueWithAdmission(
       return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
     } catch (error) {
-      if (error instanceof RepositoryWorkflowCapacityError) throw error;
+      if (error instanceof RepositoryWorkflowCapacityError || isAgentCapacityRefusal(error)) throw error;
       return handleIssueProcessingError(error, { job, context, octokit, claudeResult, worktreeInfo });
     }
-  }));
+  })));
 }
 
 /**

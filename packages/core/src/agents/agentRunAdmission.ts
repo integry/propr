@@ -1,13 +1,13 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { setTimeout as delay } from 'node:timers/promises';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { checkAbortSignal, plannerAbortSignalKeyForTask } from '../claude/docker/dockerAbortController.js';
 import { ExecutionAbortedError, getExecutionAbortError } from '../claude/docker/dockerExecutionOwnership.js';
 import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
-import { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
+import { AGENT_RUN_ALIAS_LIMITS_ENV, agentRunAliasCeiling, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
+import { aliasCapacityWait, isAgentCapacityError, wakeAgentCapacityWaiters } from './agentCapacity.js';
 
 /** Fleet's existing server-side activation boundary is PROPR_FLEET_CONTROL_SECRET.
  * WORKER_CONCURRENCY is provisioned by Fleet, not the persisted UI setting.
@@ -197,12 +197,13 @@ export async function agentAdmissionMetrics(client: AdmissionRedis, instance: st
  * holder occupies its alias until removal is confirmed. Holders without an
  * alias (pre-upgrade records, exempt launches) appear under no alias. */
 export async function agentAdmissionAliasHolders(client: AdmissionRedis, instance: string): Promise<Record<string, number>> {
-    const counts: Record<string, number> = {};
+    // A Map, so an alias such as `constructor` never reads an inherited property.
+    const counts = new Map<string, number>();
     for (const value of Object.values(await client.hgetall(agentAdmissionKeys(instance)[0]))) {
         const { alias } = JSON.parse(value) as { alias?: string };
-        if (alias) counts[alias] = (counts[alias] ?? 0) + 1;
+        if (alias) counts.set(alias, (counts.get(alias) ?? 0) + 1);
     }
-    return counts;
+    return Object.fromEntries(counts);
 }
 
 /** Launches that have no registered direct agent and are deliberately
@@ -225,7 +226,7 @@ export class AgentAdmissionIdentityError extends Error {
 export function resolveAdmissionAlias(config: AdmissionConfig, identity: { agentAlias?: string; exemption?: AgentAdmissionExemption }): { alias: string; ceiling: string; log: Record<string, string | number> } {
     const alias = identity.agentAlias?.trim() ?? '';
     if (!alias && !identity.exemption && config.aliasLimits) throw new AgentAdmissionIdentityError();
-    const ceiling = alias ? config.aliasLimits?.[alias] : undefined;
+    const ceiling = agentRunAliasCeiling(config.aliasLimits, alias);
     const log = { ...(alias ? { agentAlias: alias } : {}), ...(ceiling === undefined ? {} : { aliasLimit: ceiling }) };
     return { alias, ceiling: ceiling === undefined ? '' : String(ceiling), log };
 }
@@ -254,6 +255,14 @@ export interface AdmissionOptions {
     exemption?: AgentAdmissionExemption;
     /** Observes each change of the reason an acquire is still waiting. */
     onWaiting?: (reason: AgentAdmissionWaitReason) => void;
+    /**
+     * A queue job that can defer: an alias-ceiling wait longer than this throws
+     * AgentCapacityError instead of holding the worker. Defaults to the job's
+     * capacity context (`runWithAgentCapacityContext`); unset keeps waiting.
+     */
+    capacityRaceWaitMs?: number;
+    /** The abort reason that means the caller's own timeout expired (not a cancellation). */
+    timeoutReason?: unknown;
     extraEnvVars?: Record<string, string>;
     cwd?: string;
     /** Infrastructure injection for real Redis tests; never sourced from request data. */
@@ -269,6 +278,11 @@ export interface AdmittedAgent {
     id: string;
     signal: AbortSignal;
     finish(): Promise<void>;
+}
+
+/** A capacity refusal is reported as itself; anything else as the cancellation that caused it, if any. */
+function admissionFailure(error: unknown, signal: AbortSignal): unknown {
+    return isAgentCapacityError(error) ? error : getExecutionAbortError(signal) ?? error;
 }
 
 function checkAdmissionAbort(signal: AbortSignal): void {
@@ -342,6 +356,9 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
             if (coordinationError) throw coordinationError;
             if (acquired) await call('release');
             await client.zrem(waiting, token);
+            // Released capacity goes to the oldest job deferred for this alias.
+            if (acquired && ceiling) void wakeAgentCapacityWaiters(alias, { config })
+                .catch(error => logger.debug({ alias, error: String(error) }, 'Could not wake agent capacity waiters'));
         } finally { ownedClient?.disconnect(); }
     };
     const renew = () => {
@@ -375,6 +392,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await checkCancelled();
         logger.info({ instance: config.instance, limit: config.limit, ...log }, 'Waiting for physical agent admission');
         const reportWait = waitReasonReporter(config.instance, log, options.onWaiting);
+        const aliasWait = aliasCapacityWait(alias, ceiling, options);
         while (true) {
             await client.zadd(waiting, Date.now() + 30_000, token);
             await recover(identity);
@@ -386,7 +404,8 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
                 continue;
             }
             reportWait(result);
-            await delay(options.pollMs ?? 250, undefined, { signal });
+            aliasWait.observe(result);
+            await aliasWait.pause(options.pollMs ?? 250, signal);
         }
         await client.zrem(waiting, token);
         renew();
@@ -406,7 +425,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     } catch (error) {
         try { await finish(); }
         catch (cleanupError) { logger.error({ error: String(cleanupError) }, 'Agent admission retained for recovery'); }
-        throw getExecutionAbortError(signal) ?? error;
+        throw admissionFailure(error, signal);
     }
 }
 

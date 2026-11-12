@@ -827,6 +827,8 @@ test('executor and native goal admission retain create and final argument secret
                 }});
                 mock.module('./packages/core/src/agents/agentRunAdmission.ts', {namedExports:{
                     prepareAdmittedAgent:async () => ({args:final,finish:async()=>{}}),
+                    agentAdmissionKeys:(instance) => [instance+':holders',instance+':config',instance+':waiting'],
+                    resolveAgentRunAdmission:() => null,
                 }});
                 const options = {nativeGoalObjective:'test',taskId:'diagnostic-test',goalControl:{
                     setActiveTurn:async()=>{},appendOutput:async()=>{},load:async()=>({desiredState:'running',pendingInputs:[]})},issueRef:{number:1}};

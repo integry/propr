@@ -28,6 +28,7 @@ import { applyWorkflowCostCap, pullRequestRunCostCapTarget, withRunCostCap } fro
 import { workflowReportsBlockers } from './blockedRunText.js';
 import { resolveUltrafixFixExecution } from './ultrafixEscalation.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
+import { admitAgentCapacity, checkJobAgentCapacity, isAgentCapacityRefusal, persistAgentCapacityDeferral, runWithJobAgentCapacity } from './agentCapacityDeferral.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { retainOriginalScope } from './ultrafixOrchestrationService.js';
@@ -237,6 +238,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             commentHistory += await loadOriginalContributionDiscussion(octokit, context);
         }
 
+        // The direct agent is known once the (possibly escalated) model is: a saturated
+        // agent defers here, before the starting comment, worktree and handoff exist.
+        const agentCapacity = await checkJobAgentCapacity(job, async () => [await (await import('./prCommentAgentUtils.js')).resolvePRCommentAgent(llm, correlatedLogger)]);
+        await admitAgentCapacity(job);
+
         await markSelectedUltrafixFindings(
             job, redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber }, selectedReviewComments,
         );
@@ -314,14 +320,15 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const visualPreviewSettings = refineWorkflowPreviews(await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`), repositoryWorkflow);
         const prompt = [publication.status, buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection, visualPreviewSettings }), repositoryWorkflowPrompt(repositoryWorkflow)].filter(Boolean).join('\n\n');
 
-        const { claudeResult, agentType } = await resolveAndExecuteAgent({
-            llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
+        const { worktreePath, branchName } = state.worktreeInfo;
+        const { claudeResult, agentType } = await runWithJobAgentCapacity(agentCapacity, () => resolveAndExecuteAgent({
+            llm, worktreePath, branchName, prompt,
             pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
             reasoningLevel: job.data.reasoningLevel, repositoryWorkflow, applyRepositoryWorkflow: true,
             // Bind the launched container's immutable identity to the handoff, so
             // recovery never trusts a different container's evidence for this task.
             onContainerInfo: containerId => markExecutionHandoffContainer(state, containerId),
-        });
+        }));
         state.claudeResult = claudeResult;
         await markExecutionHandoffAgentExited(state, claudeResult.success === true, claudeResult.success === true ? noChangeAnalysisSummary(claudeResult) : null);
 
@@ -490,6 +497,13 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
             // the PR lock. On failure the queue retry owns the comments, but this attempt must not stay pending.
             await persistRepositoryWorkflowDeferral({ job, workflow: state.repositoryWorkflow, baseBranch: state.repositoryWorkflowBaseBranch,
                 extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
+                onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
+            throw error;
+        }
+        if (isAgentCapacityRefusal(error)) {
+            capacityRefused = true;
+            // Same as a repository refusal: the delayed job keeps the claimed comments and holds no PR lock while it waits.
+            await persistAgentCapacityDeferral({ job, error, extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
                 onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
             throw error;
         }
