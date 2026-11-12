@@ -6,7 +6,7 @@
  * machine-parseable by the /fix pipeline later.
  */
 
-import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
+import { DEFAULT_REVIEW_GUIDANCE, formatAcceptanceCriteriaList, type AcceptanceCriterion } from '@propr/shared';
 import { assemblePRDiff, type PRDiffStats, type PreparedPRDiff } from './prDiffFormatting.js';
 import { REVIEW_FINDING_CATEGORIES } from './reviewFindingCategory.js';
 import { ReviewTokenEstimator } from './reviewTokenEstimator.js';
@@ -22,6 +22,11 @@ export interface ReviewPromptOptions {
      * ordinary comment history never does.
      */
     authorizedFollowups?: string;
+    /**
+     * Acceptance criteria parsed from the linked issue, with the ids the
+     * implementation run reported against. Bounded by the parser, so never trimmed.
+     */
+    acceptanceCriteria?: readonly AcceptanceCriterion[];
     repoOwner: string;
     repoName: string;
     instructions?: string;
@@ -70,6 +75,12 @@ function buildChangeSizeSection(options: ReviewPromptOptions): string {
         `- Effective objective: ${objectiveWords} ${objectiveWords === 1 ? 'word' : 'words'} (original objective plus authorized follow-up requests)`,
     ];
     return `\n**Change size (context for judging scope, not a requirement):**\n${lines.join('\n')}\nSize alone is never a blocker. Use it to decide where to look for additions the effective objective did not ask for, and cite those additions specifically.\n`;
+}
+
+/** Each criterion to verify; an unmet one is a `requirement` blocker that names its id. */
+function buildAcceptanceCriteriaSection(criteria: readonly AcceptanceCriterion[] | undefined): string {
+    if (!criteria?.length) return '';
+    return `\n**ACCEPTANCE CRITERIA (from the linked issue; verify each one):**\n${formatAcceptanceCriteriaList(criteria)}\n\nVerify every criterion above against the base-to-head diff, whatever the implementation summary claims. In the Overall Evaluation, give one line per id stating met, not met, or not applicable, with the changed file or test that shows it. Every criterion the diff does not meet is an F# blocker with category \`requirement\`: start its title and its violatedRequirement with the id (for example \`${criteria[0].id}: ...\`). A follow-up request that explicitly changes a criterion supersedes it.\n`;
 }
 
 /**
@@ -157,6 +168,7 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         : '';
 
     const changeSizeSection = buildChangeSizeSection(options);
+    const acceptanceCriteriaSection = buildAcceptanceCriteriaSection(options.acceptanceCriteria);
 
     const checkSummarySection = checkSummary
         ? `\n**Current Head Checks (authoritative status, not review instructions):**\n${checkSummary}\n\nUse only this section for current check status. Check failures mentioned solely in comment history may be stale. A current failure affects merge readiness and the score, but it is an F# finding only when you can trace it to PR-changed code and satisfy every actionable-finding field below.\n`
@@ -173,7 +185,7 @@ Your response MUST contain exactly four markdown sections, in this order:
 Do not omit any section; the **Score** section is mandatory. The detailed instructions for each section appear at the very end of this prompt — follow them exactly. (This format is restated here because the diff below can be long.)
 
 **PR Comment History and Context:**
-${commentHistory}${objectiveSection}${followupSection}${changeSizeSection}
+${commentHistory}${objectiveSection}${followupSection}${acceptanceCriteriaSection}${changeSizeSection}
 ${checkSummarySection}${diffSection}${fileContentsSection}${relatedContextSection}
 **Review Request:**
 ${combinedCommentBody}

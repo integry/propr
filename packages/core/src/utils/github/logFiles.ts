@@ -15,6 +15,7 @@ import { redactSecrets } from '../secretRedaction.js';
 import type { RepositoryValidationResult } from '../../workflow/repositoryValidationResult.js';
 import { buildReviewDigest, type ReviewConfig, type ReviewDigest, type ReviewDigestChange } from '../../workflow/reviewDigest.js';
 import { renderReviewDigest } from '../../workflow/reviewDigestMarkdown.js';
+import type { AcceptanceCriterion } from '@propr/shared';
 
 export { redactSecrets };
 
@@ -32,7 +33,7 @@ interface IssueRef {
 interface CompletionCommentOptions {
     publishedAs?: 'pull_request' | 'issue_comment';
     /** The run's diff; with changes, the parts include a review digest. */
-    review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig };
+    review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig; acceptanceCriteria?: readonly AcceptanceCriterion[] };
 }
 
 interface ConversationMessage {
@@ -408,7 +409,10 @@ export async function generateCompletionCommentParts(
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
     }
-    const reviewDigest = options.review ? buildReviewDigest(options.review.changes, result.repositoryValidationResult, options.review.config) : null;
+    const reviewDigest = options.review
+        ? buildReviewDigest(options.review.changes, result.repositoryValidationResult, options.review.config,
+            options.review.acceptanceCriteria && { criteria: options.review.acceptanceCriteria, agentReport: result.summary })
+        : null;
     return {
         run: execution.text,
         summary: buildSummarySection(result),

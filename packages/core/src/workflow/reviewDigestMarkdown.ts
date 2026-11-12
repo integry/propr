@@ -1,8 +1,10 @@
 /**
  * Markdown for the review digest section of pull request descriptions and
  * completion comments. Bounded, and every repository- or agent-controlled
- * string is a code span: paths, dependency names and validation commands.
+ * string is a code span: paths, dependency names, validation commands,
+ * acceptance criteria and the agent's statements about them.
  */
+import { ACCEPTANCE_CRITERION_STATUS_LABEL, type AcceptanceCriterionStatus } from '@propr/shared';
 import { describeRepositoryValidationStatus } from './repositoryValidationResult.js';
 import { REVIEW_RISK_TIERS, type ReviewDigest, type ReviewDigestFile, type ReviewRiskReason, type ReviewRiskTier } from './reviewDigest.js';
 import { redactSecrets } from '../utils/secretRedaction.js';
@@ -91,6 +93,19 @@ function validationSection(digest: ReviewDigest): string[] {
     return [`**Validation evidence** (${validation.overall})`, '', ...listed, ...(more > 0 ? [`- …and ${more} more`] : [])];
 }
 
+const STATUS_MARK: Record<AcceptanceCriterionStatus, string> = { met: '✅', not_met: '❌', not_applicable: '➖', not_addressed: '⚠️' };
+
+function acceptanceSection(digest: ReviewDigest): string[] {
+    const results = digest.acceptanceCriteria;
+    if (!results?.length) return [];
+    const met = results.filter(result => result.status === 'met').length;
+    const lines = results.map(result => {
+        const evidence = result.evidence ? ` — ${codeSpan(result.evidence)}` : '';
+        return `- ${STATUS_MARK[result.status]} **${result.id}** (${ACCEPTANCE_CRITERION_STATUS_LABEL[result.status]}): ${codeSpan(result.text)}${evidence}`;
+    });
+    return [`**Acceptance criteria** (${met} of ${results.length} met, as stated by the agent)`, '', ...lines, ''];
+}
+
 /** The digest section, ending in a blank line like the other completion parts; empty without a digest. */
 export function renderReviewDigest(digest: ReviewDigest | null | undefined): string {
     if (!digest) return '';
@@ -98,6 +113,7 @@ export function renderReviewDigest(digest: ReviewDigest | null | undefined): str
     const lines = [
         '### Review digest',
         '',
+        ...acceptanceSection(digest),
         ...riskSection(digest),
         '',
         ...validationSection(digest),
@@ -112,5 +128,8 @@ export function summarizeReviewDigest(digest: ReviewDigest): string {
     const tiers = REVIEW_RISK_TIERS.map(tier => `${digest.tiers[tier].count} ${tier}`).join(', ');
     const dependencies = digest.newDependencies.count ? `; ${plural(digest.newDependencies.count, 'new dependency').replace(/dependencys$/, 'dependencies')}` : '';
     const validation = digest.validation ? `; validation ${digest.validation.overall}` : '';
-    return `Review digest: ${plural(digest.size.files, 'file')} (${lineCounts(digest.size)}): ${tiers} risk${dependencies}${validation}`;
+    const criteria = digest.acceptanceCriteria?.length
+        ? `; ${digest.acceptanceCriteria.filter(result => result.status === 'met').length}/${digest.acceptanceCriteria.length} acceptance criteria met`
+        : '';
+    return `Review digest: ${plural(digest.size.files, 'file')} (${lineCounts(digest.size)}): ${tiers} risk${dependencies}${validation}${criteria}`;
 }

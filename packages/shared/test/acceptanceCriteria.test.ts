@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import {
+  MAX_ACCEPTANCE_CRITERIA, MAX_ACCEPTANCE_CRITERION_LENGTH, MAX_ACCEPTANCE_EVIDENCE_LENGTH,
+  evaluateAcceptanceCriteria, extractAcceptanceCriteria, formatAcceptanceCriteriaList,
+} from '../src/acceptanceCriteria.js';
+
+const texts = (body: string) => extractAcceptanceCriteria(body).map(criterion => criterion.text);
+
+test('no heading means no criteria', () => {
+  assert.deepEqual(extractAcceptanceCriteria(undefined), []);
+  assert.deepEqual(extractAcceptanceCriteria(''), []);
+  assert.deepEqual(extractAcceptanceCriteria('## Requirements\n\n- one\n- two\n\nAcceptance criteria: it works'), []);
+  assert.deepEqual(extractAcceptanceCriteria('**Acceptance criteria**\n- bold is not a heading'), []);
+});
+
+test('matches the heading case-insensitively at any ATX or setext level', () => {
+  for (const heading of ['# Acceptance criteria', '## Acceptance Criteria', '###### ACCEPTANCE CRITERIA', '### Acceptance criteria:', '## **Acceptance  criteria** ##', '  ## acceptance criteria']) {
+    assert.deepEqual(texts(`${heading}\n\n- works`), ['works'], heading);
+  }
+  assert.deepEqual(texts('Intro\n\nAcceptance criteria\n===\n- one'), ['one']);
+  assert.deepEqual(texts('Acceptance Criteria\n---\n- one'), ['one']);
+  assert.deepEqual(texts('## Acceptance criteria for later\n- no'), []);
+});
+
+test('assigns stable ids in order and stops at the next heading of the same or a higher level', () => {
+  const body = [
+    '## Problem', '- not a criterion', '',
+    '## Acceptance criteria', '', '- First', '* Second', '+ Third', '1. Fourth', '2) Fifth', '',
+    '### Backend', '- Under a subheading', '',
+    '## Out of scope', '- Not this',
+  ].join('\n');
+  assert.deepEqual(extractAcceptanceCriteria(body), [
+    { id: 'AC1', text: 'First' }, { id: 'AC2', text: 'Second' }, { id: 'AC3', text: 'Third' },
+    { id: 'AC4', text: 'Fourth' }, { id: 'AC5', text: 'Fifth' }, { id: 'AC6', text: 'Under a subheading' },
+  ]);
+  assert.deepEqual(texts('# Acceptance criteria\n- one\n## Deeper\n- two\n# Next\n- three'), ['one', 'two']);
+});
+
+test('folds nested items and continuation lines into their parent criterion', () => {
+  const body = [
+    '## Acceptance criteria',
+    '- Parent:', '  - child one', '    - grandchild', '  - child two',
+    '- Wrapped item', '  continues here', 'and lazily here',
+    '', 'A plain paragraph is not a criterion.', '',
+    '- Last',
+  ].join('\n');
+  assert.deepEqual(texts(body), ['Parent: child one; grandchild; child two', 'Wrapped item continues here and lazily here', 'Last']);
+  assert.deepEqual(texts('## Acceptance criteria\n  - indented top level\n  - second\n    - nested'), ['indented top level', 'second; nested']);
+});
+
+test('drops checkboxes, HTML comments and list items inside code fences', () => {
+  const body = '## Acceptance criteria\n- [ ] Open\n- [x] Done\n- [X] Also done <!-- note -->\n```md\n- fenced\n## Not a heading\n```\n- After fence\n- [ ]\n';
+  assert.deepEqual(texts(body), ['Open', 'Done', 'Also done', 'After fence']);
+  assert.deepEqual(texts('```\n## Acceptance criteria\n- fenced\n```\n'), []);
+});
+
+test('bounds the count and the length of each criterion', () => {
+  const many = ['## Acceptance criteria', ...Array.from({ length: MAX_ACCEPTANCE_CRITERIA + 5 }, (_, index) => `- item ${index + 1}`)].join('\n');
+  const criteria = extractAcceptanceCriteria(many);
+  assert.equal(criteria.length, MAX_ACCEPTANCE_CRITERIA);
+  assert.equal(criteria.at(-1)?.id, `AC${MAX_ACCEPTANCE_CRITERIA}`);
+  const [long] = extractAcceptanceCriteria(`## Acceptance criteria\n- ${'x'.repeat(MAX_ACCEPTANCE_CRITERION_LENGTH * 3)}`);
+  assert.equal(long.text.length, MAX_ACCEPTANCE_CRITERION_LENGTH);
+  assert.ok(long.text.endsWith('…'));
+});
+
+test('parses adversarial bodies in linear time', () => {
+  const started = Date.now();
+  extractAcceptanceCriteria(`## Acceptance criteria\n- ${'<!--'.repeat(20_000)}${' #'.repeat(20_000)}\n${'#'.repeat(30_000)}`);
+  evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `AC1: met ${' |'.repeat(50_000)}x`);
+  assert.ok(Date.now() - started < 1000);
+});
+
+test('formats criteria for prompts', () => {
+  assert.equal(formatAcceptanceCriteriaList([{ id: 'AC1', text: 'One' }, { id: 'AC2', text: 'Two' }]), '- AC1: One\n- AC2: Two');
+  assert.equal(formatAcceptanceCriteriaList([]), '');
+});
+
+test('pairs each criterion with the agent statement and marks the rest not addressed', () => {
+  const criteria = extractAcceptanceCriteria('## Acceptance criteria\n- A\n- B\n- C\n- D\n- E');
+  const report = [
+    'I implemented the parser.', '',
+    '**Acceptance criteria:**',
+    '- **AC1:** met — `packages/shared/src/acceptanceCriteria.ts`',
+    '- AC2 - not met: the UI part is still missing',
+    '| AC3 | not applicable | docs-only change |',
+    '- AC1: met — `packages/shared/test/acceptanceCriteria.test.ts`',
+    '- AC9: met — unknown id is ignored',
+    'The AC4 work is done.',
+    '- AC5: met',
+  ].join('\n');
+  assert.deepEqual(evaluateAcceptanceCriteria(criteria, report), [
+    { id: 'AC1', text: 'A', status: 'met', evidence: '`packages/shared/test/acceptanceCriteria.test.ts`' },
+    { id: 'AC2', text: 'B', status: 'not_met', evidence: 'the UI part is still missing' },
+    { id: 'AC3', text: 'C', status: 'not_applicable', evidence: 'docs-only change' },
+    { id: 'AC4', text: 'D', status: 'not_addressed' },
+    { id: 'AC5', text: 'E', status: 'met' },
+  ]);
+  assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), undefined), [{ id: 'AC1', text: 'A', status: 'not_addressed' }]);
+  const [bounded] = evaluateAcceptanceCriteria(criteria.slice(0, 1), `AC1: N/A — ${'y'.repeat(1000)}`);
+  assert.equal(bounded.status, 'not_applicable');
+  assert.equal(bounded.evidence?.length, MAX_ACCEPTANCE_EVIDENCE_LENGTH);
+});
