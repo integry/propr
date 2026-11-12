@@ -129,7 +129,6 @@ interface LLMMetricsSummary {
     };
     modelBreakdown: Record<string, unknown>;
     dailyMetrics: unknown[];
-    recentHighCostAlerts: unknown[];
     lastUpdated: string;
 }
 
@@ -152,7 +151,6 @@ export const llmMetricsMock = {
         },
         modelBreakdown: {},
         dailyMetrics: [],
-        recentHighCostAlerts: [],
         lastUpdated: new Date().toISOString()
     })),
     getLLMMetricsByCorrelationId: mock.fn(async () => null)

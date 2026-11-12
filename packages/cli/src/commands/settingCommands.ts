@@ -81,6 +81,11 @@ function getSettingDescription(key: SettingKey): string {
     agent_network_mode_enforced: "With restricted mode, stop repositories choosing open (true/false; \"default\" = env AGENT_NETWORK_MODE_ENFORCED)",
     agent_network_allow: "Comma-separated hosts every restricted run may reach (\"default\" = env AGENT_NETWORK_ALLOW)",
     agent_network_ignore_repository_allow: "With enforced restricted mode, ignore hosts repositories add in network.allow (true/false; \"default\" = env AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW)",
+    token_outlier_multiplier: "Alert when a run uses more than this multiple of its baseline median tokens (1.5-100, default 4)",
+    token_outlier_min_tokens: "Runs at or below this many total tokens never raise a token alert (default 500000)",
+    token_outlier_baseline_runs: "Successful runs (same repository, model and execution type) in the baseline median (8-200, default 20)",
+    token_outlier_pause_alerts: "Skip a repository's scheduled automations after this many token alerts in the window (0 = off)",
+    token_outlier_pause_window_hours: "Hours over which token alerts count toward the automation pause (1-720, default 24)",
   };
   return descriptions[key];
 }

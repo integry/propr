@@ -162,7 +162,21 @@ For directly supported Claude and OpenAI models, ProPR uses the providers' publi
 
 Reasoning effort changes how many thinking/output tokens a model uses; it does not apply a separate price multiplier. Provider usage reports already include reasoning tokens in `output_tokens`, so ProPR bills that output once and records the effective reasoning level in the expanded log details. Codex also reports the reasoning-token subset there when available. A higher effort setting can therefore cost more because it produces more billed output, not because each token has a different rate.
 
-When a single run crosses the cost threshold (`LLM_COST_THRESHOLD_USD`, default `10.00`), ProPR records a high-cost alert; the 10 most recent appear in the aggregated metrics summary. Investigate when:
+### Token-outlier alerts
+
+After each agent execution is recorded, ProPR compares its total tokens (input, output, cache creation and cache reads) with a baseline from its own history: the median of the last successful executions for the same repository, model and execution type. When the run uses more than a multiple of that baseline **and** more than an absolute floor, every instance member gets a `warning` Inbox notification on the task, stating the observed and baseline token counts. Each task alerts at most once, so follow-ups and retries of the same task stay quiet. Repositories with notifications turned off do not alert.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `token_outlier_multiplier` | `4` | Alert above this multiple of the baseline median (1.5–100). |
+| `token_outlier_min_tokens` | `500000` | Runs at or below this many total tokens never alert. |
+| `token_outlier_baseline_runs` | `20` | Successful executions in the baseline (8–200). No alert fires until at least 8 exist. |
+| `token_outlier_pause_alerts` | `0` (off) | After this many alerts for one repository within the window, its scheduled automation runs are skipped until the window has passed. |
+| `token_outlier_pause_window_hours` | `24` | Window for counting alerts toward the pause (1–720). |
+
+Change them with MCP `update_execution_settings` or `propr setting update token_outlier_multiplier 5`. Manual **Run now** and API, MCP or CLI triggers are never paused; a skipped scheduled run shows the reason in its run history.
+
+Investigate when:
 
 - A single run exceeds the expected cost
 - A loop repeats too many times
@@ -171,7 +185,7 @@ When a single run crosses the cost threshold (`LLM_COST_THRESHOLD_USD`, default 
 
 A cost spike should lead to an action: smaller task scope, a different model, or loop limits.
 
-`LLM_COST_THRESHOLD_USD` only alerts. To **enforce** a limit, set a per-run spend cap; a run whose estimated cost reaches it is stopped and its partial work published:
+Token-outlier alerts only notify. To **enforce** a limit, set a per-run spend cap; a run whose estimated cost reaches it is stopped and its partial work published:
 
 | Precedence | Where | Value |
 |---|---|---|

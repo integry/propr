@@ -1,6 +1,7 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import type { Knex } from 'knex';
+import { TOKEN_OUTLIER_SETTING_NAMES } from '@propr/shared';
 export { validateAgentsConfig, normalizeAgentsConfig } from './configAgentValidation.js';
 export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName } from './configSettings.js';
 
@@ -29,7 +30,8 @@ export const SPECIALIZED_SETTING_NAMES = [
   'agent_network_mode',
   'agent_network_mode_enforced',
   'agent_network_allow',
-  'agent_network_ignore_repository_allow'
+  'agent_network_ignore_repository_allow',
+  ...TOKEN_OUTLIER_SETTING_NAMES
 ] as const;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
