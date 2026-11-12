@@ -155,6 +155,45 @@ test('a refinement keeps item ids and drops dependsOn entries for removed tasks'
   assert.deepEqual(stored[2].dependsOn, ['ui']);
 });
 
+async function refineUnchanged(db: Knex, currentPlan: Item[], runId: string): Promise<void> {
+  await db('task_drafts').where({ draft_id: draftId }).update({ status: 'refining', refinement_result: JSON.stringify({ status: 'in_progress', runId }) });
+  await runBackgroundRefinement({ db, draftId, currentPlan, instruction: 'Tidy the plan', generationModel: 'test-model',
+    correlationId: runId, accessToken: 'token', runId }, {
+    checkAborted: async () => false,
+    getRepoContext: async () => ({ worktreePath: '/tmp/worktree', repository, authToken: 'token' }),
+    // The model hands the stored plan back byte for byte as a modification.
+    refine: async () => ({ action: 'modified', summary: 'Kept the plan.', model: 'test-model', plan: structuredClone(currentPlan) }) as never,
+  });
+}
+
+test('a refinement returning the stored plan unchanged still stores only direct prerequisites', async t => {
+  t.mock.method(console, 'log', () => undefined);
+  // A user saved the chain with a redundant edge: UI lists Schema although API already does.
+  const saved = [task('Schema', { id: 'schema' }), task('API', { id: 'api', dependsOn: ['schema'] }), task('UI', { id: 'ui', dependsOn: ['schema', 'api'] })];
+  const db = await setup(t, saved);
+  await db('task_drafts').where({ draft_id: draftId }).update({ plan_cause: 'manual_edit' });
+
+  await refineUnchanged(db, saved, 'refinement-unchanged-redundant');
+  assert.deepEqual(relation(await storedPlan(db)), [['schema', []], ['api', ['schema']], ['ui', ['api']]]);
+  const current = await db('task_drafts').where({ draft_id: draftId }).first();
+  assert.equal(current.plan_cause, 'refinement');
+  const [snapshot] = await listPlanRevisions(db, draftId);
+  assert.equal(snapshot.cause, 'manual_edit', 'the user-saved plan is kept in the history');
+  assert.equal(snapshot.currentCause, 'refinement');
+});
+
+test('a refinement returning an already reduced stored plan unchanged keeps it and its provenance', async t => {
+  t.mock.method(console, 'log', () => undefined);
+  const saved = [task('Schema', { id: 'schema' }), task('API', { id: 'api', dependsOn: ['schema'] }), task('UI', { id: 'ui', dependsOn: ['api'] })];
+  const db = await setup(t, saved);
+  await db('task_drafts').where({ draft_id: draftId }).update({ plan_cause: 'manual_edit' });
+
+  await refineUnchanged(db, saved, 'refinement-unchanged-reduced');
+  assert.deepEqual(await storedPlan(db), saved);
+  assert.equal((await db('task_drafts').where({ draft_id: draftId }).first()).plan_cause, 'manual_edit');
+  assert.deepEqual(await listPlanRevisions(db, draftId), []);
+});
+
 function issueServer() {
   let posts = 0;
   let failAt: number | undefined;

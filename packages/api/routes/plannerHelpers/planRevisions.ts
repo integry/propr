@@ -70,19 +70,36 @@ export async function getCurrentPlanCause(db: Knex, draftId: string): Promise<Pl
  * what created the live plan, so only a run that actually replaced the plan
  * claims it: an answer or a clarification hands the caller's plan back and
  * keeps the provenance that plan already had, as does a "modified" result
- * that is byte-identical to the stored plan.
+ * that is byte-identical to the stored plan and needs no dependency repair.
  */
 export function refinementPlanUpdates(db: Knex, action: unknown, plan: unknown): Record<string, unknown> {
   // Refined items keep their ids; new items get one, and references the model
-  // left dangling (to a removed task, itself, or around a cycle) are dropped.
-  // A result identical to the stored plan, as returned, changes nothing.
+  // left dangling (to a removed task, itself, or around a cycle) or reachable
+  // through another prerequisite are dropped.
   const returned = JSON.stringify(plan);
   if (action !== 'modified') return { plan_json: returned };
-  const serializedPlan = JSON.stringify(Array.isArray(plan) ? preparePlanItemsFromModel(plan) : plan);
+  const prepared = Array.isArray(plan) ? preparePlanItemsFromModel(plan) : plan;
+  const serializedPlan = JSON.stringify(prepared);
+  if (Array.isArray(plan) && Array.isArray(prepared) && dependenciesChanged(plan, prepared)) {
+    // The model's dependencies were repaired, so even a result identical to
+    // the stored plan replaces it: storage must hold only direct prerequisites.
+    return {
+      plan_json: serializedPlan,
+      plan_cause: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', serializedPlan, 'plan_cause', 'refinement']),
+    };
+  }
+  // Otherwise a result identical to the stored plan, as returned, changes
+  // nothing (ids assigned to an older plan's items wait for a real edit).
   return {
     plan_json: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', returned, 'plan_json', serializedPlan]),
     plan_cause: db.raw('CASE WHEN ?? IN (?, ?) THEN ?? ELSE ? END', ['plan_json', returned, serializedPlan, 'plan_cause', 'refinement']),
   };
+}
+
+/** Whether preparation changed any item's `dependsOn`; items keep their positions. */
+function dependenciesChanged(returned: readonly unknown[], prepared: readonly unknown[]): boolean {
+  const dependsOn = (item: unknown) => (item && typeof item === 'object' ? (item as { dependsOn?: unknown }).dependsOn : undefined);
+  return returned.some((item, index) => JSON.stringify(dependsOn(item)) !== JSON.stringify(dependsOn(prepared[index])));
 }
 
 function summarize(row: PlanRevisionRow, currentCause: PlanRevisionCause): PlanRevisionSummary {
