@@ -322,7 +322,7 @@ Every goal command accepts `--json` and prints a versioned document: `{ "version
 
 | Option | Meaning |
 | --- | --- |
-| `--until <condition>` | `completed`, `failed`, `cancelled` (the goal's persisted result), `paused` (a pause the worker confirmed), `terminal` (any of completed, failed or cancelled) or `checkpoint` (a checkpoint published after the cursor). Omit it to wait for any new goal event. |
+| `--until <condition>` | `completed`, `failed`, `cancelled` (the goal's persisted result), `paused` (a pause the worker confirmed), `terminal` (any of completed, failed or cancelled) `checkpoint` (a checkpoint published after the cursor) or `blocked` (the agent opened a question or approval for you; a still-open one matches immediately without a cursor). Omit it to wait for any new goal event, including a blocker opening or closing. |
 | `--after-cursor <cursor>` | Only count events after this cursor, as printed by an earlier wait. |
 | `--timeout <seconds>` | Overall deadline, `0`–`86400` (default `300`). `0` checks once without waiting. |
 | `-j, --json` | Print a `goal-wait` document: `outcome`, `condition`, `cursor`, `matchedImmediately`, the triggering `event`, the current `goal` projection, `requests` and `exitCode`. The timeout and Ctrl-C variants are described below. |

@@ -43,6 +43,15 @@ export type GoalBlockerResolution =
     | 'superseded_by_attempt'
     | 'goal_terminal';
 
+/** What `recordGoalBlocker` recorded for an open request. */
+export interface RecordedGoalBlocker {
+    /** Highest input sequence recorded before the blocker was first opened. */
+    inputBoundary: number | null;
+    blockerId: string;
+    /** True only for the call that inserted the row, so the operator is told once. */
+    opened: boolean;
+}
+
 /**
  * Open (or refresh) the blocker for one provider request. Returns the highest
  * input sequence recorded before the blocker was first opened, or null when
@@ -53,7 +62,7 @@ export async function recordGoalBlocker(
     attempt: GoalBlockerAttempt,
     goal: GoalBlockerOwner,
     report: GoalBlockerReport,
-): Promise<{ inputBoundary: number | null } | null> {
+): Promise<RecordedGoalBlocker | null> {
     const requestKey = report.requestKey.slice(0, 255);
     const existing = await trx('goal_blockers')
         .where({ goal_id: attempt.goalId, request_key: requestKey })
@@ -64,7 +73,11 @@ export async function recordGoalBlocker(
         if (existing.status !== 'open' || existing.run_claim !== attempt.claimId) return null;
         await trx('goal_blockers').where({ blocker_id: existing.blocker_id, status: 'open' })
             .update({ last_observed_at: trx.fn.now() });
-        return { inputBoundary: existing.input_boundary === null ? null : Number(existing.input_boundary) };
+        return {
+            inputBoundary: existing.input_boundary === null ? null : Number(existing.input_boundary),
+            blockerId: existing.blocker_id,
+            opened: false,
+        };
     }
     const questions = normalizeGoalBlockerQuestions(report.questions ?? []);
     const blockerId = randomUUID();
@@ -92,7 +105,7 @@ export async function recordGoalBlocker(
     });
     const inserted = await trx('goal_blockers').where({ blocker_id: blockerId })
         .first('input_boundary') as { input_boundary: number | string };
-    return { inputBoundary: Number(inserted.input_boundary) };
+    return { inputBoundary: Number(inserted.input_boundary), blockerId, opened: true };
 }
 
 /** Close one open blocker raised by this attempt. */
