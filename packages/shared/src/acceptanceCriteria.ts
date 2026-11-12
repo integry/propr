@@ -85,6 +85,8 @@ function bound(text: string, max: number): string {
 type SectionLine = string | null;
 
 const LEADING_WHITESPACE = /^[ \t]*/;
+/** Most list items one line is read as opening, as in `- 1. text`; keeps long marker runs linear. */
+const MAX_ITEMS_PER_LINE = 8;
 const LIST_MARKER = /^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]*)/;
 
 /** Width of `text` in columns, with tab stops every four columns. */
@@ -104,10 +106,37 @@ function listContentColumn(line: string): number {
     return spacing < 1 || spacing > 4 || !line.slice(match[0].length).trim() ? markerEnd + 1 : markerEnd + spacing;
 }
 
+/**
+ * The list item's content as a line of its own, padded to its content column,
+ * when the content starts on the item's line; otherwise null.
+ */
+function itemContentLine(line: string, column: number): string | null {
+    const match = LIST_MARKER.exec(line) as RegExpExecArray;
+    const text = line.slice(match[0].length);
+    return text.trim() && column === columnWidth(match[0]) ? ' '.repeat(column) + text : null;
+}
+
+/** The fence run `text` opens with; a backtick run followed by another backtick is inline code. */
+function fenceRun(text: string): string | null {
+    const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(text);
+    return match && !(match[1][0] === '`' && match[2].includes('`')) ? match[1] : null;
+}
+
 interface OpenFence {
     marker: string;
     /** Content column of the list item holding the fence; 0 at top level. */
     column: number;
+}
+
+/** How a line relates to fenced code. */
+interface FenceLine {
+    /** Content column of the list item holding the fence; 0 at top level. */
+    column: number;
+    /**
+     * Set when the fence opens on a list item's own line, as in `- \`\`\`md`:
+     * the item's marker, which starts the item although its content is fenced.
+     */
+    itemMarker?: string;
 }
 
 /**
@@ -119,22 +148,20 @@ class FenceTracker {
     private fence: OpenFence | null = null;
     private previousBlank = true;
 
-    /**
-     * The content column of the list item holding the fence when `line` is a
-     * fence delimiter or fenced code (0 for a top-level fence), otherwise -1.
-     */
-    fenceColumn(line: string): number {
+    /** How `line` relates to fenced code: null unless it is a fence delimiter or fenced code. */
+    fenceLine(line: string): FenceLine | null {
         const blank = !line.trim();
         const indent = columnWidth(LEADING_WHITESPACE.exec(line)?.[0] ?? '');
         const held = this.fence?.column;
         const fenced = this.fence ? this.continueFence(line, blank, indent) : this.openFence(line, blank, indent);
         this.previousBlank = blank;
-        if (!fenced) return -1;
+        if (!fenced) return null;
+        if (typeof fenced === 'string') return { column: (this.fence as OpenFence).column, itemMarker: fenced };
         // A closing delimiter clears the fence, and a less-indented line can end it and open another.
-        return this.fence?.column ?? held ?? 0;
+        return { column: this.fence?.column ?? held ?? 0 };
     }
 
-    private continueFence(line: string, blank: boolean, indent: number): boolean {
+    private continueFence(line: string, blank: boolean, indent: number): boolean | string {
         const fence = this.fence as OpenFence;
         // A line indented less than the holding list item ends the item and its fence.
         if (!blank && indent < fence.column) {
@@ -146,7 +173,8 @@ class FenceTracker {
         return true;
     }
 
-    private openFence(line: string, blank: boolean, indent: number): boolean {
+    /** True when `line` opens a fence; the item marker when it opens on a list item's line. */
+    private openFence(line: string, blank: boolean, indent: number): boolean | string {
         if (blank) return false;
         // The list items this line can still belong to: those it is indented into.
         let depth = this.containers.length;
@@ -154,18 +182,38 @@ class FenceTracker {
         const content = listContentColumn(line);
         const column = depth ? this.containers[depth - 1] : 0;
         const marker = content < 0 ? this.delimiterAt(line, indent, column) : null;
-        // Only paragraph text continues a less-indented item lazily; a list item or fence ends it.
-        if (content >= 0 || marker || this.previousBlank) this.containers.length = depth;
-        if (content >= 0) this.containers.push(content);
+        // Only paragraph text continues a less-indented item lazily; a list item, fence or heading ends it.
+        if (content >= 0 || marker || this.previousBlank || atxHeading(line)) this.containers.length = depth;
+        if (content >= 0) return this.openItems(line, content);
         if (!marker) return false;
         this.fence = { marker, column };
         return true;
     }
 
+    /**
+     * Records the list items starting on `line`, such as `- 1. text`, and opens
+     * the fence that their content starts with, if any.
+     */
+    private openItems(line: string, firstColumn: number): boolean | string {
+        let itemLine: string | null = line;
+        let column = firstColumn;
+        for (let opened = 0; itemLine !== null && column >= 0 && opened < MAX_ITEMS_PER_LINE; opened++) {
+            this.containers.push(column);
+            itemLine = itemContentLine(itemLine, column);
+            const marker = itemLine === null ? null : fenceRun(itemLine.slice(column));
+            if (marker) {
+                this.fence = { marker, column };
+                return (LIST_MARKER.exec(line) as RegExpExecArray)[0];
+            }
+            column = itemLine === null ? -1 : listContentColumn(itemLine);
+        }
+        return false;
+    }
+
     /** The fence run starting `line`, when its indentation is within three columns of `column`. */
     private delimiterAt(line: string, indent: number, column: number): string | null {
         if (indent < column || indent - column > 3) return null;
-        return /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+        return fenceRun(line);
     }
 }
 
@@ -208,9 +256,14 @@ function visibleLines(lines: readonly string[]): VisibleLine[] {
     const fences = new FenceTracker();
     let inComment = false;
     for (const line of lines) {
-        const fenceColumn = inComment ? -1 : fences.fenceColumn(line);
-        if (fenceColumn >= 0) {
-            visible.push({ text: line, fenced: true, inListItem: fenceColumn > 0 });
+        const fence = inComment ? null : fences.fenceLine(line);
+        if (fence?.itemMarker !== undefined) {
+            // The item starts here, but its content is the fence's opening delimiter.
+            visible.push({ text: fence.itemMarker, fenced: false, inListItem: false });
+            continue;
+        }
+        if (fence) {
+            visible.push({ text: line, fenced: true, inListItem: fence.column > 0 });
             continue;
         }
         const stripped = stripLineComments(line, inComment);
@@ -261,6 +314,8 @@ function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
 /**
  * Groups section lines into items: each top-level list item starts one, nested
  * items become further parts, and continuation lines extend the last part.
+ * Whatever ends a list (a sub-heading, a top-level fence, a paragraph) also
+ * ends its indentation, so the next list's first item is top-level again.
  */
 function listItems(section: readonly SectionLine[]): string[][] {
     const items: string[][] = [];
@@ -269,7 +324,7 @@ function listItems(section: readonly SectionLine[]): string[][] {
     let previousBlank = true;
     for (const line of section) {
         if (line === null || !line.trim()) {
-            if (line === null) current = null;
+            if (line === null) [current, topIndent] = [null, -1];
             previousBlank = true;
             continue;
         }
@@ -285,7 +340,7 @@ function listItems(section: readonly SectionLine[]): string[][] {
         } else if (current && (/^[ \t]/.test(line) || !previousBlank)) {
             // Indented or lazy continuation; a plain paragraph after a blank line ends the item.
             current[current.length - 1] += ` ${line.trim()}`;
-        } else current = null;
+        } else [current, topIndent] = [null, -1];
         previousBlank = false;
     }
     return items;

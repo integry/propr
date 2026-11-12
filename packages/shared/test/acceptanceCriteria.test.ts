@@ -95,14 +95,62 @@ test('ignores fenced examples inside nested list items', () => {
     '- Document usage.',
   ].join('\n');
   assert.deepEqual(texts(afterNested), ['Validate input: Reject malformed input, including this example: and report it. Keep valid input.', 'Document usage.']);
-  // A top-level fence still ends the item, and an unindented paragraph after an item's fence is not part of it.
-  assert.deepEqual(texts('## Acceptance criteria\n- First\n```\ncode\n```\n  - Orphan\n- Second\n'), ['First', 'Second']);
+  // A top-level fence still ends the item (and its list, so an indented item after it is top-level),
+  // and an unindented paragraph after an item's fence is not part of it.
+  assert.deepEqual(texts('## Acceptance criteria\n- First\n```\ncode\n```\n  - After the fence\n- Second\n'), ['First', 'After the fence', 'Second']);
   assert.deepEqual(texts('## Acceptance criteria\n- First\n  ```\n  code\n  ```\nNot a criterion.\n- Second\n'), ['First', 'Second']);
   // A fence in a top-level item, and one a less-indented line ends with its list item.
   assert.deepEqual(texts('## Acceptance criteria\n1. First\n   ~~~\n   - example\n   ~~~\n2. Second\n'), ['First', 'Second']);
   assert.deepEqual(texts('## Acceptance criteria\n- First\n  ```\n  - example\n- Second\n'), ['First', 'Second']);
   // Outside a list, four spaces of indentation is still not a fence.
   assert.deepEqual(texts('## Acceptance criteria\n\n    ```\n- Kept\n'), ['Kept']);
+});
+
+test('ignores fenced examples that start on a list item line', () => {
+  const body = [
+    '## Acceptance criteria',
+    '- Validate input:',
+    '  - ```md',
+    '    - Accept malformed input.',
+    '    ```',
+    '- Document usage.',
+    '- ```text',
+    '  - Example only.',
+    '  ```',
+    '  Run the example in CI.',
+    '- 1. ~~~',
+    '     - Nested example.',
+    '     ~~~',
+    '- Keep the changelog.',
+  ].join('\n');
+  // The fence is the item's content: the item still starts there and keeps its later text.
+  assert.deepEqual(extractAcceptanceCriteria(body), [
+    { id: 'AC1', text: 'Validate input:' },
+    { id: 'AC2', text: 'Document usage.' },
+    { id: 'AC3', text: 'Run the example in CI.' },
+    { id: 'AC4', text: 'Keep the changelog.' },
+  ]);
+  // Inline code with three backticks is not a fence.
+  assert.deepEqual(texts('## Acceptance criteria\n- ```npm test``` passes\n- Second\n'), ['```npm test``` passes', 'Second']);
+});
+
+test('starts a new top-level list after a sub-heading or paragraph ends the previous one', () => {
+  const body = [
+    '## Acceptance criteria',
+    '- Backend works',
+    '### Documentation',
+    '  - Usage is documented',
+    '    - with examples',
+    '### Release',
+    '- Changelog updated',
+    '',
+    'Operations:',
+    '',
+    '   1. Alert added',
+  ].join('\n');
+  assert.deepEqual(texts(body), ['Backend works', 'Usage is documented; with examples', 'Changelog updated', 'Alert added']);
+  // A heading also ends the list for fences, so a top-level fence after it hides its whole body.
+  assert.deepEqual(texts('## Acceptance criteria\n- Backend works\n### Docs\n  ```\nx\n- fenced\n  ```\n- Real\n'), ['Backend works', 'Real']);
 });
 
 test('ignores HTML comments spanning headings and list items', () => {
@@ -129,6 +177,7 @@ test('parses adversarial bodies in linear time', () => {
   const started = Date.now();
   extractAcceptanceCriteria(`## Acceptance criteria\n- ${'<!--'.repeat(20_000)}${' #'.repeat(20_000)}\n${'#'.repeat(30_000)}`);
   evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `AC1: met ${' |'.repeat(50_000)}x`);
+  extractAcceptanceCriteria(`## Acceptance criteria\n${'- '.repeat(50_000)}\`\`\`\n${'1. '.repeat(30_000)}x`);
   assert.ok(Date.now() - started < 1000);
 });
 
@@ -187,4 +236,12 @@ test('ignores statements in fenced examples and HTML comments, keeping the last 
   const nested = ['- Notes:', '  - Example format:', '    ```md', '    - AC1: met — example', '    ```', '- AC1: not met — missing'].join('\n');
   assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), nested)[0].status, 'not_met');
   assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), nested.split('\n').slice(0, 5).join('\n'))[0].status, 'not_addressed');
+  // A fence opening on the list item line, and the real statement after it.
+  const onItemLine = ['- AC1: not met — missing implementation', '- ```md', '  - AC1: met — example', '  ```'];
+  assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), onItemLine.join('\n')), [
+    { id: 'AC1', text: 'A', status: 'not_met', evidence: 'missing implementation' },
+  ]);
+  const after = [...onItemLine, '- AC2: met — `src/b.ts`'].join('\n');
+  assert.equal(evaluateAcceptanceCriteria(criteria, after)[1].status, 'met');
+  assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), '* 1. ~~~\n     AC1: met — example\n     ~~~')[0].status, 'not_addressed');
 });
