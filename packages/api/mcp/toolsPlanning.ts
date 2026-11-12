@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getEpicExecutionQueue, summarizeEpicQueue, type EpicAdvancePolicy } from '@propr/core';
+import { withPlanIssueDependencies } from '@propr/shared';
 import type { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { McpError } from './config.js';
 import { callWorkflow } from './adapter.js';
@@ -8,6 +9,8 @@ import { type McpTool, type ToolDeps, addPlanImplementationTool, TERMINAL_PLAN_S
 import { planRelationLimit, summarizePlan } from './listSummaries.js';
 import { getCurrentPlanCause, getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { classifyError, type McpErrorStage } from './errorEnvelope.js';
+import { planStorageUpdates } from '../routes/plannerHelpers/validation.js';
+import { prepareMcpPlan, publicationPlanItems, recordPublishedDependencies, validatePublicationPlan } from './planItems.js';
 import { activePublication as parseActivePublication, findMarkedIssue, parseContextConfig, partialPublication, publicationLeaseLapsed, publicationLeaseLapsesAt, publicationSummary, publicationOwner, publicationOwnerStopped, withinPublicationLease, PUBLICATION_LEASE_EXPIRED, PUBLICATION_LEASE_MS, type ActivePublication, type PublishedIssue } from './planPublication.js';
 import { McpOperations } from './operations.js';
 
@@ -41,29 +44,6 @@ const columns = ['draft_id', 'repository', 'name', 'initial_prompt', 'plan_json'
 
 type PublicationStep = 'authorize' | 'create_issue' | 'load_issues' | 'record_issue' | 'verify_claim' | 'complete';
 
-function requiredTaskFields(value: unknown): string[] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return ['title', 'body', 'implementation'];
-  const task = value as Record<string, unknown>;
-  return ['title', 'body', 'implementation'].filter(field => typeof task[field] !== 'string' || task[field].length === 0);
-}
-
-function validatePublicationPlan(planJson: unknown, schema: z.ZodType): Array<Record<string, unknown>> {
-  let value: unknown;
-  try { value = typeof planJson === 'string' ? JSON.parse(planJson) : planJson; }
-  catch { value = null; }
-  const entries = Array.isArray(value) ? value : [];
-  const incomplete = entries.map((task, index) => ({ index,
-    title: task && typeof task === 'object' && typeof (task as Record<string, unknown>).title === 'string'
-      ? (task as Record<string, unknown>).title : `Task ${index + 1}`,
-    missing: requiredTaskFields(task),
-  })).filter(task => task.missing.length > 0);
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) throw new McpError('PLAN_INVALID', 'Plan is incomplete or invalid. Update it before publishing.', 400, {
-    stage: 'validation', retryable: false, details: { incomplete },
-  });
-  return parsed.data as Array<Record<string, unknown>>;
-}
-
 function failureStage(step: PublicationStep, stage: McpErrorStage | null): McpErrorStage {
   if (step === 'authorize') return 'authorization';
   if (['load_issues', 'record_issue', 'verify_claim', 'complete'].includes(step)) return 'database';
@@ -73,7 +53,8 @@ function failureStage(step: PublicationStep, stage: McpErrorStage | null): McpEr
 }
 
 export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: ReturnType<typeof createPlannerRoutes>): void {
-  const planTask = z.object({ id: idSchema.optional(), title: z.string().min(1).max(256), body: textSchema, implementation: textSchema, notes: textSchema.optional() }).strict();
+  const planTask = z.object({ id: idSchema.optional(), title: z.string().min(1).max(256), body: textSchema, implementation: textSchema, notes: textSchema.optional(),
+    dependsOn: z.array(idSchema).max(20).optional().describe('Ids of other items in this plan that must be implemented first.') }).strict();
   const plan = z.array(planTask).min(1).max(20);
   
   const { db, policy } = deps;
@@ -127,17 +108,18 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
           tools: ['list_plan_revisions', 'get_plan_revision', 'restore_plan_revision'],
         },
         epicQueue: summarizeEpicQueue(await getEpicExecutionQueue(args.planId, { database: db })),
-        issues: await db('plan_issues').where({ draft_id: args.planId }).limit(100) });
+        issues: (await db('plan_issues').where({ draft_id: args.planId }).limit(100)).map(withPlanIssueDependencies) });
     } });
   tools.push({ name: 'create_plan', description: 'Create a draft plan only. This does not publish issues or start execution.', scope: 'plan',
     schema: z.object({ ...mutationShape, repository: repositorySchema, name: z.string().min(1).max(256), prompt: textSchema, plan: plan.optional(), todoIds: z.array(z.uuid()).max(20).optional() }).strict(),
     run: async ({ principal, args }) => {
       const id = randomUUID();
+      const prepared = args.plan ? prepareMcpPlan(args.plan) : undefined;
       await db.transaction(async tx => {
         const todoIds = [...new Set<string>(args.todoIds || [])];
         if (todoIds.length && (await tx('repo_todos').where({ user_id: principal.user.id, repository: args.repository }).whereIn('todo_id', todoIds)).length !== todoIds.length) throw new McpError('NOT_FOUND', 'Selected TODOs must belong to you in this repository.', 404);
         await tx('task_drafts').insert({ draft_id: id, user_id: principal.user.id, repository: args.repository, name: args.name, initial_prompt: args.prompt,
-          plan_json: args.plan ? JSON.stringify(args.plan) : null, plan_cause: args.plan ? 'manual_edit' : null, status: 'draft' });
+          plan_json: prepared ? prepared.serialized : null, plan_cause: prepared ? 'manual_edit' : null, status: 'draft' });
         if (todoIds.length) await tx('repo_todos').whereIn('todo_id', todoIds).update({ linked_draft_id: id, updated_at: tx.fn.now() });
       });
       return ok({ planId: id, revision: 0, status: 'draft' });
@@ -145,12 +127,11 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
   tools.push({ name: 'update_plan', description: 'Update a draft using its exact revision. Read the plan again on a conflict.', scope: 'plan', target,
     schema: z.object({ ...mutationShape, ...planShape, expectedRevision: z.number().int().min(0), name: z.string().min(1).max(256).optional(), prompt: textSchema.optional(), plan: plan.optional() }).strict(),
     run: async ({ principal, args }) => {
-      const serializedPlan = args.plan === undefined ? undefined : JSON.stringify(args.plan);
+      const prepared = args.plan === undefined ? undefined : prepareMcpPlan(args.plan);
       const changed = await db('task_drafts').where({ draft_id: args.planId, user_id: principal.user.id, mcp_revision: args.expectedRevision })
         .whereIn('status', ['draft', 'review', 'approved', 'failed']).update({
           ...(args.name !== undefined ? { name: args.name } : {}), ...(args.prompt !== undefined ? { initial_prompt: args.prompt } : {}),
-          ...(serializedPlan !== undefined ? { plan_json: serializedPlan,
-            plan_cause: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']) } : {}),
+          ...(prepared !== undefined ? planStorageUpdates(db, prepared, 'manual_edit') : {}),
           updated_at: db.fn.now(), mcp_revision: args.expectedRevision + 1,
         });
       if (!changed) throw new McpError('STALE_REVISION', 'Plan changed or an operation is active. Read it again before updating.', 409);
@@ -213,7 +194,8 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       const draft = await db('task_drafts').where({ draft_id: args.planId, mcp_revision: args.expectedRevision }).first();
       if (!draft) throw new McpError('STALE_REVISION', 'Plan revision changed.', 409);
       const publicationPlan = z.array(planTask.extend({ issue_number: z.number().int().positive().optional(), issue_url: z.string().url().optional() })).min(1).max(20);
-      const tasks = validatePublicationPlan(draft.plan_json, publicationPlan);
+      // Older drafts get item ids here; the completed plan stores them.
+      const tasks = publicationPlanItems(validatePublicationPlan(draft.plan_json, publicationPlan));
       const initialContext = parseContextConfig(draft.context_config);
       const partial = args.resume ? partialPublication(initialContext.publication) : undefined;
       const active = args.resume ? parseActivePublication(initialContext.publication) : undefined;
@@ -332,16 +314,15 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         }
       };
 
-      const recordIssue = async (number: number): Promise<void> => {
+      const recordIssue = async (number: number, index: number): Promise<void> => {
         // The authority check and insert share one statement, including after
         // a GitHub await. Losing the claim cannot append rows to a newer attempt.
-        const inserted = await db.raw(`insert into \`plan_issues\` (draft_id, repository, issue_number)
-          select draft_id, ?, ? from task_drafts
+        const inserted = await db.raw(`insert into \`plan_issues\` (draft_id, repository, issue_number, plan_item_id)
+          select draft_id, ?, ?, ? from task_drafts
           where draft_id = ? and status = 'executing' and mcp_revision = ? and context_config = ?
-          returning id`, [args.repository, number, args.planId, claimedRevision, activeContextJson]);
+          returning id`, [args.repository, number, String(tasks[index]?.id ?? '') || null, args.planId, claimedRevision, activeContextJson]);
         if (!inserted.length) await assertClaim();
       };
-
       const recordedRows: Array<{ issue_number: unknown }> = await (async () => {
         try { return await db('plan_issues').where({ draft_id: args.planId }).select('issue_number').orderBy('id'); }
         catch (error) {
@@ -370,7 +351,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       for (const issue of [...created.values()].sort((left, right) => left.index - right.index)) {
         if (recorded.has(issue.number)) continue;
         try {
-          await recordIssue(issue.number);
+          await recordIssue(issue.number, issue.index);
           recorded.add(issue.number);
         } catch (error) {
           await fail(error, { index: issue.index,
@@ -417,9 +398,17 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         const published = { index, number: issue.number, url: issue.url };
         created.set(index, published);
         try {
-          await recordIssue(issue.number);
+          await recordIssue(issue.number, index);
           recorded.add(issue.number);
         } catch (error) { await fail(error, { index, title: String(task.title), step: 'record_issue' }); }
+      }
+      try {
+        const claim = { planId: args.planId, revision: claimedRevision, contextConfig: activeContextJson };
+        if (!await recordPublishedDependencies(db, claim, tasks, tasks.map((_task, index) => created.get(index)?.number))) await assertClaim();
+      } catch (error) {
+        if (error instanceof McpError && error.code === 'PUBLICATION_CLAIM_LOST') throw error;
+        const index = tasks.length - 1;
+        await fail(error, { index, title: String(tasks[index]?.title || `Task ${index + 1}`), step: 'record_issue' });
       }
       const issues = tasks.map((task, index) => ({ ...created.get(index)!, title: String(task.title) }))
         .map(({ number, url, title }) => ({ number, url, title }));

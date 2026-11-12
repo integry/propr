@@ -9,6 +9,8 @@ import { DeleteTaskDialog } from './DeleteTaskDialog';
 import { extractFilePaths } from './taskCardUtils';
 import { getOutlineTitle } from './planDisplayName';
 import { RenderEditableContent, CollapsedImplementationPreview, EditableField, ViewMode } from './TaskCardComponents';
+import { TaskPrerequisites } from './TaskPrerequisites';
+import type { TaskPrerequisite } from './taskPrerequisiteSteps';
 
 /** Heading text: the step number sits beside it, so a generated "<plan> (n/m):" prefix is dropped. */
 const getHeadingTitle = (title: string | undefined): string => getOutlineTitle(title ?? '');
@@ -24,6 +26,8 @@ interface TaskCardProps {
   hideNotes?: boolean;
   /** Phones drop the heading trash icon, which sat a thumb's width from the pencil; Delete moves into edit mode. */
   isMobile?: boolean;
+  /** Steps this task depends on (read-only). */
+  prerequisites?: TaskPrerequisite[];
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
@@ -36,6 +40,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   id,
   hideNotes = false,
   isMobile = false,
+  prerequisites,
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
@@ -176,6 +181,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 onDelete={() => setShowDeleteDialog(true)}
               />
             </div>
+            <TaskPrerequisites prerequisites={prerequisites} />
             <div className="mt-1">
               <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Specification</span>
               <RenderEditableContent

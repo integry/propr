@@ -12,6 +12,8 @@ export type SaveStatus = 'saved' | 'saving' | 'error';
 export interface DeletedTask {
   task: PlanTask;
   index: number;
+  /** Ids of tasks whose dependsOn named the deleted task; restoring adds it back to them. */
+  dependents?: string[];
 }
 
 /**
@@ -19,6 +21,9 @@ export interface DeletedTask {
  * - Generates IDs for tasks missing them
  * - Handles duplicate IDs by appending unique suffixes
  * - Ensures no empty or undefined IDs exist
+ * Existing unique IDs are never changed: dependsOn edges refer to them. The
+ * server stores plans with unique ids, so the duplicate rename only guards
+ * React keys against a malformed plan.
  */
 const ensureTaskIds = (tasks: PlanTask[]): PlanTask[] => {
   const seenIds = new Set<string>();
@@ -58,6 +63,13 @@ const ensureTaskIds = (tasks: PlanTask[]): PlanTask[] => {
     }
     return task;
   });
+};
+
+const withoutDependency = (task: PlanTask, dependencyId: string): PlanTask => {
+  const dependsOn = (task.dependsOn ?? []).filter(id => id !== dependencyId);
+  const updated: PlanTask = { ...task, dependsOn };
+  if (dependsOn.length === 0) delete updated.dependsOn;
+  return updated;
 };
 
 /**
@@ -234,8 +246,11 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
     const task = currentPlan[index];
 
-    // Defensive check: ensure we're only removing one task
-    const newPlan = currentPlan.filter(t => t.id !== taskId);
+    // Defensive check: ensure we're only removing one task. Tasks that depended
+    // on the deleted one drop that entry, since the server rejects references
+    // to items that no longer exist.
+    const dependents = currentPlan.filter(t => t.id !== taskId && t.dependsOn?.includes(taskId)).map(t => t.id);
+    const newPlan = currentPlan.filter(t => t.id !== taskId).map(t => dependents.includes(t.id) ? withoutDependency(t, taskId) : t);
 
     // Safety check: verify we only removed one task
     if (newPlan.length !== currentPlan.length - 1) {
@@ -249,11 +264,13 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
     updatePlan(newPlan, 'user');
 
-    return { task, index };
+    return dependents.length ? { task, index, dependents } : { task, index };
   }, [currentPlan, updatePlan]);
 
   const restoreTask = useCallback((deleted: DeletedTask) => {
-    const newPlan = [...currentPlan];
+    const dependents = new Set(deleted.dependents ?? []);
+    const newPlan = currentPlan.map(t => dependents.has(t.id) && !t.dependsOn?.includes(deleted.task.id)
+      ? { ...t, dependsOn: [...(t.dependsOn ?? []), deleted.task.id] } : t);
     // Insert at the original index, or at the end if the index is out of bounds
     const insertIndex = Math.min(deleted.index, newPlan.length);
     newPlan.splice(insertIndex, 0, deleted.task);

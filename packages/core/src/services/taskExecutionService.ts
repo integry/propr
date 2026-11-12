@@ -13,6 +13,8 @@ import {
   type CreatedIssue
 } from './githubIssueService.js';
 import type { TaskDraftConfig } from './planning/planningTypes.js';
+import { normalizePlanItems } from '@propr/shared';
+import { recordPlanIssueDependencies } from '../config/planIssueDependencies.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -145,13 +147,21 @@ async function validateAndPrepareDraft(
     correlatedLogger.info({ draftId, deletedCount }, 'Detached existing plan issues');
   }
 
-  const planJson: PlanTask[] = typeof draft.plan_json === 'string'
+  const storedPlan: PlanTask[] = typeof draft.plan_json === 'string'
     ? JSON.parse(draft.plan_json)
     : draft.plan_json;
 
-  if (!Array.isArray(planJson) || planJson.length === 0) {
+  if (!Array.isArray(storedPlan) || storedPlan.length === 0) {
     throw new Error('Draft has no tasks to execute');
   }
+
+  // Older drafts may lack item ids; give them ids so each issue records the
+  // item it came from, and refuse a plan whose dependencies are invalid.
+  const normalizedPlan = normalizePlanItems(storedPlan);
+  if (!normalizedPlan.ok) {
+    throw new Error(`Plan has invalid dependencies: ${normalizedPlan.message}`);
+  }
+  const planJson = normalizedPlan.plan;
 
   // For re-finalization, clear old issue references from plan tasks
   if (isReFinalization) {
@@ -317,6 +327,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   }
 
   const updatedConfig = buildExecutionContextConfig(contextConfig, results, failures);
+
+  // Prerequisites resolve to issue numbers only once every issue exists.
+  await recordPlanIssueDependencies(draftId, planJson);
 
   await db!('task_drafts')
     .where({ draft_id: draftId })

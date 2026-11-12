@@ -87,6 +87,10 @@ You MUST output a strict JSON array with objects containing exactly these fields
 - "body": Comprehensive issue description with context, requirements, implementation details, and acceptance criteria
 - "implementation": The suggested code changes with proper markdown formatting (see below)
 
+Each object may also contain these optional fields:
+- "id": A short, unique identifier for the task within this plan, such as "add-schema" (lowercase words joined by hyphens)
+- "dependsOn": An array of the "id"s of other tasks in this plan whose code this task needs before it can be implemented, for example ["add-schema"]. Only list a task when this one cannot be built without that task's changes; omit the field when the task is independent. Never list the task itself, and never create a cycle.
+
 Do not include markdown formatting or explanations outside the JSON.
 
 **Implementation Field Formatting — CRITICAL:**
@@ -226,7 +230,7 @@ You MUST return a JSON object with this exact structure:
 - For "clarify": Ask a specific question (e.g., "Would you like me to add a new task for X, or modify the existing task?").
 
 **Plan modification rules:**
-1. Maintain the schema: { title, body, implementation }.
+1. Maintain the schema: { id, title, body, implementation } plus the optional "notes" and "dependsOn". Keep every existing task's "id" exactly as it is, including when you edit or move the task, and keep its "dependsOn" unless the instruction changes it. A new task may have a new unique "id" or none. "dependsOn" lists the "id"s of other tasks in the plan whose code a task needs first; remove an entry when you remove the task it names, and never create a cycle.
 2. Update implementation code when the task changes.
 3. Keep body content verbose with context, requirements, implementation details, and acceptance criteria.
 4. If action is "answered" or "clarify", return the plan UNCHANGED.
@@ -242,9 +246,14 @@ export interface RefinementResponse {
 }
 
 export interface PlanItem {
+  /** Stable item id, unique within the plan; assigned when the plan is stored if missing. */
+  id?: string;
   title: string;
   body: string;
   implementation: string;
+  notes?: string;
+  /** Ids of other items in the same plan that must be implemented first. */
+  dependsOn?: string[];
 }
 
 export type Plan = PlanItem[];

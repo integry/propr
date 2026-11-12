@@ -3,6 +3,7 @@
  * This maintains backwards compatibility with existing imports.
  */
 
+import { preparePlanItemsFromModel } from '@propr/shared';
 import { db } from '../db/connection.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
@@ -179,7 +180,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
-  const validatedPlan = await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId });
+  const validatedPlan = preparePlanItemsFromModel(await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId }));
   correlatedLogger.info({ taskCount: validatedPlan.length }, 'Plan generated successfully');
 
   // Add trace step for granularity enforcement if tasks were merged

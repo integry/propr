@@ -1,6 +1,8 @@
 import { PlanIssueStatus, logger } from '@propr/core';
 import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
 
+// Plan issue responses carry the item id and prerequisite issue numbers.
+export { withPlanIssueDependencies } from '@propr/shared';
 export interface ImplementationSettings { useEpic: boolean; autoMerge: boolean; }
 export interface ImplementationSettingsOverrides { useEpic?: boolean; autoMerge?: boolean; }
 export interface ResolvedUltrafixSettings { runUltrafix: boolean; ultrafixGoal: number | null; ultrafixMaxCycles: number | null; }

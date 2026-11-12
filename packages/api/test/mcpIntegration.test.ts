@@ -28,6 +28,7 @@ import { up as epicExecutionQueues } from '../../core/src/db/migrations/20261003
 import { up as epicQueueFinalization } from '../../core/src/db/migrations/20261003010000_add_epic_queue_finalization.js';
 import { up as epicQueueUseEpic } from '../../core/src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
 import { up as epicQueueParallel } from '../../core/src/db/migrations/20261003030000_add_epic_queue_parallel.js';
+import { up as planIssueDependencies } from '../../core/src/db/migrations/20261112120000_add_plan_issue_dependencies.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { McpError } from '../mcp/config.js';
@@ -45,6 +46,7 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
   await lifecycleMigration(db); await taskSubmissions(db); await submissionIdentity(db); await taskFinalResult(db);
   await planRevisions(db); await planRevisionCauses(db);
   await epicExecutionQueues(db); await epicQueueFinalization(db); await epicQueueUseEpic(db); await epicQueueParallel(db);
+  await planIssueDependencies(db);
   await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
   await db.schema.createTable('goals', table => {
     table.string('goal_id'); table.string('owner_id'); table.string('repository'); table.string('current_task_id');

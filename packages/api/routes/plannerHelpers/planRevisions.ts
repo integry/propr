@@ -4,6 +4,7 @@
  */
 
 import type { Knex } from 'knex';
+import { preparePlanItemsFromModel } from '@propr/shared';
 
 /** Statuses in which a plan's content may be replaced by a restore. */
 export const PLAN_RESTORABLE_STATUSES = ['draft', 'review', 'approved', 'failed'] as const;
@@ -72,11 +73,15 @@ export async function getCurrentPlanCause(db: Knex, draftId: string): Promise<Pl
  * that is byte-identical to the stored plan.
  */
 export function refinementPlanUpdates(db: Knex, action: unknown, plan: unknown): Record<string, unknown> {
-  const serializedPlan = JSON.stringify(plan);
-  if (action !== 'modified') return { plan_json: serializedPlan };
+  // Refined items keep their ids; new items get one, and references the model
+  // left dangling (to a removed task, itself, or around a cycle) are dropped.
+  // A result identical to the stored plan, as returned, changes nothing.
+  const returned = JSON.stringify(plan);
+  if (action !== 'modified') return { plan_json: returned };
+  const serializedPlan = JSON.stringify(Array.isArray(plan) ? preparePlanItemsFromModel(plan) : plan);
   return {
-    plan_json: serializedPlan,
-    plan_cause: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', serializedPlan, 'plan_cause', 'refinement']),
+    plan_json: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', returned, 'plan_json', serializedPlan]),
+    plan_cause: db.raw('CASE WHEN ?? IN (?, ?) THEN ?? ELSE ? END', ['plan_json', returned, serializedPlan, 'plan_cause', 'refinement']),
   };
 }
 
@@ -173,6 +178,8 @@ export async function restorePlanRevision(
     if (boundary) {
       await tx('task_draft_plan_revisions').where({ revision_id: boundary.revision_id }).update({ is_restore: true });
     }
+    // Snapshots, and so restores, keep item ids and dependsOn byte for byte.
+    // A snapshot from before item ids gets them at its next edit or publication.
     await restorable().update({ plan_json: row.plan_json, plan_cause: 'restore', status: 'review', updated_at: tx.fn.now() });
 
     const kept = tx('task_draft_plan_revisions').where({ draft_id: draftId })

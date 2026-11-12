@@ -33,7 +33,7 @@ export function buildPlanFilePrompt(fullContext: string): string {
 
 Do not put the plan in your reply. Write it to files in the current directory:
 
-1. Write each task as its own file in plan order: \`${PLAN_TASKS_DIR}/001.json\`, \`${PLAN_TASKS_DIR}/002.json\`, and so on. Each file holds ONE JSON object with the string fields "title", "body" and "implementation", written exactly as the instructions above describe. Write one task per tool call; never put the whole plan into a single file or message.
+1. Write each task as its own file in plan order: \`${PLAN_TASKS_DIR}/001.json\`, \`${PLAN_TASKS_DIR}/002.json\`, and so on. Each file holds ONE JSON object with the string fields "title", "body" and "implementation", written exactly as the instructions above describe. It may also hold the optional "id" (a short unique string such as "add-schema") and "dependsOn" (an array of other tasks' "id"s whose code this task needs first; omit it for independent tasks). Write one task per tool call; never put the whole plan into a single file or message.
 2. Run \`node ${PLAN_VALIDATOR_FILE} --tasks ${PLAN_TASKS_DIR}\`. It assembles the task files into plan.json and prints a JSON report.
 3. If the report lists errors, fix the files it names and run it again. Repeat until it exits with status 0 and reports "valid": true.
 4. Do not edit ${PLAN_VALIDATOR_FILE} and do not write any other files. The workspace holds only these files; everything you need from the repository is in this prompt.

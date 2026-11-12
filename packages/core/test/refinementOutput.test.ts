@@ -94,4 +94,27 @@ describe('normalizeRefinedPlan', () => {
     if (result.ok) return;
     assert.equal(result.details.reason, 'unknown_target');
   });
+
+  test('keeps item ids through edit operations and restores ids a complete plan dropped', () => {
+    const withIds = [
+      { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+    ];
+    const edited = normalizeRefinedPlan(withIds, [
+      { action: 'update', index: 1, id: 'renamed', body: 'New API body' },
+      { action: 'retain', index: 0 },
+    ]);
+    assert.equal(edited.ok, true);
+    if (!edited.ok) return;
+    assert.deepEqual(edited.plan.map(item => [item.id, item.dependsOn ?? []]), [['schema', []], ['api', ['schema']]]);
+
+    const complete = normalizeRefinedPlan(withIds, [
+      { title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { title: 'API', body: 'Rewritten', implementation: 'API steps', dependsOn: ['schema'] },
+      { title: 'Docs', body: 'Docs body', implementation: 'Docs steps' },
+    ]);
+    assert.equal(complete.ok, true);
+    if (!complete.ok) return;
+    assert.deepEqual(complete.plan.map(item => item.id), ['schema', 'api', undefined]);
+  });
 });
