@@ -119,7 +119,9 @@ async function hasOtherCurrentManualOwner(
 
 export async function handleUltrafixContinuation(
     action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string;
+        /** The fix step's agent reported a blocker (`on_blocker: report`); the loop stops instead of counting a fix. */
+        blocked?: boolean }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
     if ((await params.stateManager.getTaskState(params.taskId))?.state === 'cancelled') return;
@@ -130,6 +132,7 @@ export async function handleUltrafixContinuation(
             userId: job.data.userId,
             ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
             currentJobId: job.id,
+            blockedStep: params.blocked,
         });
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
         await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult, job.data.ultrafixMeta), correlatedLogger);

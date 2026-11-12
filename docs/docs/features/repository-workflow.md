@@ -38,6 +38,7 @@ network:
   allow:
     - "registry.npmjs.org"
     - "*.internal.example.com"
+on_blocker: report
 ```
 
 All fields are optional. Use `{}` for an empty policy; a file that is empty or contains only comments (for example, the scaffold with every section commented out) is also treated as an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors once; the job is not retried, because the same base commit would fail the same way. A malformed instance `worker_concurrency` setting is not a workflow error: ProPR falls back to `WORKER_CONCURRENCY` (default 5). Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
@@ -72,6 +73,34 @@ When `after_create` is omitted, `.propr/setup.sh` remains implicit if present an
 `validation` adds commands the agent must run and report before finishing. ProPR also executes them in order after the agent exits, with the hook timeout applied to each command, and appends the observed results to the completion summary: `Passed`, `Failed (exit N)`, `Timed out` (the command reached its time limit), `Killed (exit 137)` (killed before its limit, for example by the out-of-memory killer) or `Not run`. Validation shares the instance's overall execution timeout with the agent, so ProPR also bounds it as a whole. It stops starting commands early enough to leave time for `after_run`, `before_remove` and container teardown, and shortens a command's timeout to the remaining budget. That reserve is 30 seconds plus, for each configured `after_run` and `before_remove` hook, 60 seconds and a five-second grace period. If `hooks.timeout_ms` is set explicitly, each cleanup hook reserves its full timeout instead (still capped by the instance ceiling), so set it only when cleanup really needs that long. The remaining commands are reported as `Not run (execution time limit reached)`, and the completed agent run is kept rather than reported as an execution timeout. A failing validation command does not suppress later commands or erase implementation work. Command output is available in execution logs. Validation commands should be safe to repeat and **must not modify files**: they run in the task workspace after the agent and before ProPR commits, so changes they make (for example `lint --fix`, regenerated snapshots or build output that is not ignored) are committed with the agent's work. Use check-only variants such as `eslint .` or `prettier --check`.
 
 Results are authoritative only when the container wrapper runs as root and drops repository commands and the agent to the unprivileged `node` user, as the supported agent images do. Otherwise each result is marked `(unverified: container wrapper was not running as root)`, because an agent sharing the wrapper's user could write its own results. If an agent's transport did not capture the container output, results read `Not observed`.
+
+## Reporting blockers
+
+By default (`on_blocker: continue`, or no `on_blocker` key) a run that cannot do what was asked still ends like any other run: a run without changes is reported as complete. Set `on_blocker: report` to let the agent stop and say what blocked it instead:
+
+```yaml
+on_blocker: report   # continue (default) | report
+```
+
+With `report`, issue implementation and PR follow-up (including `/fix` and Ultrafix fix steps) prompts tell the agent: if the task cannot be completed as specified, do not deliver a reduced or placeholder version; revert any partial changes and end the final message with a line that starts with the marker `PROPR_BLOCKED:`, followed by a short explanation of what blocked it and what is needed. For example:
+
+```text
+PROPR_BLOCKED: The payment API credentials are not available in this environment; a sandbox key is needed to run the integration tests.
+```
+
+ProPR looks for the marker only in the agent's final message, and only when it starts a top-level line: a marker inside a code block, a quote, a list item or the middle of a sentence (for example quoted tool output or file contents) is ignored. Only runs that end normally are checked; timeouts, spend-cap stops and failures keep their usual handling. The explanation is limited to 2,000 characters and secrets are redacted, as for other agent text.
+
+When the agent reports a blocker:
+
+- **Issues:** nothing is committed and no pull request is opened. The processing label is removed, the done label is not added and a linked plan issue keeps its status. ProPR comments on the issue that the run stopped on a blocker and quotes the explanation.
+- **Epic execution queues:** a blocked issue is not finished, so the plan's queue does not advance past it under either advance policy, and a parallel execution does not complete. The queue's blocked reason (shown on the plan page and in MCP `get_plan`) says that the issue stopped on a blocker. Queue recovery does not restart or close the issue. Once you resolve the blocker and request processing again, a run that ends without a blocker clears the reason, and the queue continues as usual when the issue merges or completes without changes.
+- **Follow-ups and `/fix`:** nothing is committed or pushed and selected review findings stay pending. The completion comment states the blocker instead of the no-change text.
+- **Ultrafix:** a blocked fix step stops the loop with the reason `fix_step_blocked` instead of counting as a completed fix.
+- If the agent left changes in the worktree anyway, they are not committed and the comment lists the files.
+
+The task ends `completed` with the terminal reason `blocked`, shown in task history and in MCP `get_task` and `get_task_events`. A blocked run is not retried and is never handed to a replacement provider. ProPR also creates a warning in the Inbox for it (a `task` notification with `metadata.event` set to `task.blocked`).
+
+With `continue` or without the key, prompts and outcomes are unchanged.
 
 ## Auto-merge policy
 

@@ -628,6 +628,7 @@ export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingCheck
 export * from './services/usageTips/index.js';
 
 export * from './workflow/repositoryWorkflow.js';
+export * from './workflow/blockerReport.js';
 export * from './network/egressAllowlist.js';
 export * from './network/egressProxy.js';
 export * from './network/networkPolicy.js';
@@ -648,6 +649,7 @@ export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
+export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/reviewScoreStore.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login

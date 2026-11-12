@@ -37,6 +37,9 @@ function isTerminalNoPrTask(row: LatestTaskHistoryRow | undefined): boolean {
     const prResult = metadata.prResult && typeof metadata.prResult === 'object'
         ? metadata.prResult as Record<string, unknown>
         : {};
+    // A run that stopped on a reported blocker (`on_blocker: report`) waits for a
+    // person to resolve it and request processing again; it is not abandoned work.
+    if (metadata.terminalReason === 'blocked' || prResult.terminalReason === 'blocked') return false;
 
     return metadata.pr === null || prResult.prCreated === false || prResult.prNumber === null;
 }

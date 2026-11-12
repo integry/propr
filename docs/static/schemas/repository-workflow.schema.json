@@ -151,6 +151,13 @@
           }
         }
       }
+    },
+    "on_blocker": {
+      "enum": [
+        "continue",
+        "report"
+      ],
+      "description": "What a run does when it cannot complete its task as specified. continue (default) keeps the normal outcome; report tells the agent to stop without partial changes and end its final message with a PROPR_BLOCKED: line, which ProPR reports as a blocked run: no commit, no pull request, no done label."
     }
   }
 }

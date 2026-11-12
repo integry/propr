@@ -53,6 +53,8 @@ export interface PostProcessingResult {
     error?: string;
     /** Set when the final push failed; names the salvage rung and the recovery. */
     pushFailure?: PushFailureRecord;
+    /** Set when the agent stopped and reported a blocker (`on_blocker: report`); nothing was committed. */
+    blocked?: { explanation: string; uncommittedFiles: string[] };
 }
 
 type Octokit = {
@@ -412,6 +414,7 @@ interface FinalResultResults {
 function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
     if (!claudeResult?.success) return 'claude_processing_failed';
     if (postProcessingResult?.pr) return 'complete_with_pr';
+    if (postProcessingResult?.blocked) return 'blocked';
     return 'claude_success_no_changes';
 }
 
