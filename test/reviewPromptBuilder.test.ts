@@ -354,13 +354,13 @@ describe('buildReviewPrompt — demonstrated failure and verification provenance
         assert.ok(prompt.indexOf('**Demonstrated failure — required inside the evidence field.**') > transitionIdx);
     });
 
-    test('carries the demonstration inside existing fields without new mandatory fields', () => {
+    test('carries the demonstration inside existing fields; category is the only added field', () => {
         const prompt = buildReviewPrompt(baseOptions());
         const recordFields = [...prompt.matchAll(/^- \*\*([A-Za-z]+):\*\*/gm)].map(match => match[1]);
 
         assert.deepEqual(
             [...new Set(recordFields)],
-            ['violatedRequirement', 'evidence', 'introducedByPR', 'requiredForMerge', 'minimumCorrection'],
+            ['category', 'violatedRequirement', 'evidence', 'introducedByPR', 'requiredForMerge', 'minimumCorrection'],
         );
         assert.ok(prompt.includes(
             '- **evidence:** `changed/file.ts:123` — trigger, ordered failure sequence, observable consequence, why existing protections do not prevent it, and how it was verified',

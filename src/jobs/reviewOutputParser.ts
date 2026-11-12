@@ -11,12 +11,15 @@
  */
 
 import { extractRecordFields, formatRecordFields, hasRecordFieldHeader } from './reviewRecordFields.js';
+import { parseReviewFindingCategory, type ReviewFindingCategory } from './reviewFindingCategory.js';
 
 export type ReviewOutputStatus = 'valid_with_blockers' | 'valid_clean' | 'invalid';
 
 export interface ActionableFinding {
     id: string;
     title: string;
+    /** What kind of problem the blocker is; `correctness` for records that predate categories. */
+    category: ReviewFindingCategory;
     violatedRequirement: string;
     evidence: string;
     introducedByPR: true;
@@ -139,7 +142,9 @@ function hasSequentialRecordHeadings(
         && records.every((record, index) => record.id === `${prefix}${firstNumber + index}`);
 }
 
+// `category` is optional in both contracts so records written before it parse.
 const MACHINE_FINDING_FIELDS: ReadonlySet<string> = new Set([
+    'category',
     'violatedrequirement',
     'evidence',
     'introducedbypr',
@@ -147,7 +152,7 @@ const MACHINE_FINDING_FIELDS: ReadonlySet<string> = new Set([
     'minimumcorrection',
 ]);
 
-const PUBLIC_FINDING_FIELDS: ReadonlySet<string> = new Set(['requiredbehavior', 'evidence', 'minimumfix']);
+const PUBLIC_FINDING_FIELDS: ReadonlySet<string> = new Set(['category', 'requiredbehavior', 'evidence', 'minimumfix']);
 
 function parseMachineActionableRecords(section: string): ActionableFinding[] | null {
     const records = extractMarkdownRecords(section, 'F');
@@ -163,11 +168,13 @@ function parseMachineActionableRecords(section: string): ActionableFinding[] | n
         const requiredForMerge = fields.get('requiredformerge') ?? '';
         const minimumCorrection = fields.get('minimumcorrection') ?? '';
         const introducedByPRExplanation = introducedByPR.replace(/^true\b\s*(?:[-—:]\s*)?/i, '').trim();
-        if (!violatedRequirement || !evidence || !introducedByPRExplanation || !minimumCorrection) return null;
+        const category = parseReviewFindingCategory(fields.get('category'));
+        if (!category || !violatedRequirement || !evidence || !introducedByPRExplanation || !minimumCorrection) return null;
         if (!/^true\b/i.test(introducedByPR) || !/^true\b/i.test(requiredForMerge)) return null;
         findings.push({
             id: record.id,
             title: record.title,
+            category,
             violatedRequirement,
             evidence,
             introducedByPR: true,
@@ -198,10 +205,13 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
         const violatedRequirement = fields.get('requiredbehavior') ?? '';
         const evidence = fields.get('evidence') ?? '';
         const minimumCorrection = fields.get('minimumfix') ?? '';
-        if (fields.size !== 3 || !violatedRequirement || !evidence || !minimumCorrection) return null;
+        const category = parseReviewFindingCategory(fields.get('category'));
+        if (fields.size !== (fields.has('category') ? 4 : 3) || !category) return null;
+        if (!violatedRequirement || !evidence || !minimumCorrection) return null;
         findings.push({
             id: record.id,
             title: record.title.replace(/^🔴[ \t]+/, ''),
+            category,
             violatedRequirement,
             evidence,
             introducedByPR: true,
@@ -342,6 +352,7 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
     return findings.map(finding => [
         `### ${finding.id}: 🔴 ${finding.title}`,
         formatRecordFields([
+            ['Category', finding.category],
             ['Required behavior', finding.violatedRequirement],
             ['Evidence', finding.evidence],
             ['Minimum fix', finding.minimumCorrection],
@@ -376,31 +387,6 @@ export function highestReviewRecordNumber(records: readonly { id: string }[]): n
         highest = Math.max(highest, number);
     }
     return highest;
-}
-
-function getNextRecordNumber(
-    reviewBodies: readonly (string | null | undefined)[],
-    pickRecords: (review: StructuredReviewResult) => readonly { id: string }[],
-): number {
-    let highest = 0;
-    for (const body of reviewBodies) {
-        if (!body) continue;
-        highest = Math.max(highest, highestReviewRecordNumber(pickRecords(parseStructuredReview(body))));
-    }
-    return highest + 1;
-}
-
-export function getNextActionableFindingNumber(reviewBodies: readonly (string | null | undefined)[]): number {
-    return getNextRecordNumber(reviewBodies, review => review.actionableFindings);
-}
-
-/**
- * S# counterpart of `getNextActionableFindingNumber`. Suggestions carry the same
- * permanent-identifier guarantee as blockers, so `/fix S5` names one record for
- * the life of the pull request instead of a different one per review comment.
- */
-export function getNextReviewSuggestionNumber(reviewBodies: readonly (string | null | undefined)[]): number {
-    return getNextRecordNumber(reviewBodies, review => review.suggestions);
 }
 
 export interface PublicReviewRenderOptions {
