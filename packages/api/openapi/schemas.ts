@@ -15,7 +15,7 @@ import { extensionProfileInputSchema, extensionSelectionSchema, INSTANCE_PERMISS
  */
 export const apiSchemas = z.registry<{ id: string }>();
 
-function component<T extends z.ZodType>(id: string, schema: T, description?: string): T {
+export function component<T extends z.ZodType>(id: string, schema: T, description?: string): T {
   const described = (description ? schema.describe(description) : schema) as T;
   apiSchemas.add(described, { id });
   return described;
@@ -315,7 +315,7 @@ export const JsonObject = component('JsonObject', z.object({}).loose(), 'A JSON 
  */
 export const apiQuerySets = z.registry<{ id: string }>();
 
-function querySet<T extends z.ZodObject>(id: string, schema: T): T {
+export function querySet<T extends z.ZodObject>(id: string, schema: T): T {
   apiQuerySets.add(schema, { id });
   return schema;
 }

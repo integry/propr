@@ -270,6 +270,8 @@ export type {
 // Stats API
 export { getReviewScoreSummary } from "./stats.js";
 export { getPullRequestReadiness } from "./pullRequests.js";
+export { listRepositoryEvents, waitRepositoryEvents } from "./repositoryEvents.js";
+export type { RepositoryEventQuery, RepositoryEventListResult, RepositoryEventWaitResult, RepositoryEventView } from "./repositoryEvents.js";
 export type { PullRequestReadiness, PullRequestReadinessGate, ReadinessGateStatus } from "./pullRequests.js";
 export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreQuery, MeanFigure } from "./stats.js";
 

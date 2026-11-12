@@ -29,6 +29,7 @@ import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
+import { installRepositoryEventAppendHook } from './services/repositoryEventWait.js';
 import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createConnectStorageCorsMiddleware, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
@@ -44,6 +45,7 @@ import {
   createStatsRoutes,
   createReviewScoreRoutes,
   createPullRequestReadinessRoutes,
+  createRepositoryEventRoutes,
   createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
@@ -418,6 +420,9 @@ export function setupRoutes(): void {
   const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
   const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
   const pullRequestReadinessRoutes = createPullRequestReadinessRoutes({ db });
+  const repositoryEventRoutes = createRepositoryEventRoutes({ db });
+  // Journal appends committed in this process wake repository event waiters at once.
+  void installRepositoryEventAppendHook();
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: isDashboardSummaryEnabled });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
@@ -480,6 +485,7 @@ export function setupRoutes(): void {
     repositoryMediaRoutes,
     reviewScoreRoutes,
     pullRequestReadinessRoutes,
+    repositoryEventRoutes,
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,

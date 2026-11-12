@@ -872,6 +872,75 @@ than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
 
+#### Waiting for repository changes
+
+A coordinator that needs to know when a pull request, an epic queue or a plan
+issue changed does not have to poll several reads and diff them. ProPR
+appends every such change to a durable per-repository journal, and two
+read-scope tools consume it:
+
+- `list_repository_events` returns the events after a cursor, in journal
+  order: `{events, cursor, truncated}`. `limit` is at most 100;
+  `truncated` means more matching events follow the returned cursor.
+- `wait_repository_events` takes the same arguments plus `timeoutSeconds`
+  (default 15, maximum 30). It returns at once when matching events already
+  exist after the cursor, and otherwise blocks until one is appended or the
+  timeout passes: `{outcome, events, cursor, waitedMs, timeoutSeconds}` with
+  `outcome` `events` or `timeout`. A timeout returns the cursor unchanged.
+
+Both filter with `domains` (`pull_request`, `epic_queue`, `plan_issue`),
+`types`, `pullRequest` and `planId`:
+
+| Domain | Types |
+| --- | --- |
+| `pull_request` | `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed` |
+| `epic_queue` | `started`, `advanced`, `blocked`, `completed` |
+| `plan_issue` | `status_changed` |
+
+Each event carries `cursor`, `domain`, `type`, `repository`, `entityId`,
+`payload` (identifiers and small scalars only, never PR bodies, comment text,
+diffs or logs) and `occurredAt`, plus `pullRequest`, `issueNumber`, `planId`
+and `head` when they apply. Events are hints: read the current state before
+acting on one.
+
+**The cursor contract.** A cursor is an opaque string bound to one
+repository. Delivery is at-least-once and ordered: keep the cursor of the
+last event you processed and pass it back as `afterCursor`, and you never
+miss an event. A call without `afterCursor` starts at the current end of the
+journal, so it returns the current cursor and no history, unless you pass
+`fromStart: true` to read the retained history (30 days). Cursor errors carry
+a recovery hint:
+
+| Code | Meaning |
+| --- | --- |
+| `CURSOR_INVALID` | Malformed, or not issued by this instance. Start again without `afterCursor`. |
+| `CURSOR_WRONG_REPOSITORY` | Issued for another repository. |
+| `CURSOR_EXPIRED` | Older than the retained journal, so events after it may be gone. Re-read the state, then continue without a cursor. An expired cursor is never reported as an empty result. |
+
+`WAIT_LIMIT` means too many repository event waits are open for you on this
+server (the limit counts CLI, REST and MCP waits together). `WAIT_ABORTED`
+means the call was cancelled; nothing changed. Your access to the repository
+is checked as for `list_pull_requests`, and events of other repositories are
+never returned.
+
+**Coordinator loop.** Wait for changes to a pull request, then read its
+readiness instead of re-reading everything:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42, "timeoutSeconds": 30 }
+```
+
+1. Call `wait_repository_events` with the arguments above (no cursor the
+   first time).
+2. On `outcome` `events`, call `get_pull_request_readiness` with
+   `{ "repository": "acme/web", "number": 42 }` and act on the verdict.
+3. Call `wait_repository_events` again with `afterCursor` set to the returned
+   `cursor`. On `timeout`, call it again with the same cursor.
+
+The same reads are `GET /api/repository-events` and
+`GET /api/repository-events/wait`, and `propr events list` / `propr events
+wait` (`--follow` keeps going on the cursor).
+
 #### Goals waiting on you
 
 `list_goal_attention` lists, bounded and newest goal first, only the goals that

@@ -506,6 +506,52 @@ export interface PullRequestReadiness {
   evaluatedAt: string;
 }
 
+/** One durable repository change event. */
+export interface RepositoryEvent {
+  /** Resumes immediately after this event. */
+  cursor: string;
+  domain: "pull_request" | "epic_queue" | "plan_issue";
+  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`. */
+  type: string;
+  repository: string;
+  pullRequest?: number;
+  issueNumber?: number;
+  planId?: string;
+  /** PR number, epic execution id or plan issue id, as text. */
+  entityId: string;
+  /** Head SHA the event was recorded for, when it concerns one. */
+  head?: string;
+  /** Identifiers and small scalars only; never PR bodies, comments, diffs or logs. */
+  payload: {
+    [key: string]: unknown;
+  };
+  occurredAt: string;
+}
+
+/** Repository change events after a cursor. Delivery is at-least-once and ordered. */
+export interface RepositoryEventList {
+  /** Matching events after the cursor, in journal order. */
+  events: RepositoryEvent[];
+  /** After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`. */
+  cursor: string;
+  /** More matching events exist after `cursor`. */
+  truncated: boolean;
+}
+
+/** Outcome of a bounded wait for repository change events. */
+export interface RepositoryEventWait {
+  /** `events` when matching events were found; `timeout` otherwise, with the starting cursor unchanged. */
+  outcome: "events" | "timeout";
+  /** Matching events after the cursor, in journal order. */
+  events: RepositoryEvent[];
+  /** After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`. */
+  cursor: string;
+  /** More matching events exist after `cursor`. */
+  truncated: boolean;
+  waitedMs: number;
+  timeoutSeconds: number;
+}
+
 /** The assignees of a task's GitHub issue or pull request. */
 export interface TaskAssignees {
   subject: TaskSubject;
@@ -754,6 +800,26 @@ export interface TaskFollowupRunsQuery {
   commentId: string;
 }
 
+/** Query parameters of `listRepositoryEvents`. */
+export interface RepositoryEventsQuery {
+  /** `owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance. */
+  repository: string;
+  /** Opaque cursor from an earlier response for this repository. Only events after it are returned. */
+  afterCursor?: string;
+  /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
+  fromStart?: "true" | "false";
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  domains?: string;
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  types?: string;
+  /** Only events of this pull request number. */
+  pullRequest?: number;
+  /** Only events of this plan. */
+  planId?: string;
+  /** Most events returned; defaults to 50. */
+  limit?: number;
+}
+
 /** Query parameters of `listTasks`. */
 export interface ListTasksQuery {
   /** `all` (default), `active`, `waiting`, `attention`, or a worker state. */
@@ -775,4 +841,26 @@ export interface ListTasksQuery {
   assignee?: string;
   /** With `task`: refresh that run's assignees from GitHub first. */
   syncAssignees?: "true" | "false";
+}
+
+/** Query parameters of `waitRepositoryEvents`. */
+export interface RepositoryEventsWaitQuery {
+  /** `owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance. */
+  repository: string;
+  /** Opaque cursor from an earlier response for this repository. Only events after it are returned. */
+  afterCursor?: string;
+  /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
+  fromStart?: "true" | "false";
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  domains?: string;
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  types?: string;
+  /** Only events of this pull request number. */
+  pullRequest?: number;
+  /** Only events of this plan. */
+  planId?: string;
+  /** Most events returned; defaults to 50. */
+  limit?: number;
+  /** Seconds to block when no matching event exists yet; defaults to 15. */
+  timeoutSeconds?: number;
 }

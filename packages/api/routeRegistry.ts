@@ -50,6 +50,7 @@ interface OperationalRouteDeps {
   plannerRoutes: ReturnType<typeof routes.createPlannerRoutes>;
   previewMediaRoutes: ReturnType<typeof createPreviewMediaRoutes>;
   pullRequestReadinessRoutes: ReturnType<typeof routes.createPullRequestReadinessRoutes>;
+  repositoryEventRoutes: ReturnType<typeof routes.createRepositoryEventRoutes>;
   queueRoutes: ReturnType<typeof routes.createQueueRoutes>;
   relevanceRoutes: ReturnType<typeof routes.createRelevanceRoutes>;
   repoChatRoutes: ReturnType<typeof routes.createRepoChatRoutes>;
@@ -193,6 +194,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     plannerRoutes,
     previewMediaRoutes,
     pullRequestReadinessRoutes,
+    repositoryEventRoutes,
     queueRoutes,
     relevanceRoutes,
     repoChatRoutes,
@@ -355,6 +357,8 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/stats/review-scores.csv', reviewScoreRoutes.getCsv],
     ['get', '/api/pull-requests/:number/scores', reviewScoreRoutes.getPullRequestScores],
     ['get', '/api/pull-requests/:number/readiness', pullRequestReadinessRoutes.getReadiness],
+    ['get', '/api/repository-events', repositoryEventRoutes.listEvents],
+    ['get', '/api/repository-events/wait', repositoryEventRoutes.waitEvents],
     ['get', '/api/usage-tips', usageTipsRoutes.get],
     ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
     ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative],

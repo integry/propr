@@ -137,12 +137,28 @@ export function repositoryEventActivity(event: RepositoryEventInput): {
     return null;
 }
 
-function publishAfterCommit(database: Knex, event: RepositoryEventInput): void {
-    const activity = repositoryEventActivity(event);
-    if (!activity) return;
-    const publish = () => {
-        void getEventPublisher().publishActivity(activity).catch(() => undefined);
-    };
+type AppendListener = (repository: string) => void;
+const appendListeners = new Set<AppendListener>();
+
+/**
+ * Be told, in this process, when an append has committed. Readers waiting on
+ * the journal use it to re-read at once instead of on their next poll; other
+ * processes rely on the activity event or their poll interval. The listener
+ * only learns the repository, never the event: the journal stays the source
+ * of truth. Returns the unsubscribe function.
+ */
+export function subscribeRepositoryEventAppends(listener: AppendListener): () => void {
+    appendListeners.add(listener);
+    return () => { appendListeners.delete(listener); };
+}
+
+function notifyAppendListeners(repository: string): void {
+    for (const listener of appendListeners) {
+        try { listener(repository); } catch { /* a listener never affects the append */ }
+    }
+}
+
+function afterCommit(database: Knex, run: () => void): void {
     // Announcing a change before its transaction commits would send readers to
     // a row they cannot see yet (or one a rollback removes). A nested
     // transaction is a savepoint: releasing it commits nothing, so wait for
@@ -154,8 +170,16 @@ function publishAfterCommit(database: Knex, event: RepositoryEventInput): void {
         if (transaction.executionPromise) pending.push(transaction.executionPromise);
         transaction = transaction.parentTransaction;
     }
-    if (pending.length) Promise.all(pending).then(publish, () => undefined);
-    else publish();
+    if (pending.length) Promise.all(pending).then(run, () => undefined);
+    else run();
+}
+
+function announceAfterCommit(database: Knex, event: RepositoryEventInput, publish: boolean): void {
+    const activity = publish ? repositoryEventActivity(event) : null;
+    afterCommit(database, () => {
+        notifyAppendListeners(event.repository);
+        if (activity) void getEventPublisher().publishActivity(activity).catch(() => undefined);
+    });
 }
 
 /** The knex transactor fields that say when a (possibly nested) transaction settles. */
@@ -188,7 +212,7 @@ export async function appendRepositoryEvent(
             return { status: 'duplicate' };
         }
         counters.appended++;
-        if (options.publish !== false) publishAfterCommit(database, event);
+        announceAfterCommit(database, event, options.publish !== false);
         return { status: 'appended', seq: Number(seq) };
     } catch (error) {
         counters.failures++;

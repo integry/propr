@@ -20,6 +20,7 @@ import {
   TaskSubmission,
   TaskSubmissionRequest,
 } from './schemas.js';
+import { RepositoryEventList, RepositoryEventWait, RepositoryEventsQuery, RepositoryEventsWaitQuery } from './schemasRepositoryEvents.js';
 import type { RouteDoc } from './types.js';
 
 const TASK_ID = 'Task (run) identifier, as returned in `TaskSummary.id`.';
@@ -256,6 +257,35 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
       400: { description: '`INVALID_INPUT`: the number or repository is malformed.' },
       404: { description: '`PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it.' },
       502: { description: '`GITHUB_UNAVAILABLE`: GitHub did not return the pull request; the read is safe to retry.' },
+    },
+  },
+  'GET /api/repository-events': {
+    operationId: 'listRepositoryEvents',
+    summary: 'List repository change events after a cursor',
+    description: 'Reads the durable change-event journal of one repository (pull request, epic queue and plan issue changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned.',
+    tags: ['Repositories'],
+    query: RepositoryEventsQuery,
+    errors: 'envelope',
+    responses: {
+      200: { description: 'Matching events and the cursor to resume from.', schema: RepositoryEventList },
+      400: { description: '`INVALID_INPUT` (a malformed parameter), `CURSOR_INVALID` (the cursor is malformed or was not issued here) or `CURSOR_WRONG_REPOSITORY` (the cursor belongs to another repository). The `hint` says how to recover.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub.' },
+      410: { description: '`CURSOR_EXPIRED`: the cursor is older than the retained journal, so events after it may have been pruned. This is never reported as an empty result.' },
+    },
+  },
+  'GET /api/repository-events/wait': {
+    operationId: 'waitRepositoryEvents',
+    summary: 'Wait for repository change events after a cursor',
+    description: 'Blocks for at most `timeoutSeconds` (default 15, max 30) until a matching event exists after the cursor, then returns it like the list read. Returns at once when matching events already exist. A timeout is an ordinary `200` with `outcome: timeout` and the starting cursor unchanged. Disconnecting only releases the waiter. Concurrent waits per owner are limited on each API process, counted together with MCP `wait_repository_events`.',
+    tags: ['Repositories'],
+    query: RepositoryEventsWaitQuery,
+    errors: 'envelope',
+    responses: {
+      200: { description: 'Matching events, or a timeout with the unchanged cursor.', schema: RepositoryEventWait },
+      400: { description: '`INVALID_INPUT`, `CURSOR_INVALID` or `CURSOR_WRONG_REPOSITORY`.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub.' },
+      410: { description: '`CURSOR_EXPIRED`: the cursor is older than the retained journal.' },
+      429: { description: '`WAIT_LIMIT`: too many repository event waits are open for this owner on this server.' },
     },
   },
 };
