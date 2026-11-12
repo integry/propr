@@ -60,6 +60,11 @@ export interface EpicExecutionQueue {
   maxParallel: number | null;
   /** Prerequisites outside a graph execution that are merged (satisfied); read with the queue. */
   mergedOutside: number[];
+  /**
+   * Unclaimed graph issues whose persisted plan status is in progress (a person started them):
+   * they hold a slot and report in flight, for dispatch and for every summary alike. Read with the queue.
+   */
+  runningWithoutClaim: number[];
   /** Durable initial dispatch intent; plan_issues retains the old model for label removal. */
   headSelection: { agent_alias: string; model_name: string } | null;
   /** Outstanding epic completion labeling, independent of the current children's branch. */
@@ -112,7 +117,8 @@ export function executionModeOf(row: { mode?: EpicExecutionMode | null; parallel
   return row.mode === 'graph' || row.mode === 'sequential' || row.mode === 'parallel' ? row.mode : row.parallel ? 'parallel' : 'sequential';
 }
 
-function fromRows(row: QueueRow, rows: IssueRow[], mergedOutside: number[]): EpicExecutionQueue {
+function fromRows(row: QueueRow, rows: IssueRow[], { mergedOutside, runningWithoutClaim }:
+  { mergedOutside: number[]; runningWithoutClaim: number[] }): EpicExecutionQueue {
   const mode = executionModeOf(row);
   const items = rows.map(item => ({
     issueNumber: item.issue_number, position: item.position, state: item.state, dispatchedAt: toNumber(item.dispatched_at),
@@ -134,7 +140,7 @@ function fromRows(row: QueueRow, rows: IssueRow[], mergedOutside: number[]): Epi
     unstarted: row.status === 'cancelled' && row.blocked_reason === UNSTARTED_EPIC_REASON,
     autoMerge: Boolean(row.auto_merge), useEpic: Boolean(row.use_epic), parallel, ready: Boolean(row.ready),
     mode, maxParallel: mode === 'graph' && row.max_parallel !== null && row.max_parallel !== undefined ? Number(row.max_parallel) : null,
-    mergedOutside,
+    mergedOutside, runningWithoutClaim,
     headSelection: row.head_selection ? JSON.parse(row.head_selection) : null,
     owesEpicFinalization: Boolean(row.owes_epic_finalization),
     headStartedAt: head?.dispatchedAt ?? null, createdAt: row.created_at, updatedAt: row.updated_at,
@@ -155,7 +161,20 @@ export async function getEpicExecutionQueue(draftId: string, { database = db }: 
   const items = await database(EPIC_QUEUE_ISSUES).where({ draft_id: draftId, execution_id: row.execution_id })
     .orderBy('position').select<IssueRow[]>('issue_number', 'position', 'state', 'dispatched_at', 'blocked_kind', 'blocked_reason', 'blocked_at',
       'updated_at', ...(graph ? ['depends_on'] : []));
-  return fromRows(row, items, graph ? await mergedOutsidePrerequisites(database, draftId, items) : []);
+  return fromRows(row, items, graph
+    ? { mergedOutside: await mergedOutsidePrerequisites(database, draftId, items), runningWithoutClaim: await runningUnclaimedIssues(database, draftId, items) }
+    : { mergedOutside: [], runningWithoutClaim: [] });
+}
+
+/**
+ * Unclaimed, unsettled graph issues whose plan status is neither pending nor terminal: they run without a
+ * queue claim. Literal statuses: suites mock the plan issue manager with partial exports.
+ */
+async function runningUnclaimedIssues(database: Knex, draftId: string, items: IssueRow[]): Promise<number[]> {
+  const unclaimed = items.filter(item => item.dispatched_at === null && !SETTLED_STATES.includes(item.state)).map(item => item.issue_number);
+  if (!unclaimed.length) return [];
+  return database('plan_issues').where({ draft_id: draftId }).whereIn('issue_number', unclaimed)
+    .whereNotIn('status', ['pending', 'merged', 'closed']).pluck('issue_number');
 }
 
 /** A prerequisite that is not part of the execution counts as satisfied only once its plan issue is merged. */
@@ -188,15 +207,16 @@ export function isEpicQueueIssueInFlight(queue: EpicExecutionQueue | null, issue
 }
 
 /** The execution's issues as the scheduler sees them: edges and slots follow the mode. */
-export function epicScheduleIssues(queue: EpicExecutionQueue, inProgress: ReadonlySet<number> = new Set()): EpicScheduleIssue[] {
+export function epicScheduleIssues(queue: EpicExecutionQueue): EpicScheduleIssue[] {
+  const inProgress = new Set(queue.runningWithoutClaim);
   const edges = executionEdges(queue.mode, queue.items);
   return queue.items.map((item, index) => ({ issueNumber: item.issueNumber, position: item.position, state: item.state,
     dependsOn: edges[index], inFlight: !isSettled(item) && (item.dispatchedAt !== null || item.state === 'dispatched' || inProgress.has(item.issueNumber)) }));
 }
 
-/** The execution's current schedule; `inProgress` adds issues that run without a queue claim. */
-export function epicQueueSchedule(queue: EpicExecutionQueue, inProgress?: ReadonlySet<number>): EpicSchedule {
-  return scheduleEpicIssues({ issues: epicScheduleIssues(queue, inProgress), mergedOutside: queue.mergedOutside,
+/** The execution's current schedule, including the issues that run without a queue claim. */
+export function epicQueueSchedule(queue: EpicExecutionQueue): EpicSchedule {
+  return scheduleEpicIssues({ issues: epicScheduleIssues(queue), mergedOutside: queue.mergedOutside,
     limit: executionLimit(queue.mode, queue.maxParallel) });
 }
 

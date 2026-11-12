@@ -146,6 +146,41 @@ test('a blocked branch keeps its dependents waiting while an independent branch 
   assert.deepEqual(started(), [1, 5, 2, 3]);
 });
 
+test('an unclaimed issue closed while waiting and then reopened starts once its prerequisites merge', async () => {
+  await createGraph({ issues: [1, 2, 3], maxParallel: 3, dependsOn: diamond });
+  await startEpicQueueHead('draft', deps);
+  assert.deepEqual(started(), [1]);
+  await markStartedRunning();
+  // Issue 2 waits for 1 and was never claimed; someone closes it, and the next pass blocks it.
+  await setStatus(2, 'closed');
+  await reconcileEpicExecutionQueues(deps);
+  let item = (await getEpicExecutionQueue('draft'))!.items[1];
+  assert.deepEqual([item.state, item.blockedKind, item.dispatchedAt], ['blocked', 'closed_unmerged', null]);
+  // Reopened: the next pass drops the closure block, so it waits for its prerequisite again.
+  await setStatus(2, 'pending');
+  await reconcileEpicExecutionQueues(deps);
+  item = (await getEpicExecutionQueue('draft'))!.items[1];
+  assert.deepEqual([item.state, item.blockedKind, item.blockedReason], ['pending', null, null]);
+  assert.deepEqual((await schedule())[1], [2, 'waiting', [1]]);
+  await finish(1);
+  assert.deepEqual(started(), [1, 2, 3]);
+});
+
+test('an unclaimed issue keeps an unrelated blocker, and a closed one stays blocked across passes', async () => {
+  await createGraph({ issues: [1, 2, 3], maxParallel: 3, dependsOn: diamond });
+  await startEpicQueueHead('draft', deps);
+  await markStartedRunning();
+  await database('epic_execution_queue_issues').where({ issue_number: 3 })
+    .update({ state: 'blocked', blocked_kind: 'missing_from_plan', blocked_reason: 'missing', blocked_at: clock });
+  await setStatus(2, 'closed');
+  await reconcileEpicExecutionQueues(deps);
+  // Still closed: further passes keep the closure block.
+  await reconcileEpicExecutionQueues(deps);
+  const items = (await getEpicExecutionQueue('draft'))!.items;
+  assert.deepEqual([items[1].state, items[1].blockedKind], ['blocked', 'closed_unmerged']);
+  assert.deepEqual([items[2].state, items[2].blockedKind], ['blocked', 'missing_from_plan']);
+});
+
 test('restart in the middle: reconcile restores the in-flight set without duplicate dispatches', async () => {
   await createGraph({ maxParallel: 2 });
   await startEpicQueueHead('draft', deps);
@@ -194,6 +229,7 @@ test('an issue started out of band holds a slot, and an unmerged outside prerequ
   await setStatus(2, 'processing');
   await startEpicQueueHead('draft', deps);
   assert.deepEqual(started(), [1], 'issue 2 runs without a claim and holds the second slot');
+  assert.deepEqual((await schedule())[1], [2, 'in_flight', []], 'the issue started by hand reports in flight, not ready');
   assert.deepEqual((await schedule())[2], [3, 'waiting', [99]]);
   await finish(2);
   assert.deepEqual(started(), [1], 'issue 3 still waits for #99, which is not part of the execution');

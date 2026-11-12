@@ -57,12 +57,6 @@ const parseContext = (value: unknown) => {
   return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
 };
 
-/** Issues that run without a queue claim (started by a person): they still hold a slot. */
-function runningWithoutClaim(queue: EpicExecutionQueue, statuses: PlanStatusRow[]): Set<number> {
-  return new Set(statuses.filter(row => row.status !== PlanIssueStatus.PENDING && !isTerminalStatus(row.status))
-    .map(row => row.issue_number).filter(issue => queue.items.some(item => item.issueNumber === issue && item.dispatchedAt === null)));
-}
-
 /**
  * Settles one issue by its persisted plan status: merged is done; closed without merge
  * blocks it, so its dependents keep waiting while other branches run.
@@ -81,6 +75,19 @@ async function settleGraphIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
   await markQueueIssueDone(database, queue, item, { timestamp,
     guard: query => query.whereExists(database('plan_issues').select('id')
       .where({ draft_id: queue.draftId, issue_number: item.issueNumber, status: PlanIssueStatus.MERGED })) });
+}
+
+/**
+ * An unclaimed issue that was closed (before the queue ever started it) and is reopened: drop the
+ * closure block so it is pending again and the scheduler can claim it once its prerequisites merge.
+ * Fenced on the persisted status still being non-terminal; other blockers keep their explanation.
+ */
+async function reopenUnclaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: GraphDriveHooks): Promise<void> {
+  if (item.state !== 'blocked' || item.blockedKind !== 'closed_unmerged') return;
+  const { database } = hooks;
+  await ownedIssue(database, queue, item).where({ state: 'blocked', blocked_kind: 'closed_unmerged' }).whereNull('dispatched_at')
+    .whereExists(planIssueWithStatus(database, queue.draftId, [item.issueNumber], false))
+    .update({ ...clearedBlock(database), updated_at: hooks.now() });
 }
 
 /** A claimed issue that is not terminal: clear a stale explanation once it is reopened, retry a lost dispatch. */
@@ -108,9 +115,8 @@ async function claimReadyGraphIssues(queue: EpicExecutionQueue, hooks: GraphDriv
     if (!locked) return [];
     const current = await getEpicExecutionQueue(queue.draftId, { database: trx });
     if (current?.executionId !== queue.executionId || current.mode !== 'graph') return [];
-    const statuses = await trx('plan_issues').where({ draft_id: queue.draftId }).whereIn('issue_number', current.issues)
-      .select<PlanStatusRow[]>('issue_number', 'status');
-    const schedule = epicQueueSchedule(current, runningWithoutClaim(current, statuses));
+    // Issues a person started (read with the queue, inside the lock) hold a slot without a claim.
+    const schedule = epicQueueSchedule(current);
     const timestamp = hooks.now();
     const claimed: EpicQueueIssue[] = [];
     for (const issueNumber of schedule.start) {
@@ -156,7 +162,8 @@ async function driveIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
   }
   // Merge evidence is the persisted plan status, also for an issue a person started out of band.
   if (isTerminalStatus(status)) return settleGraphIssue(queue, item, status, hooks);
-  if (item.dispatchedAt === null || !draft || draft.paused) return;
+  if (item.dispatchedAt === null) return reopenUnclaimedIssue(queue, item, hooks);
+  if (!draft || draft.paused) return;
   await driveClaimedIssue(queue, item, { status, contextConfig: draft.context_config }, hooks);
 }
 
