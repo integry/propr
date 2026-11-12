@@ -15,7 +15,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Job, Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
-import { agentAdmissionAliasHolders, agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig } from './agentRunAdmission.js';
+import { agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AdmissionRedis } from './agentRunAdmission.js';
 
 /** The direct agent (alias) is at its ceiling; the caller should wait or defer. */
 export class AgentCapacityError extends Error {
@@ -88,18 +88,72 @@ function resolveConfig(options: CapacityOptions): AdmissionConfig | null {
     try { return resolveAgentRunAdmission(); } catch { return null; }
 }
 
+// Read-only. Classifies each aliased holder by Redis server time, the same
+// clock the admission script's `expired` uses: `recoverable` holders (deadline
+// passed, or already `recovering`) still occupy their alias, but only an
+// admission attempt's recovery can free them.
+const OCCUPANCY_SCRIPT = `
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+local live, recoverable = {}, {}
+for _,value in ipairs(redis.call('HVALS', KEYS[1])) do
+  local r = cjson.decode(value)
+  if r.alias then
+    if r.state == 'recovering' or r.deadline <= now then
+      recoverable[r.alias] = (recoverable[r.alias] or 0) + 1
+    else
+      live[r.alias] = (live[r.alias] or 0) + 1
+    end
+  end
+end
+local result = {}
+for alias, count in pairs(live) do table.insert(result, alias); table.insert(result, count); table.insert(result, 0) end
+for alias, count in pairs(recoverable) do table.insert(result, alias); table.insert(result, 0); table.insert(result, count) end
+return result
+`;
+
+export interface AgentAliasOccupancy { live: number; recoverable: number }
+
+/** Holders per direct agent alias, split into `live` ones (deadline not yet
+ * passed) and `recoverable` ones (expired, or `recovering`). A recoverable
+ * holder still occupies its alias, but its process may be gone, so nothing
+ * but the recovery in an admission attempt will ever release it: a capacity
+ * pre-check must let such a job reach the acquire rather than defer it. */
+export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 'eval'>, instance: string): Promise<Record<string, AgentAliasOccupancy>> {
+    const rows = await client.eval(OCCUPANCY_SCRIPT, 1, agentAdmissionKeys(instance)[0]) as Array<string | number>;
+    const occupancy: Record<string, AgentAliasOccupancy> = {};
+    for (let i = 0; i < rows.length; i += 3) {
+        const entry = occupancy[String(rows[i])] ??= { live: 0, recoverable: 0 };
+        entry.live += Number(rows[i + 1]);
+        entry.recoverable += Number(rows[i + 2]);
+    }
+    return occupancy;
+}
+
+/** Holders of `alias` that block a job from reaching the acquire: only live ones. */
+async function liveAliasHolders(client: Redis, instance: string, alias: string): Promise<number> {
+    return (await agentAdmissionAliasOccupancy(client, instance))[alias]?.live ?? 0;
+}
+
 /**
- * Whether `alias` has room under its ceiling right now. Advisory only: an alias
- * without a ceiling always has room here, and a Redis failure answers `true` so
- * the authoritative acquire (which fails closed) decides.
+ * Whether `alias` has room under its ceiling right now, or a holder that only
+ * recovery can free. Advisory only: an alias without a ceiling always has room
+ * here, and a Redis failure answers `true` so the authoritative acquire (which
+ * fails closed) decides.
+ *
+ * An expired or `recovering` holder still occupies its alias until recovery
+ * confirms its container is gone, but recovery is demand-driven: it runs only
+ * inside an admission attempt. Counting such a holder here would defer every
+ * job of the alias before any reached that recovery, so a holder whose process
+ * died would block the alias forever. Those jobs proceed to the acquire, which
+ * recovers (removal confirmed before reuse) and then admits or waits.
  */
 export async function agentAliasHasCapacity(alias: string, options: CapacityOptions = {}): Promise<boolean> {
     const config = resolveConfig(options);
     const ceiling = aliasCeiling(config, alias);
     if (!config || ceiling === undefined) return true;
     try {
-        const holders = await withCapacityClient(options.client, client => agentAdmissionAliasHolders(client, config.instance));
-        return (holders[alias] ?? 0) < ceiling;
+        return await withCapacityClient(options.client, client => liveAliasHolders(client, config.instance, alias)) < ceiling;
     } catch (error) {
         logger.debug({ alias, error: (error as Error).message }, 'Agent capacity pre-check unavailable; the admission boundary decides');
         return true;
@@ -163,8 +217,8 @@ export async function wakeAgentCapacityWaiters(alias: string, options: CapacityO
     if (!config || ceiling === undefined) return 0;
     return withCapacityClient(options.client, async client => {
         const key = agentCapacityWaitersKey(config.instance, alias);
-        const holders = await agentAdmissionAliasHolders(client, config.instance);
-        const free = ceiling - (holders[alias] ?? 0);
+        // Same rule as the pre-check: a woken job may be the one that recovers an expired holder.
+        const free = ceiling - await liveAliasHolders(client, config.instance, alias);
         if (free <= 0) return 0;
         const queues = new Map<string, Queue>();
         let woken = 0;

@@ -22,7 +22,8 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { agentAdmissionKeys, prepareAdmittedAgent, resolveAgentRunAdmission, type AdmissionDocker } from '../packages/core/src/agents/agentRunAdmission.js';
 import {
-    AgentCapacityError, AgentCapacityWaitTimeoutError, agentCapacityWaitersKey, configureAgentCapacityRedis, runWithAgentCapacityContext,
+    AgentCapacityError, AgentCapacityWaitTimeoutError, agentAliasHasCapacity, agentCapacityWaitersKey, configureAgentCapacityRedis, runWithAgentCapacityContext,
+    wakeAgentCapacityWaiters,
 } from '../packages/core/src/agents/agentCapacity.js';
 import { deferCapacityJob } from '../src/jobs/repositoryWorkflow.js';
 import { admitAgentCapacity, checkJobAgentCapacity, isAgentCapacityRefusal, persistAgentCapacityDeferral } from '../src/jobs/agentCapacityDeferral.js';
@@ -262,6 +263,77 @@ test('a lost race at the authoritative acquire: a short wait is admitted, a long
         await again.finish();
     } finally {
         await held.finish().catch(() => {});
+    }
+});
+
+test('a holder whose process died is recovered by the deferred jobs of its alias, never blocking it forever', integration(), async () => {
+    const name = `agent-capacity-abandoned-${run}`;
+    queues.push(name);
+    const queue = new Queue(name, { connection: redis! });
+    const [holdersKey] = agentAdmissionKeys(instanceId);
+    assert.equal(await redis!.hlen(holdersKey), 0);
+    const events: string[] = [];
+    const recording = (prefix: string): AdmissionDocker => {
+        let count = 0;
+        return {
+            daemon: async () => 'test', assertEmpty: async () => {},
+            create: async () => { const id = `${prefix}-${++count}`; events.push(`create ${id}`); return id; },
+            remove: async id => { events.push(`remove ${id}`); },
+        };
+    };
+    // The holder's process dies: its renewal never completes and it never calls finish().
+    const frozen = new Proxy(redis!, { get: (target, key) => key === 'eval'
+        ? (script: string, keys: number, ...args: (string | number)[]) => args[2] === 'renew' ? new Promise<never>(() => {}) : target.eval(script, keys, ...args)
+        : Reflect.get(target, key, target) });
+    const lease = 1_500;
+    await prepareAdmittedAgent(['run', 'agent'], { agentAlias: 'local-llama', client: frozen, docker: recording('dead'), config: resolveAgentRunAdmission()!, pollMs: 10, leaseMs: lease });
+    const abandonedAt = Date.now();
+    const { tasks, stateManager } = timeline();
+    const ran: string[] = [];
+    const workerConnection = redis!.duplicate();
+    let worker: Worker | undefined;
+    try {
+        assert.equal(await agentAliasHasCapacity('local-llama'), false, 'a live holder fills the ceiling');
+        worker = new Worker(name, (job: Job<{ alias: string }>) => deferCapacityJob(job, async () => {
+            try {
+                await checkJobAgentCapacity(job, [{ agentAlias: job.data.alias }], { registry });
+                await admitAgentCapacity(job);
+            } catch (error) {
+                if (isAgentCapacityRefusal(error)) await persistAgentCapacityDeferral({ job, error, stateManager: stateManager as never, taskId: job.id!, correlatedLogger: log });
+                throw error;
+            }
+            const admitted = await prepareAdmittedAgent(['run', 'agent'], { agentAlias: job.data.alias, client: redis!, docker: recording(job.id!), config: resolveAgentRunAdmission()!, pollMs: 10 });
+            await admitted.finish();
+            ran.push(job.id!);
+            return 'done';
+        }), { connection: workerConnection, concurrency: 1 });
+        await queue.add('local', { alias: 'local-llama' }, { attempts: 3, removeOnComplete: false, jobId: 'A1' });
+        await until(async () => (await queue.getJob('A1'))!.data.agentCapacityDeferrals === 1 && await (await queue.getJob('A1'))!.isDelayed(), 8_000, 'a deferral while the holder is live');
+        assert.equal(await wakeAgentCapacityWaiters('local-llama'), 0, 'no slot to wake while the holder is live');
+
+        // The lease expires. Nothing releases the holder: expiry frees no capacity, and its process is gone.
+        await delay(Math.max(0, abandonedAt + lease + 100 - Date.now()));
+        assert.equal(await redis!.hlen(holdersKey), 1, 'the abandoned holder still occupies its slot');
+        assert.equal(await agentAliasHasCapacity('local-llama'), true, 'only recovery can free it, so jobs must reach the acquire');
+        assert.equal(await wakeAgentCapacityWaiters('local-llama'), 1, 'a wakeup counts it as recoverable too');
+
+        // The woken (or backed-off) job reaches the acquire, recovers the holder and runs.
+        await until(() => ran.includes('A1'), 8_000, 'the deferred job after recovery');
+        assert.ok(events.indexOf('remove dead-1') >= 0 && events.indexOf('remove dead-1') < events.indexOf('create A1-1'), 'the dead container is removed before the slot is reused');
+        const a1 = (await queue.getJob('A1'))!;
+        assert.equal(a1.attemptsMade, 1);
+        assert.equal(a1.data.agentCapacityDeferrals, undefined);
+        assert.equal(tasks.get('A1')!.history.filter(row => row.metadata?.agentCapacityDeferrals).length, 1);
+
+        // Later jobs of the alias are not deferred at all.
+        await queue.add('local', { alias: 'local-llama' }, { attempts: 3, removeOnComplete: false, jobId: 'A2' });
+        await until(() => ran.includes('A2'), 8_000, 'a later job');
+        assert.equal((await queue.getJob('A2'))!.data.agentCapacityDeferrals, undefined);
+        assert.equal(await redis!.hlen(holdersKey), 0, 'no holder left behind');
+    } finally {
+        await worker?.close(true);
+        workerConnection.disconnect();
+        await queue.close();
     }
 });
 
