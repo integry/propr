@@ -13,14 +13,17 @@ import { capture, installSettingsFixture } from './settings-layout.fixture';
 test('lays settings out as a vertical rail beside one contained, single-column form', async ({ page }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await installSettingsFixture(page);
-  await page.goto('/settings?tab=models');
+  await page.goto('/settings');
 
   // A vertical rail lists the settings domains, with no arbitrary counts.
   const rail = page.getByRole('tablist', { name: 'Settings categories' });
   await expect(rail.getByRole('tab')).toHaveText([
-    'General', 'AI Models & Reasoning', 'Workflow & PR Rules', 'Ultrafix & Escalation',
+    'AI Models & Reasoning', 'Workflow & PR Rules', 'Ultrafix & Escalation',
     'Sandbox & Network', 'Agent Extensions & Packages', 'Integrations & MCP', 'Notifications',
+    'Maintenance', 'Experimental',
   ]);
+  // AI Models & Reasoning opens by default.
+  await expect(rail.getByRole('tab', { name: 'AI Models & Reasoning' })).toHaveAttribute('aria-selected', 'true');
   const tabBoxes = await Promise.all((await rail.getByRole('tab').all()).map(tab => tab.boundingBox()));
   for (const box of tabBoxes.slice(1)) {
     expect(Math.abs(box!.x - tabBoxes[0]!.x)).toBeLessThanOrEqual(1);
@@ -95,10 +98,13 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   await expect(page.getByRole('region', { name: 'Agent watchdog' })).toBeHidden();
   await capture(page, 'settings-ultrafix');
 
-  await page.getByRole('tab', { name: 'General' }).click();
+  await page.getByRole('tab', { name: 'Experimental' }).click();
   await expect(page.getByLabel('Show usage tips')).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'Enable voice briefings' })).toBeVisible();
-  await capture(page, 'settings-general');
+  await capture(page, 'settings-experimental');
+
+  await page.getByRole('tab', { name: 'Maintenance' }).click();
+  await expect(page.getByRole('region', { name: 'Instance data', exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Integrations & MCP' }).click();
   await expect(page.getByRole('heading', { name: 'LLM Usage Tracking' })).toBeVisible();
@@ -195,7 +201,7 @@ test('drills into settings on a phone instead of scrolling a tab strip', async (
 
   // Screen 1: every category is listed vertically and fully readable.
   const tabs = page.getByRole('tablist', { name: 'Settings categories' }).getByRole('tab');
-  await expect(tabs).toHaveCount(8);
+  await expect(tabs).toHaveCount(9);
   for (const tab of await tabs.all()) {
     await expect(tab).toBeInViewport({ ratio: 1 });
     expect(await tab.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -236,8 +242,7 @@ test('walks the phone category list with the keyboard before opening one', async
   await page.goto('/settings');
 
   const tabs = page.getByRole('tablist', { name: 'Settings categories' });
-  await tabs.getByRole('tab', { name: 'General' }).focus();
-  await page.keyboard.press('ArrowDown');
+  await tabs.getByRole('tab', { name: 'AI Models & Reasoning' }).focus();
   await page.keyboard.press('ArrowDown');
 
   // Arrows only move focus: the list stays up and the route is unchanged.

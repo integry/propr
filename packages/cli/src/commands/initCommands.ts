@@ -138,6 +138,8 @@ hooks:
 #   method: squash
 #   protected_paths:
 #     - ".github/workflows/**"
+#   require_up_to_date: false
+#   max_branch_updates_per_hour: 3
 # Stop and report a blocker (no commit, no PR) instead of delivering a reduced version.
 # on_blocker: report
 # Mark more paths high risk in the review digest of agent PRs and completion comments.

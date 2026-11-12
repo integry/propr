@@ -292,13 +292,13 @@ test('keeps Voice Briefings off until opt-in, then usable on a narrow mobile vie
   await expect(launcher).toBeHidden();
 });
 
-test('shows the administrator opt-in under General', async ({ page }) => {
+test('shows the administrator opt-in under Experimental', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 820 });
   await stubVoiceBriefingSmokeApis(page, () => undefined, administrator);
-  await page.goto('/settings');
+  await page.goto('/settings?tab=experimental');
 
   const optIn = page.getByRole('checkbox', { name: 'Enable voice briefings' });
-  await expect(page.getByRole('heading', { name: 'Experimental', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Opt-in features', exact: true })).toBeVisible();
   await expect(optIn).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Voice briefing' })).toBeHidden();
 

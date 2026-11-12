@@ -45,11 +45,13 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('ExperimentalSettingsSection', () => {
-  it('groups voice briefings and dashboard AI summaries under one Experimental heading', () => {
+  it('groups voice briefings and dashboard AI summaries under one opt-in heading', () => {
     const onChange = vi.fn();
     render(<ExperimentalSettingsSection dashboardSummaryEnabled={false} onDashboardSummaryChange={onChange} />, { wrapper: Wrapper });
 
-    const section = screen.getByRole('region', { name: 'Experimental' });
+    // The Experimental category names the page, so the section does not repeat it.
+    expect(screen.queryByRole('heading', { name: 'Experimental' })).toBeNull();
+    const section = screen.getByRole('region', { name: 'Opt-in features' });
     expect(within(section).getByRole('checkbox', { name: 'Enable voice briefings' })).not.toBeChecked();
     const summary = within(section).getByRole('checkbox', { name: 'Dashboard AI summaries' });
     expect(summary).not.toBeChecked();
@@ -63,7 +65,7 @@ describe('ExperimentalSettingsSection', () => {
     render(
       <SettingsNavigation sections={[{
         id: 'experimental',
-        category: 'general',
+        category: 'experimental',
         searchText: 'experimental features opt-in voice briefings dashboard AI summary summaries',
         content: <ExperimentalSettingsSection dashboardSummaryEnabled onDashboardSummaryChange={vi.fn()} />,
       }]} />,

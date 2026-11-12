@@ -33,6 +33,8 @@ auto_merge:
     - ".github/workflows/**"
     - "packages/core/src/db/migrations/**"
     - "package.json"
+  require_up_to_date: true
+  max_branch_updates_per_hour: 3
 network:
   mode: restricted
   allow:
@@ -204,6 +206,8 @@ With `continue` or without the key, prompts and outcomes are unchanged.
 | `enabled` | `true` | `false` never arms auto-merge, even when the label is present. |
 | `method` | repository default | `merge`, `squash` or `rebase`. Without it ProPR uses squash, as before, unless the repository disallows squash merges. |
 | `protected_paths` | none | Globs. If any changed file matches one, auto-merge is not armed. |
+| `require_up_to_date` | `false` | ProPR's own merge waits until the PR head contains the latest base commit. A behind PR is updated from its base and merged only after CI passes on the updated head. See [Up-to-date branches](#up-to-date-branches). |
+| `max_branch_updates_per_hour` | `3` | With `require_up_to_date`, the most branch updates ProPR requests for one PR in any hour (1 to 30). |
 
 `.propr` and everything below it (`.propr/**`) are always protected, whatever the configuration says, including a `.propr` file or symlink added by the PR, so an agent cannot change repository policy and merge it unattended.
 
@@ -227,6 +231,37 @@ A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.p
 **New commits.** When an armed PR receives a new head (or is retargeted to another base), ProPR evaluates the policy again. If it no longer allows auto-merge, for example because a follow-up commit touched a protected path, ProPR disables auto-merge on the PR, records a timeline event and comments. Only auto-merge that ProPR itself enabled is withdrawn; auto-merge a person or another GitHub App enabled is left alone.
 
 **Epic queues.** An Epic queue advances when the head's PR is merged, not when auto-merge is armed. If auto-merge is skipped for the head's PR, the queue stays active and shows *Waiting for human merge* with the reason; it resumes as soon as a person merges the PR.
+
+### Up-to-date branches
+
+GitHub only reports a PR as cleanly mergeable for its current head, and a PR that is merely behind its base waits until something else changes it. Where branch protection does not require up-to-date branches, two PRs that each pass alone can also merge and break the base together. `require_up_to_date: true` gives ProPR's own auto-merge merge-queue-like behaviour:
+
+1. When a labelled PR passes every other gate (labels, Ultrafix state, CI, mergeability, active work, policy) ProPR compares its head with the latest commit of the base branch. A head that contains it merges as before.
+2. A behind head is not merged. ProPR updates the branch through GitHub's update-branch API, passing the head SHA it evaluated so a concurrent push is never overwritten.
+3. The updated head runs CI. The check-run webhooks and the auto-merge sweep evaluate it again, and it merges only once its own CI has passed (and the base has not moved again).
+
+ProPR's comparison and the merge that follows run one at a time per repository, so two PRs that are each current against the same base cannot both merge: the second one is compared again against the base the first merge produced, and is updated instead of merged. ProPR renews that ownership while the merge is in progress and checks it again just before merging. If it was lost (for example, the process stalled past its five-minute expiry), the PR is not merged and is compared again later.
+
+A PR that is waiting (for another PR's turn or merge, for its own branch update, or for its update rate limit) is recorded for retry. The auto-merge sweep then re-evaluates it about once a minute, even if no further check event arrives and the PR is not part of a plan. It stays recorded until an evaluation settles it: the PR merges or closes, becomes a draft, loses the `auto-merge` label (or its Ultrafix loop fails), or the repository policy leaves it for a person. Checks that are still running or have failed keep it recorded, and so does any mergeability GitHub reports other than clean (not computed yet, conflicts, blocked): the final result of a re-run or of a new head may arrive while GitHub has not computed mergeability yet or other work on the PR is still running, and an approval produces no check event. An evaluation that could not decide, for example because CI or the PR could not be read, keeps it for the next sweep too. A PR that is not recorded again for a day is dropped.
+
+GitHub's own auto-merge would merge a behind head without this comparison, so ProPR does not arm it under `require_up_to_date`. The `auto-merge` label keeps the merge intent, and ProPR merges the PR itself from check events and the auto-merge sweep. A GitHub auto-merge request ProPR armed earlier (for example before the option was enabled) is withdrawn with a comment the next time ProPR evaluates the PR; a request a person or another App armed is left alone.
+
+Only one PR per repository is brought up to date at a time: the oldest eligible PR (lowest number) holds the repository's turn until its updated head merges, its CI fails, it is closed, or an hour passes without progress. Each PR gets at most `max_branch_updates_per_hour` updates per hour; a PR that reaches the limit gives up its turn so a busy base branch cannot cause an update loop, and is updated again once the hour has passed.
+
+If GitHub cannot update the branch because of merge conflicts, ProPR queues [automatic merge-conflict resolution](./pr-followup.md#automatic-merge-conflict-resolution) when it is enabled for the repository; otherwise it comments on the PR explaining why auto-merge is waiting. Without the option, a behind PR is skipped exactly as before.
+
+Each decision is recorded with the same auto-merge timeline event, at most once per head and base:
+
+| Reason | When |
+| --- | --- |
+| `updated_branch` | The head was behind; ProPR requested a branch update. |
+| `waiting_for_ci_updated_head` | CI has not passed yet on the updated head (or failed on it, which ends the PR's turn). |
+| `waiting_branch_update_pending` | The requested update has not produced a new head yet. |
+| `waiting_branch_update_serialized` | Another PR in the repository holds the turn, an older PR is eligible, or another PR's comparison and merge are in progress. |
+| `waiting_branch_update_rate_limited` | The PR reached `max_branch_updates_per_hour`. |
+| `waiting_branch_update_conflict` | The update failed because of conflicts; the event says whether automatic resolution was queued. |
+| `waiting_branch_update_failed` | GitHub refused the update for another reason. |
+| `waiting_base_comparison_unavailable` | GitHub could not compare the head with the base branch; nothing is merged. |
 
 ## Review digest risk paths
 

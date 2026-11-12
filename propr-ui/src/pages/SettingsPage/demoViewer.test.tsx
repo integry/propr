@@ -84,12 +84,14 @@ describe('demo viewer navigation', () => {
 
     const categories = within(screen.getByRole('tablist', { name: 'Settings categories' })).getAllByRole('tab');
     expect(categories.map(tab => tab.textContent)).toEqual(expect.arrayContaining([
-      expect.stringContaining('General'),
       expect.stringContaining('AI Models & Reasoning'),
       expect.stringContaining('Workflow & PR Rules'),
       expect.stringContaining('Integrations & MCP'),
       expect.stringContaining('Notifications'),
+      expect.stringContaining('Experimental'),
     ]));
+    // Maintenance is administrator-only, so a viewer without its sections does not see it.
+    expect(categories.map(tab => tab.textContent)).not.toContain('Maintenance');
     expect(screen.getByText('Demo mode is read-only. Settings can be inspected but not saved.')).toBeInTheDocument();
   });
 
