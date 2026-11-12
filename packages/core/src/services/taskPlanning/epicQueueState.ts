@@ -216,22 +216,37 @@ export async function completeSettledExecution(database: Knex, owner: Owner, tim
 
 /**
  * Appends pending issues to an active sequential execution, as long as it still holds exactly
- * the issues the caller read: a concurrent advance or completion is never overwritten.
+ * the issues the caller read: a concurrent advance or completion is never overwritten. An issue
+ * that already settled in this execution is requeued: its row is reset to pending at the tail.
  */
 export async function appendEpicQueueIssues(queue: EpicExecutionQueue, issueNumbers: number[],
   { database = db, now = Date.now }: { database?: Knex; now?: () => number } = {}): Promise<boolean> {
-  if (!issueNumbers.length || issueNumbers.some(issue => queue.issues.includes(issue)) || new Set(issueNumbers).size !== issueNumbers.length) return false;
+  if (!issueNumbers.length || new Set(issueNumbers).size !== issueNumbers.length) return false;
+  // Only settled issues may be requeued; an unsettled one is already owed by the execution.
+  if (issueNumbers.some(issue => { const item = epicQueueIssue(queue, issue); return item && !isSettled(item); })) return false;
   const timestamp = now();
   const work = async (trx: Knex) => {
     const owned = { draft_id: queue.draftId, execution_id: queue.executionId };
     const current = await trx('epic_execution_queues').where({ ...owned, status: 'active' }).forUpdate().first('draft_id');
     if (!current) return false;
-    const items = await trx(EPIC_QUEUE_ISSUES).where(owned).orderBy('position').select<Array<{ issue_number: number; position: number }>>('issue_number', 'position');
+    const items = await trx(EPIC_QUEUE_ISSUES).where(owned).orderBy('position')
+      .select<Array<{ issue_number: number; position: number; state: EpicQueueIssueState }>>('issue_number', 'position', 'state');
     if (items.length !== queue.items.length || items.some((item, index) => item.issue_number !== queue.items[index].issueNumber)) return false;
-    const next = (items.at(-1)?.position ?? -1) + 1;
-    await trx(EPIC_QUEUE_ISSUES).insert(issueNumbers.map((issueNumber, index) => ({ ...owned, issue_number: issueNumber, position: next + index,
-      state: 'pending', dispatched_at: null, blocked_kind: null, blocked_reason: null, blocked_at: null, created_at: timestamp, updated_at: timestamp })));
-    await trx('epic_execution_queues').where(owned).update({ issues: JSON.stringify([...queue.issues, ...issueNumbers]), updated_at: timestamp });
+    // A requeued issue must still be settled; nothing but an append moves a settled row back.
+    if (issueNumbers.some(issue => items.some(item => item.issue_number === issue && !SETTLED_STATES.includes(item.state)))) return false;
+    let next = (items.at(-1)?.position ?? -1) + 1;
+    const pending = { state: 'pending', dispatched_at: null, blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp };
+    for (const issueNumber of issueNumbers) {
+      const position = next++;
+      if (!items.some(item => item.issue_number === issueNumber)) {
+        await trx(EPIC_QUEUE_ISSUES).insert({ ...owned, issue_number: issueNumber, position, ...pending, created_at: timestamp });
+        continue;
+      }
+      await trx(EPIC_QUEUE_ISSUES).where({ ...owned, issue_number: issueNumber }).whereIn('state', SETTLED_STATES)
+        .update({ ...pending, position });
+    }
+    const order = await trx(EPIC_QUEUE_ISSUES).where(owned).orderBy('position').pluck('issue_number');
+    await trx('epic_execution_queues').where(owned).update({ issues: JSON.stringify(order), updated_at: timestamp });
     return true;
   };
   return (database as Knex.Transaction).isTransaction ? work(database) : database.transaction(trx => work(trx));

@@ -36,7 +36,7 @@ await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
 const { PlanIssueStatus: S } = await import('../src/config/planIssueManager.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, advanceEpicQueue, startEpicQueueHead,
   reconcileEpicExecutionQueues, appendEpicQueueIssues } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
-const { agentBlockedHeadReason } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
+const { agentBlockedHeadReason, clearEpicQueueHeadBlocked } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 
 async function createSchema(target: Knex, migrations = [up, finalization, useEpic, parallel, recovery, issueStates]) {
   await target.schema.createTable('task_drafts', table => {
@@ -44,6 +44,10 @@ async function createSchema(target: Knex, migrations = [up, finalization, useEpi
   });
   await target.schema.createTable('plan_issues', table => {
     table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.integer('pr_number'); table.string('status');
+    table.string('task_id');
+  });
+  await target.schema.createTable('task_history', table => {
+    table.increments('history_id'); table.string('task_id'); table.string('state'); table.bigInteger('timestamp'); table.text('metadata');
   });
   for (const migrate of migrations) await migrate(target);
 }
@@ -57,9 +61,10 @@ beforeEach(async () => {
 });
 
 /** A database whose queue rows were written by the single-cursor schema, then migrated. */
-async function migrateLegacy(rows: Array<Record<string, unknown>>) {
+async function migrateLegacy(rows: Array<Record<string, unknown>>, seed?: (legacy: Knex) => Promise<void>) {
   const legacy = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await createSchema(legacy, [up, finalization, useEpic, parallel, recovery]);
+  await seed?.(legacy);
   for (const row of rows) {
     await legacy('task_drafts').insert({ draft_id: row.draft_id });
     await legacy('epic_execution_queues').insert({ repository: 'acme/repo', created_at: 100, updated_at: 200, ...row });
@@ -125,6 +130,59 @@ test('an active parallel queue migrates with every child dispatched and its bloc
     const { issueStates: _perIssue, ...summary } = summarizeEpicQueue(queue)!;
     assert.deepEqual(summary, { issues: [10, 20, 30], cursor: 0, head: null, status: 'active', advanceOn: 'merged',
       blockedReason: agentBlockedHeadReason(20), executionMode: 'parallel' });
+  } finally { await legacy.destroy(); }
+});
+
+const BLOCKED_RUN = JSON.stringify({ terminalReason: 'blocked', prResult: { status: 'success', terminalReason: 'blocked' } });
+
+test('a parallel queue migrates every child whose latest run is still blocked, not only the one its reason names', async () => {
+  const legacy = await migrateLegacy([{ draft_id: 'par', execution_id: 'par-1', issues: '[10,20,30,40]', cursor: 0,
+    status: 'active', parallel: true, blocked_reason: agentBlockedHeadReason(20) }], async target => {
+    await target('plan_issues').insert([
+      { draft_id: 'par', issue_number: 10, status: 'processing', task_id: 'task-10' },
+      { draft_id: 'par', issue_number: 20, status: 'processing', task_id: 'task-20' },
+      { draft_id: 'par', issue_number: 30, status: 'merged', task_id: 'task-30' },
+      { draft_id: 'par', issue_number: 40, status: 'processing', task_id: 'task-40' },
+    ]);
+    await target('task_history').insert([
+      { task_id: 'task-10', state: 'completed', timestamp: 1, metadata: BLOCKED_RUN },
+      { task_id: 'task-20', state: 'completed', timestamp: 2, metadata: BLOCKED_RUN },
+      // Merged since, or rerun since: neither still holds a blocker.
+      { task_id: 'task-30', state: 'completed', timestamp: 1, metadata: BLOCKED_RUN },
+      { task_id: 'task-40', state: 'completed', timestamp: 1, metadata: BLOCKED_RUN },
+      { task_id: 'task-40', state: 'processing', timestamp: 3, metadata: null },
+    ]);
+  });
+  try {
+    let queue = await getEpicExecutionQueue('par', { database: legacy });
+    assert.deepEqual(states(queue)?.map(([issue, state, , kind]) => [issue, state, kind]),
+      [[10, 'blocked', 'agent_blocked'], [20, 'blocked', 'agent_blocked'], [30, 'dispatched', null], [40, 'dispatched', null]]);
+    assert.equal(queue?.blockedReason, agentBlockedHeadReason(20), 'the child the legacy reason named stays the latest blocker');
+
+    // The named child finishes a normal rerun; the other child still holds the epic and explains it.
+    assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'par', issueNumber: 20 }, { database: legacy }), true);
+    queue = await getEpicExecutionQueue('par', { database: legacy });
+    assert.equal(queue?.blockedReason, agentBlockedHeadReason(10));
+    assert.deepEqual(summarizeEpicQueue(queue)?.issueStates[0],
+      { issue: 10, state: 'blocked', blockedKind: 'agent_blocked', blockedReason: agentBlockedHeadReason(10) });
+  } finally { await legacy.destroy(); }
+});
+
+test('a legacy queue that requeued a settled issue migrates to one row per issue, keeping outstanding work', async () => {
+  const legacy = await migrateLegacy([
+    // #10 settled, then was requeued behind the in-flight head #20.
+    { draft_id: 'requeued', execution_id: 'requeued-1', issues: '[10,20,10]', cursor: 1, status: 'active', head_started_at: 500 },
+    { draft_id: 'finished', execution_id: 'finished-1', issues: '[10,20,10]', cursor: 3, status: 'completed' },
+  ]);
+  try {
+    const queue = await getEpicExecutionQueue('requeued', { database: legacy });
+    assert.deepEqual(states(queue), [[20, 'dispatched', 500, null], [10, 'pending', null, null]]);
+    assert.deepEqual([queue?.issues, queue?.cursor, queue?.headStartedAt], [[20, 10], 0, 500]);
+    const finished = await getEpicExecutionQueue('finished', { database: legacy });
+    assert.deepEqual(states(finished)?.map(([issue, state]) => [issue, state]), [[20, 'done'], [10, 'done']]);
+    await removeIssueStates(legacy);
+    const restored = await legacy('epic_execution_queues').where({ draft_id: 'requeued' }).first();
+    assert.deepEqual([restored.issues, restored.cursor, Number(restored.head_started_at)], ['[20,10]', 0, 500]);
   } finally { await legacy.destroy(); }
 });
 
@@ -219,4 +277,26 @@ test('issues appended to an active queue get pending rows; a stale or replaced e
   await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [40] });
   assert.equal(await appendEpicQueueIssues(appended!, [40]), false, 'a replaced execution never writes');
   assert.deepEqual((await getEpicExecutionQueue('draft'))?.issues, [40]);
+});
+
+test('an issue that settled in the active execution is requeued at the tail; an unsettled one is not appended twice', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
+  await startEpicQueueHead('draft', deps);
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'merged' });
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.MERGED }, deps);
+  // #10 is reset to pending while #20 is in flight.
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'pending' });
+  const advanced = await getEpicExecutionQueue('draft');
+  assert.equal(await appendEpicQueueIssues(advanced!, [20]), false, 'the in-flight head is already owed');
+  assert.equal(await appendEpicQueueIssues(advanced!, [10, 30]), true);
+  const queue = await getEpicExecutionQueue('draft');
+  assert.deepEqual(queue?.items.map(item => [item.issueNumber, item.position, item.state, item.dispatchedAt]),
+    [[20, 1, 'dispatched', queue?.items[0].dispatchedAt], [10, 2, 'pending', null], [30, 3, 'pending', null]]);
+  assert.deepEqual([queue?.issues, queue?.cursor, summarizeEpicQueue(queue)?.head], [[20, 10, 30], 0, 20]);
+  assert.equal((await database('epic_execution_queues').where({ draft_id: 'draft' }).first()).issues, '[20,10,30]');
+  assert.equal(await appendEpicQueueIssues(queue!, [10]), false, 'a requeued issue is pending again');
+  // The requeued issue runs again after the head settles.
+  await database('plan_issues').where({ issue_number: 20 }).update({ status: 'merged' });
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 20, status: S.MERGED }, deps);
+  assert.deepEqual(starts, [10, 20, 10]);
 });
