@@ -258,10 +258,10 @@ test('returns one PR\'s score history with its outcome', async () => {
   const body = state.body as { outcome: string; merged_at: string; scores: Array<Record<string, unknown>> };
   assert.equal(body.outcome, 'merged');
   assert.equal(body.merged_at, daysAgo(3));
-  assert.deepEqual(body.scores.map(score => [score.cycle_number, score.score, score.source, score.reviewer_model, score.head_sha]), [
-    [1, 5, 'ultrafix', GPT, 'sha-5'],
-    [2, 8, 'ultrafix', GPT, 'sha-8'],
-    [null, 9, 'review', GPT, 'sha-9'],
+  assert.deepEqual(body.scores.map(score => [score.cycle_number, score.score, score.source, score.reviewer_model, score.head_sha, score.goal_reached]), [
+    [1, 5, 'ultrafix', GPT, 'sha-5', false],
+    [2, 8, 'ultrafix', GPT, 'sha-8', true],
+    [null, 9, 'review', GPT, 'sha-9', null],
   ]);
   const empty = await invoke(routes().getPullRequestScores, { repository: 'acme/repo' }, { number: '404' });
   assert.deepEqual(empty.body, { repository: 'acme/repo', pr_number: 404, outcome: null, merged_at: null, closed_at: null, scores: [] });

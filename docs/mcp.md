@@ -960,6 +960,61 @@ and returns image content plus dimensions and byte counts. Only
 are rejected with `PREVIEW_NOT_RENDERABLE` and should be opened on GitHub.
 Image content is untrusted, like comment prose.
 
+**Is it ready to integrate?** `get_pull_request_readiness` returns one
+verdict for a pull request, with a coded reason for every gate. It is a pure
+read: it does not comment, label, update the branch or merge, it does not
+arm or withdraw auto-merge, and it leaves ProPR's own state untouched,
+including the marker that records when ProPR first saw a head without CI.
+
+```json
+{ "repository": "acme/web", "number": 42 }
+```
+
+Your GitHub access to the repository is checked the same way as for
+`get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
+sees what the auto-merge path sees, including legacy commit statuses and the
+repository's non-blocking checks.
+
+The `verdict` is `merged` or `closed` when the PR state says so. Otherwise it
+is `blocked` if any gate has status `fail`, else `waiting` if any gate is
+`waiting`, else `unknown` if any gate is `unknown`, else `ready`.
+`blockingReasons` lists the reason codes of failed gates, and `waitingReasons`
+lists those of waiting or unknown gates. `gates` lists every gate, in the order
+of the table below, with `gate`, `status` (`pass`, `waiting`, `fail`, `unknown`
+or `not_applicable`), `reason` and an optional `detail`:
+
+| Gate | Reason codes, by status |
+| --- | --- |
+| `open` | pass: `pull_request_open`. fail: `pull_request_merged`, `pull_request_closed` |
+| `not_draft` | pass: `not_draft`. fail: `draft` |
+| `checks` | pass: `checks_passing`, or `no_ci` once ProPR has seen the head without any CI for two minutes. waiting: `waiting_for_ci` before that, and `checks_not_passing` while blocking checks still run. fail: `checks_not_passing` when a blocking check failed. unknown: `unavailable` (check runs or commit statuses could not be read) |
+| `mergeable` | pass: `mergeable`. fail: `merge_conflict`, `branch_behind_base`. `branch_protection_blocked` waits while checks or a required review are still pending, and fails otherwise. unknown: `merge_state_unknown` |
+| `human_review` | pass: `approved`, `no_changes_requested`. fail: `changes_requested`. waiting: `review_required`. unknown: `review_state_unavailable` |
+| `ai_review` | pass: `goal_reached`. fail: `score_below_goal`. waiting: `review_stale_head` (the latest review is of another head). `no_review` is not applicable, or waiting when the PR has the `ultrafix` label. unknown: `review_scores_unavailable` |
+| `ultrafix` | pass: `ultrafix_succeeded`. fail: `ultrafix_failed`. waiting: `ultrafix_active`, `ultrafix_pending` (label present, no loop has completed). unknown: `ultrafix_state_unavailable`. not applicable: `ultrafix_not_requested` |
+| `active_work` | pass: `no_active_work`. waiting: `propr_work_active`. unknown: `active_work_unavailable`. An unreadable queue is never reported as idle |
+| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`. not applicable: `auto_merge_not_requested` |
+
+`ai_review` never holds a PR that ProPR is not reviewing. The newest score of
+the latest review job counts. `review` reports its `score`, its `goal` (the
+cycle's Ultrafix goal, or `ultrafix_rating_goal` for a plain `/review`),
+`goalReached`, `reviewedHead` and `matchesCurrentHead`, and is null when there
+is no review. `ultrafix` reports `active`, `completionStatus` and
+`labelPresent`, and is null when the loop state could not be read.
+
+The policy is read only when the PR or its linked issue carries the
+`auto-merge` label. Otherwise the gate is not applicable and cannot change the
+verdict. `autoMerge` reports eligibility as `eligible`, `ineligible` or
+`transient`, with a reason: `pr_label`, `linked_issue_label`,
+`no_auto_merge_label`, `epic_without_label`, `ultrafix_active`,
+`ultrafix_failed`, `ultrafix_not_succeeded`, `ultrafix_state_unavailable` or
+`linked_issue_unavailable`. Its `policy` field is null when auto-merge was not
+requested. `checks` repeats the CI reason, with the names in `blockingFailed`
+and `blockingPending` and the `nonBlockingCount`. The same verdict is served
+at `GET /api/pull-requests/{number}/readiness?repository=owner/repo` and by
+`propr pr readiness <number> --json`. A pull request that does not exist, or
+that the App cannot see, fails with `PULL_REQUEST_NOT_FOUND`.
+
 **4. Act on it at a known head.** The append-only
 `review_pull_request`, `fix_review_findings`, `run_ultrafix` and
 `comment_on_pull_request` tools make `expectedHead` optional. When it is

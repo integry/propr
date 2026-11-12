@@ -248,12 +248,24 @@ async function getCommitStatusInfo(octokit: any, owner: string, repoName: string
  * statuses. Either may be unavailable; only when both fail is this an error.
  * `complete` is false when one of the two requests failed.
  */
+export interface CheckSignals {
+    checkRuns: CheckRunRecord[];
+    commitStatus: CommitStatusInfo;
+    complete: boolean;
+}
+
+/** The read-only part of Octokit the CI readers use; defaults to the App identity. */
+export interface CheckSignalsOctokit {
+    request(route: string, params?: Record<string, unknown>): Promise<{ data: any }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
 async function fetchCheckSignals(
     owner: string,
     repoName: string,
     ref: string,
-): Promise<{ checkRuns: CheckRunRecord[]; commitStatus: CommitStatusInfo; complete: boolean }> {
-    const octokit = await getAuthenticatedOctokit();
+    client?: CheckSignalsOctokit,
+): Promise<CheckSignals> {
+    const octokit = client ?? await getAuthenticatedOctokit();
     const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
         octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
             owner,
@@ -485,15 +497,9 @@ export async function observePRHead(
     now: number,
 ): Promise<number> {
     const { owner, repoName, prNumber, headSha } = head;
-    const key = headObservationKey(owner, repoName, prNumber);
-    const raw = await store.get(key);
-    if (raw) {
-        const observation = JSON.parse(raw) as { sha?: unknown; observedAt?: unknown };
-        if (observation.sha === headSha && typeof observation.observedAt === 'number' && Number.isFinite(observation.observedAt)) {
-            return observation.observedAt;
-        }
-    }
-    await store.set(key, JSON.stringify({ sha: headSha, observedAt: now }), 'EX', HEAD_OBSERVATION_TTL_SECONDS);
+    const observedAt = await readPRHeadObservation(store, head);
+    if (observedAt !== null) return observedAt;
+    await store.set(headObservationKey(owner, repoName, prNumber), JSON.stringify({ sha: headSha, observedAt: now }), 'EX', HEAD_OBSERVATION_TTL_SECONDS);
     return now;
 }
 
@@ -502,44 +508,125 @@ export interface CiMergeReadiness {
     reason: 'checks_passing' | 'checks_not_passing' | 'no_ci' | 'waiting_for_ci' | 'unavailable';
 }
 
+/** A CI readiness verdict with the blocking/non-blocking summary it was derived from (null without CI signal). */
+export interface CiMergeClassification extends CiMergeReadiness {
+    summary: CheckRunsStatus | null;
+}
+
+function hasCheckSignal(signals: Pick<CheckSignals, 'checkRuns' | 'commitStatus'>): boolean {
+    return signals.checkRuns.length > 0 || signals.commitStatus.totalCount > 0;
+}
+
+/**
+ * Pure classification behind {@link getCiMergeReadiness}: the same verdict for
+ * the same signals, with no reads or writes. `nonBlockingPatterns` applies when
+ * the head has CI signal; `observedAt` (when ProPR first saw this head without
+ * signal, or null when it never did) applies when it has none. A head never
+ * observed before is classified as observed `now`, as the merge path's first
+ * observation would record it.
+ */
+export function classifyCiMergeReadiness(
+    signals: CheckSignals,
+    input: { now: number; nonBlockingPatterns?: readonly string[]; observedAt?: number | null },
+): CiMergeClassification {
+    // An unreadable endpoint may hide pending or failing CI, so neither the
+    // passing signals of the other endpoint nor their absence prove anything.
+    if (!signals.complete) return { ready: false, reason: 'unavailable', summary: null };
+    if (hasCheckSignal(signals)) {
+        const summary = summarizeCheckSignals(signals.checkRuns, signals.commitStatus, input.nonBlockingPatterns ?? []);
+        return summary.allPassing
+            ? { ready: true, reason: 'checks_passing', summary }
+            : { ready: false, reason: 'checks_not_passing', summary };
+    }
+    const observedAt = input.observedAt ?? input.now;
+    return input.now - observedAt >= NO_CI_GRACE_MS
+        ? { ready: true, reason: 'no_ci', summary: null }
+        : { ready: false, reason: 'waiting_for_ci', summary: null };
+}
+
+/**
+ * When ProPR first saw `headSha` as the PR's head without CI signal, or null
+ * when the recorded observation is for another head (or there is none). Reads
+ * only; {@link observePRHead} is the writer.
+ */
+export async function readPRHeadObservation(
+    store: Pick<Redis, 'get'>,
+    head: { owner: string; repoName: string; prNumber: number; headSha: string },
+): Promise<number | null> {
+    const raw = await store.get(headObservationKey(head.owner, head.repoName, head.prNumber));
+    if (!raw) return null;
+    const observation = JSON.parse(raw) as { sha?: unknown; observedAt?: unknown };
+    return observation.sha === head.headSha && typeof observation.observedAt === 'number' && Number.isFinite(observation.observedAt)
+        ? observation.observedAt
+        : null;
+}
+
+interface CiMergeReadinessOptions {
+    /** The PR whose current head is `ref`. */
+    prNumber: number;
+    now?: number;
+    loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>;
+}
+
 /**
  * Whether CI allows merging `ref`, the current head of the PR: every blocking
  * check passed, or no CI ran for it at all. No CI counts only when both CI
  * endpoints answered, and only once ProPR has seen the head without signal for
  * {@link NO_CI_GRACE_MS}, so checks that have not registered yet after a push
  * are not mistaken for missing CI. The commit date says nothing about when it
- * was pushed, so the grace runs from ProPR's own first observation.
+ * was pushed, so the grace runs from ProPR's own first observation, which this
+ * function records (and clears once the head has CI). See
+ * {@link readCiMergeReadiness} for the same verdict without those writes.
  */
 export async function getCiMergeReadiness(
     owner: string,
     repoName: string,
     ref: string,
-    options: {
-        /** The PR whose current head is `ref`. */
-        prNumber: number;
-        now?: number;
-        loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>;
-        observations?: HeadObservationStore;
-    },
+    options: CiMergeReadinessOptions & { observations?: HeadObservationStore },
 ): Promise<CiMergeReadiness> {
     const { prNumber, now = Date.now(), loadNonBlockingChecks = getNonBlockingChecksForRepository } = options;
     try {
-        const { checkRuns, commitStatus, complete } = await fetchCheckSignals(owner, repoName, ref);
-        // An unreadable endpoint may hide pending or failing CI, so neither the
-        // passing signals of the other endpoint nor their absence prove anything.
-        if (!complete) return { ready: false, reason: 'unavailable' };
-        if (checkRuns.length > 0 || commitStatus.totalCount > 0) {
+        const signals = await fetchCheckSignals(owner, repoName, ref);
+        if (!signals.complete) return { ready: false, reason: 'unavailable' };
+        if (hasCheckSignal(signals)) {
             // The PR's head now has CI, so any earlier no-CI observation is over:
             // a later return to that earlier head must wait out a fresh grace period.
             await (options.observations ?? getUltrafixStateRedis()).del(headObservationKey(owner, repoName, prNumber));
-            const summary = summarizeCheckSignals(checkRuns, commitStatus, await loadNonBlockingChecks(owner, repoName));
-            return summary.allPassing ? { ready: true, reason: 'checks_passing' } : { ready: false, reason: 'checks_not_passing' };
+            const { ready, reason } = classifyCiMergeReadiness(signals, { now, nonBlockingPatterns: await loadNonBlockingChecks(owner, repoName) });
+            return { ready, reason };
         }
         const observedAt = await observePRHead(options.observations ?? getUltrafixStateRedis(), { owner, repoName, prNumber, headSha: ref }, now);
-        return now - observedAt >= NO_CI_GRACE_MS ? { ready: true, reason: 'no_ci' } : { ready: false, reason: 'waiting_for_ci' };
+        const { ready, reason } = classifyCiMergeReadiness(signals, { now, observedAt });
+        return { ready, reason };
     } catch (error) {
         logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to check CI merge readiness');
         return { ready: false, reason: 'unavailable' };
+    }
+}
+
+/**
+ * The verdict {@link getCiMergeReadiness} would reach for `ref`, read without
+ * side effects: the head observation is read but never recorded or cleared, so
+ * a head never observed without CI reads as `waiting_for_ci`.
+ */
+export async function readCiMergeReadiness(
+    owner: string,
+    repoName: string,
+    ref: string,
+    options: CiMergeReadinessOptions & { observations?: Pick<Redis, 'get'>; octokit?: CheckSignalsOctokit },
+): Promise<CiMergeClassification> {
+    const { prNumber, now = Date.now(), loadNonBlockingChecks = getNonBlockingChecksForRepository } = options;
+    try {
+        const signals = await fetchCheckSignals(owner, repoName, ref, options.octokit);
+        if (!signals.complete) return classifyCiMergeReadiness(signals, { now });
+        if (hasCheckSignal(signals)) {
+            return classifyCiMergeReadiness(signals, { now, nonBlockingPatterns: await loadNonBlockingChecks(owner, repoName) });
+        }
+        const observedAt = await readPRHeadObservation(options.observations ?? getUltrafixStateRedis(), { owner, repoName, prNumber, headSha: ref });
+        return classifyCiMergeReadiness(signals, { now, observedAt });
+    } catch (error) {
+        logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to read CI merge readiness');
+        return { ready: false, reason: 'unavailable', summary: null };
     }
 }
 
@@ -790,9 +877,14 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
  * Like {@link linkedIssueHasAutoMergeLabel}, but `null` when the PR or a linked
  * issue could not be read, so a caller can tell "no label" from "unknown".
  */
-export async function readLinkedIssueAutoMergeLabel(owner: string, repoName: string, prNumber: number): Promise<boolean | null> {
+export async function readLinkedIssueAutoMergeLabel(
+    owner: string,
+    repoName: string,
+    prNumber: number,
+    client?: CheckSignalsOctokit,
+): Promise<boolean | null> {
     try {
-        const octokit = await getAuthenticatedOctokit();
+        const octokit = client ?? await getAuthenticatedOctokit();
 
         const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner,
@@ -875,59 +967,7 @@ export async function getActiveTasksForPR(
     prNumber: number
 ): Promise<ActivePRWork> {
     try {
-        const queue = await getIssueQueue();
-        const queueStates = ['waiting', 'active', 'delayed'] as const;
-        const queuedJobs: Array<{ jobId: string; state: string }> = [];
-        for (const queueState of queueStates) {
-            const jobs = await queue.getJobs([queueState]);
-            for (const job of jobs) {
-                const jobData = job.data as unknown as Record<string, unknown>;
-                const jobRepository = typeof jobData.repository === 'string'
-                    ? jobData.repository
-                    : (
-                        typeof jobData.repoOwner === 'string' &&
-                        typeof jobData.repoName === 'string' &&
-                        `${jobData.repoOwner}/${jobData.repoName}`
-                    );
-                const jobPrNumber = typeof jobData.prNumber === 'number'
-                    ? jobData.prNumber
-                    : (typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber : null);
-                if (jobRepository === repository && jobPrNumber === prNumber) {
-                    queuedJobs.push({ jobId: String(job.id), state: queueState });
-                }
-            }
-        }
-
-        // Find tasks associated with this PR that are not in a terminal state
-        // A task is active if its latest state is not terminal
-        const activeTasks = await db('tasks')
-            .select('tasks.task_id', 'task_history.state')
-            .leftJoin('task_history', function() {
-                this.on('tasks.task_id', '=', 'task_history.task_id')
-                    .andOn('task_history.history_id', '=', db.raw(`(
-                        SELECT MAX(history_id) FROM task_history th2
-                        WHERE th2.task_id = tasks.task_id
-                    )`));
-            })
-            .where('tasks.repository', repository)
-            .where('tasks.pr_number', prNumber)
-            .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
-
-        const result: ActivePRWork = {
-            activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state })),
-            queuedJobs,
-        };
-
-        if (result.activeTasks.length > 0 || result.queuedJobs.length > 0) {
-            logger.info({
-                repository,
-                prNumber,
-                activeTasks: result.activeTasks,
-                queuedJobs: result.queuedJobs,
-            }, 'Found active or queued work for PR');
-        }
-
-        return result;
+        return await readActiveTasksForPR(repository, prNumber);
     } catch (error) {
         logger.warn({
             repository,
@@ -937,6 +977,70 @@ export async function getActiveTasksForPR(
         // On error, assume no active tasks to avoid blocking legitimate merges
         return { activeTasks: [], queuedJobs: [] };
     }
+}
+
+/**
+ * {@link getActiveTasksForPR} without its fail-open fallback: a queue or
+ * database error is thrown, so a read-only caller can report the active-work
+ * state as unknown instead of as idle.
+ */
+export async function readActiveTasksForPR(
+    repository: string,
+    prNumber: number
+): Promise<ActivePRWork> {
+    const queue = await getIssueQueue();
+    const queueStates = ['waiting', 'active', 'delayed'] as const;
+    const queuedJobs: Array<{ jobId: string; state: string }> = [];
+    for (const queueState of queueStates) {
+        const jobs = await queue.getJobs([queueState]);
+        for (const job of jobs) {
+            const jobData = job.data as unknown as Record<string, unknown>;
+            const jobRepository = typeof jobData.repository === 'string'
+                ? jobData.repository
+                : (
+                    typeof jobData.repoOwner === 'string' &&
+                    typeof jobData.repoName === 'string' &&
+                    `${jobData.repoOwner}/${jobData.repoName}`
+                );
+            const jobPrNumber = typeof jobData.prNumber === 'number'
+                ? jobData.prNumber
+                : (typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber : null);
+            if (jobRepository === repository && jobPrNumber === prNumber) {
+                queuedJobs.push({ jobId: String(job.id), state: queueState });
+            }
+        }
+    }
+
+    // Find tasks associated with this PR that are not in a terminal state
+    // A task is active if its latest state is not terminal
+    const activeTasks = await db('tasks')
+        .select('tasks.task_id', 'task_history.state')
+        .leftJoin('task_history', function() {
+            this.on('tasks.task_id', '=', 'task_history.task_id')
+                .andOn('task_history.history_id', '=', db.raw(`(
+                    SELECT MAX(history_id) FROM task_history th2
+                    WHERE th2.task_id = tasks.task_id
+                )`));
+        })
+        .where('tasks.repository', repository)
+        .where('tasks.pr_number', prNumber)
+        .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
+
+    const result: ActivePRWork = {
+        activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state })),
+        queuedJobs,
+    };
+
+    if (result.activeTasks.length > 0 || result.queuedJobs.length > 0) {
+        logger.info({
+            repository,
+            prNumber,
+            activeTasks: result.activeTasks,
+            queuedJobs: result.queuedJobs,
+        }, 'Found active or queued work for PR');
+    }
+
+    return result;
 }
 
 /**

@@ -453,6 +453,59 @@ export interface NotificationUnreadCount {
   unreadCount: number;
 }
 
+/** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */
+export interface PullRequestReadiness {
+  repository: string;
+  number: number;
+  /** Head SHA the verdict was evaluated for. */
+  head: string;
+  base: string;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** `merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`. */
+  verdict: "ready" | "waiting" | "blocked" | "merged" | "closed" | "unknown";
+  /** Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy. */
+  gates: Array<{
+    gate: "open" | "not_draft" | "checks" | "mergeable" | "human_review" | "ai_review" | "ultrafix" | "active_work" | "policy";
+    status: "pass" | "waiting" | "fail" | "unknown" | "not_applicable";
+    /** Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`) or `auto_merge_not_requested`. */
+    reason: string;
+    detail?: string;
+  }>;
+  /** Reason codes of gates with status `fail`. */
+  blockingReasons: string[];
+  /** Reason codes of gates with status `waiting` or `unknown`. */
+  waitingReasons: string[];
+  /** Latest persisted ProPR AI review; null when there is none. */
+  review: {
+    score: number;
+    goal: number;
+    goalReached: boolean;
+    reviewedHead: string | null;
+    matchesCurrentHead: boolean;
+  } | null;
+  /** Null when the Ultrafix state could not be read. */
+  ultrafix: {
+    active: boolean;
+    completionStatus: "succeeded" | "failed" | null;
+    labelPresent: boolean;
+  } | null;
+  checks: {
+    reason: "checks_passing" | "checks_not_passing" | "no_ci" | "waiting_for_ci" | "unavailable";
+    blockingFailed: string[];
+    blockingPending: string[];
+    nonBlockingCount: number;
+  };
+  autoMerge: {
+    eligible: "eligible" | "ineligible" | "transient";
+    /** Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`. */
+    reason: string;
+    /** Auto-merge policy reason; null when auto-merge is not requested. */
+    policy: string | null;
+  };
+  evaluatedAt: string;
+}
+
 /** The assignees of a task's GitHub issue or pull request. */
 export interface TaskAssignees {
   subject: TaskSubject;
@@ -681,6 +734,12 @@ export interface InstanceDatabaseExportQuery {
 /** Query parameters of `getInstanceStorageCleanupResult`. */
 export interface InstanceStorageResultQuery {
   instanceId: string;
+}
+
+/** Query parameters of `getPullRequestReadiness`. */
+export interface PullRequestReadinessQuery {
+  /** `owner/repo` of the pull request. */
+  repository: string;
 }
 
 /** Query parameters of `getTaskAssignees`. */

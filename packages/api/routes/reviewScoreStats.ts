@@ -349,6 +349,8 @@ export interface PullRequestScoreHistory {
     source: string;
     score: number;
     goal: number | null;
+    /** The review job's goal verdict (Ultrafix cycles); null for a plain `/review`. */
+    goal_reached: boolean | null;
     blocker_count: number;
     suggestion_count: number;
     reviewer_agent: string | null;
@@ -365,13 +367,17 @@ export async function loadPullRequestScores(db: Knex, repository: string, prNumb
   const [scores, state] = await Promise.all([
     db('review_scores').where({ repository_id: repository, pr_number: prNumber })
       .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }])
-      .select('cycle_number', 'source', 'score', 'goal', 'blocker_count', 'suggestion_count', 'reviewer_agent',
-        'reviewer_model', 'implementer_model', 'head_sha', 'task_id', 'created_at') as Promise<PullRequestScoreHistory['scores']>,
+      .select('cycle_number', 'source', 'score', 'goal', 'goal_reached', 'blocker_count', 'suggestion_count', 'reviewer_agent',
+        'reviewer_model', 'implementer_model', 'head_sha', 'task_id', 'created_at') as Promise<Array<Omit<PullRequestScoreHistory['scores'][number], 'goal_reached'> & { goal_reached: boolean | number | null }>>,
     db('notification_pull_request_state').where({ repository, pr_number: prNumber })
       .select('outcome', 'merged_at', 'closed_at').first() as Promise<{ outcome: string | null; merged_at: string | null; closed_at: string | null } | undefined>,
   ]);
   const outcome = state?.outcome === 'merged' || state?.merged_at ? 'merged' : state?.outcome === 'closed' ? 'closed' : null;
-  return { repository, pr_number: prNumber, outcome, merged_at: state?.merged_at ?? null, closed_at: state?.closed_at ?? null, scores };
+  return {
+    repository, pr_number: prNumber, outcome, merged_at: state?.merged_at ?? null, closed_at: state?.closed_at ?? null,
+    // SQLite stores booleans as 0/1; the projection is always a boolean or null.
+    scores: scores.map(score => ({ ...score, goal_reached: score.goal_reached === null || score.goal_reached === undefined ? null : Boolean(score.goal_reached) })),
+  };
 }
 
 interface ReviewScoreRoutesDeps {
