@@ -254,7 +254,7 @@ const expiredError = () =>
   new RepositoryEventWaitError('CURSOR_EXPIRED', 'afterCursor refers to journal history that is no longer retained.', 410);
 
 type Page = { rows: RepositoryEventRow[]; truncated: boolean };
-interface Snapshot { after: number; page: Page; floor: number; generation: string }
+interface Snapshot { after: number; page: Page; floor: number; generation: string; resume: number }
 
 /** Matching events in (after, bound], at most `limit + 1` so truncation is known without a second read. */
 async function readPage(db: Knex, filters: RepositoryEventFilters & { repository: string; after: number; bound: number; limit: number }): Promise<Page> {
@@ -289,22 +289,28 @@ async function readSnapshot(db: Knex, options: RepositoryEventFilters & { reposi
     if (start.kind === 'cursor' && start.seq < floor - 1 && start.generation !== generation) throw expiredError();
     const bound = await journalBound(trx, options.repository, floor);
     const after = start.kind === 'cursor' ? start.seq : start.kind === 'end' ? bound : 0;
-    return { after, floor, generation, page: await readPage(trx, { ...options, after, bound, limit: options.limit }) };
+    const page = await readPage(trx, { ...options, after, bound, limit: options.limit });
+    return { after, floor, generation, page, resume: await resumePosition(trx, options.repository, { after, page, floor }) };
   });
 }
 
 /**
  * The position to resume from: the last returned event, or the start when
- * none was returned. A complete page also covers every retained event up to
- * the floor, so its cursor is never left below `floor - 1` (a `fromStart`
- * read of a pruned repository). A truncated page keeps its position, even
- * below the floor, so retained history is not skipped; that cursor carries
- * the retention generation (see `cursorAt`).
+ * none was returned. Below `floor - 1` (a `fromStart` read of a pruned
+ * repository) the position moves up to the floor only when no retained
+ * event of the repository, matching the filters or not, lies between it and
+ * the floor: `truncated` describes matching events only, and a client may
+ * resume with other filters, so skipping a retained non-matching event would
+ * lose it. A position kept below the floor carries the retention generation
+ * (see `cursorAt`). Read in the snapshot's transaction.
  */
-function resumeSeq(snapshot: Snapshot): number {
-  const last = snapshot.page.rows.at(-1);
-  const seq = last ? Number(last.seq) : snapshot.after;
-  return snapshot.page.truncated ? seq : Math.max(seq, snapshot.floor - 1);
+async function resumePosition(db: Knex, repository: string, read: { after: number; page: Page; floor: number }): Promise<number> {
+  const { after, page, floor } = read;
+  const last = page.rows.at(-1);
+  const seq = last ? Number(last.seq) : after;
+  if (page.truncated || seq >= floor - 1) return seq;
+  const retained = await whereRepository(db('repository_events'), repository).where('seq', '>', seq).where('seq', '<', floor).first('seq');
+  return retained ? seq : floor - 1;
 }
 
 /**
@@ -320,7 +326,7 @@ function pageResult(repository: string, snapshot: Snapshot): RepositoryEventList
   const cursorOf = (seq: number) => cursorAt(repository, snapshot, seq);
   return {
     events: snapshot.page.rows.map(row => eventView(row, repository, cursorOf)),
-    cursor: cursorOf(resumeSeq(snapshot)),
+    cursor: cursorOf(snapshot.resume),
     truncated: snapshot.page.truncated,
   };
 }
@@ -397,7 +403,7 @@ export async function waitForRepositoryEvents(options: RepositoryEventWaitOption
       if (remaining <= 0) return result(snapshot);
       // From here on the wait has an established position (for `fromStart`
       // or no cursor, the one it would return), checked like a cursor.
-      start = { kind: 'cursor', seq: resumeSeq(snapshot), generation: snapshot.generation };
+      start = { kind: 'cursor', seq: snapshot.resume, generation: snapshot.generation };
       if (options.signal?.aborted) throw abortedError();
       if (!woken) {
         await new Promise<void>(resolve => {

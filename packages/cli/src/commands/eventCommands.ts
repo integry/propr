@@ -18,8 +18,9 @@ import {
   type RepositoryEventView,
 } from "@propr/shared";
 import { listRepositoryEvents, waitRepositoryEvents, type RepositoryEventQuery } from "../api/repositoryEvents.js";
+import type { ApiClient } from "../api/client.js";
 import { ApiError, RequestCancelledError } from "../api/errors.js";
-import { createConfigManager } from "../config/index.js";
+import { createConfigManager, type ConfigManager } from "../config/index.js";
 import { parsePositiveInteger, resolveProject, ProjectResolutionError } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 
@@ -136,43 +137,60 @@ function reportError(error: unknown, json: boolean | undefined): void {
   });
 }
 
+interface RunState { cursor?: string; signal: AbortSignal }
+
+/** Injected in tests; the configured API client and configuration otherwise. */
+export interface EventsRunDeps { client?: ApiClient; configManager?: ConfigManager }
+
 /**
  * Follow the journal from a cursor: wait, print, repeat. Returns when
- * interrupted; the last processed cursor is printed so a later run resumes.
+ * interrupted; the caller reports the last processed cursor.
  */
-async function follow(query: RepositoryEventQuery, timeoutSeconds: number, json: boolean, state: { cursor?: string; signal: AbortSignal }): Promise<void> {
+async function follow(query: RepositoryEventQuery, timeoutSeconds: number, json: boolean, state: RunState, client: ApiClient | undefined): Promise<void> {
   let first = state.cursor === undefined;
   while (!state.signal.aborted) {
-    const result = await waitRepositoryEvents({ ...query, afterCursor: state.cursor, fromStart: first && query.fromStart, timeoutSeconds }, { signal: state.signal });
+    const result = await waitRepositoryEvents({ ...query, afterCursor: state.cursor, fromStart: first && query.fromStart, timeoutSeconds }, { client, signal: state.signal });
     first = false;
     printEvents(result.events, json);
     state.cursor = result.cursor;
   }
 }
 
-async function run(options: EventOptions, wait: boolean): Promise<number> {
+/** Every interrupted exit: name the last processed cursor so a later run resumes there. */
+function interrupted(state: RunState): number {
+  console.error(`Stopped reading events.${state.cursor ? ` Resume with --after-cursor ${state.cursor}` : ""}`);
+  return EVENTS_WAIT_EXIT_CODES.interrupted;
+}
+
+/** Run `propr events list|wait`; Ctrl-C cancels the request in flight and stops at once. Resolves to the exit code. */
+export async function runEventsCommand(options: EventOptions, wait: boolean, deps: EventsRunDeps = {}): Promise<number> {
   const controller = new AbortController();
   const interrupt = () => controller.abort();
   process.once("SIGINT", interrupt);
-  const state: { cursor?: string; signal: AbortSignal } = { cursor: options.afterCursor, signal: controller.signal };
+  const { signal } = controller;
+  const { client } = deps;
+  const state: RunState = { cursor: options.afterCursor, signal };
   try {
-    const query = parseEventQuery(options, resolveProject(options, await createConfigManager()));
+    const query = parseEventQuery(options, resolveProject(options, deps.configManager ?? await createConfigManager()));
     const timeoutSeconds = wait ? parseWaitTimeout(options.timeout) : REPOSITORY_EVENT_WAIT_MAX_TIMEOUT_SECONDS;
     if (options.follow) {
       let start = query;
       if (!wait) {
         // List first (one page at a time), then wait on the cursor.
-        for (let page = await listRepositoryEvents(query); ; page = await listRepositoryEvents({ ...query, afterCursor: page.cursor, fromStart: false })) {
+        for (let page = await listRepositoryEvents(query, { client, signal }); ;
+          page = await listRepositoryEvents({ ...query, afterCursor: page.cursor, fromStart: false }, { client, signal })) {
           printEvents(page.events, options.json ?? false);
           state.cursor = page.cursor;
-          if (!page.truncated) break;
+          if (!page.truncated || signal.aborted) break;
         }
         start = { ...query, fromStart: false };
       }
-      await follow(start, timeoutSeconds, options.json ?? false, state);
-      return EVENTS_WAIT_EXIT_CODES.interrupted;
+      await follow(start, timeoutSeconds, options.json ?? false, state, client);
+      return interrupted(state);
     }
-    const result = wait ? await waitRepositoryEvents({ ...query, timeoutSeconds }, { signal: controller.signal }) : await listRepositoryEvents(query);
+    const result = wait
+      ? await waitRepositoryEvents({ ...query, timeoutSeconds }, { client, signal })
+      : await listRepositoryEvents(query, { client, signal });
     if (options.json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -180,12 +198,14 @@ async function run(options: EventOptions, wait: boolean): Promise<number> {
       if (!result.events.length) console.log(wait ? "No matching events before the timeout." : "No events after the cursor.");
       console.log(`Cursor: ${result.cursor}${result.truncated ? " (more events follow; read again with this cursor)" : ""}`);
     }
+    if (signal.aborted) {
+      // Interrupted as the response arrived: it was printed, so resume after it.
+      state.cursor = result.cursor;
+      return interrupted(state);
+    }
     return wait && result.events.length === 0 ? EVENTS_WAIT_EXIT_CODES.timeout : EVENTS_WAIT_EXIT_CODES.events;
   } catch (error) {
-    if (error instanceof RequestCancelledError) {
-      console.error(`Stopped reading events.${state.cursor ? ` Resume with --after-cursor ${state.cursor}` : ""}`);
-      return EVENTS_WAIT_EXIT_CODES.interrupted;
-    }
+    if (error instanceof RequestCancelledError) return interrupted(state);
     reportError(error, options.json);
     return 1;
   } finally {
@@ -205,7 +225,7 @@ Examples:
   $ propr events list --follow --type merged,closed
 `)
     .action(async (options: EventOptions) => {
-      const code = await run(options, false);
+      const code = await runEventsCommand(options, false);
       if (code !== 0) process.exit(code);
     }));
   events.addCommand(addFilterOptions(new Command("wait")
@@ -220,7 +240,7 @@ Examples:
   $ propr events wait --follow --domain epic_queue --json
 `)
     .action(async (options: EventOptions) => {
-      const code = await run(options, true);
+      const code = await runEventsCommand(options, true);
       if (code !== 0) process.exit(code);
     }));
   return events;

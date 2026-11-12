@@ -391,3 +391,38 @@ test('events stored under another spelling of the repository are read, bounded a
   await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, stale - 1) }), 'CURSOR_EXPIRED', 410);
   assert.equal(seqOf((await list()).cursor), stale);
 });
+
+test('a filtered fromStart read below the floor never resumes past retained events it did not return', async () => {
+  // Retained opened (1) and merged (2); an older-stamped event (3) is pruned, so the floor is 4.
+  const opened = await append({ type: 'opened' });
+  const merged = await append({ type: 'merged' });
+  const pruned = await append({ type: 'head_changed', occurredAt: OLD });
+  await prune();
+
+  // A complete filtered page stops at the last returned event, not at the floor.
+  const complete = await list({ fromStart: true, types: ['opened'] });
+  assert.deepEqual(complete.events.map(event => seqOf(event.cursor)), [opened]);
+  assert.equal(complete.truncated, false);
+  assert.equal(seqOf(complete.cursor), opened);
+  assert.deepEqual((await list({ afterCursor: complete.cursor, types: ['merged'] })).events.map(event => seqOf(event.cursor)), [merged],
+    'resuming with changed filters still sees the retained merged event');
+
+  // An empty filtered page keeps the starting position.
+  const empty = await list({ fromStart: true, types: ['closed'] });
+  assert.deepEqual(empty.events, []);
+  assert.equal(seqOf(empty.cursor), 0);
+  assert.deepEqual((await list({ afterCursor: empty.cursor })).events.map(event => seqOf(event.cursor)), [opened, merged]);
+
+  // Waits return the same positions.
+  const waited = await wait({ fromStart: true, types: ['opened'], timeoutSeconds: 0 });
+  assert.equal(waited.cursor, complete.cursor);
+  const timedOut = await wait({ fromStart: true, types: ['closed'], timeoutSeconds: 0 });
+  assert.equal(timedOut.outcome, 'timeout');
+  assert.deepEqual((await list({ afterCursor: timedOut.cursor, types: ['merged'] })).events.map(event => seqOf(event.cursor)), [merged]);
+
+  // Once nothing retained remains between the last returned event and the floor, the cursor resumes at the floor.
+  const last = await list({ fromStart: true, types: ['merged'] });
+  assert.equal(seqOf(last.cursor), pruned);
+  const lastEmpty = await list({ afterCursor: complete.cursor, types: ['closed'] });
+  assert.equal(seqOf(lastEmpty.cursor), opened, 'merged is still retained after opened');
+});

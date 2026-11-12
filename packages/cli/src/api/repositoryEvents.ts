@@ -48,11 +48,15 @@ function params(query: RepositoryEventQuery): Record<string, string | number | u
  * end, so a retry after a lost response could move that boundary past events
  * appended meanwhile: it is sent exactly once, and a failure surfaces instead.
  * Requests with a cursor or `fromStart` are replayable and keep retries.
+ * Aborting `signal` cancels the request (`RequestCancelledError`).
  */
-export async function listRepositoryEvents(query: RepositoryEventQuery, client?: ApiClient): Promise<RepositoryEventListResult> {
-  const apiClient = client ?? (await createApiClient());
+export async function listRepositoryEvents(
+  query: RepositoryEventQuery,
+  options: { client?: ApiClient; signal?: AbortSignal } = {},
+): Promise<RepositoryEventListResult> {
+  const apiClient = options.client ?? (await createApiClient());
   const replayable = query.afterCursor !== undefined || query.fromStart === true;
-  return (await apiClient.get<RepositoryEventListResult>("/api/repository-events", { params: params(query), retry: replayable })).data;
+  return (await apiClient.get<RepositoryEventListResult>("/api/repository-events", { params: params(query), retry: replayable, signal: options.signal })).data;
 }
 
 /**

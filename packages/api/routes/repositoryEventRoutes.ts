@@ -124,6 +124,12 @@ function notAccessible(res: Response): void {
   res.status(404).json({ code: 'REPOSITORY_NOT_ACCESSIBLE', message: 'Repository not found or not accessible', error: 'Repository not found or not accessible' });
 }
 
+/** Whether the client connection behind a response is already gone. */
+function connectionClosed(req: Request, res: Response): boolean {
+  if (res.writableEnded) return false;
+  return Boolean(res.destroyed || (res as { closed?: boolean }).closed || req.destroyed || req.socket?.destroyed);
+}
+
 export function createRepositoryEventRoutes(deps: RepositoryEventRoutesDeps) {
   const configuredRepositories = deps.configuredRepositories ?? defaultConfiguredRepositories;
   const verifyAccess = deps.verifyAccess ?? defaultVerifyAccess;
@@ -173,14 +179,21 @@ export function createRepositoryEventRoutes(deps: RepositoryEventRoutesDeps) {
     }
   }
 
-  /** Bounded wait; a timeout is an ordinary 200 result, and a client disconnect only releases the waiter. */
+  /**
+   * Bounded wait; a timeout is an ordinary 200 result, and a client disconnect
+   * only releases the waiter. Disconnects are tracked before authorization is
+   * awaited, and a connection already gone by then never opens a waiter.
+   */
   async function waitEvents(req: Request, res: Response): Promise<void> {
-    const parsed = await authorize(req, res, true);
-    if (!parsed) return;
     const disconnected = new AbortController();
     const onClose = () => { if (!res.writableEnded) disconnected.abort(); };
     res.once?.('close', onClose);
     try {
+      const parsed = await authorize(req, res, true);
+      if (!parsed) return;
+      // A close emitted before the listener was attached is not replayed.
+      if (connectionClosed(req, res)) disconnected.abort();
+      if (disconnected.signal.aborted) return;
       res.json(await (deps.waitForEvents ?? waitForRepositoryEvents)({
         db: deps.db, ...parsed, ownerId: String(req.user!.id), signal: disconnected.signal,
       }));
