@@ -58,9 +58,12 @@ export function isDocumentationFile(filename: string): boolean {
 
 /** Test sources, fixtures and snapshots by conventional directory or file name. */
 export function isTestFile(filename: string): boolean {
+    // Name patterns run on the last path segment only, without an unanchored `[^/]+$` tail:
+    // that form rescans to the end from every `-spec.`-like position (polynomial on long paths).
+    const name = filename.slice(filename.lastIndexOf('/') + 1);
     return /(^|\/)(?:__tests__|__snapshots__|__mocks__|tests?|spec|specs|e2e|fixtures?|testdata)\//i.test(filename)
-        || /[._-](?:test|spec)\.[^/]+$/i.test(filename)
-        || /(^|\/)test_[^/]+\.py$/i.test(filename)
+        || /[._-](?:test|spec)\../i.test(name)
+        || /^test_.+\.py$/i.test(name)
         || /_test\.(?:go|py|rb|exs?)$/i.test(filename)
         || /\.snap$/i.test(filename);
 }
