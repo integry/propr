@@ -31,8 +31,7 @@ import {
 import type { AutoMergeDecision, AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
 import { mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, type MergeOwnershipCheck } from './autoMergeUpToDate.js';
 import {
-    ciRefusalOutcome, eligibilityRefusalOutcome, evaluateAutoMergeEligibility, mergeabilityRefusalOutcome, policyRefusalOutcome,
-    type AutoMergeEvaluationOutcome,
+    eligibilityRefusalOutcome, evaluateAutoMergeEligibility, policyRefusalOutcome, type AutoMergeEvaluationOutcome,
 } from './autoMergeEvaluation.js';
 
 export interface StatusEventPayload {
@@ -237,10 +236,12 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
         log.debug({ owner, repoName, prNumber, reason: ci.reason }, 'CI does not allow merging yet, skipping merge');
         // A head ProPR produced by updating the branch records that it waits for CI.
         if (ci.reason !== 'unavailable') await noteCiWaitAfterBranchUpdate({ owner, repo: repoName, prNumber, headSha, log });
-        return ciRefusalOutcome(ci);
+        // Running or failed: the green event a re-run or new head produces may meet a transient refusal no event follows.
+        return 'inconclusive';
     }
 
-    if (!passesMergeabilityGate(ctx, prInfo)) return mergeabilityRefusalOutcome(prInfo);
+    // Unknown, conflicting or blocked: what changes it (a recomputation, a new head, a review) may re-drive no merge.
+    if (!passesMergeabilityGate(ctx, prInfo)) return 'inconclusive';
 
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;

@@ -532,15 +532,15 @@ describe('getCiMergeReadiness', () => {
     test('pending checks hold the merge', async () => {
         resetMocks();
         respond([{ name: 'build', status: 'in_progress', conclusion: null }]);
-        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10), { ready: false, reason: 'checks_not_passing', checksFailed: false });
+        assert.deepStrictEqual(await readiness('sha', observedAt + NO_CI_GRACE_MS * 10), { ready: false, reason: 'checks_not_passing' });
     });
 
-    test('failed checks hold the merge and are reported as failed, also while others still run', async () => {
+    test('failed checks hold the merge, also while others still run', async () => {
         resetMocks();
         respond([{ name: 'build', status: 'completed', conclusion: 'failure' }]);
-        assert.deepStrictEqual(await readiness('sha', observedAt), { ready: false, reason: 'checks_not_passing', checksFailed: true });
+        assert.deepStrictEqual(await readiness('sha', observedAt), { ready: false, reason: 'checks_not_passing' });
         respond([{ name: 'build', status: 'completed', conclusion: 'failure' }, { name: 'lint', status: 'in_progress', conclusion: null }]);
-        assert.deepStrictEqual(await readiness('sha', observedAt), { ready: false, reason: 'checks_not_passing', checksFailed: true });
+        assert.deepStrictEqual(await readiness('sha', observedAt), { ready: false, reason: 'checks_not_passing' });
     });
 
     test('a head with no CI at all is mergeable once it was seen without checks for the grace period', async () => {
@@ -579,7 +579,7 @@ describe('getCiMergeReadiness', () => {
         respond([]);
         assert.deepStrictEqual(await readiness('first', observedAt, observations), { ready: false, reason: 'waiting_for_ci' });
         respond([{ name: 'build', status: 'in_progress', conclusion: null }]);
-        assert.deepStrictEqual(await readiness('second', observedAt + NO_CI_GRACE_MS, observations), { ready: false, reason: 'checks_not_passing', checksFailed: false });
+        assert.deepStrictEqual(await readiness('second', observedAt + NO_CI_GRACE_MS, observations), { ready: false, reason: 'checks_not_passing' });
         // The branch is reset to the first head after its original grace period passed.
         respond([]);
         assert.deepStrictEqual(await readiness('first', observedAt + 2 * NO_CI_GRACE_MS, observations), { ready: false, reason: 'waiting_for_ci' });
@@ -3088,7 +3088,7 @@ describe('auto_merge.require_up_to_date sweep retries', () => {
         });
     }
 
-    test('a failed check and a closed PR resolve the evaluation; an unreadable PR does not', async () => {
+    test('a closed PR resolves the evaluation; a failed check and an unreadable PR do not', async () => {
         resetMocks();
         useUpToDatePolicy();
         const openPR = { state: 'open', labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
@@ -3099,7 +3099,8 @@ describe('auto_merge.require_up_to_date sweep retries', () => {
             return { data: {} };
         };
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => failingChecks(endpoint));
-        assert.equal(await reevaluatePRAutoMerge('test-owner', 'test-repo', 42, { correlationId: 'c' }), 'resolved', 'a failed check waits for a new head');
+        assert.equal(await reevaluatePRAutoMerge('test-owner', 'test-repo', 42, { correlationId: 'c' }), 'inconclusive',
+            'a failed check keeps the retry: the green event of a re-run or new head may meet a transient refusal');
 
         // The head lookup succeeds, then the auto-merge info read fails.
         let prReads = 0;
@@ -3168,27 +3169,89 @@ describe('auto_merge.require_up_to_date sweep retries', () => {
         assert.equal(deferred(), false, 'the merged PR leaves the retry set');
     });
 
-    test('a failed check settles the retry entry while running checks keep it', async () => {
+    test('a non-plan PR updated by ProPR stays retried after its CI fails and merges once a green re-run met unknown mergeability', async () => {
         resetMocks();
         useUpToDatePolicy();
-        let checks: Array<{ name: string; status: string; conclusion: string | null }> = [{ name: 'CI', status: 'in_progress', conclusion: null }];
+        const TURN_KEY = 'auto-merge:up-to-date:turn:test-owner/test-repo';
+        // The PR's state on GitHub, advanced step by step below.
+        const pr = { head: 'old-head', checks: 'success' as 'success' | 'failure', mergeable: true as boolean | null, mergeableState: 'behind' };
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
-            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
-                return { data: { state: 'open', labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
-                    base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha' } } };
+            if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch') {
+                pr.head = 'updated-head';
+                return { data: { message: 'Updating pull request branch.' } };
             }
-            if (endpoint.includes('check-runs')) return { data: { check_runs: checks } };
+            if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge') return { data: { merged: true, sha: 'merge123' } };
+            if (endpoint === 'GET /repos/{owner}/{repo}/compare/{basehead}') {
+                return { data: { behind_by: pr.head === 'old-head' ? 2 : 0, base_commit: { sha: 'base-tip' } } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: {
+                    state: 'open', labels: [{ name: 'auto-merge' }], draft: false, body: '', mergeable: pr.mergeable, mergeable_state: pr.mergeableState,
+                    base: { ref: 'main' }, head: { ref: 'feature', sha: pr.head, repo: { owner: { login: 'test-owner' } } },
+                } };
+            }
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: pr.checks }] } };
             return { data: {} };
         });
-        redisSortedSets.set(DEFERRED_KEY, new Map([['test-owner/test-repo#42', Date.now()]]));
-        await sweep();
-        assert.ok(deferred(), 'running checks keep the entry');
 
-        checks = [{ name: 'CI', status: 'completed', conclusion: 'failure' }, { name: 'lint', status: 'in_progress', conclusion: null }];
+        // 1. A green check on the behind head: ProPR updates the branch and defers the PR.
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'old-head' }), 'test-correlation-id');
+        assert.equal(pr.head, 'updated-head', 'the branch was updated');
+        assert.ok(deferred(), 'deferred for the sweep');
+        assert.equal(redisValues.get(TURN_KEY), '42', 'the PR holds the update turn');
+
+        // 2. CI fails on the updated head. Sweeps keep the retry entry; the failure only ends the update turn.
+        Object.assign(pr, { checks: 'failure', mergeable: true, mergeableState: 'clean' });
         await sweep();
-        assert.equal(deferred(), false, 'a failed blocking check waits on a new head, which produces its own event');
+        await sweep();
         assert.equal(mergeCalls().length, 0);
+        assert.ok(deferred(), 'a failed check does not settle the retry');
+        assert.equal(redisValues.has(TURN_KEY), false, 'the failed head gives up the update turn for the next PR');
+
+        // 3. The failed check is re-run on the same head; its green event arrives before GitHub recomputed mergeability.
+        Object.assign(pr, { checks: 'success', mergeable: null, mergeableState: 'unknown' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'updated-head' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 0);
+        assert.ok(deferred(), 'still retried: no further event will arrive');
+
+        // 4. Mergeability resolves without another event; the sweep merges the updated head.
+        Object.assign(pr, { mergeable: true, mergeableState: 'clean' });
+        await sweep();
+        assert.equal(mergeCalls().length, 1, 'the recovery sweep merges the PR');
+        assert.equal((mergeCalls()[0].arguments[1] as { sha?: string }).sha, 'updated-head');
+        assert.equal(deferred(), false, 'the merged PR leaves the retry set');
     });
+
+    // Each state waits on a change that may re-drive no merge: a review produces no check event, and the
+    // green event of a new head (conflicts) or of a re-run (a failing non-required check) may meet unknown mergeability.
+    const mergeabilityRefusals: Array<[string, Parameters<typeof mockCurrentPR>[0], boolean]> = [
+        ['blocked (an approval dismissed by the update)', { mergeable: true, mergeableState: 'blocked' }, false],
+        ['dirty (conflicts with the base)', { mergeable: false, mergeableState: 'dirty' }, true],
+        ['unstable (a non-required check failed)', { mergeable: true, mergeableState: 'unstable' }, true],
+    ];
+    for (const [label, refusal, greenEvent] of mergeabilityRefusals) {
+        test(`a deferred non-plan PR GitHub reports as ${label} stays retried and merges once mergeable`, async () => {
+            resetMocks();
+            useUpToDatePolicy();
+            redisSortedSets.set(DEFERRED_KEY, new Map([['test-owner/test-repo#42', Date.now()]]));
+            mockCurrentPR(refusal);
+            await sweep();
+            assert.equal(mergeCalls().length, 0);
+            assert.ok(deferred(), `${label}: the refusal does not settle the retry`);
+
+            if (greenEvent) {
+                mockCurrentPR({ mergeable: null, mergeableState: 'unknown' });
+                await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+                assert.equal(mergeCalls().length, 0);
+                assert.ok(deferred(), `${label}: the green event met unknown mergeability`);
+            }
+
+            mockCurrentPR();
+            await sweep();
+            assert.equal(mergeCalls().length, 1, `${label}: the recovery sweep merges the PR`);
+            assert.equal(deferred(), false, 'the merged PR leaves the retry set');
+        });
+    }
 
     test('a PR labelled only through its linked issue is inconclusive while the issue cannot be read', async () => {
         resetMocks();

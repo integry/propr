@@ -7,14 +7,18 @@
 import type logger from '../utils/logger.js';
 import { isEpicBranch } from '../services/taskExecutionService.js';
 import type { AutoMergeDecision } from '../workflow/autoMergePolicy.js';
-import { readLinkedIssueAutoMergeLabel, type CiMergeReadiness, type PRAutoMergeInfo } from './checkRunHelpers.js';
+import { readLinkedIssueAutoMergeLabel, type PRAutoMergeInfo } from './checkRunHelpers.js';
 
 /**
- * `resolved`: the PR merged, is no longer open, or waits on something that
- * produces its own event (a human, a new head, a failed check). `inconclusive`:
- * a read was unavailable or a transient gate (unknown mergeability, CI not yet
- * registered or still running, active work, a refused or failed merge, a
- * deferral) held the merge back; the PR stays in the sweep's retry set.
+ * `resolved`: the PR merged, is no longer open, is a draft, is no longer an
+ * auto-merge candidate (label removed, Ultrafix failed), or the policy left it
+ * to a human. `inconclusive`: anything else held the merge back, so the PR
+ * stays in the sweep's retry set. That includes every CI and mergeability
+ * refusal, not only transient ones (a read that failed, CI not yet registered or
+ * still running, unknown mergeability, active work, a refused or failed merge, a
+ * deferral). Failed checks, conflicts or a blocked merge wait on a re-run, a new
+ * head or a review, and the event that produces (if any) may meet a transient
+ * refusal that no further event follows; only the retry entry then recovers the PR.
  */
 export type AutoMergeEvaluationOutcome = 'resolved' | 'inconclusive';
 
@@ -83,23 +87,6 @@ export async function evaluateAutoMergeEligibility(ctx: AutoMergeEligibilityCont
 /** Ultrafix still working, or labels/state that could not be read, are inconclusive; a missing label or failed Ultrafix is not. */
 export function eligibilityRefusalOutcome(eligibility: Exclude<AutoMergeEligibility, 'eligible'>): AutoMergeEvaluationOutcome {
     return eligibility === 'transient' ? 'inconclusive' : 'resolved';
-}
-
-/**
- * A failed blocking check waits on a new head (or a re-run), which produces its
- * own event, so it resolves the evaluation. Checks that are still running do
- * not: the green event they produce may itself meet a transient refusal (unknown
- * mergeability, active work) that no further event follows, so the retry entry
- * must outlive them. Unreadable CI and a head whose CI has not registered (or a
- * repository without CI, inside its grace period) may produce no event either.
- */
-export function ciRefusalOutcome(ci: Pick<CiMergeReadiness, 'reason' | 'checksFailed'>): AutoMergeEvaluationOutcome {
-    return ci.reason === 'checks_not_passing' && ci.checksFailed === true ? 'resolved' : 'inconclusive';
-}
-
-/** A mergeability GitHub has not computed yet is inconclusive; any other refusal waits on a change to the PR. */
-export function mergeabilityRefusalOutcome(prInfo: Pick<PRAutoMergeInfo, 'mergeable' | 'mergeableState'>): AutoMergeEvaluationOutcome {
-    return prInfo.mergeable === null || prInfo.mergeableState === 'unknown' ? 'inconclusive' : 'resolved';
 }
 
 /**

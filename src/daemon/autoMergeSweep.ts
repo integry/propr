@@ -42,11 +42,12 @@ export async function loadAutoMergeSweepCandidates(now: Date = new Date()): Prom
  * need not be a plan PR. Each PR goes through the same gates as a green check
  * (labels, Ultrafix state, CI, mergeability, active work, repository policy).
  * A deferred PR leaves the retry set only once a re-evaluation resolved it (it
- * merged, closed, or waits on something that produces its own event, such as a
- * failed check) and did not defer it again; an inconclusive one (unavailable CI
- * or PR reads, checks still running, unknown mergeability, active work, a
- * refused merge) or a failed one keeps it. Running checks keep it because the
- * green event they produce may meet a transient refusal no event follows.
+ * merged, closed, became a draft, is no longer an auto-merge candidate, or the
+ * policy left it to a human) and did not defer it again; an inconclusive one
+ * (unavailable CI or PR reads, running or failed checks, any mergeability
+ * refusal, active work, a refused merge) or a failed one keeps it. Failed checks
+ * and mergeability refusals keep it too: the green event of a re-run or new head
+ * may meet a transient refusal no event follows, and a review produces no check event.
  */
 export async function sweepAutoMergeCandidates(
     loadCandidates: () => Promise<AutoMergeSweepCandidate[]> = loadAutoMergeSweepCandidates,
