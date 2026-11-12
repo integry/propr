@@ -152,6 +152,7 @@ function harness(options: {
         const stored = await transitionRun(run.id, ['running'], 'report_ready', patch);
         return stored ? { outcome: 'stored', run: stored } : { outcome: 'not_running' };
       }) as AgentRunProcessorDeps['storeReport'],
+      storeUnclassifiedReport: (run, report) => transitionRun(run.id, ['running'], 'report_ready', { report }),
       validateDefinition: async () => options.invalid ?? null,
       listPreviousReports: listPreviousReports as unknown as AgentRunProcessorDeps['listPreviousReports'],
       listLatestReports: listLatestReports as unknown as AgentRunProcessorDeps['listLatestReports'],
@@ -700,6 +701,18 @@ describe('processAgentRunJob', () => {
     assert.equal(h.transitions.length, 0);
     assert.deepEqual(h.notified, []);
     assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['completed', taskId]]);
+  });
+
+  test('a run that fails right after its report is stored is evaluated for the streak with its report flags (F14)', async () => {
+    const h = harness();
+    const transitionRun = h.deps.transitionRun!;
+    // Like enqueueAgentRunActionOrFail when the action phase cannot be queued.
+    h.deps.advanceAfterReport = async run => transitionRun(run.id, ['report_ready'], 'failed', { failureReason: 'queue unavailable' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['failed', 'new']]);
   });
 
   test('a finalization error after the report is stored keeps the report and is retried by the next delivery', async () => {

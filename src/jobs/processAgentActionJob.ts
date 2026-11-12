@@ -131,14 +131,25 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
     /** Run ids whose acting step this process is executing. */
     const activeRuns = new Set<string>();
 
-    /** acting → failed; false when the run already left `acting`. Persistence errors are retried. */
-    async function failActingRun(runId: string, reason: string, log: Logger, patch: AgentRunTransitionPatch = {}): Promise<boolean> {
+    /** acting → failed; null when the run already left `acting`. Persistence errors are retried. */
+    async function failActingRun(runId: string, reason: string, log: Logger, patch: AgentRunTransitionPatch = {}): Promise<StoredAgentRun | null> {
         try {
-            return await deps.transitionRun(runId, ['acting'], 'failed', { ...patch, failureReason: reason }) !== null;
+            return await deps.transitionRun(runId, ['acting'], 'failed', { ...patch, failureReason: reason });
         } catch (error) {
             log.error({ runId, err: error }, 'Could not mark agent run failed');
             throw new AgentRunPersistenceError(runId, error);
         }
+    }
+
+    /**
+     * The streak check once a run's flags are final, whichever state ended it.
+     * A failed or cancelled acting step that changed nothing is an unproductive
+     * run like a completed one, and the streak it extends must be noticed now:
+     * a schedule set to pause on such a streak would otherwise keep running
+     * until some later run happened to complete. Never throws.
+     */
+    async function evaluateEndedRun(run: StoredAgentRun | null): Promise<void> {
+        if (run) await deps.evaluateStreak(run);
     }
 
     /** Wraps task-store writes so a failure is retried by the next delivery. */
@@ -158,9 +169,12 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
     async function keepMutationsOfEndedRun(context: ActionContext): Promise<void> {
         const { runId, taskId, log, actingMutations } = context;
         if (typeof actingMutations !== 'number') return;
-        await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations }).catch(error => {
+        const recorded = await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations }).catch(error => {
             log.warn({ runId, taskId, actingMutations, err: error }, 'Could not store the acting step mutation count on its ended run');
+            return null;
         });
+        // The count made the run's flags final, so this is where its streak is evaluated.
+        await evaluateEndedRun(recorded);
     }
 
     /**
@@ -192,8 +206,10 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         const usageLimit = error instanceof UsageLimitError;
         const reason = usageLimit ? AGENT_RUN_USAGE_LIMIT_REASON : (error as Error).message;
         log[error instanceof AgentRunReportError ? 'warn' : 'error']({ runId, taskId, err: error }, 'Agent run acting step failed');
-        if (!await failActingRun(runId, reason, log, mutationsPatch(context))) return taskFollowsRun(context);
+        const failed = await failActingRun(runId, reason, log, mutationsPatch(context));
+        if (!failed) return taskFollowsRun(context);
         await settleTask(context, manager => manager.markTaskFailed(taskId, usageLimit ? new Error(reason) : error as Error));
+        await evaluateEndedRun(failed);
         return { status: 'failed', runId, taskId, reason, correlationId };
     }
 
@@ -205,6 +221,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         log.info({ runId, taskId }, `Agent run action task was cancelled ${when}`);
         const cancelled = await deps.transitionRun(runId, ['acting'], 'cancelled', mutationsPatch(context));
         if (!cancelled) return taskFollowsRun(context);
+        await evaluateEndedRun(cancelled);
         return { status: 'cancelled', runId, taskId, correlationId };
     }
 
@@ -285,7 +302,8 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         if (!definition || refused) {
             const reason = refused ?? UNREADABLE_DEFINITION_REASON;
             log.warn({ runId, reason }, 'Agent run acting step refused');
-            await failActingRun(runId, reason, log);
+            // No acting count: the run's report flags alone decide its verdict, which is final now.
+            await evaluateEndedRun(await failActingRun(runId, reason, log));
             return { status: 'failed', runId, reason, correlationId };
         }
         const held = await capacityHold(run, definition);

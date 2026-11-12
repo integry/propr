@@ -192,8 +192,12 @@ const defaultStreakDeps: Required<UnproductiveStreakDeps> = {
 };
 
 /**
- * Called once a run's flags are final (report stored, acting step finished,
- * acting step rejected).
+ * Called once a run's flags are final: the report stored and the run ended
+ * without an acting step, the acting step finished (completed, failed or
+ * cancelled, with its count), or the acting step rejected. A run that failed or
+ * was cancelled is evaluated too: `agentRunProductivity` gives it a verdict, so
+ * the streak finder counts it, and a streak it brings to the threshold must not
+ * wait for some later run to complete.
  * Best effort for the caller: errors propagate, and the caller logs them.
  */
 export async function evaluateUnproductiveStreak(run: StoredAgentRun, overrides: UnproductiveStreakDeps = {}): Promise<UnproductiveStreakOutcome> {

@@ -171,16 +171,33 @@ describe('a mutating acting step breaks the unproductive streak however its run 
     assert.equal(await scheduleEnabled(), true);
   });
 
-  test('a failed step that changed nothing still extends the streak', async () => {
+  test('a failed step that changed nothing extends the streak, and the owner is told by that very run (F14)', async () => {
     const inbox: Inbox = { events: [] };
     await unchangedRun('completed');
     await unchangedRun('completed');
     const acting = await unchangedRun('acting');
     const grant = { performed: 0 };
     assert.equal((await actionProcessor(async () => { throw new Error('agent crashed'); }, grant, inbox)(actionJob(acting))).status, 'failed');
-    assert.equal((await getAgentRunById(acting.id, deps()))?.actingMutations, 0);
+    const failed = await getAgentRunById(acting.id, deps());
+    assert.equal(failed?.state, 'failed', 'the run still fails');
+    assert.equal(failed?.actingMutations, 0);
+    // The third unproductive scheduled run reached the threshold: no later completed run is needed.
+    assert.deepEqual(inbox.events.map(event => event.deduplicationKey.split(':')[0]), ['automation-unproductive', 'automation-unproductive-paused']);
+    assert.equal(await scheduleEnabled(), false, 'the opted-in schedule was paused by the failed run');
+  });
 
-    assert.equal(await evaluateUnproductiveStreak(await unchangedRun('completed'), streakDeps(inbox)), 'paused');
+  test('a cancelled step that changed nothing is evaluated once its count is recorded (F14)', async () => {
+    const inbox: Inbox = { events: [] };
+    await unchangedRun('completed');
+    await unchangedRun('completed');
+    const acting = await unchangedRun('acting');
+    const grant = { performed: 0 };
+    const cancelledElsewhere = actionProcessor(async () => {
+      await transitionAgentRun(acting.id, ['acting'], 'cancelled', {}, deps());
+      return { success: true, summary: 'nothing to do', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+    }, grant, inbox);
+    assert.equal((await cancelledElsewhere(actionJob(acting))).status, 'cancelled');
+    assert.equal((await getAgentRunById(acting.id, deps()))?.actingMutations, 0);
     assert.equal(inbox.events.length, 2, 'the streak item, then the one saying the schedule was paused');
     assert.equal(await scheduleEnabled(), false);
   });

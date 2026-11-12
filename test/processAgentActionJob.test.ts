@@ -504,7 +504,60 @@ describe('acting-step mutation count', () => {
       assert.deepEqual(h.transitions.filter(t => t.to === 'failed').map(t => t.patch.actingMutations), [2], 'stored with the failure itself');
       assert.deepEqual(h.revokedWhile, ['acting'], 'counted before the run failed, and revoked once');
       assert.equal(h.taskState(), 'failed');
-      assert.equal(h.evaluated.length, 0, 'a failed run is not evaluated; later runs read its count');
+      assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['failed', 2]], 'the streak check sees the failed run with its count (F14)');
+    }
+  });
+
+  test('a failed acting step that changed nothing is evaluated for the streak, after its run and task are settled (F14)', async () => {
+    const h = harness({ mutatingOperations: 0, execute: async () => { throw new Error('agent crashed'); } });
+    const order: string[] = [];
+    h.deps.evaluateStreak = async run => { order.push(`evaluate:${run?.state}:${h.taskState()}`); if (run) h.evaluated.push(run); };
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['failed', 0]]);
+    assert.deepEqual(order, ['evaluate:failed:failed'], 'evaluated once the failure and its task are stored');
+    // An unknown count still leaves the failed run's verdict to its report flags; the evaluator decides.
+    const unknown = harness({ mutatingOperations: null, execute: async () => { throw new Error('agent crashed'); } });
+    await createAgentActionProcessor(unknown.deps)(actionJob());
+    assert.deepEqual(unknown.evaluated.map(run => [run.state, run.actingMutations ?? null]), [['failed', null]]);
+  });
+
+  test('a run that fails before acting (no report, unreadable definition) is evaluated with its report flags (F14)', async () => {
+    const h = harness({ run: actingRun({ report: null }) });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed');
+    assert.deepEqual(h.evaluated.map(run => run.state), ['failed']);
+  });
+
+  test('a task stopped during execution is evaluated with the cancelled run and its count (F14)', async () => {
+    const h = harness({ mutatingOperations: 0 });
+    const stateManager = h.deps.stateManager!;
+    h.executeTask.mock.mockImplementation(async () => {
+      await stateManager().markTaskCancelled(TASK_ID, 'user', {});
+      return SUCCESS;
+    });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 0]]);
+  });
+
+  test('a run another writer ended is evaluated once its count is recorded, and only then (F14)', async () => {
+    const h = harness({ mutatingOperations: 0 });
+    h.executeTask.mock.mockImplementation(async () => {
+      await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+      return SUCCESS;
+    });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+    assert.deepEqual(h.recorded, [0]);
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 0]]);
+
+    // No count recorded (already stored, or the write failed): nothing final happened here, so no evaluation.
+    for (const recordMutations of [async () => null, async () => { throw new Error('database unavailable'); }]) {
+      const other = harness({ mutatingOperations: 0 });
+      other.deps.recordMutations = recordMutations;
+      other.executeTask.mock.mockImplementation(async () => {
+        await other.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+        return SUCCESS;
+      });
+      assert.equal((await createAgentActionProcessor(other.deps)(actionJob())).status, 'cancelled');
+      assert.deepEqual(other.evaluated, []);
     }
   });
 

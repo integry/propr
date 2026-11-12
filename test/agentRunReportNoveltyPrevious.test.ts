@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
 import { createAgentRun, transitionAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
-import { listLatestStoredReports, listPreviousReports, storeAgentRunReport } from '../packages/core/src/services/agents/agentRunReports.ts';
+import { listLatestStoredReports, listPreviousReports, storeAgentRunReport, storeUnclassifiedAgentRunReport } from '../packages/core/src/services/agents/agentRunReports.ts';
 
 const { reportNoveltyPatch, storeReportWithNovelty } = await import('../src/jobs/agentRuns/reportNovelty.ts');
 type ReportNoveltyStore = import('../src/jobs/agentRuns/reportNovelty.ts').ReportNoveltyStore;
@@ -120,7 +120,7 @@ function realStore(overrides: Partial<ReportNoveltyStore> = {}): ReportNoveltySt
     listLatestReports: (definitionId, options) => listLatestStoredReports(definitionId, options, ticking()),
     listPreviousReports: (definitionId, options) => listPreviousReports(definitionId, options, ticking()),
     storeReport: (run, input) => storeAgentRunReport(run, input, ticking()),
-    transitionRun: (id, from, to, patch) => transitionAgentRun(id, from, to, patch, ticking()),
+    storeUnclassifiedReport: (run, text) => storeUnclassifiedAgentRunReport(run, text, ticking()),
     ...overrides,
   };
 }
@@ -182,6 +182,49 @@ describe('comparing and storing a report are one step per definition (F11)', () 
     const cancelled = await startRun();
     await transitionAgentRun(cancelled.id, ['running'], 'cancelled', {}, deps());
     assert.deepEqual(await storeAgentRunReport(cancelled, { patch: { report: REPORT_B, ...flags }, previousRunId: current.id }, deps()), { outcome: 'not_running' });
+  });
+
+  test('reports stored in the same millisecond keep their storing order, whatever their run ids (F13)', async () => {
+    // A fixed clock: every write lands on the same reported_at unless the store orders them itself.
+    const fixed = (): ReportNoveltyStore => ({
+      listLatestReports: (definitionId, options) => listLatestStoredReports(definitionId, options, deps()),
+      listPreviousReports: (definitionId, options) => listPreviousReports(definitionId, options, deps()),
+      storeReport: (run, input) => storeAgentRunReport(run, input, deps()),
+      storeUnclassifiedReport: (run, text) => storeUnclassifiedAgentRunReport(run, text, deps()),
+    });
+    const [x, y] = [await startRun(), await startRun()];
+    // A's id sorts above B's, so an id tie-breaker would put A first however B was stored after it.
+    const [a, b] = x.id > y.id ? [x, y] : [y, x];
+    const storedA = await storeReportWithNovelty(a, REPORT_A, fixed(), silent);
+    const storedB = await storeReportWithNovelty(b, REPORT_B, fixed(), silent);
+    assert.deepEqual([storedA?.reportNovelty, storedB?.reportNovelty], ['new', 'new']);
+    assert.ok(storedB!.reportedAt! > storedA!.reportedAt!, 'the second report is stored strictly after the first');
+    assert.deepEqual((await listLatestStoredReports(definition.id, { limit: 5 }, deps())).map(entry => entry.runId), [b.id, a.id]);
+
+    const c = await startRun();
+    assert.equal((await storeReportWithNovelty(c, REPORT_B, fixed(), silent))?.reportNovelty, 'unchanged', 'C repeats the report stored last, B');
+    // Classified against B, as stored; a predecessor check that picked A would refuse this.
+    assert.equal((await storeAgentRunReport(await startRun(), { patch: { report: REPORT_A, reportHash: 'a'.repeat(64), reportNovelty: 'new' }, previousRunId: c.id }, deps())).outcome, 'stored');
+  });
+
+  test('a report stored without flags is still the next run\'s previous report, in storing order (F13)', async () => {
+    const fixedClock = () => ({ database, now: () => clock });
+    const first = await startRun();
+    await report(first, REPORT_A);
+    const [x, y] = [await startRun(), await startRun()];
+    const [a, b] = x.id > y.id ? [x, y] : [y, x];
+    clock += 1_000;
+    assert.equal((await storeAgentRunReport(a, { patch: { report: REPORT_A, reportHash: 'a'.repeat(64), reportNovelty: 'unchanged' }, previousRunId: first.id }, fixedClock())).outcome, 'stored');
+    // The classification could not be read: stored without flags, on the same clock tick.
+    const unflagged = await storeUnclassifiedAgentRunReport(b, REPORT_B, fixedClock());
+    assert.equal(unflagged?.state, 'report_ready');
+    assert.equal(unflagged?.reportNovelty, null);
+    assert.deepEqual((await listLatestStoredReports(definition.id, { limit: 1 }, fixedClock())).map(entry => entry.runId), [b.id]);
+    assert.equal((await storeReportWithNovelty(await startRun(), REPORT_B, realStore(), silent))?.reportNovelty, 'unchanged');
+
+    const gone = await startRun();
+    await transitionAgentRun(gone.id, ['running'], 'cancelled', {}, deps());
+    assert.equal(await storeUnclassifiedAgentRunReport(gone, REPORT_B, fixedClock()), null);
   });
 
   test('the first report of a definition is stored as new', async () => {

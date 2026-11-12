@@ -9,7 +9,7 @@ import {
     getAuthenticatedOctokit,
     getStateManager,
     logger,
-    storeAgentRunReport,
+    storeAgentRunReport, storeUnclassifiedAgentRunReport,
     transitionAgentRun,
     UsageLimitError,
     validateAgentDefinitionRuntime,
@@ -106,7 +106,7 @@ export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
     transitionRun: transitionAgentRun,
     validateDefinition: definition => validateAgentDefinitionRuntime(definition),
     ...defaultReportNoveltyLookups,
-    storeReport: storeAgentRunReport,
+    storeReport: storeAgentRunReport, storeUnclassifiedReport: storeUnclassifiedAgentRunReport,
     stateManager: () => getStateManager(),
     getGitHubAccess: async () => {
         const octokit = await getAuthenticatedOctokit();
@@ -309,6 +309,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         if (!settled) settled = await deps.getRun(run.id) ?? null;
         if (!settled || !REPORTED_RUN_STATES.has(settled.state)) {
             await settleTaskWithRun({ runId: run.id, taskId, stateManager, log });
+            // Failed right after its report was stored (action phase not queued): the report's
+            // flags are final, so an unchanged report extends the streak like a completed run's.
+            await deps.evaluateStreak(settled);
             return settled;
         }
         const task = await stateManager.getTaskState(taskId);

@@ -6,9 +6,9 @@ import {
     listLatestStoredReports,
     listPreviousReports,
     storeAgentRunReport,
+    storeUnclassifiedAgentRunReport,
     type AgentReportNovelty,
     type StoredAgentRun,
-    type transitionAgentRun,
 } from '@propr/core';
 
 /**
@@ -90,8 +90,8 @@ export async function reportNoveltyPatch(
 export interface ReportNoveltyStore extends ReportNoveltyLookups {
     /** Stores the report with its flags while the report they were classified against is still the latest. */
     storeReport: typeof storeAgentRunReport;
-    /** Stores the report without flags, when none could be classified. */
-    transitionRun: typeof transitionAgentRun;
+    /** Stores the report without flags, when none could be classified; still in storing order. */
+    storeUnclassifiedReport: typeof storeUnclassifiedAgentRunReport;
 }
 
 /** Comparisons made before the flags are given up, when other runs keep storing reports in between. */
@@ -118,5 +118,5 @@ export async function storeReportWithNovelty(
         if (stored.outcome === 'not_running') return null;
     }
     // Unknown flags stay null rather than a classification that may already be stale.
-    return deps.transitionRun(run.id, ['running'], 'report_ready', { report });
+    return deps.storeUnclassifiedReport(run, report);
 }
