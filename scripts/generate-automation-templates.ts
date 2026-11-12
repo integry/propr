@@ -24,7 +24,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const TEMPLATE_SOURCE_DIR = path.join(root, 'packages/shared/automation-templates');
 export const TEMPLATE_CATALOG_PATH = path.join(root, 'packages/shared/src/automationTemplates.catalog.json');
 /** Catalog order: editorial, so the first entry is the one offered first. */
-export const TEMPLATE_ORDER = ['daily-issue-triage', 'instruction-learning-loop'];
+export const TEMPLATE_ORDER = ['daily-issue-triage', 'instruction-learning-loop', 'weekly-codebase-drift-report'];
 
 export async function generateAutomationTemplates(sourceDir = TEMPLATE_SOURCE_DIR, order = TEMPLATE_ORDER): Promise<AutomationTemplateCatalog> {
   const entries = (await readdir(sourceDir, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
