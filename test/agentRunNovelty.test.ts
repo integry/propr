@@ -38,6 +38,20 @@ describe('normalizeAgentReport', () => {
     for (const [input, expected] of cases) assert.equal(normalizeAgentReport(input), expected, input);
   });
 
+  test('a timestamp normalises the same whatever whitespace separates its parts', () => {
+    const layouts: Array<[string, string[]]> = [
+      ['Checked 2026-11-11 22:00 UTC.', ['Checked 2026-11-12  22:00 UTC.', 'Checked 2026-11-12\n22:00 UTC.', 'Checked 2026-11-12\r\n\t22:00\nUTC.', 'Checked 2026-11-12 22:00  UTC.']],
+      ['Started 2026-11-11 22:00:15 +01:00.', ['Started 2026-11-12\n22:00:15\n+01:00.', 'Started 2026-11-12   22:00:15  +01:00.']],
+      ['Finished at 9:05 pm UTC.', ['Finished at 10:15\npm\nUTC.', 'Finished at 10:15  pm  UTC.']],
+      ['Report for Nov 11, 2026.', ['Report for Nov\n12,\n2026.', 'Report for Nov  12,   2026.']],
+    ];
+    for (const [single, variants] of layouts) {
+      const expected = normalizeAgentReport(single);
+      for (const variant of variants) assert.equal(normalizeAgentReport(variant), expected, JSON.stringify(variant));
+    }
+    assert.equal(normalizeAgentReport('Checked 2026-11-12\n22:00 UTC.'), 'Checked <date>.');
+  });
+
   test('replaces only the run ids given, ignoring case, and keeps other UUIDs', () => {
     assert.equal(normalizeAgentReport(`Run run-42 (see ${RUN_A})`, { runIds: ['run-42'] }), `Run <run> (see ${RUN_A})`);
     assert.equal(normalizeAgentReport(`Run ${RUN_A.toUpperCase()}`, { runIds: [RUN_A] }), 'Run <run>');
@@ -70,6 +84,16 @@ describe('classifyAgentReportNovelty', () => {
     const previous = { runId: 'legacy-run-7', report: `# Nightly 2026-11-10 (run legacy-run-7)\n\n${BODY}` };
     const result = classifyAgentReportNovelty({ runId: RUN_B, report: `# Nightly   2026-11-11 (run ${RUN_B})\n${BODY}\n`, previous });
     assert.equal(result.reportNovelty, 'unchanged');
+  });
+
+  test('the same report with the next timestamp wrapped or spaced differently is unchanged', () => {
+    const watch = 'Dependency watch: lodash remains outdated in acme/web.';
+    const previous = { runId: RUN_A, report: `Checked 2026-11-11 22:00 UTC. ${watch}` };
+    for (const report of [`Checked 2026-11-12\n22:00 UTC. ${watch}`, `Checked 2026-11-12  22:00 UTC. ${watch}`, `Checked 2026-11-12 22:00 UTC. ${watch}`]) {
+      const result = classifyAgentReportNovelty({ runId: RUN_B, report, previous });
+      assert.equal(result.reportNovelty, 'unchanged', JSON.stringify(report));
+      assert.equal(result.reportHash, hashAgentReport(previous.report));
+    }
   });
 
   test('a report about another incident or task is new; one that only quotes another run id is unchanged', () => {

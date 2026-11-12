@@ -35,19 +35,24 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Unicode-normalised text with every whitespace run collapsed to one space. */
+function collapseWhitespace(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * The report text with whitespace, dates, times and the given run ids normalised.
- * `runIds` are matched literally (ignoring case, as UUIDs are) before anything
- * else; other identifiers are kept.
+ * Whitespace is collapsed first, so a timestamp wrapped across lines or spaced
+ * out matches the same pattern as its single-spaced form. `runIds` are then
+ * matched literally (ignoring case, as UUIDs are); other identifiers are kept.
  */
 export function normalizeAgentReport(report: string, { runIds = [] }: { runIds?: readonly string[] } = {}): string {
-  let text = report.normalize('NFKC');
+  let text = collapseWhitespace(report);
   // Longest first, so an id that contains another is replaced whole.
-  for (const runId of [...new Set(runIds)].filter(Boolean).sort((a, b) => b.length - a.length)) {
-    text = text.replace(new RegExp(escapeRegExp(runId.normalize('NFKC')), 'gi'), '<run>');
-  }
+  const ids = [...new Set(runIds.filter(Boolean).map(id => collapseWhitespace(id)))].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const runId of ids) text = text.replace(new RegExp(escapeRegExp(runId), 'gi'), '<run>');
   for (const [pattern, replacement] of VOLATILE_PATTERNS) text = text.replace(pattern, replacement);
-  return text.replace(/\s+/g, ' ').trim();
+  return text;
 }
 
 /** SHA-256 (hex) of the normalised report. */
