@@ -144,12 +144,25 @@ function publishAfterCommit(database: Knex, event: RepositoryEventInput): void {
         void getEventPublisher().publishActivity(activity).catch(() => undefined);
     };
     // Announcing a change before its transaction commits would send readers to
-    // a row they cannot see yet (or one a rollback removes).
-    const pending = (database as Knex.Transaction).isTransaction
-        ? (database as Knex.Transaction & { executionPromise?: Promise<unknown> }).executionPromise
-        : undefined;
-    if (pending) pending.then(publish, () => undefined);
+    // a row they cannot see yet (or one a rollback removes). A nested
+    // transaction is a savepoint: releasing it commits nothing, so wait for
+    // every enclosing transaction up to the outermost one, and stay silent if
+    // any of them (the event's own savepoint included) rolls back.
+    const pending: Promise<unknown>[] = [];
+    let transaction = (database as Partial<PendingTransaction>).isTransaction ? database as PendingTransaction : undefined;
+    while (transaction) {
+        if (transaction.executionPromise) pending.push(transaction.executionPromise);
+        transaction = transaction.parentTransaction;
+    }
+    if (pending.length) Promise.all(pending).then(publish, () => undefined);
     else publish();
+}
+
+/** The knex transactor fields that say when a (possibly nested) transaction settles. */
+interface PendingTransaction {
+    isTransaction: true;
+    executionPromise?: Promise<unknown>;
+    parentTransaction?: PendingTransaction;
 }
 
 /**

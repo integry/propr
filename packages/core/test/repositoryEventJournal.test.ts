@@ -134,6 +134,31 @@ describe('repository event journal', () => {
     assert.equal((await listRepositoryEvents(database, { repository: 'acme/app' })).length, 1);
   });
 
+  test('an append in a nested transaction publishes only once the outermost transaction commits', async () => {
+    let publishedAfterRelease = -1;
+    await database.transaction(async outer => {
+      await outer.transaction(async inner => { await appendRepositoryEvent(inner, event({ type: 'merged' })); });
+      await flush();
+      publishedAfterRelease = published.length;
+      throw new Error('outer rolled back');
+    }).catch(() => undefined);
+    await flush();
+    assert.equal(publishedAfterRelease, 0, 'published when the savepoint was released');
+    assert.equal(published.length, 0, 'an append rolled back with the outer transaction is never announced');
+    assert.equal((await listRepositoryEvents(database, { repository: 'acme/app' })).length, 0);
+
+    await database.transaction(async outer => {
+      await outer.transaction(async inner => {
+        await appendRepositoryEvent(inner, event({ type: 'closed' }));
+        throw new Error('savepoint rolled back');
+      }).catch(() => undefined);
+      await outer.transaction(async inner => { await appendRepositoryEvent(inner, event({ type: 'merged' })); });
+    });
+    await flush();
+    assert.deepEqual(published.map(entry => entry.change), ['completed'], 'only the append whose savepoint survived is announced');
+    assert.deepEqual((await listRepositoryEvents(database, { repository: 'acme/app' })).map(row => row.type), ['merged']);
+  });
+
   test('maps journal events onto the activity envelope', () => {
     assert.equal(repositoryEventActivity(event({ type: 'ultrafix_ended', payload: { outcome: 'stopped' } }))?.change, 'cancelled');
     assert.equal(repositoryEventActivity(event({ type: 'review_scored' }))?.change, 'progressed');

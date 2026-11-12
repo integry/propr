@@ -160,6 +160,24 @@ test('a merge-wait explanation restored after a concurrent human-merge explanati
   assert.equal(reasons[2], reasons[0]);
 });
 
+test('alternating explanations within one clock tick each journal their own event', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
+  // Every write carries the same timestamp, so the state read before each A→B is identical.
+  const frozen = { database, now: () => clock };
+  for (let round = 0; round < 2; round++) {
+    assert.equal(await markEpicQueueAwaitingHumanMerge(humanMerge, frozen), true);
+    assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }, frozen), true);
+  }
+  // A redelivered trigger re-writing the current reason is still not a transition.
+  assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }, frozen), true);
+  const reasons = await blockedReasons();
+  assert.equal(reasons.length, 4, 'a timestamp collision suppressed a real transition');
+  assert.match(reasons[0], /^Waiting for human merge:/);
+  assert.match(reasons[1], /stopped on a blocker reported by the agent/);
+  assert.deepEqual(reasons.slice(2), reasons.slice(0, 2));
+  assert.equal((await getEpicExecutionQueue('draft', deps))!.blockedReason, reasons[3]);
+});
+
 test('a reason replaced between the in-transaction read and the update is re-read before journaling', async () => {
   await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
   await markEpicQueueAwaitingHumanMerge(humanMerge, deps);

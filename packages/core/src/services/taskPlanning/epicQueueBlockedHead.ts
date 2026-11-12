@@ -49,7 +49,7 @@ export async function markEpicQueueHeadBlocked({ draftId, issueNumber }: { draft
   const ref = { ...epicQueueJournalRef(draftId, active.row), ...(active.row.parallel ? { issues: [issueNumber], cursor: 0 } : {}) };
   // The cursor guard is the row's own, even when the event names a parallel child.
   return Boolean(await setEpicQueueBlocked(database, ref, reason,
-    { timestamp: now(), guard: active.guard, dedupeSuffix: `:${issueNumber}` }));
+    { timestamp: now(), guard: active.guard }));
 }
 
 function historyMetadata(metadata: unknown): Record<string, unknown> {

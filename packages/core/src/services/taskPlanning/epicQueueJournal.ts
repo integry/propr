@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { Knex } from 'knex';
 import type { EpicQueueEventType } from '@propr/shared';
 import { appendRepositoryEvent, capRepositoryEventReason, type RepositoryEventInput } from '../repositoryEventJournal.js';
@@ -19,7 +18,7 @@ export interface EpicQueueJournalRef {
  * replacement execution of the same plan has its own history.
  */
 export function epicQueueEvent(queue: EpicQueueJournalRef, type: EpicQueueEventType, details: {
-  dedupeKey: string; issueNumber?: number | null; payload?: Record<string, unknown>; occurredAt?: number;
+  dedupeKey: string | null; issueNumber?: number | null; payload?: Record<string, unknown>; occurredAt?: number;
 }): RepositoryEventInput {
   return {
     repository: queue.repository, domain: 'epic_queue', type, entityId: queue.executionId, planId: queue.draftId,
@@ -57,21 +56,20 @@ export function epicQueueAdvanceEvent(queue: EpicQueueJournalRef, fromIssue: num
     payload: { fromIssue, toIssue: queue.issues[cursor], cursor }, dedupeKey: `epic:${queue.executionId}:advanced:${cursor}` });
 }
 
-const reasonDigest = (reason: string) => createHash('sha256').update(reason).digest('hex').slice(0, 16);
-
 /**
  * The `blocked` event for a new explanation, or null when the queue already
- * carries this one (a redelivered trigger re-writes the same reason). The key
- * includes the state the writer read, so concurrent writers of one transition
- * share it while a later re-block of the same head is a new event.
+ * carries this one (a redelivered trigger re-writes the same reason). It has
+ * no dedupe key: it is appended only by the writer whose guarded update made
+ * the transition, so the guard, not a key, makes it unique. A key derived from
+ * the state read (cursor, timestamp, reason) would repeat when the queue
+ * returns to that state within one clock tick, and drop a real transition.
  */
 export function epicQueueBlockedEvent(queue: EpicQueueJournalRef, reason: string, occurredAt?: number): RepositoryEventInput | null {
   if (reason === queue.blockedReason) return null;
   const headIssue = queue.issues[queue.cursor] ?? null;
   return epicQueueEvent(queue, 'blocked', {
-    issueNumber: headIssue, occurredAt,
+    issueNumber: headIssue, occurredAt, dedupeKey: null,
     payload: { headIssue, blockedReason: capRepositoryEventReason(reason) },
-    dedupeKey: `epic:${queue.executionId}:blocked:${queue.cursor}:${queue.updatedAt}:${reasonDigest(reason)}`,
   });
 }
 
@@ -84,11 +82,12 @@ const BLOCKED_WRITE_ATTEMPTS = 5;
  * reason read inside the write's transaction, never from the caller's earlier
  * snapshot: another writer may have replaced the reason since, and returning
  * to an older explanation is still a transition. The update is also guarded on
- * the reason and timestamp that were read, and re-read on a mismatch.
+ * the reason and timestamp that were read, and re-read on a mismatch, so only
+ * the writer that made a transition journals it, once.
  * Returns the number of rows changed.
  */
 export async function setEpicQueueBlocked(database: Knex, queue: EpicQueueJournalRef, reason: string,
-  { timestamp, guard = {}, dedupeSuffix = '' }: { timestamp: number; guard?: Record<string, unknown>; dedupeSuffix?: string }): Promise<number> {
+  { timestamp, guard = {} }: { timestamp: number; guard?: Record<string, unknown> }): Promise<number> {
   const where = { draft_id: queue.draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor, ...guard };
   for (let attempt = 0; attempt < BLOCKED_WRITE_ATTEMPTS; attempt++) {
     const outcome = await database.transaction(async trx => {
@@ -100,7 +99,7 @@ export async function setEpicQueueBlocked(database: Knex, queue: EpicQueueJourna
         .where({ ...where, blocked_reason: current.blocked_reason, updated_at: current.updated_at })
         .update({ blocked_reason: reason, updated_at: timestamp });
       if (!changed) return null;
-      if (event) await appendRepositoryEvent(trx, { ...event, dedupeKey: `${event.dedupeKey}${dedupeSuffix}` });
+      if (event) await appendRepositoryEvent(trx, event);
       return changed;
     });
     if (outcome !== null) return outcome;
