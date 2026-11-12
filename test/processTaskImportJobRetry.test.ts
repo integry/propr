@@ -10,7 +10,14 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), 'task-import-retention-'));
 process.env.GIT_WORKTREES_BASE_PATH = path.join(root, 'worktrees');
 process.env.GIT_CLONES_BASE_PATH = path.join(root, 'clones');
 const { cleanupWorktree: realCleanup } = await import('../packages/core/src/git/worktreeOperations.js');
-after(async () => { await fs.remove(root); });
+after(async () => {
+    // A deleting cleanup consults the follow-up handoff table once Docker answers
+    // (it does in CI), which opens the shared SQLite connection; close it or the
+    // open pool keeps this file's process alive past its timeout.
+    const { closeConnection } = await import('../packages/core/src/db/connection.js');
+    await closeConnection();
+    await fs.remove(root);
+});
 let repositoryPath = '';
 let checkoutPath = '';
 let authenticationFails = true;
