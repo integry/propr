@@ -14,7 +14,7 @@ let submission: { payload: string } | undefined;
 let liveLabels: string[] | undefined;
 
 const findIssueSubmission = mock.fn(async () => submission);
-type GateResult = { arm: boolean; reason: string; mergeMethod?: string; pullRequest?: { headSha: string; baseRef: string } | null };
+type GateResult = { arm: boolean; reason: string; mergeMethod?: string; directMergeOnly?: true; pullRequest?: { headSha: string; baseRef: string } | null };
 const evaluatedPullRequest = { headSha: 'evaluated-head', baseRef: 'main' };
 let gateResult: GateResult = { arm: true, reason: 'armed', mergeMethod: 'SQUASH', pullRequest: evaluatedPullRequest };
 const gateAutoMergeArming = mock.fn(async (_input: Record<string, unknown>) => gateResult);
@@ -137,6 +137,11 @@ test('the repository auto-merge policy decides before auto-merge is armed', asyn
     gateResult = { arm: true, reason: 'armed', mergeMethod: 'SQUASH', pullRequest: null };
     await runWithSubmission({ instruction: 'Fix dates', autoMerge: true }, ['AI', 'auto-merge']);
     assert.deepEqual(autoMerges, [], 'a decision without an evaluated head never arms auto-merge');
+
+    // `require_up_to_date`: GitHub's auto-merge would merge a behind head, so only ProPR merges.
+    gateResult = { arm: true, reason: 'armed', directMergeOnly: true, pullRequest: evaluatedPullRequest };
+    await runWithSubmission({ instruction: 'Fix dates', autoMerge: true }, ['AI', 'auto-merge']);
+    assert.deepEqual(autoMerges, [], 'a direct-merge-only decision never arms GitHub auto-merge');
     gateResult = { arm: true, reason: 'armed', mergeMethod: 'SQUASH', pullRequest: evaluatedPullRequest };
 });
 

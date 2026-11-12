@@ -123,3 +123,26 @@ test('skip explanations are one line and name the reason code and paths', () => 
     const many = describeAutoMergeDecision(decideAutoMerge(valid(), Array.from({ length: 8 }, (_, i) => `.propr/${i}`), context));
     assert.match(many, /and 3 more/);
 });
+
+test('require_up_to_date is off by default and carries the hourly update allowance only when armed', () => {
+    assert.equal(decideAutoMerge(valid(), ['a.ts'], context).upToDate, undefined, 'option off: behaviour unchanged');
+    assert.equal(decideAutoMerge(valid({ require_up_to_date: false }), ['a.ts'], context).upToDate, undefined);
+    assert.deepEqual(decideAutoMerge(valid({ require_up_to_date: true }), ['a.ts'], context).upToDate, { maxBranchUpdatesPerHour: 3 });
+    assert.deepEqual(decideAutoMerge(valid({ require_up_to_date: true, max_branch_updates_per_hour: 5 }), ['a.ts'], context).upToDate, { maxBranchUpdatesPerHour: 5 });
+    // The allowance alone does not turn the option on, and a skipped decision carries none.
+    assert.equal(decideAutoMerge(valid({ max_branch_updates_per_hour: 5 }), ['a.ts'], context).upToDate, undefined);
+    assert.equal(decideAutoMerge(valid({ require_up_to_date: true }), ['.propr/x'], context).upToDate, undefined);
+});
+
+test('workflow parser accepts require_up_to_date and a bounded update allowance', () => {
+    const config = parseRepositoryWorkflow('auto_merge:\n  require_up_to_date: true\n  max_branch_updates_per_hour: 30\n');
+    assert.deepEqual(config.auto_merge, { require_up_to_date: true, max_branch_updates_per_hour: 30 });
+    for (const source of [
+        'auto_merge:\n  require_up_to_date: "yes"', 'auto_merge:\n  max_branch_updates_per_hour: 0',
+        'auto_merge:\n  max_branch_updates_per_hour: 31', 'auto_merge:\n  max_branch_updates_per_hour: 1.5',
+        'auto_merge:\n  max_branch_updates_per_hour: "3"',
+    ]) {
+        assert.throws(() => parseRepositoryWorkflow(source), RepositoryWorkflowPolicyError, source);
+    }
+    assert.equal(decideAutoMerge(valid({ require_up_to_date: 1 }), ['a.ts'], context).reason, 'skipped_policy_invalid');
+});
