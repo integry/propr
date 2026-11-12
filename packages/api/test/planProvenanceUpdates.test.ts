@@ -133,7 +133,10 @@ test('a refinement that replaces the plan records refinement provenance for the 
   await setDraft(db, { plan_cause: 'generation' });
 
   await refineInBackground(db, plan('A1', 'A2', 'A3', 'A4'), { action: 'modified', plan: JSON.parse(plan('B1', 'B2')) });
-  assert.equal((await draft(db)).plan_json, plan('B1', 'B2'));
+  // The refined items had no ids, so storing them assigned one to each.
+  const stored = JSON.parse((await draft(db)).plan_json) as Array<Record<string, string>>;
+  assert.deepEqual(stored.map(({ title, body, implementation }) => ({ title, body, implementation })), JSON.parse(plan('B1', 'B2')));
+  assert.equal(new Set(stored.map(item => item.id)).size, 2);
   assert.equal((await draft(db)).plan_cause, 'refinement');
   const [snapshot] = await listPlanRevisions(db, draftId);
   assert.deepEqual(snapshot.titles, ['A1', 'A2', 'A3', 'A4']);

@@ -418,11 +418,11 @@ describe('planner background abort reconciliation', () => {
     t.mock.method(console, 'log', () => undefined);
     const draftId = 'refinement-core-normalised';
     const runId = 'refinement-run-core-normalised';
-    const currentPlan = [{ title: 'First', body: 'First body', implementation: 'First implementation' }];
+    const currentPlan = [{ id: 'first', title: 'First', body: 'First body', implementation: 'First implementation' }];
     // An edit-shaped task title proves the handler does not normalise again.
     const refinedPlan = [
-      { title: 'First', body: 'First body\n\nMore', implementation: 'First implementation' },
-      { title: 'action', body: 'Second body', implementation: 'Second implementation' },
+      { id: 'first', title: 'First', body: 'First body\n\nMore', implementation: 'First implementation' },
+      { id: 'second', title: 'action', body: 'Second body', implementation: 'Second implementation' },
     ];
     await database('task_drafts').insert({
       draft_id: draftId, status: 'refining', plan_json: JSON.stringify(currentPlan), plan_cause: 'generation',
@@ -626,8 +626,8 @@ for (const action of ['answered', 'clarify'] as const) {
 test('modified in the legacy handler records refinement provenance for the saved plan', async t => {
   t.mock.method(console, 'log', () => undefined);
   const draftId = 'legacy-modified';
-  const currentPlan = [{ title: 'Add metrics', body: 'Emit counters', implementation: 'Use the registry' }];
-  const refinedPlan = [{ title: 'Add metrics', body: 'Emit counters and gauges', implementation: 'Use the registry' }];
+  const currentPlan = [{ id: 'metrics', title: 'Add metrics', body: 'Emit counters', implementation: 'Use the registry' }];
+  const refinedPlan = [{ id: 'metrics', title: 'Add metrics', body: 'Emit counters and gauges', implementation: 'Use the registry' }];
   await database('task_drafts').insert({ draft_id: draftId, status: 'review', plan_cause: 'generation',
     plan_json: JSON.stringify(currentPlan) });
   const handler = createRefineHandler({ db: database, verifyOwnership: async () => ({ authorized: true }),

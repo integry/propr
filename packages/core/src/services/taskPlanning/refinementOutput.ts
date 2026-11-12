@@ -97,6 +97,45 @@ function appendText(existing: unknown, addition: string): string {
   return typeof existing === 'string' && existing.length > 0 ? `${existing}\n\n${addition}` : addition;
 }
 
+function itemId(item: TaskRecord | undefined): string | undefined {
+  return typeof item?.id === 'string' && item.id.trim() ? item.id : undefined;
+}
+
+function omitsDependencies(item: TaskRecord): boolean {
+  return !Object.hasOwn(item, 'dependsOn') || item.dependsOn === undefined || item.dependsOn === null;
+}
+
+/**
+ * A complete refined plan should copy every item id and dependsOn, but a model
+ * may drop them. An item without an id takes the id of the one current item
+ * with the same title, when no other refined item already carries that id, so
+ * a task the model rewrote in full keeps its identity and its dependents. An
+ * item matched to a current task that omits dependsOn keeps that task's
+ * prerequisites; only an explicit list (empty to remove them all) changes
+ * them. References to tasks the refinement removed are pruned when the plan
+ * is stored.
+ */
+function restoreOmittedIdentity(currentPlan: Plan, refined: TaskRecord[]): TaskRecord[] {
+  const used = new Set(refined.map(itemId).filter((id): id is string => id !== undefined));
+  const current = currentPlan as unknown as TaskRecord[];
+  return refined.map(item => {
+    let restored = item;
+    if (itemId(item) === undefined && typeof item.title === 'string') {
+      const matches = current.filter(task => task.title === item.title);
+      const id = matches.length === 1 ? itemId(matches[0]) : undefined;
+      if (id !== undefined && !used.has(id)) {
+        used.add(id);
+        restored = { id, ...item };
+      }
+    }
+    const id = itemId(restored);
+    if (id === undefined || !omitsDependencies(restored)) return restored;
+    const matches = current.filter(task => itemId(task) === id);
+    const previous = matches.length === 1 ? matches[0].dependsOn : undefined;
+    return Array.isArray(previous) && previous.length > 0 ? { ...restored, dependsOn: [...previous] } : restored;
+  });
+}
+
 /**
  * Accept a complete refined plan, or deterministically apply an edit-style
  * model response to the plan it was asked to refine. Ambiguous output fails
@@ -118,7 +157,7 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
     const incomplete = incompleteTasks(refined);
     return incomplete.length
       ? failure('incomplete_tasks', 'The refinement returned incomplete plan tasks.', { incomplete })
-      : { ok: true, plan: refined as Plan, merged: false };
+      : { ok: true, plan: restoreOmittedIdentity(currentPlan, refined as TaskRecord[]) as unknown as Plan, merged: false };
   }
   if (operationCount !== refined.length || records.some(item => !item)) {
     return failure('mixed_shape', 'The refinement mixed complete tasks with edit operations.', { operations: operationCount });
@@ -167,7 +206,9 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
     if (name === 'remove' || name === 'delete') {
       removed.add(index);
     } else if (name === 'update' || name === 'replace') {
-      current[index] = { ...current[index], ...editableFields(edit) };
+      // An edit changes a task's content, never its identity.
+      const id = itemId(current[index]);
+      current[index] = { ...current[index], ...editableFields(edit), ...(id !== undefined ? { id } : {}) };
     } else if (name === 'extend') {
       for (const field of ['body', 'implementation', 'notes'] as const) {
         if (!Object.hasOwn(edit, field)) continue;

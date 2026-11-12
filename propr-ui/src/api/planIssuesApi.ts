@@ -28,6 +28,10 @@ export interface PlanIssue {
   /** Review scores the PR received, oldest first; one per review run. */
   review_scores?: number[];
   task_id: string | null;
+  /** Id of the plan item this issue was published from; null for issues published before item ids. */
+  plan_item_id?: string | null;
+  /** Issue numbers of the plan issues this one depends on. */
+  depends_on_issues?: number[];
   run_ultrafix?: boolean | null;
   ultrafix_goal?: number | null;
   ultrafix_max_cycles?: number | null;

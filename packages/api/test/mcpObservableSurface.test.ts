@@ -324,6 +324,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Plan issue fields recording the plan item and its prerequisite issues.
+    'plan_item_id', 'depends_on_issues',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
   ]);

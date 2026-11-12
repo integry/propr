@@ -12,6 +12,8 @@ export interface PlanTask {
   implementation: string;
   notes?: string;
   attachments?: PlanTaskAttachment[];
+  /** Ids of other tasks in the same plan that must be implemented first. */
+  dependsOn?: string[];
   issue_number?: number;
   issue_url?: string;
 }

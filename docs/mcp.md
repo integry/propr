@@ -362,6 +362,21 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+Every plan item has a stable `id`, unique within the plan, and may list in
+`dependsOn` the ids of its direct prerequisites, other items in the same plan
+that must be implemented first. `create_plan` and `update_plan` (and the web UI's draft update) assign an
+id to items sent without one, never change an existing id, and reject with
+`PLAN_INVALID` a duplicate id or a `dependsOn` entry that names no item, the item
+itself, or closes a cycle; the message names the item, and `details.errors`
+lists every problem. Ids and `dependsOn` survive refinement, plan revisions and
+restore. Plans without `dependsOn` are valid and are the default. Plans sent
+through these tools are stored as written; only generated and refined plans have
+indirect prerequisites removed from `dependsOn`. On
+publication each issue in `get_plan.issues` records `plan_item_id` and
+`depends_on_issues`, its prerequisites as issue numbers; issues published
+before dependencies existed read `null` and `[]`. Scheduling does not use
+these edges yet: epic queues still follow plan order.
+
 `generate_repository_improvements` answers "what should we work on next?"
 with the same generator as the web UI **Improve** tab. Pass `categories`
 (`code-quality`, `performance`, `security`, `testing`, `documentation`,
@@ -632,7 +647,7 @@ Stable codes introduced by the observable operator surface are:
 | `GITHUB_*`: `GITHUB_AUTH_FAILED`, `GITHUB_FORBIDDEN`, `GITHUB_NOT_FOUND`, `GITHUB_RATE_LIMITED`, `GITHUB_REJECTED`, `GITHUB_UNAVAILABLE`, `GITHUB_RESPONSE_INVALID` | GitHub rejected, denied, could not find, throttled or could not serve the request, or returned a response the tool could not act on. |
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
-| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published. |
+| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published, or its item ids or `dependsOn` are invalid (duplicate id, unknown or self reference, cycle). |
 | `STALE_REVISION` | The supplied `expectedRevision` no longer matches the plan (a genuine optimistic-concurrency conflict). `details.currentRevision`, when present, is the revision a fresh read would return. |
 | `PLAN_NOT_DELETABLE` | `delete_plan` refused the plan because of its status, not its revision: it is generating, refining or executing published work. `details.status` is the blocking status. |
 | `PUBLISH_FAILED` | Publication failed before any issue was created; the plan claim was released. `details.currentRevision` is the revision to pass when retrying. |

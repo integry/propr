@@ -305,7 +305,7 @@ function incompletePlanRepairPrompt(currentPlan: PlanItem[], instruction: string
 Apply the requested changes to the current plan below and return ONLY this JSON object:
 {"action": "modified", "summary": "<what changed>", "plan": [ ... ]}
 
-The plan array must contain EVERY issue of the refined plan in full, each as {"title", "body", "implementation"}, copying unchanged issues verbatim. Do not return edit instructions such as "retain", "extend" or "unchanged". No markdown or code fences.
+The plan array must contain EVERY issue of the refined plan in full, each as {"title", "body", "implementation"} plus its existing "id", "notes" and "dependsOn", copying unchanged issues verbatim. Do not return edit instructions such as "retain", "extend" or "unchanged". No markdown or code fences.
 
 Current plan:
 ${JSON.stringify(currentPlan)}

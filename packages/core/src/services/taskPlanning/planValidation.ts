@@ -175,7 +175,61 @@ if (plan !== undefined && documentMode) {
         errors.push(label(index) + ' has no non-empty "' + field + '" string');
       }
     }
+    if (task.id !== undefined && (typeof task.id !== 'string' || !task.id.trim())) {
+      errors.push(label(index) + ' has an "id" that is not a non-empty string');
+    }
+    if (task.dependsOn !== undefined && (!Array.isArray(task.dependsOn) || task.dependsOn.some(entry => typeof entry !== 'string'))) {
+      errors.push(label(index) + ' has a "dependsOn" that is not an array of task "id" strings');
+    }
   });
+  if (Array.isArray(plan)) checkDependencies(plan);
+}
+
+// Optional "id" and "dependsOn": ids are unique, and every dependsOn entry
+// names another task's id without forming a cycle.
+function checkDependencies(tasks) {
+  const ids = new Map();
+  tasks.forEach((task, index) => {
+    if (!task || typeof task.id !== 'string' || !task.id.trim()) return;
+    if (ids.has(task.id)) errors.push(label(index) + ' reuses the id "' + task.id + '" of task ' + (ids.get(task.id) + 1) + ': ids must be unique');
+    else ids.set(task.id, index);
+  });
+  const edges = new Map();
+  tasks.forEach((task, index) => {
+    if (!task || !Array.isArray(task.dependsOn)) return;
+    const kept = [];
+    for (const dependency of task.dependsOn) {
+      if (typeof dependency !== 'string') continue;
+      if (dependency === task.id) errors.push(label(index) + ' lists its own id "' + dependency + '" in "dependsOn"');
+      else if (!ids.has(dependency)) errors.push(label(index) + ' depends on "' + dependency + '", which is not the "id" of any task');
+      else kept.push(dependency);
+    }
+    if (typeof task.id === 'string' && ids.get(task.id) === index) edges.set(task.id, kept);
+  });
+  const state = new Map();
+  const path = [];
+  const visit = id => {
+    state.set(id, 'visiting');
+    path.push(id);
+    for (const next of edges.get(id) || []) {
+      if (state.get(next) === 'visiting') return path.slice(path.indexOf(next)).concat(next);
+      if (!state.has(next)) {
+        const cycle = visit(next);
+        if (cycle) return cycle;
+      }
+    }
+    path.pop();
+    state.set(id, 'done');
+    return null;
+  };
+  for (const id of ids.keys()) {
+    if (state.has(id)) continue;
+    const cycle = visit(id);
+    if (cycle) {
+      errors.push(label(ids.get(cycle[0])) + ' is part of a "dependsOn" cycle: ' + cycle.join(' -> ') + '; remove one of these dependencies');
+      break;
+    }
+  }
 }
 
 if (errors.length === 0 && existsSync(originalPath)) {
