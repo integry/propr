@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 import { scaffoldProprDirectory } from "../packages/cli/src/commands/initCommands.js";
+import { parseRepositoryWorkflow } from "../packages/core/src/workflow/repositoryWorkflow.js";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "propr-cli-init-"));
@@ -49,6 +50,18 @@ describe("scaffoldProprDirectory", () => {
 
       const setupMode = (await stat(path.join(proprDir, "setup.sh"))).mode & 0o777;
       assert.strictEqual(setupMode, 0o755);
+    });
+  });
+
+  test("workflow scaffold documents on_blocker commented out, and uncommenting it is valid", async () => {
+    await withTempDir(async (dir) => {
+      await scaffoldProprDirectory({ cwd: dir });
+      const workflow = await readFile(path.join(dir, ".propr", "workflow.yml"), "utf-8");
+      assert.match(workflow, /^# on_blocker: report$/m);
+      // Commented out, the scaffold keeps today's behaviour.
+      assert.strictEqual(parseRepositoryWorkflow(workflow).on_blocker, undefined);
+      const enabled = workflow.replace(/^# on_blocker: report$/m, "on_blocker: report");
+      assert.strictEqual(parseRepositoryWorkflow(enabled).on_blocker, "report");
     });
   });
 

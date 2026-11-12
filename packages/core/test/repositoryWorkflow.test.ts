@@ -8,6 +8,8 @@ import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
+import { reportsBlockers } from '../src/workflow/repositoryWorkflow.js';
+import { BLOCKER_MARKER, BLOCKER_EXPLANATION_MAX_LENGTH, blockerReportPrompt, detectBlockerReport, parseBlockerReport } from '../src/workflow/blockerReport.js';
 import { buildWorkflowWrapper, WorkflowMarkerCollector, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH, withWorkflowExecutionDeadline } from '../src/workflow/workflowExecution.js';
 import { AntigravityGoalStream } from '../src/agents/impl/antigravityGoalStream.js';
 import { EventEmitter } from 'node:events';
@@ -128,6 +130,7 @@ test('published editor schema agrees with runtime on supported fields and reject
         { auto_merge: { require_up_to_date: true, max_branch_updates_per_hour: 3 } }, { auto_merge: { require_up_to_date: false } },
         { auto_merge: { require_up_to_date: 'yes' } }, { auto_merge: { max_branch_updates_per_hour: 0 } }, { auto_merge: { max_branch_updates_per_hour: 31 } },
         { auto_merge: { max_branch_updates_per_hour: 2.5 } },
+        { on_blocker: 'report' }, { on_blocker: 'continue' }, { on_blocker: 'stop' }, { on_blocker: true }, { on_blocker: null },
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.
@@ -138,6 +141,103 @@ test('published editor schema agrees with runtime on supported fields and reject
         try { parseRepositoryWorkflow(JSON.stringify(candidate)); } catch { accepted = false; }
         assert.equal(validate(candidate), accepted, JSON.stringify(candidate));
     }
+});
+
+test('on_blocker accepts continue or report and only report adds the blocker instructions', () => {
+    assert.deepEqual(parseRepositoryWorkflow('on_blocker: report'), { on_blocker: 'report' });
+    assert.deepEqual(parseRepositoryWorkflow('on_blocker: continue'), { on_blocker: 'continue' });
+    for (const source of ['on_blocker: stop', 'on_blocker: true', 'on_blocker: [report]', 'on_blocker: ~']) {
+        assert.throws(() => parseRepositoryWorkflow(source), /on_blocker must be "continue" or "report"/, source);
+    }
+    const base = 'validation: [npm test]';
+    const unchanged = repositoryWorkflowPrompt(policy(base));
+    // Absent or `continue`: the prompt is byte-for-byte what it was.
+    assert.equal(repositoryWorkflowPrompt(policy(`${base}\non_blocker: continue`)), unchanged);
+    assert.ok(!unchanged.includes(BLOCKER_MARKER));
+    assert.equal(reportsBlockers(policy(base)), false);
+    assert.equal(reportsBlockers(policy('on_blocker: continue')), false);
+    assert.equal(reportsBlockers(undefined), false);
+    const reporting = policy(`${base}\non_blocker: report`);
+    assert.equal(reportsBlockers(reporting), true);
+    assert.equal(repositoryWorkflowPrompt(reporting), `${unchanged}\n\n${blockerReportPrompt()}`);
+    assert.match(blockerReportPrompt(), /do not deliver a reduced, partial or placeholder version/);
+    assert.match(blockerReportPrompt(), /without partial changes/);
+    assert.ok(blockerReportPrompt().includes(BLOCKER_MARKER));
+});
+
+test('blocker marker is read from the final message only when it starts a top-level line', () => {
+    assert.deepEqual(parseBlockerReport(`I looked into it.\n\n${BLOCKER_MARKER} The API key is missing.\nA sandbox key is needed.`), {
+        explanation: 'The API key is missing.\nA sandbox key is needed.',
+    });
+    assert.deepEqual(parseBlockerReport(`${BLOCKER_MARKER}\n\nNo access to the database.`), { explanation: 'No access to the database.' });
+    assert.deepEqual(parseBlockerReport(`  ${BLOCKER_MARKER} Indented by two spaces.`), { explanation: 'Indented by two spaces.' });
+    assert.deepEqual(parseBlockerReport(BLOCKER_MARKER), { explanation: 'The agent reported a blocker without an explanation.' });
+    // The last top-level marker wins.
+    assert.deepEqual(parseBlockerReport(`${BLOCKER_MARKER} first\n${BLOCKER_MARKER} second`), { explanation: 'second' });
+
+    for (const absent of [
+        null, undefined, '', 'Implemented the change and added tests.',
+        // Quoted, tool or file text never counts.
+        `The prompt says to end with \`${BLOCKER_MARKER}\` when blocked; I was not blocked.`,
+        `\`\`\`\n${BLOCKER_MARKER} printed by a tool\n\`\`\``,
+        `~~~text\n${BLOCKER_MARKER} from a file\n~~~\nDone.`,
+        `> ${BLOCKER_MARKER} quoted from the issue`,
+        `    ${BLOCKER_MARKER} indented code block`,
+        `- ${BLOCKER_MARKER} inside a list item`,
+        `Output: ${BLOCKER_MARKER} nope`,
+        'propr_blocked: lower case is not the marker',
+    ]) assert.equal(parseBlockerReport(absent), null, JSON.stringify(absent));
+    // A fence that never closes hides everything after it.
+    assert.equal(parseBlockerReport(`\`\`\`\n${BLOCKER_MARKER} still code`), null);
+    // A marker after a closed fence still counts.
+    assert.deepEqual(parseBlockerReport(`\`\`\`\nlog\n\`\`\`\n${BLOCKER_MARKER} Real blocker.`), { explanation: 'Real blocker.' });
+});
+
+test('a blocker marker inside a list item continuation or nested container is not a blocker', () => {
+    for (const absent of [
+        // The reported case: an example quoted on a bullet's continuation line, then completed work.
+        `- Example diagnostic:\n  ${BLOCKER_MARKER} Missing credentials.\n\nImplemented and verified the fix.`,
+        `* Example:\n\n  ${BLOCKER_MARKER} after a blank line, still inside the item`,
+        `1. First step\n   ${BLOCKER_MARKER} continuation of an ordered item`,
+        `2) Step\n\n   ${BLOCKER_MARKER} continuation of a parenthesised ordered item`,
+        `- Outer\n  - Nested\n    ${BLOCKER_MARKER} nested item continuation`,
+        `- Outer\n  > ${BLOCKER_MARKER} quote inside the item`,
+        `- Outer\n  \`\`\`\n  ${BLOCKER_MARKER} fenced inside the item\n  \`\`\`\nDone.`,
+        `-   Wide item\n    ${BLOCKER_MARKER} continuation at the wider content column`,
+        `- Tab item\n\t${BLOCKER_MARKER} tab-indented continuation`,
+        `- ~~~text\n  ${BLOCKER_MARKER} inside a fence opened on the item line\n  ~~~\nDone.`,
+        `- ~~~text\n  log\n  ~~~\n- next\n  ${BLOCKER_MARKER} continuation after the item fence`,
+    ]) assert.equal(parseBlockerReport(absent), null, JSON.stringify(absent));
+
+    // A top-level line after the list ends it, so a real blocker still counts.
+    assert.deepEqual(parseBlockerReport(`- Checked the config\n- Checked the docs\n\n${BLOCKER_MARKER} The API key is missing.`), { explanation: 'The API key is missing.' });
+    assert.deepEqual(parseBlockerReport(`- Checked the config\n${BLOCKER_MARKER} No sandbox.`), { explanation: 'No sandbox.' });
+    assert.deepEqual(parseBlockerReport(`1. Tried it\n\n ${BLOCKER_MARKER} Indented less than the item content.`), { explanation: 'Indented less than the item content.' });
+    // A fence opened on the list-marker line is tracked, so its closing delimiter does not open a new fence.
+    assert.deepEqual(parseBlockerReport(`- ~~~text\n  diagnostic output\n  ~~~\n\n${BLOCKER_MARKER} Missing credentials.`), { explanation: 'Missing credentials.' });
+    assert.deepEqual(parseBlockerReport(`1. \`\`\`\n   log\n   \`\`\`\n${BLOCKER_MARKER} Ordered item fence.`), { explanation: 'Ordered item fence.' });
+    assert.deepEqual(parseBlockerReport(`- Outer\n  - ~~~\n    log\n    ~~~\n${BLOCKER_MARKER} Nested item fence.`), { explanation: 'Nested item fence.' });
+    assert.deepEqual(parseBlockerReport(`- - ~~~\n    log\n    ~~~\n${BLOCKER_MARKER} Same-line nested item fence.`), { explanation: 'Same-line nested item fence.' });
+    // A fence inside an item ends with the item, so an unclosed one does not hide a later top-level marker.
+    assert.deepEqual(parseBlockerReport(`- ~~~\n  log\n${BLOCKER_MARKER} Item ended.`), { explanation: 'Item ended.' });
+    // A list after the marker does not hide it: the explanation keeps the list.
+    assert.deepEqual(parseBlockerReport(`${BLOCKER_MARKER} Needed:\n- a key\n- a sandbox`), { explanation: 'Needed:\n- a key\n- a sandbox' });
+});
+
+test('blocker explanations are redacted and bounded; detection needs the option and a normal end', () => {
+    const token = `ghp_${'a'.repeat(36)}`;
+    const redacted = parseBlockerReport(`${BLOCKER_MARKER} Token ${token} was rejected.`)!;
+    assert.ok(!redacted.explanation.includes(token), redacted.explanation);
+    const long = parseBlockerReport(`${BLOCKER_MARKER} ${'x'.repeat(BLOCKER_EXPLANATION_MAX_LENGTH * 2)}`)!;
+    assert.equal(long.explanation.length, BLOCKER_EXPLANATION_MAX_LENGTH);
+    assert.ok(long.explanation.endsWith('…'));
+
+    const summary = `${BLOCKER_MARKER} Needs credentials.`;
+    assert.deepEqual(detectBlockerReport({ success: true, summary }, true), { explanation: 'Needs credentials.' });
+    assert.deepEqual(detectBlockerReport({ success: true, summary: null, finalResult: { result: summary } }, true), { explanation: 'Needs credentials.' });
+    assert.equal(detectBlockerReport({ success: true, summary }, false), null, 'option off');
+    assert.equal(detectBlockerReport({ success: false, summary }, true), null, 'failed runs keep their own handling');
+    assert.equal(detectBlockerReport(null, true), null);
 });
 
 test('limits.max_cost_usd is read leniently and clamped; a malformed cap means no cap, not a rejected policy', async () => {

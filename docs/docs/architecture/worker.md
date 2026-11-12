@@ -250,7 +250,7 @@ tasks (only issue tasks are replayable today).
 Each decision is written to the task timeline without changing its state:
 `replacement.dispatched`, `replacement.skipped` (with its reason:
 `cap_reached`, `user_cancelled`, `issue_closed`, `watchdog_stop`,
-`cost_cap_stop`, `budget_exhausted`, `disabled`, …) and
+`cost_cap_stop`, `blocked_stop`, `budget_exhausted`, `disabled`, …) and
 `replacement.exhausted` when the cap or budget ends a lineage. The Inbox holds
 back the failure alert of a replaced attempt and shows one "Replacement
 started" card instead. The GitHub failure comment on the final failure lists

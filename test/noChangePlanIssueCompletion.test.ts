@@ -13,6 +13,7 @@ const statusWrites: Array<[string, number, string]> = [];
 let rejectPrimaryRemoval = false;
 let failStatusWrite = false;
 let failPlanLookup = false;
+let queue: Record<string, unknown> | null = null;
 // Mirrors the Redis commands the completion obligation uses.
 const redisClient = createNoChangeCompletionStoreDouble();
 const store = { clear: () => redisClient.clear(), get size() { return redisClient.records().length; } };
@@ -31,7 +32,7 @@ const octokit = {
 
 await mock.module('@propr/core', {
     namedExports: {
-        getEpicExecutionQueue: mock.fn(async () => null),
+        getEpicExecutionQueue: mock.fn(async () => queue),
         findIssueSubmission: mock.fn(async () => undefined),
         // Mirrors the real lookup: a failed read resolves null unless the caller asks for the failure.
         findPlanIssueByRepoAndNumber: mock.fn(async (_repository: string, _issueNumber: number, options?: { throwOnError?: boolean }) => {
@@ -73,6 +74,7 @@ beforeEach(() => {
     rejectPrimaryRemoval = false;
     failStatusWrite = false;
     failPlanLookup = false;
+    queue = null;
     store.clear();
     statusWrites.length = 0;
     getPlanIssuesByDraft.mock.resetCalls();
@@ -107,6 +109,16 @@ test('no-change completion records merged status but leaves successor selection 
 test('no-change completion without auto-merge leaves plan status to other observers', async () => {
     await completeWithoutChanges(['AI']);
     assert.deepEqual(statusWrites, []);
+    assert.deepEqual(requests.filter(request => request.route.endsWith('/labels')).map(request => request.body.labels), [['AI-done']]);
+});
+
+test('with on_blocker: report, a genuine no-change completion of a queue head that was blocked earlier is still marked merged', async () => {
+    // A previous run stopped on a blocker; this rerun succeeded without a diff or a blocker marker.
+    queue = { status: 'active', issues: [10, 30], cursor: 0,
+        blockedReason: 'Issue #10 stopped on a blocker reported by the agent; resolve the blocker and request processing again to continue this epic.' };
+    const result = await completeWithoutChanges(['AI']);
+    assert.equal(result.success, true);
+    assert.deepEqual(statusWrites, [['acme/repo', 10, 'merged']], 'the merged status advances the queue');
     assert.deepEqual(requests.filter(request => request.route.endsWith('/labels')).map(request => request.body.labels), [['AI-done']]);
 });
 
