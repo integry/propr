@@ -85,7 +85,7 @@ Adding **several** model labels to one issue fans the work out into one job per 
 
 ```text
 AI
-llm-claude-fable51
+llm-claude-fable52
 llm-codex-astra
 ```
 
@@ -94,23 +94,24 @@ This issue produces two tasks and two pull requests — one per model.
 The same aliases work in PR comments (the `llm-` prefix is optional; the raw catalog model ids are accepted too):
 
 ```
-/switch claude-fable51      # future follow-ups on this PR use this model
+/switch claude-fable52      # future follow-ups on this PR use this model
 /use codex-astra            # one follow-up with this model
-/review claude-fable51 codex-astra   # independent reviews from two models
+/review claude-fable52 codex-astra   # independent reviews from two models
 ```
 
 See [PR Slash Commands](./pr-commands.md) for full command syntax.
 
 ## Claude Code Models
 
-Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias. Claude Fable 5.1, Claude Sonnet 5.5, and Claude Haiku 5.5 are the targets of the plain `fable`, `sonnet`, and `haiku` aliases, so labels such as `llm-claude-fable` and `llm-claude-haiku` also select them.
+Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias. Claude Fable 5.2, Claude Sonnet 5.5, and Claude Haiku 5.5 are the targets of the plain `fable`, `sonnet`, and `haiku` aliases, so labels such as `llm-claude-fable` and `llm-claude-haiku` also select them. Claude Fable 5.1 is now a legacy model: it stays available through `llm-claude-fable51` and its explicit aliases.
 
 | Model | Label | Context |
 |-------|-------|---------|
 | Claude Opus 5.5 | `llm-claude-opus55` | 1M |
-| Claude Fable 5.1 | `llm-claude-fable51` | 1M |
+| Claude Fable 5.2 | `llm-claude-fable52` | 1M |
 | Claude Sonnet 5.5 | `llm-claude-sonnet55` | 1M |
 | Claude Haiku 5.5 | `llm-claude-haiku55` | 1M |
+| Claude Fable 5.1 | `llm-claude-fable51` | 1M |
 | Claude Fable 5 | `llm-claude-fable5` | 1M |
 | Claude Opus 5 | `llm-claude-opus5` | 1M |
 | Claude Sonnet 5 | `llm-claude-sonnet5` | 1M |
@@ -119,20 +120,24 @@ Claude Opus 5.5 is the default Claude model and the target of the plain `opus` a
 | Claude Opus 4.6 | `llm-claude-opus46` | 1M |
 | Claude Sonnet 4.6 | `llm-claude-sonnet46` | 1M |
 | Claude Opus 4.5 | `llm-claude-opus45` | 200K |
-| Claude Sonnet 4.5 | `llm-claude-sonnet45` | 200K |
+| Claude Sonnet 4.5 (deprecated) | `llm-claude-sonnet45` | 200K |
 | Claude Haiku 4.5 | `llm-claude-haiku45` | 200K |
 
-Some models require a minimum agent CLI version (for example, Haiku 5.5 requires Claude Code ≥ 2.1.293); ProPR records this in the catalog and the agent image is kept current.
+Some models require a minimum agent CLI version (for example, Fable 5.2 requires Claude Code ≥ 2.1.321); ProPR records this in the catalog and the agent image is kept current.
+
+Anthropic retires Claude Sonnet 4.5 on 2026-11-30. Until then it runs as selected; from that date, Claude runs launched with a saved Sonnet 4.5 selection, alias or `llm-claude-sonnet45` label use Claude Sonnet 5.5.
 
 ## Codex Models
 
 {/* GPT-6.1 Sol capability/cost wording verified 2026-10-01: https://developers.openai.com/api/docs/models/gpt-6.1-sol */}
-GPT-6 Astra is the recommended default for the most demanding implementation, research, and security work. GPT-6.1 Sol offers near-Astra capability at a lower cost, GPT-6 Sol remains available for existing workflows, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6.1 Sol requires Codex CLI >= 0.153.0, while GPT-6 Sol and GPT-6 Luna require Codex CLI >= 0.155.0. The bundled Codex CLI is pinned to 0.166.0.
+{/* GPT-6.1 Terra wording and pricing verified 2026-11-12: https://developers.openai.com/api/docs/models/gpt-6.1-terra */}
+GPT-6 Astra is the recommended default for the most demanding implementation, research, and security work. GPT-6.1 Sol offers near-Astra capability at a lower cost, GPT-6.1 Terra is a fast, efficient option at half of Sol's price, GPT-6 Sol remains available for existing workflows, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6.1 Sol requires Codex CLI >= 0.153.0, GPT-6 Sol and GPT-6 Luna require Codex CLI >= 0.155.0, and GPT-6.1 Terra requires Codex CLI >= 0.165.0. The bundled Codex CLI is pinned to 0.167.2.
 
 | Model | Label | Context |
 |-------|-------|---------|
 | GPT-6 Astra | `llm-codex-astra` | 1.05M |
 | GPT-6.1 Sol | `llm-codex-gpt61-sol` | 1.05M |
+| GPT-6.1 Terra | `llm-codex-gpt61-terra` | 1.05M |
 | GPT-6 Sol | `llm-codex-gpt6-sol` | 1.05M |
 | GPT-6 Luna | `llm-codex-gpt6-luna` | 1.05M |
 | GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1.05M |

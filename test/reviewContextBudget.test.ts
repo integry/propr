@@ -95,6 +95,10 @@ describe('review input capacity resolution', () => {
         assert.equal(opus55.tokenizerProfile, 'anthropic-calibrated');
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-sonnet-5-5' }).contextWindow, 1000000);
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-haiku-5-5' }).contextWindow, 1000000);
+        // Claude Code 2.1.322 marks Fable 5.2 native_1m
+        const fable52 = resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-fable-5-2' });
+        assert.equal(fable52.source, 'runtime-verified');
+        assert.equal(fable52.contextWindow, 1000000);
 
         // The ProPR catalog lists 1M for Opus 4.6, but the runtime only grants it with the [1m] suffix.
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-opus-4-6' }).contextWindow, 200000);
@@ -114,6 +118,13 @@ describe('review input capacity resolution', () => {
         assert.equal(astra.runtimeOverheadReserve, 12000 + 27200);
         assert.equal(astra.safeInputTokens, 200800);
         assert.equal(astra.tokenizerProfile, 'openai-o200k');
+
+        // Codex 0.167.2 bundles GPT-6.1 Terra with a 500K default window.
+        const terra = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.1-terra' });
+        assert.equal(terra.source, 'runtime-verified');
+        assert.equal(terra.contextWindow, 500000);
+        assert.equal(terra.runtimeOverheadReserve, 12000 + 50000);
+        assert.equal(terra.safeInputTokens, 500000 - REVIEW_OUTPUT_TOKEN_RESERVE - 62000);
     });
 
     test('keeps documented conservative fallbacks for unknown models and runtimes', () => {
