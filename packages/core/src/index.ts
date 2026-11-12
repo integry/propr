@@ -654,6 +654,8 @@ export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/reviewScoreStore.js';
+// Durable repository change-event journal (pull requests, epic queues, plan issues).
+export * from './services/repositoryEventJournal.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

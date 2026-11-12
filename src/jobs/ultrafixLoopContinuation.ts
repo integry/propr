@@ -6,6 +6,7 @@
  */
 
 import type { Logger } from 'pino';
+import type { UltrafixOutcome } from '@propr/shared';
 import { recordUltrafixEscalationReview } from './ultrafixEscalation.js';
 import type { Redis } from 'ioredis';
 import {
@@ -88,7 +89,7 @@ export interface ContinuationResult {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
-    outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+    outcome?: UltrafixOutcome;
     goal?: number;
     maxCycles?: number;
     /** Blocking checks holding a deferred review back (non-blocking checks are never listed). */

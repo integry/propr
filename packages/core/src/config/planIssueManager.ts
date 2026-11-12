@@ -2,21 +2,11 @@ import { getEventPublisher } from '../utils/eventPublisher.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { resolvePlanIssueDefaultSelection } from './planIssueDefaults.js';
+import { notifyEpicQueue, updatePlanIssuesWithStatusJournal, type PlanIssueScope } from './planIssueStatusJournal.js';
 // Load the planning facade lazily: it also exports the epic queue, which depends on this module.
 async function checkAndUpdateDraftStatus(draftId: string): Promise<void> {
     const planning = await import('../services/taskPlanningService.js');
     await planning.checkAndUpdateDraftStatus(draftId);
-}
-
-async function notifyEpicQueue(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
-    try {
-        const { isTerminalStatus } = await import('../webhook/statusMachine.js');
-        if (!isTerminalStatus(status)) return;
-        const { onPlanIssueStatusChanged } = await import('../services/taskPlanning/epicExecutionQueue.js');
-        await onPlanIssueStatusChanged(draftId, issueNumber, status);
-    } catch (error) {
-        logger.warn?.({ draftId, issueNumber, status, error: (error as Error).message }, 'Failed to notify epic queue');
-    }
 }
 
 /**
@@ -242,9 +232,8 @@ export async function updatePlanIssue(
             if (updates[field] !== undefined) updateData[field] = updates[field];
         }
 
-        await db('plan_issues')
-            .where({ draft_id: draftId, issue_number: issueNumber })
-            .update(updateData);
+        await updatePlanIssuesWithStatusJournal(rows => rows.where({ draft_id: draftId, issue_number: issueNumber }),
+            updateData, updates.status);
 
         const issue = await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
@@ -362,13 +351,15 @@ export async function updatePlanIssueStatus(
             logger.info({ repository, issueNumber, status }, 'Abandoned a plan issue status update that no longer applies');
             return false;
         }
-        const rows = db('plan_issues').where({ repository, issue_number: issueNumber });
-        // Part of the update itself, so a pull request linked after the lookup still keeps its status.
-        if (onLinkedReview) rows.where(row => row.whereNull('pr_number').orWhereNotIn('status', LINKED_REVIEW_STATUSES));
+        const scope: PlanIssueScope = rows => {
+            rows.where({ repository, issue_number: issueNumber });
+            // Part of the update itself, so a pull request linked after the lookup still keeps its status.
+            return onLinkedReview ? rows.where(row => row.whereNull('pr_number').orWhereNotIn('status', LINKED_REVIEW_STATUSES)) : rows;
+        };
         // An existing row left unchanged by that guard is reported to the caller, which alone knows whether it settles its write.
-        if (!await rows.update({ status, updated_at: db.fn.now() }) && onLinkedReview && planIssue) { onLinkedReview(); return false; }
+        const updated = await updatePlanIssuesWithStatusJournal(scope, { status, updated_at: db.fn.now() }, status);
+        if (!updated && onLinkedReview && planIssue) { onLinkedReview(); return false; }
         persisted = true;
-
         if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);
 
         logger.info({ repository, issueNumber, status }, 'Updated plan issue status');
@@ -458,9 +449,7 @@ export async function updatePlanIssueByPR(
         if (updates.status !== undefined) updateData.status = updates.status;
         if (updates.followup_count !== undefined) updateData.followup_count = updates.followup_count;
 
-        await db('plan_issues')
-            .where({ repository, pr_number: prNumber })
-            .update(updateData);
+        await updatePlanIssuesWithStatusJournal(rows => rows.where({ repository, pr_number: prNumber }), updateData, updates.status);
 
         if (planIssue && updates.status !== undefined) await notifyEpicQueue(planIssue.draft_id, planIssue.issue_number, updates.status);
 

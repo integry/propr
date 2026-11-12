@@ -584,8 +584,8 @@ function setupWebhookRoute(): void {
         redis: { set: (key, value, opts) => opts
           ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
           : redisClient.set(key, value) as Promise<string | null> },
-        processor: async (payload, event, cid) => {
-          await processWebhookEvent(payload, event as WebhookEventType, cid);
+        processor: async (payload, event, cid, deliveryId) => {
+          await processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId);
         },
         correlationId,
         mergedPRTaskCanceller: {

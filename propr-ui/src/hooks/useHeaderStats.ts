@@ -33,7 +33,10 @@ import {
   saveDismissedIds,
   saveDismissedTaskTimestamps,
 } from './useHeaderStatsHelpers';
-import type { ActivityUpdatePayload as ScopedActivityUpdatePayload } from '@propr/shared/dist/activityEvents.js';
+import type {
+  ActivityDomain as ScopedActivityDomain,
+  ActivityUpdatePayload as ScopedActivityUpdatePayload,
+} from '@propr/shared/dist/activityEvents.js';
 import type {
   DismissedTaskTimestamps,
   RunningItem,
@@ -57,7 +60,7 @@ const ALL_STATS_RESOURCES: readonly HeaderStatsResource[] = ['queue', 'drafts', 
  * happen because the thing it reads actually changed.
  */
 const HEADER_INTERESTS: Record<HeaderStatsResource, {
-  domains: readonly (ActivityDomain | 'system')[];
+  domains: readonly (ActivityDomain | ScopedActivityDomain)[];
   changes?: readonly (ActivityChange | 'progressed')[];
 }> = {
   queue: { domains: ['task', 'queue', 'goal'] },

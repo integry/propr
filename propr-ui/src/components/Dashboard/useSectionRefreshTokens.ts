@@ -15,13 +15,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSocket } from '../../contexts/useSocket';
 import type { ActivityChange, ActivityDomain, ActivityUpdatePayload } from '@propr/shared';
-import type { ActivityUpdatePayload as ScopedActivityUpdatePayload } from '@propr/shared/dist/activityEvents.js';
+import type {
+  ActivityDomain as ScopedActivityDomain,
+  ActivityUpdatePayload as ScopedActivityUpdatePayload,
+} from '@propr/shared/dist/activityEvents.js';
 import { ALL_REPOSITORIES } from './sectionState';
 
 interface SectionInterest {
   // Both published envelope vocabularies: a frame can name its change
   // `progress` or `progressed`, and notification changes only exist in one.
-  domains?: readonly (ActivityDomain | 'system')[];
+  domains?: readonly (ActivityDomain | ScopedActivityDomain)[];
   changes?: readonly (ActivityChange | 'progressed' | 'read' | 'dismissed' | 'dismissed_all')[];
 }
 
