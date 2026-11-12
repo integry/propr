@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- grant issuance, revocation, settlement and recovery regressions share one API fixture. */
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -5,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { after, afterEach, beforeEach, test } from 'node:test';
 import express from 'express';
 import knex, { type Knex } from 'knex';
+import { z } from 'zod';
 import { closeConnection, db as coreDb, runMigrations, signAgentRunGrantRequest, type StoredAgentRun } from '@propr/core';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
 import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
@@ -26,7 +28,8 @@ import {
   revokeAgentRunPhaseGrant,
   type AgentRunGrantDependencies,
 } from '../mcp/agentRunGrants.js';
-import { AGENT_RUN_GRANT_SIGNATURE_WINDOW_MS, createAgentRunInternalRoutes } from '../routes/agentRunInternalRoutes.js';
+import { AGENT_RUN_GRANT_SIGNATURE_WINDOW_MS, countGrantMutatingOperations, createAgentRunInternalRoutes } from '../routes/agentRunInternalRoutes.js';
+import { executeTool, type McpTool, type ToolDeps } from '../mcp/tools.js';
 import { createRequestRateLimiter } from '../requestRateLimits.js';
 
 after(async () => closeConnection());
@@ -66,6 +69,8 @@ beforeEach(async () => {
   await lifecycleMigration(db);
   await accessLogMigration(db);
   await db.schema.createTable('instance_members', table => { table.string('github_user_id').primary(); table.string('role'); table.string('source'); });
+  // The columns the ended-grant purge reads: a run whose acting count is still owed keeps its ended action grant named.
+  await db.schema.createTable('agent_runs', table => { table.string('id').primary(); table.boolean('acting_mutations_pending').notNullable().defaultTo(false); });
   await db('instance_members').insert({ github_user_id: OWNER, role: 'member', source: 'local' });
   grantDeps = { database: db, resolveConfig: async () => config, userGrants: activeGrant };
   policy = new McpPolicy(new McpOAuthProvider(new McpStore(db, config.encryptionKey), config), config, activeGrant);
@@ -286,6 +291,82 @@ test('the grant a phase ended is remembered in the transaction that forgets the 
   assert.equal(await db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: 'run-1:action' }).first(), undefined);
   assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), null);
   assert.ok(await db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: 'run-2:report' }).first(), 'a fresh memory stays');
+});
+
+/** A mutating receipt row under `grant`, as `McpOperations.run` leaves one. */
+function receiptRow(grant: string, sequence: number, state = 'completed') {
+  return { id: `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`, owner_id: OWNER, grant_id: grant, idempotency_key: `key-${sequence}-abcdef`,
+    tool: 'create_todo', payload_hash: 'x'.repeat(64), state, lifecycle: state, created_at: Date.now(), updated_at: Date.now(), accepted_at: Date.now() };
+}
+
+test('a mutation admitted after its grant was revoked is refused, so the count taken at the revoke is complete (F26)', async () => {
+  runs.set('run-1', run({ state: 'acting' }));
+  const issued = await post('', signed('action'));
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const grantId = issued.body.grantId as string;
+  // Authenticated once, as the API does before repository authorization; both calls below reuse it.
+  const principal = await policy.authenticate(issued.body.token as string);
+  const deps = { db, policy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } as ToolDeps;
+  let invoked = 0;
+  const tool: McpTool = {
+    name: 'fixture_mutation', description: 'A mutating fixture tool', scope: 'execute', schema: z.object({ idempotencyKey: z.string() }),
+    run: async () => { invoked += 1; return { status: 200, data: { changed: true } }; },
+  };
+
+  // Admitted while the grant lives: the receipt commits before the mutation runs, and the revoke's count sees it.
+  const admitted = await executeTool(tool, { idempotencyKey: 'admitted-before-revoke' }, principal, deps);
+  assert.equal((admitted.data as { state: string }).state, 'completed');
+  assert.equal(invoked, 1);
+  const revoked = await post('/revoke', { ...signed('action'), grantId });
+  assert.equal(revoked.body.revoked, true);
+  assert.equal(revoked.body.mutatingOperations, 1);
+
+  // A request that authenticated before the revoke and reaches admission after it: refused before it
+  // runs, with no receipt, so the stored count stays the count of what the grant performed.
+  await assert.rejects(executeTool(tool, { idempotencyKey: 'admitted-after-revoke' }, principal, deps), { code: 'GRANT_REVOKED', status: 403 });
+  assert.equal(invoked, 1, 'the mutation never ran');
+  assert.equal(await db('mcp_operations').where({ grant_id: grantId }).count('* as count').first().then(row => Number(row!.count)), 1, 'no receipt was admitted');
+  assert.equal(await countGrantMutatingOperations(db, grantId), 1);
+  assert.equal((await post('/revoke', signed('action'))).body.mutatingOperations, 1, 'a redelivery recovers the same count');
+  const denied = await db('mcp_access_log').where({ name: 'fixture_mutation', outcome: 'denied' }).first();
+  assert.equal(denied?.error_code, 'GRANT_REVOKED', 'the refusal is in the access log');
+});
+
+test('an ended action grant stays named past the grant TTL while its run still owes the count (F27)', async () => {
+  const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'action' as const, repositories: ['acme/repo'] };
+  const issued = await issueAgentRunGrant(input, grantDeps);
+  await db('mcp_operations').insert([receiptRow(issued.grantId, 1)]);
+  // The step was claimed (its count is owed) and its grant was revoked long ago: the worker stopped before storing the count.
+  await db('agent_runs').insert([{ id: 'run-1', acting_mutations_pending: true }, { id: 'run-3', acting_mutations_pending: false }]);
+  const revokedAt = Date.now() - AGENT_RUN_GRANT_TTL_MS - 60_000;
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', { ...grantDeps, now: () => revokedAt }), { grantId: issued.grantId, revoked: true });
+  const reportGrant = await issueAgentRunGrant({ ...input, phase: 'report' }, grantDeps);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, now: () => revokedAt }), { grantId: reportGrant.grantId, revoked: true });
+  const settled = await issueAgentRunGrant({ ...input, runId: 'run-3' }, grantDeps);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-3', 'action', { ...grantDeps, now: () => revokedAt }), { grantId: settled.grantId, revoked: true });
+  const endedRecord = (id: string) => db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id }).first();
+  assert.ok(Number((await endedRecord('run-1:action')).expires_at) < Date.now(), 'the record is past its TTL');
+
+  // Hours later, another phase's revoke purges expired memories: not the one of an owed count.
+  const other = await issueAgentRunGrant({ ...input, runId: 'run-2', phase: 'report' }, grantDeps);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-2', 'report', grantDeps), { grantId: other.grantId, revoked: true });
+  assert.ok(await endedRecord('run-1:action'), 'retained while run-1 owes its acting count');
+  assert.equal(await endedRecord('run-1:report'), undefined, 'only the action grant holds a count');
+  assert.equal(await endedRecord('run-3:action'), undefined, 'a settled run\'s memory is purged by its TTL');
+
+  // The redelivered job still learns the grant and the count of what it changed.
+  const recovered = await post('/revoke', signed('action'));
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.revoked, false);
+  assert.equal(recovered.body.grantId, issued.grantId);
+  assert.equal(recovered.body.mutatingOperations, 1);
+
+  // Once the count is stored, the next purge forgets the grant as before.
+  await db('agent_runs').where({ id: 'run-1' }).update({ acting_mutations_pending: false });
+  const later = await issueAgentRunGrant({ ...input, runId: 'run-2', phase: 'report' }, grantDeps);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-2', 'report', grantDeps), { grantId: later.grantId, revoked: true });
+  assert.equal(await endedRecord('run-1:action'), undefined);
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), null);
 });
 
 test('a retried phase replaces its grant and revokes the previous token', async () => {

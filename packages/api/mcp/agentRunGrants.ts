@@ -33,8 +33,9 @@ export const AGENT_RUN_GRANT_RECORD_KIND = 'agent_run_grant';
  * the revoke returns. A worker that stops in between leaves a redelivery with
  * nothing but this record to name the grant whose `mcp_operations` receipts
  * hold the count, so it is written in the same transaction that deletes the
- * phase record. Kept for the grant TTL after the revoke, then purged; the sweep
- * never reads this kind, so an ended grant is not revoked again every pass.
+ * phase record. Kept for the grant TTL after the revoke, and for as long after
+ * as its run still owes that count, then purged; the sweep never reads this
+ * kind, so an ended grant is not revoked again every pass.
  */
 export const AGENT_RUN_ENDED_GRANT_RECORD_KIND = 'agent_run_ended_grant';
 
@@ -225,9 +226,20 @@ async function readEndedGrantRecord(store: McpStore, tx: Knex, recordId: string)
   } catch { return null; }
 }
 
-/** Forgets ended-grant records older than the grant TTL; their count was settled long ago or is lost with them. */
+/**
+ * Forgets ended-grant records older than the grant TTL, except an action
+ * grant's while its run still owes the count of what the grant changed
+ * (`acting_mutations_pending`, set when the step was claimed and cleared when
+ * the count is stored). A worker that stopped between its revoke and that
+ * write may be redelivered long after the TTL, and this record is then the
+ * only name of the grant whose `mcp_operations` receipts hold the count: lose
+ * it and the run's mutations read as unknown. A settled run's record, and one
+ * whose run is gone, are purged as before.
+ */
 async function purgeEndedGrantRecords(database: Knex, now: number): Promise<void> {
-  await database('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND }).where('expires_at', '<=', now).delete();
+  await database('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND }).where('expires_at', '<=', now)
+    .whereNotIn('id', database('agent_runs').where('acting_mutations_pending', true).select(database.raw('id || ?', [':action'])))
+    .delete();
 }
 
 /**

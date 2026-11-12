@@ -1,4 +1,5 @@
 import { Octokit } from '@octokit/core';
+import type { Knex } from 'knex';
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors, type JWTPayload, type JWTHeaderParameters } from 'jose';
 import { loadMonitoredReposRaw } from '@propr/core';
 import type { GitHubUser } from '../authTypes.js';
@@ -58,6 +59,18 @@ export class McpPolicy {
       throw new McpError('ACCESS_REVOKED', 'Instance membership was revoked.', 403);
     }
     return { user, authorization, grant, scopes, github };
+  }
+
+  /**
+   * Admits one mutating operation under the principal's grant, inside the
+   * transaction that writes its receipt. `authenticate` read the grant before
+   * authorization; a revocation that commits meanwhile is seen here (the grant
+   * row is re-read under the lock revocation takes), so the operation is
+   * refused before it runs, and a count taken after the revocation sees every
+   * receipt admitted before it.
+   */
+  async admit(principal: McpPrincipal, tx: Knex): Promise<void> {
+    await this.oauth.admitGrant(principal.grant.id, tx);
   }
 
   /** The owner's GitHub credential, renewed when needed and verified with GitHub. */
