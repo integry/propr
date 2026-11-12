@@ -13,12 +13,15 @@ import {
   deleteAgentDefinitionUnlessRunInStates,
   enqueueAgentRunActionOrFail,
   evaluateProviderCapacity,
+  findUnproductiveScheduledStreak,
+  findUnproductiveStreakNotification,
   getAgentDefinition,
   getAgentRun,
   listAgentDefinitions,
   listAgentRuns,
   loadUsagePauseThreshold,
   logger,
+  pauseScheduleForUnproductiveStreak,
   transitionAgentRun,
   triggerAgentRun,
   updateAgentDefinition,
@@ -37,6 +40,7 @@ import {
   AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AUTOMATION_DEFINITION_CONTRACT,
   AUTOMATION_TEMPLATE_CATALOG,
+  automationRunNoChangeReason,
   DEFAULT_AUTOMATION_PREVIOUS_REPORTS,
   MAX_AUTOMATION_ATTACHMENTS,
   validateAutomationDefinitionInput,
@@ -50,6 +54,7 @@ import {
   verifyGitHubRepositoryAccess,
 } from '../githubMetadataAuth.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
+import { evaluateUnproductiveStreakQuietly } from '../../../src/jobs/agentRuns/unproductiveStreak.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { publicGoalAttachments, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
 import { attachCreator, projectCreator, rememberCreator } from '../services/creatorProjection.js';
@@ -93,6 +98,8 @@ export interface AutomationDefinitionRouteServices {
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
   /** Enqueues the acting step of an approved run, failing the run when that is impossible. */
   startActing?: (run: StoredAgentRun, operatorNote: string | null) => Promise<StoredAgentRun>;
+  /** Unproductive-streak check once a rejection or a cancellation makes a run's verdict final; never throws. */
+  evaluateStreak?: (run: StoredAgentRun) => Promise<void>;
   now?: () => number;
 }
 
@@ -173,6 +180,7 @@ export function automationDefinitionInputToPatch(body: Partial<AutomationDefinit
     patch.scheduleEnabled = body.schedule != null;
   }
   if (has(input, 'enabled')) patch.enabled = body.enabled;
+  if (has(input, 'pauseWhenUnproductive')) patch.pauseWhenUnproductive = body.pauseWhenUnproductive;
   if (has(input, 'agentId')) patch.agentAlias = body.agentId ?? null;
   if (has(input, 'model')) patch.modelName = body.model ?? null;
   if (has(input, 'previousReportCount')) {
@@ -200,11 +208,20 @@ async function attributedAgentDefinition(definition: StoredAgentDefinition) {
   return { ...publicAutomationDefinition(definition), createdBy: await projectCreator(definition.ownerId) };
 }
 
+/**
+ * A run as clients see it. `reportHash`, `reportNovelty` and `actingMutations`
+ * are stored flags; `noChangeReason` derives from them (null when the run
+ * produced something or has no flags) so every client shows the same badge.
+ */
 export function publicAutomationRun(run: StoredAgentRun, { includeReport }: { includeReport: boolean }) {
   const snapshot = run.definitionSnapshot ? publicAutomationDefinition(run.definitionSnapshot) : null;
-  if (includeReport) return { ...run, definitionSnapshot: snapshot };
+  const noChangeReason = automationRunNoChangeReason(run);
+  // Whether the acting step's count is still being settled is worker bookkeeping, not a run flag.
+  const visible: Partial<StoredAgentRun> = { ...run };
+  delete visible.actingMutationsPending;
+  if (includeReport) return { ...visible, noChangeReason, definitionSnapshot: snapshot };
   // History rows stay light: the report and the definition snapshot are only in the run detail.
-  const summary: Partial<StoredAgentRun> = { ...run };
+  const summary: Partial<StoredAgentRun> & { noChangeReason: typeof noChangeReason } = { ...visible, noChangeReason };
   delete summary.report;
   delete summary.definitionSnapshot;
   return summary;
@@ -288,6 +305,12 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
   });
   const startActing = services.startActing
     ?? ((run: StoredAgentRun, note: string | null) => enqueueAgentRunActionOrFail(run, { ...storeDeps, operatorNote: note }));
+  const evaluateStreak = services.evaluateStreak ?? ((run: StoredAgentRun) => evaluateUnproductiveStreakQuietly(run, {
+    findStreak: (definitionId, threshold) => findUnproductiveScheduledStreak(definitionId, threshold, storeDeps),
+    getDefinition: (definitionId, owner) => getAgentDefinition(definitionId, owner, storeDeps),
+    pauseSchedule: (definitionId, pause) => pauseScheduleForUnproductiveStreak(definitionId, pause, storeDeps),
+    findNotification: key => findUnproductiveStreakNotification(key, storeDeps),
+  }));
 
   /**
    * The user's GitHub grant must be able to read every repository, exactly
@@ -371,7 +394,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       includePreviousReports: input.includePreviousReports, previousReportsLimit: input.previousReportsLimit,
       scheduleCron: input.scheduleCron ?? null, scheduleTimezone: 'UTC', scheduleEnabled: input.scheduleEnabled ?? false,
       nextRunAt: null, autonomyMode: input.autonomyMode ?? AUTOMATION_DEFINITION_CONTRACT.defaultAutonomyMode,
-      extensionProfile: input.extensionProfile,
+      extensionProfile: input.extensionProfile, pauseWhenUnproductive: input.pauseWhenUnproductive ?? false,
       enabled: input.enabled ?? true, revision: 0, createdAt: timestamp, updatedAt: timestamp,
     };
     if (input.extensionProfile && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');
@@ -574,6 +597,11 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
         logger.warn({ runId: run.id, taskId, err: error }, 'Automation run was cancelled but its task could not be stopped');
       }
     }
+    // A run cancelled with its report stored and no acting step under way (awaiting approval,
+    // say) has no worker left to evaluate it, so its final verdict is evaluated here. A run
+    // whose claimed acting step still holds its grant stays pending until that worker settles
+    // the count and evaluates it.
+    await evaluateStreak(cancelled);
     res.json({ run: publicAutomationRun(cancelled, { includeReport: true }) });
   });
 
@@ -619,6 +647,8 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
 
   const rejectRun = handler('Failed to reject automation run', async (req, res) => {
     const rejected = await decideRun(req, requireOwner(req), 'rejected');
+    // A rejected acting step can no longer change anything, so the run's verdict is final now.
+    await evaluateStreak(rejected);
     res.json({ run: publicAutomationRun(rejected, { includeReport: true }) });
   });
 

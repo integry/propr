@@ -575,6 +575,7 @@ export * from './changedFileKinds.js';
 // API, MCP, CLI, UI, worker and scheduler.
 export * from './automationDefinitions.js';
 export * from './automationTemplates.js';
+export * from './automationRunProductivity.js';
 // Deprecated names remain available to existing clients.
 export * from './agentDefinitions.js';
 export * from './cronSchedule.js';

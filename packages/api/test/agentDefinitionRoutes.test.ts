@@ -474,6 +474,39 @@ describe('automation definition routes', () => {
     assert.equal(detail.body.run.report, 'All quiet.');
   });
 
+  test('run payloads carry the unproductive-run flags and the derived no-change reason', async () => {
+    const definition = await createDefinition('alice');
+    const fresh = (await triggerRun(definition.id)).body.run as Record<string, unknown>;
+    assert.equal(fresh.reportNovelty, null);
+    assert.equal(fresh.actingMutations, null);
+    assert.equal(fresh.noChangeReason, null);
+    const runId = fresh.id as string;
+    await transitionAgentRun(runId, ['queued'], 'running', {}, { database });
+    await transitionAgentRun(runId, ['running'], 'report_ready', { report: 'All quiet.', reportHash: 'a'.repeat(64), reportNovelty: 'unchanged' }, { database });
+    await transitionAgentRun(runId, ['report_ready'], 'completed', {}, { database });
+
+    const history = await call(routes.listRuns, request('alice', { params: { id: definition.id } }));
+    const [summary] = history.body.runs as Array<Record<string, unknown>>;
+    assert.equal(summary.state, 'completed');
+    assert.equal(summary.reportHash, 'a'.repeat(64));
+    assert.equal(summary.reportNovelty, 'unchanged');
+    assert.equal(summary.noChangeReason, 'unchanged_report');
+    const detail = await call(routes.getRun, request('alice', { params: { runId } }));
+    assert.equal(detail.body.run.noChangeReason, 'unchanged_report');
+  });
+
+  test('pauseWhenUnproductive is off by default, settable on create and update, and validated', async () => {
+    assert.equal((await createDefinition('alice')).pauseWhenUnproductive, false);
+    const opted = await createDefinition('alice', { name: 'Opted in', pauseWhenUnproductive: true });
+    assert.equal(opted.pauseWhenUnproductive, true);
+    const updated = await call(routes.update, request('alice', { params: { id: opted.id }, body: { pauseWhenUnproductive: false, expectedRevision: opted.revision } }));
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.equal(updated.body.definition.pauseWhenUnproductive, false);
+    const invalid = await call(routes.create, request('alice', { body: { name: 'Bad', prompt: 'p', repositories: ['acme/app'], pauseWhenUnproductive: 'yes' } }));
+    assert.equal(invalid.status, 400);
+    assert.match(String(invalid.body.error), /pauseWhenUnproductive must be a boolean/);
+  });
+
   test('uploads and removes input files without exposing stored paths', async () => {
     const definition = await createDefinition('alice');
     const file = { originalname: 'notes.md', size: 12, path: '/tmp/upload' } as MulterFile;

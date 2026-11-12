@@ -64,6 +64,30 @@ describe('AgentRunHistory', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
+  it('marks runs that produced nothing with a "no change" badge, still completed', async () => {
+    vi.mocked(listAutomationRuns).mockResolvedValue({
+      runs: [
+        run('unchanged', { reportNovelty: 'unchanged', actingMutations: null, noChangeReason: 'unchanged_report' }),
+        run('noop', { autonomyMode: 'auto', reportNovelty: 'new', actingMutations: 0, noChangeReason: 'no_op_action' }),
+        run('acted', { autonomyMode: 'auto', reportNovelty: 'unchanged', actingMutations: 2, noChangeReason: null }),
+        run('legacy', { reportNovelty: null, actingMutations: null }),
+        // An older server sends only the stored flags; the same rule applies.
+        run('empty', { reportNovelty: 'empty', actingMutations: null }),
+      ],
+      total: 5, limit: AGENT_RUN_PAGE_SIZE, offset: 0, nextOffset: null,
+    });
+    renderHistory();
+    const rows = await screen.findAllByTestId('agent-run-row');
+    const badge = (index: number) => within(rows[index]).queryByTestId('agent-run-no-change');
+    expect(badge(0)).toHaveTextContent('No change');
+    expect(badge(0)).toHaveAttribute('title', "The report was the same as the previous run's");
+    expect(rows[0]).toHaveTextContent('Completed');
+    expect(badge(1)).toHaveAttribute('data-reason', 'no_op_action');
+    expect(badge(2)).toBeNull();
+    expect(badge(3)).toBeNull();
+    expect(badge(4)).toHaveAttribute('data-reason', 'empty_report');
+  });
+
   it('loads the next page from nextOffset and appends it', async () => {
     const first = Array.from({ length: AGENT_RUN_PAGE_SIZE }, (_, index) => run(`a${index}`));
     vi.mocked(listAutomationRuns)

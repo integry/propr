@@ -4,9 +4,10 @@ import path from 'node:path';
 import { after, describe, mock, test } from 'node:test';
 import fs from 'fs-extra';
 import type { Job } from 'bullmq';
-import type { AutomationRunState } from '@propr/shared';
+import { MAX_AUTOMATION_PREVIOUS_REPORTS, type AutomationRunState } from '@propr/shared';
 import type { AgentRunJobData, AgentTaskOptions, StoredAgentDefinition, StoredAgentRun } from '@propr/core';
 import { UsageLimitError } from '../packages/core/src/claude/claudeHelpers.ts';
+import { hashAgentReport } from '../packages/core/src/services/agents/agentRunNovelty.ts';
 
 // The scratch workspace root is read from the environment at import time.
 const SCRATCH_BASE = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-run-worktrees-'));
@@ -77,12 +78,15 @@ interface Harness {
   taskState: () => string | null;
   executeTask: ReturnType<typeof mock.fn>;
   listPreviousReports: ReturnType<typeof mock.fn>;
+  listLatestReports: ReturnType<typeof mock.fn>;
   buildPrompt: ReturnType<typeof mock.fn>;
   prepareWorkspace: ReturnType<typeof mock.fn>;
   cleanup: ReturnType<typeof mock.fn>;
   /** Runs whose action phase was enqueued, and owners told about a preview report. */
   enqueuedActions: string[];
   notified: string[];
+  /** Runs the unproductive-streak check was given. */
+  evaluated: StoredAgentRun[];
 }
 
 /** In-memory run store honouring the compare-and-set semantics of `transitionAgentRun`. */
@@ -123,6 +127,7 @@ function harness(options: {
     summary: '## Summary\nTwo dependencies are outdated.',
   })));
   const listPreviousReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Old report' }]);
+  const listLatestReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, createdAt: NOW - 2000, report: 'Old report' }]);
   const buildPrompt = mock.fn(() => 'PROMPT');
   const prepareWorkspace = mock.fn(options.prepare ?? (async () => ({
     worktreePath: '/tmp/worktree', branchName: 'agent-run/run-1',
@@ -132,17 +137,25 @@ function harness(options: {
 
   const enqueuedActions: string[] = [];
   const notified: string[] = [];
+  const evaluated: StoredAgentRun[] = [];
   const startActing = async (acting: StoredAgentRun) => { enqueuedActions.push(acting.id); return acting; };
 
   return {
     run: () => current,
     taskState: () => task,
-    transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified,
+    transitions, stateCalls, executeTask, listPreviousReports, listLatestReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified, evaluated,
     deps: {
       getRun: async () => current,
       transitionRun,
+      // The real store also checks the predecessor under SQLite's write lock; see agentRunReportNoveltyPrevious.test.ts.
+      storeReport: (async (run, { patch }) => {
+        const stored = await transitionRun(run.id, ['running'], 'report_ready', patch);
+        return stored ? { outcome: 'stored', run: stored } : { outcome: 'not_running' };
+      }) as AgentRunProcessorDeps['storeReport'],
+      storeUnclassifiedReport: (run, report) => transitionRun(run.id, ['running'], 'report_ready', { report }),
       validateDefinition: async () => options.invalid ?? null,
       listPreviousReports: listPreviousReports as unknown as AgentRunProcessorDeps['listPreviousReports'],
+      listLatestReports: listLatestReports as unknown as AgentRunProcessorDeps['listLatestReports'],
       stateManager: () => ({
         createTaskStateIfAbsent: record('create'),
         getTaskState: async () => (task === null ? null : { state: task }),
@@ -162,6 +175,7 @@ function harness(options: {
         notifyAwaitingApproval: async waiting => { notified.push(waiting.ownerId); },
       }),
       resumeActing: startActing,
+      evaluateStreak: async run => { if (run) evaluated.push(run); },
     },
   };
 }
@@ -229,10 +243,20 @@ describe('processAgentRunJob', () => {
     assert.equal(promptInput.run.id, 'run-1');
   });
 
-  test('previous reports are not loaded when the definition does not include them', async () => {
+  test('previous reports are not given to the prompt when the definition does not include them', async () => {
     const h = harness({ run: storedRun({ definitionSnapshot: definition({ includePreviousReports: false }) }) });
     await createAgentRunProcessor(h.deps)(job);
-    assert.equal(h.listPreviousReports.mock.callCount(), 0);
+    const promptInput = h.buildPrompt.mock.calls[0].arguments[0] as { previousReports: unknown };
+    assert.deepEqual(promptInput.previousReports, []);
+    // Only the novelty check reads previous reports: the latest to compare with, and the
+    // run ids either report's prompt could have listed.
+    // The previous reported run's own prompt history too: its report may quote runs from it.
+    assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [
+      ['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }],
+      ['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW - 2000, excludeRunId: 'run-0' }],
+    ]);
+    // The report to compare with is the one stored last, with no creation-time boundary.
+    assert.deepEqual(h.listLatestReports.mock.calls.map(call => call.arguments), [['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, excludeRunId: 'run-1' }]]);
   });
 
   for (const state of ['cancelled', 'skipped', 'deferred'] as const) {
@@ -681,6 +705,42 @@ describe('processAgentRunJob', () => {
     assert.equal(h.transitions.length, 0);
     assert.deepEqual(h.notified, []);
     assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['completed', taskId]]);
+  });
+
+  test('a run that fails right after its report is stored is evaluated for the streak with its report flags (F14)', async () => {
+    const h = harness();
+    const transitionRun = h.deps.transitionRun!;
+    // Like enqueueAgentRunActionOrFail when the action phase cannot be queued.
+    h.deps.advanceAfterReport = async run => transitionRun(run.id, ['report_ready'], 'failed', { failureReason: 'queue unavailable' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['failed', 'new']]);
+  });
+
+  test('a run that fails right after its report is stored and loses its task write is evaluated by the retry (F21)', async () => {
+    const h = harness();
+    const transitionRun = h.deps.transitionRun!;
+    h.deps.advanceAfterReport = async run => transitionRun(run.id, ['report_ready'], 'failed', { failureReason: 'queue unavailable' });
+    failTaskCallOnce(h, 'markTaskFailed');
+    const order: string[] = [];
+    h.deps.evaluateStreak = async run => {
+      if (!run) return;
+      order.push(`evaluate:${run.state}:${h.taskState()}`);
+      h.evaluated.push(run);
+    };
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunSettlementError, 'the delivery fails so BullMQ retries it');
+    assert.equal(h.run().state, 'failed');
+    assert.deepEqual(order, [], 'the check comes after the task write, so it has not run');
+
+    // The retry only has the task left to end, but the run's report flags are final, so it is evaluated.
+    assert.equal((await processor(job)).status, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['failed', 'new']]);
+    assert.deepEqual(order, ['evaluate:failed:failed'], 'evaluated once the task follows the run');
+    assert.equal(h.executeTask.mock.callCount(), 1, 'the agent is not run again');
   });
 
   test('a finalization error after the report is stored keeps the report and is retried by the next delivery', async () => {
@@ -1193,5 +1253,117 @@ describe('report task model identity', () => {
     const execution = h.stateCalls.find(call => call[0] === 'update' && call[2] === 'claude_execution')!;
     assert.deepEqual(execution[3], { reason: 'Running agent codex' });
     assert.deepEqual(reportTaskIdentity(h, run), { modelName: null, agentAlias: null });
+  });
+});
+
+describe('report novelty', () => {
+  const reportWith = (summary: string) => async () => ({ success: true, logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 10, summary });
+  const BODY = '## Summary\nTwo dependencies are outdated: lodash and react, both in acme/web.';
+
+  test('the report is stored with its normalised hash and novelty, then the streak is checked', async () => {
+    const h = harness({ execute: reportWith(`${BODY}\nChecked 2026-11-11.`) });
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Something else entirely, said at length.' }]);
+    await createAgentRunProcessor(h.deps)(job);
+    const reported = h.transitions.find(t => t.to === 'report_ready');
+    assert.equal(reported?.patch.reportNovelty, 'new');
+    assert.equal(reported?.patch.reportHash, hashAgentReport(`${BODY}\nChecked 2026-11-12.`));
+    assert.equal(h.run().state, 'completed', 'the state machine is unchanged');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.reportNovelty]), [['completed', 'new']]);
+  });
+
+  test('the same report as the previous run, apart from its date and run id, is unchanged', async () => {
+    const h = harness({ execute: reportWith(`${BODY}\nRun run-1 on 2026-11-11.`) });
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: `${BODY}\n\nRun run-0 on 2026-11-10.` }]);
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().reportNovelty, 'unchanged');
+    assert.equal(h.run().state, 'completed');
+  });
+
+  test('the comparison uses the report stored last, not the prompt history (F8)', async () => {
+    // The prompt history holds an older report A; the report stored last, by a run whose
+    // acting step then failed or one created after this run, already said B.
+    const h = harness({ execute: reportWith(`${BODY}\nRun run-1.`) });
+    h.listPreviousReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 2000, report: 'Report A, about something else entirely.' }]);
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-2', reportedAt: NOW - 1000, report: `${BODY}\nRun run-2.` }]);
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().reportNovelty, 'unchanged');
+  });
+
+  test('run ids quoted from earlier reports count as volatile; other ids, such as an incident, do not', async () => {
+    const INCIDENT_A = '3d934921-c7ae-4cb4-add8-b82d109ed330';
+    const INCIDENT_B = '1f731cb6-c2ad-4aa4-b8c4-ad5fcbf92f1c';
+    const incident = (id: string, since: string) => `Unresolved incident ${id} requires investigation and escalation to the owner. Compared with run ${since}.`;
+    const earlier = [
+      { runId: 'run-0', reportedAt: NOW - 1000, report: incident(INCIDENT_A, 'run-00') },
+      { runId: 'run-00', reportedAt: NOW - 2000, report: incident(INCIDENT_A, 'run-000') },
+    ];
+    // Each report quotes the run before it; the previous report's predecessor is still known.
+    const listEarlier = async (_definitionId: string, { limit }: { limit: number }) => earlier.slice(0, limit);
+    const same = harness({ execute: reportWith(incident(INCIDENT_A, 'run-0')) });
+    same.listPreviousReports.mock.mockImplementation(listEarlier);
+    same.listLatestReports.mock.mockImplementation(listEarlier);
+    await createAgentRunProcessor(same.deps)(job);
+    assert.equal(same.run().reportNovelty, 'unchanged');
+
+    const otherIncident = harness({ execute: reportWith(incident(INCIDENT_B, 'run-0')) });
+    otherIncident.listPreviousReports.mock.mockImplementation(listEarlier);
+    otherIncident.listLatestReports.mock.mockImplementation(listEarlier);
+    await createAgentRunProcessor(otherIncident.deps)(job);
+    assert.equal(otherIncident.run().reportNovelty, 'new');
+  });
+
+  test('a report another run stored between comparing and storing is compared with again (F11)', async () => {
+    const h = harness({ execute: reportWith(`${BODY}\nRun run-1.`) });
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Something else entirely, said at length.' }]);
+    const stores: Array<string | null> = [];
+    const storeReport = h.deps.storeReport!;
+    h.deps.storeReport = async (run, input) => {
+      stores.push(input.previousRunId);
+      if (stores.length > 1) return storeReport(run, input);
+      // run-2 stored the same report while this one was being compared.
+      h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-2', reportedAt: NOW, report: `${BODY}\nRun run-2.` }]);
+      return { outcome: 'previous_changed' };
+    };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(stores, ['run-0', 'run-2']);
+    assert.equal(h.run().reportNovelty, 'unchanged');
+    assert.deepEqual(h.evaluated.map(run => run.reportNovelty), ['unchanged']);
+  });
+
+  test('a run that left running while its report was compared discards the report (F11)', async () => {
+    const h = harness();
+    h.deps.storeReport = async () => {
+      await h.deps.transitionRun!('run-1', ['running'], 'cancelled');
+      return { outcome: 'not_running' };
+    };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.run().report, null, 'nothing was stored');
+    assert.equal(h.transitions.some(t => t.to === 'report_ready'), false);
+    assert.deepEqual(h.evaluated, []);
+  });
+
+  test('a report below the minimum length is empty', async () => {
+    const h = harness({ execute: reportWith('Nothing new.') });
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().reportNovelty, 'empty');
+    assert.equal(h.run().state, 'completed');
+  });
+
+  test('without a previous report the report is new; an unreadable previous report leaves the flags null', async () => {
+    const first = harness({ execute: reportWith(BODY) });
+    first.listLatestReports.mock.mockImplementation(async () => []);
+    await createAgentRunProcessor(first.deps)(job);
+    assert.equal(first.run().reportNovelty, 'new');
+
+    const unreadable = harness({ execute: reportWith(BODY), run: storedRun({ definitionSnapshot: definition({ includePreviousReports: false }) }) });
+    unreadable.listLatestReports.mock.mockImplementation(async () => { throw new Error('database unavailable'); });
+    const result = await createAgentRunProcessor(unreadable.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(unreadable.run().state, 'completed');
+    assert.equal(unreadable.run().reportNovelty, undefined);
+    assert.equal(unreadable.run().reportHash, undefined);
   });
 });

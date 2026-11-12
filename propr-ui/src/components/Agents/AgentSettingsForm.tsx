@@ -115,6 +115,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
         <AgentScheduleSection
           enabled={form.scheduleEnabled}
           expression={form.schedule}
+          pauseWhenUnproductive={form.pauseWhenUnproductive}
           onChange={update}
           disabled={readOnly}
         />
