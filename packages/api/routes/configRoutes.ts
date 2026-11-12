@@ -1,4 +1,4 @@
-import { getIntegerSettingOrDefault } from './configSettings.js';
+import { getIntegerSettingOrDefault, implementationEscalationSettingsResponse } from './configSettings.js';
 import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, parseMaxProviderReplacements, parseUsageTipsSettings } from '@propr/shared';
 import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
@@ -274,6 +274,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           ultrafix_escalation_patience: escalation.patience,
           ultrafix_escalation_max_reasoning_levels: escalation.maxReasoningLevels,
         })),
+        ...implementationEscalationSettingsResponse(await configStore.loadImplementationEscalationSettings()),
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,

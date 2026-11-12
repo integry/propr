@@ -190,6 +190,7 @@ describe('config route follow-up helpers', () => {
                     loadUltrafixPauseSeconds: async () => 60,
                     loadDefaultMaxCostUsd: async () => 0,
                     loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                    loadImplementationEscalationSettings: async () => ({ enabled: false, models: [], maxReasoningLevels: 2, validationFollowupEnabled: false }),
                 },
             });
             const res = {
@@ -1199,6 +1200,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
                 loadDefaultMaxCostUsd: async () => 0,
                 loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                loadImplementationEscalationSettings: async () => ({ enabled: false, models: [], maxReasoningLevels: 2, validationFollowupEnabled: false }),
             },
         });
         const res = {
@@ -1247,6 +1249,10 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
+            implementation_escalation_enabled: false,
+            implementation_escalation_models: [],
+            implementation_escalation_max_reasoning_levels: 2,
+            implementation_escalation_validation_followup: false,
             ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
@@ -1291,6 +1297,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
                 loadDefaultMaxCostUsd: async () => 0,
                 loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                loadImplementationEscalationSettings: async () => ({ enabled: false, models: [], maxReasoningLevels: 2, validationFollowupEnabled: false }),
             },
         });
         const res = {
@@ -1339,6 +1346,10 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
+            implementation_escalation_enabled: false,
+            implementation_escalation_models: [],
+            implementation_escalation_max_reasoning_levels: 2,
+            implementation_escalation_validation_followup: false,
             ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
@@ -1373,6 +1384,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
                 loadDefaultMaxCostUsd: async () => 0,
                 loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                loadImplementationEscalationSettings: async () => ({ enabled: false, models: [], maxReasoningLevels: 2, validationFollowupEnabled: false }),
             },
         });
         const res = {
@@ -1424,6 +1436,10 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
+            implementation_escalation_enabled: false,
+            implementation_escalation_models: [],
+            implementation_escalation_max_reasoning_levels: 2,
+            implementation_escalation_validation_followup: false,
             ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
             invalid_settings: {
                 auto_followup_score_threshold: 'invalid',
@@ -3090,6 +3106,7 @@ describe('config route follow-up helpers', () => {
                     loadUltrafixPauseSeconds: loadUltrafixPauseSecondsMock,
                     loadDefaultMaxCostUsd: async () => 0,
                     loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                    loadImplementationEscalationSettings: async () => ({ enabled: false, models: [], maxReasoningLevels: 2, validationFollowupEnabled: false }),
                 },
             });
             const res = {
@@ -3138,6 +3155,10 @@ describe('config route follow-up helpers', () => {
                 ultrafix_escalation_models: [],
                 ultrafix_escalation_patience: 3,
                 ultrafix_escalation_max_reasoning_levels: 2,
+                implementation_escalation_enabled: false,
+                implementation_escalation_models: [],
+                implementation_escalation_max_reasoning_levels: 2,
+                implementation_escalation_validation_followup: false,
                 ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
             });
         } finally {

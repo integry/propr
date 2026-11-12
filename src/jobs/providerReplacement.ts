@@ -49,6 +49,17 @@ function markCurrentFailed(lineage: LineageAttempt[], taskId: string): LineageAt
     return lineage.map(attempt => attempt.taskId === taskId ? { ...attempt, state: 'failed' } : attempt);
 }
 
+/** How the replacement picks its agent, model and effort. */
+async function replacementSelectionText(): Promise<string> {
+    try {
+        const { loadImplementationEscalationSettings } = await import('@propr/core');
+        if ((await loadImplementationEscalationSettings()).enabled) {
+            return 'one step up the escalation ladder (a higher reasoning level, or the next escalation model) when one is available';
+        }
+    } catch { /* The settings are unavailable: describe the default. */ }
+    return 'with the same agent and model';
+}
+
 /**
  * Call before the failure comment and the failed state are published. Records
  * whether a replacement will follow (so the Inbox holds back the failure alert)
@@ -66,7 +77,7 @@ export async function prepareProviderReplacement(failure: ProviderFailure): Prom
             });
             if (evaluation.eligible) {
                 return `\n\n🔁 **Retrying automatically.** This run ended with a transient provider error, so replacement attempt ${evaluation.attemptNumber} `
-                    + `(up to ${evaluation.maxReplacements} replacement${evaluation.maxReplacements === 1 ? '' : 's'}) will start with the same agent and model.`;
+                    + `(up to ${evaluation.maxReplacements} replacement${evaluation.maxReplacements === 1 ? '' : 's'}) will start ${await replacementSelectionText()}.`;
             }
             lineage = evaluation.reason === null ? [] : evaluation.lineage;
         } else {

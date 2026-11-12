@@ -215,3 +215,15 @@ describe('Ultrafix escalation CLI settings', () => {
     for (const key of ['ultrafix_escalation_enabled', 'ultrafix_escalation_models', 'ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels']) assert.equal(isValidSettingKey(key), true);
   });
 });
+
+describe('Implementation escalation CLI settings', () => {
+  test('parses both toggles, the ordered model list and N=0', () => {
+    assert.equal(parseSettingValue('implementation_escalation_enabled', 'true'), true);
+    assert.equal(parseSettingValue('implementation_escalation_validation_followup', 'false'), false);
+    assert.deepEqual(parseSettingValue('implementation_escalation_models', '["claude:claude-opus-5-5"]'), ['claude:claude-opus-5-5']);
+    assert.equal(parseSettingValue('implementation_escalation_max_reasoning_levels', '0'), 0);
+    assert.throws(() => parseSettingValue('implementation_escalation_max_reasoning_levels', '-1'));
+    assert.throws(() => parseSettingValue('implementation_escalation_enabled', 'yes'));
+    for (const key of ['implementation_escalation_enabled', 'implementation_escalation_models', 'implementation_escalation_max_reasoning_levels', 'implementation_escalation_validation_followup']) assert.equal(isValidSettingKey(key), true);
+  });
+});

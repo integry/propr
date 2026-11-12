@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Implementation escalation**: a new instance setting group (Settings →
+  Ultrafix & Escalation → Implementation Escalation, off by default) lets issue
+  runs start cheap and escalate only after a failure. With
+  `implementation_escalation_enabled`, an automatic replacement of a failed
+  attempt runs one reasoning level higher, up to
+  `implementation_escalation_max_reasoning_levels`, then hands off to the next
+  model in `implementation_escalation_models`, using the Ultrafix escalation
+  ladder and its availability and usage checks. With
+  `implementation_escalation_validation_followup`, a run whose PR failed
+  repository validation gets one automatic follow-up one step up, asking the
+  agent to fix the failing commands. Each escalation is a `task.escalation`
+  timeline event (from, to, reason) and spends from the task's spend cap.
+  Usage-limit re-queues never escalate.
 - **Review quality by effort**: `GET /api/stats/review-scores` adds `by_effort`,
   the same figures per implementer model and reasoning level, with PRs whose
   level was never recorded grouped under `unknown`; `models` keeps the

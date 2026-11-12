@@ -122,6 +122,12 @@ export interface SystemSettings extends Partial<TokenOutlierSettings> {
   ultrafix_escalation_models: string[];
   ultrafix_escalation_patience: number;
   ultrafix_escalation_max_reasoning_levels: number;
+  /** Replacements of failed implementation runs climb the escalation ladder. */
+  implementation_escalation_enabled: boolean;
+  implementation_escalation_models: string[];
+  implementation_escalation_max_reasoning_levels: number;
+  /** One escalated follow-up when an implementation PR failed repository validation. */
+  implementation_escalation_validation_followup: boolean;
   ultrafix_rating_goal: number;
 
   /**
@@ -288,6 +294,10 @@ export interface UpdateSettingsOptions extends Partial<TokenOutlierSettings> {
   ultrafix_escalation_models?: string[];
   ultrafix_escalation_patience?: number;
   ultrafix_escalation_max_reasoning_levels?: number;
+  implementation_escalation_enabled?: boolean;
+  implementation_escalation_models?: string[];
+  implementation_escalation_max_reasoning_levels?: number;
+  implementation_escalation_validation_followup?: boolean;
   ultrafix_rating_goal?: number;
 
   /**
@@ -373,6 +383,10 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_escalation_models",
   "ultrafix_escalation_patience",
   "ultrafix_escalation_max_reasoning_levels",
+  "implementation_escalation_enabled",
+  "implementation_escalation_models",
+  "implementation_escalation_max_reasoning_levels",
+  "implementation_escalation_validation_followup",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
@@ -484,6 +498,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed;
     }
     case "ultrafix_escalation_max_reasoning_levels":
+    case "implementation_escalation_max_reasoning_levels":
     case "max_provider_replacements": {
       const parsed = parseMaxProviderReplacements(value);
       if (parsed === null) {
@@ -523,7 +538,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
-    case "ultrafix_escalation_models": {
+    case "ultrafix_escalation_models":
+    case "implementation_escalation_models": {
       const parsed: unknown = JSON.parse(value);
       if (!Array.isArray(parsed) || parsed.some(m => typeof m !== 'string' || !m.trim())) {
         throw new Error('Escalation models must be a JSON array of nonempty model names');
@@ -531,6 +547,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed.map(m => m.trim());
     }
     case "ultrafix_escalation_enabled":
+    case "implementation_escalation_enabled":
+    case "implementation_escalation_validation_followup":
     case "usage_tips_enabled":
     case "dashboard_summary_enabled":
     case "followup_requires_assignment":

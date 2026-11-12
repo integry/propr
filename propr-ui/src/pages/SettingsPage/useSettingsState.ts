@@ -58,6 +58,10 @@ export function useSettingsState() {
     ultrafix_escalation_models: [],
     ultrafix_escalation_patience: 3,
     ultrafix_escalation_max_reasoning_levels: 2,
+    implementation_escalation_enabled: false,
+    implementation_escalation_models: [],
+    implementation_escalation_max_reasoning_levels: 2,
+    implementation_escalation_validation_followup: false,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60,
@@ -161,6 +165,10 @@ export function useSettingsState() {
         ultrafix_escalation_models: settingsToSave.ultrafix_escalation_models.filter(Boolean),
         ultrafix_escalation_patience: settingsToSave.ultrafix_escalation_patience,
         ultrafix_escalation_max_reasoning_levels: settingsToSave.ultrafix_escalation_max_reasoning_levels,
+        implementation_escalation_enabled: settingsToSave.implementation_escalation_enabled,
+        implementation_escalation_models: settingsToSave.implementation_escalation_models.filter(Boolean),
+        implementation_escalation_max_reasoning_levels: settingsToSave.implementation_escalation_max_reasoning_levels,
+        implementation_escalation_validation_followup: settingsToSave.implementation_escalation_validation_followup,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds,
@@ -305,8 +313,8 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
-  const handleEscalationModelsChange = useCallback((models: string[]) => {
-    const newSettings = { ...settings, ultrafix_escalation_models: models };
+  const handleEscalationModelsChange = useCallback((models: string[], name: 'ultrafix_escalation_models' | 'implementation_escalation_models' = 'ultrafix_escalation_models') => {
+    const newSettings = { ...settings, [name]: models };
     setSettings(newSettings);
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);

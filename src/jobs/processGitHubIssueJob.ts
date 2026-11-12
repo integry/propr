@@ -357,14 +357,8 @@ async function processIssueWithAdmission(
 
       await job.updateProgress(100);
       await markTaskComplete({
-        stateManager,
-        taskId,
-        issueRef,
-        currentIssueLabels: currentLabels,
-        claudeResult,
-        postProcessingResult,
-        commitResult,
-        correlatedLogger
+        stateManager, taskId, issueRef, currentIssueLabels: currentLabels, claudeResult, postProcessingResult, commitResult, correlatedLogger,
+        agentAlias: context.agentAlias, modelName: context.modelName,
       });
       return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 

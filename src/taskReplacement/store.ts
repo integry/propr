@@ -111,7 +111,7 @@ export interface CreateReplacementInput {
 /** A timeline event recorded on a task without changing its state. */
 export interface TimelineEvent {
     taskId: string;
-    event: 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted';
+    event: 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | 'task.escalation';
     reason: string;
     metadata: Record<string, unknown>;
     timestamp: string;

@@ -18,8 +18,10 @@ import type {
 } from './store.js';
 import { createReplacementDelivery, REPLACEMENT_JOB_NAME, TERMINAL_STATES } from './delivery.js';
 import { deliverExhaustedComment } from './exhaustedComment.js';
+import { escalateReplay, recordReplacementEscalation, type EscalateReplacement } from './escalation.js';
 
 export { REPLACEMENT_JOB_NAME } from './delivery.js';
+export type { EscalateReplacement, ReplacementEscalation } from './escalation.js';
 export { exhaustedCommentMarker, MAX_EXHAUSTED_COMMENT_ATTEMPTS } from './exhaustedComment.js';
 /** A pending decision older than this is completed by the reconciler. */
 export const PENDING_REPLACEMENT_RECOVERY_MS = 5 * 60 * 1000;
@@ -103,6 +105,8 @@ export interface TaskReplacementDependencies {
      * killed by a worker restart never ran its cleanup), so the replacement can continue it.
      */
     releaseLostAttemptBranch?(repoOwner: string, repoName: string, branchName: string): Promise<void>;
+    /** The replacement's escalated selection, or null to rerun the failed attempt's. */
+    escalate?: EscalateReplacement;
     frontendUrl?: string;
     now?: () => Date;
     randomId?: () => string;
@@ -333,6 +337,7 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         // Lineage bookkeeping, not queue payload: the replacement's replay data carries it on.
         const replay: ReplayJobData = { ...task.replayJobData! };
         delete replay.lineageCostCapUsd;
+        const escalation = await escalateReplay(deps.escalate, replay, request.cause, deps.logger);
         const correlationId = (deps.randomId ?? randomUUID)();
         const replacementTaskId = buildIssueTaskId({
             repoOwner: replay.repoOwner, repoName: replay.repoName, issueNumber: replay.number,
@@ -363,6 +368,7 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             ...(failure ? { failure } : {}),
         });
         if (!claimed) return { action: 'none' };
+        await recordReplacementEscalation(deps.store, escalation, { taskId: task.taskId, replacementTaskId, attemptNumber, timestamp });
         if (task.branchName && deps.releaseLostAttemptBranch) {
             await deps.releaseLostAttemptBranch(replay.repoOwner, replay.repoName, task.branchName).catch(error => {
                 deps.logger?.warn({ taskId: task.taskId, branchName: task.branchName, error: (error as Error).message },

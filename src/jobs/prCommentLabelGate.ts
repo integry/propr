@@ -15,10 +15,11 @@ const EXPLICIT_COMMANDS = new Set(['review', 'fix', 'ultrafix']);
 export async function pullRequestJobAllowed(
     labels: Array<{ name: string }>,
     primaryProcessingLabels: string[],
-    request: { data: Pick<CommentJobData, 'commandMode' | 'ultrafixMeta'>; comments: UnprocessedComment[]; correlationId: string },
+    request: { data: Pick<CommentJobData, 'commandMode' | 'ultrafixMeta' | 'effortEscalation'>; comments: UnprocessedComment[]; correlationId: string },
 ): Promise<boolean> {
     if (labels.some(label => primaryProcessingLabels.includes(label.name))) return true;
-    if (request.data.ultrafixMeta || EXPLICIT_COMMANDS.has(request.data.commandMode ?? 'default')) return true;
+    // An escalated validation follow-up was started by the instance policy for this pull request.
+    if (request.data.ultrafixMeta || request.data.effortEscalation || EXPLICIT_COMMANDS.has(request.data.commandMode ?? 'default')) return true;
     // Loaded lazily: callers' tests enumerate the core exports they mock.
     const { hasValidTriggerLabel, checkCommentTrigger } = await import('@propr/core');
     if (await hasValidTriggerLabel(labels)) return true;

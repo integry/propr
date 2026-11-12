@@ -11,6 +11,8 @@ import 'dotenv/config';
 export type {
     IssueJobData,
     CommentJobData,
+    ImplementationEscalationLadder,
+    EffortEscalationRequest,
     UnprocessedComment,
     TaskImportJobData,
     GoalJobData,

@@ -1,5 +1,5 @@
 import { MAX_RUN_COST_CAP_USD, TOKEN_OUTLIER_SETTING_NAMES, describeTokenOutlierSettingRange, parseTokenOutlierSetting, type TokenOutlierSettingName } from '@propr/shared';
-import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
+import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue, type ImplementationEscalationSettings } from '@propr/core';
 
 interface SettingFields extends Partial<Record<TokenOutlierSettingName, unknown>> {
   usage_tips_enabled?: unknown;
@@ -13,6 +13,10 @@ interface SettingFields extends Partial<Record<TokenOutlierSettingName, unknown>
   ultrafix_escalation_models?: unknown;
   ultrafix_escalation_patience?: unknown;
   ultrafix_escalation_max_reasoning_levels?: unknown;
+  implementation_escalation_enabled?: unknown;
+  implementation_escalation_models?: unknown;
+  implementation_escalation_max_reasoning_levels?: unknown;
+  implementation_escalation_validation_followup?: unknown;
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
@@ -40,6 +44,10 @@ export type SettingSaveName =
   | 'ultrafix_escalation_models'
   | 'ultrafix_escalation_patience'
   | 'ultrafix_escalation_max_reasoning_levels'
+  | 'implementation_escalation_enabled'
+  | 'implementation_escalation_models'
+  | 'implementation_escalation_max_reasoning_levels'
+  | 'implementation_escalation_validation_followup'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds'
@@ -54,6 +62,10 @@ export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_to
 export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
 export const AGENT_NETWORK_SETTING_NAMES = ['agent_network_mode', 'agent_network_mode_enforced', 'agent_network_allow', 'agent_network_ignore_repository_allow'] as const;
 export type AgentNetworkSettingName = typeof AGENT_NETWORK_SETTING_NAMES[number];
+export const IMPLEMENTATION_ESCALATION_SETTING_NAMES = [
+  'implementation_escalation_enabled', 'implementation_escalation_models',
+  'implementation_escalation_max_reasoning_levels', 'implementation_escalation_validation_followup',
+] as const;
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -242,29 +254,48 @@ function extractAgentWatchdogSettingSaves(fields: SettingFields, result: Setting
   return result;
 }
 
+const ESCALATION_BOOLEAN_SETTINGS = ['ultrafix_escalation_enabled', 'implementation_escalation_enabled', 'implementation_escalation_validation_followup'] as const;
+const ESCALATION_INTEGER_SETTINGS = [
+  ['ultrafix_escalation_patience', 1], ['ultrafix_escalation_max_reasoning_levels', 0], ['implementation_escalation_max_reasoning_levels', 0],
+] as const;
+const ESCALATION_MODEL_LIST_SETTINGS = ['ultrafix_escalation_models', 'implementation_escalation_models'] as const;
+
+/** The implementation escalation group of the settings response. */
+export function implementationEscalationSettingsResponse(settings: ImplementationEscalationSettings): Record<typeof IMPLEMENTATION_ESCALATION_SETTING_NAMES[number], unknown> {
+  return {
+    implementation_escalation_enabled: settings.enabled,
+    implementation_escalation_models: settings.models,
+    implementation_escalation_max_reasoning_levels: settings.maxReasoningLevels,
+    implementation_escalation_validation_followup: settings.validationFollowupEnabled,
+  };
+}
+
+/** Ultrafix and implementation escalation: toggles, ladder limits and ordered handoff models. */
 async function extractEscalationSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
   const { saves, normalized } = result;
-  if (fields.ultrafix_escalation_enabled !== undefined) {
-    if (typeof fields.ultrafix_escalation_enabled !== 'boolean') return { error: 'ultrafix_escalation_enabled must be a boolean', saves: [], normalized };
-    normalized.ultrafix_escalation_enabled = fields.ultrafix_escalation_enabled;
-    saves.push({ name: 'ultrafix_escalation_enabled' });
+  for (const name of ESCALATION_BOOLEAN_SETTINGS) {
+    if (fields[name] === undefined) continue;
+    if (typeof fields[name] !== 'boolean') return { error: `${name} must be a boolean`, saves: [], normalized };
+    normalized[name] = fields[name];
+    saves.push({ name });
   }
-  for (const [name, min] of [['ultrafix_escalation_patience', 1], ['ultrafix_escalation_max_reasoning_levels', 0]] as const) {
+  for (const [name, min] of ESCALATION_INTEGER_SETTINGS) {
     if (fields[name] === undefined) continue;
     const value = validateStrictInt(fields[name], min, Infinity);
     if (value === null) return { error: `${name} must be a safe integer >= ${min}`, saves: [], normalized };
     normalized[name] = value;
     saves.push({ name });
   }
-  if (fields.ultrafix_escalation_models !== undefined) {
-    const models = fields.ultrafix_escalation_models;
-    if (!Array.isArray(models) || models.some(m => typeof m !== 'string' || !m.trim())) return { error: 'ultrafix_escalation_models must be an ordered array of nonempty model names', saves: [], normalized };
+  for (const name of ESCALATION_MODEL_LIST_SETTINGS) {
+    const models = fields[name];
+    if (models === undefined) continue;
+    if (!Array.isArray(models) || models.some(m => typeof m !== 'string' || !m.trim())) return { error: `${name} must be an ordered array of nonempty model names`, saves: [], normalized };
     for (const model of models) {
       const result = await validatePrReviewModel(model);
-      if (result.error) return { error: result.error.replaceAll('pr_review_model', 'ultrafix_escalation_models'), saves: [], normalized };
+      if (result.error) return { error: result.error.replaceAll('pr_review_model', name), saves: [], normalized };
     }
-    normalized.ultrafix_escalation_models = [...new Set(models.map(m => m.trim()))];
-    saves.push({ name: 'ultrafix_escalation_models' });
+    normalized[name] = [...new Set(models.map(m => m.trim()))];
+    saves.push({ name });
   }
 
   return { saves, normalized };

@@ -180,6 +180,22 @@ async function syncEpicQueueOutcome({ issueRef, claudeResult, postProcessingResu
   }
 }
 
+/** One automatic follow-up, one step up the escalation ladder, when the opened PR failed repository validation. */
+async function requestEscalatedValidationFollowup(params: TaskCompletionParams): Promise<void> {
+  const { taskId, issueRef, claudeResult, postProcessingResult, correlatedLogger } = params;
+  if (claudeResult?.repositoryValidationResult?.overall !== 'failed' || !postProcessingResult?.pr) return;
+  const agentAlias = params.agentAlias ?? issueRef.agentAlias;
+  const modelName = params.modelName ?? issueRef.modelName;
+  if (!agentAlias || !modelName) return;
+  try {
+    // Loaded lazily: the escalation ladder pulls in the agent registry and usage monitoring.
+    const { requestValidationFollowup } = await import('../implementationEscalation.js');
+    await requestValidationFollowup({ taskId, issueRef, agentAlias, modelName, claudeResult, pullRequest: postProcessingResult.pr, correlatedLogger });
+  } catch (error) {
+    correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Could not start the automatic validation follow-up');
+  }
+}
+
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
   const { taskId, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
@@ -196,6 +212,7 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
     await syncEpicQueueOutcome(taskCompletionParams);
     await closeFailedPlanIssue(taskCompletionParams);
+    await requestEscalatedValidationFollowup(taskCompletionParams);
   } catch (stateError) {
     correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update terminal task state');
   }

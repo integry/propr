@@ -110,7 +110,7 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
     applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
     const { branchName: jobBranchName, llm: jobLlm } = job.data;
-    const jobRequest = { commandMode: job.data.commandMode, ultrafixMeta: job.data.ultrafixMeta };
+    const jobRequest = { commandMode: job.data.commandMode, ultrafixMeta: job.data.ultrafixMeta, effortEscalation: job.data.effortEscalation };
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta, jobRequest };
 }
 
@@ -170,6 +170,12 @@ async function resolveExecutionReasoning(
     linkedIssueLabels: Parameters<typeof resolvePrReasoningLevelOverride>[1],
 ): Promise<ExecuteProcessingParams['llm']> {
     const { job, context: { repoOwner, repoName, pullRequestNumber, correlatedLogger } } = params;
+    // An automatic escalated follow-up runs one step above its source task, whatever the labels say.
+    const escalation = job.data.effortEscalation;
+    if (escalation) {
+        job.data.reasoningLevel = escalation.effort;
+        return escalation.model;
+    }
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prLabels, linkedIssueLabels, {
         repoOwner, repoName, pullRequestNumber, correlatedLogger,
     });

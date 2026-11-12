@@ -35,6 +35,10 @@ const SETTINGS: SystemSettings = {
   ultrafix_escalation_models: [],
   ultrafix_escalation_patience: 3,
   ultrafix_escalation_max_reasoning_levels: 2,
+  implementation_escalation_enabled: false,
+  implementation_escalation_models: [],
+  implementation_escalation_max_reasoning_levels: 2,
+  implementation_escalation_validation_followup: false,
 };
 
 test("getExtraConfigSetting reads only the requested extra config endpoint", async () => {

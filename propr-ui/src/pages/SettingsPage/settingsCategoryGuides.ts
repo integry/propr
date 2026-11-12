@@ -45,10 +45,12 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
       'Escalation compares each review with the best score so far in the run: 6 → 6 or lower is a stall, 6 → 7 resets patience.',
       'After Patience stalled reviews, the current model climbs one reasoning tier. Once it has climbed Max Reasoning Levels times, the next model in the chain takes over at its base effort.',
       'Remove the ultrafix label from a pull request to stop the loop after the current cycle.',
+      'Implementation Escalation uses the same ladder for issue runs: a replaced failed attempt runs one step higher. Usage-limit retries never escalate.',
     ],
     links: [
       { label: '/ultrafix', href: `${DOCS}/features/pr-commands#ultrafix` },
       { label: 'Automatic escalation', href: `${DOCS}/features/pr-commands#automatic-escalation` },
+      { label: 'Implementation escalation', href: `${DOCS}/features/pr-commands#implementation-escalation` },
     ],
   },
   sandbox: {

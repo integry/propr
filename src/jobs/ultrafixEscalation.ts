@@ -7,7 +7,7 @@ import {
 import { loadState, saveUltrafixStateIfCurrent, type UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import { advanceEscalation, type EscalationModel } from './ultrafixEscalationPolicy.js';
 
-type CandidateSkip = {
+export type CandidateSkip = {
     candidate: string;
     reason: 'agent_unavailable' | 'agent_disabled' | 'model_unsupported' | 'usage_limit' | 'model_resolution_failed';
     resolvedModel?: string;
@@ -24,7 +24,11 @@ function availabilitySkipReason(
     return undefined;
 }
 
-async function resolveModel(
+/**
+ * A model as an escalation ladder rung: its agent:model ID, reasoning levels and
+ * effective effort. With `checkUsage`, a provider at its usage limit is skipped.
+ */
+export async function resolveModel(
     model: string | null | undefined, checkUsage: boolean, overrideEffort?: ReasoningLevel,
     onSkip?: (details: Omit<CandidateSkip, 'candidate'>) => void,
 ): Promise<EscalationModel | null> {
@@ -63,6 +67,16 @@ async function resolveModel(
         model: resolved, levels, effortInModel,
         effort: effortInModel ? embedded : runtime && levels.includes(runtime) ? runtime : undefined,
     };
+}
+
+/** Resolves a handoff candidate with availability and usage checks, collecting why it was skipped. */
+export async function resolveHandoffCandidate(candidate: string, skipped: CandidateSkip[]): Promise<EscalationModel | null> {
+    try {
+        return await resolveModel(candidate, true, undefined, details => skipped.push({ candidate, ...details }));
+    } catch {
+        skipped.push({ candidate, reason: 'model_resolution_failed' });
+        return null;
+    }
 }
 
 /** Called after normal PR model/label resolution, before executing a fix. */
@@ -106,14 +120,7 @@ export async function recordUltrafixEscalationReview(
     }
     const before = { ...current.escalation.current, modelIndex: current.escalation.modelIndex, climbs: current.escalation.climbs };
     const skipped: CandidateSkip[] = [];
-    await advanceEscalation(current.escalation, score, async candidate => {
-        try {
-            return await resolveModel(candidate, true, undefined, details => skipped.push({ candidate, ...details }));
-        } catch {
-            skipped.push({ candidate, reason: 'model_resolution_failed' });
-            return null;
-        }
-    });
+    await advanceEscalation(current.escalation, score, candidate => resolveHandoffCandidate(candidate, skipped));
     // Report only decisions accepted by the epoch-guarded save, after all awaits.
     if (!await persist(redis, current)) return null;
     const context = { owner: current.owner, repo: current.repo, pr: current.pr, workEpoch: current.workEpoch, score, bestScore: current.escalation.bestScore };

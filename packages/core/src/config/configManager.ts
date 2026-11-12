@@ -388,6 +388,8 @@ export {
     savePrReviewModel,
     loadUltrafixEscalationSettings,
     type UltrafixEscalationSettings,
+    loadImplementationEscalationSettings,
+    type ImplementationEscalationSettings,
     loadUltrafixRatingGoal,
     saveUltrafixRatingGoal,
     loadUltrafixMaxCycles,

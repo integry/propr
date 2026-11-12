@@ -21,6 +21,10 @@ export interface Settings {
   ultrafix_escalation_models: string[];
   ultrafix_escalation_patience: number;
   ultrafix_escalation_max_reasoning_levels: number;
+  implementation_escalation_enabled: boolean;
+  implementation_escalation_models: string[];
+  implementation_escalation_max_reasoning_levels: number;
+  implementation_escalation_validation_followup: boolean;
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;

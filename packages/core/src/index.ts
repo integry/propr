@@ -140,6 +140,8 @@ export {
 export type {
     IssueJobData,
     CommentJobData,
+    ImplementationEscalationLadder,
+    EffortEscalationRequest,
     TaskImportJobData,
     SystemTaskJobData,
     IndexingJobData,

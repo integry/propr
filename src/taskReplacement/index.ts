@@ -72,6 +72,12 @@ export function getTaskReplacementService(): TaskReplacementService {
             const released = await releaseLostAttemptBranch(owner, repo, branchName);
             if (released) logger.warn({ branchName, worktreePath: released }, 'Freed the replaced attempt\'s work branch from its retained worktree');
         },
+        async escalate(replay, cause) {
+            // Loaded lazily: the escalation ladder pulls in the agent registry and usage monitoring.
+            const { escalateReplacementJob, implementationEscalationEvent } = await import('../jobs/implementationEscalation.js');
+            const result = await escalateReplacementJob(replay, cause, { logger });
+            return result && { jobData: result.jobData, event: implementationEscalationEvent(result.escalation) };
+        },
         publishTaskUpdate: payload => getEventPublisher().publishTaskUpdate(payload),
         logger,
     });

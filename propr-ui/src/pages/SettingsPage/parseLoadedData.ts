@@ -36,6 +36,10 @@ interface SettingsApiData {
   ultrafix_escalation_models?: string[];
   ultrafix_escalation_patience?: number;
   ultrafix_escalation_max_reasoning_levels?: number;
+  implementation_escalation_enabled?: boolean;
+  implementation_escalation_models?: string[];
+  implementation_escalation_max_reasoning_levels?: number;
+  implementation_escalation_validation_followup?: boolean;
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
@@ -105,6 +109,19 @@ export function runLimitSettingsToSave(settings: Settings) {
   };
 }
 
+type ImplementationEscalationName = 'implementation_escalation_enabled' | 'implementation_escalation_models'
+  | 'implementation_escalation_max_reasoning_levels' | 'implementation_escalation_validation_followup';
+
+/** Older servers omit the group; both triggers default to off. */
+function implementationEscalation(data: Pick<SettingsApiData, ImplementationEscalationName>): Pick<Settings, ImplementationEscalationName> {
+  return {
+    implementation_escalation_enabled: data.implementation_escalation_enabled ?? false,
+    implementation_escalation_models: data.implementation_escalation_models ?? [],
+    implementation_escalation_max_reasoning_levels: data.implementation_escalation_max_reasoning_levels ?? 2,
+    implementation_escalation_validation_followup: data.implementation_escalation_validation_followup ?? false,
+  };
+}
+
 function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig[]): Settings {
   return {
     worker_concurrency: settingsData.worker_concurrency || '',
@@ -129,6 +146,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     ultrafix_escalation_models: settingsData.ultrafix_escalation_models ?? [],
     ultrafix_escalation_patience: settingsData.ultrafix_escalation_patience ?? 3,
     ultrafix_escalation_max_reasoning_levels: settingsData.ultrafix_escalation_max_reasoning_levels ?? 2,
+    ...implementationEscalation(settingsData),
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,

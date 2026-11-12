@@ -69,6 +69,27 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     maxCostUsd?: number;
     /** Task IDs of earlier attempts (replaced runs) whose spend counts toward this run's cap. */
     costBudgetTaskIds?: string[];
+    /** Position on the implementation escalation ladder; replacements carry it on. */
+    implementationEscalation?: ImplementationEscalationLadder;
+}
+
+/** Ladder snapshot of an implementation lineage: its models and how far it climbed. */
+export interface ImplementationEscalationLadder {
+    /** The lineage's first model, then the configured handoff models (agent:model). */
+    models: string[];
+    maxReasoningLevels: number;
+    modelIndex: number;
+    /** Reasoning increases on the current model. */
+    climbs: number;
+}
+
+/** A follow-up the escalation policy started, run with this model and effort whatever the labels say. */
+export interface EffortEscalationRequest {
+    model: string;
+    effort?: ReasoningLevel;
+    reason: 'repository_validation_failed';
+    /** Implementation task whose failed validation started the follow-up. */
+    sourceTaskId: string;
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';
@@ -120,6 +141,8 @@ export interface CommentJobData extends RepositoryWorkflowDeferralData {
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
+    /** Set on an automatic escalated follow-up; its model and effort beat labels. */
+    effortEscalation?: EffortEscalationRequest;
     /** Internal lease token persisted across BullMQ redelivery of this same job. */
     prProcessingLockToken?: string;
     /** Times this job has waited in place for another job's PR processing lock; drives the backoff. */

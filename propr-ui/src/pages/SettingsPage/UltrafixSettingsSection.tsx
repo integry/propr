@@ -1,8 +1,8 @@
 import React from 'react';
-import { formatModelName } from '../../utils/modelDisplay';
 import { SettingsCheckboxField, SettingsField, SettingsSection } from './SettingsLayout';
 import { buildAllModelOptions, type ModelSelectionAgent } from './modelSelectionHelpers';
 import { SETTINGS_CONTROL } from './settingsStyles';
+import EscalationModelListField from './EscalationModelListField';
 
 interface UltrafixSettings {
   ultrafix_escalation_enabled: boolean;
@@ -116,34 +116,9 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
       />
       {settings.ultrafix_escalation_enabled && (
         <>
-          <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
-            helperText="Tried in order after the current model. Unavailable or usage-exhausted models are skipped.">
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2">
-              {models.map((model, index) => (
-                <div key={index} className="contents">
-                  <span className="text-sm text-gray-500">{index + 1}.</span>
-                  <select id={`ultrafix_escalation_model_${index}`} aria-label={`Escalation model ${index + 1}`}
-                    value={model} className={`${SETTINGS_CONTROL} min-w-0`}
-                    onChange={event => onEscalationModelsChange(models.map((value, i) => i === index ? event.target.value : value))}>
-                    {!modelOptions.some(option => option.value === model) && <option value={model}>{formatModelName(model)} (unavailable)</option>}
-                    {modelOptions.map(option => <option key={option.value} value={option.value}>
-                      {option.label}{option.enabled ? '' : ' (disabled)'}
-                    </option>)}
-                  </select>
-                  <button type="button" aria-label={`Remove escalation model ${index + 1}`}
-                    onClick={() => onEscalationModelsChange(models.filter((_, i) => i !== index))}
-                    className="text-sm text-gray-600 hover:text-gray-900">Remove</button>
-                </div>
-              ))}
-              <select id="ultrafix_escalation_model_add" aria-label="Add escalation model" value="" className={`${SETTINGS_CONTROL} col-start-2 min-w-0`}
-                onChange={event => { if (event.target.value) onEscalationModelsChange([...models, event.target.value]); }}>
-                <option value="">Add escalation model…</option>
-                {modelOptions.map(option => <option key={option.value} value={option.value}>
-                  {option.label}{option.enabled ? '' : ' (disabled)'}
-                </option>)}
-              </select>
-            </div>
-          </SettingsField>
+          <EscalationModelListField idPrefix="ultrafix_escalation_model" ariaLabel="Escalation model" label="Escalation Models (in order)"
+            helperText="Tried in order after the current model. Unavailable or usage-exhausted models are skipped."
+            models={models} modelOptions={modelOptions} onChange={onEscalationModelsChange} />
           <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
             helperText="Reviews without a new best score before escalating. E.g. 2: best 6/10, then 6 and 5 → escalate.">
             <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"

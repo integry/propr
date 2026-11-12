@@ -34,3 +34,21 @@ test('rejects invalid toggles, counts, lists, and unavailable models atomically'
         assert.deepEqual(result.saves, []);
     }
 });
+
+test('validates and normalizes the implementation escalation group like the Ultrafix one', async () => {
+    const fields = { implementation_escalation_enabled: true, implementation_escalation_models: [' claude:stronger ', 'claude:stronger'], implementation_escalation_max_reasoning_levels: 0, implementation_escalation_validation_followup: false };
+    const result = await extractSettingSaves(fields);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(result.normalized, { ...fields, implementation_escalation_models: ['claude:stronger'] });
+    assert.equal(result.saves.length, 4);
+    for (const invalid of [
+        { implementation_escalation_enabled: 1 },
+        { implementation_escalation_validation_followup: 'true' },
+        { implementation_escalation_max_reasoning_levels: -1 },
+        { implementation_escalation_models: ['missing'] },
+    ]) {
+        const rejected = await extractSettingSaves({ ultrafix_rating_goal: 8, ...invalid });
+        assert.match(rejected.error ?? '', /implementation_escalation_/);
+        assert.deepEqual(rejected.saves, []);
+    }
+});

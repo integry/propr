@@ -3,6 +3,7 @@ import React from 'react';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import WorkflowSettingsSection from './WorkflowSettingsSection';
 import UltrafixSettingsSection from './UltrafixSettingsSection';
+import ImplementationEscalationSettingsSection from './ImplementationEscalationSettingsSection';
 import AgentWatchdogSettingsSection from './AgentWatchdogSettingsSection';
 import AgentNetworkSettingsSection from './AgentNetworkSettingsSection';
 import AIModelSelectionSection from './AIModelSelectionSection';
@@ -23,6 +24,8 @@ import McpServerSection from './McpServerSection';
 import { useSettingsCategoryRoute } from './useSettingsCategoryRoute';
 import { agentExtensionSections, maintenanceSections, settingsDataSections } from './settingsDataSections';
 import SettingsSaveStatusBar from './SettingsSaveStatusBar';
+
+const CHECKBOX_SETTINGS = new Set(['ultrafix_escalation_enabled', 'implementation_escalation_enabled', 'implementation_escalation_validation_followup', 'auto_resolve_merge_conflicts', 'followup_requires_assignment', 'usage_tips_enabled']);
 
 const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
@@ -73,7 +76,7 @@ const AdminSettingsPage: React.FC = () => {
   const handleGeneralSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const settingName = event.target.name;
     let value: string | number | boolean;
-    const numericFields = ['max_provider_replacements', 'ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+    const numericFields = ['max_provider_replacements', 'ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'implementation_escalation_max_reasoning_levels', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
     if (numericFields.includes(settingName)) {
       const raw = event.target.value;
       // Only accept strings that are strictly integer digits (with optional leading minus)
@@ -82,7 +85,7 @@ const AdminSettingsPage: React.FC = () => {
       const parsed = Number(raw);
       if (!Number.isSafeInteger(parsed)) return;
       value = parsed;
-    } else if (settingName === 'ultrafix_escalation_enabled' || settingName === 'auto_resolve_merge_conflicts' || settingName === 'followup_requires_assignment' || settingName === 'usage_tips_enabled') {
+    } else if (CHECKBOX_SETTINGS.has(settingName)) {
       value = (event.target as HTMLInputElement).checked;
     } else {
       value = event.target.value;
@@ -277,6 +280,9 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
+    { id: 'implementation-escalation', category: 'ultrafix', searchText: 'implementation escalation failed attempt replacement retry reasoning effort model handoff validation failed follow-up',
+      content: <ImplementationEscalationSettingsSection settings={settings} modelAgents={catalogAgents?.length ? catalogAgents : agents}
+        onModelsChange={models => handleEscalationModelsChange(models, 'implementation_escalation_models')} onSettingChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} /> },
     { id: 'agent-network', category: 'sandbox', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce',
       content: <AgentNetworkSettingsSection values={settings} defaults={settings.agent_network_defaults} onCommit={handleAgentRunSettingChange} /> },
     {

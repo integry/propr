@@ -369,6 +369,25 @@ Select escalation models from the ordered dropdowns in **Settings → Ultrafix &
 
 The policy is captured when the first automatic fix starts and persisted with the run, including its current model, effort, best score, and patience counter. Webhook and polling intake use the same continuation; deferred CI resumes retain this state. Disabling the master toggle also bypasses escalation in existing runs. The existing overall maximum cycle limit and goal/coverage rules still apply across all models. With escalation disabled, model and reasoning selection and stopping behavior remain unchanged.
 
+#### Implementation Escalation
+
+Implementation runs (an issue picked up by ProPR) can use the same ladder outside Ultrafix, so you can start them on a cheaper model and effort and escalate only after a failure. Settings → Ultrafix & Escalation → Implementation Escalation holds this instance-wide group. Both triggers are disabled by default.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `implementation_escalation_enabled` | `false` | Replacement attempts of failed runs climb one step |
+| `implementation_escalation_models` | `[]` | Ordered handoff models, as model IDs or `agent:model` pairs |
+| `implementation_escalation_max_reasoning_levels` | `2` | Maximum effort increases per model; `0` hands off directly |
+| `implementation_escalation_validation_followup` | `false` | One escalated follow-up when repository validation failed |
+
+**Failed attempts.** When a failed run qualifies for an automatic replacement (a transient provider error, see `max_provider_replacements`, or a run lost with its worker), the replacement runs one step up the ladder instead of repeating the same selection. A step is one reasoning level higher on the current model, up to the configured maximum. After that, or when the model has no higher level, the step hands off to the next handoff model at that model's own base effort. A handoff candidate is checked the same way as in Ultrafix: unavailable, disabled and usage-exhausted (Agent Tank session or weekly usage of 100% or more) candidates are skipped. When no step is left, the replacement keeps the current model and effort. The ladder is captured with the first replacement and carried by every later attempt of the same task, so each further replacement climbs one more step. The replacement cap, the per-run spend cap and the stop rules for replacements are unchanged.
+
+Usage-limit re-queues never escalate: a run that hit a 429 or usage limit waits for the reset and then resumes with the same model and effort.
+
+**Failed validation.** With `implementation_escalation_validation_followup` on, an implementation run that opened a pull request whose repository validation commands failed (`.propr/workflow.yml` `validation`, reported as `failed`; an `incomplete` result does not count) starts one automatic follow-up on that pull request, one step up the ladder. The follow-up asks the agent to fix the failing commands and lists them with their status. It uses the escalated model and effort whatever the PR's model and level labels say. Each task gets at most one such follow-up. This setting works without `implementation_escalation_enabled`, and uses the same models and maximum.
+
+Each escalation is recorded on the timeline of the task that failed as a `task.escalation` event with its `from` and `to` model and effort and its `reason` (`provider_transient`, `infra_lost` or `repository_validation_failed`). Escalated attempts and the validation follow-up count toward the task's spend cap together with the earlier attempts, as replacements already do: a higher tier spends the same remaining budget, it does not get a new one.
+
 #### Waiting Rules
 
 Before each cycle, ProPR checks readiness:

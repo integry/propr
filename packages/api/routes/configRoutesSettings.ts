@@ -1,7 +1,7 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
-import { AGENT_NETWORK_SETTING_NAMES, AGENT_WATCHDOG_SETTING_NAMES } from './configSettings.js';
+import { AGENT_NETWORK_SETTING_NAMES, AGENT_WATCHDOG_SETTING_NAMES, IMPLEMENTATION_ESCALATION_SETTING_NAMES } from './configSettings.js';
 import type { Knex } from 'knex';
 import {
   REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
@@ -298,7 +298,8 @@ async function saveNormalizedSettingsWithRollback({
     agent_network_ignore_repository_allow,
     ...remainingSettings
   } = settings;
-  const { picked: tokenOutlierFields, rest: otherSettings } = pickSettings(remainingSettings, TOKEN_OUTLIER_SETTING_NAMES);
+  const { picked: implementationEscalationFields, rest: nonEscalationSettings } = pickSettings(remainingSettings, IMPLEMENTATION_ESCALATION_SETTING_NAMES);
+  const { picked: tokenOutlierFields, rest: otherSettings } = pickSettings(nonEscalationSettings, TOKEN_OUTLIER_SETTING_NAMES);
 
   const extracted = await extractSettingSaves({
     auto_followup_score_threshold,
@@ -325,6 +326,7 @@ async function saveNormalizedSettingsWithRollback({
     agent_network_mode_enforced,
     agent_network_allow,
     agent_network_ignore_repository_allow,
+    ...implementationEscalationFields,
     ...tokenOutlierFields
   });
 

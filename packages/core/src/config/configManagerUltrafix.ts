@@ -178,3 +178,33 @@ export async function loadUltrafixEscalationSettings(): Promise<UltrafixEscalati
         maxReasoningLevels: typeof levels === 'number' && Number.isSafeInteger(levels) && levels >= 0 ? levels : 2,
     };
 }
+
+// --- Implementation escalation ---
+
+export interface ImplementationEscalationSettings {
+    /** Replacement attempts of implementation tasks climb the escalation ladder. */
+    enabled: boolean;
+    /** Ordered handoff models once the reasoning climbs of the current model are used up. */
+    models: string[];
+    maxReasoningLevels: number;
+    /** One automatic follow-up, one step up the ladder, when repository validation failed. */
+    validationFollowupEnabled: boolean;
+}
+
+const DEFAULT_IMPLEMENTATION_ESCALATION_MAX_REASONING_LEVELS = 2;
+
+/** Instance-wide escalation for issue implementation runs; both triggers are off by default. */
+export async function loadImplementationEscalationSettings(): Promise<ImplementationEscalationSettings> {
+    const [enabled, models, levels, validationFollowup] = await Promise.all([
+        getConfig<unknown>('implementation_escalation_enabled', false),
+        getConfig<unknown>('implementation_escalation_models', []),
+        getConfig<unknown>('implementation_escalation_max_reasoning_levels', DEFAULT_IMPLEMENTATION_ESCALATION_MAX_REASONING_LEVELS),
+        getConfig<unknown>('implementation_escalation_validation_followup', false),
+    ]);
+    return {
+        enabled: enabled === true,
+        models: Array.isArray(models) ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map(m => m.trim()) : [],
+        maxReasoningLevels: typeof levels === 'number' && Number.isSafeInteger(levels) && levels >= 0 ? levels : DEFAULT_IMPLEMENTATION_ESCALATION_MAX_REASONING_LEVELS,
+        validationFollowupEnabled: validationFollowup === true,
+    };
+}

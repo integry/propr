@@ -63,6 +63,9 @@ export interface TaskCompletionParams {
   postProcessingResult: PostProcessingResult | null;
   commitResult: CommitResult | null;
   correlatedLogger: Logger;
+  /** The run's resolved agent and model, when the job data left them to defaults. */
+  agentAlias?: string;
+  modelName?: string;
 }
 
 export interface ExecuteWorktreeParams {

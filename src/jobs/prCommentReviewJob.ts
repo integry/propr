@@ -48,7 +48,7 @@ export interface PRJobContext {
     isBatchJob: boolean;
     commentsToProcess: UnprocessedComment[];
     /** The job's command, for the processing-label gate; absent counts as a plain follow-up. */
-    jobRequest?: Pick<CommentJobData, 'commandMode' | 'ultrafixMeta'>;
+    jobRequest?: Pick<CommentJobData, 'commandMode' | 'ultrafixMeta' | 'effortEscalation'>;
 }
 
 interface ProcessingState {

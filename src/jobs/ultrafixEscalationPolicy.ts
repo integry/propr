@@ -34,6 +34,23 @@ export async function advanceEscalation(
     }
     if (++state.stalledReviews < state.patience) return;
     state.stalledReviews = 0;
+    await escalateOneStep(state, resolveAvailableModel);
+}
+
+/** The ladder fields one escalation step reads and moves. */
+export type EscalationLadderState = Pick<UltrafixEscalationState, 'models' | 'maxReasoningLevels' | 'modelIndex' | 'current' | 'climbs'>;
+
+export type EscalationStep = 'reasoning_increased' | 'model_handoff';
+
+/**
+ * One step up the ladder: the next reasoning level of the current model while
+ * climbs remain, then the next available model of the list. Returns null, and
+ * keeps the current model and effort, when no later step is available.
+ */
+export async function escalateOneStep(
+    state: EscalationLadderState,
+    resolveAvailableModel: (model: string) => Promise<EscalationModel | null>,
+): Promise<EscalationStep | null> {
     const levels = state.current.levels;
     const index = state.current.effort ? levels.indexOf(state.current.effort) : 0;
     const next = levels[index + 1];
@@ -41,7 +58,7 @@ export async function advanceEscalation(
         state.current.effort = next;
         if (state.current.effortInModel) state.current.model = state.current.model.replace(/-(low|medium|high)$/, `-${next}`);
         state.climbs++;
-        return;
+        return 'reasoning_increased';
     }
     for (let index = state.modelIndex + 1; index < state.models.length; index++) {
         const candidate = await resolveAvailableModel(state.models[index]);
@@ -49,7 +66,7 @@ export async function advanceEscalation(
         state.modelIndex = index;
         state.current = candidate;
         state.climbs = 0;
-        return;
+        return 'model_handoff';
     }
-    // Keep the current model and effort when no later candidate is available.
+    return null;
 }

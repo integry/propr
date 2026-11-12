@@ -1,9 +1,17 @@
 import { createHash } from 'node:crypto';
 import { normalizeWorkEvidenceCommentIds } from '@propr/shared';
 
-/** Filter out ultrafix synthetic comments (author='propr-ultrafix' or id=0) */
+/** Authors of requests ProPR queued itself: Ultrafix steps and escalated validation follow-ups. */
+const SYNTHETIC_COMMENT_AUTHORS = new Set(['propr-ultrafix', 'propr-escalation']);
+
+/** A request ProPR queued itself; it does not exist on GitHub. */
+export function isSyntheticComment(comment: { author: string }): boolean {
+    return SYNTHETIC_COMMENT_AUTHORS.has(comment.author);
+}
+
+/** Filter out synthetic comments (a synthetic author, or id=0) */
 export function filterRealComments<T extends { author: string; id: number }>(comments: readonly T[]): T[] {
-    return comments.filter(comment => comment.author !== 'propr-ultrafix' && comment.id !== 0);
+    return comments.filter(comment => !isSyntheticComment(comment) && comment.id !== 0);
 }
 
 /**

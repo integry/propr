@@ -11,7 +11,7 @@ import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/sha
 import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
 import { parseLinkedIssueNumbers } from '../github/linkedIssueReferences.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
-import { acceptedRequestDigest } from '../shared/workEvidenceMarker.js';
+import { acceptedRequestDigest, isSyntheticComment } from '../shared/workEvidenceMarker.js';
 import { receiptConsumesRequest } from './requestReceipts.js';
 
 interface ValidationComment {
@@ -74,8 +74,8 @@ export async function validateAndFilterComments(
 ): Promise<UnprocessedComment[]> {
     const validatedComments: UnprocessedComment[] = [];
     for (const comment of commentsToProcess) {
-        // Skip validation for ultrafix synthetic comments (they don't exist on GitHub)
-        if (comment.author === 'propr-ultrafix') {
+        // Skip validation for synthetic comments (they don't exist on GitHub)
+        if (isSyntheticComment(comment)) {
             validatedComments.push(comment);
             continue;
         }
@@ -116,8 +116,8 @@ export function filterUnprocessedComments(
     const { pullRequestNumber, correlatedLogger } = options;
     return commentsToProcess
         .filter(comment => {
-            // Skip "already processed" check for ultrafix synthetic comments
-            if (comment.author === 'propr-ultrafix') {
+            // Skip "already processed" check for synthetic comments
+            if (isSyntheticComment(comment)) {
                 return true;
             }
 

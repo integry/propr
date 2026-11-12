@@ -146,3 +146,15 @@ test('cancellation while scheduling a replacement removes the new retry', async 
     await handleUsageLimitError(new Error('usage limit'), { ...source, attemptsMade: 1 } as any, data, options());
     assert.deepEqual([...jobs.keys()], [previous.id]);
 });
+
+test('a usage-limit re-queue never escalates: the retry keeps the model, effort and ladder position', async () => {
+    const ladder = { models: ['codex:model', 'claude:stronger'], maxReasoningLevels: 2, modelIndex: 0, climbs: 1 };
+    const escalated = { ...data, reasoningLevel: 'high', implementationEscalation: ladder };
+    await handleUsageLimitError(new Error('usage limit'), { ...source, data: escalated } as any, escalated as any, options());
+    const retry = [...jobs.values()][0];
+    assert.equal(retry.data.agentAlias, 'codex');
+    assert.equal(retry.data.modelName, 'model');
+    assert.equal(retry.data.reasoningLevel, 'high');
+    assert.deepEqual(retry.data.implementationEscalation, ladder);
+    assert.equal(retry.data.replacesTaskId, undefined, 'a re-queue is not a replacement attempt');
+});
