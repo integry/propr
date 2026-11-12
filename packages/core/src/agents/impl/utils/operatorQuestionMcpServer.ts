@@ -163,13 +163,29 @@ function claimPath(id) {
     return path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '${OPERATOR_QUESTION_CLAIM_SUFFIX}');
 }
 
-/** Tell the worker the call was cancelled, unless it already claimed the question for an answer. */
+/**
+ * Claim the question for the client's cancellation. True only when this
+ * creates the claim: an existing claim is the worker's answer, already being
+ * published, and with no claim recorded the worker may still answer. Creating
+ * the file decides the claim (the worker treats any claim it did not create as
+ * a cancellation); its content is informational.
+ */
 async function claimCancelled(id) {
+    let handle;
     try {
-        await fsp.writeFile(claimPath(id), '${OPERATOR_QUESTION_CLAIM_CANCELLED}', { flag: 'wx', mode: 0o644 });
+        handle = await fsp.open(claimPath(id), 'wx', 0o644);
     } catch (error) {
         if (!error || error.code !== 'EEXIST') process.stderr.write('propr-operator: could not record a cancellation\n');
+        return false;
     }
+    try {
+        await handle.writeFile('${OPERATOR_QUESTION_CLAIM_CANCELLED}');
+    } catch {
+        process.stderr.write('propr-operator: could not describe a cancellation\n');
+    } finally {
+        await handle.close().catch(() => undefined);
+    }
+    return true;
 }
 
 async function readResponse(id) {
@@ -195,7 +211,8 @@ async function ask(requestId, args) {
     if (closeAt - Date.now() < minRemainingMs) return noAnswer(tooLate);
     const id = crypto.randomUUID();
     // Registered before the request is written, so an early cancellation is still published.
-    const wait = { id, cancelled: false };
+    // cancelled is set only by winning the exclusive claim, never by the notification alone.
+    const wait = { id, cancelling: false, cancelled: false };
     waits.set(requestId, wait);
     try {
         await writeAtomic(path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '.json'), { id, question, options });
@@ -257,9 +274,10 @@ input.on('line', async line => {
         request = JSON.parse(line);
         if (request.method === 'notifications/cancelled') {
             const wait = waits.get(request.params && request.params.requestId);
-            if (wait && !wait.cancelled) {
-                wait.cancelled = true;
-                await claimCancelled(wait.id);
+            if (wait && !wait.cancelling) {
+                wait.cancelling = true;
+                // Losing the claim to the worker's answer keeps the call waiting for that answer.
+                if (await claimCancelled(wait.id)) wait.cancelled = true;
             }
             return;
         }

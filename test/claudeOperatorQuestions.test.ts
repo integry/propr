@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -393,10 +393,41 @@ describe('ask_operator tool', () => {
     const call = askWithId({ question: 'Late cancel?' });
     const report = await reported(questions, control);
     assert.equal(await questions.answer({ id: 'input', message: 'Done.', sequence: 5 }, 'turn-1'), true);
+    // The server is between polls: the cancellation arrives before it reads the published answer.
     cancel(call.id);
-    await call.result;
+    const result = await call.result;
+    assert.equal(result.isError, undefined);
+    assert.equal(result.content[0].text, 'The operator answered:\nDone.');
     const claim = path.join(launch.exchangeDir, 'requests', `${report.questions?.[0].id}.claim`);
     assert.equal(readFileSync(claim, 'utf8'), 'answered');
+    assert.deepEqual(control.delivered, [{ inputId: 'input', turnId: 'turn-1' }]);
+    assert.deepEqual(control.resolved, [{ requestKey: report.requestKey, resolution: 'answered' }]);
+  });
+
+  test('a cancellation between the answer claim and its publication keeps waiting for the answer', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { askWithId, cancel } = startServer(launch);
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-cancel-unpublished');
+    const call = askWithId({ question: 'Claimed but unpublished?' });
+    const report = await reported(questions, control);
+    const id = report.questions?.[0].id;
+    // The worker's answer path has created its claim but not yet written the response.
+    const claim = path.join(launch.exchangeDir, 'requests', `${id}.claim`);
+    writeFileSync(claim, 'answered', { flag: 'wx' });
+    cancel(call.id);
+    // Several polls pass: a cancellation that lost the claim must not end the call.
+    const pending = Symbol('pending');
+    const early = await Promise.race([call.result, new Promise(resolve => setTimeout(() => resolve(pending), 1_500))]);
+    assert.equal(early, pending);
+    assert.equal(readFileSync(claim, 'utf8'), 'answered');
+
+    const responses = path.join(launch.exchangeDir, 'responses');
+    writeFileSync(path.join(responses, `.${id}.tmp`), JSON.stringify({ status: 'answered', answer: 'Published late.' }));
+    renameSync(path.join(responses, `.${id}.tmp`), path.join(responses, `${id}.json`));
+    const result = await call.result;
+    assert.equal(result.isError, undefined);
+    assert.equal(result.content[0].text, 'The operator answered:\nPublished late.');
   });
 
   test('attempt end closes open questions and the exchange is removed', async () => {
