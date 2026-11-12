@@ -180,7 +180,7 @@ export async function enqueueRemainingBehindRunning(params: {
   const existing = await getEpicExecutionQueue(draftId);
   if (existing?.status === 'active') {
     if (existing.parallel || !existing.ready) throw new EpicQueueRequestError('An execution is already being set up for this plan.');
-    const owned = new Set(existing.issues.slice(existing.cursor));
+    const owned = new Set(existing.items.filter(item => item.state !== 'done' && item.state !== 'skipped').map(item => item.issueNumber));
     const missing = pending.filter(issue => !owned.has(issue.issue_number));
     if (!missing.length) return { queued: pending.map(issue => issue.issue_number), alreadyQueued: true };
     await appendToActiveQueue({ queue: existing, issues: missing, epicLabel: existing.useEpic ? epicLabel : undefined, contextConfig });
@@ -228,9 +228,7 @@ async function appendToActiveQueue(params: {
     await syncQueuedEpicIssueSelectors({ draftId: queue.draftId, repository: queue.repository, issueNumber: issue.issue_number,
       epicLabel, autoMerge: queue.autoMerge, selection, octokit, canConfigure: owned });
   }
-  // Compare-and-swap on the issue list so a concurrent advance or completion is not overwritten.
-  const appended = await core.db('epic_execution_queues')
-    .where({ draft_id: queue.draftId, execution_id: queue.executionId, status: 'active', issues: JSON.stringify(queue.issues) })
-    .update({ issues: JSON.stringify([...queue.issues, ...params.issues.map(issue => issue.issue_number)]), updated_at: Date.now() });
+  // Compare-and-swap on the per-issue rows so a concurrent advance or completion is not overwritten.
+  const appended = await core.appendEpicQueueIssues(queue, params.issues.map(issue => issue.issue_number));
   if (!appended) throw new EpicQueueRequestError('The plan execution changed; refresh and queue again.');
 }

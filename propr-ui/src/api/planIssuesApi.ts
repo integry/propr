@@ -156,12 +156,25 @@ export const implementIssue = async (
 };
 
 /** Summary of the plan's sequential execution queue: `issues[cursor]` is in flight, later entries wait their turn. */
+export type PlanExecutionQueueIssueState = 'pending' | 'dispatched' | 'done' | 'blocked' | 'skipped';
+export type PlanExecutionQueueBlockedKind = 'closed_unmerged' | 'missing_from_plan' | 'dispatch_failed' | 'agent_blocked'
+  | 'awaiting_human_merge' | 'label_handoff' | 'setup_not_ready';
+
 export interface PlanExecutionQueue {
   issues: number[];
   cursor: number;
   head: number | null;
   status: 'active' | 'completed' | 'cancelled';
+  advanceOn?: 'merged' | 'terminal';
   blockedReason: string | null;
+  executionMode?: 'parallel';
+  /** Per-issue state in queue order; blocked issues carry a structured reason kind. */
+  issueStates?: Array<{
+    issue: number;
+    state: PlanExecutionQueueIssueState;
+    blockedKind: PlanExecutionQueueBlockedKind | null;
+    blockedReason: string | null;
+  }>;
 }
 
 /** Fetches the plan's execution queue, or null when the plan never queued work. */

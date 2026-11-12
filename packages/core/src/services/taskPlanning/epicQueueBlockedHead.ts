@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
-import { isTerminalStatus } from '../../webhook/statusMachine.js';
+import { epicQueueIssue, getEpicExecutionQueue, isEpicQueueIssueInFlight, isSettled, reopenParallelQueueIssue, unblockQueueIssue,
+  blockQueueIssue, type EpicExecutionQueue, type EpicQueueIssue } from './epicQueueState.js';
 
 /**
  * An issue run that ended with the `blocked` outcome (`on_blocker: report`)
@@ -9,8 +10,6 @@ import { isTerminalStatus } from '../../webhook/statusMachine.js';
  * and survives recovery passes until a later run for the issue settles normally.
  */
 const BLOCKED_HEAD_PATTERN = /^Issue #\d+ stopped on a blocker reported by the agent;/;
-/** SQL LIKE form of the pattern, for guards evaluated in the same statement as a write. */
-export const AGENT_BLOCKED_REASON_LIKE = 'Issue #% stopped on a blocker reported by the agent;%';
 
 export function agentBlockedHeadReason(issueNumber: number): string {
   return `Issue #${issueNumber} stopped on a blocker reported by the agent; resolve the blocker and request processing again to continue this epic.`;
@@ -21,17 +20,19 @@ export function isAgentBlockedReason(reason: string | null | undefined): boolean
 }
 
 type Deps = { database?: Knex; now?: () => number };
-type ActiveRow = { execution_id: string; issues: string; cursor: number; parallel: boolean | number };
 
-async function activeQueueFor(database: Knex, draftId: string, issueNumber: number): Promise<{ row: ActiveRow; guard: Record<string, unknown> } | null> {
-  const row = await database('epic_execution_queues').where({ draft_id: draftId, status: 'active' })
-    .first<ActiveRow | undefined>('execution_id', 'issues', 'cursor', 'parallel');
-  if (!row) return null;
-  const issues = JSON.parse(row.issues) as number[];
-  // A parallel execution runs every child at once; a sequential one only its head.
-  if (row.parallel ? !issues.includes(issueNumber) : issues[row.cursor] !== issueNumber) return null;
-  // Guarded like every other queue write: a newer execution or a moved cursor wins.
-  return { row, guard: { draft_id: draftId, execution_id: row.execution_id, status: 'active', cursor: row.cursor } };
+/**
+ * The active execution in which this issue is in flight (its sequential head, or an unsettled parallel child), with the observed occurrence.
+ * A done parallel child that was reopened and is running again is put back in flight first, so its new run is tracked.
+ */
+async function activeQueueFor(database: Knex, draftId: string, issueNumber: number, timestamp: number): Promise<{ queue: EpicExecutionQueue; item: EpicQueueIssue } | null> {
+  const queue = await getEpicExecutionQueue(draftId, { database });
+  const item = epicQueueIssue(queue, issueNumber);
+  if (!queue || !item) return null;
+  if (queue.parallel && queue.status === 'active' && isSettled(item)) {
+    return await reopenParallelQueueIssue(database, queue, item, timestamp) ? { queue, item: { ...item, state: 'dispatched' } } : null;
+  }
+  return isEpicQueueIssueInFlight(queue, issueNumber) ? { queue, item } : null;
 }
 
 /**
@@ -41,66 +42,23 @@ async function activeQueueFor(database: Knex, draftId: string, issueNumber: numb
  */
 export async function markEpicQueueHeadBlocked({ draftId, issueNumber }: { draftId: string; issueNumber: number },
   { database = db, now = Date.now }: Deps = {}): Promise<boolean> {
-  const active = await activeQueueFor(database, draftId, issueNumber);
+  const timestamp = now();
+  const active = await activeQueueFor(database, draftId, issueNumber, timestamp);
   if (!active) return false;
-  return Boolean(await database('epic_execution_queues').where(active.guard)
-    .update({ blocked_reason: agentBlockedHeadReason(issueNumber), updated_at: now() }));
-}
-
-function historyMetadata(metadata: unknown): Record<string, unknown> {
-  if (metadata && typeof metadata === 'object') return metadata as Record<string, unknown>;
-  if (typeof metadata !== 'string' || !metadata) return {};
-  try {
-    const parsed = JSON.parse(metadata);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
-/** True when the latest persisted state of the task is a completed run that stopped on a reported blocker. */
-async function latestRunBlocked(database: Knex, taskId: string): Promise<boolean> {
-  const latest = await database('task_history').where({ task_id: taskId }).orderBy('timestamp', 'desc').orderBy('history_id', 'desc')
-    .first<{ state: string; metadata: unknown } | undefined>('state', 'metadata');
-  if (!latest || latest.state !== 'completed') return false;
-  const metadata = historyMetadata(latest.metadata);
-  const prResult = metadata.prResult && typeof metadata.prResult === 'object' ? metadata.prResult as Record<string, unknown> : {};
-  return metadata.terminalReason === 'blocked' || prResult.terminalReason === 'blocked';
-}
-
-/**
- * The first other child of a parallel execution (in queue order) that is still
- * in progress and whose latest run stopped on a reported blocker.
- */
-async function siblingStillBlocked(database: Knex, draftId: string, issues: number[], issueNumber: number): Promise<number | null> {
-  const others = issues.filter(issue => issue !== issueNumber);
-  if (others.length === 0) return null;
-  const rows = await database('plan_issues').where({ draft_id: draftId }).whereIn('issue_number', others)
-    .select<Array<{ issue_number: number; status: string; task_id: string | null }>>('issue_number', 'status', 'task_id');
-  for (const issue of others) {
-    const row = rows.find(candidate => candidate.issue_number === issue);
-    if (!row?.task_id || isTerminalStatus(row.status as never)) continue;
-    if (await latestRunBlocked(database, row.task_id)) return issue;
-  }
-  return null;
+  // Guarded like every other queue write: a newer execution, a settled issue or a requeued occurrence wins.
+  return blockQueueIssue(database, active.queue, active.item, { kind: 'agent_blocked', reason: agentBlockedHeadReason(issueNumber), timestamp });
 }
 
 /**
  * A later run for the issue settled without a blocker: drop this issue's
- * blocker explanation, leaving any other reason (a merge wait, a sibling's
- * blocker in a parallel execution) in place. In a parallel execution a
- * sibling whose latest run is still blocked takes over the explanation, since
- * only the most recent blocker's reason is stored. Returns true when this
- * issue's reason was replaced.
+ * blocker, leaving any other reason (a merge wait) in place. Other children of
+ * a parallel execution keep their own blockers, so the latest one still blocked
+ * explains the execution. Returns true when this issue's blocker was cleared.
  */
 export async function clearEpicQueueHeadBlocked({ draftId, issueNumber }: { draftId: string; issueNumber: number },
   { database = db, now = Date.now }: Deps = {}): Promise<boolean> {
-  const active = await activeQueueFor(database, draftId, issueNumber);
+  const timestamp = now();
+  const active = await activeQueueFor(database, draftId, issueNumber, timestamp);
   if (!active) return false;
-  const sibling = active.row.parallel
-    ? await siblingStillBlocked(database, draftId, JSON.parse(active.row.issues) as number[], issueNumber)
-    : null;
-  return Boolean(await database('epic_execution_queues')
-    .where({ ...active.guard, blocked_reason: agentBlockedHeadReason(issueNumber) })
-    .update({ blocked_reason: sibling === null ? null : agentBlockedHeadReason(sibling), updated_at: now() }));
+  return unblockQueueIssue(database, active.queue, active.item, { timestamp, kinds: ['agent_blocked'] });
 }

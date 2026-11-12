@@ -11,7 +11,7 @@ import {
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
 } from '@propr/shared';
 import type { FileChangesData } from '@propr/core';
-import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue, cancelUnstartedEpicExecutionQueue, UNSTARTED_EPIC_REASON } from '@propr/core';
+import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue, cancelUnstartedEpicExecutionQueue } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
@@ -627,7 +627,7 @@ export function addPlanImplementationTool(
       const ultrafixGoal = args.runUltrafix ? await resolveUltrafixGoal(args.ultrafixGoal) : null;
       const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallelExecutionId?: string }> => {
         const previous = await getEpicExecutionQueue(args.planId, { database: tx });
-        if (previous?.status === 'cancelled' && previous.blockedReason === UNSTARTED_EPIC_REASON) {
+        if (previous?.unstarted) {
           const records = await tx('mcp_records').where({ kind: 'issue_execution' })
             .whereIn('id', previous.issues.map(number => `${args.planId}:${number}`));
           for (const record of records) {

@@ -1,3 +1,4 @@
+import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
@@ -61,7 +62,7 @@ await database.schema.createTable('tasks', table => {
 await database.schema.createTable('task_history', table => {
   table.increments('history_id'); table.string('task_id'); table.string('state');
 });
-for (const migrate of [up, finalization, useEpic, parallel, recovery]) await migrate(database);
+for (const migrate of [up, finalization, useEpic, parallel, recovery, epicQueueIssueStates]) await migrate(database);
 /** Records the issue's worker task in `state`, as the worker state manager would. */
 async function workerTask(state: string, taskId = 'task-10') {
   await database('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 10, task_type: 'issue' }).onConflict('task_id').ignore();
@@ -186,6 +187,7 @@ test('the final child releases all configured triggers before epic finalization'
   configured = ['AI', 'Assistant'];
   labels = new Set(['AI', 'AI-done', 'Assistant', 'Assistant-done']);
   await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ issues: '[10]' });
+  await database('epic_execution_queue_issues').where({ draft_id: 'draft', issue_number: 20 }).delete();
   await startEpicQueueHead('draft');
   assert.deepEqual(events, ['remove:10:AI', 'remove:10:Assistant', 'finalize']);
 });
@@ -195,6 +197,7 @@ test('another trigger without its own done marker is separate work and is left a
   for (const [policy, status] of [['merged', 'merged'], ['terminal', 'closed']] as const) {
     events.length = 0;
     await database('epic_execution_queues').delete();
+    await database('epic_execution_queue_issues').delete();
     await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
     await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ advance_on: policy });
     await database('plan_issues').where({ issue_number: 10 }).update({ status });
