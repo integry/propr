@@ -160,6 +160,7 @@ export type {
 
 export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type AutoMergeReevaluationOptions, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export type { AutoMergeEvaluationOutcome } from './webhook/autoMergeEvaluation.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';

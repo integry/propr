@@ -8,7 +8,6 @@ import {
     getCurrentPRHead,
     getCiMergeReadiness,
     getPRAutoMergeInfo,
-    linkedIssueHasAutoMergeLabel,
     hasActiveTasksForPR,
     findPRsForCommit,
     findPRsForCommitCached,
@@ -31,6 +30,10 @@ import {
 } from '../services/autoMergeGate.js';
 import type { AutoMergeDecision, AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
 import { mergeWhenUpToDate, noteCiWaitAfterBranchUpdate, type MergeOwnershipCheck } from './autoMergeUpToDate.js';
+import {
+    ciRefusalOutcome, eligibilityRefusalOutcome, evaluateAutoMergeEligibility, mergeabilityRefusalOutcome, policyRefusalOutcome,
+    type AutoMergeEvaluationOutcome,
+} from './autoMergeEvaluation.js';
 
 export interface StatusEventPayload {
     sha: string;
@@ -99,56 +102,14 @@ interface PRMergeContext extends PRContext {
  * Determines if a PR should be auto-merged based on labels.
  */
 export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
-    const { owner, repoName, prNumber, prInfo, log } = ctx;
-
-    if (prInfo.hasActiveUltrafixLoop) {
-        log.info({ owner, repoName, prNumber }, 'PR has an active ultrafix loop, skipping auto-merge');
-        return false;
-    }
-
-    if (prInfo.ultrafixCompletionStatus === 'failed') {
-        log.info({ owner, repoName, prNumber }, 'PR has a failed ultrafix loop, keeping auto-merge blocked');
-        return false;
-    }
-
-    if (prInfo.hasUltrafixLabel && prInfo.ultrafixStateUnavailable) {
-        log.warn(
-            { owner, repoName, prNumber },
-            'Ultrafix state is unavailable while ultrafix label is present, keeping auto-merge blocked'
-        );
-        return false;
-    }
-
-    if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus !== 'succeeded') {
-        log.info(
-            { owner, repoName, prNumber, ultrafixCompletionStatus: prInfo.ultrafixCompletionStatus },
-            'Ultrafix label remains without a successful completion state, keeping auto-merge blocked'
-        );
-        return false;
-    }
-
-    if (isEpicBranch(prInfo.headBranch)) {
-        if (!prInfo.hasLabel) {
-            log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping merge');
-            return false;
-        }
-        return true;
-    }
-
-    const issueHasLabel = await linkedIssueHasAutoMergeLabel(owner, repoName, prNumber);
-    if (!prInfo.hasLabel && !issueHasLabel) {
-        log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
-        return false;
-    }
-
-    return true;
+    return await evaluateAutoMergeEligibility(ctx) === 'eligible';
 }
 
 /**
  * Performs the actual merge of a PR and post-merge actions. `stillOwned` (`require_up_to_date`) is checked right
  * before the merge request: an attempt that lost the merge ownership must not merge on a stale comparison.
  */
-async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string, stillOwned?: MergeOwnershipCheck): Promise<void> {
+async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string, stillOwned?: MergeOwnershipCheck): Promise<boolean> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
     let commitTitle: string | undefined;
     let commitMessage: string | undefined;
@@ -162,7 +123,10 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
         }
     }
 
-    if (stillOwned && !await stillOwned()) return log.info({ owner, repoName, prNumber }, 'Auto-merge ownership was lost before the merge request, not merging');
+    if (stillOwned && !await stillOwned()) {
+        log.info({ owner, repoName, prNumber }, 'Auto-merge ownership was lost before the merge request, not merging');
+        return false;
+    }
     const mergeResult = await mergePR({ owner, repoName, prNumber, mergeMethod, commitTitle, commitMessage, sha: expectedHeadSha });
 
     if (mergeResult.success && mergeResult.merged) {
@@ -175,9 +139,10 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
             await updatePlanIssueByPR(repository, prNumber, { status: PlanIssueStatus.MERGED });
             log.info({ repository, prNumber }, 'Updated plan issue status to merged');
         }
-    } else {
-        log.warn({ owner, repoName, prNumber, error: mergeResult.error }, 'Failed to auto-merge PR');
+        return true;
     }
+    log.warn({ owner, repoName, prNumber, error: mergeResult.error }, 'Failed to auto-merge PR');
+    return false;
 }
 
 /**
@@ -202,10 +167,12 @@ function passesMergeabilityGate(ctx: PRContext, prInfo: PRAutoMergeInfo): boolea
  * merges only after its own CI passes. The comparison and the merge run under
  * the repository's merge ownership, so a second candidate compares against the
  * base this merge produced; the ownership is confirmed right before the merge
- * request. A head GitHub still reports as behind never merges.
+ * request. A head GitHub still reports as behind never merges. Only a merge
+ * resolves the evaluation: an updated, waiting, refused or failed merge leaves it inconclusive.
  */
-async function mergeEvaluatedHead(ctx: PRMergeContext, decision: AutoMergeDecision, baseRef: string, ciReason: string): Promise<void> {
+async function mergeEvaluatedHead(ctx: PRMergeContext, decision: AutoMergeDecision, baseRef: string, ciReason: string): Promise<AutoMergeEvaluationOutcome> {
     const { owner, repoName, prNumber, headSha, prInfo, log } = ctx;
+    let merged = false;
     const merge = async (stillOwned?: MergeOwnershipCheck): Promise<void> => {
         if (prInfo.mergeableState !== 'clean') {
             log.debug({ owner, repoName, prNumber, mergeableState: prInfo.mergeableState }, 'GitHub reports the PR as behind its base, skipping merge');
@@ -216,30 +183,34 @@ async function mergeEvaluatedHead(ctx: PRMergeContext, decision: AutoMergeDecisi
         const mergeMethod = await resolveDirectMergeMethod({ owner, repo: repoName, method: decision.method });
         log.info({ owner, repoName, prNumber, headSha, ci: ciReason, mergeMethod }, 'CI allows merging the auto-merge PR, attempting to merge');
         // GitHub refuses the merge if the head moved after the evaluation.
-        await performMergeAndPostActions(ctx, mergeMethod, headSha, stillOwned);
+        merged = await performMergeAndPostActions(ctx, mergeMethod, headSha, stillOwned);
     };
-    if (!decision.upToDate) {
-        await merge();
-        return;
-    }
-    await mergeWhenUpToDate({ owner, repo: repoName, prNumber, headSha, baseRef, log }, decision.upToDate, merge);
+    if (decision.upToDate) await mergeWhenUpToDate({ owner, repo: repoName, prNumber, headSha, baseRef, log }, decision.upToDate, merge);
+    else await merge();
+    return merged ? 'resolved' : 'inconclusive';
 }
 
 /**
- * Processes a single PR for potential auto-merge.
+ * Processes a single PR for potential auto-merge. The outcome tells the sweep
+ * whether a `require_up_to_date` retry is resolved ({@link AutoMergeEvaluationOutcome}).
  */
-async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ignoreWorkIds?: readonly string[] } = {}): Promise<void> {
+async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ignoreWorkIds?: readonly string[] } = {}): Promise<AutoMergeEvaluationOutcome> {
     const { owner, repoName, prNumber, log } = ctx;
     const prInfo = await getPRAutoMergeInfo(owner, repoName, prNumber);
 
+    if (prInfo.unavailable) {
+        log.debug({ owner, repoName, prNumber }, 'PR could not be read, skipping auto-merge for now');
+        return 'inconclusive';
+    }
+
     if (prInfo.state !== undefined && prInfo.state !== 'open') {
         log.debug({ owner, repoName, prNumber, state: prInfo.state }, 'PR is not open, skipping auto-merge');
-        return;
+        return 'resolved';
     }
 
     if (prInfo.isDraft) {
         log.debug({ owner, repoName, prNumber }, 'PR is a draft, skipping auto-merge');
-        return;
+        return 'resolved';
     }
 
     // `require_up_to_date`: GitHub's own auto-merge would merge a behind head once
@@ -251,13 +222,13 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
 
     const mergeCtx: PRMergeContext = { ...ctx, headSha, prInfo };
 
-    const shouldMerge = await shouldAutoMergePR(mergeCtx);
-    if (!shouldMerge) return;
+    const eligibility = await evaluateAutoMergeEligibility(mergeCtx);
+    if (eligibility !== 'eligible') return eligibilityRefusalOutcome(eligibility);
 
     const currentPrHead = await getCurrentPRHead(owner, repoName, prNumber);
     if (currentPrHead !== headSha) {
         log.debug({ owner, repoName, prNumber, checkRunSha: headSha, currentPrHead }, 'Check run SHA does not match current PR head, skipping');
-        return;
+        return 'inconclusive';
     }
 
     // Passing CI, or no CI at all for this head, lets the merge proceed.
@@ -266,10 +237,10 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
         log.debug({ owner, repoName, prNumber, reason: ci.reason }, 'CI does not allow merging yet, skipping merge');
         // A head ProPR produced by updating the branch records that it waits for CI.
         if (ci.reason !== 'unavailable') await noteCiWaitAfterBranchUpdate({ owner, repo: repoName, prNumber, headSha, log });
-        return;
+        return ciRefusalOutcome(ci);
     }
 
-    if (!passesMergeabilityGate(ctx, prInfo)) return;
+    if (!passesMergeabilityGate(ctx, prInfo)) return mergeabilityRefusalOutcome(prInfo);
 
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
@@ -282,7 +253,7 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
             activeTasks,
             queuedJobs,
         }, 'Skipping auto-merge - active or queued work in progress for this PR');
-        return;
+        return 'inconclusive';
     }
 
     // The repository's auto-merge policy (read from the base branch) gates this
@@ -291,13 +262,13 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
     if (!decision.arm) {
         log.info({ owner, repoName, prNumber, reason: decision.reason, matchedPaths: decision.matchedPaths },
             'Auto-merge policy does not allow merging this PR; leaving it for a human');
-        return;
+        return policyRefusalOutcome(decision);
     }
     // The decision covers only the head it evaluated, which must be the head whose checks passed.
     if (pullRequest?.headSha !== headSha) {
         log.info({ owner, repoName, prNumber, checkedHeadSha: headSha, evaluatedHeadSha: pullRequest?.headSha },
             'PR head changed while evaluating the auto-merge policy, skipping merge');
-        return;
+        return 'inconclusive';
     }
 
     // `require_up_to_date` keeps GitHub's own auto-merge off: it would merge a
@@ -307,7 +278,7 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string, options: { ig
         await withdrawNativeAutoMergeForUpToDate({ owner, repo: repoName, prNumber, pullRequest, opportunity: 'check_merge', log });
     }
 
-    await mergeEvaluatedHead(mergeCtx, decision, pullRequest.baseRef || prInfo.baseBranch, ci.reason);
+    return mergeEvaluatedHead(mergeCtx, decision, pullRequest.baseRef || prInfo.baseBranch, ci.reason);
 }
 
 export interface AutoMergeReevaluationOptions {
@@ -316,21 +287,22 @@ export interface AutoMergeReevaluationOptions {
     ignoreWorkIds?: readonly string[];
 }
 
+/** Re-evaluate the PR's current head; the outcome tells the sweep whether a retry is resolved. */
 export async function reevaluatePRAutoMerge(
     owner: string,
     repoName: string,
     prNumber: number,
     options: AutoMergeReevaluationOptions,
-): Promise<void> {
+): Promise<AutoMergeEvaluationOutcome> {
     const log = logger.withCorrelation(options.correlationId);
     const headSha = await getCurrentPRHead(owner, repoName, prNumber);
     if (!headSha) {
         log.debug({ owner, repoName, prNumber }, 'Auto-merge re-evaluation skipped: PR head SHA unavailable');
-        return;
+        return 'inconclusive';
     }
 
     const ctx: PRContext = { owner, repoName, prNumber, log };
-    await processPRAutoMerge(ctx, headSha, options);
+    return processPRAutoMerge(ctx, headSha, options);
 }
 
 /**

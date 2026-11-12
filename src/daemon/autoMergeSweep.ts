@@ -1,6 +1,6 @@
 import {
     db, generateCorrelationId, loadDeferredUpToDateCandidates, logger, PlanIssueStatus, reevaluatePRAutoMerge, settleDeferredUpToDateCandidate,
-    type DeferredUpToDateCandidate,
+    type AutoMergeEvaluationOutcome, type DeferredUpToDateCandidate,
 } from '@propr/core';
 
 export const AUTO_MERGE_SWEEP_INTERVAL_MS = 60_000;
@@ -41,7 +41,10 @@ export async function loadAutoMergeSweepCandidates(now: Date = new Date()): Prom
  * (waiting for another PR's update turn or merge, or for its own update), which
  * need not be a plan PR. Each PR goes through the same gates as a green check
  * (labels, Ultrafix state, CI, mergeability, active work, repository policy).
- * A deferred PR leaves the retry set once a re-evaluation did not defer it again.
+ * A deferred PR leaves the retry set only once a re-evaluation resolved it (it
+ * merged, closed, or waits on something that produces its own event) and did
+ * not defer it again; an inconclusive one (unavailable CI or PR reads, unknown
+ * mergeability, active work, a refused merge) or a failed one keeps it.
  */
 export async function sweepAutoMergeCandidates(
     loadCandidates: () => Promise<AutoMergeSweepCandidate[]> = loadAutoMergeSweepCandidates,
@@ -64,14 +67,20 @@ export async function sweepAutoMergeCandidates(
     for (const { repository, prNumber, deferred: retry } of candidates.values()) {
         const [owner, repo] = repository.split('/');
         if (!owner || !repo) continue;
+        let outcome: AutoMergeEvaluationOutcome;
         try {
-            await reevaluate(owner, repo, prNumber, { correlationId: generateCorrelationId() });
+            outcome = await reevaluate(owner, repo, prNumber, { correlationId: generateCorrelationId() });
         } catch (error) {
             // A failed re-evaluation keeps a deferred PR in the retry set.
             logger.warn({ repository, prNumber, error: (error as Error).message }, 'Auto-merge sweep failed for PR');
             continue;
         }
         if (!retry) continue;
+        if (outcome !== 'resolved') {
+            // No event may follow an inconclusive evaluation: the next sweep tries again.
+            logger.debug({ repository, prNumber, outcome }, 'Deferred auto-merge candidate stays in the retry set');
+            continue;
+        }
         try {
             await deferred.settle(retry);
         } catch (error) {

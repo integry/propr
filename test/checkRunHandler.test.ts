@@ -48,7 +48,12 @@ await mock.module('ioredis', {
                 }),
                 zrem: mock.fn(async (key: string, member: string) => (redisSortedSets.get(key)?.delete(member) ? 1 : 0)),
                 // The up-to-date gate's token-checked renew/release scripts; TTLs are not simulated.
-                eval: mock.fn(async (script: string, _keys: number, key: string, token: string) => {
+                eval: mock.fn(async (script: string, _keys: number, key: string, token: string, settleBefore?: number) => {
+                    // The retry set's settle: remove the member unless it was deferred again after `settleBefore`.
+                    if (script.includes("'zscore'")) {
+                        const score = redisSortedSets.get(key)?.get(token);
+                        return score !== undefined && score <= Number(settleBefore) && redisSortedSets.get(key)!.delete(token) ? 1 : 0;
+                    }
                     if (redisValues.get(key) !== token) return 0;
                     if (script.includes("'del'")) redisValues.delete(key);
                     return 1;
@@ -204,6 +209,7 @@ const {
     handleCheckRunEvent,
     handleCheckSuiteEvent,
     handleStatusEvent,
+    reevaluatePRAutoMerge,
     setUltrafixCheckRunHook,
     shouldAutoMergePR,
     triggerUltrafixCheckRunHook,
@@ -2988,5 +2994,132 @@ describe('auto_merge.require_up_to_date', () => {
         await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
         assert.equal(mergeCalls().length, 0);
         assert.deepEqual(recordedReasons(), [['waiting_for_ci_updated_head', 'waiting']]);
+    });
+});
+
+describe('auto_merge.require_up_to_date sweep retries', () => {
+    const DEFERRED_KEY = 'auto-merge:up-to-date:deferred';
+    const MERGE_OWNERSHIP_KEY = 'auto-merge:up-to-date:merging:test-owner/test-repo';
+    const mergeCalls = () => mockOctokit.request.mock.calls.filter((call: { arguments: unknown[] }) => call.arguments[0] === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge');
+    /** An auto-merge PR (not a plan PR) whose head is current with `main`. */
+    function mockCurrentPR(options: { ciUnavailable?: boolean; mergeable?: boolean | null; mergeableState?: string } = {}) {
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge') return { data: { merged: true, sha: 'merge123' } };
+            if (endpoint === 'GET /repos/{owner}/{repo}/compare/{basehead}') return { data: { behind_by: 0, base_commit: { sha: 'base-tip' } } };
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: {
+                    state: 'open', labels: [{ name: 'auto-merge' }], draft: false, body: '',
+                    mergeable: options.mergeable === undefined ? true : options.mergeable, mergeable_state: options.mergeableState ?? 'clean',
+                    base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                } };
+            }
+            // Both CI endpoints failing makes CI readiness `unavailable`.
+            if (options.ciUnavailable && (endpoint.includes('check-runs') || endpoint.endsWith('/status'))) throw new Error('GitHub 502');
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] } };
+            return { data: {} };
+        });
+    }
+    function useUpToDatePolicy(): void {
+        mockRedisGet.mock.mockImplementation((async (key: string) => redisValues.get(key) ?? null) as never);
+        mockRedisDel.mock.mockImplementation(async (key?: string) => (redisValues.delete(key ?? '') ? 1 : 0));
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async input => ({
+            decision: { arm: true, reason: 'armed', upToDate: { maxBranchUpdatesPerHour: 3 } } as PolicyDecision,
+            pullRequest: { headSha: await getCurrentPRHead(input.owner, input.repo, input.prNumber), baseRef: 'main' } as { headSha: string | null } | null,
+        }));
+    }
+    // The daemon's sweep imports `@propr/core` (the built package); route it to the core sources under test.
+    let sweepModule: Promise<typeof import('../src/daemon/autoMergeSweep.js')> | null = null;
+    const loadSweep = () => sweepModule ??= (async () => {
+        const retry = await import('../packages/core/src/webhook/autoMergeUpToDateRetry.js');
+        await mock.module('@propr/core', {
+            namedExports: {
+                db: () => { throw new Error('the sweep test injects its plan candidates'); },
+                generateCorrelationId: () => 'sweep-correlation-id',
+                logger: mockLogger,
+                PlanIssueStatus: { MERGED: 'merged', CLOSED: 'closed' },
+                reevaluatePRAutoMerge,
+                loadDeferredUpToDateCandidates: retry.loadDeferredUpToDateCandidates,
+                settleDeferredUpToDateCandidate: retry.settleDeferredUpToDateCandidate,
+            },
+        });
+        return import('../src/daemon/autoMergeSweep.js');
+    })();
+    /** The production sweep over the Redis retry set; PR 42 is not a plan PR. */
+    async function sweep(): Promise<void> {
+        const { sweepAutoMergeCandidates } = await loadSweep();
+        await sweepAutoMergeCandidates(async () => []);
+    }
+    const deferred = () => redisSortedSets.get(DEFERRED_KEY)?.has('test-owner/test-repo#42') ?? false;
+
+    const transientGates: Array<[string, Parameters<typeof mockCurrentPR>[0]]> = [
+        ['CI unavailable', { ciUnavailable: true }],
+        ['mergeability not computed yet', { mergeable: null, mergeableState: 'unknown' }],
+    ];
+    for (const [label, firstSweep] of transientGates) {
+        test(`a deferred non-plan PR whose first sweep finds ${label} merges on the next sweep without another webhook`, async () => {
+            resetMocks();
+            useUpToDatePolicy();
+            // A green check finds another PR owning the merge: PR 42 is deferred.
+            redisValues.set(MERGE_OWNERSHIP_KEY, '41:other-token');
+            mockCurrentPR();
+            await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+            assert.equal(mergeCalls().length, 0);
+            assert.ok(deferred(), 'deferred for the sweep');
+            redisValues.delete(MERGE_OWNERSHIP_KEY);
+
+            mockCurrentPR(firstSweep);
+            await sweep();
+            assert.equal(mergeCalls().length, 0, `${label}: nothing merges`);
+            assert.ok(deferred(), `${label}: the inconclusive evaluation keeps the retry entry`);
+
+            // The gate recovers; the head is unchanged, so no check event arrives.
+            mockCurrentPR();
+            await sweep();
+            assert.equal(mergeCalls().length, 1, 'the next sweep merges the PR');
+            assert.equal(deferred(), false, 'the merged PR leaves the retry set');
+        });
+    }
+
+    test('a failed check and a closed PR resolve the evaluation; an unreadable PR does not', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        const openPR = { state: 'open', labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
+            base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha' } };
+        const failingChecks = (endpoint: string) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: openPR };
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'failure' }] } };
+            return { data: {} };
+        };
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => failingChecks(endpoint));
+        assert.equal(await reevaluatePRAutoMerge('test-owner', 'test-repo', 42, { correlationId: 'c' }), 'resolved', 'a failed check waits for a new head');
+
+        // The head lookup succeeds, then the auto-merge info read fails.
+        let prReads = 0;
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}' && ++prReads > 1) throw new Error('GitHub 502');
+            return failingChecks(endpoint);
+        });
+        assert.equal(await reevaluatePRAutoMerge('test-owner', 'test-repo', 42, { correlationId: 'c' }), 'inconclusive', 'an unreadable PR is not settled');
+
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}'
+            ? { data: { ...openPR, state: 'closed' } } : { data: {} }));
+        redisSortedSets.set(DEFERRED_KEY, new Map([['test-owner/test-repo#42', Date.now()]]));
+        await sweep();
+        assert.equal(deferred(), false, 'a closed PR leaves the retry set');
+    });
+
+    test('a PR labelled only through its linked issue is inconclusive while the issue cannot be read', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: { state: 'open', labels: [], draft: false, mergeable: true, mergeable_state: 'clean', body: 'Fixes #100',
+                    base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha' } } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') throw new Error('GitHub 502');
+            return { data: {} };
+        });
+        assert.equal(await reevaluatePRAutoMerge('test-owner', 'test-repo', 42, { correlationId: 'c' }), 'inconclusive');
+        assert.equal(mergeCalls().length, 0, 'still never merges');
     });
 });
