@@ -652,16 +652,41 @@ describe('acting-step mutation count', () => {
     assert.equal(h.executeTask.mock.callCount(), 1);
   });
 
-  test('another delivery of the run without the kept count does not settle it (F20)', async () => {
+  test('a redelivery without the kept count settles what the grant still reports; the kept count still lands over it (F20, F23)', async () => {
+    // The action job is deduplicated per run, so a delivery without the obligation is a redelivery after
+    // the claimant lost its lock: it takes the count over. The claimant already ended its grant, so the
+    // phase holds none and the takeover settles unknown; a known count is still stored over that.
     const h = harness({ mutatingOperations: 3 });
-    h.deps.recordMutations = async (_runId, record) => { h.recorded.push(record.actingMutations); throw new Error('database unavailable'); };
+    const revoke = h.deps.mcpGrants!.revoke;
+    h.deps.mcpGrants!.revoke = async (runId, grant) => {
+      const result = await revoke(runId, grant);
+      return grant.grantId ? result : { revoked: false, grantId: null, calls: null, mutatingOperations: null };
+    };
+    const recordMutations = h.deps.recordMutations!;
+    let failures = 1;
+    h.deps.recordMutations = async (runId, record) => {
+      if (failures-- > 0) { h.recorded.push(record.actingMutations); throw new Error('database unavailable'); }
+      return recordMutations(runId, record);
+    };
     h.executeTask.mock.mockImplementation(async () => {
       await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
       return SUCCESS;
     });
-    await assert.rejects(createAgentActionProcessor(h.deps)(actionJob()), { name: 'AgentRunMutationsSettlementError' });
+    const claimant = actionJob();
+    const processAction = createAgentActionProcessor(h.deps);
+    await assert.rejects(processAction(claimant), { name: 'AgentRunMutationsSettlementError' });
+    assert.deepEqual(claimant.data.actingMutationsOwed, { actingMutations: 3 });
+
     assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
-    assert.deepEqual(h.recorded, [3], 'only the claimant or its retry settles the count');
+    assert.deepEqual(h.grants.revoked, ['grant-1', undefined], 'the redelivery ends whatever grant the phase still holds');
+    assert.deepEqual(h.recorded, [3, null]);
+    assert.equal(h.run().actingMutationsPending, false);
+    assert.equal(h.run().actingMutations ?? null, null);
+
+    assert.equal((await processAction(claimant)).status, 'cancelled');
+    assert.deepEqual(h.recorded, [3, null, 3]);
+    assert.equal(h.run().actingMutations, 3, 'the known count is stored over the unknown settlement');
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations ?? null]), [['cancelled', null], ['cancelled', 3]]);
   });
 
   test('a run whose final write failed after its grant ended keeps the count on the retry that fails it (F20)', async () => {
@@ -761,13 +786,106 @@ describe('a task write that fails after the run ended leaves the streak check to
     assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['completed', 0]]);
   });
 
-  test('a run whose claimed count is still outstanding is not evaluated by a delivery that does not hold it', async () => {
-    // Cancelled elsewhere while another delivery's step holds the grant: that delivery settles and evaluates it.
-    const h = harness({ run: actingRun({ state: 'cancelled', actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution' });
-    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'cancelled');
+  test('a run whose claimed count is still outstanding is not settled by a duplicate delivery while its step executes here', async () => {
+    // Cancelled elsewhere while this worker's step holds the grant: that step's delivery settles and evaluates it.
+    const h = harness({ mutatingOperations: 1 });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    h.executeTask.mock.mockImplementation(async () => { await gate; return SUCCESS; });
+    const processor = createAgentActionProcessor(h.deps);
+    const first = processor(actionJob());
+    while (h.executeTask.mock.callCount() === 0) await new Promise(resolve => setImmediate(resolve));
+    await h.deps.transitionRun!('run-1', ['acting'], 'cancelled');
+
+    assert.equal((await processor(actionJob())).status, 'cancelled');
     assert.equal(h.taskState(), 'cancelled', 'the task still follows the run');
+    assert.deepEqual(h.grants.revoked, [], 'the executing step keeps its grant');
     assert.deepEqual(h.recorded, []);
     assert.deepEqual(h.evaluated, []);
+
+    release();
+    assert.equal((await first).status, 'cancelled');
+    assert.deepEqual(h.grants.revoked, ['grant-1']);
+    assert.deepEqual(h.recorded, [1]);
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 1]]);
+  });
+
+  for (const state of ['cancelled', 'failed'] as const) {
+    test(`a redelivery for a run ${state} while the worker holding its grant stopped ends that grant and settles its count (F23)`, async () => {
+      // The claiming worker stopped before `endGrant` or its catch could run, so the job kept no obligation.
+      const h = harness({ run: actingRun({ state, actionTaskId: TASK_ID, actingMutationsPending: true, failureReason: state === 'failed' ? 'boom' : null }), task: 'claude_execution', mutatingOperations: 2 });
+      const job = actionJob();
+      assert.equal(job.data.actingMutationsOwed, undefined);
+      assert.equal((await createAgentActionProcessor(h.deps)(job)).status, state);
+      assert.deepEqual(h.grants.revoked, [undefined], 'whatever action grant the run still holds is revoked, by phase');
+      assert.deepEqual(h.recorded, [2]);
+      assert.equal(h.run().actingMutations, 2);
+      assert.equal(h.run().actingMutationsPending, false);
+      assert.equal(h.run().state, state, 'the run keeps its end');
+      assert.equal(h.taskState(), state);
+      assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [[state, 2]], 'the recovered run is evaluated once its count is final');
+      assert.equal(h.executeTask.mock.callCount(), 0);
+    });
+  }
+
+  test('a crashed step whose grant is already gone, or cannot be ended, is settled with an unknown count (F23)', async () => {
+    const gone = harness({ run: actingRun({ state: 'cancelled', actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution' });
+    gone.deps.mcpGrants!.revoke = async () => ({ revoked: false, grantId: null, calls: null, mutatingOperations: null });
+    assert.equal((await createAgentActionProcessor(gone.deps)(actionJob())).status, 'cancelled');
+    assert.deepEqual(gone.recorded, [null]);
+    assert.equal(gone.run().actingMutationsPending, false);
+    assert.equal(gone.run().actingMutations ?? null, null);
+    assert.deepEqual(gone.evaluated.map(run => [run.state, run.actingMutations ?? null]), [['cancelled', null]]);
+
+    const unreachable = harness({ run: actingRun({ state: 'cancelled', actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution', mutatingOperations: new Error('ProPR API unreachable') });
+    assert.equal((await createAgentActionProcessor(unreachable.deps)(actionJob())).status, 'cancelled');
+    assert.deepEqual(unreachable.recorded, [null]);
+    assert.deepEqual(unreachable.evaluated.map(run => [run.state, run.actingMutations ?? null]), [['cancelled', null]]);
+  });
+
+  test('a recovered count that could not be stored is kept with the job; the retry settles it without ending a grant again (F23)', async () => {
+    const h = harness({ run: actingRun({ state: 'cancelled', actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution', mutatingOperations: 2 });
+    const recordMutations = h.deps.recordMutations!;
+    let failures = 1;
+    h.deps.recordMutations = async (runId, record) => {
+      if (failures-- > 0) { h.recorded.push(record.actingMutations); throw new Error('database unavailable'); }
+      return recordMutations(runId, record);
+    };
+    const job = actionJob();
+    const processAction = createAgentActionProcessor(h.deps);
+    await assert.rejects(processAction(job), { name: 'AgentRunMutationsSettlementError' });
+    assert.deepEqual(job.data.actingMutationsOwed, { actingMutations: 2 });
+    assert.equal(h.taskState(), 'cancelled', 'the task followed the run before the delivery failed');
+    assert.deepEqual(h.evaluated, []);
+
+    assert.equal((await processAction(job)).status, 'cancelled');
+    assert.deepEqual(h.grants.revoked, [undefined], 'the grant was ended once');
+    assert.deepEqual(h.recorded, [2, 2]);
+    assert.equal(h.run().actingMutations, 2);
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 2]]);
+  });
+
+  test('an abandoned acting step is failed with the count its grant recorded, after that grant is ended (F23)', async () => {
+    const h = harness({ run: actingRun({ actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution', mutatingOperations: 3 });
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed');
+    assert.deepEqual(h.grants.revoked, [undefined]);
+    assert.deepEqual(h.revokedWhile, ['acting'], 'counted before the run is failed');
+    assert.equal(h.run().failureReason, AGENT_ACTION_ABANDONED_REASON);
+    assert.equal(h.run().actingMutations, 3);
+    assert.equal(h.run().actingMutationsPending, false);
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['failed', 3]]);
+
+    // Cancelled by its owner between the redelivery's read and its own write: the adopted count still lands.
+    const raced = harness({ run: actingRun({ actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution', mutatingOperations: 3 });
+    const transitionRun = raced.deps.transitionRun!;
+    raced.deps.transitionRun = async (id, from, to, patch) => {
+      if (to === 'failed') await transitionRun(id, ['acting'], 'cancelled');
+      return transitionRun(id, from, to, patch);
+    };
+    assert.equal((await createAgentActionProcessor(raced.deps)(actionJob())).status, 'cancelled');
+    assert.deepEqual(raced.recorded, [3]);
+    assert.equal(raced.run().actingMutations, 3);
+    assert.deepEqual(raced.evaluated.map(run => [run.state, run.actingMutations]), [['cancelled', 3]]);
   });
 
   test('a lost task write after a recorded count does not delay that count\'s check; the retry repeats it', async () => {

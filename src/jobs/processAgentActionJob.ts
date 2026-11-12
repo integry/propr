@@ -21,7 +21,7 @@ import {
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
 import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
-import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
+import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant, type RevokedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import {
     actionSummaryFromResult,
     AgentRunMutationsSettlementError,
@@ -135,8 +135,9 @@ interface ActionContext {
     actingMutations?: number | null;
     /**
      * True once this delivery claimed the acting step (or is the retry of one that
-     * kept the count it still owed with the job): it then owes the run the
-     * settlement of the step's count, even when another writer ended the run.
+     * kept the count it still owed with the job, or took over the claim of a worker
+     * that stopped): it then owes the run the settlement of the step's count, even
+     * when another writer ended the run.
      */
     ownsClaim?: boolean;
 }
@@ -299,9 +300,37 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
     }
 
     /**
+     * Takes over the claim of an acting step whose worker stopped before it settled
+     * the step's count: BullMQ redelivers a claimed step only once the worker
+     * executing it lost its lock, and the caller leaves a step this process is still
+     * executing alone. That worker's only record of what the step changed is the
+     * action grant it held, which nothing else revokes until the terminal-run sweep:
+     * ending it here stops any container the lost worker left behind and yields the
+     * count. A grant already gone (or a revoke that fails) leaves the count unknown,
+     * as it does for the claiming delivery. From here on this delivery owes the run
+     * the settlement, exactly like the delivery that claimed the step; a worker that
+     * merely lost its lock and is still executing then settles nothing: its revoke by
+     * grant id finds the grant gone, and a count is never stored twice.
+     */
+    async function adoptAbandonedClaim(context: ActionContext): Promise<void> {
+        if (context.ownsClaim) return;
+        const { runId, taskId, log } = context;
+        context.ownsClaim = true;
+        let revoked: RevokedAgentRunMcpGrant | null | undefined = null;
+        try {
+            revoked = await deps.mcpGrants.revoke(runId, { phase: 'action' });
+        } catch (error) {
+            log.warn({ runId, taskId, err: error instanceof Error ? error.message : String(error) }, 'Could not end the MCP grant of an acting step its worker abandoned; its mutation count is unknown');
+        }
+        context.actingMutations = revoked?.revoked ? revoked.mutatingOperations ?? null : null;
+        log.info({ runId, taskId, grantId: revoked?.grantId ?? null, actingMutations: context.actingMutations }, 'Took over the mutation count of an acting step its worker abandoned');
+    }
+
+    /**
      * A delivery for a run whose action task was already recorded: another
      * delivery claimed it. One still live in this process is left alone; one
-     * left behind by a worker that stopped is failed rather than run twice.
+     * left behind by a worker that stopped is failed rather than run twice,
+     * with the count its grant recorded before it is ended.
      */
     async function recoverClaimedRun(run: StoredAgentRun, context: ActionContext): Promise<JobResult> {
         const { runId, taskId, log, correlationId } = context;
@@ -310,6 +339,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             return { status: 'skipped', runId, taskId, correlationId };
         }
         log.warn({ runId, taskId }, 'Agent run acting step was left running by an interrupted worker; failing it');
+        await adoptAbandonedClaim(context);
         const stopped = await followCancelledTask(context, 'before its worker stopped');
         if (stopped) return stopped;
         return failRunAndTask(context, new AgentRunReportError(AGENT_ACTION_ABANDONED_REASON));
@@ -359,7 +389,13 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         // 1. Only an `acting` run is acted on: dry runs, rejections and cancels never get here.
         const run = await deps.getRun(runId);
         if (!run || run.state !== 'acting') {
-            if (run?.actionTaskId) return taskFollowsRun(context);
+            if (run?.actionTaskId) {
+                // Ended by another writer while a claimed step's count was still outstanding, and
+                // that step's worker stopped before settling it (this delivery neither owes the
+                // count nor executes the step): take the count over, or the run stays pending forever.
+                if (ENDED_RUN_STATES.has(run.state) && run.actingMutationsPending && !activeRuns.has(runId)) await adoptAbandonedClaim(context);
+                return taskFollowsRun(context);
+            }
             log.info({ runId, state: run?.state ?? null }, 'Agent run is not acting; skipping');
             return { status: 'skipped', runId, correlationId };
         }
