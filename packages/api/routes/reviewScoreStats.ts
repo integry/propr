@@ -325,7 +325,7 @@ const CSV_COLUMNS: Array<[string, (model: ReviewScoreModelSummary) => string | n
 ];
 
 /** RFC 4180 cell; unknown is an empty cell, and text cannot start a spreadsheet formula. */
-function csvCell(value: string | number | null): string {
+export function csvCell(value: string | number | null): string {
   if (value === null) return '';
   if (typeof value === 'number') return String(value);
   const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
