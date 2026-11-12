@@ -13,6 +13,8 @@ import type { GoalBlockerReport, GoalControlInput, GoalExecutionControl } from '
 import {
     formatQuestionWait,
     OPERATOR_QUESTION_ATTEMPT_ENDING,
+    OPERATOR_QUESTION_CLAIM_ANSWERED,
+    OPERATOR_QUESTION_CLAIM_SUFFIX,
     OPERATOR_QUESTION_EXCHANGE_ROOT,
     OPERATOR_QUESTION_MIN_REMAINING_MS,
     OPERATOR_QUESTION_REQUESTS_DIR,
@@ -133,6 +135,47 @@ export class ClaudeOperatorQuestions implements ClaudeOperatorQuestionChannel {
         await fs.rename(temporary, file);
     }
 
+    private claimPath(id: string): string {
+        return path.join(this.launch.exchangeDir, OPERATOR_QUESTION_REQUESTS_DIR, `${id}${OPERATOR_QUESTION_CLAIM_SUFFIX}`);
+    }
+
+    /** The server published the client's cancellation of this tool call (or it was claimed otherwise). */
+    private async claimed(id: string): Promise<boolean> {
+        try {
+            await fs.access(this.claimPath(id));
+            return true;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+        }
+    }
+
+    /**
+     * Claim a question for an answer. False when the server claimed it first
+     * because the call was cancelled: no tool call reads the answer any more.
+     */
+    private async claimForAnswer(id: string): Promise<boolean> {
+        try {
+            await fs.writeFile(this.claimPath(id), OPERATOR_QUESTION_CLAIM_ANSWERED, { flag: 'wx', mode: 0o644 });
+            return true;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+            throw error;
+        }
+    }
+
+    private async closeCancelled(question: OpenQuestion): Promise<void> {
+        this.open.delete(question.id);
+        await this.control.resolveBlocker?.(question.requestKey, 'provider_resolved');
+    }
+
+    /** Close the blockers of questions whose tool call was cancelled. */
+    private async reconcileCancelled(): Promise<void> {
+        for (const question of [...this.open.values()]) {
+            if (await this.claimed(question.id)) await this.closeCancelled(question);
+        }
+    }
+
     /** A question that is not waited on gets a best-effort reply; the server's own deadline covers a lost one. */
     private async decline(id: string, message: string): Promise<void> {
         await this.respond(id, { status: 'closed', message }).catch(error => {
@@ -149,6 +192,8 @@ export class ClaudeOperatorQuestions implements ClaudeOperatorQuestionChannel {
             const id = REQUEST_FILE.exec(name)?.[1];
             if (!id || this.seen.has(id)) continue;
             this.seen.add(id);
+            // Cancelled before it was ever reported: no blocker.
+            if (await this.claimed(id)) continue;
             const parsed = parseRequest(await fs.readFile(path.join(directory, name), 'utf8').catch(() => ''), id);
             if (!parsed) {
                 await this.decline(id, 'ProPR could not read the question');
@@ -197,6 +242,7 @@ export class ClaudeOperatorQuestions implements ClaudeOperatorQuestionChannel {
                 expiresAt: Math.min(ownExpiry, closeAt), endsWithAttempt: closeAt < ownExpiry,
             });
         }
+        await this.reconcileCancelled();
         for (const question of [...this.open.values()]) {
             if (this.now() < question.expiresAt) continue;
             this.open.delete(question.id);
@@ -213,11 +259,19 @@ export class ClaudeOperatorQuestions implements ClaudeOperatorQuestionChannel {
     /**
      * A goal input names no question, so while several wait it answers none,
      * and an input queued before the question opened is an unrelated correction.
+     * A question whose tool call was cancelled answers nothing: the input is
+     * then delivered as ordinary goal input.
      */
     async answer(input: GoalControlInput, turnId: string): Promise<boolean> {
+        await this.reconcileCancelled();
         const waiting = [...this.open.values()];
         const question = waiting.length === 1 && answersAfter(waiting[0], input) ? waiting[0] : undefined;
         if (!question) return false;
+        // The cancellation may land after the check above; the exclusive claim decides.
+        if (!await this.claimForAnswer(question.id)) {
+            await this.closeCancelled(question);
+            return false;
+        }
         this.open.delete(question.id);
         await this.respond(question.id, { status: 'answered', answer: input.message });
         await this.control.markInputDelivered(input.id, turnId);

@@ -43,6 +43,14 @@ const MAX_TIMER_MS = 2_147_483_647;
 /** Exchange file layout, shared by the server source below and the worker. */
 export const OPERATOR_QUESTION_REQUESTS_DIR = 'requests';
 export const OPERATOR_QUESTION_RESPONSES_DIR = 'responses';
+/**
+ * `<request id>.claim` in the requests directory, created exclusively: the
+ * first of the worker (delivering an answer) and the server (handling the
+ * client's request cancellation) decides whether an operator input is consumed.
+ */
+export const OPERATOR_QUESTION_CLAIM_SUFFIX = '.claim';
+export const OPERATOR_QUESTION_CLAIM_ANSWERED = 'answered';
+export const OPERATOR_QUESTION_CLAIM_CANCELLED = 'cancelled';
 
 export interface OperatorQuestionRequestFile {
     id: string;
@@ -151,6 +159,19 @@ async function writeAtomic(file, value) {
     await fsp.rename(temporary, file);
 }
 
+function claimPath(id) {
+    return path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '${OPERATOR_QUESTION_CLAIM_SUFFIX}');
+}
+
+/** Tell the worker the call was cancelled, unless it already claimed the question for an answer. */
+async function claimCancelled(id) {
+    try {
+        await fsp.writeFile(claimPath(id), '${OPERATOR_QUESTION_CLAIM_CANCELLED}', { flag: 'wx', mode: 0o644 });
+    } catch (error) {
+        if (!error || error.code !== 'EEXIST') process.stderr.write('propr-operator: could not record a cancellation\n');
+    }
+}
+
 async function readResponse(id) {
     try {
         return JSON.parse(await fsp.readFile(path.join(exchange, '${OPERATOR_QUESTION_RESPONSES_DIR}', id + '.json'), 'utf8'));
@@ -173,12 +194,13 @@ async function ask(requestId, args) {
     const { question, options } = validate(args);
     if (closeAt - Date.now() < minRemainingMs) return noAnswer(tooLate);
     const id = crypto.randomUUID();
-    await writeAtomic(path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '.json'), { id, question, options });
-    // Never wait past the attempt's question close time, however long the setting allows.
-    const deadline = Math.min(Date.now() + maxWaitMs, closeAt) + graceMs;
-    const wait = { cancelled: false };
+    // Registered before the request is written, so an early cancellation is still published.
+    const wait = { id, cancelled: false };
     waits.set(requestId, wait);
     try {
+        await writeAtomic(path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '.json'), { id, question, options });
+        // Never wait past the attempt's question close time, however long the setting allows.
+        const deadline = Math.min(Date.now() + maxWaitMs, closeAt) + graceMs;
         while (!wait.cancelled) {
             const response = await readResponse(id);
             if (response && response.status === 'answered' && typeof response.answer === 'string') {
@@ -235,7 +257,10 @@ input.on('line', async line => {
         request = JSON.parse(line);
         if (request.method === 'notifications/cancelled') {
             const wait = waits.get(request.params && request.params.requestId);
-            if (wait) wait.cancelled = true;
+            if (wait && !wait.cancelled) {
+                wait.cancelled = true;
+                await claimCancelled(wait.id);
+            }
             return;
         }
         if (request.id === undefined) return;

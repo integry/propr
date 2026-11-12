@@ -76,9 +76,17 @@ function startServer(launch: OperatorQuestionLaunch, overrides: Record<string, s
     pending.set(nextId, resolve);
     child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id: nextId, method, params })}\n`);
   });
-  const ask = (args: Record<string, unknown>) => request('tools/call', { name: 'ask_operator', arguments: args })
-    .then(message => message.result as { content: Array<{ text: string }>; isError?: boolean });
-  return { child, request, ask };
+  /** Ask without waiting; `id` is the JSON-RPC request id a cancellation names. */
+  const askWithId = (args: Record<string, unknown>) => {
+    const result = request('tools/call', { name: 'ask_operator', arguments: args })
+      .then(message => message.result as { content: Array<{ text: string }>; isError?: boolean });
+    return { id: nextId, result };
+  };
+  const ask = (args: Record<string, unknown>) => askWithId(args).result;
+  const cancel = (requestId: number) => {
+    child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId, reason: 'test' } })}\n`);
+  };
+  return { child, request, ask, askWithId, cancel };
 }
 
 async function until<T>(probe: () => Promise<T | undefined> | T | undefined, timeoutMs = 5_000): Promise<T> {
@@ -296,6 +304,99 @@ describe('ask_operator tool', () => {
     const result = await ask({ question: 'Anyone?' });
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /^No answer from the operator/);
+  });
+
+  test('a cancelled tool call closes its blocker and the next input is delivered as ordinary input', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { askWithId, cancel } = startServer(launch);
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-cancel');
+    const call = askWithId({ question: 'Ship it on Friday?' });
+    const report = await reported(questions, control);
+    assert.equal(questions.waiting, 1);
+
+    cancel(call.id);
+    const cancelled = await call.result;
+    assert.equal(cancelled.isError, true);
+    assert.match(cancelled.content[0].text, /cancelled/);
+    // The goal turn is still active: the worker learns of it through the exchange.
+    await until(async () => {
+      await questions.sync('turn-1');
+      return questions.waiting === 0 ? true : undefined;
+    });
+    assert.deepEqual(control.resolved, [{ requestKey: report.requestKey, resolution: 'provider_resolved' }]);
+
+    assert.equal(await questions.answer({ id: 'after-cancel', message: 'Yes, ship it.', sequence: 5 }, 'turn-1'), false);
+    assert.deepEqual(control.delivered, []);
+    assert.equal(existsSync(path.join(launch.exchangeDir, 'responses', `${report.questions?.[0].id}.json`)), false);
+  });
+
+  test('an input routed before the worker synced a cancellation is not consumed', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { askWithId, cancel } = startServer(launch);
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-cancel-race');
+    const call = askWithId({ question: 'Rename the module?' });
+    const report = await reported(questions, control);
+    cancel(call.id);
+    await call.result;
+    const claim = path.join(launch.exchangeDir, 'requests', `${report.questions?.[0].id}.claim`);
+    await until(() => existsSync(claim) ? true : undefined);
+
+    // No sync between the cancellation and the input: answer reconciles first.
+    assert.equal(await questions.answer({ id: 'input', message: 'Yes.', sequence: 5 }, 'turn-1'), false);
+    assert.deepEqual(control.delivered, []);
+    assert.deepEqual(control.resolved, [{ requestKey: report.requestKey, resolution: 'provider_resolved' }]);
+    assert.equal(readFileSync(claim, 'utf8'), 'cancelled');
+  });
+
+  test('a cancelled question no longer stops another waiting question from being answered', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { askWithId, cancel } = startServer(launch);
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-cancel-two');
+    const first = askWithId({ question: 'First?' });
+    await reported(questions, control);
+    const second = askWithId({ question: 'Second?' });
+    await reported(questions, control, 'turn-1', 2);
+    cancel(first.id);
+    await first.result;
+    await until(async () => {
+      await questions.sync('turn-1');
+      return questions.waiting === 1 ? true : undefined;
+    });
+    assert.equal(await questions.answer({ id: 'input', message: 'Answer two.', sequence: 5 }, 'turn-1'), true);
+    assert.equal((await second.result).content[0].text, 'The operator answered:\nAnswer two.');
+    assert.deepEqual(control.delivered, [{ inputId: 'input', turnId: 'turn-1' }]);
+  });
+
+  test('a question cancelled before the worker discovers it never becomes a blocker', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { askWithId, cancel } = startServer(launch);
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-cancel-early');
+    const call = askWithId({ question: 'Never seen?' });
+    cancel(call.id);
+    assert.equal((await call.result).isError, true);
+    const requests = readdirSync(path.join(launch.exchangeDir, 'requests'));
+    assert.equal(requests.filter(name => name.endsWith('.claim')).length, 1);
+    await questions.sync('turn-1');
+    assert.equal(control.reports.length, 0);
+    assert.equal(questions.waiting, 0);
+  });
+
+  test('a question already claimed for an answer is not reclaimed by a late cancellation', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { askWithId, cancel } = startServer(launch);
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-cancel-late');
+    const call = askWithId({ question: 'Late cancel?' });
+    const report = await reported(questions, control);
+    assert.equal(await questions.answer({ id: 'input', message: 'Done.', sequence: 5 }, 'turn-1'), true);
+    cancel(call.id);
+    await call.result;
+    const claim = path.join(launch.exchangeDir, 'requests', `${report.questions?.[0].id}.claim`);
+    assert.equal(readFileSync(claim, 'utf8'), 'answered');
   });
 
   test('attempt end closes open questions and the exchange is removed', async () => {
