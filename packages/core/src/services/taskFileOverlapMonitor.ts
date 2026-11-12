@@ -243,6 +243,8 @@ export interface LiveFileChangesCaptureOptions {
     repository: string;
     redis: Redis;
     intervalMs?: number;
+    /** Longest `stop()` waits for in-flight and final work before releasing the run (default 10s). */
+    stopTimeoutMs?: number;
     log?: { debug: (obj: object, msg: string) => void; warn?: (obj: object, msg: string) => void };
     /** Seams for tests. */
     capture?: (taskId: string, worktreePath: string) => Promise<unknown>;
@@ -259,10 +261,14 @@ export interface LiveFileChangesCaptureHandle {
     /**
      * Ends the capture. While the run is still registered it optionally records the worktree
      * once more (`finalCapture`), then runs an unthrottled comparison so an overlap that arose
-     * during a throttled window is not lost, and only then unregisters the run.
+     * during a throttled window is not lost, and only then unregisters the run. Bounded by
+     * `stopTimeoutMs`: past it the remaining capture and comparison are skipped and the run
+     * resolves, so an unreachable Redis never holds the agent run's completion.
      */
     stop: (options?: { finalCapture?: boolean }) => Promise<void>;
 }
+
+export const LIVE_CAPTURE_STOP_TIMEOUT_MS = 10_000;
 
 export function startLiveFileChangesCapture(options: LiveFileChangesCaptureOptions): LiveFileChangesCaptureHandle {
     const { taskId, worktreePath, repository, redis } = options;
@@ -270,11 +276,15 @@ export function startLiveFileChangesCapture(options: LiveFileChangesCaptureOptio
     const checkOverlaps = options.checkOverlaps ?? checkRepositoryFileOverlaps;
     let running: Promise<void> | null = null;
     let stopped = false;
+    // Set once stop() gives up waiting: work still pending afterwards must not record, register or compare.
+    let abandoned = false;
+    const unregister = () => unregisterActiveFileChangesTask(redis, repository, taskId).catch(() => undefined);
     const tick = () => running ??= (async () => {
         try {
             await capture(taskId, worktreePath);
             if (stopped) return;
             await registerActiveFileChangesTask(redis, repository, taskId);
+            if (stopped) return;
             await checkOverlaps({ redis, repository });
         } catch (error) {
             options.log?.debug({ taskId, error: (error as Error).message }, 'Periodic file changes update failed');
@@ -282,26 +292,46 @@ export function startLiveFileChangesCapture(options: LiveFileChangesCaptureOptio
     })().finally(() => { running = null; });
     const interval = setInterval(() => { void tick(); }, options.intervalMs ?? 2000);
     interval.unref?.();
+
+    const shutdown = async (finalCapture: boolean) => {
+        await running?.catch(() => undefined);
+        if (finalCapture && !abandoned) {
+            try {
+                await capture(taskId, worktreePath);
+            } catch (error) {
+                (options.log?.warn ?? options.log?.debug)?.call(options.log, { taskId, error: (error as Error).message }, 'Failed to capture file changes');
+            }
+        }
+        try {
+            if (!abandoned) await registerActiveFileChangesTask(redis, repository, taskId);
+            if (!abandoned) await checkOverlaps({ redis, repository, force: true });
+        } catch (error) {
+            options.log?.debug({ taskId, error: (error as Error).message }, 'Final file overlap check failed');
+        }
+        // Always last, so a registration made by work that outlived the deadline is still removed.
+        await unregister();
+    };
+
     return {
         tick,
         stop: async ({ finalCapture = false } = {}) => {
             stopped = true;
             clearInterval(interval);
-            await running?.catch(() => undefined);
-            if (finalCapture) {
-                try {
-                    await capture(taskId, worktreePath);
-                } catch (error) {
-                    (options.log?.warn ?? options.log?.debug)?.call(options.log, { taskId, error: (error as Error).message }, 'Failed to capture file changes');
-                }
-            }
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const deadline = new Promise<'timeout'>(resolve => {
+                timer = setTimeout(() => resolve('timeout'), options.stopTimeoutMs ?? LIVE_CAPTURE_STOP_TIMEOUT_MS);
+                timer.unref?.();
+            });
             try {
-                await registerActiveFileChangesTask(redis, repository, taskId);
-                await checkOverlaps({ redis, repository, force: true });
-            } catch (error) {
-                options.log?.debug({ taskId, error: (error as Error).message }, 'Final file overlap check failed');
+                if (await Promise.race([shutdown(finalCapture).then(() => 'done' as const), deadline]) === 'timeout') {
+                    abandoned = true;
+                    (options.log?.warn ?? options.log?.debug)?.call(options.log, { taskId }, 'File changes capture did not stop in time; continuing without the final overlap check');
+                    // Queued behind any pending registration on the same connection; the stale window drops it otherwise.
+                    void unregister();
+                }
+            } finally {
+                clearTimeout(timer);
             }
-            await unregisterActiveFileChangesTask(redis, repository, taskId).catch(() => undefined);
         },
     };
 }

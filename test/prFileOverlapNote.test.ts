@@ -1,6 +1,10 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendOverlapNote, buildPullRequestOverlapNote } from '../src/jobs/prFileOverlapNote.js';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { appendOverlapNote, buildPullRequestOverlapNote, changedPathsForOverlap } from '../src/jobs/prFileOverlapNote.js';
 
 const { db } = await import('@propr/core');
 after(() => db.destroy());
@@ -69,4 +73,49 @@ test('the note is appended only when the body still fits', () => {
     assert.equal(appendOverlapNote('body', '', 100), 'body');
     assert.equal(appendOverlapNote('body', 'note', 100), 'body\n\n---\n\nnote');
     assert.equal(appendOverlapNote('body', 'note', 10), 'body');
+});
+
+function branchWithAgentCommit(): { root: string; worktreePath: string } {
+    const root = mkdtempSync(join(tmpdir(), 'pr-overlap-paths-'));
+    const worktreePath = join(root, 'work');
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: worktreePath, stdio: 'pipe' });
+    execFileSync('git', ['init', '--bare', '-b', 'main', join(root, 'origin.git')], { stdio: 'pipe' });
+    mkdirSync(join(worktreePath, 'src'), { recursive: true });
+    git('init', '-b', 'main');
+    git('remote', 'add', 'origin', join(root, 'origin.git'));
+    writeFileSync(join(worktreePath, 'src/shared.ts'), 'base\n');
+    git('add', '.');
+    git('commit', '-m', 'base');
+    git('push', 'origin', 'main');
+    git('checkout', '-b', 'propr/new');
+    // The agent commits the shared file itself; post-processing then commits only the remaining change.
+    writeFileSync(join(worktreePath, 'src/shared.ts'), 'agent\n');
+    git('commit', '-am', 'agent commit');
+    writeFileSync(join(worktreePath, 'src/unique.ts'), 'final\n');
+    git('add', '.');
+    git('commit', '-m', 'final commit');
+    return { root, worktreePath };
+}
+
+test('the note compares the whole branch diff, including files the agent committed itself', async () => {
+    const { root, worktreePath } = branchWithAgentCommit();
+    try {
+        const commitResult = { filesChanged: ['src/unique.ts'] };
+        const paths = await changedPathsForOverlap({ worktreePath, baseBranch: 'main', commitResult, claudeResult: null });
+        assert.deepEqual([...paths].sort(), ['src/shared.ts', 'src/unique.ts']);
+        const note = await buildPullRequestOverlapNote({
+            octokit: { request: async () => ({ data: [] }) }, redis: fakeRedis() as never, repoOwner: 'acme', repoName: 'widget',
+            taskId: 'task-new', branchName: 'propr/new', prLabel: 'AI-PR', paths,
+        });
+        assert.match(note, /- Active task task-other: `src\/shared\.ts`$/m);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('without a readable branch diff the note uses the final commit and the agent report together', async () => {
+    const failing = async () => { throw new Error('unknown revision'); };
+    assert.deepEqual(await changedPathsForOverlap({ worktreePath: '/nowhere', baseBranch: 'main', commitResult: { filesChanged: ['src/unique.ts'] }, claudeResult: { modifiedFiles: ['src/shared.ts'] }, branchDiffPaths: failing }),
+        ['src/unique.ts', 'src/shared.ts']);
+    assert.deepEqual(await changedPathsForOverlap({ baseBranch: 'main', commitResult: null, claudeResult: { modifiedFiles: ['a.ts'] } }), ['a.ts']);
 });

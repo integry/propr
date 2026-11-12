@@ -259,7 +259,8 @@ export async function createPullRequest(
     const basePrBody = await withPullRequestOverlapNote(describedPrBody, templateBodyLengthBudget(visualPreviewSection), {
         octokit: octokit as unknown as PullRequestOverlapNoteOptions['octokit'], redis: options.redis,
         repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, taskId: options.taskId, branchName: worktreeInfo.branchName,
-        prLabel: PR_LABEL, paths: changedPathsForOverlap(commitResult, claudeResult), correlatedLogger,
+        prLabel: PR_LABEL, correlatedLogger,
+        paths: await changedPathsForOverlap({ worktreePath: worktreeInfo.worktreePath, baseBranch, commitResult, claudeResult, correlatedLogger }),
     });
     const prBody = appendVisualPreviewSection(basePrBody, visualPreviewSection);
 

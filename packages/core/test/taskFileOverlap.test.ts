@@ -160,6 +160,32 @@ test('the live capture writes changes, registers the run as active, compares, an
     assert.equal(await redis.zscore(activeFileChangesTasksKey('acme/app'), 'followup-1'), null);
 });
 
+test('stop is bounded when an in-flight capture never settles, and the abandoned work cannot register the run', async () => {
+    const redis = new FakeRedis();
+    const client = redis as unknown as Redis;
+    const key = activeFileChangesTasksKey('acme/outage');
+    let releaseCapture: () => void = () => undefined;
+    let captures = 0;
+    const checks: boolean[] = [];
+    const capture = startLiveFileChangesCapture({
+        taskId: 'outage-1', worktreePath: '/tmp/worktree', repository: 'acme/outage', redis: client, intervalMs: 60_000, stopTimeoutMs: 50,
+        // Like a Redis write that stays pending while the connection reconnects.
+        capture: () => { captures += 1; return new Promise<void>(resolve => { releaseCapture = resolve; }); },
+        checkOverlaps: async options => { checks.push(Boolean(options.force)); return { status: 'single_task', newPairs: [] }; },
+    });
+    const tick = capture.tick();
+    const started = Date.now();
+    await capture.stop({ finalCapture: true });
+    assert.ok(Date.now() - started < 5_000, 'stop resolved at its deadline');
+    // The capture is released only after stop gave up: no final capture, registration or comparison follows.
+    releaseCapture();
+    await tick;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(captures, 1);
+    assert.deepEqual(checks, []);
+    assert.equal(await redis.zscore(key, 'outage-1'), null);
+});
+
 test('a timeline write that fails is retried on a later comparison without duplicating the delivered side', async () => {
     const redis = new FakeRedis();
     const client = redis as unknown as Redis;

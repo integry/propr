@@ -108,9 +108,33 @@ export function appendOverlapNote(body: string, note: string, maxLength: number)
     return combined.length <= maxLength ? combined : body;
 }
 
-/** The PR's changed files: the commit's, else the agent's report. */
-export function changedPathsForOverlap(commitResult: { filesChanged?: string[] } | null | undefined, claudeResult: { modifiedFiles?: string[] } | null | undefined): string[] {
-    return commitResult?.filesChanged ?? claudeResult?.modifiedFiles ?? [];
+export interface PullRequestChangedPathsOptions {
+    worktreePath?: string;
+    baseBranch: string;
+    commitResult?: { filesChanged?: string[] } | null;
+    claudeResult?: { modifiedFiles?: string[] } | null;
+    correlatedLogger?: Pick<Logger, 'debug'>;
+    /** Seam for tests: the branch's changed paths against the base. */
+    branchDiffPaths?: (worktreePath: string, baseRef: string) => Promise<string[]>;
+}
+
+async function gitBranchDiffPaths(worktreePath: string, baseRef: string): Promise<string[]> {
+    const { createHooklessGit } = await loadCore();
+    const output = await createHooklessGit(worktreePath).raw(['diff', '--name-only', '-z', `${baseRef}...HEAD`]);
+    return output.split('\0').filter(Boolean);
+}
+
+/**
+ * The PR's changed files: the whole branch diff against the PR base, so commits the agent
+ * made itself count alongside the final post-processing commit. When the diff cannot be read
+ * in time, falls back to the union of the final commit's files and the agent's report.
+ */
+export async function changedPathsForOverlap(options: PullRequestChangedPathsOptions): Promise<string[]> {
+    const fallback = [...new Set([...(options.commitResult?.filesChanged ?? []), ...(options.claudeResult?.modifiedFiles ?? [])])];
+    if (!options.worktreePath) return fallback;
+    const diff = await settle((options.branchDiffPaths ?? gitBranchDiffPaths)(options.worktreePath, `origin/${options.baseBranch}`),
+        options.correlatedLogger, 'the branch diff');
+    return diff.length ? [...new Set([...diff, ...fallback])] : fallback;
 }
 
 /** `body` with the overlap note appended when there is one and it fits; never throws. */
