@@ -4,12 +4,19 @@ import { db } from '../db/connection.js';
 import { appendRepositoryEvent } from '../services/repositoryEventJournal.js';
 
 /**
- * Journal a pull request being opened or receiving a new head. Both are keyed
- * so webhook redelivery appends nothing: a pull request opens once, and each
- * head commit is new once. Never throws.
+ * Journal a pull request being opened or receiving a new head. A pull request
+ * opens once, so `opened` is keyed by the pull request alone. A head change is
+ * keyed by the webhook delivery that reported it: GitHub redelivers with the
+ * same `X-GitHub-Delivery` id, while a force-push back to an earlier commit is
+ * a new delivery, so it is journaled even though that commit was seen before.
+ * Without a delivery id the head change is appended unkeyed, since neither the
+ * commit nor the before/after pair identifies one occurrence. Never throws.
  */
-export async function journalPullRequestWebhook(payload: PullRequestEvent, database: Knex = db): Promise<void> {
+export async function journalPullRequestWebhook(payload: PullRequestEvent, options: {
+    deliveryId?: string | null; database?: Knex;
+} = {}): Promise<void> {
     if (payload.action !== 'opened' && payload.action !== 'synchronize') return;
+    const database = options.database ?? db;
     const repository = payload.repository.full_name;
     const prNumber = payload.pull_request.number;
     const headSha = payload.pull_request.head?.sha ?? null;
@@ -21,6 +28,8 @@ export async function journalPullRequestWebhook(payload: PullRequestEvent, datab
         return;
     }
     if (!headSha) return;
-    await appendRepositoryEvent(database, { ...base, type: 'head_changed', dedupeKey: `pr:${prNumber}:head:${headSha}`,
+    const deliveryId = typeof options.deliveryId === 'string' && options.deliveryId ? options.deliveryId : null;
+    await appendRepositoryEvent(database, { ...base, type: 'head_changed',
+        dedupeKey: deliveryId ? `pr:${prNumber}:head_changed:delivery:${deliveryId}` : null,
         payload: { previousHeadSha: typeof payload.before === 'string' ? payload.before : null } });
 }

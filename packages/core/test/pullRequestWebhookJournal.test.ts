@@ -60,13 +60,30 @@ const journal = async () => (await listRepositoryEvents(database, { repository: 
 test('opened and each new head are journaled once, however often GitHub redelivers', async () => {
   await handlePlanPRUpdate(delivery('opened'), 'c1');
   await handlePlanPRUpdate(delivery('opened'), 'c1-redelivery');
-  await handlePlanPRUpdate(delivery('synchronize', { head: { sha: 'head2' } }, { before: 'head1', after: 'head2' }), 'c2');
-  await handlePlanPRUpdate(delivery('synchronize', { head: { sha: 'head2' } }, { before: 'head1', after: 'head2' }), 'c2-redelivery');
+  await handlePlanPRUpdate(delivery('synchronize', { head: { sha: 'head2' } }, { before: 'head1', after: 'head2' }), 'c2', 'delivery-2');
+  // A redelivery carries the same X-GitHub-Delivery id.
+  await handlePlanPRUpdate(delivery('synchronize', { head: { sha: 'head2' } }, { before: 'head1', after: 'head2' }), 'c2-redelivery', 'delivery-2');
   await handlePlanPRUpdate(delivery('edited'), 'c3');
   assert.deepEqual(await journal(), [
     { type: 'opened', entityId: '70', headSha: 'head1', payload: { baseRef: 'main', draft: false } },
     { type: 'head_changed', entityId: '70', headSha: 'head2', payload: { previousHeadSha: 'head1' } },
   ]);
+});
+
+test('a force-push back to an earlier head is journaled; only a redelivery of it is not', async () => {
+  const push = (from: string, to: string) => delivery('synchronize', { head: { sha: to } }, { before: from, after: to });
+  await handlePlanPRUpdate(push('head1', 'head2'), 'c1', 'delivery-1');
+  await handlePlanPRUpdate(push('head2', 'head3'), 'c2', 'delivery-2');
+  await handlePlanPRUpdate(push('head3', 'head2'), 'c3', 'delivery-3');
+  await handlePlanPRUpdate(push('head3', 'head2'), 'c3-redelivery', 'delivery-3');
+  // The same transition again, in a new delivery, is a new occurrence.
+  await handlePlanPRUpdate(push('head2', 'head3'), 'c4', 'delivery-4');
+  await handlePlanPRUpdate(push('head3', 'head2'), 'c5', 'delivery-5');
+  assert.deepEqual((await journal()).map(event => [event.payload.previousHeadSha, event.headSha]), [
+    ['head1', 'head2'], ['head2', 'head3'], ['head3', 'head2'], ['head2', 'head3'], ['head3', 'head2'],
+  ]);
+  const events = await listRepositoryEvents(database, { repository: 'acme/repo' });
+  assert.equal(events.at(-1)?.headSha, 'head2', 'the last journaled head is the pull request\'s head');
 });
 
 test('a merge and a close are journaled from the outcome writer', async () => {

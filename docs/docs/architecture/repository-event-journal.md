@@ -28,7 +28,7 @@ This page covers the storage, the writer and the event catalog. A read and wait 
 
 Indexes: `(repository, seq)`, `(repository, domain, entity_id, seq)`, and a unique index on `(repository, dedupe_key)`.
 
-`repository_event_floors` stores, for each repository, the lowest `seq` that retention may still have kept (see [Retention](#retention)).
+`repository_event_floors` stores, for each repository, one past the highest `seq` that retention has deleted (see [Retention](#retention)).
 
 Rows are written by explicit application appends, not SQLite triggers. A later migration that rebuilds a source table therefore has nothing to recreate. This is different from `goal_events`.
 
@@ -53,7 +53,7 @@ Payloads carry identifiers and small scalars only. They never include PR bodies,
 | Type | Written by | Payload | Dedupe key |
 | --- | --- | --- | --- |
 | `opened` | `pull_request` webhook, `opened` | `baseRef`, `draft` | `pr:{n}:opened` |
-| `head_changed` | `pull_request` webhook, `synchronize` | `previousHeadSha` (`head_sha` holds the new head) | `pr:{n}:head:{sha}` |
+| `head_changed` | `pull_request` webhook, `synchronize` | `previousHeadSha` (`head_sha` holds the new head) | `pr:{n}:head_changed:delivery:{X-GitHub-Delivery}` (none without a delivery id) |
 | `review_scored` | `recordReviewScores` | `score`, `goal`, `goalReached`, `source`, `cycle`, `reviewerModel` | `pr:{n}:review_scored:{review_scores.id}` |
 | `ultrafix_started` | `startLoop` | `goal`, `maxCycles`, `workEpoch` | `pr:{n}:ultrafix_started:{epoch}:{command comment}` |
 | `ultrafix_ended` | `completeLoop`, `stopLoop` | `outcome` (`goal_reached`, `cycles_exhausted`, `stopped` or `failed`), `finalScore`, `reason`, `workEpoch` | `pr:{n}:ultrafix_ended:{epoch}:{command comment}` |
@@ -84,7 +84,7 @@ A `blocked` event is appended only when the explanation changes, so rewriting th
 | --- | --- | --- |
 | `status_changed` | `updatePlanIssue`, `updatePlanIssueStatus`, `updatePlanIssueByPR` | `from`, `to` |
 
-A write that leaves the status unchanged appends nothing. These writers already publish a `plan` activity event, so the journal does not publish a second one.
+Each writer reads the rows it changes, with their prior status, in the same transaction as its guarded update and the append. One event is written per changed row, and nothing for rows its filters excluded or rows already at the new status (a redelivered webhook). There is no dedupe key, so a transition that repeats within one clock tick is still its own event. These writers already publish a `plan` activity event, so the journal does not publish a second one.
 
 ## Realtime
 
@@ -102,6 +102,6 @@ The activity envelope (`packages/shared/src/activityEvents.ts`) has a `pull_requ
 
 ## Retention
 
-The daemon's hourly maintenance sweep (the same one that reclaims stale draft context) deletes events older than 30 days. For each pruned repository it stores `floor_seq` in `repository_event_floors`. That value is one past the highest deleted `seq`, and it never moves backwards.
+The daemon's hourly maintenance sweep (the same one that reclaims stale draft context) deletes events older than 30 days, and only those: an unexpired event survives even if an older-stamped event (a delayed delivery, or an outcome stamped with its merge time) was appended after it. For each pruned repository it stores `floor_seq` in `repository_event_floors`. That value is one past the highest deleted `seq`, and it never moves backwards.
 
-A reader holding cursor `c` for a repository has missed pruned events when `c < floor_seq - 1`. This tells an expired cursor apart from an empty result. A repository that has never been pruned has floor `1`.
+A reader holding cursor `c` for a repository may have missed pruned events when `c < floor_seq - 1`. Unexpired events below the floor stay readable. This tells an expired cursor apart from an empty result. A repository that has never been pruned has floor `1`.

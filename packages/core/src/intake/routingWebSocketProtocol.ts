@@ -691,7 +691,7 @@ export async function resolveDeliveryPayload(opts: ResolveDeliveryPayloadOptions
  * billing) the service forwards to the relay in the ACK; returning `void` is a plain
  * `accepted`. A thrown error withholds the ACK so the relay can redeliver.
  */
-export type RoutingEventDispatch = (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
+export type RoutingEventDispatch = (payload: unknown, eventType: WebhookEventType, correlationId: string, deliveryId?: string) => Promise<void | DeliveryDisposition>;
 
 export interface RoutingWebSocketIntakeServiceOptions extends DeliveryInterestServiceOptions {
     /**

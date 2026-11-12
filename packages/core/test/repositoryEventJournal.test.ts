@@ -165,4 +165,25 @@ describe('repository event journal', () => {
     assert.equal((await pruneRepositoryEvents(database, { now: () => now })).deleted, 0);
     assert.equal(await getRepositoryEventFloor(database, 'acme/app'), (old2 as { seq: number }).seq + 1);
   });
+
+  test('retention keeps unexpired events appended before an older-stamped one', async () => {
+    const now = Date.parse('2026-11-12T00:00:00.000Z');
+    const day = 24 * 60 * 60 * 1000;
+    const repository = 'late/delivery';
+    const recent = [];
+    for (const type of ['opened', 'head_changed', 'review_scored']) {
+      recent.push(await appendRepositoryEvent(database, event({ repository, type, occurredAt: new Date(now - day) })) as { seq: number });
+    }
+    // A delayed delivery stamped with its original, expired time lands at a higher seq.
+    const late = await appendRepositoryEvent(database, event({ repository, type: 'closed', occurredAt: new Date(now - 45 * day) })) as { seq: number };
+    const after = await appendRepositoryEvent(database, event({ repository, type: 'merged', occurredAt: new Date(now - day) })) as { seq: number };
+
+    const result = await pruneRepositoryEvents(database, { now: () => now });
+    assert.equal(result.deleted, 1);
+    assert.deepEqual((await listRepositoryEvents(database, { repository })).map(row => row.seq),
+      [...recent.map(row => row.seq), after.seq]);
+    // The floor still moves past every deleted seq, so a cursor below it is known to have missed the pruned row.
+    assert.equal(await getRepositoryEventFloor(database, repository), late.seq + 1);
+    assert.equal(result.floors[repository], late.seq + 1);
+  });
 });

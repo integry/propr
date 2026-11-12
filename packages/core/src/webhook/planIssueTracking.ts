@@ -255,7 +255,8 @@ async function recordPullRequestOutcomeForScores(
  */
 export async function handlePlanPRUpdate(
     payload: PullRequestEvent,
-    correlationId: string
+    correlationId: string,
+    deliveryId?: string,
 ): Promise<void> {
     const log = logger.withCorrelation(correlationId);
     const repository = payload.repository.full_name;
@@ -263,7 +264,7 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
-        await journalPullRequestWebhook(payload);
+        await journalPullRequestWebhook(payload, { deliveryId });
         if (action === 'closed' && payload.pull_request.merged === true) {
             try {
                 await notificationService.markPullRequestMergedAndDismissNotifications(

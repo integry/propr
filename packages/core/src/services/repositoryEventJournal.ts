@@ -230,9 +230,13 @@ export async function listRepositoryEvents(database: Knex, input: ListRepository
 }
 
 /**
- * The lowest `seq` retention may still have kept for a repository (1 when
- * nothing was ever pruned). A cursor below `floor - 1` may have missed
+ * The cursor-expiration boundary of a repository (1 when nothing was ever
+ * pruned): one past the highest `seq` retention has deleted. A cursor at or
+ * above `floor - 1` has missed nothing; a cursor below it may have missed
  * pruned events, so a reader can tell an expired cursor from an empty result.
+ * Retention deletes by age alone, so unexpired events below the floor are
+ * still kept and readable (an older-stamped event can be appended after
+ * newer ones); only the guarantee of completeness ends at the floor.
  */
 export async function getRepositoryEventFloor(database: Knex, repository: string): Promise<number> {
     const row = await database('repository_event_floors').where({ repository }).first<{ floor_seq: number } | undefined>('floor_seq');
@@ -245,7 +249,12 @@ export interface PruneRepositoryEventsResult {
     floors: Record<string, number>;
 }
 
-/** Delete events older than the retention window and record each repository's new floor. */
+/**
+ * Delete events older than the retention window and raise each affected
+ * repository's floor past the highest deleted `seq`. Only expired rows are
+ * deleted: a recent event keeps its retention even when an older-stamped event
+ * was appended after it at a higher `seq`.
+ */
 export async function pruneRepositoryEvents(database: Knex, options: {
     olderThanDays?: number; now?: () => number;
 } = {}): Promise<PruneRepositoryEventsResult> {
@@ -257,11 +266,12 @@ export async function pruneRepositoryEvents(database: Knex, options: {
             .groupBy('repository').select<Array<{ repository: string; max_seq: number }>>('repository', trx.raw('MAX(seq) as max_seq'));
         const floors: Record<string, number> = {};
         if (!expired.length) return { deleted: 0, floors };
-        // Everything at or below the newest expired seq goes, so the floor is exact
-        // even if an older-stamped row was appended after a newer one.
         let deleted = 0;
         for (const { repository, max_seq: maxSeq } of expired) {
-            deleted += await trx('repository_events').where({ repository }).where('seq', '<=', maxSeq).delete();
+            // The same age predicate as the selection, so no unexpired row goes;
+            // the seq bound only keeps the floor matching what was deleted.
+            deleted += await trx('repository_events').where({ repository }).where('occurred_at', '<', cutoff)
+                .where('seq', '<=', maxSeq).delete();
             const floor = Number(maxSeq) + 1;
             await trx('repository_event_floors').insert({ repository, floor_seq: floor, pruned_at: new Date(now).toISOString() })
                 .onConflict('repository').merge({
