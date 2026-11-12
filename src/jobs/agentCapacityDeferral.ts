@@ -37,6 +37,14 @@ export const CLEARED_AGENT_CAPACITY_DEFERRAL: AgentCapacityDeferralData = {
     agentCapacityDeferrals: undefined, agentCapacityRetryAt: undefined, agentCapacityWaitingSince: undefined, agentCapacityAliases: undefined,
 };
 
+/**
+ * The wait `admitAgentCapacity` ended: its count, when it began and the
+ * synthetic members it chose. A job whose authoritative acquire can still turn
+ * a lost race into a deferral passes it back to `persistAgentCapacityDeferral`,
+ * so that refusal continues the same wait instead of starting a new one.
+ */
+export type AdmittedAgentCapacityWait = Pick<AgentCapacityDeferralData, 'agentCapacityDeferrals' | 'agentCapacityWaitingSince' | 'agentCapacitySelections'>;
+
 function waiterOf(job: { queueName?: string; id?: string | null }): string | undefined {
     return job.queueName && job.id ? JSON.stringify([job.queueName, job.id]) : undefined;
 }
@@ -115,28 +123,39 @@ function refusalReason(error: unknown): string {
  * timeline: one row per wait, updated in place. Call before unwinding locks and
  * claims, then rethrow so `deferCapacityJob` delays the job. A refusal that
  * cannot be stored ends this attempt through `onPersistFailure`.
+ *
+ * `resumed` is the wait an earlier `admitAgentCapacity` of this delivery ended
+ * (a lost race at the authoritative acquire): the refusal keeps its count, its
+ * place on the waiting lists and its synthetic members, so the re-entered job
+ * neither selects (advancing the round-robin cursor) again nor waits as a newcomer.
  */
 export async function persistAgentCapacityDeferral<T extends AgentCapacityDeferralData>(options: {
     job: CapacityJob<T>; error: unknown; correlatedLogger: Logger; extraData?: Partial<T>;
     stateManager?: Pick<WorkerStateManager, 'getTaskState' | 'updateHistoryMetadata' | 'updateTaskStateIfCurrent'>; taskId?: string;
     onPersistFailure?(error: Error): Promise<void>;
+    resumed?: AdmittedAgentCapacityWait;
     now?: number;
 }): Promise<void> {
     const { job, error, correlatedLogger } = options;
     const capacity = await core();
     const now = options.now ?? Date.now();
     const aliases = refusedAliases(error);
-    const since = job.data.agentCapacityWaitingSince ?? now;
-    // Lists this job already sits on: the aliases its previous refusal named.
+    const resumed = options.resumed ?? {};
+    const since = job.data.agentCapacityWaitingSince ?? resumed.agentCapacityWaitingSince ?? now;
+    const selections = job.data.agentCapacitySelections ?? resumed.agentCapacitySelections;
+    // Lists this job already sits on: the aliases its stored refusal names (admission left them all).
     const previous = job.data.agentCapacityAliases ?? [];
     await capacity.registerAgentCapacityWaiter(aliases, waiterOf(job), since);
-    const next = nextCapacityDeferral(job.data.agentCapacityDeferrals, { now });
+    const next = nextCapacityDeferral(job.data.agentCapacityDeferrals ?? resumed.agentCapacityDeferrals, { now });
     const deferrals = next.deferrals;
     let retryAt = next.retryAt;
     // A holder released between the pre-check and joining the list cannot have woken this job.
     if (aliases.length && (await Promise.all(aliases.map(alias => capacity.agentAliasHasCapacity(alias)))).every(Boolean)) retryAt = now + 250;
     try {
-        await job.updateData({ ...job.data, ...options.extraData, agentCapacityDeferrals: deferrals, agentCapacityRetryAt: retryAt, agentCapacityWaitingSince: since, agentCapacityAliases: aliases });
+        await job.updateData({
+            ...job.data, ...options.extraData, ...(selections ? { agentCapacitySelections: selections } : {}),
+            agentCapacityDeferrals: deferrals, agentCapacityRetryAt: retryAt, agentCapacityWaitingSince: since, agentCapacityAliases: aliases,
+        });
     } catch (persistError) {
         // The stored data still names the previous aliases; leave only the lists this attempt joined.
         await capacity.forgetAgentCapacityWaiter(aliases.filter(alias => !previous.includes(alias)), waiterOf(job));
@@ -160,13 +179,17 @@ export async function persistAgentCapacityDeferral<T extends AgentCapacityDeferr
  * The job proceeds: end its agent-capacity wait (counters and waiting-list
  * entries). `keepSelections` retains the chosen synthetic members until the
  * agents actually run, for jobs that can still wait on repository capacity.
+ * Returns the wait it ended, for a job that can still lose the race at the
+ * authoritative acquire (see `persistAgentCapacityDeferral`'s `resumed`).
  */
-export async function admitAgentCapacity<T extends AgentCapacityDeferralData>(job: CapacityJob<T>, options: { keepSelections?: boolean } = {}): Promise<void> {
-    const waiting = job.data.agentCapacityAliases;
-    const stale = !options.keepSelections && job.data.agentCapacitySelections !== undefined;
-    if (!job.data.agentCapacityDeferrals && !waiting?.length && !stale) return;
+export async function admitAgentCapacity<T extends AgentCapacityDeferralData>(job: CapacityJob<T>, options: { keepSelections?: boolean } = {}): Promise<AdmittedAgentCapacityWait> {
+    const { agentCapacityDeferrals, agentCapacityWaitingSince, agentCapacitySelections, agentCapacityAliases: waiting } = job.data;
+    const ended = { agentCapacityDeferrals, agentCapacityWaitingSince, agentCapacitySelections };
+    const stale = !options.keepSelections && agentCapacitySelections !== undefined;
+    if (!agentCapacityDeferrals && !waiting?.length && !stale) return ended;
     if (waiting?.length) await (await core()).forgetAgentCapacityWaiter(waiting, waiterOf(job));
     await job.updateData({ ...job.data, ...CLEARED_AGENT_CAPACITY_DEFERRAL, ...(options.keepSelections ? {} : { agentCapacitySelections: undefined }) });
+    return ended;
 }
 
 /** Runs the job's agents with the pre-check's pinned members (and race bound); a no-op context without a policy. */

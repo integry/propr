@@ -21,7 +21,10 @@ import type { GitHubToken } from './githubTypes.js';
 import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { compactNotificationRecap } from './notificationRecap.js';
 import { deferOnCapacityRefusal } from './capacityDeferral.js';
-import { admitAgentCapacity, checkJobAgentCapacity, isAgentCapacityRefusal, JOB_AGENT_CAPACITY_RACE_WAIT_MS, persistAgentCapacityDeferral, runWithJobAgentCapacity } from './agentCapacityDeferral.js';
+import {
+    admitAgentCapacity, checkJobAgentCapacity, isAgentCapacityRefusal, JOB_AGENT_CAPACITY_RACE_WAIT_MS, persistAgentCapacityDeferral, runWithJobAgentCapacity,
+    type AdmittedAgentCapacityWait,
+} from './agentCapacityDeferral.js';
 
 interface TaskImportResult extends JobResult {
     repository?: string;
@@ -76,7 +79,8 @@ async function openTaskImportTask(job: Job<TaskImportJobData>, taskId: string, s
  * A default agent at its per-agent ceiling delays this same job (no attempt
  * consumed). Task import publishes nothing before its agent runs, so a lost race
  * at the authoritative acquire that waits longer than the race bound is
- * deferred too; the throwaway worktree is removed meanwhile.
+ * deferred too, continuing the wait the pre-check admitted (its count, place
+ * and synthetic member); the throwaway worktree is removed meanwhile.
  */
 export function processTaskImportJob(job: Job<TaskImportJobData>): Promise<TaskImportResult> {
     return deferOnCapacityRefusal(job, () => processAdmittedTaskImportJob(job));
@@ -111,6 +115,8 @@ async function processAdmittedTaskImportJob(job: Job<TaskImportJobData>): Promis
     const taskId = taskImportTaskId(repoOwner, repoName, jobId);
 
     let deferred = false;
+    // The wait admission ended; a lost race at the authoritative acquire continues it.
+    let admittedWait: AdmittedAgentCapacityWait | undefined;
     try {
         if (!await openTaskImportTask(job, taskId, stateManager)) return { status: 'cancelled', repository, jobId };
 
@@ -119,7 +125,7 @@ async function processAdmittedTaskImportJob(job: Job<TaskImportJobData>): Promis
         const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
         // Before cloning: a saturated default agent defers the job.
         const agentCapacity = await checkJobAgentCapacity(job, [{ agentAlias: resolvedAlias, model: resolvedModel }], { raceWaitMs: JOB_AGENT_CAPACITY_RACE_WAIT_MS });
-        await admitAgentCapacity(job);
+        admittedWait = await admitAgentCapacity(job);
 
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),
@@ -221,7 +227,7 @@ async function processAdmittedTaskImportJob(job: Job<TaskImportJobData>): Promis
     } catch (error) {
         if (isAgentCapacityRefusal(error)) {
             deferred = true;
-            await persistAgentCapacityDeferral({ job, error, stateManager, taskId, correlatedLogger });
+            await persistAgentCapacityDeferral({ job, error, stateManager, taskId, correlatedLogger, resumed: admittedWait });
             throw error;
         }
         if (error instanceof UsageLimitError) {
