@@ -195,6 +195,11 @@ comment/task lookup. A comment embedding GitHub user attachments lists them unde
 `attachments` (`index`, `attachmentId`, `type`, untrusted `alt`, `fetchable`);
 `get_comment_attachment` returns the image itself. New reviews persist reviewed head and task identity in the
 existing review marker; legacy reviews explicitly report an unknown head.
+GitHub code review lives outside the issue comments, so `source=reviews` pages
+submitted reviews (state, summary body, commit) and `source=review_comments`
+pages inline review comments (path, line, review and reply ids), both
+oldest-first by page number with the same body chunks; the conversation-only
+selectors (newest-first, comment and task lookup) are refused for them.
 `fix_review_findings` requires `reviewCommentId` and at least one identifier
 across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
 follow-ups), which may be mixed freely; it rejects consumed, unknown, malformed

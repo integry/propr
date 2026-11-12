@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issues. The catalog is also served by
   `GET /api/automation-definitions/templates`, the MCP read tool
   `list_automation_templates` and `propr automation templates`.
+- **Instruction learning loop template**: a weekly automation template that
+  reads recent pull request discussions through ProPR's MCP tools and
+  proposes short additions to, or removals from, the repository's agent
+  instructions (`AGENTS.md`, `.propr/instructions.md` or the workflow
+  `instructions` file). Each candidate cites at least two pull requests where
+  the same correction was made; the report also lists stale instructions and
+  warns when the instruction files grow too long. With autonomy raised, the
+  acting step creates one ProPR task that opens a pull request with the cited
+  changes for review.
+- **MCP `get_pull_request_discussion` review sources**: `source: "reviews"`
+  pages a pull request's submitted GitHub reviews and
+  `source: "review_comments"` its inline review comments (file, line, reply
+  thread). The default conversation read never included either, so the
+  Instruction learning loop now reads all three.
 
 ### Fixed
 

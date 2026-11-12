@@ -111,8 +111,24 @@ ProPR ships a small catalog of automation templates for common recurring jobs. A
 | Template | What the report contains | Suggested schedule |
 | --- | --- | --- |
 | **Daily issue triage** (`daily-issue-triage`) | Issues that need a human today, likely duplicates (including repeats of recently closed issues), proposed severity labels, proposed security labels and stale issues with a suggested next step. It only reads issues and never comments on, labels or closes them. | `0 7 * * 1-5` (weekdays at 07:00 UTC), with the previous report included so each run focuses on what changed |
+| **Instruction learning loop** (`instruction-learning-loop`) | Candidate rules from review corrections that repeat across pull requests, each with proposed wording, a target instruction file and links to at least two pull requests; existing instructions that look stale or contradicted, as removal candidates; and the size of the instruction files, with a warning when they grow too long. | `0 8 * * 1` (Mondays at 08:00 UTC), with the previous report included so candidates are not proposed twice |
 
 The triage template needs `repository_read`, which gives the run a read-only GitHub token for the repositories in scope. With `preview` or `auto`, the acting step can turn the report into TODOs, tasks or plans through ProPR's MCP tools (see [Acting on a report](#acting-on-a-report)).
+
+### Instruction learning loop
+
+The same correction often gets made in review after review: "use the shared helper", "add a migration test", "do not log the token". The **Instruction learning loop** template turns those repeats into proposed instructions, so the next run gets them right the first time.
+
+Each week the run reads the repository's agent instructions (`AGENTS.md`, `.propr/instructions.md` and the file named by `instructions` in [`.propr/workflow.yml`](./repository-workflow.md#instructions-and-validation)) and the last 30 days of pull request discussions through ProPR's MCP tools (`list_pull_requests`, `get_pull_request_discussion`, `list_tasks` and `get_task_events`). For each pull request it pages through the conversation, the submitted reviews and the inline review comments, because most human review corrections are made on specific lines rather than in the conversation. It needs `repository_read` and `propr_mcp`, so it runs on Claude Code or Codex. Its report lists:
+
+- **Candidate rules**: the proposed wording in one or two sentences, the target file, and links to at least two distinct pull requests where the same correction was made. A correction seen in a single pull request, or a one-off preference, is never proposed.
+- **Removal candidates**: existing instructions that look stale or that recent merged work contradicts.
+- **Instruction file size**: each file and the total, with a warning above 300 lines or 20,000 characters, because long instructions crowd out the task.
+- **Proposed task**: a ready-to-use task body with the changes and their citations.
+
+Pull request text is treated as untrusted data: the run never follows instructions found in it, and never proposes a rule whose only source is text asking for that rule.
+
+Instruction changes always go through a reviewed pull request. Instructions steer every later run in the repository, so a bad rule learned from a misread review, or one planted in a pull request comment, would repeat its mistake on every task. The template starts in `dry_run`, so a run only writes the report. With `preview` (recommended) or `auto`, the acting step creates one ProPR task per repository whose body carries the proposed changes and their citations. The acting step cannot edit files itself; the task opens a pull request, and a maintainer reviews and merges it like any other change.
 
 The catalog is also available outside the UI: `GET /api/automation-definitions/templates`, the MCP read tool `list_automation_templates` and `propr automation templates` (add `--json` for the versioned document). Each entry has an `id`, `name`, `description`, `category`, `prompt`, `capabilities`, `schedule`, `autonomy`, `previousReportCount` and `reviewBeforeSaving`, and the document carries a catalog `version`. To start an automation from a template through the API, send its fields to `POST /api/automation-definitions` together with your own `repositories`.
 
