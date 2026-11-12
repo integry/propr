@@ -12,7 +12,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Job, Queue } from 'bullmq';
+import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AdmissionRedis } from './agentRunAdmission.js';
@@ -229,7 +229,7 @@ export async function wakeAgentCapacityWaiters(alias: string, options: CapacityO
                     const [queueName, jobId] = JSON.parse(waiter) as [string, string];
                     let queue = queues.get(queueName);
                     if (!queue) queues.set(queueName, queue = new Queue(queueName, { connection: client }));
-                    const job = await Job.fromId(queue, jobId);
+                    const job = await queue.getJob(jobId);
                     // A finished (or cancelled and removed) job no longer waits.
                     if (!job || job.finishedOn) { await client.zrem(key, waiter); continue; }
                     woken++;
