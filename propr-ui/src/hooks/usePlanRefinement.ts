@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
 import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/proprApi';
+import { restoreDeletedTask, type DetachedDependency } from './planTaskDependencies';
 
 const REFINEMENT_POLL_INTERVAL_MS = 1000;
 // The API recovers an abandoned refinement after 35 minutes. This is a final
@@ -149,6 +150,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
   const [refinementProgress, setRefinementProgress] = useState<RefinementProgress>({ isRefining: false });
   const saveRef = useRef<ReturnType<typeof debounce> | null>(null);
+  const detachedDependenciesRef = useRef<DetachedDependency[]>([]);
 
   const currentPlan = history[pointer];
 
@@ -268,13 +270,11 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   }, [currentPlan, updatePlan]);
 
   const restoreTask = useCallback((deleted: DeletedTask) => {
-    const dependents = new Set(deleted.dependents ?? []);
-    const newPlan = currentPlan.map(t => dependents.has(t.id) && !t.dependsOn?.includes(deleted.task.id)
-      ? { ...t, dependsOn: [...(t.dependsOn ?? []), deleted.task.id] } : t);
-    // Insert at the original index, or at the end if the index is out of bounds
-    const insertIndex = Math.min(deleted.index, newPlan.length);
-    newPlan.splice(insertIndex, 0, deleted.task);
-    updatePlan(newPlan, 'user');
+    // The deletion record holds the task as it was; tasks deleted since then
+    // must not come back as references, but are reconnected on their restore.
+    const restored = restoreDeletedTask(currentPlan, deleted, detachedDependenciesRef.current);
+    detachedDependenciesRef.current = restored.detached;
+    updatePlan(restored.plan, 'user');
   }, [currentPlan, updatePlan]);
 
   const reorderTasks = useCallback((activeId: string, overId: string) => {

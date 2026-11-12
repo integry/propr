@@ -194,8 +194,11 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       const draft = await db('task_drafts').where({ draft_id: args.planId, mcp_revision: args.expectedRevision }).first();
       if (!draft) throw new McpError('STALE_REVISION', 'Plan revision changed.', 409);
       const publicationPlan = z.array(planTask.extend({ issue_number: z.number().int().positive().optional(), issue_url: z.string().url().optional() })).min(1).max(20);
-      // Older drafts get item ids here; the completed plan stores them.
-      const tasks = publicationPlanItems(validatePublicationPlan(draft.plan_json, publicationPlan));
+      // Older drafts get item ids here. The claim below stores them before any
+      // issue records one, so an interrupted attempt's resume reads the same ids.
+      const storedTasks = validatePublicationPlan(draft.plan_json, publicationPlan);
+      const tasks = publicationPlanItems(storedTasks);
+      const assignedItemIds = tasks.some((task, index) => task.id !== storedTasks[index]?.id);
       const initialContext = parseContextConfig(draft.context_config);
       const partial = args.resume ? partialPublication(initialContext.publication) : undefined;
       const active = args.resume ? parseActivePublication(initialContext.publication) : undefined;
@@ -241,7 +244,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       else claim.whereIn('status', ['draft', 'review', 'approved']);
       let claimedRevision = args.expectedRevision + 1;
       const claimed = await claim.update({ status: 'executing', context_config: activeContextJson,
-        updated_at: db.fn.now(), mcp_revision: claimedRevision });
+        ...(assignedItemIds ? { plan_json: JSON.stringify(tasks) } : {}), updated_at: db.fn.now(), mcp_revision: claimedRevision });
       if (!claimed) throw new McpError('PRECONDITION_FAILED', args.resume
         ? 'Plan is no longer available to resume. Read it again and confirm its publication is still recoverable.'
         : 'Plan is already published or busy.', 409);

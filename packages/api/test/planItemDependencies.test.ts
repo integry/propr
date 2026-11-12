@@ -192,6 +192,35 @@ test('a resumed MCP publication records the same rows as an uninterrupted one', 
   assert.deepEqual(await publishedRows(db, call), expectedRows);
 });
 
+test('a resumed MCP publication of a draft without item ids keeps the ids its first attempt recorded', async t => {
+  // An older draft: no item ids, so no dependencies either.
+  const legacyPlan = [task('Schema'), task('API'), task('UI')];
+  const db = await setup(t, legacyPlan);
+  const server = issueServer();
+  server.failOn(2);
+  const { call } = mcp(db, server.request);
+  const { mcp_revision: revision } = await db('task_drafts').where({ draft_id: draftId }).first();
+  await assert.rejects(call('publish_plan', { idempotencyKey: 'publish-first', planId: draftId, expectedRevision: revision }, 'first-attempt'),
+    (error: unknown) => error instanceof McpError && error.code === 'PUBLISH_PARTIAL');
+
+  // The partial publication's stored plan names the item its recorded issue carries.
+  const partialPlan = await storedPlan(db);
+  const ids = partialPlan.map(item => item.id);
+  assert.ok(ids.every(id => typeof id === 'string' && id.length > 0));
+  assert.equal(new Set(ids).size, ids.length);
+  const firstRow = await db('plan_issues').where({ draft_id: draftId, issue_number: 101 }).first();
+  assert.equal(firstRow.plan_item_id, ids[0]);
+
+  const partial = await db('task_drafts').where({ draft_id: draftId }).first();
+  await call('publish_plan', { idempotencyKey: 'publish-resume', planId: draftId, expectedRevision: partial.mcp_revision, resume: true }, 'resume-attempt');
+  assert.deepEqual(await publishedRows(db, call), [
+    { issue_number: 101, plan_item_id: ids[0], depends_on_issues: [] },
+    { issue_number: 102, plan_item_id: ids[1], depends_on_issues: [] },
+    { issue_number: 103, plan_item_id: ids[2], depends_on_issues: [] },
+  ]);
+  assert.deepEqual((await storedPlan(db)).map(item => item.id), ids);
+});
+
 test('REST finalize refuses a stored plan with invalid dependencies before claiming it', async t => {
   const db = await setup(t, [task('A', { id: 'a', dependsOn: ['ghost'] })]);
   const response = { statusCode: 200, body: {} as Record<string, unknown> };

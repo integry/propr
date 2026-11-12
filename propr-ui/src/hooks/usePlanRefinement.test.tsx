@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDraftWithPlan, refinePlan, updateDraft } from '../api/proprApi';
 import type { DraftWithPlan, PlanTask } from '../api/proprApi';
+import { validatePlanItemGraph } from '@propr/shared';
 import { usePlanRefinement } from './usePlanRefinement';
 
 vi.mock('../api/proprApi', () => ({
@@ -209,6 +210,41 @@ describe('usePlanRefinement', () => {
 
       act(() => { result.current.restoreTask(deleted!); });
       expect(relation(result.current.plan)).toEqual([['schema', []], ['api', ['schema']], ['ui', ['api', 'schema']]]);
+    });
+
+    it('restores a dependent whose prerequisite was deleted after it, and reconnects them on the second restore', async () => {
+      const { result } = renderHook(() => usePlanRefinement('draft-1', dependentPlan));
+      let api: ReturnType<typeof result.current.deleteTask> = null;
+      let schema: ReturnType<typeof result.current.deleteTask> = null;
+
+      act(() => { api = result.current.deleteTask('api'); });
+      act(() => { schema = result.current.deleteTask('schema'); });
+      expect(relation(result.current.plan)).toEqual([['ui', []]]);
+
+      act(() => { result.current.restoreTask(api!); });
+      // The record still names the deleted schema task; the restored plan does not.
+      expect(api!.task.dependsOn).toEqual(['schema']);
+      expect(relation(result.current.plan)).toEqual([['ui', ['api']], ['api', []]]);
+      await act(async () => { await result.current.flushPendingSave(); });
+      expect(validatePlanItemGraph(mockUpdateDraft.mock.calls.at(-1)![1].plan_json!)).toEqual({ valid: true });
+
+      act(() => { result.current.restoreTask(schema!); });
+      expect(relation(result.current.plan)).toEqual([['schema', []], ['ui', ['api', 'schema']], ['api', ['schema']]]);
+    });
+
+    it('reconnects a dependent restored after its prerequisite when both were deleted, prerequisite first', () => {
+      const { result } = renderHook(() => usePlanRefinement('draft-1', dependentPlan));
+      let schema: ReturnType<typeof result.current.deleteTask> = null;
+      let api: ReturnType<typeof result.current.deleteTask> = null;
+
+      act(() => { schema = result.current.deleteTask('schema'); });
+      act(() => { api = result.current.deleteTask('api'); });
+      act(() => { result.current.restoreTask(schema!); });
+      expect(relation(result.current.plan)).toEqual([['schema', []], ['ui', ['schema']]]);
+
+      act(() => { result.current.restoreTask(api!); });
+      expect(relation(result.current.plan)).toEqual([['api', ['schema']], ['schema', []], ['ui', ['schema', 'api']]]);
+      expect(validatePlanItemGraph(result.current.plan)).toEqual({ valid: true });
     });
   });
 });

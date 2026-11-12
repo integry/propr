@@ -230,7 +230,7 @@ You MUST return a JSON object with this exact structure:
 - For "clarify": Ask a specific question (e.g., "Would you like me to add a new task for X, or modify the existing task?").
 
 **Plan modification rules:**
-1. Maintain the schema: { id, title, body, implementation } plus the optional "notes" and "dependsOn". Keep every existing task's "id" exactly as it is, including when you edit or move the task, and keep its "dependsOn" unless the instruction changes it. A new task may have a new unique "id" or none. "dependsOn" lists the "id"s of other tasks in the plan whose code a task needs first; remove an entry when you remove the task it names, and never create a cycle.
+1. Maintain the schema: { id, title, body, implementation } plus the optional "notes" and "dependsOn". Keep every existing task's "id" exactly as it is, including when you edit or move the task, and keep its "dependsOn" unless the instruction changes it (a task that omits "dependsOn" keeps its current prerequisites; give "dependsOn": [] to remove them all). A new task may have a new unique "id" or none. "dependsOn" lists the "id"s of other tasks in the plan whose code a task needs first; remove an entry when you remove the task it names, and never create a cycle.
 2. Update implementation code when the task changes.
 3. Keep body content verbose with context, requirements, implementation details, and acceptance criteria.
 4. If action is "answered" or "clarify", return the plan UNCHANGED.
