@@ -79,15 +79,19 @@ function bound(text: string, max: number): string {
 }
 
 /**
- * A line inside the criteria section; null marks a break, such as a sub-heading
- * or a top-level code fence, that ends the current item.
+ * A line inside the criteria section: text; a heading held by a list item, which
+ * is a part of that item; or null for a break, such as a sub-heading or a
+ * top-level code fence, that ends the current item.
  */
-type SectionLine = string | null;
+type SectionLine = string | { heading: string } | null;
 
 const LEADING_WHITESPACE = /^[ \t]*/;
 /** Most list items one line is read as opening, as in `- 1. text`; keeps long marker runs linear. */
 const MAX_ITEMS_PER_LINE = 8;
+/** Most block quotes read as nested, as in `> > text`; deeper ones read as fenced code, keeping each line's scan linear. */
+const MAX_QUOTE_DEPTH = 8;
 const LIST_MARKER = /^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]*)/;
+const QUOTE_MARKER = /^[ \t]*>[ \t]?/;
 
 /** Width of `text` in columns, with tab stops every four columns. */
 function columnWidth(text: string): number {
@@ -127,43 +131,65 @@ function closingFenceRun(text: string): string | null {
     return /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(text)?.[1] ?? null;
 }
 
+/** A block quote line's content, after its `>` and one optional space; null when `text` is not quoted. */
+function quotedText(text: string): string | null {
+    const match = QUOTE_MARKER.exec(text);
+    return match ? text.slice(match[0].length) : null;
+}
+
 interface OpenFence {
     marker: string;
     /** Content column of the list item holding the fence; 0 at top level. */
     column: number;
 }
 
-/** How a line relates to fenced code. */
-interface FenceLine {
-    /** Content column of the list item holding the fence; 0 at top level. */
+interface OpenQuote {
+    /** Reads the quote's content, without its `>` markers, as a document of its own. */
+    content: FenceTracker;
+    /** Content column of the list item holding the quote; 0 at top level. */
     column: number;
+}
+
+/** How a line relates to the list items holding it and to fenced code. */
+interface TrackedLine {
+    /** Content column of the list item holding the line; 0 at top level. */
+    column: number;
+    /** A code fence delimiter or a line inside fenced code, including fenced code in a block quote. */
+    fenced: boolean;
     /**
-     * Set when the fence opens on a list item's own line, as in `- \`\`\`md`:
-     * the item's marker, which starts the item although its content is fenced.
+     * Set when the fence opens on a list item's own line, as in `- \`\`\`md`
+     * or `- > \`\`\`md`: the item's marker, which starts the item although its
+     * content is fenced.
      */
     itemMarker?: string;
 }
 
 /**
- * Tracks fenced code, including fences inside list items, whose indentation is
- * relative to the item's content column rather than the line start.
+ * Tracks the list items holding each line, and fenced code, including fences
+ * inside list items, whose indentation is relative to the item's content column
+ * rather than the line start, and fences inside block quotes, whose lines start
+ * with the quote's `>` markers.
  */
 class FenceTracker {
     private containers: number[] = [];
     private fence: OpenFence | null = null;
+    private quote: OpenQuote | null = null;
+    /** True after a line that no paragraph text continues lazily: a blank line or a heading. */
     private previousBlank = true;
+    /** Content column of the list item holding the current line. */
+    private column = 0;
 
-    /** How `line` relates to fenced code: null unless it is a fence delimiter or fenced code. */
-    fenceLine(line: string): FenceLine | null {
+    constructor(private readonly quoteDepth = 0) {}
+
+    /** How `line`, the next line of the document, relates to its list items and to fenced code. */
+    track(line: string): TrackedLine {
         const blank = !line.trim();
         const indent = columnWidth(LEADING_WHITESPACE.exec(line)?.[0] ?? '');
-        const held = this.fence?.column;
         const fenced = this.fence ? this.continueFence(line, blank, indent) : this.openFence(line, blank, indent);
-        this.previousBlank = blank;
-        if (!fenced) return null;
-        if (typeof fenced === 'string') return { column: (this.fence as OpenFence).column, itemMarker: fenced };
-        // A closing delimiter clears the fence, and a less-indented line can end it and open another.
-        return { column: this.fence?.column ?? held ?? 0 };
+        this.previousBlank = blank || (!fenced && atxHeading(line) !== null);
+        const tracked: TrackedLine = { column: this.column, fenced: fenced !== false };
+        if (typeof fenced === 'string') tracked.itemMarker = fenced;
+        return tracked;
     }
 
     private continueFence(line: string, blank: boolean, indent: number): boolean | string {
@@ -173,22 +199,34 @@ class FenceTracker {
             this.fence = null;
             return this.openFence(line, blank, indent);
         }
-        const run = this.delimiterAt(line, indent, fence.column, closingFenceRun);
+        this.column = fence.column;
+        const run = this.startAt(line, indent, fence.column, closingFenceRun);
         if (run && run[0] === fence.marker[0] && run.length >= fence.marker.length) this.fence = null;
         return true;
     }
 
-    /** True when `line` opens a fence; the item marker when it opens on a list item's line. */
+    /**
+     * True when `line` opens a fence, or is fenced code in a block quote; the
+     * item marker when that starts on a list item's line.
+     */
     private openFence(line: string, blank: boolean, indent: number): boolean | string {
-        if (blank) return false;
+        if (blank) {
+            // A blank line ends a block quote, and any fence inside it.
+            this.quote = null;
+            return false;
+        }
         // The list items this line can still belong to: those it is indented into.
         let depth = this.containers.length;
         while (depth && this.containers[depth - 1] > indent) depth--;
         const content = listContentColumn(line);
         const column = depth ? this.containers[depth - 1] : 0;
-        const marker = content < 0 ? this.delimiterAt(line, indent, column) : null;
-        // Only paragraph text continues a less-indented item lazily; a list item, fence or heading ends it.
-        if (content >= 0 || marker || this.previousBlank || atxHeading(line)) this.containers.length = depth;
+        this.column = column;
+        const quoted = content < 0 ? this.startAt(line, indent, column, quotedText) : null;
+        const marker = content < 0 && quoted === null ? this.startAt(line, indent, column, fenceRun) : null;
+        // Only paragraph text continues a less-indented item lazily; a list item, block quote, fence or heading ends it.
+        if (content >= 0 || quoted !== null || marker || this.previousBlank || atxHeading(line)) this.containers.length = depth;
+        if (quoted !== null) return this.quoteLine(quoted, column);
+        this.quote = null;
         if (content >= 0) return this.openItems(line, content);
         if (!marker) return false;
         this.fence = { marker, column };
@@ -197,7 +235,7 @@ class FenceTracker {
 
     /**
      * Records the list items starting on `line`, such as `- 1. text`, and opens
-     * the fence that their content starts with, if any.
+     * the fence, or the block quote, that their content starts with, if any.
      */
     private openItems(line: string, firstColumn: number): boolean | string {
         let itemLine: string | null = line;
@@ -205,29 +243,42 @@ class FenceTracker {
         for (let opened = 0; itemLine !== null && column >= 0 && opened < MAX_ITEMS_PER_LINE; opened++) {
             this.containers.push(column);
             itemLine = itemContentLine(itemLine, column);
-            const marker = itemLine === null ? null : fenceRun(itemLine.slice(column));
-            if (marker) {
-                this.fence = { marker, column };
-                return (LIST_MARKER.exec(line) as RegExpExecArray)[0];
-            }
-            column = itemLine === null ? -1 : listContentColumn(itemLine);
+            if (itemLine === null) return false;
+            const quoted = this.startAt(itemLine, column, column, quotedText);
+            const marker = quoted === null ? fenceRun(itemLine.slice(column)) : null;
+            if (marker) this.fence = { marker, column };
+            if (marker || (quoted !== null && this.quoteLine(quoted, column))) return (LIST_MARKER.exec(line) as RegExpExecArray)[0];
+            if (quoted !== null) return false;
+            column = listContentColumn(itemLine);
         }
         return false;
     }
 
-    /** The opening (or closing) fence run starting `line`, when its indentation is within three columns of `column`. */
-    private delimiterAt(line: string, indent: number, column: number, run = fenceRun): string | null {
-        if (indent < column || indent - column > 3) return null;
-        return run(line);
+    /**
+     * Reads a block quote line's content with the quote's own tracker; true when
+     * that content is fenced code, or is nested too deep to read.
+     */
+    private quoteLine(text: string, column: number): boolean {
+        if (this.quoteDepth >= MAX_QUOTE_DEPTH) return true;
+        if (this.quote?.column !== column) this.quote = { content: new FenceTracker(this.quoteDepth + 1), column };
+        return this.quote.content.track(text).fenced;
+    }
+
+    /**
+     * What `start` reads from `line` (a fence run, or a block quote's content),
+     * when its indentation is within three columns of `column`.
+     */
+    private startAt(line: string, indent: number, column: number, start: (text: string) => string | null): string | null {
+        return indent < column || indent - column > 3 ? null : start(line);
     }
 }
 
 interface VisibleLine {
     text: string;
-    /** A code fence delimiter or a line inside fenced code. */
+    /** A code fence delimiter or a line inside fenced code, including fenced code in a block quote. */
     fenced: boolean;
-    /** Fenced code held by a list item, which the fence does not end. */
-    inListItem: boolean;
+    /** Content column of the list item holding the line; 0 at top level and inside HTML comments. */
+    column: number;
 }
 
 /** Removes `<!-- ... -->` comments from one line, given whether a comment is already open at its start. */
@@ -258,23 +309,23 @@ function stripLineComments(line: string, inComment: boolean): { text: string; in
  */
 function visibleLines(lines: readonly string[]): VisibleLine[] {
     const visible: VisibleLine[] = [];
-    const fences = new FenceTracker();
+    const tracker = new FenceTracker();
     let inComment = false;
     for (const line of lines) {
-        const fence = inComment ? null : fences.fenceLine(line);
-        if (fence?.itemMarker !== undefined) {
+        const tracked = inComment ? null : tracker.track(line);
+        if (tracked?.itemMarker !== undefined) {
             // The item starts here, but its content is the fence's opening delimiter.
-            visible.push({ text: fence.itemMarker, fenced: false, inListItem: false });
+            visible.push({ text: tracked.itemMarker, fenced: false, column: tracked.column });
             continue;
         }
-        if (fence) {
-            visible.push({ text: line, fenced: true, inListItem: fence.column > 0 });
+        if (tracked?.fenced) {
+            visible.push({ text: line, fenced: true, column: tracked.column });
             continue;
         }
         const stripped = stripLineComments(line, inComment);
         inComment = stripped.inComment;
         // A line that was only comment reads as blank, like the rendered output.
-        visible.push({ text: stripped.text.trim() ? stripped.text : '', fenced: false, inListItem: false });
+        visible.push({ text: stripped.text.trim() ? stripped.text : '', fenced: false, column: tracked?.column ?? 0 });
     }
     return visible;
 }
@@ -293,21 +344,27 @@ function headingAt(lines: readonly string[], index: number): { heading: Heading;
  * The lines under the first "Acceptance criteria" heading, up to the next
  * heading of the same or a higher level. A top-level code fence is a break; a
  * fence inside a list item reads as blank lines, so the item continues after it.
+ * A heading inside a list item is part of that item, and never ends the section.
  */
 function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
     const lines = visible.map(line => line.text);
     const section: SectionLine[] = [];
     let sectionLevel = 0;
+    // Content column of the list item holding the section's heading; 0 at top level.
+    let sectionColumn = 0;
     for (let index = 0; index < lines.length; index++) {
+        // Held by a list item that opened inside the section, so part of a criterion.
+        const inItem = sectionLevel > 0 && visible[index].column > sectionColumn;
         if (visible[index].fenced) {
-            if (sectionLevel) section.push(visible[index].inListItem ? '' : null);
+            if (sectionLevel) section.push(inItem ? '' : null);
             continue;
         }
         const found = headingAt(lines, index);
         if (found) {
-            if (sectionLevel && found.heading.level <= sectionLevel) break;
-            if (sectionLevel) section.push(null);
-            else if (isAcceptanceHeading(found.heading.text)) sectionLevel = found.heading.level;
+            if (inItem) section.push({ heading: found.heading.text });
+            else if (sectionLevel && found.heading.level <= sectionLevel) break;
+            else if (sectionLevel) section.push(null);
+            else if (isAcceptanceHeading(found.heading.text)) [sectionLevel, sectionColumn] = [found.heading.level, visible[index].column];
             index += found.span - 1;
             continue;
         }
@@ -318,9 +375,10 @@ function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
 
 /**
  * Groups section lines into items: each top-level list item starts one, nested
- * items become further parts, and continuation lines extend the last part.
- * Whatever ends a list (a sub-heading, a top-level fence, a paragraph) also
- * ends its indentation, so the next list's first item is top-level again.
+ * items and headings become further parts, and continuation lines extend the
+ * last part. Whatever ends a list (a sub-heading, a top-level fence, a
+ * paragraph) also ends its indentation, so the next list's first item is
+ * top-level again.
  */
 function listItems(section: readonly SectionLine[]): string[][] {
     const items: string[][] = [];
@@ -328,6 +386,12 @@ function listItems(section: readonly SectionLine[]): string[][] {
     let topIndent = -1;
     let previousBlank = true;
     for (const line of section) {
+        if (line !== null && typeof line === 'object') {
+            // As after a blank line, nothing continues the heading lazily.
+            current?.push(line.heading);
+            previousBlank = true;
+            continue;
+        }
         if (line === null || !line.trim()) {
             if (line === null) [current, topIndent] = [null, -1];
             previousBlank = true;
@@ -358,8 +422,10 @@ function joinParts(parts: readonly string[]): string {
 /**
  * The list items under the first heading matching "Acceptance criteria"
  * (case-insensitive, any ATX or setext level), up to the next heading of the
- * same or a higher level. Each top-level item is one criterion; nested items
- * and continuation lines are folded into it. Checkboxes and HTML comments are dropped. At most
+ * same or a higher level outside a list item. Each top-level item is one
+ * criterion; nested items, headings inside the item and continuation lines are
+ * folded into it. Checkboxes, HTML comments and fenced code, including fenced
+ * code in a block quote, are dropped. At most
  * MAX_ACCEPTANCE_CRITERIA criteria of at most MAX_ACCEPTANCE_CRITERION_LENGTH
  * characters each.
  */
@@ -408,7 +474,8 @@ function parseStatementLine(line: string): { id: string; status: AcceptanceCrite
 /**
  * Pair each criterion with the agent's last statement about it. A criterion
  * without a statement is `not_addressed`. Statements inside fenced code (such
- * as a format example) or HTML comments are not the agent's report and are ignored.
+ * as a format example, including one in a block quote) or HTML comments are
+ * not the agent's report and are ignored.
  */
 export function evaluateAcceptanceCriteria(
     criteria: readonly AcceptanceCriterion[],

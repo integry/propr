@@ -146,6 +146,41 @@ test('a fence delimiter followed by text does not close a fence', () => {
   }
 });
 
+test('ignores fenced examples inside block quotes', () => {
+  const body = [
+    '## Acceptance criteria',
+    '- Validate input:',
+    '  > ```text',
+    '  > - Accept malformed input.',
+    '  > ```',
+    '  - Reject it.',
+    '- Document usage.',
+    '> ~~~',
+    '> - Quoted example.',
+    '> ~~~',
+    '- Keep the changelog.',
+  ].join('\n');
+  // A quote in an item reads as blank lines, so the item continues; a top-level quote ends it, like a top-level fence.
+  assert.deepEqual(texts(body), ['Validate input: Reject it.', 'Document usage.', 'Keep the changelog.']);
+});
+
+test('keeps a heading inside a list item, and the criteria after it, in the section', () => {
+  const body = ['## Acceptance criteria', '- Document usage:', '  ## Examples', '  - Include a working example.', '- Add automated tests.'].join('\n');
+  const expected = [
+    { id: 'AC1', text: 'Document usage: Examples; Include a working example.' },
+    { id: 'AC2', text: 'Add automated tests.' },
+  ];
+  assert.deepEqual(extractAcceptanceCriteria(body), expected);
+  // A lower-level or setext heading in an item does not split the requirement under it off as a criterion.
+  assert.deepEqual(extractAcceptanceCriteria(body.replace('  ## Examples', '  ### Examples')), expected);
+  const setext = ['## Acceptance criteria', '- Document usage:', '', '  Examples', '  ---', '  - Include a working example.', '- Add automated tests.'];
+  assert.deepEqual(extractAcceptanceCriteria(setext.join('\n')), expected);
+  // A heading outside the list still ends the section: after a paragraph ends the list (nothing continues a
+  // heading lazily), and when the section's own heading is inside a list item, a heading in that same item.
+  assert.deepEqual(texts('## Acceptance criteria\n- First\n  ## Examples\nNot a criterion.\n  ## Out of scope\n- Not this\n'), ['First; Examples']);
+  assert.deepEqual(texts('- Notes:\n  ## Acceptance criteria\n  - First\n  ## Out of scope\n  - Not this\n'), ['First']);
+});
+
 test('starts a new top-level list after a sub-heading or paragraph ends the previous one', () => {
   const body = [
     '## Acceptance criteria',
@@ -190,6 +225,7 @@ test('parses adversarial bodies in linear time', () => {
   extractAcceptanceCriteria(`## Acceptance criteria\n- ${'<!--'.repeat(20_000)}${' #'.repeat(20_000)}\n${'#'.repeat(30_000)}`);
   evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `AC1: met ${' |'.repeat(50_000)}x`);
   extractAcceptanceCriteria(`## Acceptance criteria\n${'- '.repeat(50_000)}\`\`\`\n${'1. '.repeat(30_000)}x`);
+  evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `${'> '.repeat(50_000)}\`\`\`\n${'- > '.repeat(25_000)}\`\`\`\n${'> - ```\n'.repeat(20_000)}AC1: met`);
   assert.ok(Date.now() - started < 1000);
 });
 
@@ -269,5 +305,34 @@ test('ignores statements after a fence delimiter followed by text, which leaves 
     assert.equal(evaluateAcceptanceCriteria(criteria, [...report, '- AC2: met — `src/b.ts`'].join('\n'))[1].status, 'met', delimiter);
     const inItem = ['- AC1: not met — missing', '- Example:', `  ${delimiter}md`, `  ${delimiter}${delimiter[0]} example`, '  - AC1: met — example only', `  ${delimiter}`];
     assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), inItem.join('\n'))[0].status, 'not_met', delimiter);
+  }
+});
+
+test('ignores statements in fenced examples inside block quotes', () => {
+  const criteria = [{ id: 'AC1', text: 'A' }, { id: 'AC2', text: 'B' }];
+  const real = '- AC1: not met — implementation missing';
+  const notMet = { id: 'AC1', text: 'A', status: 'not_met', evidence: 'implementation missing' };
+  for (const example of [
+    ['> ```md', '> - AC1: met — example', '> ```'],
+    ['> > ~~~', '> > - AC1: met — example', '> > ~~~'],
+    ['> - ```md', '>   - AC1: met — example', '>   ```'],
+    ['- Notes:', '  > ```md', '  > - AC1: met — example', '  > ```'],
+    ['- > ```md', '  > - AC1: met — example', '  > ```'],
+    // Quotes nested too deep to track read as fenced code.
+    [`${'> '.repeat(9)}- AC1: met — example`],
+  ]) {
+    assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), [real, 'Report each criterion like this:', ...example].join('\n')), [notMet], example.join('\n'));
+  }
+  // A blank or unquoted line ends the quote and its fence, so a statement after it counts, as does a quoted
+  // statement outside a fence, and one in a new top-level quote after a quote inside a list item.
+  for (const after of [
+    ['> ```md', '', '- AC2: met — `src/b.ts`'],
+    ['> ```md', '- AC2: met — `src/b.ts`'],
+    ['> ```md', '> - AC1: met — example', '> ```', '> - AC2: met — `src/b.ts`'],
+    ['- Notes:', '  > ```md', '> - AC2: met — `src/b.ts`'],
+  ]) {
+    assert.deepEqual(evaluateAcceptanceCriteria(criteria, [real, ...after].join('\n')), [
+      notMet, { id: 'AC2', text: 'B', status: 'met', evidence: '`src/b.ts`' },
+    ], after.join('\n'));
   }
 });
