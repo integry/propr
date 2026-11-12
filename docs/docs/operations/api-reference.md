@@ -72,6 +72,31 @@ const client = new ProprClient({
 const { tasks } = await client.listTasks({ status: 'attention', limit: 20 });
 ```
 
+## Pull request readiness
+
+`GET /api/pull-requests/{number}/readiness?repository=owner/repo` answers "is this pull request ready to integrate, and if not, why" with one verdict and a coded reason per gate. The MCP tool `get_pull_request_readiness` and `propr pr readiness <number> [--json]` return the same result. The read has no side effects. It never writes to GitHub or Redis, never updates the branch or merges, and never arms or withdraws auto-merge. It runs as the ProPR GitHub App, so it sees the same signals as auto-merge: check runs, legacy commit statuses, the repository's non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state and active ProPR work. Errors use the error envelope: `INVALID_INPUT` (400), `PULL_REQUEST_NOT_FOUND` (404) and `GITHUB_UNAVAILABLE` (502, safe to retry).
+
+The verdict is `merged` or `closed` when the PR state says so. Otherwise it is `blocked` if any gate has status `fail`, else `waiting` if any gate is `waiting`, else `unknown` if any gate is `unknown`, else `ready`. `blockingReasons` lists the reason codes of failed gates, and `waitingReasons` lists those of waiting or unknown gates. Each entry in `gates` has a `gate`, a `status` (`pass`, `waiting`, `fail`, `unknown` or `not_applicable`), a stable `reason` and an optional `detail`.
+
+| Gate | Reason codes, by status |
+| --- | --- |
+| `open` | pass: `pull_request_open`. fail: `pull_request_merged`, `pull_request_closed` |
+| `not_draft` | pass: `not_draft`. fail: `draft` |
+| `checks` | pass: `checks_passing`, or `no_ci` once the head has had no CI for two minutes after ProPR first saw it. waiting: `waiting_for_ci` before that, and `checks_not_passing` while blocking checks still run. fail: `checks_not_passing` when a blocking check failed. unknown: `unavailable` |
+| `mergeable` | pass: `mergeable`. fail: `merge_conflict`, `branch_behind_base`. `branch_protection_blocked` waits while checks or a required review are pending, and fails otherwise. unknown: `merge_state_unknown` |
+| `human_review` | pass: `approved`, `no_changes_requested`. fail: `changes_requested`. waiting: `review_required`. unknown: `review_state_unavailable` |
+| `ai_review` | pass: `goal_reached`. fail: `score_below_goal`. waiting: `review_stale_head`. `no_review` is not applicable, or waiting with the `ultrafix` label. unknown: `review_scores_unavailable` |
+| `ultrafix` | pass: `ultrafix_succeeded`. fail: `ultrafix_failed`. waiting: `ultrafix_active`, `ultrafix_pending`. unknown: `ultrafix_state_unavailable`. not applicable: `ultrafix_not_requested` |
+| `active_work` | pass: `no_active_work`. waiting: `propr_work_active`. unknown: `active_work_unavailable` |
+| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`, `auto_merge_request_unavailable`, `pull_request_changed`. not applicable: `auto_merge_not_requested` |
+
+`ai_review` never holds a PR that ProPR is not reviewing. Its goal is the Ultrafix cycle's goal, or the instance `ultrafix_rating_goal` for a plain `/review`. The policy is read, and can change the verdict, only when the PR or its linked issue carries the `auto-merge` label. `autoMerge` reports eligibility (`eligible`, `ineligible` or `transient`), its reason (`pr_label`, `linked_issue_label`, `no_auto_merge_label`, `epic_without_label`, `ultrafix_active`, `ultrafix_failed`, `ultrafix_not_succeeded`, `ultrafix_state_unavailable`, `linked_issue_unavailable`) and the policy reason.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$PROPR_URL/api/pull-requests/42/readiness?repository=acme/app"
+```
+
 ## Quick start with curl
 
 ```bash

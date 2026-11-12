@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 307
-    documented: 69
+    total: 308
+    documented: 70
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -6375,6 +6375,60 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/pull-requests/{number}/readiness:
+    get:
+      operationId: getPullRequestReadiness
+      summary: Get the readiness verdict of a pull request
+      description: "Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. See the gate and reason-code tables in the API reference."
+      tags:
+        - Tasks
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: number
+          in: path
+          required: true
+          description: Pull request number.
+          schema:
+            type: string
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo` of the pull request."
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The readiness verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullRequestReadiness"
+        "400":
+          description: "`INVALID_INPUT`: the number or repository is malformed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "502":
+          description: "`GITHUB_UNAVAILABLE`: GitHub did not return the pull request; the read is safe to retry."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: PullRequestReadinessQuery
+      x-propr-auth: member
   /api/pull-requests/{number}/scores:
     get:
       operationId: getApiPullRequestsNumberScores
@@ -9983,6 +10037,201 @@ components:
       required:
         - unreadCount
       additionalProperties: false
+    PullRequestReadiness:
+      type: object
+      properties:
+        repository:
+          type: string
+        number:
+          type: integer
+          exclusiveMinimum: 0
+        head:
+          type: string
+          description: Head SHA the verdict was evaluated for.
+        base:
+          type: string
+        state:
+          type: string
+          enum:
+            - open
+            - merged
+            - closed
+        draft:
+          type: boolean
+        verdict:
+          type: string
+          enum:
+            - ready
+            - waiting
+            - blocked
+            - merged
+            - closed
+            - unknown
+          description: "`merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`."
+        gates:
+          type: array
+          items:
+            type: object
+            properties:
+              gate:
+                type: string
+                enum:
+                  - open
+                  - not_draft
+                  - checks
+                  - mergeable
+                  - human_review
+                  - ai_review
+                  - ultrafix
+                  - active_work
+                  - policy
+              status:
+                type: string
+                enum:
+                  - pass
+                  - waiting
+                  - fail
+                  - unknown
+                  - not_applicable
+              reason:
+                type: string
+                description: "Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`."
+              detail:
+                type: string
+            required:
+              - gate
+              - status
+              - reason
+            additionalProperties: false
+          description: "Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy."
+        blockingReasons:
+          type: array
+          items:
+            type: string
+          description: Reason codes of gates with status `fail`.
+        waitingReasons:
+          type: array
+          items:
+            type: string
+          description: Reason codes of gates with status `waiting` or `unknown`.
+        review:
+          anyOf:
+            - type: object
+              properties:
+                score:
+                  type: number
+                goal:
+                  type: number
+                goalReached:
+                  type: boolean
+                reviewedHead:
+                  type:
+                    - string
+                    - "null"
+                matchesCurrentHead:
+                  type: boolean
+              required:
+                - score
+                - goal
+                - goalReached
+                - reviewedHead
+                - matchesCurrentHead
+              additionalProperties: false
+            - type: "null"
+          description: Latest persisted ProPR AI review; null when there is none.
+        ultrafix:
+          anyOf:
+            - type: object
+              properties:
+                active:
+                  type: boolean
+                completionStatus:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - succeeded
+                        - failed
+                    - type: "null"
+                labelPresent:
+                  type: boolean
+              required:
+                - active
+                - completionStatus
+                - labelPresent
+              additionalProperties: false
+            - type: "null"
+          description: Null when the Ultrafix state could not be read.
+        checks:
+          type: object
+          properties:
+            reason:
+              type: string
+              enum:
+                - checks_passing
+                - checks_not_passing
+                - no_ci
+                - waiting_for_ci
+                - unavailable
+            blockingFailed:
+              type: array
+              items:
+                type: string
+            blockingPending:
+              type: array
+              items:
+                type: string
+            nonBlockingCount:
+              type: integer
+              minimum: 0
+          required:
+            - reason
+            - blockingFailed
+            - blockingPending
+            - nonBlockingCount
+          additionalProperties: false
+        autoMerge:
+          type: object
+          properties:
+            eligible:
+              type: string
+              enum:
+                - eligible
+                - ineligible
+                - transient
+            reason:
+              type: string
+              description: Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`.
+            policy:
+              description: Auto-merge policy reason; null when auto-merge is not requested.
+              type:
+                - string
+                - "null"
+          required:
+            - eligible
+            - reason
+            - policy
+          additionalProperties: false
+        evaluatedAt:
+          type: string
+          format: date-time
+      required:
+        - repository
+        - number
+        - head
+        - base
+        - state
+        - draft
+        - verdict
+        - gates
+        - blockingReasons
+        - waitingReasons
+        - review
+        - ultrafix
+        - checks
+        - autoMerge
+        - evaluatedAt
+      additionalProperties: false
+      description: Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state.
     TaskAssignees:
       type: object
       properties:

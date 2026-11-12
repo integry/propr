@@ -15,6 +15,7 @@ import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecu
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
+import type { ReadinessEvaluator } from '../routes/pullRequestReadinessRoutes.js';
 import type { FollowupHandoffRouteDeps } from '../routes/followupHandoffRoutes.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createDockerRoutes, stopTaskExecution } from '../routes/dockerRoutes.js';
@@ -101,7 +102,7 @@ export interface McpTool {
   authorize?: (context: Pick<ToolContext, 'principal' | 'args'>) => Promise<void>;
   run:  (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Readiness evaluator; core's evaluatePullRequestReadiness unless a test injects one. */ pullRequestReadiness?: ReadinessEvaluator }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };

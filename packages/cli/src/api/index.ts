@@ -269,6 +269,8 @@ export type {
 
 // Stats API
 export { getReviewScoreSummary } from "./stats.js";
+export { getPullRequestReadiness } from "./pullRequests.js";
+export type { PullRequestReadiness, PullRequestReadinessGate, ReadinessGateStatus } from "./pullRequests.js";
 export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreQuery, MeanFigure } from "./stats.js";
 
 // Goals API

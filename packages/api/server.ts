@@ -43,6 +43,7 @@ import {
   createAgentVersionRoutes,
   createStatsRoutes,
   createReviewScoreRoutes,
+  createPullRequestReadinessRoutes,
   createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
@@ -416,6 +417,7 @@ export function setupRoutes(): void {
   const analyticsCache = createAnalyticsCache();
   const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
   const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
+  const pullRequestReadinessRoutes = createPullRequestReadinessRoutes({ db });
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: isDashboardSummaryEnabled });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
@@ -477,6 +479,7 @@ export function setupRoutes(): void {
     repoTodoRoutes,
     repositoryMediaRoutes,
     reviewScoreRoutes,
+    pullRequestReadinessRoutes,
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,
