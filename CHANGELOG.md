@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Claude Fable 5.2 and GPT-6.1 Terra**: Claude Fable 5.2 (`claude-fable-5-2`,
+  label `llm-claude-fable52`, 1M context, $8 / $40 per million tokens with
+  cache reads at 2.5% of input) is the new target of the plain `fable` and
+  `claude-fable` aliases and of the recommended plan-generation and PR-review
+  models. It needs Claude Code 2.1.321 or later. Claude Fable 5.1 stays
+  available as a legacy model through `fable51`, `claude-fable-5-1` and
+  `llm-claude-fable51`. GPT-6.1 Terra (`gpt-6.1-terra`, label
+  `llm-codex-gpt61-terra`, $1 / $5) is added to the Codex catalog; it needs
+  Codex 0.165.0 or later, and reviews use its 500K Codex runtime window.
+
 - **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
   option in `.propr/workflow.yml` (default `false`) makes ProPR's own
   auto-merge behave like a merge queue. A labelled PR that passes every other
@@ -24,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sweep. GitHub's native auto-merge is not armed under the option (ProPR withdraws
   its own earlier request). Every decision is recorded with the auto-merge
   timeline event.
+
+### Changed
+
+- **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
+  moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
+  tool-policy checks pass against both binaries. Codex 0.167 rewords the
+  Daybreak provider refusal that ProPR's `daybreak=false` override already
+  avoids.
+
+### Deprecated
+
+- **Claude Sonnet 4.5**: Anthropic retires `claude-sonnet-4-5-20250929` on
+  2026-11-30. It stays selectable until then; from that date, Claude runs
+  launched with a saved Sonnet 4.5 selection, alias or `llm-claude-sonnet45`
+  label use Claude Sonnet 5.5.
+  Opus 4.5 and Haiku 4.5 are unaffected.
 
 ### Fixed
 
