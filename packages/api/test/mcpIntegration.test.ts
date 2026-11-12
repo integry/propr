@@ -100,7 +100,26 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         assert.equal(create.data.state, 'completed');
         const id = create.data.result.planId;
         const duplicate = await call('create_plan', args); assert.equal(duplicate.data.operationId, create.data.operationId);
-        const get = await call('get_plan', { repository: 'acme/repo', planId: id }); assert.equal(get.data.status, 'draft');
+        assert.equal(create.data.result.status, 'review');
+        const get = await call('get_plan', { repository: 'acme/repo', planId: id }); assert.equal(get.data.status, 'review');
+        // A prompt-only draft stays 'draft' until update_plan gives it a plan.
+        const bare = await call('create_plan', { repository: 'acme/repo', name: `Prompt only ${modern}`, prompt: 'Improve reliability', idempotencyKey: `create-bare-plan-${modern}` });
+        assert.equal(bare.data.result.status, 'draft');
+        const bareId = bare.data.result.planId;
+        await call('update_plan', { repository: 'acme/repo', planId: bareId, expectedRevision: 0, name: 'Still prompt only', idempotencyKey: `rename-bare-plan-${modern}` });
+        assert.equal((await db('task_drafts').where({ draft_id: bareId }).first()).status, 'draft');
+        await call('update_plan', { repository: 'acme/repo', planId: bareId, expectedRevision: 1, plan: args.plan, idempotencyKey: `fill-bare-plan-${modern}` });
+        assert.equal((await db('task_drafts').where({ draft_id: bareId }).first()).status, 'review');
+        // Only 'draft' is promoted: a plan update keeps every other editable status.
+        for (const preserved of ['review', 'approved', 'failed']) {
+          await db('task_drafts').where({ draft_id: bareId }).update({ status: preserved });
+          const revision = Number((await db('task_drafts').where({ draft_id: bareId }).first()).mcp_revision);
+          const kept = await call('update_plan', { repository: 'acme/repo', planId: bareId, expectedRevision: revision, plan: [{ ...args.plan[0], title: `Keep ${preserved}` }], idempotencyKey: `keep-${preserved}-plan-${modern}` });
+          assert.equal(kept.data.result.revision, revision + 1);
+          const row = await db('task_drafts').where({ draft_id: bareId }).first();
+          assert.equal(row.status, preserved); assert.equal(JSON.parse(row.plan_json)[0].title, `Keep ${preserved}`);
+        }
+        await db('task_drafts').where({ draft_id: bareId }).delete();
         assert.equal(get.data.epicQueue, null);
         const updated = await call('update_plan', { repository: 'acme/repo', planId: id, expectedRevision: 0, name: 'Reviewed reliability', idempotencyKey: `update-plan-${modern}` });
         assert.equal(updated.data.result.revision, 1);
