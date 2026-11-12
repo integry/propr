@@ -8,6 +8,7 @@ import type { Knex } from 'knex';
 import { getConfig } from '../../config/configManager.js';
 import { db } from '../../db/connection.js';
 import logger from '../../utils/logger.js';
+import { lockAgentRunDefinition } from './agentRunDefinitionLock.js';
 import { rowToAgentRun, type AgentRunRow, type AgentRunStoreDependencies, type StoredAgentRun } from './agentRunStore.js';
 
 /**
@@ -50,19 +51,25 @@ export function agentRunProductivity(
  * revoke failed, or no grant was issued) only ends the outstanding mark. Only
  * onto the run the step claimed, once it has failed or been cancelled, and
  * never over a count already stored. Returns the updated run, or null when no
- * such run matched (nothing changed, so nothing new to evaluate).
+ * such run matched (nothing changed, so nothing new to evaluate). The write
+ * makes the run's verdict final, so like a terminal transition it takes the
+ * definition's lock first (see `lockAgentRunDefinition`): a streak evaluation
+ * under way either sees it or commits its pause before it lands.
  */
 export async function recordAgentRunActingMutations(
   id: string,
   { actionTaskId, actingMutations }: { actionTaskId: string; actingMutations: number | null },
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<StoredAgentRun | null> {
-  const [updated] = await database('agent_runs').where({ id, action_task_id: actionTaskId }).whereIn('state', ['failed', 'cancelled'])
-    .whereNull('acting_mutations')
-    .modify(query => { if (actingMutations === null) query.where('acting_mutations_pending', true); })
-    .update({ acting_mutations: actingMutations, acting_mutations_pending: false, updated_at: now() })
-    .returning('*') as AgentRunRow[];
-  return updated ? rowToAgentRun(updated) : null;
+  return database.transaction(async trx => {
+    await lockAgentRunDefinition(trx, id);
+    const [updated] = await trx('agent_runs').where({ id, action_task_id: actionTaskId }).whereIn('state', ['failed', 'cancelled'])
+      .whereNull('acting_mutations')
+      .modify(query => { if (actingMutations === null) query.where('acting_mutations_pending', true); })
+      .update({ acting_mutations: actingMutations, acting_mutations_pending: false, updated_at: now() })
+      .returning('*') as AgentRunRow[];
+    return updated ? rowToAgentRun(updated) : null;
+  });
 }
 
 /** Instance setting `automation_unproductive_run_threshold`; an unreadable or invalid value uses the default. */
@@ -242,8 +249,9 @@ export async function pauseScheduleForUnproductiveStreak(
   try {
     return await database.transaction(async trx => {
       // A conditional write, so of two concurrent evaluations only one carries out the pause,
-      // and only while the definition still opts in. Being the transaction's first statement,
-      // it also takes SQLite's single write lock: no run can change from here to the commit.
+      // and only while the definition still opts in. It also locks the definition row, the
+      // lock every write that makes a run's verdict final takes first (`lockAgentRunDefinition`;
+      // on SQLite, the single write lock): no such write lands between here and the commit.
       const claimed = await trx('agent_definitions').where({ id: definitionId, pause_when_unproductive: true })
         .where(owed => owed.whereNull('unproductive_paused_streak').orWhereNot('unproductive_paused_streak', deduplicationKey))
         .update({ unproductive_paused_streak: deduplicationKey });
@@ -255,8 +263,9 @@ export async function pauseScheduleForUnproductiveStreak(
         if (current?.unproductive_paused_streak === deduplicationKey) return 'done_before';
         return current && !current.pause_when_unproductive ? 'opted_out' : 'done_before';
       }
-      // Read under that lock, so a run completing productively either committed before this
-      // read (and is seen) or waits until the pause is committed.
+      // Read under that lock, so a run turning productive (its terminal transition, or a late
+      // settlement of its acting count) either committed before this read, and is seen, or
+      // waits until the pause is committed.
       const streak = await findUnproductiveScheduledStreak(definitionId, threshold, { database: trx });
       if (streak.streakKey !== streakKey || !streak.reachedThreshold) throw new StreakEndedBeforePause();
       await trx('agent_definitions').where({ id: definitionId }).whereNotNull('pending_schedule_slot')

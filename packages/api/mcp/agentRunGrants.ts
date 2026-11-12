@@ -26,6 +26,17 @@ export const AGENT_RUN_MCP_CLIENT_ID = 'propr-agent-runs';
 export const AGENT_RUN_GRANT_TTL_MS = 2 * 60 * 60 * 1000;
 /** `mcp_records` kind locating the grant of one run phase (`<runId>:<phase>`), for revocation and the daemon sweep. */
 export const AGENT_RUN_GRANT_RECORD_KIND = 'agent_run_grant';
+/**
+ * `mcp_records` kind remembering the grant a run phase last ended
+ * (`<runId>:<phase>`). The phase record is deleted when its grant is revoked,
+ * but the count of what that grant changed is only stored on the run after
+ * the revoke returns. A worker that stops in between leaves a redelivery with
+ * nothing but this record to name the grant whose `mcp_operations` receipts
+ * hold the count, so it is written in the same transaction that deletes the
+ * phase record. Kept for the grant TTL after the revoke, then purged; the sweep
+ * never reads this kind, so an ended grant is not revoked again every pass.
+ */
+export const AGENT_RUN_ENDED_GRANT_RECORD_KIND = 'agent_run_ended_grant';
 
 export type AgentRunGrantPhase = 'report' | 'action';
 export const AGENT_RUN_GRANT_PHASES: readonly AgentRunGrantPhase[] = ['report', 'action'];
@@ -70,6 +81,21 @@ export interface AgentRunGrantRecord {
   grantId: string;
   ownerId: string;
   expiresAt: number;
+}
+
+/** What `revokeAgentRunPhaseGrant` found for a phase: the grant it ended, or one that phase ended before. */
+export interface RevokedAgentRunPhaseGrant {
+  grantId: string;
+  /** False when the grant was already ended: the id still names its `mcp_operations` receipts. */
+  revoked: boolean;
+}
+
+/** The record of a grant a phase ended; the grant id names its `mcp_operations` receipts. */
+interface EndedAgentRunGrantRecord {
+  runId: string;
+  phase: AgentRunGrantPhase;
+  grantId: string;
+  revokedAt: number;
 }
 
 export interface IssuedAgentRunGrant {
@@ -187,27 +213,59 @@ export async function revokeAgentRunGrant(grantId: string, deps: AgentRunGrantDe
 }
 
 /**
- * Revokes the grant recorded for one run phase and forgets it. Returns the
- * revoked grant id, or null when that phase holds no grant. With `grantId`,
- * only that grant is revoked: a newer grant recorded by a retried phase is
- * left alone (the older one was revoked when it was replaced). With
- * `expiredBy`, only a grant that expired by that time is revoked, so a cleanup
- * that judged an earlier record expired never revokes its fresh replacement.
+ * The grant a phase ended before, read outside `McpStore.get` so a record past
+ * its expiry still answers while its row exists. Null for none or an unreadable row.
+ */
+async function readEndedGrantRecord(store: McpStore, tx: Knex, recordId: string): Promise<EndedAgentRunGrantRecord | null> {
+  const row = await tx('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: recordId }).first('value');
+  if (!row) return null;
+  try {
+    const record = store.unseal<EndedAgentRunGrantRecord | null>(row.value);
+    return record && typeof record.grantId === 'string' ? record : null;
+  } catch { return null; }
+}
+
+/** Forgets ended-grant records older than the grant TTL; their count was settled long ago or is lost with them. */
+async function purgeEndedGrantRecords(database: Knex, now: number): Promise<void> {
+  await database('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND }).where('expires_at', '<=', now).delete();
+}
+
+/**
+ * Revokes the grant recorded for one run phase and forgets it, remembering
+ * which grant the phase ended. Returns the revoked grant id, or null when that
+ * phase holds no grant and ended none. With `grantId`, only that grant is
+ * revoked: a newer grant recorded by a retried phase is left alone (the older
+ * one was revoked when it was replaced). With `expiredBy`, only a grant that
+ * expired by that time is revoked, so a cleanup that judged an earlier record
+ * expired never revokes its fresh replacement; a cleanup is never answered with
+ * an ended grant. Without a grant to revoke, the grant the phase ended before
+ * (that one, when `grantId` names it) is returned with `revoked: false`: a
+ * worker that stopped between its revoke and the write of what the grant
+ * changed leaves a redelivery that must still count the grant's operations.
  */
 export async function revokeAgentRunPhaseGrant(
-  runId: string, phase: AgentRunGrantPhase, deps: AgentRunGrantDependencies & { grantId?: string; expiredBy?: number } = {},
-): Promise<string | null> {
+  runId: string, phase: AgentRunGrantPhase, deps: AgentRunGrantDependencies & { grantId?: string; expiredBy?: number; now?: () => number } = {},
+): Promise<RevokedAgentRunPhaseGrant | null> {
   const oauth = await provider(deps);
   const recordId = agentRunGrantRecordId(runId, phase);
+  const now = deps.now ?? Date.now;
   // Serialized with issuance (see lockPhaseRecord): the record read here is the
   // one deleted, never a replacement recorded meanwhile.
   return oauth.store.db.transaction(async tx => {
-    if (!await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).forUpdate().first('id')) return null;
-    const record = await readPhaseRecord(oauth.store, tx, recordId);
-    if (!record || (deps.grantId !== undefined && record.grantId !== deps.grantId)) return null;
-    if (deps.expiredBy !== undefined && record.expiresAt > deps.expiredBy) return null;
+    const live = await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).forUpdate().first('id');
+    const record = live ? await readPhaseRecord(oauth.store, tx, recordId) : null;
+    if (!record || (deps.grantId !== undefined && record.grantId !== deps.grantId) || (deps.expiredBy !== undefined && record.expiresAt > deps.expiredBy)) {
+      if (deps.expiredBy !== undefined) return null;
+      const ended = await readEndedGrantRecord(oauth.store, tx, recordId);
+      return ended && (deps.grantId === undefined || ended.grantId === deps.grantId) ? { grantId: ended.grantId, revoked: false } : null;
+    }
     await oauth.revokeGrant(record.grantId, undefined, tx);
+    const revokedAt = now();
+    const ended: EndedAgentRunGrantRecord = { runId, phase, grantId: record.grantId, revokedAt };
+    // Written before the phase record goes, in its transaction: the grant's identity never has a gap.
+    await oauth.store.put(AGENT_RUN_ENDED_GRANT_RECORD_KIND, recordId, ended, { expiresAt: revokedAt + AGENT_RUN_GRANT_TTL_MS, database: tx });
     await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).delete();
-    return record.grantId;
+    await purgeEndedGrantRecords(tx, revokedAt);
+    return { grantId: record.grantId, revoked: true };
   });
 }

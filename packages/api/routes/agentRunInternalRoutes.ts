@@ -147,14 +147,17 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
     if (!body) return;
     const runId = req.params.runId as string;
     try {
-      const revoked = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy });
+      const ended = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy, now });
       // How much the grant was used, so the worker can tell a run whose agent
       // never reached the endpoint from one that simply chose not to call it.
-      const activity = revoked ? await loadMcpGrantActivity(database, [revoked]) : null;
-      const calls = revoked ? (activity ? activity.get(revoked)?.recentRequests ?? 0 : null) : null;
+      const grantId = ended?.grantId ?? null;
+      const activity = grantId ? await loadMcpGrantActivity(database, [grantId]) : null;
+      const calls = grantId ? (activity ? activity.get(grantId)?.recentRequests ?? 0 : null) : null;
       // Counted once the grant is revoked, so no further mutation can land after the count.
-      const mutatingOperations = revoked ? await countGrantMutatingOperations(database, revoked) : null;
-      res.json({ revoked: revoked !== null, grantId: revoked, calls, mutatingOperations });
+      // A grant the phase ended before is counted the same way: a worker that stopped
+      // between its revoke and the write of that count recovers it here.
+      const mutatingOperations = grantId ? await countGrantMutatingOperations(database, grantId) : null;
+      res.json({ revoked: ended?.revoked === true, grantId, calls, mutatingOperations });
     } catch (error) {
       sendGrantError(res, error, 'revoke', runId);
     }

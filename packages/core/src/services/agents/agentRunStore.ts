@@ -7,13 +7,11 @@ import {
   isAutomationReportNovelty,
   isAutomationRunState,
   isTerminalAutomationRunState,
-  type AutomationAutonomyMode,
-  type AutomationReportNovelty,
-  type AutomationRunState,
-  type AutomationRunTrigger,
+  type AutomationAutonomyMode, type AutomationReportNovelty, type AutomationRunState, type AutomationRunTrigger,
 } from '@propr/shared';
 import { db } from '../../db/connection.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
+import { underDefinitionLockIfFinal } from './agentRunDefinitionLock.js';
 
 /**
  * Agent run receipts. This is the only module that writes `agent_runs`.
@@ -368,9 +366,11 @@ async function applyAgentRunTransition(
   if (isTerminalAutomationRunState(to)) changes.finished_at = timestamp;
 
   // RETURNING yields the row this update produced; a separate read could see a
-  // competing transition that landed after it.
-  const [updated] = await database(TABLE).where({ ...guard, id }).whereIn('state', [...from]).update(changes)
-    .returning('*') as AgentRunRow[];
+  // competing transition that landed after it. A transition that can make the
+  // run's verdict final is written under its definition's lock, so a streak
+  // evaluation under way either sees it or commits its pause before it lands.
+  const [updated] = await underDefinitionLockIfFinal(database, id, { to, patch },
+    trx => trx(TABLE).where({ ...guard, id }).whereIn('state', [...from]).update(changes).returning('*') as Promise<AgentRunRow[]>);
   return updated ? rowToAgentRun(updated) : null;
 }
 

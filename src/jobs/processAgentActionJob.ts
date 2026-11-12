@@ -306,11 +306,13 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
      * executing alone. That worker's only record of what the step changed is the
      * action grant it held, which nothing else revokes until the terminal-run sweep:
      * ending it here stops any container the lost worker left behind and yields the
-     * count. A grant already gone (or a revoke that fails) leaves the count unknown,
-     * as it does for the claiming delivery. From here on this delivery owes the run
-     * the settlement, exactly like the delivery that claimed the step; a worker that
-     * merely lost its lock and is still executing then settles nothing: its revoke by
-     * grant id finds the grant gone, and a count is never stored twice.
+     * count. A worker that stopped after its own revoke, before it stored the count,
+     * left the grant ended but still named by the API, which counts that grant's
+     * operations the same way (`revoked` is then false). Only a grant never issued,
+     * or a revoke that fails, leaves the count unknown, as it does for the claiming
+     * delivery. From here on this delivery owes the run the settlement, exactly like
+     * the delivery that claimed the step; a worker that merely lost its lock and is
+     * still executing then stores nothing new: a count is never stored twice.
      */
     async function adoptAbandonedClaim(context: ActionContext): Promise<void> {
         if (context.ownsClaim) return;
@@ -322,8 +324,10 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         } catch (error) {
             log.warn({ runId, taskId, err: error instanceof Error ? error.message : String(error) }, 'Could not end the MCP grant of an acting step its worker abandoned; its mutation count is unknown');
         }
-        context.actingMutations = revoked?.revoked ? revoked.mutatingOperations ?? null : null;
-        log.info({ runId, taskId, grantId: revoked?.grantId ?? null, actingMutations: context.actingMutations }, 'Took over the mutation count of an acting step its worker abandoned');
+        // A grant ended now, or one the phase ended before that the API still names: either way its count.
+        const counted = revoked?.revoked === true || Boolean(revoked?.grantId);
+        context.actingMutations = counted ? revoked?.mutatingOperations ?? null : null;
+        log.info({ runId, taskId, grantId: revoked?.grantId ?? null, endedBefore: revoked?.revoked === false, actingMutations: context.actingMutations }, 'Took over the mutation count of an acting step its worker abandoned');
     }
 
     /**

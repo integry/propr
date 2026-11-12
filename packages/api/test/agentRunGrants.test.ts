@@ -16,7 +16,9 @@ import type { McpConfig } from '../mcp/config.js';
 import { renderConnectedApp } from '../mcp/browser.js';
 import { configureDemoMode } from '../demoMode.js';
 import {
+  AGENT_RUN_ENDED_GRANT_RECORD_KIND,
   AGENT_RUN_GRANT_RECORD_KIND,
+  AGENT_RUN_GRANT_TTL_MS,
   AGENT_RUN_MCP_CLIENT_ID,
   agentRunGrantScopes,
   issueAgentRunGrant,
@@ -240,10 +242,50 @@ test('revoking an acting grant reports the mutating operations it performed', as
   assert.equal(revoked.status, 200);
   assert.equal(revoked.body.revoked, true);
   assert.equal(revoked.body.mutatingOperations, 3);
-  // A grant that is already gone reports no count rather than a no-op.
+  // A grant the phase already ended is still named, with its count: a worker that stopped
+  // between its revoke and the write of that count recovers it on redelivery (F24).
   const again = await post('/revoke', { ...signed('action'), grantId });
   assert.equal(again.body.revoked, false);
-  assert.equal(again.body.mutatingOperations, null);
+  assert.equal(again.body.grantId, grantId);
+  assert.equal(again.body.mutatingOperations, 3);
+  const byPhase = await post('/revoke', signed('action'));
+  assert.equal(byPhase.body.revoked, false, 'nothing is revoked twice');
+  assert.equal(byPhase.body.grantId, grantId, 'a redelivery that knows no grant id still finds the grant');
+  assert.equal(byPhase.body.mutatingOperations, 3);
+});
+
+test('the grant a phase ended is remembered in the transaction that forgets the phase record, and only until the grant TTL (F24)', async () => {
+  const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'action' as const, repositories: ['acme/repo'] };
+  const issued = await issueAgentRunGrant(input, grantDeps);
+  const store = new McpStore(db, config.encryptionKey);
+  const revokedAt = Date.now();
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', { ...grantDeps, grantId: issued.grantId, now: () => revokedAt }), { grantId: issued.grantId, revoked: true });
+  assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:action'), undefined, 'the phase holds no grant');
+  const ended = await db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: 'run-1:action' }).first();
+  assert.ok(ended, 'the ended grant is recorded durably');
+  assert.equal(ended.owner_id, null, 'not listed as an app of the owner');
+  assert.equal(Number(ended.expires_at), revokedAt + AGENT_RUN_GRANT_TTL_MS);
+  assert.deepEqual(store.unseal(ended.value), { runId: 'run-1', phase: 'action', grantId: issued.grantId, revokedAt });
+
+  // Named by phase, or by its own id; a stale id names nothing, and a cleanup (fenced by expiry) is never answered with it.
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), { grantId: issued.grantId, revoked: false });
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', { ...grantDeps, grantId: issued.grantId }), { grantId: issued.grantId, revoked: false });
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', { ...grantDeps, grantId: 'grant-of-another-attempt' }), null);
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', { ...grantDeps, expiredBy: Date.now() + AGENT_RUN_GRANT_TTL_MS }), null);
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'report', grantDeps), null, 'the other phase ended nothing');
+
+  // A retried phase's new grant takes over; ending it replaces the memory of the first.
+  const replacement = await issueAgentRunGrant(input, grantDeps);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), { grantId: replacement.grantId, revoked: true });
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), { grantId: replacement.grantId, revoked: false });
+
+  // Once the grant TTL has passed since the revoke, the next revoke of any phase purges the memory.
+  await db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: 'run-1:action' }).update({ expires_at: revokedAt - 1 });
+  const other = await issueAgentRunGrant({ ...input, runId: 'run-2', phase: 'report' }, grantDeps);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-2', 'report', { ...grantDeps, now: () => revokedAt }), { grantId: other.grantId, revoked: true });
+  assert.equal(await db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: 'run-1:action' }).first(), undefined);
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), null);
+  assert.ok(await db('mcp_records').where({ kind: AGENT_RUN_ENDED_GRANT_RECORD_KIND, id: 'run-2:report' }).first(), 'a fresh memory stays');
 });
 
 test('a retried phase replaces its grant and revokes the previous token', async () => {
@@ -286,12 +328,12 @@ test('stale cleanup overlapping a replacement never deletes the replacement reco
     revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, grantId: a.grantId }),
     issueAgentRunGrant(input, grantDeps),
   ]);
-  assert.ok(revoked === a.grantId || revoked === null);
+  assert.ok(revoked === null || (revoked.grantId === a.grantId && revoked.revoked));
   await assert.rejects(policy.authenticate(a.accessToken));
   await policy.authenticate(b.accessToken);
   const store = new McpStore(db, config.encryptionKey);
   assert.equal((await store.get<{ grantId: string }>(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'))?.grantId, b.grantId);
-  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, grantId: b.grantId }), b.grantId);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, grantId: b.grantId }), { grantId: b.grantId, revoked: true });
   await assert.rejects(policy.authenticate(b.accessToken));
 });
 
@@ -339,7 +381,7 @@ test('cleanup revokes and deletes a phase record whose stored expiry has passed'
 test('an ended run\'s expired phase record is deleted without an expiry fence', async () => {
   const issued = await issueAgentRunGrant({ ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'action', repositories: ['acme/repo'] }, grantDeps);
   await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:action' }).update({ expires_at: Date.now() - 1 });
-  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), issued.grantId);
+  assert.deepEqual(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), { grantId: issued.grantId, revoked: true });
   assert.equal(await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:action' }).first(), undefined);
 });
 

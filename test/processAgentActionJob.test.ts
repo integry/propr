@@ -88,7 +88,7 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
     promptWorkspace: { repositoriesReadable: true, primaryRepository: '.', contextRepositories: [] }, attachments: [], cleanup,
   }));
   const buildPrompt = mock.fn(buildAgentActionPrompt);
-  const grants = { requested: [] as string[], revoked: [] as string[] };
+  const grants = { requested: [] as string[], revoked: [] as string[], ended: [] as string[] };
   const notified: StoredAgentRun[] = [];
   /** The run's state each time the grant was revoked, and every run the streak check saw. */
   const revokedWhile: AutomationRunState[] = [];
@@ -129,7 +129,11 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
         revokedWhile.push(current.state);
         const counted = options.mutatingOperations;
         if (counted instanceof Error) throw counted;
-        return { revoked: true, grantId: grant.grantId ?? null, calls: 1, mutatingOperations: counted === undefined ? null : counted };
+        const mutatingOperations = counted === undefined ? null : counted;
+        // Like the API: a grant ended by id stays named for the phase, with its count, and is not revoked twice.
+        if (grant.grantId === undefined && grants.ended.length > 0) return { revoked: false, grantId: grants.ended[grants.ended.length - 1], calls: 1, mutatingOperations };
+        if (grant.grantId !== undefined) grants.ended.push(grant.grantId);
+        return { revoked: true, grantId: grant.grantId ?? null, calls: 1, mutatingOperations };
       },
     },
     evaluateStreak: async run => { if (run) evaluated.push(run); },
@@ -827,6 +831,40 @@ describe('a task write that fails after the run ended leaves the streak check to
       assert.equal(h.executeTask.mock.callCount(), 0);
     });
   }
+
+  test('a worker that stopped after ending its grant, before storing the count, leaves a redelivery that recovers it (F24)', async () => {
+    // Two unchanged scheduled runs precede this one; its acting step changed one thing, so it must not complete the streak.
+    const h = harness({ mutatingOperations: 1 });
+    const stateManager = h.deps.stateManager!;
+    let stopped: Promise<void> | null = null;
+    h.deps.stateManager = () => {
+      const manager = stateManager();
+      return { ...manager, getTaskState: async (taskId: string) => {
+        // The process terminates right after `endGrant()` returned: nothing after it runs, no catch, no job update.
+        if (h.grants.revoked.length === 1 && stopped === null) { stopped = new Promise<void>(() => undefined); return stopped; }
+        return manager.getTaskState(taskId);
+      } } as typeof manager;
+    };
+    const job = actionJob();
+    const lost = createAgentActionProcessor(h.deps)(job);
+    while (h.grants.revoked.length === 0) await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.grants.revoked, ['grant-1'], 'the grant was ended by id');
+    assert.equal(h.run().state, 'acting');
+    assert.equal(h.run().actingMutationsPending, true, 'the count was never stored');
+    assert.equal(job.data.actingMutationsOwed, undefined, 'the job kept no obligation either');
+
+    // Another worker's delivery of the same job: the phase holds no grant any more, but the API still names the one it ended.
+    assert.equal((await createAgentActionProcessor(h.deps)(actionJob())).status, 'failed');
+    assert.deepEqual(h.grants.revoked, ['grant-1', undefined], 'the redelivery asked by phase');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.run().failureReason, AGENT_ACTION_ABANDONED_REASON);
+    assert.equal(h.run().actingMutations, 1, 'the mutation survives the crash');
+    assert.equal(h.run().actingMutationsPending, false);
+    assert.deepEqual(h.evaluated.map(run => [run.state, run.actingMutations]), [['failed', 1]], 'evaluated as productive, not as the third unchanged run');
+    assert.equal(h.executeTask.mock.callCount(), 1, 'the step is not run again');
+    void lost;
+  });
 
   test('a crashed step whose grant is already gone, or cannot be ended, is settled with an unknown count (F23)', async () => {
     const gone = harness({ run: actingRun({ state: 'cancelled', actionTaskId: TASK_ID, actingMutationsPending: true }), task: 'claude_execution' });
