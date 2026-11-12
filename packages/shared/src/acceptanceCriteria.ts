@@ -122,6 +122,11 @@ function fenceRun(text: string): string | null {
     return match && !(match[1][0] === '`' && match[2].includes('`')) ? match[1] : null;
 }
 
+/** The fence run of a closing delimiter, which only whitespace may follow: `~~~ text` is fenced code. */
+function closingFenceRun(text: string): string | null {
+    return /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(text)?.[1] ?? null;
+}
+
 interface OpenFence {
     marker: string;
     /** Content column of the list item holding the fence; 0 at top level. */
@@ -168,7 +173,7 @@ class FenceTracker {
             this.fence = null;
             return this.openFence(line, blank, indent);
         }
-        const run = this.delimiterAt(line, indent, fence.column);
+        const run = this.delimiterAt(line, indent, fence.column, closingFenceRun);
         if (run && run[0] === fence.marker[0] && run.length >= fence.marker.length) this.fence = null;
         return true;
     }
@@ -210,10 +215,10 @@ class FenceTracker {
         return false;
     }
 
-    /** The fence run starting `line`, when its indentation is within three columns of `column`. */
-    private delimiterAt(line: string, indent: number, column: number): string | null {
+    /** The opening (or closing) fence run starting `line`, when its indentation is within three columns of `column`. */
+    private delimiterAt(line: string, indent: number, column: number, run = fenceRun): string | null {
         if (indent < column || indent - column > 3) return null;
-        return fenceRun(line);
+        return run(line);
     }
 }
 

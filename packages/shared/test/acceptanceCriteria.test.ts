@@ -134,6 +134,18 @@ test('ignores fenced examples that start on a list item line', () => {
   assert.deepEqual(texts('## Acceptance criteria\n- ```npm test``` passes\n- Second\n'), ['```npm test``` passes', 'Second']);
 });
 
+test('a fence delimiter followed by text does not close a fence', () => {
+  for (const delimiter of ['~~~', '```']) {
+    // At top level, and inside a list item, where `- Fenced` would otherwise become a criterion or part of one.
+    const topLevel = ['## Acceptance criteria', '- First', `${delimiter}text`, `${delimiter} example`, '- Fenced', delimiter, '- Second'];
+    assert.deepEqual(texts(topLevel.join('\n')), ['First', 'Second'], delimiter);
+    const inItem = ['## Acceptance criteria', '- First:', `  ${delimiter}text`, `  ${delimiter}${delimiter[0]} example`, '  - Fenced', `  ${delimiter}`, '  - Nested', '- Second'];
+    assert.deepEqual(texts(inItem.join('\n')), ['First: Nested', 'Second'], delimiter);
+    // Trailing whitespace is allowed, so these still close.
+    assert.deepEqual(texts(`## Acceptance criteria\n${delimiter}\n- Fenced\n${delimiter}  \t\n- Kept\n`), ['Kept'], delimiter);
+  }
+});
+
 test('starts a new top-level list after a sub-heading or paragraph ends the previous one', () => {
   const body = [
     '## Acceptance criteria',
@@ -244,4 +256,18 @@ test('ignores statements in fenced examples and HTML comments, keeping the last 
   const after = [...onItemLine, '- AC2: met — `src/b.ts`'].join('\n');
   assert.equal(evaluateAcceptanceCriteria(criteria, after)[1].status, 'met');
   assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), '* 1. ~~~\n     AC1: met — example\n     ~~~')[0].status, 'not_addressed');
+});
+
+test('ignores statements after a fence delimiter followed by text, which leaves the fence open', () => {
+  const criteria = [{ id: 'AC1', text: 'A' }, { id: 'AC2', text: 'B' }];
+  for (const delimiter of ['~~~', '```']) {
+    const report = ['- AC1: not met — implementation missing', `${delimiter}text`, `${delimiter} example`, '- AC1: met — example only', delimiter];
+    assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), report.join('\n')), [
+      { id: 'AC1', text: 'A', status: 'not_met', evidence: 'implementation missing' },
+    ], delimiter);
+    // The real closing delimiter still ends the example, so a statement after it counts.
+    assert.equal(evaluateAcceptanceCriteria(criteria, [...report, '- AC2: met — `src/b.ts`'].join('\n'))[1].status, 'met', delimiter);
+    const inItem = ['- AC1: not met — missing', '- Example:', `  ${delimiter}md`, `  ${delimiter}${delimiter[0]} example`, '  - AC1: met — example only', `  ${delimiter}`];
+    assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), inItem.join('\n'))[0].status, 'not_met', delimiter);
+  }
 });
