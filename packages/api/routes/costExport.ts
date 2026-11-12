@@ -67,30 +67,49 @@ export function parseCostGroupBy(value: unknown): { keys: CostGroupKey[] } | { i
   return { keys: COST_GROUP_KEYS.filter(key => parts.includes(key)) };
 }
 
+/** Days between an execution's start and a log call's start. */
+const START_GAP = 'abs(julianday(l.start_time) - julianday(re.start_time))';
+
 /**
- * The one `llm_logs` call that recorded each execution in the window: a call of
- * the same task in the same session, or, when neither has a session (both are
- * written from one result), of the same task on the same model; a task-less
- * execution matches only a call of its session. Among matches the same
- * session, then the same model, then the nearest start wins. Both dimensions
- * are read from that one call, so an execution with no matching call has
- * neither.
+ * The one `llm_logs` call that recorded each execution in the window. A
+ * session is same-run evidence: an execution with a task matches a call of the
+ * same task in its session, and a task-less execution a call of its session;
+ * among those the same model, then the nearest start, wins.
+ *
+ * Without a session (both rows are written from one result, so both lack it)
+ * nothing names the run, so a call of the same task on the same model is
+ * accepted only as one-to-one evidence: its time span must overlap the
+ * execution's, and each must be the other's nearest such candidate. A call is
+ * therefore never lent to a second run, nor to a run that never overlapped it.
+ *
+ * Both dimensions are read from that one call, so an execution with no
+ * matching call has neither.
  */
 function loggedRuns(db: Knex, byTask: boolean, window: AnalyticsWindow | null): Knex.Raw {
-  const candidates = (match: string) => {
-    const query = db('llm_executions as re').join('llm_logs as l', db.raw(match))
+  const viaSession = (match: string) => whereCreatedWithin(
+    db('llm_executions as re').join('llm_logs as l', db.raw(match))
       .select('re.execution_id', 'l.agent_alias', 'l.execution_type', db.raw(`row_number() over (
         partition by re.execution_id
-        order by (case when l.session_id = re.session_id then 0 else 1 end),
-          (case when l.model_name = re.model_name then 0 else 1 end),
-          abs(julianday(l.start_time) - julianday(re.start_time)), l.log_id
-      ) as rank`));
-    return whereCreatedWithin(query, 're.start_time', window);
+        order by (case when l.model_name = re.model_name then 0 else 1 end), ${START_GAP}, l.log_id
+      ) as rank`)),
+    're.start_time', window);
+  const sessionless = () => {
+    // Ranked over every overlapping execution, in the window or not, so a call
+    // whose own execution started before the window is not lent to a later one.
+    const pairs = db('llm_executions as re').join('llm_logs as l', db.raw(`l.task_id = re.task_id
+        and l.session_id is null and re.session_id is null and l.model_name = re.model_name
+        and julianday(l.start_time) <= julianday(coalesce(re.end_time, re.start_time))
+        and julianday(re.start_time) <= julianday(coalesce(l.end_time, l.start_time))`))
+      .select('re.execution_id', 're.start_time', 'l.agent_alias', 'l.execution_type',
+        db.raw(`row_number() over (partition by re.execution_id order by ${START_GAP}, l.log_id) as rank`),
+        db.raw(`row_number() over (partition by l.log_id order by ${START_GAP}, re.execution_id) as log_rank`));
+    const mutual = db.from(pairs.as('p')).select('p.execution_id', 'p.agent_alias', 'p.execution_type', 'p.rank')
+      .where('p.log_rank', 1);
+    return whereCreatedWithin(mutual, 'p.start_time', window);
   };
-  const viaSession = candidates(`l.session_id = re.session_id${byTask ? ' and re.task_id is null' : ''}`);
-  const viaTask = candidates(`l.task_id = re.task_id and (l.session_id = re.session_id
-    or (l.session_id is null and re.session_id is null and l.model_name = re.model_name))`);
-  const ranked = byTask ? db.queryBuilder().unionAll([viaTask, viaSession]) : viaSession;
+  const viaTask = viaSession('l.task_id = re.task_id and l.session_id = re.session_id');
+  const taskless = viaSession(`l.session_id = re.session_id${byTask ? ' and re.task_id is null' : ''}`);
+  const ranked = byTask ? db.queryBuilder().unionAll([viaTask, sessionless(), taskless]) : taskless;
   return db.raw(`(select execution_id, agent_alias, execution_type from (?) where rank = 1) as run`, [ranked]);
 }
 

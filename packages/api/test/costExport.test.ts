@@ -26,11 +26,13 @@ interface ExecutionSeed {
   cacheRead?: number | null;
   effort?: string | null;
   session?: string | null;
+  /** Defaults to `at`. */
+  end?: string;
 }
 
 async function seedExecution(seed: ExecutionSeed): Promise<number> {
   const [row] = await db('llm_executions').insert({
-    task_id: seed.task, session_id: seed.session ?? null, start_time: seed.at, end_time: seed.at, duration_ms: 1000,
+    task_id: seed.task, session_id: seed.session ?? null, start_time: seed.at, end_time: seed.end ?? seed.at, duration_ms: 1000,
     model_name: seed.model, success: seed.success ?? true, num_turns: 1, cost_usd: seed.cost === undefined ? 1 : seed.cost,
     input_tokens: seed.input === undefined ? 100 : seed.input, output_tokens: seed.output === undefined ? 10 : seed.output,
     cache_creation_input_tokens: seed.cacheWrite ?? null, cache_read_input_tokens: seed.cacheRead ?? null,
@@ -39,9 +41,11 @@ async function seedExecution(seed: ExecutionSeed): Promise<number> {
   return Number((row as { execution_id: number }).execution_id ?? row);
 }
 
-async function seedLog(log: { task?: string | null; session?: string | null; model: string; at: string; type: string; agent: string | null }): Promise<void> {
+async function seedLog(log: {
+  task?: string | null; session?: string | null; model: string; at: string; end?: string; type: string; agent: string | null;
+}): Promise<void> {
   await db('llm_logs').insert({
-    execution_type: log.type, model_name: log.model, start_time: log.at, success: true,
+    execution_type: log.type, model_name: log.model, start_time: log.at, end_time: log.end ?? null, success: true,
     session_id: log.session ?? null, task_id: log.task ?? null, agent_alias: log.agent,
   });
 }
@@ -145,10 +149,10 @@ test('agent and execution type come from one matching call; nothing is borrowed 
     await seedLog({ task: 'gamma-1', session: 's-review', model: 'gpt', at: daysAgo(2), type: 'review', agent: 'codex' });
     // B: a session no call of the task recorded, on a model no session-less call used.
     await seedExecution({ task: 'gamma-1', at: daysAgo(1), model: 'sonnet', session: 's-b' });
-    // C: no session; the nearer of two session-less same-model calls matches, never another session's call.
+    // C: no session; the session-less same-model call whose span covers the run matches, never another session's call.
     await seedExecution({ task: 'gamma-1', at: daysAgo(1, 12), model: 'haiku' });
     await seedLog({ task: 'gamma-1', model: 'haiku', at: daysAgo(3), type: 'summarization', agent: 'claude' });
-    await seedLog({ task: 'gamma-1', model: 'haiku', at: daysAgo(1, 11), type: 'context-analysis', agent: 'claude' });
+    await seedLog({ task: 'gamma-1', model: 'haiku', at: daysAgo(1, 11), end: daysAgo(1, 12), type: 'context-analysis', agent: 'claude' });
     await seedLog({ task: 'gamma-1', session: 's-other', model: 'haiku', at: daysAgo(1, 12), type: 'review', agent: 'codex' });
 
     const result = await loadCostExport(db, window30d, ['agent', 'execution_type']);
@@ -160,6 +164,38 @@ test('agent and execution type come from one matching call; nothing is borrowed 
     const byAgent = await loadCostExport(db, window30d, ['agent']);
     assert.deepEqual(byAgent.rows.map(row => [row.agent, row.executions]), [['claude', 1], [null, 2]]);
     assert.equal(byAgent.totals.executions, 3);
+  } finally {
+    db = previous;
+    await scratch.destroy();
+  }
+});
+
+test('a session-less call is evidence for one overlapping run only; other session-less runs stay unknown', async () => {
+  const scratch = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  await scratch.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+  const previous = db;
+  db = scratch;
+  try {
+    await db('tasks').insert({ task_id: 'delta-1', repository: 'acme/delta', task_type: 'issue', created_at: daysAgo(5) });
+    // Two session-less runs of one task on one model; only the earlier one's call was recorded.
+    await seedExecution({ task: 'delta-1', at: daysAgo(2, 10), end: daysAgo(2, 11), model: 'opus', cost: 1 });
+    await seedLog({ task: 'delta-1', model: 'opus', at: daysAgo(2, 10), end: daysAgo(2, 11), type: 'implementation', agent: 'claude' });
+    await seedExecution({ task: 'delta-1', at: daysAgo(2, 14), end: daysAgo(2, 15), model: 'opus', cost: 4 });
+    // Two runs overlapping one call: only the nearer one takes it.
+    await seedExecution({ task: 'delta-1', at: daysAgo(1, 10), end: daysAgo(1, 12), model: 'opus', cost: 2 });
+    await seedExecution({ task: 'delta-1', at: daysAgo(1, 11), end: daysAgo(1, 12), model: 'opus', cost: 8 });
+    await seedLog({ task: 'delta-1', model: 'opus', at: daysAgo(1, 10), end: daysAgo(1, 12), type: 'review', agent: 'codex' });
+
+    const result = await loadCostExport(db, window30d, ['agent', 'execution_type']);
+    assert.deepEqual(result.rows.map(row => [row.agent, row.execution_type, row.executions, row.cost_usd]), [
+      ['claude', 'implementation', 1, 1],
+      ['codex', 'review', 1, 2],
+      [null, null, 2, 12],
+    ]);
+    // A window that leaves out the call's own run does not lend the call to the later run.
+    const late = { ...window30d, from: new Date(Date.parse(daysAgo(1, 10)) + 1_800_000) };
+    const lateRows = await loadCostExport(db, late, ['agent']);
+    assert.deepEqual(lateRows.rows.map(row => [row.agent, row.executions]), [[null, 1]]);
   } finally {
     db = previous;
     await scratch.destroy();
