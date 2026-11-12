@@ -393,6 +393,8 @@ describe('native goal provider contract', () => {
         assert.deepEqual(capability.lifecycle, { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' });
         assert.equal(capability.controls.liveInput, true);
       }
+      // Questions the operator answers with goal input: Codex requestUserInput, Claude ask_operator.
+      assert.equal(capability.controls.operatorQuestions, type !== 'antigravity', `${type} question support`);
     }
   });
 
@@ -420,7 +422,7 @@ describe('native goal provider contract', () => {
       return {
         agentId: current.config.id, agentAlias: current.config.alias, agentType: current.config.type,
         goalCapable: probes > 1, lifecycle: null,
-        controls: { liveInput: false, inputAtBoundary: false, modelAtBoundary: false, pauseAtBoundary: false },
+        controls: { liveInput: false, inputAtBoundary: false, modelAtBoundary: false, pauseAtBoundary: false, operatorQuestions: false },
         ...(probes > 1 ? {} : { reason: 'Temporary introspection failure' }),
       };
     });

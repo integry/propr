@@ -154,7 +154,11 @@ describe('Codex App Server provider event fixtures', () => {
   test('provider support is documented per provider and unknown providers claim nothing', () => {
     assert.equal(goalBlockerSupport('codex').question, 'supported');
     assert.equal(goalBlockerSupport('codex').approval, 'handoff');
-    for (const provider of ['claude', 'antigravity', 'opencode', null]) {
+    // Claude goals ask through the injected ask_operator tool; there is still no approval signal.
+    assert.equal(goalBlockerSupport('claude').question, 'supported');
+    assert.equal(goalBlockerSupport('claude').approval, 'unavailable');
+    assert.equal(goalBlockerSupport('claude').paused, 'supported');
+    for (const provider of ['antigravity', 'opencode', null]) {
       assert.equal(goalBlockerSupport(provider).question, 'unavailable');
       assert.equal(goalBlockerSupport(provider).approval, 'unavailable');
       assert.equal(goalBlockerSupport(provider).paused, 'supported');

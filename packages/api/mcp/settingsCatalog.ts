@@ -88,6 +88,8 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
     description: 'Unattended agent runs (schedule, API, MCP, CLI, and auto acting steps) are deferred or skipped when Agent Tank reports the provider\'s subscription usage at or above this percent (50-100, default 90). Manual Run now always proceeds; unknown usage never blocks.' },
   { ...execution('ultrafix.ci_wait_timeout_ms', 'Ultrafix CI wait timeout', '', ['ultrafix_ci_wait_timeout_ms'], ['ULTRAFIX_CI_WAIT_TIMEOUT_MS']), ui: undefined,
     description: 'How long an Ultrafix review may wait for blocking CI checks before the loop stops with "CI did not settle". Default 2 hours.' },
+  { ...execution('goals.question_max_wait_ms', 'Goal question maximum wait', '', ['goal_question_max_wait_ms', 'ask_operator timeout', 'operator question wait']), ui: undefined,
+    description: 'How long a Claude goal\'s ask_operator question waits for an operator answer before the agent is told nobody answered (at least 60000 ms, default 24 hours). Never longer than the agent timeout.' },
   execution('execution.agent_stall_timeout_ms', 'Agent stall timeout', 'Settings → Sandbox & Network → Agent watchdog', ['agent_stall_timeout_ms', 'stall watchdog', 'inactivity timeout'], ['AGENT_STALL_TIMEOUT_MS']),
   execution('execution.agent_tool_stall_timeout_ms', 'Agent tool stall timeout', 'Settings → Sandbox & Network → Agent watchdog', ['agent_tool_stall_timeout_ms', 'tool inactivity timeout'], ['AGENT_TOOL_STALL_TIMEOUT_MS']),
   execution('execution.agent_degenerate_output_limit', 'Agent degenerate output limit', 'Settings → Sandbox & Network → Agent watchdog', ['agent_degenerate_output_limit', 'whitespace output watchdog'], ['AGENT_DEGENERATE_OUTPUT_LIMIT']),

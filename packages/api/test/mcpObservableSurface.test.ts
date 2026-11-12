@@ -326,6 +326,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'review_and_improve_pr', 'start_goal',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
+    // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.
+    'ask_operator', 'goal_question_max_wait_ms',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)

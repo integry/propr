@@ -144,6 +144,9 @@ export interface SystemSettings {
    */
   ultrafix_ci_wait_timeout_ms: number;
 
+  /** Milliseconds a Claude goal's ask_operator question waits for an answer (default 24 hours). */
+  goal_question_max_wait_ms?: number;
+
   /** Agent network policy overrides; null uses the environment default. */
   agent_network_mode?: "open" | "restricted" | null;
   agent_network_mode_enforced?: boolean | null;
@@ -310,6 +313,9 @@ export interface UpdateSettingsOptions {
    */
   ultrafix_ci_wait_timeout_ms?: number;
 
+  /** Milliseconds a Claude goal's ask_operator question waits for an answer (at least 60000). */
+  goal_question_max_wait_ms?: number;
+
   /** Agent watchdog overrides; null restores the environment default. */
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
@@ -378,6 +384,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_pause_seconds",
   "default_max_cost_usd",
   "ultrafix_ci_wait_timeout_ms",
+  "goal_question_max_wait_ms",
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
   "agent_degenerate_output_limit",
@@ -464,6 +471,12 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be a number between 1 and 10`);
       }
       return parsed;
+    }
+    case "goal_question_max_wait_ms": {
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 60000) {
+        throw new Error(`Invalid value for ${key}: must be an integer of at least 60000 (one minute)`);
+      }
+      return Number(value);
     }
     case "ultrafix_escalation_patience":
     case "ultrafix_ci_wait_timeout_ms":

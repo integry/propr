@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -13,10 +13,19 @@ import {
   type ClaudeTurnResult,
 } from '../packages/core/src/agents/impl/claudeNativeGoal.ts';
 import { buildDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
+import {
+  ClaudeOperatorQuestions,
+  createOperatorQuestionExchange,
+} from '../packages/core/src/agents/impl/claudeOperatorQuestions.ts';
+import {
+  CLAUDE_OPERATOR_QUESTION_POLICY,
+  type OperatorQuestionLaunch,
+} from '../packages/core/src/agents/impl/utils/operatorQuestionMcpServer.ts';
 import { GOAL_CONTINUE_INPUT } from '../packages/core/src/goals.ts';
 import type {
   AgentConfig,
   AgentTaskOptions,
+  GoalBlockerReport,
   GoalControlSnapshot,
   GoalExecutionControl,
 } from '../packages/core/src/agents/types.ts';
@@ -144,12 +153,63 @@ function session(
   return { fake: new FakeClaudeSession(transcriptPath, script, options.onInterrupt), sessionId };
 }
 
-function run(fake: FakeClaudeSession, sessionId: string, control: FakeControl, options: Partial<AgentTaskOptions> = {}) {
+function run(
+  fake: FakeClaudeSession,
+  sessionId: string,
+  control: FakeControl,
+  options: Partial<AgentTaskOptions> = {},
+  questions?: ClaudeOperatorQuestions,
+) {
   return runClaudeGoalProtocol(fake, {
     worktreePath: '/tmp/worktree', issueRef: { number: 0, repoOwner: 'acme', repoName: 'repo' },
     prompt: COMMAND, githubToken: 'token', executionMode: 'goal', nativeGoalObjective: COMMAND,
     goalControl: control, ...options,
-  }, { command: COMMAND, condition: CONDITION, sessionId, transcriptPath: fake.transcriptPath, startedAt: Date.now() });
+  }, { command: COMMAND, condition: CONDITION, sessionId, transcriptPath: fake.transcriptPath, startedAt: Date.now(), questions });
+}
+
+interface QuestionControl extends FakeControl {
+  reports: GoalBlockerReport[];
+  resolved: Array<{ requestKey: string; resolution: string }>;
+  heartbeats: number;
+  /** Runs once the question's blocker is recorded, as an operator reacting to "Needs you". */
+  onReport?: (control: QuestionControl) => void;
+}
+
+function questionControl(boundary = 3): QuestionControl {
+  const control = fakeControl() as QuestionControl;
+  control.reports = [];
+  control.resolved = [];
+  control.heartbeats = 0;
+  control.heartbeat = async () => { control.heartbeats += 1; };
+  control.reportBlocker = async report => {
+    control.reports.push(report);
+    setImmediate(() => control.onReport?.(control));
+    return boundary;
+  };
+  control.resolveBlocker = async (requestKey, resolution) => { control.resolved.push({ requestKey, resolution }); };
+  return control;
+}
+
+const QUESTION_ID = '11111111-2222-4333-8444-555555555555';
+
+/** Stand in for the in-container MCP server: write the request, then watch for the worker's response. */
+function askOperator(launch: OperatorQuestionLaunch, onResponse: (response: Record<string, unknown>) => void): void {
+  writeFileSync(path.join(launch.exchangeDir, 'requests', `${QUESTION_ID}.json`), JSON.stringify({
+    id: QUESTION_ID, question: 'Which region should the bucket use?', options: ['eu-west-1', 'us-east-1'],
+  }));
+  const responseFile = path.join(launch.exchangeDir, 'responses', `${QUESTION_ID}.json`);
+  const timer = setInterval(() => {
+    if (!existsSync(responseFile)) return;
+    clearInterval(timer);
+    onResponse(JSON.parse(readFileSync(responseFile, 'utf8')) as Record<string, unknown>);
+  }, 2);
+}
+
+async function questionSession(script: (current: FakeClaudeSession, text: string, launch: OperatorQuestionLaunch) => void, control: QuestionControl) {
+  const launch = await createOperatorQuestionExchange(60_000, path.join(directory, 'exchanges'));
+  const created = session((current, text) => script(current, text, launch));
+  const questions = new ClaudeOperatorQuestions(launch, control, created.sessionId);
+  return { ...created, launch, questions };
 }
 
 describe('Claude native /goal protocol', () => {
@@ -508,5 +568,100 @@ describe('Claude native /goal protocol', () => {
     assert.doesNotMatch(resumed, /--session-id/);
     const task = buildDockerArgs(config, 1000, { ...base, executionMode: 'task' }).join(' ');
     assert.match(task, /claude -p - --no-session-persistence/);
+  });
+});
+
+describe('Claude native goal operator questions', () => {
+  test('the next input after the question is the tool result, not a correction, and the turn is not nudged', async () => {
+    const control = questionControl(3);
+    let response: Record<string, unknown> | undefined;
+    const { fake, sessionId, questions } = await questionSession((current, text, launch) => {
+      if (text !== COMMAND) return;
+      askOperator(launch, answer => {
+        response = answer;
+        current.transcript(GOAL_MET);
+        current.endTurn({ text: 'Done.' });
+      });
+    }, control);
+    control.onReport = current => {
+      current.snapshot = { ...current.snapshot, pendingInputs: [{ id: 'answer-1', message: 'eu-west-1, please.', sequence: 4 }] };
+    };
+
+    const completion = await run(fake, sessionId, control, {}, questions);
+
+    assert.deepEqual(completion, { status: 'completed' });
+    assert.deepEqual(response, { status: 'answered', answer: 'eu-west-1, please.' });
+    assert.equal(control.reports.length, 1);
+    assert.equal(control.reports[0].category, 'question');
+    assert.ok(control.reports[0].responseActions.includes('send_input'));
+    assert.equal(control.reports[0].turnId, `${sessionId}:1`);
+    assert.deepEqual(control.delivered, [{ inputId: 'answer-1', turnId: `${sessionId}:1` }]);
+    assert.deepEqual(control.resolved.map(entry => entry.resolution), ['answered']);
+    assert.deepEqual(fake.sent, [COMMAND], 'the answer is not also sent as a user message');
+    assert.equal(fake.interrupts, 0);
+    assert.ok(control.heartbeats > 0, 'the goal heartbeats while the question waits');
+  });
+
+  test('input queued before the question stays a mid-turn correction', async () => {
+    const control = questionControl(3);
+    const { fake, sessionId, questions } = await questionSession((current, text, launch) => {
+      if (text === COMMAND) {
+        askOperator(launch, () => undefined);
+        return;
+      }
+      if (text === 'Also update the README.') {
+        current.transcript(GOAL_MET);
+        current.endTurn();
+      }
+    }, control);
+    control.onReport = current => {
+      current.snapshot = { ...current.snapshot, pendingInputs: [{ id: 'early', message: 'Also update the README.', sequence: 3 }] };
+    };
+
+    const completion = await run(fake, sessionId, control, {}, questions);
+
+    assert.deepEqual(completion, { status: 'completed' });
+    assert.deepEqual(fake.sent, [COMMAND, 'Also update the README.']);
+    assert.deepEqual(control.delivered, [{ inputId: 'early', turnId: `${sessionId}:1` }]);
+    // The turn ended with the question unanswered, so it is closed with the turn.
+    assert.deepEqual(control.resolved.map(entry => entry.resolution), ['turn_ended']);
+  });
+
+  for (const desiredState of ['paused', 'cancelled'] as const) {
+    test(`${desiredState === 'paused' ? 'pause' : 'cancel'} while a question waits closes it and stops the goal`, async () => {
+      const control = questionControl();
+      let response: Record<string, unknown> | undefined;
+      const { fake, sessionId, questions } = await questionSession((current, text, launch) => {
+        if (text === COMMAND) askOperator(launch, closed => { response = closed; });
+        if (text === '/goal clear') current.endTurn();
+      }, control);
+      control.onReport = current => { current.snapshot = { ...current.snapshot, desiredState }; };
+
+      const completion = await run(fake, sessionId, control, {}, questions);
+
+      assert.equal(completion.status, 'interrupted');
+      assert.equal(fake.interrupts, 1);
+      assert.deepEqual(response, { status: 'closed', message: `the goal was ${desiredState}` });
+      assert.deepEqual(control.resolved.map(entry => entry.resolution), ['turn_ended']);
+      assert.equal(control.delivered.length, 0);
+      if (desiredState === 'cancelled') assert.ok(fake.sent.includes('/goal clear'));
+    });
+  }
+
+  test('a fresh session is told when to use the tool with its delivery context', async () => {
+    const control = questionControl();
+    const { fake, sessionId, questions } = await questionSession((current, text) => {
+      if (text.startsWith(CLAUDE_GOAL_CONTEXT_PREAMBLE)) return current.endTurn({ text: 'Acknowledged.' });
+      if (text === COMMAND) {
+        current.transcript(GOAL_MET);
+        current.endTurn();
+      }
+    }, control);
+
+    await run(fake, sessionId, control, { initialControlInputId: 'context-1', initialControlInputMessage: 'Launch policy' }, questions);
+
+    assert.equal(fake.sent[0], `${CLAUDE_GOAL_CONTEXT_PREAMBLE}\n\nLaunch policy\n\n${CLAUDE_OPERATOR_QUESTION_POLICY}`);
+    assert.match(CLAUDE_OPERATOR_QUESTION_POLICY, /only for a decision you cannot resolve from the goal, the repository or a sensible default/);
+    assert.match(CLAUDE_OPERATOR_QUESTION_POLICY, /Never ask for credentials/);
   });
 });

@@ -1,4 +1,4 @@
-import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
+import { MAX_RUN_COST_CAP_USD, MIN_GOAL_QUESTION_MAX_WAIT_MS } from '@propr/shared';
 import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
@@ -19,6 +19,7 @@ interface SettingFields {
   default_max_cost_usd?: unknown;
   agent_run_usage_pause_percent?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
+  goal_question_max_wait_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
   agent_degenerate_output_limit?: unknown;
@@ -46,6 +47,7 @@ export type SettingSaveName =
   | 'default_max_cost_usd'
   | 'agent_run_usage_pause_percent'
   | 'ultrafix_ci_wait_timeout_ms'
+  | 'goal_question_max_wait_ms'
   | AgentWatchdogSettingName
   | AgentNetworkSettingName;
 
@@ -182,6 +184,12 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
+  }
+  if (fields.goal_question_max_wait_ms !== undefined) {
+    const v = validateStrictInt(fields.goal_question_max_wait_ms, MIN_GOAL_QUESTION_MAX_WAIT_MS, Infinity);
+    if (v === null) return { error: `goal_question_max_wait_ms must be an integer of at least ${MIN_GOAL_QUESTION_MAX_WAIT_MS}`, saves: [], normalized };
+    normalized.goal_question_max_wait_ms = v;
+    saves.push({ name: 'goal_question_max_wait_ms' });
   }
   return result;
 }

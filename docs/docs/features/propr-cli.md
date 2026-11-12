@@ -551,6 +551,7 @@ Settings keys:
 | `ultrafix_max_cycles` | Maximum number of ultrafix cycles |
 | `ultrafix_pause_seconds` | Pause duration between ultrafix cycles |
 | `default_max_cost_usd` | Default per-run [spend cap](./execution-safety.md#spend-caps) in USD (0 = no cap) |
+| `goal_question_max_wait_ms` | How long a Claude goal's [`ask_operator` question](./goals.md#claude-questions) waits for an answer, in ms (at least 60000, default 86400000; never longer than the agent timeout) |
 | `agent_stall_timeout_ms` | Stop an agent run silent this long, in ms (0 disables; `default` restores `AGENT_STALL_TIMEOUT_MS`) |
 | `agent_tool_stall_timeout_ms` | Silence allowed while a tool call runs, in ms (0 disables; `default` restores `AGENT_TOOL_STALL_TIMEOUT_MS`) |
 | `agent_degenerate_output_limit` | Consecutive whitespace-only deltas that stop a run (0 disables; `default` restores `AGENT_DEGENERATE_OUTPUT_LIMIT`) |
