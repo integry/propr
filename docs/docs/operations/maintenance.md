@@ -168,7 +168,7 @@ Holds that need a decision stay for an operator: an unconfirmed usage-limit retr
 
 An administrator settles such a hold from any of four places, all behind `instance.manage_runtime`:
 
-- **Settings → Workflow & PR Rules → Maintenance** lists every tracked handoff with its reason, branch and next action, and offers **Resume** and **Release**. Release never deletes files or commits; tick *Release even if the worktree holds unpublished work* to force one whose worktree still holds work (the commits stay reachable in the worktree and under `refs/propr/superseded/`).
+- **Settings → Maintenance → Held follow-ups** lists every tracked handoff with its reason, branch and next action, and offers **Resume** and **Release**. Release never deletes files or commits; tick *Release even if the worktree holds unpublished work* to force one whose worktree still holds work (the commits stay reachable in the worktree and under `refs/propr/superseded/`).
 - **MCP**: `list_followup_handoffs`, `get_followup_handoff`, `resume_followup_handoff` and `release_followup_handoff`.
 - **CLI** (`@propr/cli` 0.9.1 or later): `propr handoffs list`, `propr handoffs inspect <owner/repo> <pr>`, `propr handoffs resume <owner/repo> <pr> [--authorize-cancelled]`, `propr handoffs release <owner/repo> <pr> [--force]`.
 - **API**: `GET /api/admin/followup-handoffs`, `GET`/`POST …/:owner/:repo/:pr`, `…/resume` and `…/release`, with a JSON body of `{"force": true}` or `{"authorizeCancelled": true}` where needed.

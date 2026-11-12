@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DatabaseExportStatus, RepositoryStorageInventory, StorageCapabilities, StorageCleanupPreview } from '@propr/shared';
-import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
+import { useCurrentUser } from '../../contexts/AuthContext';
+import { canManageInstanceStorage } from './settingsPermissions';
 import * as api from '../../api/instanceStorageApi';
 import { SettingsSection } from './SettingsLayout';
 
@@ -10,7 +11,7 @@ const bytes = (n: number | null | undefined) => n == null ? 'Unknown' : `${(n / 
 
 export default function InstanceStorageSection() {
   const user = useCurrentUser();
-  if (user?.role !== 'admin' || !userHasPermission(user, 'instance.manage_settings')) return null;
+  if (!canManageInstanceStorage(user)) return null;
   return <StorageControls key={user.id} actor={user.id} />;
 }
 function StorageControls({ actor }: { actor: string }) {
