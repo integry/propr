@@ -81,6 +81,8 @@ export interface PrTemplateValueInput {
     repository?: string;
     commits?: Array<{ sha?: string; message: string }>;
     filesChanged?: string[];
+    /** Rendered review digest section; empty when the run has no diff. */
+    digest?: string;
 }
 
 function codeSpan(text: string): string {
@@ -111,6 +113,7 @@ export function buildPrTemplateValues(input: PrTemplateValueInput): PrTemplateVa
         commits: commits.join('\n'),
         files_changed: listedFiles.join('\n'),
         summary: sanitizeAgentReport(input.summary),
+        digest: (input.digest ?? '').trim(),
         session_id: input.sessionId ?? '',
         repository: input.repository ?? '',
     };

@@ -158,6 +158,23 @@
         "report"
       ],
       "description": "What a run does when it cannot complete its task as specified. continue (default) keeps the normal outcome; report tells the agent to stop without partial changes and end its final message with a PROPR_BLOCKED: line, which ProPR reports as a blocked run: no commit, no pull request, no done label."
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Review digest settings. The digest in agent PR descriptions and completion comments ranks changed files by risk; CI and workflow files, .propr/**, agent configuration, lockfiles, dependency manifests, migrations and auth- or payment-looking paths are high risk by default.",
+      "properties": {
+        "risk_paths": {
+          "type": "array",
+          "maxItems": 200,
+          "description": "Repository-root-anchored globs (*, ?, **, [...]), matched like auto_merge.protected_paths, that mark matching changed paths as high risk in the review digest. Case-insensitive; a matching directory covers its contents.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$"
+          }
+        }
+      }
     }
   }
 }
