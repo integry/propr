@@ -5,6 +5,9 @@
 // about a streak of unproductive scheduled runs; the streak whose pause was
 // last carried out is recorded with it, so a pause left unfinished after the
 // notification was stored is retried, and one already done is not repeated.
+// A claimed acting step's count stays outstanding (`acting_mutations_pending`)
+// until its worker has ended the grant and settled the count, known or not, so
+// a run another writer cancels or fails meanwhile is not read as final.
 // Existing runs keep null flags: they were never classified.
 const DEFINITION_COLUMNS = [
   ['pause_when_unproductive', table => table.boolean('pause_when_unproductive').notNullable().defaultTo(false)],
@@ -14,6 +17,7 @@ const RUN_COLUMNS = [
   ['report_hash', table => table.string('report_hash', 64).nullable()],
   ['report_novelty', table => table.string('report_novelty', 16).nullable()],
   ['acting_mutations', table => table.integer('acting_mutations').nullable()],
+  ['acting_mutations_pending', table => table.boolean('acting_mutations_pending').notNullable().defaultTo(false)],
 ];
 
 export async function up(knex) {

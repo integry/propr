@@ -13,6 +13,7 @@ import {
   type StoredAgentRun,
 } from '../packages/core/src/services/agents/agentRunStore.ts';
 import {
+  agentRunProductivity,
   findUnproductiveScheduledStreak,
   pauseScheduleForUnproductiveStreak,
   recordAgentRunActingMutations,
@@ -83,7 +84,7 @@ function streakDeps(inbox: Inbox): UnproductiveStreakDeps {
 }
 
 /** The production acting-step processor on the real run store; the agent and its MCP grant are stand-ins. */
-function actionProcessor(execute: () => Promise<unknown>, grant: { performed: number }, inbox: Inbox) {
+function actionProcessor(execute: () => Promise<unknown>, grant: { performed: number; uncounted?: boolean }, inbox: Inbox) {
   const taskStates = new Map<string, string>();
   const terminal = new Set(['completed', 'failed', 'cancelled']);
   const setTask = (taskId: string, state: string) => { if (!terminal.has(taskStates.get(taskId) ?? '')) taskStates.set(taskId, state); };
@@ -111,7 +112,7 @@ function actionProcessor(execute: () => Promise<unknown>, grant: { performed: nu
     mcpGrants: {
       request: async (_runId, phase) => ({ grantId: 'grant-1', phase, url: 'http://api:4000/api/mcp', token: 'mcp-secret', expiresAt: clock + 60_000, scopes: ['read', 'plan', 'execute'] }),
       // Like the API: counted once the grant is revoked.
-      revoke: async (_runId, issued) => ({ revoked: true, grantId: issued.grantId ?? null, calls: 1, mutatingOperations: grant.performed }),
+      revoke: async (_runId, issued) => ({ revoked: true, grantId: issued.grantId ?? null, calls: 1, mutatingOperations: grant.uncounted ? null : grant.performed }),
     },
     evaluateStreak: async run => { if (run) await evaluateUnproductiveStreak(run, streakDeps(inbox)); },
     gate: async () => ({ action: 'proceed' }),
@@ -213,5 +214,84 @@ describe('a mutating acting step breaks the unproductive streak however its run 
     assert.equal((await recordAgentRunActingMutations(acting.id, { actionTaskId: taskId, actingMutations: 4 }, deps()))?.actingMutations, 4);
     assert.equal(await recordAgentRunActingMutations(acting.id, { actionTaskId: taskId, actingMutations: 0 }, deps()), null, 'already stored');
     assert.equal((await getAgentRunById(acting.id, deps()))?.actingMutations, 4);
+  });
+});
+
+describe('a run cancelled while its acting step runs stays pending until the step settles its count (F17)', () => {
+  test('a run completing in between neither counts the cancelled run nor pauses the schedule', async () => {
+    const inbox: Inbox = { events: [] };
+    await unchangedRun('completed');
+    const acting = await unchangedRun('acting');
+    const grant = { performed: 0 };
+    let between: { outcome: unknown; streak: string[]; pending: unknown } | null = null;
+    const cancelledElsewhere = actionProcessor(async () => {
+      grant.performed += 1;
+      await transitionAgentRun(acting.id, ['acting'], 'cancelled', {}, deps());
+      // Another scheduled run completes unproductively before this step's grant is counted.
+      const next = await unchangedRun('completed');
+      const cancelled = await getAgentRunById(acting.id, deps());
+      between = {
+        outcome: await evaluateUnproductiveStreak(next, streakDeps(inbox)),
+        streak: (await findUnproductiveScheduledStreak(definition.id, THRESHOLD, { database })).runs.map(run => run.id),
+        pending: cancelled && agentRunProductivity(cancelled),
+      };
+      throw new Error('container stopped');
+    }, grant, inbox);
+    assert.equal((await cancelledElsewhere(actionJob(acting))).status, 'cancelled');
+
+    assert.ok(between);
+    const seen = between as { outcome: unknown; streak: string[]; pending: unknown };
+    assert.equal(seen.pending, 'pending', 'the cancelled run is not final while its count is outstanding');
+    assert.equal(seen.streak.includes(acting.id), false, 'nor is it read as final by the streak query');
+    assert.equal(seen.outcome, null);
+    assert.deepEqual(inbox.events, []);
+    assert.equal(await scheduleEnabled(), true, 'the schedule is not paused through a run that changed something');
+
+    const settled = await getAgentRunById(acting.id, deps());
+    assert.equal(settled?.actingMutations, 1);
+    assert.equal(settled?.actingMutationsPending, false);
+    const streak = await findUnproductiveScheduledStreak(definition.id, THRESHOLD, { database });
+    assert.equal(streak.runs.length, 1, 'only the run after the productive one');
+    assert.equal(streak.streakKey, acting.id);
+  });
+
+  test('an unknown count settles the run on its report flags, and that settlement evaluates the streak', async () => {
+    const inbox: Inbox = { events: [] };
+    await unchangedRun('completed');
+    await unchangedRun('completed');
+    const acting = await unchangedRun('acting');
+    const grant = { performed: 0, uncounted: true };
+    let streakWhileOutstanding: string[] = [];
+    const cancelledElsewhere = actionProcessor(async () => {
+      await transitionAgentRun(acting.id, ['acting'], 'cancelled', {}, deps());
+      streakWhileOutstanding = (await findUnproductiveScheduledStreak(definition.id, THRESHOLD, { database })).runs.map(run => run.id);
+      throw new Error('container stopped');
+    }, grant, inbox);
+    assert.equal((await cancelledElsewhere(actionJob(acting))).status, 'cancelled');
+    assert.equal(streakWhileOutstanding.includes(acting.id), false);
+
+    const settled = await getAgentRunById(acting.id, deps());
+    assert.equal(settled?.actingMutations, null, 'an unknown count is not read as a no-op');
+    assert.equal(settled?.actingMutationsPending, false);
+    assert.equal(agentRunProductivity(settled!), 'unproductive', 'its unchanged report decides once the count is settled');
+    assert.equal(inbox.events.length, 2, 'the settled run brought the streak to the threshold');
+    assert.equal(await scheduleEnabled(), false);
+  });
+
+  test('a run cancelled before its step was claimed has no count outstanding', async () => {
+    const acting = await unchangedRun('acting');
+    const cancelled = await transitionAgentRun(acting.id, ['acting'], 'cancelled', {}, deps());
+    assert.equal(cancelled?.actingMutationsPending, false);
+    assert.equal(agentRunProductivity(cancelled!), 'unproductive');
+  });
+
+  test('settling an unknown count applies once, and only while it is outstanding', async () => {
+    const acting = await unchangedRun('acting');
+    const taskId = `agent-run-${acting.id}-action`;
+    assert.equal((await claimAgentRunAction(acting.id, taskId, deps()))?.actingMutationsPending, true);
+    await transitionAgentRun(acting.id, ['acting'], 'cancelled', {}, deps());
+    assert.equal((await getAgentRunById(acting.id, deps()))?.actingMutationsPending, true, 'another writer ending the run leaves it outstanding');
+    assert.equal((await recordAgentRunActingMutations(acting.id, { actionTaskId: taskId, actingMutations: null }, deps()))?.actingMutationsPending, false);
+    assert.equal(await recordAgentRunActingMutations(acting.id, { actionTaskId: taskId, actingMutations: null }, deps()), null, 'already settled');
   });
 });

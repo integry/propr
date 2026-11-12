@@ -60,10 +60,10 @@ export interface AgentActionProcessorDeps extends Pick<AgentRunProcessorDeps,
     /** Tells the owner a held-back run waits for approval; best-effort. */
     notifyAwaitingApproval: (run: StoredAgentRun) => Promise<void>;
     /**
-     * Stores the grant's mutation count on a run another writer failed or cancelled
-     * while this acting step held the grant; null when no such run matched.
+     * Settles the grant's mutation count (null when unknown) on a run another writer
+     * failed or cancelled while this acting step held the grant; null when no such run matched.
      */
-    recordMutations: (runId: string, record: { actionTaskId: string; actingMutations: number }) => Promise<StoredAgentRun | null>;
+    recordMutations: (runId: string, record: { actionTaskId: string; actingMutations: number | null }) => Promise<StoredAgentRun | null>;
 }
 
 export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
@@ -118,11 +118,20 @@ interface ActionContext {
      * (null when that count is unknown), so whichever state ends the run keeps it.
      */
     actingMutations?: number | null;
+    /**
+     * True once this delivery claimed the acting step: it then owes the run the
+     * settlement of the step's count, even when another writer ended the run.
+     */
+    ownsClaim?: boolean;
 }
 
-/** The ended grant's count as a transition patch; nothing while it is held or unknown. */
+/**
+ * The ended grant's count as a transition patch (none while it is held or unknown).
+ * A worker writing the run's final state settles the count either way.
+ */
 function mutationsPatch(context: ActionContext): AgentRunTransitionPatch {
-    return typeof context.actingMutations === 'number' ? { actingMutations: context.actingMutations } : {};
+    const settled: AgentRunTransitionPatch = { actingMutationsPending: false };
+    return typeof context.actingMutations === 'number' ? { ...settled, actingMutations: context.actingMutations } : settled;
 }
 
 export function createAgentActionProcessor(overrides: Partial<AgentActionProcessorDeps> = {}) {
@@ -164,16 +173,20 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
 
     /**
      * A run another writer failed or cancelled while this acting step held its grant
-     * still keeps what the grant changed. Best effort: the run has already ended.
+     * still keeps what the grant changed. Until this settles the count (known, or
+     * unknown when the revoke failed or no grant was issued), the run stays out of
+     * streaks. Only the delivery that claimed the step settles it, and only once its
+     * grant has ended. Best effort: the run has already ended.
      */
     async function keepMutationsOfEndedRun(context: ActionContext): Promise<void> {
-        const { runId, taskId, log, actingMutations } = context;
-        if (typeof actingMutations !== 'number') return;
+        const { runId, taskId, log } = context;
+        if (!context.ownsClaim) return;
+        const actingMutations = typeof context.actingMutations === 'number' ? context.actingMutations : null;
         const recorded = await deps.recordMutations(runId, { actionTaskId: taskId, actingMutations }).catch(error => {
             log.warn({ runId, taskId, actingMutations, err: error }, 'Could not store the acting step mutation count on its ended run');
             return null;
         });
-        // The count made the run's flags final, so this is where its streak is evaluated.
+        // Settling the count made the run's flags final, so this is where its streak is evaluated.
         await evaluateEndedRun(recorded);
     }
 
@@ -317,6 +330,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             log.info({ runId, taskId }, 'Agent run acting step was claimed or ended by another writer');
             return taskFollowsRun(context);
         }
+        context.ownsClaim = true;
 
         activeRuns.add(runId);
         let workspace: AgentRunWorkspace | undefined;
@@ -368,7 +382,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             if (taskStopped) return taskStopped;
             const actionSummary = actionSummaryFromResult(result);
             const actingMutations = context.actingMutations ?? null;
-            const completed = await deps.transitionRun(runId, ['acting'], 'completed', { actionSummary, actingMutations });
+            const completed = await deps.transitionRun(runId, ['acting'], 'completed', { actionSummary, actingMutations, actingMutationsPending: false });
             if (!completed) return taskFollowsRun(context);
             await settleTask(context, manager => manager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(actionSummary) }));
             actionSucceeded = true;

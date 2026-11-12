@@ -215,9 +215,12 @@ async function attributedAgentDefinition(definition: StoredAgentDefinition) {
 export function publicAutomationRun(run: StoredAgentRun, { includeReport }: { includeReport: boolean }) {
   const snapshot = run.definitionSnapshot ? publicAutomationDefinition(run.definitionSnapshot) : null;
   const noChangeReason = automationRunNoChangeReason(run);
-  if (includeReport) return { ...run, noChangeReason, definitionSnapshot: snapshot };
+  // Whether the acting step's count is still being settled is worker bookkeeping, not a run flag.
+  const visible: Partial<StoredAgentRun> = { ...run };
+  delete visible.actingMutationsPending;
+  if (includeReport) return { ...visible, noChangeReason, definitionSnapshot: snapshot };
   // History rows stay light: the report and the definition snapshot are only in the run detail.
-  const summary: Partial<StoredAgentRun> & { noChangeReason: typeof noChangeReason } = { ...run, noChangeReason };
+  const summary: Partial<StoredAgentRun> & { noChangeReason: typeof noChangeReason } = { ...visible, noChangeReason };
   delete summary.report;
   delete summary.definitionSnapshot;
   return summary;

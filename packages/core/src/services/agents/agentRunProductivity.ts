@@ -30,28 +30,37 @@ const UNDECIDED_STATES = new Set<StoredAgentRun['state']>(['report_ready', 'awai
  * The run's verdict. A known acting count is final on its own: more than zero
  * makes the run productive and zero is a no-op acting step, whether or not the
  * report could be compared. Otherwise the report novelty decides once no acting
- * step can still run. `pending` runs neither extend nor break a streak.
+ * step can still run and no claimed step's count is still outstanding: a run
+ * another writer cancelled or failed while its step held the grant waits for
+ * that step's worker to settle the count. `pending` runs neither extend nor
+ * break a streak.
  */
-export function agentRunProductivity(run: Pick<StoredAgentRun, 'state' | 'reportNovelty' | 'actingMutations'>): AgentRunProductivity {
-  if (run.actingMutations == null && (run.reportNovelty == null || UNDECIDED_STATES.has(run.state))) return 'pending';
+export function agentRunProductivity(
+  run: Pick<StoredAgentRun, 'state' | 'reportNovelty' | 'actingMutations'> & Partial<Pick<StoredAgentRun, 'actingMutationsPending'>>,
+): AgentRunProductivity {
+  if (run.actingMutations == null
+    && (run.reportNovelty == null || UNDECIDED_STATES.has(run.state) || run.actingMutationsPending === true)) return 'pending';
   return automationRunNoChangeReason(run) ? 'unproductive' : 'productive';
 }
 
 /**
- * Stores the mutation count of an acting step whose run another writer ended
+ * Settles the mutation count of an acting step whose run another writer ended
  * (a cancel, or a redelivery that took the step for abandoned) while the step
- * still held its MCP grant. Only onto the run the step claimed, once it has
- * failed or been cancelled, and never over a count already stored. Returns the
- * updated run, or null when no such run matched.
+ * still held its MCP grant: a known count is stored, an unknown one (null; the
+ * revoke failed, or no grant was issued) only ends the outstanding mark. Only
+ * onto the run the step claimed, once it has failed or been cancelled, and
+ * never over a count already stored. Returns the updated run, or null when no
+ * such run matched (nothing changed, so nothing new to evaluate).
  */
 export async function recordAgentRunActingMutations(
   id: string,
-  { actionTaskId, actingMutations }: { actionTaskId: string; actingMutations: number },
+  { actionTaskId, actingMutations }: { actionTaskId: string; actingMutations: number | null },
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<StoredAgentRun | null> {
   const [updated] = await database('agent_runs').where({ id, action_task_id: actionTaskId }).whereIn('state', ['failed', 'cancelled'])
     .whereNull('acting_mutations')
-    .update({ acting_mutations: actingMutations, updated_at: now() })
+    .modify(query => { if (actingMutations === null) query.where('acting_mutations_pending', true); })
+    .update({ acting_mutations: actingMutations, acting_mutations_pending: false, updated_at: now() })
     .returning('*') as AgentRunRow[];
   return updated ? rowToAgentRun(updated) : null;
 }
@@ -88,12 +97,14 @@ function olderThan(query: Knex.QueryBuilder, after: RunKey | null): void {
 
 /**
  * The SQL form of `agentRunProductivity(run) !== 'pending'`: a known acting count,
- * or a report novelty once no acting step can still run. Filtered before the scan
- * limit, so pending runs (say, many awaiting approval) cannot use up the scan.
+ * or a report novelty once no acting step can still run and no claimed step's
+ * count is outstanding. Filtered before the scan limit, so pending runs (say,
+ * many awaiting approval) cannot use up the scan.
  */
 function decided(query: Knex.QueryBuilder): void {
   query.where(known => known.whereNotNull('acting_mutations')
-    .orWhere(reported => reported.whereNotNull('report_novelty').whereNotIn('state', [...UNDECIDED_STATES])));
+    .orWhere(reported => reported.whereNotNull('report_novelty').whereNotIn('state', [...UNDECIDED_STATES])
+      .where('acting_mutations_pending', false)));
 }
 
 /**
