@@ -21,7 +21,8 @@ import {
  * The previous reported run is the one whose report was stored last, whenever
  * it was created and whatever its acting step did afterwards. The prompt
  * history (created earlier, run not failed) is read only for the run ids a
- * report's prompt may have quoted.
+ * report's prompt may have quoted: this run's, and the previous reported run's,
+ * which may reach further back when that run reported late.
  */
 
 /**
@@ -65,11 +66,16 @@ async function classifyReport(
             listPromptHistory(run.definitionId, { limit: KNOWN_RUN_WINDOW, beforeCreatedAt: run.createdAt, excludeRunId: run.id }),
         ]);
         const previous = latest[0] ?? null;
+        // The previous report may quote runs from its own prompt history, which neither window
+        // above reaches when it was stored late (after more than KNOWN_RUN_WINDOW newer reports).
+        const previousHistory = previous
+            ? await listPromptHistory(run.definitionId, { limit: KNOWN_RUN_WINDOW, beforeCreatedAt: previous.createdAt, excludeRunId: previous.runId })
+            : [];
         const novelty = classifyAgentReportNovelty({
             runId: run.id,
             report: truncateAgentReport(report).report,
             previous,
-            knownRunIds: [...new Set([...latest, ...promptHistory].map(earlier => earlier.runId))],
+            knownRunIds: [...new Set([...latest, ...promptHistory, ...previousHistory].map(earlier => earlier.runId))],
         });
         return { novelty, previousRunId: previous?.runId ?? null };
     } catch (error) {

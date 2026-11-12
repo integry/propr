@@ -50,6 +50,11 @@ export async function listPreviousReports(
   }));
 }
 
+/** A stored report, with its run's creation time: the prompt history its run was given is read relative to it. */
+export interface LatestStoredReport extends PreviousAgentReport {
+  createdAt: number;
+}
+
 export interface ListLatestStoredReportsOptions {
   limit: number;
   /** Run to leave out, typically the run whose report is about to be stored. */
@@ -71,7 +76,7 @@ export async function listLatestStoredReports(
   definitionId: string,
   { limit, excludeRunId }: ListLatestStoredReportsOptions,
   { database = db }: AgentRunStoreDependencies = {},
-): Promise<PreviousAgentReport[]> {
+): Promise<LatestStoredReport[]> {
   const boundedLimit = Math.trunc(limit);
   if (!(boundedLimit > 0)) return [];
   const query = database('agent_runs').where({ definition_id: definitionId }).whereNotNull('report');
@@ -82,6 +87,7 @@ export async function listLatestStoredReports(
   return rows.map(row => ({
     runId: row.id,
     reportedAt: Number(row.reported_at ?? row.created_at),
+    createdAt: Number(row.created_at),
     report: row.report ?? '',
   }));
 }

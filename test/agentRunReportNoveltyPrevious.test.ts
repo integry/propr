@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
+import { MAX_AUTOMATION_PREVIOUS_REPORTS } from '@propr/shared';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
 import { createAgentRun, transitionAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
 import { listLatestStoredReports, listPreviousReports, storeAgentRunReport, storeUnclassifiedAgentRunReport } from '../packages/core/src/services/agents/agentRunReports.ts';
@@ -99,6 +100,21 @@ describe('report novelty against the previous reported run (F8)', () => {
     assert.deepEqual(history.map(entry => entry.runId), [first.id]);
     const latest = await listLatestStoredReports(definition.id, { limit: 5, excludeRunId: current.id }, deps());
     assert.deepEqual(latest.map(entry => entry.runId), [failed.id, first.id]);
+  });
+
+  test('a report differing only in run ids from a late previous report is unchanged (F15)', async () => {
+    const quoting = (runId: string) => `${REPORT_A} Compared with run ${runId}.`;
+    const origin = await startRun();
+    await report(origin, REPORT_B);
+    // `late` starts with `origin` in its prompt history, then reports only after more
+    // reports than either the latest-report window or the next run's history reaches.
+    const late = await startRun();
+    for (let index = 0; index <= MAX_AUTOMATION_PREVIOUS_REPORTS + 2; index += 1) {
+      await report(await startRun(), `Dependency watch, round ${index}: nothing urgent in acme/web or acme/api today.`);
+    }
+    assert.equal((await report(late, quoting(origin.id))).reportNovelty, 'new');
+    const next = await startRun();
+    assert.equal((await report(next, quoting(late.id))).reportNovelty, 'unchanged', 'only the quoted run ids differ');
   });
 
   test('reports stored at the same moment are ordered by run id', async () => {

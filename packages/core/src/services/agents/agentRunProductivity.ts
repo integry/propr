@@ -87,6 +87,16 @@ function olderThan(query: Knex.QueryBuilder, after: RunKey | null): void {
 }
 
 /**
+ * The SQL form of `agentRunProductivity(run) !== 'pending'`: a known acting count,
+ * or a report novelty once no acting step can still run. Filtered before the scan
+ * limit, so pending runs (say, many awaiting approval) cannot use up the scan.
+ */
+function decided(query: Knex.QueryBuilder): void {
+  query.where(known => known.whereNotNull('acting_mutations')
+    .orWhere(reported => reported.whereNotNull('report_novelty').whereNotIn('state', [...UNDECIDED_STATES])));
+}
+
+/**
  * The newest productive scheduled run older than `before`, or `start`. The SQL
  * form of `agentRunProductivity(run) === 'productive'`: a positive acting
  * count, or no acting count and a new report once no acting step can still run.
@@ -94,9 +104,9 @@ function olderThan(query: Knex.QueryBuilder, after: RunKey | null): void {
  */
 async function findProductivePredecessor(database: Knex, definitionId: string, before: RunKey): Promise<string> {
   const row = await database('agent_runs').where({ definition_id: definitionId, trigger: 'schedule' })
+    .modify(decided)
     .where(productive => productive.where('acting_mutations', '>', 0)
-      .orWhere(reported => reported.whereNull('acting_mutations').andWhere('report_novelty', 'new')
-        .whereNotIn('state', [...UNDECIDED_STATES])))
+      .orWhere(reported => reported.whereNull('acting_mutations').andWhere('report_novelty', 'new')))
     .modify(query => olderThan(query, before))
     .orderBy([{ column: 'created_at', order: 'desc' }, { column: 'id', order: 'desc' }])
     .first<{ id: string } | undefined>('id');
@@ -118,9 +128,9 @@ export interface UnproductiveStreak {
 
 /**
  * The definition's current streak of unproductive scheduled runs, newest
- * first. Pending runs are skipped; the first productive one ends the streak.
- * Rows count when either flag is known, so a run whose report could not be
- * compared still counts through its acting step.
+ * first. Pending runs are left out of the query, so they neither use up the
+ * scan nor end the streak; the first productive run ends it. A run whose report
+ * could not be compared still counts through its acting step.
  */
 export async function findUnproductiveScheduledStreak(
   definitionId: string,
@@ -134,7 +144,7 @@ export async function findUnproductiveScheduledStreak(
   for (let read = 0; read < STREAK_SCAN_LIMIT && breaker === null; read += STREAK_PAGE_SIZE) {
     const after = oldestRead;
     const rows = await database('agent_runs').where({ definition_id: definitionId, trigger: 'schedule' })
-      .where(flagged => flagged.whereNotNull('report_novelty').orWhereNotNull('acting_mutations'))
+      .modify(decided)
       .modify(page => olderThan(page, after))
       .orderBy([{ column: 'created_at', order: 'desc' }, { column: 'id', order: 'desc' }])
       .limit(STREAK_PAGE_SIZE).select<AgentRunRow[]>();

@@ -127,7 +127,7 @@ function harness(options: {
     summary: '## Summary\nTwo dependencies are outdated.',
   })));
   const listPreviousReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Old report' }]);
-  const listLatestReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Old report' }]);
+  const listLatestReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, createdAt: NOW - 2000, report: 'Old report' }]);
   const buildPrompt = mock.fn(() => 'PROMPT');
   const prepareWorkspace = mock.fn(options.prepare ?? (async () => ({
     worktreePath: '/tmp/worktree', branchName: 'agent-run/run-1',
@@ -250,7 +250,11 @@ describe('processAgentRunJob', () => {
     assert.deepEqual(promptInput.previousReports, []);
     // Only the novelty check reads previous reports: the latest to compare with, and the
     // run ids either report's prompt could have listed.
-    assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }]]);
+    // The previous reported run's own prompt history too: its report may quote runs from it.
+    assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [
+      ['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }],
+      ['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW - 2000, excludeRunId: 'run-0' }],
+    ]);
     // The report to compare with is the one stored last, with no creation-time boundary.
     assert.deepEqual(h.listLatestReports.mock.calls.map(call => call.arguments), [['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, excludeRunId: 'run-1' }]]);
   });

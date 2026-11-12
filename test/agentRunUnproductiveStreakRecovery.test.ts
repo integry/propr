@@ -185,6 +185,46 @@ describe('streak identity past the scan limit (F5)', () => {
   });
 });
 
+describe('pending runs do not use up the streak scan (F16)', () => {
+  test('three rejected unproductive runs behind more pending runs than the scan reads still notify at threshold three', async () => {
+    const rejected = await insertRuns(3, { state: 'awaiting_approval', novelty: 'unchanged' });
+    await insertRuns(SCAN_LIMIT, { state: 'awaiting_approval', novelty: 'unchanged' });
+    const events: { deduplicationKey: string }[] = [];
+    const evaluate = {
+      loadThreshold: async () => 3,
+      findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
+      findNotification: async () => null,
+      getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
+      pauseSchedule: (definitionId: string, pause: UnproductiveStreakPause) => pauseScheduleForUnproductiveStreak(definitionId, pause, deps()),
+      createEvent: (async (event: { deduplicationKey: string }) => { events.push(event); return event; }) as never,
+    };
+    let outcome: unknown = null;
+    // The owner rejects the three older runs; each rejection evaluates the streak.
+    for (const id of rejected) {
+      const run = await transitionAgentRun(id, ['awaiting_approval'], 'rejected', {}, deps());
+      assert.ok(run);
+      outcome = await evaluateUnproductiveStreak(run, evaluate);
+    }
+    assert.equal(outcome, 'notified');
+    assert.deepEqual(events.map(event => event.deduplicationKey), [unproductiveStreakDeduplicationKey(definition.id, 'start')]);
+    const streak = await findUnproductiveScheduledStreak(definition.id, 3, { database });
+    assert.deepEqual(streak.runs.map(run => run.id), [...rejected].reverse());
+    assert.equal(streak.reachedThreshold, true);
+  });
+
+  test('the streak and its identity are found behind pending runs of every undecided state', async () => {
+    const [productive] = await insertRuns(1, { novelty: 'new' });
+    const unproductive = await insertRuns(3, { state: 'rejected' });
+    for (const state of ['report_ready', 'awaiting_approval', 'acting'] as const) await insertRuns(SCAN_LIMIT / 2, { state, novelty: 'new' });
+    // Reports that could not be compared, with no acting count yet, are pending too.
+    await insertRuns(SCAN_LIMIT / 2, { novelty: null });
+    const streak = await findUnproductiveScheduledStreak(definition.id, 3, { database });
+    assert.deepEqual(streak.runs.map(run => run.id), [...unproductive].reverse());
+    assert.equal(streak.reachedThreshold, true);
+    assert.equal(streak.streakKey, productive);
+  });
+});
+
 describe('unfinished schedule pause (F4)', () => {
   async function unproductiveRun(): Promise<StoredAgentRun> {
     clock += 60_000;
