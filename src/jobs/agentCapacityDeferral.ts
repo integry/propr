@@ -109,7 +109,8 @@ function refusalReason(error: unknown): string {
 
 /**
  * Durably store an agent-capacity refusal on the same job, join the waiting
- * list of every refused alias (oldest first) and explain the wait on the task
+ * list of every refused alias (oldest first), leave the lists of aliases that
+ * no longer block it, and explain the wait on the task
  * timeline: one row per wait, updated in place. Call before unwinding locks and
  * claims, then rethrow so `deferCapacityJob` delays the job. A refusal that
  * cannot be stored ends this attempt through `onPersistFailure`.
@@ -125,6 +126,8 @@ export async function persistAgentCapacityDeferral<T extends AgentCapacityDeferr
     const now = options.now ?? Date.now();
     const aliases = refusedAliases(error);
     const since = job.data.agentCapacityWaitingSince ?? now;
+    // Lists this job already sits on: the aliases its previous refusal named.
+    const previous = job.data.agentCapacityAliases ?? [];
     await capacity.registerAgentCapacityWaiter(aliases, waiterOf(job), since);
     const next = nextCapacityDeferral(job.data.agentCapacityDeferrals, { now });
     const deferrals = next.deferrals;
@@ -134,10 +137,15 @@ export async function persistAgentCapacityDeferral<T extends AgentCapacityDeferr
     try {
         await job.updateData({ ...job.data, ...options.extraData, agentCapacityDeferrals: deferrals, agentCapacityRetryAt: retryAt, agentCapacityWaitingSince: since, agentCapacityAliases: aliases });
     } catch (persistError) {
-        await capacity.forgetAgentCapacityWaiter(aliases, waiterOf(job));
+        // The stored data still names the previous aliases; leave only the lists this attempt joined.
+        await capacity.forgetAgentCapacityWaiter(aliases.filter(alias => !previous.includes(alias)), waiterOf(job));
         if (options.onPersistFailure) await options.onPersistFailure(persistError as Error);
         throw persistError;
     }
+    // No longer blocked by an alias the previous refusal named: leave its list, so
+    // its released capacity wakes the jobs that still wait for it.
+    const obsolete = previous.filter(alias => !aliases.includes(alias));
+    if (obsolete.length) await capacity.forgetAgentCapacityWaiter(obsolete, waiterOf(job));
     correlatedLogger.info({ taskId: options.taskId, aliases, deferrals, retryAt: new Date(retryAt).toISOString() }, 'Deferred job until its agent has capacity');
     if (options.stateManager && options.taskId) {
         await recordCapacityDeferral({

@@ -78,7 +78,7 @@ before(() => {
     if (!endpoint) return;
     Object.assign(process.env, {
         REDIS_HOST: endpoint.host, REDIS_PORT: String(endpoint.port),
-        PROPR_AGENT_RUN_LIMIT: '4', PROPR_INSTANCE_ID: instanceId, PROPR_AGENT_RUN_ALIAS_LIMITS: 'local-llama=1',
+        PROPR_AGENT_RUN_LIMIT: '4', PROPR_INSTANCE_ID: instanceId, PROPR_AGENT_RUN_ALIAS_LIMITS: 'local-llama=1,remote-llama=1',
     });
     configureAgentCapacityRedis(redis);
 });
@@ -86,7 +86,7 @@ after(async () => {
     configureAgentCapacityRedis(undefined);
     if (redis) {
         // Shared Redis: delete only this run's keys.
-        await redis.del(...agentAdmissionKeys(instanceId), agentCapacityWaitersKey(instanceId, 'local-llama'));
+        await redis.del(...agentAdmissionKeys(instanceId), agentCapacityWaitersKey(instanceId, 'local-llama'), agentCapacityWaitersKey(instanceId, 'remote-llama'));
         for (const name of queues) { const queue = new Queue(name, { connection: redis }); await queue.obliterate({ force: true }).catch(() => {}); await queue.close(); }
         redis.disconnect();
     }
@@ -229,6 +229,51 @@ test('a waiter whose job ended is dropped from the waiting list without using up
     } finally {
         await redis!.del(key);
         await queue.close();
+    }
+});
+
+test('a refusal that stops naming an alias leaves its waiting list, and a wakeup skips such a waiter without using the slot', integration(), async () => {
+    const name = `agent-capacity-moved-${run}`;
+    queues.push(name);
+    const queue = new Queue(name, { connection: redis! });
+    const local = agentCapacityWaitersKey(instanceId, 'local-llama'), remote = agentCapacityWaitersKey(instanceId, 'remote-llama');
+    const members = async (key: string) => (await redis!.zrange(key, 0, -1)).map(waiter => JSON.parse(waiter)[1]);
+    const heldLocal = await holder('local-llama'), heldRemote = await holder('remote-llama');
+    try {
+        await redis!.del(local, remote);
+        // A review blocked by both reviewers joins both lists.
+        const review = await queue.add('x', {}, { jobId: 'review', delay: 60_000 });
+        await persistAgentCapacityDeferral({ job: review as never, error: new AgentCapacityError(['local-llama', 'remote-llama']), correlatedLogger: log });
+        assert.deepEqual([await members(local), await members(remote)], [['review'], ['review']]);
+
+        // A failed store keeps every list the stored data still names.
+        const failing = { ...review, queueName: name, id: 'review', data: review.data, updateData: async () => { throw new Error('redis write failed'); } };
+        await assert.rejects(persistAgentCapacityDeferral({ job: failing as never, error: new AgentCapacityError(['remote-llama']), correlatedLogger: log }), /redis write failed/);
+        assert.deepEqual([await members(local), await members(remote)], [['review'], ['review']]);
+
+        // Re-entered after local-llama freed: now only remote-llama blocks it, so it leaves local-llama's list.
+        await persistAgentCapacityDeferral({ job: review as never, error: new AgentCapacityError(['remote-llama']), correlatedLogger: log });
+        assert.deepEqual((await queue.getJob('review'))!.data.agentCapacityAliases, ['remote-llama']);
+        assert.deepEqual([await members(local), await members(remote)], [[], ['review']]);
+        assert.equal(await redis!.zscore(remote, JSON.stringify([name, 'review'])) !== null, true, 'keeps its place on the alias it still waits for');
+
+        // An obsolete entry the reconciliation missed, older than a real local-llama waiter: the wakeup drops it
+        // and promotes the real waiter. One that is not delayed may be joining the list right now: kept, not counted.
+        const waiter = await queue.add('x', {}, { jobId: 'local-only', delay: 60_000 });
+        await waiter.updateData({ agentCapacityAliases: ['local-llama'] });
+        const entering = await queue.add('x', { agentCapacityAliases: ['remote-llama'] }, { jobId: 'entering' });
+        await redis!.zadd(local, 1, JSON.stringify([name, 'review']), 2, JSON.stringify([name, 'entering']), 3, JSON.stringify([name, 'local-only']));
+        await heldLocal.finish();
+        assert.equal(await wakeAgentCapacityWaiters('local-llama'), 1);
+        assert.equal(await waiter.isDelayed(), false, 'the real waiter is woken');
+        assert.equal(await (await queue.getJob('review'))!.isDelayed(), true, 'the review still waits for remote-llama');
+        assert.equal(await entering.isDelayed(), false);
+        assert.deepEqual(await members(local), ['entering', 'local-only']);
+    } finally {
+        await redis!.del(local, remote);
+        await queue.close();
+        await heldLocal.finish().catch(() => {});
+        await heldRemote.finish().catch(() => {});
     }
 });
 

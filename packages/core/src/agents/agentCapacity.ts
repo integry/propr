@@ -204,12 +204,18 @@ export async function forgetAgentCapacityWaiter(aliases: string[], waiter: strin
     } catch (error) { logger.debug({ aliases, error: (error as Error).message }, 'Could not remove agent capacity waiter'); }
 }
 
+/** False when the job's stored refusal names only other aliases: it no longer waits for this one. */
+function waitsFor(data: unknown, alias: string): boolean {
+    const aliases = (data as { agentCapacityAliases?: unknown } | null | undefined)?.agentCapacityAliases;
+    return !Array.isArray(aliases) || aliases.includes(alias);
+}
+
 /**
  * Promote the oldest delayed waiters of `alias`, one per free slot under its
  * ceiling. Called whenever a holder of the alias is released, in whichever
  * process (worker or API) ran it. A waiter that is not delayed right now is
- * re-entering anyway; one whose job no longer exists leaves the list without
- * using up the wakeup. The backoff timer still covers a missed wakeup.
+ * re-entering anyway; one whose job no longer exists, or whose stored refusal no
+ * longer names this alias, leaves the list without using up the wakeup. The backoff timer still covers a missed wakeup.
  */
 export async function wakeAgentCapacityWaiters(alias: string, options: CapacityOptions = {}): Promise<number> {
     const config = resolveConfig(options);
@@ -232,6 +238,12 @@ export async function wakeAgentCapacityWaiters(alias: string, options: CapacityO
                     const job = await queue.getJob(jobId);
                     // A finished (or cancelled and removed) job no longer waits.
                     if (!job || job.finishedOn) { await client.zrem(key, waiter); continue; }
+                    // Waiting for other aliases only. A delayed job has stored its latest refusal, so the
+                    // entry is obsolete. One that is not delayed may be joining this list right now (its new
+                    // aliases not yet stored): keep the entry, its own post-registration capacity check covers this release.
+                    const waiting = waitsFor(job.data, alias);
+                    if (!waiting && await job.isDelayed()) { await client.zrem(key, waiter); continue; }
+                    if (!waiting) continue;
                     woken++;
                     if (await job.isDelayed()) await job.promote();
                 } catch (error) {
