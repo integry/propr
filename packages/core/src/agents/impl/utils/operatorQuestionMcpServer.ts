@@ -46,11 +46,19 @@ export const OPERATOR_QUESTION_RESPONSES_DIR = 'responses';
 /**
  * `<request id>.claim` in the requests directory, created exclusively: the
  * first of the worker (delivering an answer) and the server (handling the
- * client's request cancellation) decides whether an operator input is consumed.
+ * client's request cancellation, or giving up at its own deadline) decides
+ * whether an operator input is consumed. The server publishes its claims with
+ * their content in place, so the worker can tell a timeout from a cancellation.
  */
 export const OPERATOR_QUESTION_CLAIM_SUFFIX = '.claim';
 export const OPERATOR_QUESTION_CLAIM_ANSWERED = 'answered';
 export const OPERATOR_QUESTION_CLAIM_CANCELLED = 'cancelled';
+export const OPERATOR_QUESTION_CLAIM_TIMED_OUT = 'timed_out';
+/**
+ * When the server's deadline loses the claim to the worker's answer, it waits
+ * this much longer for that answer to be published before giving up.
+ */
+export const OPERATOR_QUESTION_ANSWER_PUBLISH_MS = 30_000;
 
 export interface OperatorQuestionRequestFile {
     id: string;
@@ -115,6 +123,7 @@ const maxOptions = ${GOAL_BLOCKER_MAX_OPTIONS};
 const pollMs = 500;
 const tooLate = '${OPERATOR_QUESTION_TOO_LATE}';
 const attemptEnding = '${OPERATOR_QUESTION_ATTEMPT_ENDING}';
+const answerPublishMs = ${OPERATOR_QUESTION_ANSWER_PUBLISH_MS};
 const waits = new Map();
 
 const tools = [{
@@ -164,24 +173,40 @@ function claimPath(id) {
 }
 
 /**
- * Claim the question for the client's cancellation. True only when this
- * creates the claim: an existing claim is the worker's answer, already being
- * published, and with no claim recorded the worker may still answer. Creating
- * the file decides the claim (the worker treats any claim it did not create as
- * a cancellation); its content is informational.
+ * Claim the question for the server: the client's cancellation or the server's
+ * own deadline. True only when this creates the claim: an existing claim is the
+ * worker's answer, already being published, or the server's other claim; with
+ * no claim recorded the worker may still answer. The claim is linked into place
+ * with its content, so the worker never reads an undescribed server claim.
  */
-async function claimCancelled(id) {
+async function claimForServer(id, kind) {
+    const target = claimPath(id);
+    const temporary = path.join(path.dirname(target), '.' + path.basename(target) + '.' + process.pid + '.' + crypto.randomUUID() + '.tmp');
+    try {
+        await fsp.writeFile(temporary, kind, { mode: 0o644 });
+        await fsp.link(temporary, target);
+        return true;
+    } catch (error) {
+        if (error && error.code === 'EEXIST') return false;
+        // Without hard links, create the claim exclusively and describe it afterwards.
+        return await claimExclusively(target, kind);
+    } finally {
+        await fsp.unlink(temporary).catch(() => undefined);
+    }
+}
+
+async function claimExclusively(target, kind) {
     let handle;
     try {
-        handle = await fsp.open(claimPath(id), 'wx', 0o644);
+        handle = await fsp.open(target, 'wx', 0o644);
     } catch (error) {
-        if (!error || error.code !== 'EEXIST') process.stderr.write('propr-operator: could not record a cancellation\n');
+        if (!error || error.code !== 'EEXIST') process.stderr.write('propr-operator: could not record a ' + kind + ' claim\n');
         return false;
     }
     try {
-        await handle.writeFile('${OPERATOR_QUESTION_CLAIM_CANCELLED}');
+        await handle.writeFile(kind);
     } catch {
-        process.stderr.write('propr-operator: could not describe a cancellation\n');
+        process.stderr.write('propr-operator: could not describe a ' + kind + ' claim\n');
     } finally {
         await handle.close().catch(() => undefined);
     }
@@ -217,7 +242,8 @@ async function ask(requestId, args) {
     try {
         await writeAtomic(path.join(exchange, '${OPERATOR_QUESTION_REQUESTS_DIR}', id + '.json'), { id, question, options });
         // Never wait past the attempt's question close time, however long the setting allows.
-        const deadline = Math.min(Date.now() + maxWaitMs, closeAt) + graceMs;
+        let deadline = Math.min(Date.now() + maxWaitMs, closeAt) + graceMs;
+        let timedOut = false;
         while (!wait.cancelled) {
             const response = await readResponse(id);
             if (response && response.status === 'answered' && typeof response.answer === 'string') {
@@ -227,7 +253,17 @@ async function ask(requestId, args) {
             if (response && response.status === 'closed') {
                 return text('The question was closed without an answer: ' + (response.message || 'the goal stopped waiting') + '.', true);
             }
-            if (Date.now() >= deadline) return noAnswer(Date.now() >= closeAt ? attemptEnding : '');
+            if (Date.now() >= deadline) {
+                const reason = Date.now() >= closeAt ? attemptEnding : '';
+                // The answer claim was not published in time: give up regardless.
+                if (timedOut) return noAnswer(reason);
+                // Winning the claim stops the worker from consuming an input nothing would read.
+                if (await claimForServer(id, '${OPERATOR_QUESTION_CLAIM_TIMED_OUT}')) return noAnswer(reason);
+                // Lost to the worker's answer (or this call's cancellation): wait for it to be published.
+                timedOut = true;
+                deadline = Date.now() + answerPublishMs;
+                continue;
+            }
             await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
         }
         return text('The question was cancelled.', true);
@@ -277,7 +313,7 @@ input.on('line', async line => {
             if (wait && !wait.cancelling) {
                 wait.cancelling = true;
                 // Losing the claim to the worker's answer keeps the call waiting for that answer.
-                if (await claimCancelled(wait.id)) wait.cancelled = true;
+                if (await claimForServer(wait.id, '${OPERATOR_QUESTION_CLAIM_CANCELLED}')) wait.cancelled = true;
             }
             return;
         }

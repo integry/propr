@@ -430,6 +430,88 @@ describe('ask_operator tool', () => {
     assert.equal(result.content[0].text, 'The operator answered:\nPublished late.');
   });
 
+  test('a server timeout during a slow blocker report closes the question and leaves the input unconsumed', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    // The worker's own wait is the full minute; the server's deadline passes while the report is awaited.
+    const { ask } = startServer(launch, { PROPR_OPERATOR_MAX_WAIT_MS: '300', PROPR_OPERATOR_GRACE_MS: '0' });
+    const control = recordingControl(4);
+    const call = ask({ question: 'Slow to report?' });
+    let serverReturned = false;
+    void call.then(() => { serverReturned = true; });
+    const report = control.reportBlocker;
+    control.reportBlocker = async blocker => {
+      await until(() => serverReturned ? true : undefined);
+      return report(blocker);
+    };
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-server-timeout');
+    await until(async () => {
+      await questions.sync('turn-1');
+      return control.reports.length ? true : undefined;
+    });
+    const result = await call;
+    assert.equal(result.isError, undefined);
+    assert.match(result.content[0].text, /^No answer from the operator/);
+    const id = control.reports[0].questions?.[0].id;
+    assert.equal(readFileSync(path.join(launch.exchangeDir, 'requests', `${id}.claim`), 'utf8'), 'timed_out');
+    assert.equal(readdirSync(path.join(launch.exchangeDir, 'requests')).some(name => name.endsWith('.tmp')), false);
+    // The sync that reported it also closed it.
+    assert.equal(questions.waiting, 0);
+    assert.deepEqual(control.resolved, [{ requestKey: control.reports[0].requestKey, resolution: 'question_timed_out' }]);
+
+    assert.equal(await questions.answer({ id: 'after-timeout', message: 'Yes.', sequence: 5 }, 'turn-1'), false);
+    assert.deepEqual(control.delivered, []);
+    assert.equal(existsSync(path.join(launch.exchangeDir, 'responses', `${id}.json`)), false);
+  });
+
+  test('an input routed after a server timeout the worker has not synced is not consumed', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { ask } = startServer(launch, { PROPR_OPERATOR_MAX_WAIT_MS: '1500', PROPR_OPERATOR_GRACE_MS: '0' });
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-server-timeout-answer');
+    const call = ask({ question: 'Timed out unseen?' });
+    const report = await reported(questions, control);
+    assert.equal(questions.waiting, 1);
+    assert.match((await call).content[0].text, /^No answer from the operator/);
+
+    // No sync between the server's timeout and the input: answer reconciles first.
+    assert.equal(await questions.answer({ id: 'input', message: 'Too late.', sequence: 5 }, 'turn-1'), false);
+    assert.deepEqual(control.delivered, []);
+    assert.deepEqual(control.resolved, [{ requestKey: report.requestKey, resolution: 'question_timed_out' }]);
+    assert.equal(existsSync(path.join(launch.exchangeDir, 'responses', `${report.questions?.[0].id}.json`)), false);
+  });
+
+  test('a question the server timed out before the worker discovered it never becomes a blocker', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { ask } = startServer(launch, { PROPR_OPERATOR_MAX_WAIT_MS: '150', PROPR_OPERATOR_GRACE_MS: '0' });
+    const control = recordingControl(4);
+    const questions = new ClaudeOperatorQuestions(launch, control, 'session-server-timeout-early');
+    assert.match((await ask({ question: 'Discovered late?' })).content[0].text, /^No answer from the operator/);
+    await questions.sync('turn-1');
+    assert.equal(control.reports.length, 0);
+    assert.equal(questions.waiting, 0);
+  });
+
+  test('a server deadline that loses the claim to an answer waits for the answer', async () => {
+    const launch = await createOperatorQuestionExchange(60_000, root);
+    const { ask } = startServer(launch, { PROPR_OPERATOR_MAX_WAIT_MS: '300', PROPR_OPERATOR_GRACE_MS: '0' });
+    const call = ask({ question: 'Answered at the deadline?' });
+    const requests = path.join(launch.exchangeDir, 'requests');
+    const name = await until(() => readdirSync(requests).find(entry => entry.endsWith('.json')));
+    const id = name.slice(0, -'.json'.length);
+    // The worker's answer path claimed it before the deadline but publishes after it.
+    writeFileSync(path.join(requests, `${id}.claim`), 'answered', { flag: 'wx' });
+    const pending = Symbol('pending');
+    const early = await Promise.race([call, new Promise(resolve => setTimeout(() => resolve(pending), 1_500))]);
+    assert.equal(early, pending);
+
+    const responses = path.join(launch.exchangeDir, 'responses');
+    writeFileSync(path.join(responses, `.${id}.tmp`), JSON.stringify({ status: 'answered', answer: 'Just in time.' }));
+    renameSync(path.join(responses, `.${id}.tmp`), path.join(responses, `${id}.json`));
+    const result = await call;
+    assert.equal(result.content[0].text, 'The operator answered:\nJust in time.');
+    assert.equal(readFileSync(path.join(requests, `${id}.claim`), 'utf8'), 'answered');
+  });
+
   test('attempt end closes open questions and the exchange is removed', async () => {
     const launch = await createOperatorQuestionExchange(60_000, root);
     const { ask } = startServer(launch);
