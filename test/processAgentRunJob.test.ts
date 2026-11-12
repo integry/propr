@@ -78,6 +78,7 @@ interface Harness {
   taskState: () => string | null;
   executeTask: ReturnType<typeof mock.fn>;
   listPreviousReports: ReturnType<typeof mock.fn>;
+  listLatestReports: ReturnType<typeof mock.fn>;
   buildPrompt: ReturnType<typeof mock.fn>;
   prepareWorkspace: ReturnType<typeof mock.fn>;
   cleanup: ReturnType<typeof mock.fn>;
@@ -126,6 +127,7 @@ function harness(options: {
     summary: '## Summary\nTwo dependencies are outdated.',
   })));
   const listPreviousReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Old report' }]);
+  const listLatestReports = mock.fn(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Old report' }]);
   const buildPrompt = mock.fn(() => 'PROMPT');
   const prepareWorkspace = mock.fn(options.prepare ?? (async () => ({
     worktreePath: '/tmp/worktree', branchName: 'agent-run/run-1',
@@ -141,12 +143,13 @@ function harness(options: {
   return {
     run: () => current,
     taskState: () => task,
-    transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified, evaluated,
+    transitions, stateCalls, executeTask, listPreviousReports, listLatestReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified, evaluated,
     deps: {
       getRun: async () => current,
       transitionRun,
       validateDefinition: async () => options.invalid ?? null,
       listPreviousReports: listPreviousReports as unknown as AgentRunProcessorDeps['listPreviousReports'],
+      listLatestReports: listLatestReports as unknown as AgentRunProcessorDeps['listLatestReports'],
       stateManager: () => ({
         createTaskStateIfAbsent: record('create'),
         getTaskState: async () => (task === null ? null : { state: task }),
@@ -242,6 +245,8 @@ describe('processAgentRunJob', () => {
     // Only the novelty check reads previous reports: the latest to compare with, and the
     // run ids either report's prompt could have listed.
     assert.deepEqual(h.listPreviousReports.mock.calls.map(call => call.arguments), [['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, beforeCreatedAt: NOW, excludeRunId: 'run-1' }]]);
+    // The report to compare with is the one stored last, with no creation-time boundary.
+    assert.deepEqual(h.listLatestReports.mock.calls.map(call => call.arguments), [['def-1', { limit: MAX_AUTOMATION_PREVIOUS_REPORTS + 1, excludeRunId: 'run-1' }]]);
   });
 
   for (const state of ['cancelled', 'skipped', 'deferred'] as const) {
@@ -1211,7 +1216,7 @@ describe('report novelty', () => {
 
   test('the report is stored with its normalised hash and novelty, then the streak is checked', async () => {
     const h = harness({ execute: reportWith(`${BODY}\nChecked 2026-11-11.`) });
-    h.listPreviousReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Something else entirely, said at length.' }]);
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: 'Something else entirely, said at length.' }]);
     await createAgentRunProcessor(h.deps)(job);
     const reported = h.transitions.find(t => t.to === 'report_ready');
     assert.equal(reported?.patch.reportNovelty, 'new');
@@ -1222,10 +1227,20 @@ describe('report novelty', () => {
 
   test('the same report as the previous run, apart from its date and run id, is unchanged', async () => {
     const h = harness({ execute: reportWith(`${BODY}\nRun run-1 on 2026-11-11.`) });
-    h.listPreviousReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: `${BODY}\n\nRun run-0 on 2026-11-10.` }]);
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 1000, report: `${BODY}\n\nRun run-0 on 2026-11-10.` }]);
     await createAgentRunProcessor(h.deps)(job);
     assert.equal(h.run().reportNovelty, 'unchanged');
     assert.equal(h.run().state, 'completed');
+  });
+
+  test('the comparison uses the report stored last, not the prompt history (F8)', async () => {
+    // The prompt history holds an older report A; the report stored last, by a run whose
+    // acting step then failed or one created after this run, already said B.
+    const h = harness({ execute: reportWith(`${BODY}\nRun run-1.`) });
+    h.listPreviousReports.mock.mockImplementation(async () => [{ runId: 'run-0', reportedAt: NOW - 2000, report: 'Report A, about something else entirely.' }]);
+    h.listLatestReports.mock.mockImplementation(async () => [{ runId: 'run-2', reportedAt: NOW - 1000, report: `${BODY}\nRun run-2.` }]);
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().reportNovelty, 'unchanged');
   });
 
   test('run ids quoted from earlier reports count as volatile; other ids, such as an incident, do not', async () => {
@@ -1240,11 +1255,13 @@ describe('report novelty', () => {
     const listEarlier = async (_definitionId: string, { limit }: { limit: number }) => earlier.slice(0, limit);
     const same = harness({ execute: reportWith(incident(INCIDENT_A, 'run-0')) });
     same.listPreviousReports.mock.mockImplementation(listEarlier);
+    same.listLatestReports.mock.mockImplementation(listEarlier);
     await createAgentRunProcessor(same.deps)(job);
     assert.equal(same.run().reportNovelty, 'unchanged');
 
     const otherIncident = harness({ execute: reportWith(incident(INCIDENT_B, 'run-0')) });
     otherIncident.listPreviousReports.mock.mockImplementation(listEarlier);
+    otherIncident.listLatestReports.mock.mockImplementation(listEarlier);
     await createAgentRunProcessor(otherIncident.deps)(job);
     assert.equal(otherIncident.run().reportNovelty, 'new');
   });
@@ -1258,12 +1275,12 @@ describe('report novelty', () => {
 
   test('without a previous report the report is new; an unreadable previous report leaves the flags null', async () => {
     const first = harness({ execute: reportWith(BODY) });
-    first.listPreviousReports.mock.mockImplementation(async () => []);
+    first.listLatestReports.mock.mockImplementation(async () => []);
     await createAgentRunProcessor(first.deps)(job);
     assert.equal(first.run().reportNovelty, 'new');
 
     const unreadable = harness({ execute: reportWith(BODY), run: storedRun({ definitionSnapshot: definition({ includePreviousReports: false }) }) });
-    unreadable.listPreviousReports.mock.mockImplementation(async () => { throw new Error('database unavailable'); });
+    unreadable.listLatestReports.mock.mockImplementation(async () => { throw new Error('database unavailable'); });
     const result = await createAgentRunProcessor(unreadable.deps)(job);
     assert.equal(result.status, 'complete');
     assert.equal(unreadable.run().state, 'completed');

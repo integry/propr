@@ -304,7 +304,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
   const evaluateStreak = services.evaluateStreak ?? ((run: StoredAgentRun) => evaluateUnproductiveStreakQuietly(run, {
     findStreak: (definitionId, threshold) => findUnproductiveScheduledStreak(definitionId, threshold, storeDeps),
     getDefinition: (definitionId, owner) => getAgentDefinition(definitionId, owner, storeDeps),
-    pauseSchedule: (definitionId, key) => pauseScheduleForUnproductiveStreak(definitionId, key, storeDeps),
+    pauseSchedule: (definitionId, pause) => pauseScheduleForUnproductiveStreak(definitionId, pause, storeDeps),
     findNotification: key => findUnproductiveStreakNotification(key, storeDeps),
   }));
 

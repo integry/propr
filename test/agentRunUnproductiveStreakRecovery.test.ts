@@ -15,6 +15,7 @@ import {
   findUnproductiveScheduledStreak,
   findUnproductiveStreakNotification,
   pauseScheduleForUnproductiveStreak,
+  type UnproductiveStreakPause,
 } from '../packages/core/src/services/agents/agentRunProductivity.ts';
 
 const { evaluateUnproductiveStreak, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
@@ -132,7 +133,7 @@ describe('streak identity past the scan limit (F5)', () => {
       findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
       findNotification: async (key: string) => seen.get(key) ?? null,
       getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
-      pauseSchedule: (definitionId: string, key: string) => pauseScheduleForUnproductiveStreak(definitionId, key, deps()),
+      pauseSchedule: (definitionId: string, pause: UnproductiveStreakPause) => pauseScheduleForUnproductiveStreak(definitionId, pause, deps()),
       createEvent: (async (event: { deduplicationKey: string }) => {
         if (!seen.has(event.deduplicationKey)) { events.push(event); seen.set(event.deduplicationKey, { schedulePaused: false }); }
         return event;
@@ -171,10 +172,10 @@ describe('unfinished schedule pause (F4)', () => {
       findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
       findNotification: (key: string) => findUnproductiveStreakNotification(key, { database }),
       getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
-      pauseSchedule: async (definitionId: string, key: string) => {
-        pauseCalls.push(key);
+      pauseSchedule: async (definitionId: string, pause: UnproductiveStreakPause) => {
+        pauseCalls.push(pause.deduplicationKey);
         if (pauseFailures > 0) { pauseFailures -= 1; throw new Error('database unavailable'); }
-        return pauseScheduleForUnproductiveStreak(definitionId, key, deps());
+        return pauseScheduleForUnproductiveStreak(definitionId, pause, deps());
       },
       createEvent: inbox.createNotificationEvent.bind(inbox) as never,
     };
@@ -284,35 +285,146 @@ describe('unfinished schedule pause (F4)', () => {
     assert.equal((await pauseRecord()).unproductive_paused_streak, null);
   });
 
+  /** The streak of two unproductive runs since `streakKey`, as the evaluation found it. */
+  const pauseFor = (streakKey = 'start') => ({ deduplicationKey: unproductiveStreakDeduplicationKey(definition.id, streakKey), streakKey, threshold: 2 });
+
   test('the pause transaction reads the opt-in itself (F7)', async () => {
+    await insertRuns(2);
     await database('agent_definitions').where({ id: definition.id }).update({ pending_schedule_slot: NOW });
     await optOut();
-    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, key(), deps()), 'opted_out');
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, pauseFor(), deps()), 'opted_out');
     const record = await pauseRecord();
     assert.equal(Boolean(record.schedule_enabled), true);
     assert.equal(Number(record.pending_schedule_slot), NOW);
     assert.equal(record.unproductive_paused_streak, null);
     // Opting back in lets the same streak's pause be made; once made it stays made.
     await updateAgentDefinition(definition.id, 'alice', { pauseWhenUnproductive: true }, deps());
-    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, key(), deps()), 'disabled');
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, pauseFor(), deps()), 'disabled');
     await optOut();
-    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, key(), deps()), 'done_before');
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, pauseFor(), deps()), 'done_before');
   });
 
   test('the pause record is written with the schedule change, once per streak', async () => {
-    const pauseKey = key();
+    await insertRuns(2);
     const results = await Promise.all([
-      pauseScheduleForUnproductiveStreak(definition.id, pauseKey, deps()),
-      pauseScheduleForUnproductiveStreak(definition.id, pauseKey, deps()),
+      pauseScheduleForUnproductiveStreak(definition.id, pauseFor(), deps()),
+      pauseScheduleForUnproductiveStreak(definition.id, pauseFor(), deps()),
     ]);
     assert.deepEqual([...results].sort(), ['disabled', 'done_before']);
     const paused = await getAgentDefinition(definition.id, 'alice', { database });
     assert.equal(paused?.scheduleEnabled, false);
     assert.equal(paused?.revision, definition.revision + 1);
     await updateAgentDefinition(definition.id, 'alice', { scheduleEnabled: true }, deps());
-    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, pauseKey, deps()), 'done_before');
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, pauseFor(), deps()), 'done_before');
     assert.equal(await scheduleEnabled(), true);
-    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, unproductiveStreakDeduplicationKey(definition.id, 'other'), deps()), 'disabled',
+    const [productive] = await insertRuns(1, { novelty: 'new' });
+    await insertRuns(2);
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, pauseFor(productive), deps()), 'disabled',
       'a new streak is paused again');
+  });
+});
+
+describe('streak ended before the pause (F9)', () => {
+  beforeEach(async () => {
+    definition = (await updateAgentDefinition(definition.id, 'alice', { pauseWhenUnproductive: true }, deps()))!;
+  });
+
+  async function scheduledRun(): Promise<StoredAgentRun> {
+    clock += 60_000;
+    const { run } = await createAgentRun({ definition, trigger: 'schedule' }, deps());
+    await transitionAgentRun(run.id, ['queued'], 'running', { reportTaskId: `agent-run-${run.id}-report` }, deps());
+    return (await transitionAgentRun(run.id, ['running'], 'report_ready', { report: 'A report', reportHash: 'f'.repeat(64), reportNovelty: 'unchanged' }, deps()))!;
+  }
+  const unproductiveRun = async () => (await transitionAgentRun((await scheduledRun()).id, ['report_ready'], 'completed', {}, deps()))!;
+  /** A newer scheduled run whose acting step is still running: pending, so the streak skips it. */
+  const actingRun = async () => (await transitionAgentRun((await scheduledRun()).id, ['report_ready'], 'acting', {}, deps()))!;
+  const completeProductively = async (run: StoredAgentRun) => {
+    assert.ok(await transitionAgentRun(run.id, ['acting'], 'completed', { actionSummary: 'Labelled 2 issues', actingMutations: 2 }, deps()));
+  };
+
+  async function realInbox({ onAnnounce = async () => undefined }: { onAnnounce?: () => Promise<unknown> } = {}) {
+    const { NotificationService } = await import('../packages/core/src/services/notificationService.ts');
+    const inbox = new NotificationService({ database, publishUpdate: async () => { await onAnnounce(); } });
+    let pauseFailures = 0;
+    const pauseCalls: UnproductiveStreakPause[] = [];
+    const evaluate = {
+      loadThreshold: async () => 2,
+      findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
+      findNotification: (key: string) => findUnproductiveStreakNotification(key, { database }),
+      getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
+      pauseSchedule: async (definitionId: string, pause: UnproductiveStreakPause) => {
+        pauseCalls.push(pause);
+        if (pauseFailures > 0) { pauseFailures -= 1; throw new Error('database unavailable'); }
+        return pauseScheduleForUnproductiveStreak(definitionId, pause, deps());
+      },
+      createEvent: inbox.createNotificationEvent.bind(inbox) as never,
+    };
+    return { evaluate, pauseCalls, failNextPause: () => { pauseFailures = 1; } };
+  }
+
+  const definitionRecord = async () => (await database('agent_definitions').where({ id: definition.id })
+    .first('pending_schedule_slot', 'unproductive_paused_streak', 'schedule_enabled'));
+
+  test('a newer run completing productively while the Inbox item is delivered keeps the schedule', async () => {
+    await database('agent_definitions').where({ id: definition.id }).update({ pending_schedule_slot: NOW + 86_400_000 });
+    await unproductiveRun();
+    const acting = await actingRun();
+    let completed = 0;
+    const { evaluate, pauseCalls } = await realInbox({ onAnnounce: async () => { completed += 1; await completeProductively(acting); } });
+    const last = await unproductiveRun();
+    const found = await findUnproductiveScheduledStreak(definition.id, 2, { database });
+    assert.deepEqual([found.reachedThreshold, found.streakKey], [true, 'start'], 'the acting run is skipped as pending');
+
+    assert.equal(await evaluateUnproductiveStreak(last, evaluate), 'notified');
+    assert.equal(completed, 1, 'the productive completion committed during notification delivery');
+    assert.deepEqual(pauseCalls.map(pause => pause.streakKey), ['start'], 'the pause was tried for the streak the evaluation found');
+    const record = await definitionRecord();
+    assert.equal(Boolean(record.schedule_enabled), true);
+    assert.equal(record.unproductive_paused_streak, null, 'the streak is not claimed');
+    assert.equal(Number(record.pending_schedule_slot), NOW + 86_400_000, 'the pending slot is kept');
+    // The productive run started a new streak, which a later run may still pause for.
+    assert.equal((await findUnproductiveScheduledStreak(definition.id, 2, { database })).streakKey, acting.id);
+  });
+
+  test('a recovered pause is not finished once a newer run ended the streak', async () => {
+    const { evaluate, failNextPause } = await realInbox();
+    await unproductiveRun();
+    const acting = await actingRun();
+    failNextPause();
+    await assert.rejects(evaluateUnproductiveStreak(await unproductiveRun(), evaluate), /database unavailable/);
+    const key = unproductiveStreakDeduplicationKey(definition.id, 'start');
+    assert.deepEqual(await findUnproductiveStreakNotification(key, { database }), { schedulePaused: true }, 'the item claims the pause');
+
+    // The recovery run finds the old streak, then the acting run completes productively.
+    const recovering = await unproductiveRun();
+    const racing = {
+      ...evaluate,
+      getDefinition: async (definitionId: string, ownerId: string) => {
+        const read = await evaluate.getDefinition(definitionId, ownerId);
+        await completeProductively(acting);
+        return read;
+      },
+    };
+    assert.equal(await evaluateUnproductiveStreak(recovering, racing), null);
+    const record = await definitionRecord();
+    assert.equal(Boolean(record.schedule_enabled), true);
+    assert.equal(record.unproductive_paused_streak, null);
+  });
+
+  test('the pause transaction rechecks the streak identity and threshold', async () => {
+    await database('agent_definitions').where({ id: definition.id }).update({ pending_schedule_slot: NOW });
+    await insertRuns(1);
+    const start = { deduplicationKey: unproductiveStreakDeduplicationKey(definition.id, 'start'), streakKey: 'start' };
+    // One unproductive run does not reach a threshold of two.
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, { ...start, threshold: 2 }, deps()), 'streak_ended');
+    await insertRuns(1);
+    // A productive run ended the streak the caller found.
+    await insertRuns(1, { novelty: 'new' });
+    await insertRuns(2);
+    assert.equal(await pauseScheduleForUnproductiveStreak(definition.id, { ...start, threshold: 2 }, deps()), 'streak_ended');
+    const record = await definitionRecord();
+    assert.equal(Boolean(record.schedule_enabled), true);
+    assert.equal(record.unproductive_paused_streak, null, 'the claim is rolled back');
+    assert.equal(Number(record.pending_schedule_slot), NOW, 'the pending slot is kept');
   });
 });

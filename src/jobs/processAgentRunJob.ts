@@ -8,7 +8,6 @@ import {
     getAgentRunById,
     getAuthenticatedOctokit,
     getStateManager,
-    listPreviousReports,
     logger,
     transitionAgentRun,
     UsageLimitError,
@@ -27,7 +26,7 @@ import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
-import { reportNoveltyPatch } from './agentRuns/reportNovelty.js';
+import { defaultReportNoveltyLookups, reportNoveltyPatch, type ReportNoveltyLookups } from './agentRuns/reportNovelty.js';
 import { evaluateUnproductiveStreakQuietly } from './agentRuns/unproductiveStreak.js';
 import { definitionReadsRepositories, prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import type { GitHubToken } from './githubTypes.js';
@@ -62,11 +61,11 @@ interface RunContext { runId: string; taskId: string; stateManager: AgentRunStat
 
 export type AgentRunStateManager = Pick<WorkerStateManager, 'createTaskStateIfAbsent' | 'getTaskState' | 'updateTaskState' | 'markTaskCompleted' | 'markTaskFailed' | 'markTaskCancelled'>;
 
-export interface AgentRunProcessorDeps {
+/** `listPreviousReports` is the prompt history; novelty also reads `listLatestReports`. */
+export interface AgentRunProcessorDeps extends ReportNoveltyLookups {
     getRun: (runId: string) => Promise<StoredAgentRun | undefined>;
     transitionRun: typeof transitionAgentRun;
     validateDefinition: (definition: StoredAgentDefinition) => Promise<string | null>;
-    listPreviousReports: typeof listPreviousReports;
     stateManager: () => AgentRunStateManager;
     /** Installation token and octokit used for cloning; read-only scoped inside agent containers. */
     getGitHubAccess: () => Promise<{ token: string; octokit: unknown }>;
@@ -105,7 +104,7 @@ export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
     getRun: runId => getAgentRunById(runId),
     transitionRun: transitionAgentRun,
     validateDefinition: definition => validateAgentDefinitionRuntime(definition),
-    listPreviousReports,
+    ...defaultReportNoveltyLookups,
     stateManager: () => getStateManager(),
     getGitHubAccess: async () => {
         const octokit = await getAuthenticatedOctokit();
@@ -539,7 +538,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             // before the report is stored, since a reported run can no longer be cancelled.
             const stoppedBeforeReport = await followCancelledTask({ runId, taskId, stateManager, log }, correlationId, 'before its report was stored');
             if (stoppedBeforeReport) return stoppedBeforeReport;
-            const novelty = await reportNoveltyPatch(run, report, { listPrevious: deps.listPreviousReports, log });
+            const novelty = await reportNoveltyPatch(run, report, deps, log);
             const reported = await deps.transitionRun(runId, ['running'], 'report_ready', { report, ...novelty });
             if (!reported) {
                 return discardLateReport({ runId, taskId, stateManager, log }, correlationId);

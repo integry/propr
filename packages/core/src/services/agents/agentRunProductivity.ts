@@ -156,9 +156,25 @@ export async function findUnproductiveStreakNotification(
 /**
  * `disabled` turned the schedule off; `already_off` found it off; `done_before`
  * found this streak's pause already carried out; `opted_out` found the
- * definition no longer set to pause when unproductive, and changed nothing.
+ * definition no longer set to pause when unproductive, and changed nothing;
+ * `streak_ended` found the streak no longer current (a newer scheduled run
+ * turned out productive, so it is not the definition's streak any more), and
+ * changed nothing.
  */
-export type UnproductiveStreakPauseResult = 'disabled' | 'already_off' | 'done_before' | 'opted_out';
+export type UnproductiveStreakPauseResult = 'disabled' | 'already_off' | 'done_before' | 'opted_out' | 'streak_ended';
+
+/** The streak an evaluation decided to pause for. */
+export interface UnproductiveStreakPause {
+  /** The streak's Inbox deduplication key, recorded as the pause made. */
+  deduplicationKey: string;
+  /** The streak's identity when the evaluation found it (`UnproductiveStreak.streakKey`). */
+  streakKey: string;
+  /** The threshold the evaluation found the streak to have reached. */
+  threshold: number;
+}
+
+/** Rolls back the claimed pause when the streak is no longer current. */
+class StreakEndedBeforePause extends Error {}
 
 /**
  * Turns the schedule off for one streak and records that streak's pause in the
@@ -167,34 +183,48 @@ export type UnproductiveStreakPauseResult = 'disabled' | 'already_off' | 'done_b
  * not overridden by later runs of the same streak. The opt-in is read inside
  * the transaction, not taken from the caller: an owner who turns
  * `pauseWhenUnproductive` off while the evaluation is under way (say, while the
- * Inbox item is delivered) is respected. Like `disableAgentDefinitionSchedule`,
- * the schedule change counts as an edit.
+ * Inbox item is delivered) is respected. The streak is read again inside the
+ * transaction too: a newer scheduled run that turned out productive meanwhile
+ * (an acting step that was still running when the streak was found) ends the
+ * streak, and the schedule is kept. Like `disableAgentDefinitionSchedule`, the
+ * schedule change counts as an edit.
  */
 export async function pauseScheduleForUnproductiveStreak(
   definitionId: string,
-  streakDeduplicationKey: string,
+  { deduplicationKey, streakKey, threshold }: UnproductiveStreakPause,
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<UnproductiveStreakPauseResult> {
-  return database.transaction(async trx => {
-    // A conditional write, so of two concurrent evaluations only one carries out the pause,
-    // and only while the definition still opts in.
-    const claimed = await trx('agent_definitions').where({ id: definitionId, pause_when_unproductive: true })
-      .where(owed => owed.whereNull('unproductive_paused_streak').orWhereNot('unproductive_paused_streak', streakDeduplicationKey))
-      .update({ unproductive_paused_streak: streakDeduplicationKey });
-    if (Number(claimed) === 0) {
-      const current = await trx('agent_definitions').where({ id: definitionId })
-        .first<{ pause_when_unproductive: boolean | number | null; unproductive_paused_streak: string | null } | undefined>(
-          'pause_when_unproductive', 'unproductive_paused_streak');
-      // A pause already made stays recorded as made, whatever the opt-in says now.
-      if (current?.unproductive_paused_streak === streakDeduplicationKey) return 'done_before';
-      return current && !current.pause_when_unproductive ? 'opted_out' : 'done_before';
-    }
-    await trx('agent_definitions').where({ id: definitionId }).whereNotNull('pending_schedule_slot')
-      .update({ pending_schedule_slot: null, pending_schedule_attempted_at: null });
-    const updated = await trx('agent_definitions').where({ id: definitionId, schedule_enabled: true })
-      .update({ schedule_enabled: false, next_run_at: null, revision: trx.raw('revision + 1'), updated_at: now() });
-    return Number(updated) > 0 ? 'disabled' : 'already_off';
-  });
+  try {
+    return await database.transaction(async trx => {
+      // A conditional write, so of two concurrent evaluations only one carries out the pause,
+      // and only while the definition still opts in. Being the transaction's first statement,
+      // it also takes SQLite's single write lock: no run can change from here to the commit.
+      const claimed = await trx('agent_definitions').where({ id: definitionId, pause_when_unproductive: true })
+        .where(owed => owed.whereNull('unproductive_paused_streak').orWhereNot('unproductive_paused_streak', deduplicationKey))
+        .update({ unproductive_paused_streak: deduplicationKey });
+      if (Number(claimed) === 0) {
+        const current = await trx('agent_definitions').where({ id: definitionId })
+          .first<{ pause_when_unproductive: boolean | number | null; unproductive_paused_streak: string | null } | undefined>(
+            'pause_when_unproductive', 'unproductive_paused_streak');
+        // A pause already made stays recorded as made, whatever the opt-in says now.
+        if (current?.unproductive_paused_streak === deduplicationKey) return 'done_before';
+        return current && !current.pause_when_unproductive ? 'opted_out' : 'done_before';
+      }
+      // Read under that lock, so a run completing productively either committed before this
+      // read (and is seen) or waits until the pause is committed.
+      const streak = await findUnproductiveScheduledStreak(definitionId, threshold, { database: trx });
+      if (streak.streakKey !== streakKey || !streak.reachedThreshold) throw new StreakEndedBeforePause();
+      await trx('agent_definitions').where({ id: definitionId }).whereNotNull('pending_schedule_slot')
+        .update({ pending_schedule_slot: null, pending_schedule_attempted_at: null });
+      const updated = await trx('agent_definitions').where({ id: definitionId, schedule_enabled: true })
+        .update({ schedule_enabled: false, next_run_at: null, revision: trx.raw('revision + 1'), updated_at: now() });
+      return Number(updated) > 0 ? 'disabled' : 'already_off';
+    });
+  } catch (error) {
+    // The claim is rolled back with the transaction: the streak's pause stays unmade.
+    if (error instanceof StreakEndedBeforePause) return 'streak_ended';
+    throw error;
+  }
 }
 
 /** True when an Inbox item with this deduplication key was persisted. */

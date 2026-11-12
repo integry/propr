@@ -17,6 +17,7 @@ import {
   hasNotificationEvent,
   loadUnproductiveRunThreshold,
   pauseScheduleForUnproductiveStreak,
+  type UnproductiveStreakPause,
 } from '../packages/core/src/services/agents/agentRunProductivity.ts';
 
 const { evaluateUnproductiveStreak, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
@@ -224,7 +225,7 @@ describe('unproductive scheduled streak', () => {
           findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
           findNotification: async (key: string) => seen.get(key) ?? null,
           getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
-          pauseSchedule: (definitionId: string, key: string) => pauseScheduleForUnproductiveStreak(definitionId, key, { database, now: () => clock }),
+          pauseSchedule: (definitionId: string, pause: UnproductiveStreakPause) => pauseScheduleForUnproductiveStreak(definitionId, pause, { database, now: () => clock }),
           // Mirrors the Inbox: a repeated deduplication key does not create a second item.
           createEvent: (async (event: Event, recipients: unknown) => {
             if (!seen.has(event.deduplicationKey)) events.push({ event, recipients });
