@@ -81,7 +81,7 @@ Mutations accept an idempotency key, so retrying a create or input never starts 
 
 ## When a goal needs you
 
-A goal that is waiting on you shows a **Needs you** panel in the goal console, a badge in the goal list, an item in the dashboard's *Needs attention* list, and an entry in `propr goal attention` and MCP `list_goal_attention`. All of them read one shared projection, so they agree on what is needed, why, and which action resolves it.
+A goal that is waiting on you shows a **Needs you** panel in the goal console, a badge in the goal list, an item in the dashboard's *Needs attention* list, and an entry in `propr goal attention` and MCP `list_goal_attention`. All of them read one shared projection, so they agree on what is needed, why, and which action resolves it. A question or approval the agent raises also creates one Inbox notification (and a push, a Voice Briefing item and an activity-digest blocker) that opens the goal; the Inbox shows a bounded, redacted summary of the question, push text stays generic, and your per-kind Inbox and push preferences and quiet hours for *Task* notifications apply. The notification is dismissed once the question is answered, times out or its attempt ends. `propr goal wait --until blocked` and MCP `wait_goal` with `until: "blocked"` return as soon as a question opens.
 
 Only explicit signals count:
 

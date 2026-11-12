@@ -810,12 +810,14 @@ result either way:
 | `paused` | A pause the worker confirmed with no queued resume. A pause request is not `paused`. |
 | `terminal` | Any of completed, failed or cancelled. |
 | `checkpoint` | A checkpoint published after the cursor — never an older one. |
-| omitted | Any new durable goal event after the cursor. |
+| `blocked` | The goal's agent opened a question or approval for you. Without a cursor, a still-open blocker of the current attempt matches immediately. Read the question with `get_goal` or `list_goal_attention`. |
+| omitted | Any new durable goal event after the cursor, including a blocker opening or closing. |
 
 The result carries `outcome` (`matched`, `timed_out` or `unreachable`),
 `cursor`, `condition`, `matchedImmediately`, the triggering `event` (`kind`
-`lifecycle` with `state`/`previousState`, or `checkpoint` with the commit and
-pull request) and the current `goal` projection (`lifecycleState`,
+`lifecycle` with `state`/`previousState`, `checkpoint` with the commit and
+pull request, or `blocker` with `blocker.id`, `blocker.status` (`open`,
+`resolved` or `superseded`) and `blocker.category`) and the current `goal` projection (`lifecycleState`,
 `requestedState`, `resultState`, `goalCompleted`, `pauseConfirmed`, checkpoint
 count, final PR). `timed_out` is not a goal failure: call `wait_goal` again with
 the returned cursor. The `goal` projection is current, so on a timeout it can

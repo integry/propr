@@ -183,6 +183,12 @@ export interface GoalBlockerRow {
 }
 
 export const GOAL_BLOCKER_SUMMARY_LIMIT = 1000;
+
+/**
+ * `metadata.event` of the Inbox card a newly opened goal blocker creates
+ * (`kind: 'task'`, with `metadata.goalId` and `metadata.blockerId`).
+ */
+export const GOAL_BLOCKER_NOTIFICATION_EVENT = 'goal.blocker_opened';
 export const GOAL_BLOCKER_QUESTION_LIMIT = 1000;
 export const GOAL_BLOCKER_HEADER_LIMIT = 200;
 export const GOAL_BLOCKER_OPTION_LIMIT = 200;
