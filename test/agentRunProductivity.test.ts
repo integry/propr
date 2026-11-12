@@ -5,7 +5,6 @@ import knex, { type Knex } from 'knex';
 import type { AutomationReportNovelty, AutomationRunTrigger } from '@propr/shared';
 import {
   createAgentDefinition,
-  disableAgentDefinitionSchedule,
   getAgentDefinition,
   updateAgentDefinition,
   type StoredAgentDefinition,
@@ -14,8 +13,10 @@ import { createAgentRun, getAgentRunById, transitionAgentRun, type StoredAgentRu
 import {
   agentRunProductivity,
   findUnproductiveScheduledStreak,
+  findUnproductiveStreakNotification,
   hasNotificationEvent,
   loadUnproductiveRunThreshold,
+  pauseScheduleForUnproductiveStreak,
 } from '../packages/core/src/services/agents/agentRunProductivity.ts';
 
 const { evaluateUnproductiveStreak, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
@@ -45,6 +46,7 @@ describe('productivity flags migration', () => {
       await migration.down(database);
       for (const column of ['report_hash', 'report_novelty', 'acting_mutations']) assert.equal(await database.schema.hasColumn('agent_runs', column), false, column);
       assert.equal(await database.schema.hasColumn('agent_definitions', 'pause_when_unproductive'), false);
+      assert.equal(await database.schema.hasColumn('agent_definitions', 'unproductive_paused_streak'), false);
 
       // A run recorded before the flags existed.
       const definitionRow = { id: 'def-old', owner_id: 'alice', name: 'Old', prompt: 'p', repositories: '[]', attachments: '[]', capabilities: '[]',
@@ -61,6 +63,7 @@ describe('productivity flags migration', () => {
       assert.equal(run?.reportNovelty, null);
       assert.equal(run?.actingMutations, null);
       assert.equal((await getAgentDefinition('def-old', 'alice', { database }))?.pauseWhenUnproductive, false);
+      assert.equal((await database('agent_definitions').where({ id: 'def-old' }).first()).unproductive_paused_streak, null);
 
       await migration.down(database);
       await migration.down(database); // safe to repeat
@@ -213,19 +216,21 @@ describe('unproductive scheduled streak', () => {
     type Event = Record<string, unknown> & { deduplicationKey: string; kind: string; target: Record<string, unknown>; title: string; body: string };
     function streakDeps(threshold = 3) {
       const events: Array<{ event: Event; recipients: unknown }> = [];
-      const seen = new Set<string>();
+      const seen = new Map<string, { schedulePaused: boolean }>();
       return {
         events,
         deps: {
           loadThreshold: async () => threshold,
           findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
-          hasNotification: async (key: string) => seen.has(key),
+          findNotification: async (key: string) => seen.get(key) ?? null,
           getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
-          disableSchedule: (definitionId: string) => disableAgentDefinitionSchedule(definitionId, { database, now: () => clock }),
+          pauseSchedule: (definitionId: string, key: string) => pauseScheduleForUnproductiveStreak(definitionId, key, { database, now: () => clock }),
           // Mirrors the Inbox: a repeated deduplication key does not create a second item.
           createEvent: (async (event: Event, recipients: unknown) => {
             if (!seen.has(event.deduplicationKey)) events.push({ event, recipients });
-            seen.add(event.deduplicationKey);
+            if (!seen.has(event.deduplicationKey)) {
+              seen.set(event.deduplicationKey, { schedulePaused: (event.metadata as { schedulePaused?: unknown } | undefined)?.schedulePaused === true });
+            }
             return event;
           }) as never,
         },
@@ -366,7 +371,7 @@ describe('unproductive scheduled streak', () => {
       const inbox = new NotificationService({ database, publishUpdate: async () => undefined });
       const evaluate = {
         ...streakDeps(2).deps,
-        hasNotification: (key: string) => hasNotificationEvent(key, { database }),
+        findNotification: (key: string) => findUnproductiveStreakNotification(key, { database }),
         createEvent: inbox.createNotificationEvent.bind(inbox) as never,
       };
       const key = unproductiveStreakDeduplicationKey(definition.id, 'start');

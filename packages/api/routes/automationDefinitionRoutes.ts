@@ -11,17 +11,17 @@ import {
   createAgentDefinition,
   createAgentRunCostGate,
   deleteAgentDefinitionUnlessRunInStates,
-  disableAgentDefinitionSchedule,
   enqueueAgentRunActionOrFail,
   evaluateProviderCapacity,
   findUnproductiveScheduledStreak,
+  findUnproductiveStreakNotification,
   getAgentDefinition,
   getAgentRun,
-  hasNotificationEvent,
   listAgentDefinitions,
   listAgentRuns,
   loadUsagePauseThreshold,
   logger,
+  pauseScheduleForUnproductiveStreak,
   transitionAgentRun,
   triggerAgentRun,
   updateAgentDefinition,
@@ -304,8 +304,8 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
   const evaluateStreak = services.evaluateStreak ?? ((run: StoredAgentRun) => evaluateUnproductiveStreakQuietly(run, {
     findStreak: (definitionId, threshold) => findUnproductiveScheduledStreak(definitionId, threshold, storeDeps),
     getDefinition: (definitionId, owner) => getAgentDefinition(definitionId, owner, storeDeps),
-    disableSchedule: definitionId => disableAgentDefinitionSchedule(definitionId, storeDeps),
-    hasNotification: key => hasNotificationEvent(key, storeDeps),
+    pauseSchedule: (definitionId, key) => pauseScheduleForUnproductiveStreak(definitionId, key, storeDeps),
+    findNotification: key => findUnproductiveStreakNotification(key, storeDeps),
   }));
 
   /**
