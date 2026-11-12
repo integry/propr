@@ -23,12 +23,19 @@ const { Redis } = await import('ioredis');
 const { spawnWithNetworkPolicy } = await import('../../../packages/core/src/claude/docker/dockerNetworkPolicy.js');
 import { spawn } from 'node:child_process';
 import { runWithExecutionAbortSignal } from '../../../packages/core/src/claude/docker/dockerExecutionOwnership.js';
+import { runAsAgentAdmissionParent, runWithAgentAdmissionParent } from '../../../packages/core/src/agents/agentRunNesting.js';
 // Unset keeps the unattributed launches the original admission tests use.
 const agentAlias = process.env.PROPR_TEST_AGENT_ALIAS || undefined;
 const controller = new AbortController();
 process.on('message', message => { if (message === 'cancel') controller.abort(new Error('fixture cancelled')); });
+// Nested-execution cases (#3480): register as a parent scope, or run on behalf of one.
+const nesting = <T>(operation: () => Promise<T>) => {
+    const register = process.env.PROPR_TEST_REGISTER_SCOPE;
+    const registered = () => register ? runAsAgentAdmissionParent(register, operation) : operation();
+    return process.env.PROPR_TEST_PARENT_SCOPE ? runWithAgentAdmissionParent(process.env.PROPR_TEST_PARENT_SCOPE, registered) : registered();
+};
 try {
-    await runWithExecutionAbortSignal(controller.signal, async () => {
+    await nesting(() => runWithExecutionAbortSignal(controller.signal, async () => {
         if (process.argv[2] === 'native') {
             const child = await spawnWithNetworkPolicy(['run', '--rm', 'fixture-agent'], args => spawn('docker', args), { agentAlias });
             await new Promise<void>((resolve, reject) => { child.once('close', () => resolve()); child.once('error', reject); });
@@ -39,7 +46,7 @@ try {
             await nested();
             if (process.argv[2] === 'fallback') await nested();
         }
-    });
+    }));
     process.send?.('done');
 } catch (error) { process.send?.({ error: String(error) }); }
 // Native cleanup releases the slot after `close`, without a handle the fixture

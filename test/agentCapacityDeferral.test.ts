@@ -328,7 +328,7 @@ test('a holder whose process died is recovered by the deferred jobs of its alias
     };
     // The holder's process dies: its renewal never completes and it never calls finish().
     const frozen = new Proxy(redis!, { get: (target, key) => key === 'eval'
-        ? (script: string, keys: number, ...args: (string | number)[]) => args[2] === 'renew' ? new Promise<never>(() => {}) : target.eval(script, keys, ...args)
+        ? (script: string, keys: number, ...args: (string | number)[]) => args[3] === 'renew' ? new Promise<never>(() => {}) : target.eval(script, keys, ...args)
         : Reflect.get(target, key, target) });
     const lease = 1_500;
     await prepareAdmittedAgent(['run', 'agent'], { agentAlias: 'local-llama', client: frozen, docker: recording('dead'), config: resolveAgentRunAdmission()!, pollMs: 10, leaseMs: lease });

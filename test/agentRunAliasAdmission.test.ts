@@ -292,7 +292,7 @@ test('crashed or lease-lost alias holders keep counting until removal is confirm
     // itself observes the recovering holder.
     const othersRecover = { ...client(), get: client().get.bind(client()), hgetall: client().hgetall.bind(client()), zadd: client().zadd.bind(client()), zrem: client().zrem.bind(client()),
         zremrangebyscore: client().zremrangebyscore.bind(client()), zcard: client().zcard.bind(client()),
-        eval: (script: string, keys: number, ...args: (string | number)[]) => args[2] === 'expired' ? Promise.resolve([]) : client().eval(script, keys, ...args) };
+        eval: (script: string, keys: number, ...args: (string | number)[]) => args[3] === 'expired' ? Promise.resolve([]) : client().eval(script, keys, ...args) };
     const blocked = waiting({ client: othersRecover, docker: runtime, config, agentAlias: 'cloud' });
     assert.equal(await blocked.reason, 'recovering');
     blocked.cancel(); await assert.rejects(blocked.admission);

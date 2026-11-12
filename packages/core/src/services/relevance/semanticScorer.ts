@@ -6,6 +6,7 @@ import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { nestedLaunchGate } from '../../agents/agentRunNesting.js';
 
 // --- Types ---
 
@@ -183,7 +184,10 @@ export async function scoreSemanticRelevance(
 
     // 4. Process each chunk in parallel
     const startTime = Date.now();
-    const chunkPromises = chunks.map(async (chunkContext, index) => {
+    // On behalf of a parent execution (an automation run's MCP search), at most
+    // the nested bound of chunks runs at once; the rest queue here (#3480).
+    const gate = nestedLaunchGate();
+    const chunkPromises = chunks.map((chunkContext, index) => gate(async () => {
       const prompt = buildSemanticRankingPrompt(userPrompt, chunkContext);
       const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
       const estimatedOutputTokens = 500;
@@ -310,7 +314,7 @@ export async function scoreSemanticRelevance(
 
         return [];
       }
-    });
+    }));
 
     const results = await Promise.all(chunkPromises);
 

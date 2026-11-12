@@ -1,5 +1,6 @@
 import type { VisualPreviewSettings } from './config/configManager.js';
 import { buildVisualPreviewPrompt } from './services/visualPreviewService.js';
+import { AGENT_ADMISSION_PARENT_ENV } from './agents/agentRunNesting.js';
 import {
     DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
     GOAL_LAUNCH_STRATEGIES,
@@ -106,6 +107,7 @@ const launchInstructions: Record<GoalLaunchStrategy, string> = {
         'Launch strategy — Agent orchestrates through ProPR:',
         'Drive delivery by deciding the decomposition and hierarchy yourself, creating GitHub issues, and starting and monitoring their implementation through ProPR.',
         'For a large delivery, organize the work into an epic PR and, when useful, sub-epic and issue PRs. You—not a ProPR planner—own every planning and hierarchy decision.',
+        `In the body of every GitHub issue you create for ProPR to implement, include this hidden line, with the value of the ${AGENT_ADMISSION_PARENT_ENV} environment variable: <!-- propr-parent-execution: <value> -->. It lets those tasks run under this goal's agent capacity while you wait for them.`,
     ].join('\n'),
 };
 
@@ -178,9 +180,14 @@ export function goalAttemptLabel(generation: number, claimId: string): string {
     return `${generation}:${claimId}`;
 }
 
-export function buildGoalPolicyEnvironment(launchStrategy?: GoalLaunchStrategy): Record<string, string> {
+/**
+ * `parentNonce` is set for an orchestrating goal: the tasks it starts name it
+ * in their issue body, so admission charges them under the goal session.
+ */
+export function buildGoalPolicyEnvironment(launchStrategy?: GoalLaunchStrategy, parentNonce?: string): Record<string, string> {
     return {
         PROPR_EXECUTION_MODE: 'goal',
         ...(launchStrategy ? { PROPR_GOAL_LAUNCH_STRATEGY: launchStrategy } : {}),
+        ...(parentNonce ? { [AGENT_ADMISSION_PARENT_ENV]: parentNonce } : {}),
     };
 }

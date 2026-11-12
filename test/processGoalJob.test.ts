@@ -302,6 +302,38 @@ test('goal execution keeps initial prompt identity separate from FIFO continuati
   assert.equal(captured[1].resumeSessionId, 'session-1');
 });
 
+test('an orchestrating goal session is the admission parent of the tasks it starts; a direct goal is not (#3480)', async () => {
+  // The same module instance processGoalJob uses, so the async context is shared.
+  const core = await import('@propr/core');
+  const data: GoalJobData = {
+    goalId: 'goal-orchestrating', taskId: 'goal-task-orchestrating', repoOwner: 'acme', repoName: 'repo',
+    generation: 0, claimId: 'claim-orchestrating',
+  };
+  const captured: Array<{ environment?: Record<string, string>; nesting: ReturnType<typeof core.currentAgentAdmissionNesting> }> = [];
+  const agent = {
+    executeTask: async (options: AgentTaskOptions) => {
+      captured.push({ environment: options.environment, nesting: core.currentAgentAdmissionNesting() });
+      return { success: false, modelUsed: 'test-model', executionTimeMs: 1, logs: '', modifiedFiles: [] };
+    },
+  };
+  const goal = {
+    goal_id: data.goalId, initial_prompt: '/goal Ship it', session_id: null, conversation_id: null,
+    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'codex', launch_strategy: 'orchestrate',
+  };
+  const prepared = { goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' }, pendingInput: null };
+  await executePreparedGoal(data, prepared as never);
+  // A later attempt of the same goal keeps the same parent, so earlier issues still link to it.
+  await executePreparedGoal({ ...data, generation: 1 }, { ...prepared, goal: { ...goal, session_id: 'session-1' } } as never);
+  await executePreparedGoal(data, { ...prepared, goal: { ...goal, launch_strategy: 'direct' } } as never);
+  const nonce = core.createGoalParentNonce(data.goalId);
+  for (const attempt of captured.slice(0, 2)) {
+    assert.equal(attempt.environment?.PROPR_PARENT_EXECUTION, nonce);
+    assert.deepEqual(attempt.nesting, { register: core.goalParentScope(nonce) });
+  }
+  assert.equal(captured[2].environment?.PROPR_PARENT_EXECUTION, undefined);
+  assert.equal(captured[2].nesting, undefined);
+});
+
 test('fresh whole-session providers receive the durable context with the first prompt before FIFO input', async () => {
   const data: GoalJobData = {
     goalId: 'goal-whole-session', taskId: 'goal-task-whole-session', repoOwner: 'acme', repoName: 'repo',
