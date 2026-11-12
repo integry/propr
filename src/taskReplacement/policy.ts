@@ -79,6 +79,8 @@ const NON_TRANSIENT_PROVIDER_PATTERNS = [
     /invalid username or token/i,
     /credentials/i,
     /aborted by user/i,
+    // The direct agent at its per-agent ceiling: a capacity wait, not a provider failure.
+    /waiting for agent capacity/i,
 ];
 
 function errorText(error: unknown): string {
@@ -104,6 +106,8 @@ function errorStatus(error: unknown, text: string): number | undefined {
  */
 export function isTransientProviderError(error: unknown, terminationReason?: string | null): boolean {
     if (terminationReason) return false;
+    const name = error && typeof error === 'object' ? (error as { name?: unknown }).name : undefined;
+    if (name === 'AgentCapacityError' || name === 'AgentCapacityWaitTimeoutError') return false;
     const text = errorText(error).trim();
     const status = errorStatus(error, text);
     if (!text && status === undefined) return false;

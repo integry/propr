@@ -58,6 +58,8 @@ import { publishGoalVisualPreviews } from './goalVisualPreviewPublisher.js';
 import { labelCompletedGoalPullRequest } from './goalPullRequestLabel.js';
 import { updateCompletedGoalPullRequest } from './goalPullRequestCompletion.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { checkGoalAgentCapacity } from './goalCapacity.js';
+import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
 
 function isRecoverableInterruption(result: AgentExecutionResult): boolean {
     if (result.terminationReason) return true;
@@ -764,6 +766,8 @@ const defaultGoalResultOperations: GoalResultOperations = {
 };
 
 export interface GoalJobProcessorDependencies {
+    /** The goal's direct agent must have capacity before the claim; throws AgentCapacityError when full. */
+    checkAgentCapacity?: (job: Job<GoalJobData>) => Promise<void>;
     claim: typeof claimGoalAttempt;
     withHeartbeat: typeof withAttemptHeartbeat;
     prepare: typeof prepareClaimedGoalAttempt;
@@ -772,6 +776,7 @@ export interface GoalJobProcessorDependencies {
 }
 
 const defaultGoalJobProcessorDependencies: GoalJobProcessorDependencies = {
+    checkAgentCapacity: checkGoalAgentCapacity,
     claim: claimGoalAttempt,
     withHeartbeat: withAttemptHeartbeat,
     prepare: prepareClaimedGoalAttempt,
@@ -783,12 +788,16 @@ export async function processGoalJob(
     job: Job<GoalJobData>,
     dependencies: GoalJobProcessorDependencies = defaultGoalJobProcessorDependencies,
 ) {
-    const claimed = await dependencies.claim(job.data);
-    if (!claimed) return { status: 'skipped', reason: 'goal_claim_fence' };
-    return dependencies.withHeartbeat(job.data, async () => {
-        const preparation = await dependencies.prepare(job.data, claimed);
-        if (!preparation.ready) return preparation.result;
-        const result = await dependencies.execute(job.data, preparation.value);
-        return handleGoalResult(job.data, preparation.value, result, dependencies.result);
+    // A saturated agent delays this same job before it claims the attempt.
+    return deferCapacityJob(job, async () => {
+        await dependencies.checkAgentCapacity?.(job);
+        const claimed = await dependencies.claim(job.data);
+        if (!claimed) return { status: 'skipped', reason: 'goal_claim_fence' };
+        return dependencies.withHeartbeat(job.data, async () => {
+            const preparation = await dependencies.prepare(job.data, claimed);
+            if (!preparation.ready) return preparation.result;
+            const result = await dependencies.execute(job.data, preparation.value);
+            return handleGoalResult(job.data, preparation.value, result, dependencies.result);
+        });
     });
 }

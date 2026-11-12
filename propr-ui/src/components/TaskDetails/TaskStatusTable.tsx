@@ -62,7 +62,7 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
 const getEventLabel = (item: HistoryItem): string | null => {
   const replacementLabel = getReplacementEventLabel(item);
   if (replacementLabel) return replacementLabel;
-  if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
+  if (item.metadata?.repositoryWorkflowDeferrals || item.metadata?.agentCapacityDeferrals) return `Waiting for ${item.metadata.repositoryWorkflowDeferrals ? 'Repository' : 'Agent'} Capacity`;
   if (isBudgetExceeded(item)) return 'Spend Cap Reached';
   return networkEgressLabel(item);
 };
@@ -164,14 +164,15 @@ const TimelineDateDivider: React.FC<{
 };
 
 /** Why a queued task is not progressing; the retry time only matters while it is still waiting. */
-const RepositoryWorkflowDeferral: React.FC<{ metadata?: HistoryItem['metadata']; isRunning: boolean }> = ({ metadata, isRunning }) => {
-  const deferrals = metadata?.repositoryWorkflowDeferrals;
+const CapacityDeferral: React.FC<{ metadata?: HistoryItem['metadata']; isRunning: boolean }> = ({ metadata, isRunning }) => {
+  const agent = !metadata?.repositoryWorkflowDeferrals && !!metadata?.agentCapacityDeferrals;
+  const deferrals = agent ? metadata?.agentCapacityDeferrals : metadata?.repositoryWorkflowDeferrals;
   if (!deferrals) return null;
-  const retryAt = isRunning ? metadata?.repositoryWorkflowRetryAt : undefined;
+  const retryAt = isRunning ? (agent ? metadata?.agentCapacityRetryAt : metadata?.repositoryWorkflowRetryAt) : undefined;
+  const aliases = agent && metadata?.agentCapacityAliases?.length ? ` for ${metadata.agentCapacityAliases.join(', ')}` : '';
   return (
-    <div className="mt-1 break-words text-xs text-slate-500" data-testid="repository-workflow-deferral">
-      {`Admission deferred ${deferrals} ${deferrals === 1 ? 'time' : 'times'}`}
-      {retryAt ? ` · next retry ${formatTimeOnly(retryAt)}` : ''}
+    <div className="mt-1 break-words text-xs text-slate-500" data-testid={agent ? 'agent-capacity-deferral' : 'repository-workflow-deferral'}>
+      {`${agent ? 'Start' : 'Admission'} deferred ${deferrals} ${deferrals === 1 ? 'time' : 'times'}${aliases}${retryAt ? ` · next retry ${formatTimeOnly(retryAt)}` : ''}`}
     </div>
   );
 };
@@ -215,7 +216,7 @@ const TimelineContent: React.FC<{
               <span className="block break-all">{item.metadata.repositoryWorkflow.baseBranch} @ {item.metadata.repositoryWorkflow.revision.slice(0, 12)}</span>
             </div>
           )}
-          <RepositoryWorkflowDeferral metadata={item.metadata} isRunning={isRunning} />
+          <CapacityDeferral metadata={item.metadata} isRunning={isRunning} />
           <BudgetExceededDetail metadata={item.metadata} />
           <NetworkEgressDetail metadata={item.metadata} />
           {item.metadata?.terminalReason && (

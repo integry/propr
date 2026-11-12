@@ -8,6 +8,7 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
@@ -346,7 +347,8 @@ export class AntigravityAgent implements Agent {
     }
 
     private handleExecutionError(error: unknown, executionTime: number, issueRef: { number: number; repoOwner: string; repoName: string }, effectiveModel: string | undefined): AgentExecutionResult {
-        if (error instanceof UsageLimitError) throw error;
+        // A capacity wait is not a provider failure: the job defers or reports the wait.
+        if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
         const err = error as Error;
         logger.error({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during Antigravity agent execution');
         return {

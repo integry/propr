@@ -7,6 +7,7 @@ import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisRes
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from '../../codex/codexHelpers.js';
 import {
     assertReasoningLevelCliVersionSupported,
@@ -113,7 +114,8 @@ export class CodexAgent implements Agent {
 
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) {
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (error instanceof UsageLimitError || isAgentCapacityError(error)) {
                 throw error;
             }
             return this.handleTaskError({ error: error as Error, executionTime: Date.now() - startTime, issueRef, repo, effectiveModel });

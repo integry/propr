@@ -8,6 +8,7 @@ import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisRes
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
@@ -136,7 +137,8 @@ export class OpenCodeAgent implements Agent {
 
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) throw error;
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
             const executionTime = Date.now() - startTime;
             const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during OpenCode agent execution');

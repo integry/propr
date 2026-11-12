@@ -567,3 +567,21 @@ for (const failure of ['missing but already registered', 'fetch failed: connecti
     }
   });
 }
+
+test('a goal whose agent is at its ceiling is deferred before the attempt claim', async () => {
+  const { DelayedError } = await import('bullmq');
+  const { AgentCapacityError } = await import('../packages/core/src/agents/agentCapacity.ts');
+  const data: GoalJobData = { goalId: 'goal-1', taskId: 'goal-task-1', repoOwner: 'acme', repoName: 'repo', generation: 2, claimId: 'claim-2' };
+  const claim = mock.fn(async () => null);
+  let delayed = 0;
+  const job = { data, token: 't', moveToDelayed: async () => { delayed++; } };
+  await assert.rejects(processGoalJob(job as never, {
+    checkAgentCapacity: async () => { throw new AgentCapacityError(['codex'], { codex: 1 }); },
+    claim, withHeartbeat: async () => assert.fail('no attempt'), prepare: async () => assert.fail('no attempt'), execute: async () => assert.fail('no attempt'), result: {},
+  } as never), DelayedError);
+  assert.equal(claim.mock.callCount(), 0, 'no goal claim is held while it waits');
+  assert.equal(delayed, 1);
+  // With capacity the attempt proceeds to its claim as before.
+  assert.deepEqual(await processGoalJob(job as never, { checkAgentCapacity: async () => {}, claim } as never), { status: 'skipped', reason: 'goal_claim_fence' });
+  assert.equal(claim.mock.callCount(), 1);
+});

@@ -10,6 +10,7 @@ import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js
 
 let events: string[] = [];
 let refuseCapacity = false;
+let refuseAgentCapacity = false;
 // Other runs holding repository slots; admission and reconciliation compare caps against them.
 let otherRuns = 0;
 const reconciledLimits: Array<number | undefined> = [];
@@ -129,6 +130,21 @@ const combinedComments: unknown[][] = [];
 // Deferral and timeline helpers are real; GitHub policy loading and admission are faked.
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
 const modules: Record<string, Record<string, unknown>> = {
+    // The real agent-capacity helpers are covered by agentCapacityDeferral.test.ts; here only the follow-up's path.
+    agentCapacityDeferral: {
+        checkJobAgentCapacity: async (_job: unknown, requests: () => Promise<unknown>) => {
+            assert.equal(typeof requests, 'function', 'the agent is resolved only when a policy needs it');
+            if (refuseAgentCapacity) throw Object.assign(new Error('Waiting for agent capacity'), { name: 'AgentCapacityError', aliases: ['claude'] });
+            return undefined;
+        },
+        admitAgentCapacity: async () => undefined,
+        isAgentCapacityRefusal: (error: unknown) => (error as Error | null)?.name === 'AgentCapacityError',
+        persistAgentCapacityDeferral: async (options: { job: { data: object; updateData(data: object): Promise<unknown> }; extraData?: object }) => {
+            await options.job.updateData({ ...options.job.data, ...options.extraData, agentCapacityDeferrals: 1 });
+            events.push('persist-agent-deferral');
+        },
+        runWithJobAgentCapacity: (_context: unknown, operation: () => Promise<unknown>) => operation(),
+    },
     // Publication fixtures have no repository workflow policy unless a test resolves one.
     repositoryWorkflow: {
         ...workflowJobs,
@@ -278,7 +294,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
-    refuseCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined; onAgentExitedCheckpoint = undefined; onUsageLimitCheckpoint = undefined; onHandleJobError = undefined;
+    refuseCapacity = false; refuseAgentCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined; onAgentExitedCheckpoint = undefined; onUsageLimitCheckpoint = undefined; onHandleJobError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0; deferralHistory.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
@@ -443,6 +459,17 @@ for (const persistenceFails of [false, true]) {
     });
 }
 
+
+test('a follow-up whose agent is at its ceiling defers before the starting comment and worktree, keeping its comments and releasing the lock', async () => {
+    refuseAgentCapacity = true;
+    await assert.rejects(processPullRequestCommentJob(job() as never), (error: unknown) => (error as Error).name === 'AgentCapacityError');
+    for (const work of ['comment:42', 'prepare', 'agent']) assert.ok(!events.includes(work), `no ${work}`);
+    assert.ok(events.includes('cleanup-capacity'), 'cleanup must not enqueue duplicate pending-comment jobs');
+    assert.deepEqual(handledTaskIds, [], 'a capacity wait is not a failure');
+    assert.ok(events.indexOf('persist-comments') < events.indexOf('stop-heartbeat'), 'the claimed comments stay with the delayed job');
+    assert.ok(events.indexOf('persist-agent-deferral') < events.indexOf('stop-heartbeat'));
+    assert.ok(events.indexOf('stop-heartbeat') < events.indexOf('release:lock:pr:upstream:project:42'), 'no PR lock is held while it waits');
+});
 
 test('a persisted PR capacity refusal explains the wait on the task timeline without changing state', async () => {
     refuseCapacity = true;

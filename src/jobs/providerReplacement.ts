@@ -25,10 +25,21 @@ export interface ProviderFailure {
 
 const agentExecutionFailures = new WeakSet<object>();
 
-/** Tags an error thrown by the coding agent's own execution, so the job's error handler can tell it from GitHub or git failures. */
+/**
+ * Tags an error thrown by the coding agent's own execution, so the job's error
+ * handler can tell it from GitHub or git failures. A capacity wait (the direct
+ * agent at its per-agent ceiling) is never a provider failure: it is left
+ * untagged, so it triggers neither provider replacement nor fallback.
+ */
 export function markAgentExecutionFailure<T>(error: T): T {
+    if (isCapacityWait(error)) return error;
     if (error && typeof error === 'object') agentExecutionFailures.add(error);
     return error;
+}
+
+function isCapacityWait(error: unknown): boolean {
+    const name = (error as { name?: unknown } | null)?.name;
+    return name === 'AgentCapacityError' || name === 'AgentCapacityWaitTimeoutError';
 }
 
 export function isAgentExecutionFailure(error: unknown): boolean {

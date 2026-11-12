@@ -20,6 +20,8 @@ import type { TaskImportJobData, JobResult } from '@propr/core';
 import type { GitHubToken } from './githubTypes.js';
 import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { compactNotificationRecap } from './notificationRecap.js';
+import { deferOnCapacityRefusal } from './capacityDeferral.js';
+import { admitAgentCapacity, checkJobAgentCapacity, isAgentCapacityRefusal, JOB_AGENT_CAPACITY_RACE_WAIT_MS, persistAgentCapacityDeferral, runWithJobAgentCapacity } from './agentCapacityDeferral.js';
 
 interface TaskImportResult extends JobResult {
     repository?: string;
@@ -50,7 +52,38 @@ function taskImportTaskId(repoOwner: string, repoName: string, jobId: string | u
         : `task-import-${jobId}`;
 }
 
-export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise<TaskImportResult> {
+/**
+ * Creates the task, or after a capacity wait keeps it (and its waiting row).
+ * Returns false when the task was stopped while the job waited.
+ */
+async function openTaskImportTask(job: Job<TaskImportJobData>, taskId: string, stateManager: ReturnType<typeof getStateManager>): Promise<boolean> {
+    const [repoOwner, repoName] = job.data.repository.split('/');
+    const issueRef = { number: 0, repoOwner, repoName, type: 'task-import' } as const;
+    const jobId = job.id === undefined ? null : String(job.id);
+    if (!job.data.agentCapacityDeferrals) {
+        await stateManager.createTaskState(taskId, issueRef, job.data.correlationId, jobId);
+        return true;
+    }
+    if ((await stateManager.getTaskState(taskId))?.state === TaskStates.CANCELLED) {
+        await admitAgentCapacity(job);
+        return false;
+    }
+    await stateManager.createTaskStateIfAbsent(taskId, issueRef, job.data.correlationId, jobId);
+    return true;
+}
+
+/**
+ * A default agent at its per-agent ceiling delays this same job (no attempt
+ * consumed). Task import publishes nothing before its agent runs, so a lost race
+ * at the authoritative acquire that waits longer than the race bound is
+ * deferred too; the throwaway worktree is removed meanwhile.
+ */
+export function processTaskImportJob(job: Job<TaskImportJobData>): Promise<TaskImportResult> {
+    return deferOnCapacityRefusal(job, () => processAdmittedTaskImportJob(job));
+}
+
+// eslint-disable-next-line complexity -- one linear lifecycle: task, capacity, worktree, agent, settle and cleanup
+async function processAdmittedTaskImportJob(job: Job<TaskImportJobData>): Promise<TaskImportResult> {
     const { id: jobId, name: jobName, data } = job;
     const {
         taskDescription,
@@ -77,13 +110,16 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
     const [repoOwner, repoName] = repository.split('/');
     const taskId = taskImportTaskId(repoOwner, repoName, jobId);
 
+    let deferred = false;
     try {
-        await stateManager.createTaskState(
-            taskId,
-            { number: 0, repoOwner, repoName, type: 'task-import' },
-            correlationId,
-            jobId === undefined ? null : String(jobId),
-        );
+        if (!await openTaskImportTask(job, taskId, stateManager)) return { status: 'cancelled', repository, jobId };
+
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
+        // Before cloning: a saturated default agent defers the job.
+        const agentCapacity = await checkJobAgentCapacity(job, [{ agentAlias: resolvedAlias, model: resolvedModel }], { raceWaitMs: JOB_AGENT_CAPACITY_RACE_WAIT_MS });
+        await admitAgentCapacity(job);
 
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),
@@ -121,14 +157,12 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         const prompt = generateTaskImportPrompt(taskDescription, repoOwner, repoName, worktreeInfo.worktreePath);
 
 
-        const registry = AgentRegistry.getInstance();
-        await registry.ensureInitialized();
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
         const agent = registry.getAgentByAlias(resolvedAlias);
         if (!agent) throw new Error(`Configured default agent not found: ${resolvedAlias}`);
 
-        const agentResult = await agent.executeTask({
-            worktreePath: worktreeInfo.worktreePath,
+        const importWorktree = worktreeInfo;
+        const agentResult = await runWithJobAgentCapacity(agentCapacity, () => agent.executeTask({
+            worktreePath: importWorktree.worktreePath,
             issueRef: {
                 number: 0,
                 repoOwner,
@@ -136,10 +170,10 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
             },
             githubToken: githubToken.token,
             prompt,
-            branchName: worktreeInfo.branchName,
+            branchName: importWorktree.branchName,
             model: resolvedModel,
             taskId,
-        });
+        }));
 
         correlatedLogger.info({
             agentAlias: resolvedAlias,
@@ -185,6 +219,11 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         };
 
     } catch (error) {
+        if (isAgentCapacityRefusal(error)) {
+            deferred = true;
+            await persistAgentCapacityDeferral({ job, error, stateManager, taskId, correlatedLogger });
+            throw error;
+        }
         if (error instanceof UsageLimitError) {
             return handleSimpleUsageLimitError(error, job as unknown as Job<{ repoOwner: string; repoName: string; number: number; modelName?: string; correlationId?: string }>, correlatedLogger, repository);
         }
@@ -197,7 +236,8 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
             try {
                 await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
                     deleteBranch: true,
-                    success: importSucceeded
+                    // A deferred import starts over in a fresh worktree; none is retained for diagnosis.
+                    success: importSucceeded || deferred
                 });
             } catch (cleanupError) {
                 correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
