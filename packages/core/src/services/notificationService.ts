@@ -37,7 +37,7 @@ import {
     type PushSubscriptionInput
 } from '@propr/shared';
 import { db } from '../db/connection.js';
-import { recordPullRequestOutcome, type PullRequestOutcomeEvent } from './reviewScoreStore.js';
+import { appendPullRequestOutcomeEvent, recordPullRequestOutcome, type PullRequestOutcomeEvent } from './reviewScoreStore.js';
 import logger from '../utils/logger.js';
 import {
     decodeNotificationCursor,
@@ -1193,6 +1193,8 @@ export class NotificationService {
                 })
                 .onConflict(['repository', 'pr_number'])
                 .merge({ merged_at: normalizedMergedAt });
+            // Journaled with the merge marker; the outcome writer shares the key, so one row results.
+            await appendPullRequestOutcomeEvent(transaction, { repository, prNumber, merged: true, mergedAt: normalizedMergedAt });
             return this.dismissReceiptsFor(() => this.matchingTargetEvents(
                 ['task', 'review', 'pull_request'],
                 transaction

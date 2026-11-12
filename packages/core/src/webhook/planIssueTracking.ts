@@ -14,6 +14,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { checkAndMigrateRepositoryFromWebhook } from './planIssueTrackingHelpers.js';
 import { notificationService } from '../services/notificationService.js';
+import { journalPullRequestWebhook } from './pullRequestJournalEvents.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -262,6 +263,7 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
+        await journalPullRequestWebhook(payload);
         if (action === 'closed' && payload.pull_request.merged === true) {
             try {
                 await notificationService.markPullRequestMergedAndDismissNotifications(

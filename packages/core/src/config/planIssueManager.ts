@@ -2,21 +2,11 @@ import { getEventPublisher } from '../utils/eventPublisher.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { resolvePlanIssueDefaultSelection } from './planIssueDefaults.js';
+import { journalPlanIssueStatus, notifyEpicQueue, readPlanIssueForJournal } from './planIssueStatusJournal.js';
 // Load the planning facade lazily: it also exports the epic queue, which depends on this module.
 async function checkAndUpdateDraftStatus(draftId: string): Promise<void> {
     const planning = await import('../services/taskPlanningService.js');
     await planning.checkAndUpdateDraftStatus(draftId);
-}
-
-async function notifyEpicQueue(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
-    try {
-        const { isTerminalStatus } = await import('../webhook/statusMachine.js');
-        if (!isTerminalStatus(status)) return;
-        const { onPlanIssueStatusChanged } = await import('../services/taskPlanning/epicExecutionQueue.js');
-        await onPlanIssueStatusChanged(draftId, issueNumber, status);
-    } catch (error) {
-        logger.warn?.({ draftId, issueNumber, status, error: (error as Error).message }, 'Failed to notify epic queue');
-    }
 }
 
 /**
@@ -242,6 +232,7 @@ export async function updatePlanIssue(
             if (updates[field] !== undefined) updateData[field] = updates[field];
         }
 
+        const before = updates.status === undefined ? null : await readPlanIssueForJournal({ draft_id: draftId, issue_number: issueNumber });
         await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
             .update(updateData);
@@ -250,6 +241,7 @@ export async function updatePlanIssue(
             .where({ draft_id: draftId, issue_number: issueNumber })
             .first();
 
+        if (issue && updates.status !== undefined) await journalPlanIssueStatus(before, updates.status);
         if (issue && updates.status !== undefined) await notifyEpicQueue(draftId, issueNumber, updates.status);
 
         logger.info({ draftId, issueNumber, updates }, 'Updated plan issue');
@@ -357,6 +349,7 @@ export async function updatePlanIssueStatus(
         // Fetch the plan issue to get the draft_id for status sync
         const planIssue = await db('plan_issues').where({ repository, issue_number: issueNumber })
             .select('draft_id', 'issue_number').orderBy('id', 'desc').first();
+        const before = await readPlanIssueForJournal({ repository, issue_number: issueNumber });
 
         if (stillApplies && !await stillApplies()) {
             logger.info({ repository, issueNumber, status }, 'Abandoned a plan issue status update that no longer applies');
@@ -368,7 +361,7 @@ export async function updatePlanIssueStatus(
         // An existing row left unchanged by that guard is reported to the caller, which alone knows whether it settles its write.
         if (!await rows.update({ status, updated_at: db.fn.now() }) && onLinkedReview && planIssue) { onLinkedReview(); return false; }
         persisted = true;
-
+        await journalPlanIssueStatus(before, status);
         if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);
 
         logger.info({ repository, issueNumber, status }, 'Updated plan issue status');
@@ -450,6 +443,7 @@ export async function updatePlanIssueByPR(
                 .orderBy('id', 'desc')
                 .first()
             : null;
+        const before = updates.status === undefined ? null : await readPlanIssueForJournal({ repository, pr_number: prNumber });
 
         const updateData: Record<string, unknown> = {
             updated_at: db.fn.now()
@@ -462,6 +456,7 @@ export async function updatePlanIssueByPR(
             .where({ repository, pr_number: prNumber })
             .update(updateData);
 
+        if (planIssue && updates.status !== undefined) await journalPlanIssueStatus(before, updates.status);
         if (planIssue && updates.status !== undefined) await notifyEpicQueue(planIssue.draft_id, planIssue.issue_number, updates.status);
 
         logger.info({ repository, prNumber, updates }, 'Updated plan issue by PR');

@@ -587,3 +587,6 @@ export * from './extensionProfiles.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+
+// The durable repository change-event journal: domains, event types and payloads.
+export * from './repositoryEvents.js';

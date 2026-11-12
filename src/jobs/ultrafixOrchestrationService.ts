@@ -11,6 +11,8 @@ import type { UltrafixEscalationState } from './ultrafixEscalationPolicy.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
 import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
+import type { UltrafixOutcome } from '@propr/shared';
+import { ultrafixEndedEvent, ultrafixOutcomeFromCompletion, ultrafixStartedEvent, writeUltrafixJournalEvent as journal } from './ultrafixJournal.js';
 export {
     clearDeferredContinuationIfCurrent,
     clearUltrafixStateIfCurrent,
@@ -375,6 +377,7 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
             { key: getUltrafixStateKey(state.owner, state.repo, state.pr), serialized: JSON.stringify(state) },
         );
     if (!saved) throw new Error('Ultrafix startup was superseded before state commit');
+    await journal(ultrafixStartedEvent(state));
     return { state, initialAction };
 }
 
@@ -486,8 +489,11 @@ export async function stopLoop(redis: Redis, owner: string, repo: string, pr: nu
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
 
+    const wasRunning = state.active && state.completionStatus === null;
     state.active = false;
     await saveState(redis, state);
+    // Only a running loop ends here; one that already completed has its event.
+    if (wasRunning) await journal(ultrafixEndedEvent(state, { outcome: 'stopped', finalScore: state.finalScore, reason: 'Ultrafix was stopped' }));
     return state;
 }
 
@@ -501,6 +507,8 @@ export async function completeLoop(
         completionReason: string;
         finalScore: number | null;
         workEpoch?: number;
+        /** Coded outcome; derived from the status and reason when omitted. */
+        outcome?: UltrafixOutcome;
     },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadOwnedState(redis, params, params.workEpoch);
@@ -512,5 +520,8 @@ export async function completeLoop(
     state.finalScore = params.finalScore;
     state.completedAt = new Date().toISOString();
 
-    return await saveOwnedState(redis, state, params.workEpoch) ? state : null;
+    if (!await saveOwnedState(redis, state, params.workEpoch)) return null;
+    await journal(ultrafixEndedEvent(state, { finalScore: params.finalScore, reason: params.completionReason,
+        outcome: params.outcome ?? ultrafixOutcomeFromCompletion(params.completionStatus, params.completionReason) }));
+    return state;
 }

@@ -92,6 +92,11 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 const mockCheckAndUpdateDraftStatus = mock.fn(async () => {});
+// The fake database only models plan_issues; journal appends have their own suite.
+await mock.module('../packages/core/src/services/repositoryEventJournal.js', {
+  namedExports: { appendRepositoryEvent: mock.fn(async () => ({ status: 'duplicate' })) },
+});
+
 await mock.module('../packages/core/src/services/taskPlanningService.js', {
   namedExports: {
     checkAndUpdateDraftStatus: mockCheckAndUpdateDraftStatus,
