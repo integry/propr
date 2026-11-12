@@ -49,6 +49,7 @@ export * from './config/configManager.js';
 // are re-exported via configManager.ts (which re-exports from configManagerUltrafix.ts).
 // Do NOT add explicit re-exports here — they would conflict with the wildcard export above.
 export { recordPlanIssueDependencies } from './config/planIssueDependencies.js';
+export * from './services/planDependencyLinks.js';
 export {
     createPlanIssue,
     getPlanIssuesByDraft,

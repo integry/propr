@@ -377,6 +377,21 @@ publication each issue in `get_plan.issues` records `plan_item_id` and
 before dependencies existed read `null` and `[]`. Scheduling does not use
 these edges yet: epic queues still follow plan order.
 
+Once every issue of the plan exists, `publish_plan` adds GitHub issue
+dependencies in a second pass: each issue is marked **blocked by** each of its
+prerequisite issues, with the caller's GitHub credential (the web UI's
+finalize uses the GitHub App installation). The links need the repository
+**Issues: write** permission. The step is best effort and idempotent: existing
+links are listed first and never duplicated, so a resumed or repeated
+publication is safe. A failed link (missing permission, GitHub API unavailable,
+issue dependencies not enabled for the repository) never fails the
+publication; the result's `dependencyLinks.links` lists each link with status
+`created`, `existing` or `failed` and its error, and `get_plan.dependencyLinks`
+shows the counts and the links that were not created. A plan without
+dependencies makes no extra GitHub calls and reports no `dependencyLinks`.
+Sub-issue links are not created, because plans have no parent tracking issue
+to attach them to.
+
 `generate_repository_improvements` answers "what should we work on next?"
 with the same generator as the web UI **Improve** tab. Pass `categories`
 (`code-quality`, `performance`, `security`, `testing`, `documentation`,

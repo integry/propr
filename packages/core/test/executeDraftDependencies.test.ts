@@ -11,12 +11,21 @@ await database.migrate.latest({ directory: fileURLToPath(new URL('../src/db/migr
 
 let nextIssue = 40;
 const posted: string[] = [];
+// GitHub "blocked by" links as "dependant<-blocker"; issue ids are number * 1000.
+const blockedBy: string[] = [];
+let dependencyFailure: Error | undefined;
 const octokit = {
   request: async (route: string, args: Record<string, unknown>) => {
     posted.push(route);
     if (route === 'POST /repos/{owner}/{repo}/issues') {
       nextIssue += 1;
-      return { data: { number: nextIssue, html_url: `https://github.com/acme/repo/issues/${nextIssue}`, title: args.title } };
+      return { data: { id: nextIssue * 1000, number: nextIssue, html_url: `https://github.com/acme/repo/issues/${nextIssue}`, title: args.title } };
+    }
+    if (route.includes('/dependencies/blocked_by') && dependencyFailure) throw dependencyFailure;
+    if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by') return { data: [] };
+    if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by') {
+      blockedBy.push(`${args.issue_number}<-${Number(args.issue_id) / 1000}`);
+      return { data: {} };
     }
     return { data: {} };
   },
@@ -65,6 +74,11 @@ test('REST publication records item ids and prerequisite issue numbers, includin
   const stored = JSON.parse((await database('task_drafts').where({ draft_id: draftId }).first()).plan_json);
   assert.deepEqual(stored.map((item: { id: string; dependsOn?: string[]; issue_number: number }) =>
     [item.id, item.dependsOn ?? [], item.issue_number]), [['ui', ['api', 'schema'], 41], ['schema', [], 42], ['api', ['schema'], 43]]);
+  // The second pass links each issue on GitHub, including to prerequisites created after it.
+  assert.deepEqual(blockedBy, ['41<-43', '41<-42', '43<-42']);
+  const context = JSON.parse((await database('task_drafts').where({ draft_id: draftId }).first()).context_config);
+  assert.deepEqual(context.dependencyLinks.links.map((link: { status: string }) => link.status), ['created', 'created', 'created']);
+  assert.equal(posted.includes('GET /repos/{owner}/{repo}/issues/{issue_number}'), false, 'ids come from the creation response');
 
   // Re-finalizing detaches the old rows and records the same relation for the new issues.
   await database('task_drafts').where({ draft_id: draftId }).update({ status: 'executed' });
@@ -76,10 +90,28 @@ test('REST publication records item ids and prerequisite issue numbers, includin
   ]);
 });
 
+test('REST publication succeeds when GitHub refuses the dependency links', async () => {
+  const draftId = '20000000-0000-4000-8000-000000000004';
+  await insertDraft(draftId, [task('Schema', { id: 'schema' }), task('API', { id: 'api', dependsOn: ['schema'] })]);
+  dependencyFailure = Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+  try {
+    const result = await executeDraft(draftId, 'user-1');
+    assert.equal(result.success, true);
+  } finally { dependencyFailure = undefined; }
+  const draft = await database('task_drafts').where({ draft_id: draftId }).first();
+  assert.equal(draft.status, 'executed');
+  const [schema, api] = (await rows(draftId)).map(row => row.issue_number);
+  assert.deepEqual(JSON.parse(draft.context_config).dependencyLinks.links, [
+    { issue: api, blockedBy: schema, status: 'failed', error: '403: Resource not accessible by integration' },
+  ]);
+});
+
 test('REST publication gives an older draft item ids and refuses invalid dependencies', async () => {
   const legacy = '20000000-0000-4000-8000-000000000002';
   await insertDraft(legacy, [task('Only')]);
+  const callsBefore = posted.length;
   await executeDraft(legacy, 'user-1');
+  assert.equal(posted.slice(callsBefore).some(route => route.includes('/dependencies/')), false, 'a plan without dependencies makes no link calls');
   const [row] = await rows(legacy);
   const [item] = JSON.parse((await database('task_drafts').where({ draft_id: legacy }).first()).plan_json);
   assert.match(item.id, /^item-/);

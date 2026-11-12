@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { getEpicExecutionQueue, summarizeEpicQueue, type EpicAdvancePolicy } from '@propr/core';
+import { getEpicExecutionQueue, summarizeEpicQueue, summarizePlanDependencyLinks, type EpicAdvancePolicy } from '@propr/core';
 import { withPlanIssueDependencies } from '@propr/shared';
 import type { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { McpError } from './config.js';
@@ -10,7 +10,7 @@ import { planRelationLimit, summarizePlan } from './listSummaries.js';
 import { getCurrentPlanCause, getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { classifyError, type McpErrorStage } from './errorEnvelope.js';
 import { planStorageUpdates } from '../routes/plannerHelpers/validation.js';
-import { prepareMcpPlan, publicationPlanItems, recordPublishedDependencies, validatePublicationPlan } from './planItems.js';
+import { linkPublishedDependencies, prepareMcpPlan, publicationPlanItems, recordPublishedDependencies, validatePublicationPlan } from './planItems.js';
 import { activePublication as parseActivePublication, findMarkedIssue, parseContextConfig, partialPublication, publicationLeaseLapsed, publicationLeaseLapsesAt, publicationSummary, publicationOwner, publicationOwnerStopped, withinPublicationLease, PUBLICATION_LEASE_EXPIRED, PUBLICATION_LEASE_MS, type ActivePublication, type PublishedIssue } from './planPublication.js';
 import { McpOperations } from './operations.js';
 
@@ -92,7 +92,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       const attachments = JSON.parse(draft.attachments || '[]');
       const context = parseContextConfig(draft.context_config);
       const revisions = await listPlanRevisions(db, args.planId);
-      return ok({ ...draft, context_config: undefined, plan_cause: undefined, publication: publicationSummary(context.publication),
+      return ok({ ...draft, context_config: undefined, plan_cause: undefined, publication: publicationSummary(context.publication), dependencyLinks: summarizePlanDependencyLinks(context.dependencyLinks),
         attachments: attachments.map(({ id, originalName, mimeType, size }: Record<string, unknown>) => ({ id, originalName, mimeType, size })),
         plan: draft.plan_json ? JSON.parse(draft.plan_json) : [], plan_json: undefined,
         revisionHistory: {
@@ -370,7 +370,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         catch (error) { await fail(error, { index, title: String(task.title), step: 'authorize' }); }
         // One renewal per task, placed directly before its issue is created or adopted.
         await requireClaim({ index, title: String(task.title) }, !args.resume);
-        let issue: { number: number; url: string; title: string } | undefined;
+        let issue: { number: number; url: string; title: string; id?: number } | undefined;
         if (args.resume) {
           try {
             const floor = [...created.values()].reduce<number | undefined>((highest, candidate) =>
@@ -390,7 +390,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
             const response = await withinPublicationLease(leaseDeadline, signal => principal.github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: String(task.title),
               body: `${task.body}\n\n## Implementation\n${task.implementation}${task.notes ? `\n\n## Notes\n${task.notes}` : ''}\n\n<!-- propr-mcp:${originalOperationId}:${index} -->`, labels: ['propr-planned'],
               request: { signal } }));
-            issue = { number: response.data.number, url: response.data.html_url, title: response.data.title };
+            issue = { number: response.data.number, url: response.data.html_url, title: response.data.title, ...(typeof response.data.id === 'number' ? { id: response.data.id } : {}) };
           } catch (error) {
             // A lease that ran out before the request started sent nothing.
             const sent = !(error instanceof McpError && error.code === PUBLICATION_LEASE_EXPIRED);
@@ -398,7 +398,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
           }
         } else adopted.push(index);
         if (!issue) throw new McpError('INTERNAL_ERROR', 'Issue publication returned no result.', 500, { stage: 'internal' });
-        const published = { index, number: issue.number, url: issue.url };
+        const published = { index, number: issue.number, url: issue.url, ...(issue.id !== undefined ? { id: issue.id } : {}) };
         created.set(index, published);
         try {
           await recordIssue(issue.number, index);
@@ -413,10 +413,15 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         const index = tasks.length - 1;
         await fail(error, { index, title: String(tasks[index]?.title || `Task ${index + 1}`), step: 'record_issue' });
       }
+      // Second pass, once every issue exists: GitHub "blocked by" links. Best
+      // effort; only losing the claim (or failing to renew it) stops publication.
+      const dependencyLinks = await linkPublishedDependencies({ principal, repository: args.repository, tasks, issues: created, leaseDeadline: () => leaseDeadline,
+        renewClaim: () => requireClaim({ index: tasks.length - 1, title: String(tasks.at(-1)?.title || `Task ${tasks.length}`) }, true) });
       const issues = tasks.map((task, index) => ({ ...created.get(index)!, title: String(task.title) }))
         .map(({ number, url, title }) => ({ number, url, title }));
       const finalContext: Record<string, unknown> = { ...activeContext };
       delete finalContext.publication;
+      if (dependencyLinks) finalContext.dependencyLinks = dependencyLinks; else delete finalContext.dependencyLinks;
       const linkedTasks = tasks.map((task, index) => ({ ...task,
         issue_number: created.get(index)!.number, issue_url: created.get(index)!.url }));
       const completed = await (async () => {
@@ -431,7 +436,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         }
       })();
       if (!completed) await requireClaim({ index: tasks.length - 1, title: String(tasks.at(-1)?.title || `Task ${tasks.length}`) });
-      return ok({ planId: args.planId, issues, resumed: Boolean(args.resume), adopted });
+      return ok({ planId: args.planId, issues, resumed: Boolean(args.resume), adopted, ...(dependencyLinks ? { dependencyLinks } : {}) });
     } });
 
   addPlanImplementationTool(tools, deps, planner, target);
