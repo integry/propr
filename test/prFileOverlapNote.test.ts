@@ -69,6 +69,27 @@ test('without overlap, changes or a connected Redis the note is empty or limited
     assert.equal(failing, '');
 });
 
+test('an open PR is compared on every page of its changed files', async () => {
+    const pages: unknown[] = [];
+    const octokit = {
+        request: async (route: string, params: Record<string, unknown>) => {
+            if (route === 'GET /repos/{owner}/{repo}/pulls') return { data: [{ number: 7, head: { ref: 'propr/other' }, labels: [{ name: 'AI-PR' }] }] };
+            pages.push(params.page);
+            assert.equal(params.per_page, 100);
+            if (params.page === 1) return { data: Array.from({ length: 100 }, (_, index) => ({ filename: `docs/page-one-${index}.md` })) };
+            if (params.page === 2) return { data: [{ filename: 'src/only-on-page-two.ts' }] };
+            throw new Error(`unexpected page ${String(params.page)}`);
+        },
+    };
+    const note = await buildPullRequestOverlapNote({
+        octokit, redis: null, repoOwner: 'acme', repoName: 'widget', taskId: 'task-new',
+        branchName: 'propr/new', prLabel: 'AI-PR', paths: ['src/only-on-page-two.ts'],
+    });
+    assert.match(note, /- Open PR #7: `src\/only-on-page-two\.ts`$/m);
+    // A short page is the last one; no further page is requested.
+    assert.deepEqual(pages, [1, 2]);
+});
+
 test('the note is appended only when the body still fits', () => {
     assert.equal(appendOverlapNote('body', '', 100), 'body');
     assert.equal(appendOverlapNote('body', 'note', 100), 'body\n\n---\n\nnote');

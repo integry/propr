@@ -9,6 +9,9 @@ const loadCore = (): Promise<Core> => import('@propr/core');
 const MAX_OPEN_PULL_REQUESTS = 10;
 const MAX_LISTED_OVERLAPS = 10;
 const LOOKUP_TIMEOUT_MS = 10_000;
+const FILES_PER_PAGE = 100;
+/** GitHub lists at most 3000 files for a pull request, so pages past this one are always empty. */
+const MAX_FILE_PAGES = 30;
 
 interface OverlapOctokit {
     request(route: string, params: Record<string, unknown>): Promise<{ data: unknown }>;
@@ -42,6 +45,7 @@ async function activeTaskSources(core: Core, options: PullRequestOverlapNoteOpti
 }
 
 async function openPullRequestSources(options: PullRequestOverlapNoteOptions): Promise<OverlapSource[]> {
+    const deadline = Date.now() + LOOKUP_TIMEOUT_MS;
     const { octokit, repoOwner: owner, repoName: repo } = options;
     const list = await octokit.request('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'open', per_page: 50 });
     if (!Array.isArray(list.data)) return [];
@@ -51,11 +55,26 @@ async function openPullRequestSources(options: PullRequestOverlapNoteOptions): P
         .slice(0, MAX_OPEN_PULL_REQUESTS);
     const sources: OverlapSource[] = [];
     for (const pull of pulls) {
-        const files = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', { owner, repo, pull_number: pull.number, per_page: 100 });
-        const paths = Array.isArray(files.data) ? (files.data as Array<{ filename?: unknown }>).map(file => file?.filename).filter((name): name is string => typeof name === 'string') : [];
-        sources.push({ key: `pr:${pull.number}`, label: `Open PR #${pull.number}`, paths });
+        sources.push({ key: `pr:${pull.number}`, label: `Open PR #${pull.number}`, paths: await pullRequestFilePaths(options, pull.number as number, deadline) });
     }
     return sources;
+}
+
+/**
+ * Every changed file of one pull request, page by page. Stops at the lookup deadline, by which
+ * point the note has already gone without open PRs, so a partial list is never compared.
+ */
+async function pullRequestFilePaths(options: PullRequestOverlapNoteOptions, pullNumber: number, deadline: number): Promise<string[]> {
+    const { octokit, repoOwner: owner, repoName: repo } = options;
+    const paths: string[] = [];
+    for (let page = 1; page <= MAX_FILE_PAGES; page++) {
+        if (Date.now() >= deadline) throw new Error(`Changed files of PR #${pullNumber} were not read before the lookup deadline`);
+        const files = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', { owner, repo, pull_number: pullNumber, per_page: FILES_PER_PAGE, page });
+        if (!Array.isArray(files.data)) break;
+        for (const file of files.data as Array<{ filename?: unknown }>) if (typeof file?.filename === 'string') paths.push(file.filename);
+        if (files.data.length < FILES_PER_PAGE) break;
+    }
+    return paths;
 }
 
 async function settle<T>(work: Promise<T[]>, log: PullRequestOverlapNoteOptions['correlatedLogger'], what: string): Promise<T[]> {
