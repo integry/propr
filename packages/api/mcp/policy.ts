@@ -65,7 +65,7 @@ export class McpPolicy {
    * Admits one mutating operation under the principal's grant, inside the
    * transaction that writes its receipt. `authenticate` read the grant before
    * authorization; a revocation that commits meanwhile is seen here (the grant
-   * row is re-read under the lock revocation takes), so the operation is
+   * row is re-read under SQLite's write lock, `BEGIN IMMEDIATE`), so the operation is
    * refused before it runs, and a count taken after the revocation sees every
    * receipt admitted before it.
    */

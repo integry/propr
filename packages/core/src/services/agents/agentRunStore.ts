@@ -11,7 +11,7 @@ import {
 } from '@propr/shared';
 import { db } from '../../db/connection.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
-import { underDefinitionLockIfFinal } from './agentRunDefinitionLock.js';
+import { inTransactionIfFinal } from './agentRunFinalTransaction.js';
 
 /**
  * Agent run receipts. This is the only module that writes `agent_runs`.
@@ -367,9 +367,10 @@ async function applyAgentRunTransition(
 
   // RETURNING yields the row this update produced; a separate read could see a
   // competing transition that landed after it. A transition that can make the
-  // run's verdict final is written under its definition's lock, so a streak
-  // evaluation under way either sees it or commits its pause before it lands.
-  const [updated] = await underDefinitionLockIfFinal(database, id, { to, patch },
+  // run's verdict final is written in its own transaction, which takes SQLite's
+  // write lock up front (`BEGIN IMMEDIATE`), so a streak evaluation under way
+  // either sees it or commits its pause before it lands.
+  const [updated] = await inTransactionIfFinal(database, { to, patch },
     trx => trx(TABLE).where({ ...guard, id }).whereIn('state', [...from]).update(changes).returning('*') as Promise<AgentRunRow[]>);
   return updated ? rowToAgentRun(updated) : null;
 }

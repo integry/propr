@@ -147,7 +147,7 @@ function harness(options: {
     deps: {
       getRun: async () => current,
       transitionRun,
-      // The real store also checks the predecessor under a definition lock; see agentRunReportNoveltyPrevious.test.ts.
+      // The real store also checks the predecessor under SQLite's write lock; see agentRunReportNoveltyPrevious.test.ts.
       storeReport: (async (run, { patch }) => {
         const stored = await transitionRun(run.id, ['running'], 'report_ready', patch);
         return stored ? { outcome: 'stored', run: stored } : { outcome: 'not_running' };

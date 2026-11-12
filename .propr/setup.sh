@@ -25,12 +25,6 @@ if [ "${PROPR_WORKSPACE_PREPARED:-false}" != "true" ]; then
   npm run test:prepare
 fi
 
-# Agent-only helper packages (never shipped): the `pg` driver lets the
-# PostgreSQL interleaving tests run when PROPR_TEST_POSTGRES_URL names a local
-# PostgreSQL (a system package of the agent image) with
-# NODE_PATH="$SCRIPT_DIR/node_modules".
-(cd "$SCRIPT_DIR" && npm ci --no-audit --no-fund)
-
 # Bound the browser download so a stalled CDN fails the CI step that runs
 # this script (nightly and labelled docs validation) instead of holding it.
 if command -v timeout >/dev/null 2>&1; then

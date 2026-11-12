@@ -1,8 +1,0 @@
-{
-  "name": "propr-agent-helpers",
-  "private": true,
-  "description": "npm helper packages used only inside the ProPR agent container (never shipped). `pg` lets the PostgreSQL interleaving tests run against a local PostgreSQL when PROPR_TEST_POSTGRES_URL is set.",
-  "devDependencies": {
-    "pg": "^8.13.1"
-  }
-}

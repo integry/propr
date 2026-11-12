@@ -110,22 +110,22 @@ export type StoreAgentRunReportResult =
   | { outcome: 'previous_changed' };
 
 /**
- * Stores a report (running → report_ready) under the definition's lock, after
- * `accept` has seen the definition's latest stored report. The storing time is
- * taken under the lock and kept strictly after the latest report's, so the
- * order reports were stored in is the order `listLatestStoredReports` returns
- * them in: the lock serialises the writes, but the clock alone would let two
+ * Stores a report (running → report_ready) in a transaction that holds
+ * SQLite's write lock from its start (`BEGIN IMMEDIATE`), after `accept` has
+ * seen the definition's latest stored report. The storing time is taken under
+ * that lock and kept strictly after the latest report's, so the order reports
+ * were stored in is the order `listLatestStoredReports` returns them in: the
+ * lock serialises the writes, but the clock alone would let two
  * reports stored in the same millisecond, or by hosts whose clocks differ, be
  * ordered by run id instead.
  */
-async function storeReportUnderDefinitionLock(
+async function storeReportUnderWriteLock(
   run: Pick<StoredAgentRun, 'id' | 'definitionId'>,
   patch: AgentRunTransitionPatch,
   accept: (latest: PreviousAgentReport | null) => boolean,
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<StoreAgentRunReportResult> {
   return database.transaction(async trx => {
-    await trx('agent_definitions').where({ id: run.definitionId }).forUpdate().first('id');
     const [latest = null] = await listLatestStoredReports(run.definitionId, { limit: 1, excludeRunId: run.id }, { database: trx });
     if (!accept(latest)) return { outcome: 'previous_changed' as const };
     const timestamp = now();
@@ -138,9 +138,8 @@ async function storeReportUnderDefinitionLock(
 /**
  * Stores a run's report with its novelty flags (running → report_ready), but
  * only while the definition's latest stored report is still the one the flags
- * were classified against. Comparing and storing are one step per definition:
- * Postgres locks the definition row until commit, and SQLite, which ignores
- * FOR UPDATE, opens the transaction holding its write lock (`BEGIN IMMEDIATE`).
+ * were classified against. Comparing and storing are one step: SQLite opens
+ * the transaction holding its write lock (`BEGIN IMMEDIATE`).
  * So of two runs storing the same report at once, the second finds the first's
  * report and is told to compare again, instead of storing it as new as well.
  * The stored report then becomes the definition's latest, whatever the clock said.
@@ -150,12 +149,12 @@ export async function storeAgentRunReport(
   { patch, previousRunId }: StoreAgentRunReportInput,
   deps: AgentRunStoreDependencies = {},
 ): Promise<StoreAgentRunReportResult> {
-  return storeReportUnderDefinitionLock(run, patch, latest => (latest?.runId ?? null) === previousRunId, deps);
+  return storeReportUnderWriteLock(run, patch, latest => (latest?.runId ?? null) === previousRunId, deps);
 }
 
 /**
  * Stores a run's report without novelty flags (running → report_ready), when
- * none could be classified. It still takes the definition's lock so it becomes
+ * none could be classified. It is still stored under the write lock so it becomes
  * the latest stored report in order, and the next run compares with it. Returns
  * the reported run, or null when the run had left `running`.
  */
@@ -164,6 +163,6 @@ export async function storeUnclassifiedAgentRunReport(
   report: string,
   deps: AgentRunStoreDependencies = {},
 ): Promise<StoredAgentRun | null> {
-  const stored = await storeReportUnderDefinitionLock(run, { report }, () => true, deps);
+  const stored = await storeReportUnderWriteLock(run, { report }, () => true, deps);
   return stored.outcome === 'stored' ? stored.run : null;
 }

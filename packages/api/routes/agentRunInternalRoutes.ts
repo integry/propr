@@ -153,8 +153,8 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
       const grantId = ended?.grantId ?? null;
       const activity = grantId ? await loadMcpGrantActivity(database, [grantId]) : null;
       const calls = grantId ? (activity ? activity.get(grantId)?.recentRequests ?? 0 : null) : null;
-      // Counted once the grant is revoked: a receipt is admitted under the grant's row lock
-      // (`McpPolicy.admit`), so every operation the grant performed is already visible here
+      // Counted once the grant is revoked: a receipt is admitted under SQLite's write lock
+      // (`McpPolicy.admit`, `BEGIN IMMEDIATE`), so every operation the grant performed is already visible here
       // and nothing is admitted under it afterwards. A grant the phase ended before is counted
       // the same way: a worker that stopped between its revoke and the write of that count
       // recovers it here.
