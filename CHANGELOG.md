@@ -44,6 +44,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consolidations as repository To-Dos. The default review guidance now also
   asks reviewers to check new helpers for duplicates and flag them under the
   `complexity` category when the review uses it.
+- **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
+  option in `.propr/workflow.yml` (default `false`) makes ProPR's own
+  auto-merge behave like a merge queue. A labelled PR that passes every other
+  gate but is behind its base is updated through GitHub's update-branch API
+  (pinned to the evaluated head) instead of merged, and merges only after CI
+  passes on the updated head. One PR per repository (the oldest eligible) is
+  updated at a time, each PR gets at most `max_branch_updates_per_hour`
+  (default 3) updates, and conflicts use the opt-in automatic conflict
+  resolution or leave an explaining comment. The comparison and the merge are
+  serialised per repository under a renewed, token-checked ownership that is
+  confirmed just before the merge, so two current PRs cannot merge together.
+  Waiting PRs, including PRs outside a plan, are retried by the auto-merge
+  sweep. GitHub's native auto-merge is not armed under the option (ProPR withdraws
+  its own earlier request). Every decision is recorded with the auto-merge
+  timeline event.
+
+### Changed
+
+- **Bundled Antigravity CLI 1.5.6**: the `propr/agent` image moves from
+  Antigravity CLI 1.4.0 to 1.5.6 (release `6212266538958848`, SHA-512 checked
+  against Google's install manifest). The model catalog is unchanged: Gemini 3.8
+  Flash, Gemini 4 Argon, Claude Opus/Sonnet 5.5 and GPT-OSS 120B. Gemini 4
+  Carbon is not added because the CLI offers it only to ADC sign-ins.
+  - From 1.5.0, a run cut short by `--print-timeout` exits with code `3`,
+    prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to
+    stderr. ProPR always passes `--print-timeout`, and now records such a
+    task as timed out with the CLI's explanation, instead of a generic
+    failure. Analysis runs no longer accept the partial answer, and native
+    goal attempts report the same message.
+  - From 1.5.2, `-p --dangerously-skip-permissions` denies actions outside the
+    workspace when a Gemini Enterprise admin requires review. The Agents and
+    Models page documents this.
+  - 1.5.5 fixes `agy -p` sometimes never exiting after printing its result.
 
 ### Fixed
 

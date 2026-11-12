@@ -51,7 +51,19 @@ if [ -f ".propr/package.json" ]; then
   else
     npm install
   fi
+  cd "$PROPR_WORKSPACE"
 fi
+
+# The steps below run in the repository root, not in .propr.
+# Each run starts from a fresh worktree, so git-ignored files are missing.
+# Create local env files from a committed example (never commit secrets):
+# if [ ! -f .env ] && [ -f .env.example ]; then
+#   cp .env.example .env
+# fi
+
+# Regenerate ignored code before the agent starts, for example:
+# npm ci
+# npm run codegen --if-present
 
 # System packages are managed at the ProPR installation level with
 # propr runtime packages ..., not from repository setup.
@@ -96,8 +108,17 @@ const WORKFLOW_YML = `# yaml-language-server: $schema=https://docs.propr.dev/sch
 # Policy is read from the task's base branch at the start of each run.
 # Instance Settings remain the defaults and hard limits.
 # .propr/setup.sh remains the implicit after_create hook when present.
+# Each run starts in a fresh worktree: git-ignored env files and generated
+# code are missing until after_create recreates them. Recipes:
+# https://docs.propr.dev/docs/features/repository-workflow#fresh-worktrees
 hooks:
   # after_create: bash .propr/setup.sh
+  # Or inline, replacing setup.sh:
+  # after_create: |
+  #   set -euo pipefail
+  #   [ -f .env ] || cp .env.example .env
+  #   npm ci
+  #   npm run codegen --if-present
   # before_run: npm run build --if-present
   # after_run: ./scripts/collect-artifacts.sh
   # before_remove: ./scripts/cleanup.sh
@@ -117,6 +138,10 @@ hooks:
 #   method: squash
 #   protected_paths:
 #     - ".github/workflows/**"
+#   require_up_to_date: false
+#   max_branch_updates_per_hour: 3
+# Stop and report a blocker (no commit, no PR) instead of delivering a reduced version.
+# on_blocker: report
 `;
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [

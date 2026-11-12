@@ -505,6 +505,27 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     assert.ok(lifecycleEvents.every(notification => !notification.actions.includes('follow_up')));
   });
 
+  test('a run that stopped on a reported blocker is not projected as a completed implementation', async () => {
+    const completedAt = iso();
+    await database('tasks').insert({
+      task_id: 'blocked-issue-run', repository: 'integry/propr',
+      issue_number: 120, pr_number: null, task_type: 'issue', initial_job_data: '{}',
+    });
+    await database('task_history').insert({
+      task_id: 'blocked-issue-run', state: 'completed', timestamp: completedAt,
+      metadata: JSON.stringify({ terminalReason: 'blocked', notificationRecap: 'Stopped on a blocker: no key' }),
+    });
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'blocked-issue-run', state: 'completed',
+      repository: 'integry/propr', issueNumber: 120, timestamp: completedAt,
+      metadata: { terminalReason: 'blocked' },
+    });
+
+    const listed = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.deepEqual(listed.notifications.filter(notification => notification.title.includes('#120')), []);
+  });
+
   test('advertises review follow-up only when the endpoint issue is the reviewed PR', async () => {
     const reviews = [
       { taskId: 'review-mismatched-thread', issueNumber: 1724, timestamp: iso() },

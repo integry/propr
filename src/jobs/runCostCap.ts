@@ -195,17 +195,22 @@ export async function writeTimelineEvent(target: Pick<RunCostCapTarget, 'taskId'
     });
 }
 
-async function repositoryNotificationsEnabled(repository: string): Promise<boolean> {
+export async function repositoryNotificationsEnabled(repository: string): Promise<boolean> {
     const entries = (await loadMonitoredReposRaw()).filter(entry => entry.name.toLowerCase() === repository.toLowerCase());
     // Mirrors the Inbox projection: disabled only when every configured entry opts out.
     return entries.length === 0 || entries.some(entry => (entry as { notificationsEnabled?: boolean }).notificationsEnabled !== false);
 }
 
+/** Every instance member, as the Inbox projection addresses task notifications. */
+export async function instanceMemberNotificationRecipients(): Promise<Array<{ userId: string; pushEnabled: boolean }>> {
+    const members = await db('instance_members').distinct('github_user_id') as Array<{ github_user_id?: unknown }>;
+    return members.flatMap(row => typeof row.github_user_id === 'string' ? [{ userId: row.github_user_id, pushEnabled: true }] : []);
+}
+
 async function notifySpendCap(target: RunCostCapTarget, snapshot: RunCostSnapshot): Promise<void> {
     const repository = `${target.repoOwner}/${target.repoName}`;
     if (!await repositoryNotificationsEnabled(repository)) return;
-    const members = await db('instance_members').distinct('github_user_id') as Array<{ github_user_id?: unknown }>;
-    const recipients = members.flatMap(row => typeof row.github_user_id === 'string' ? [{ userId: row.github_user_id, pushEnabled: true }] : []);
+    const recipients = await instanceMemberNotificationRecipients();
     if (recipients.length === 0) return;
     await createNotificationEvent({
         deduplicationKey: `budget-exceeded:${target.taskId}`,

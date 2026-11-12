@@ -8,6 +8,7 @@ import {
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import { describeUncommittedFiles, quoteBlockerExplanation } from './blockedRunText.js';
 import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
@@ -277,4 +278,35 @@ export async function buildCompletionComment(
 
         return noChangesBody;
     }
+}
+
+/**
+ * The completion comment of a follow-up or `/fix` run whose agent reported a
+ * blocker (`on_blocker: report`). It replaces the no-change text: nothing was
+ * committed or pushed. The footer marks the trigger comments as handled but
+ * binds no accepted request, as for a partial run, since the work was not done.
+ */
+export async function buildBlockedCompletionComment(
+    unprocessedComments: UnprocessedComment[],
+    blocked: { explanation: string; uncommittedFiles: readonly string[] },
+    commentContext: Pick<CommentContext, 'llm' | 'authorsText' | 'taskUrl' | 'addressedFeedback'>,
+    claudeResult: ClaudeCodeResponse,
+): Promise<string> {
+    const { llm, authorsText, taskUrl, addressedFeedback } = commentContext;
+    const requested = addressedFeedback && !isEmptyReviewFeedbackSelection(addressedFeedback)
+        ? `> Requested ${describeReviewFeedbackSelection(addressedFeedback)}\n\n` : '';
+    const uncommitted = describeUncommittedFiles(blocked.uncommittedFiles);
+    let body = `🛑 **Stopped on a blocker** while handling the follow-up request by ${authorsText}\n\n`;
+    body += requested;
+    body += 'The agent could not complete this request as specified and reported a blocker instead of delivering a reduced version. Nothing was committed or pushed.\n\n';
+    body += `## What Blocked the Run\n\n${quoteBlockerExplanation(blocked.explanation)}\n\n`;
+    if (uncommitted) body += `${uncommitted}\n\n`;
+    body += 'Resolve the blocker, then reply with updated instructions to try again.\n\n';
+    body += await buildMetricsSection(claudeResult, llm, authorsText, true);
+    if (taskUrl) body += `\n\n[View Task Execution](${taskUrl})`;
+    body += `\n\n---\n`;
+    body += buildSlashCommandsBlock();
+    body += `${buildAttributionLine()}\n`;
+    body += buildCompletionFooter(unprocessedComments, { partial: true });
+    return body;
 }

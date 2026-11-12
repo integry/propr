@@ -355,7 +355,7 @@ wait for an operator and block every later command on their pull request;
 `release_followup_handoff` stops tracking it so the next command can run (the
 branch is freed, files and commits are never deleted; a worktree that still
 holds unpublished work is released only with force set to true). The same
-decisions are in Settings → Workflow & PR Rules → Maintenance.
+decisions are in Settings → Maintenance → Held follow-ups.
 
 Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates

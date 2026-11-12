@@ -18,8 +18,11 @@ import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
 import { buildWorkNotificationRecap, fullNotificationSummary } from '../notificationRecap.js';
 import { completeProviderReplacement } from '../providerReplacement.js';
+import { blockedRunRecap } from '../blockedRunText.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+  // The agent reported a blocker (`on_blocker: report`): a terminal, non-retryable outcome with nothing published.
+  if (postProcessingResult?.blocked && claudeResult?.success) return 'blocked';
   if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {
     return 'partial_with_pr';
   }
@@ -39,6 +42,7 @@ const terminalSummary = ({ claudeResult, commitResult }: TerminalStateParams): u
 
 function buildTerminalNotificationRecap(params: TerminalStateParams, status: string) {
   const { claudeResult, postProcessingResult, commitResult } = params;
+  if (status === 'blocked' && postProcessingResult?.blocked) return blockedRunRecap(postProcessingResult.blocked);
   return buildWorkNotificationRecap(
     terminalSummary(params),
     {
@@ -50,7 +54,8 @@ function buildTerminalNotificationRecap(params: TerminalStateParams, status: str
   );
 }
 
-function terminalReasonFields(claudeResult: ClaudeCodeResponse | null) {
+function terminalReasonFields(claudeResult: ClaudeCodeResponse | null, status?: string) {
+  if (status === 'blocked') return { terminalReason: 'blocked' as const };
   const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
   return terminalReason ? { terminalReason } : {};
 }
@@ -83,7 +88,8 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
     : null;
   const taskResult = {
     status,
-    ...terminalReasonFields(claudeResult),
+    ...terminalReasonFields(claudeResult, status),
+    ...(status === 'blocked' && postProcessingResult?.blocked ? { blocker: postProcessingResult.blocked } : {}),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
@@ -163,6 +169,17 @@ async function closeFailedPlanIssue(taskCompletionParams: TaskCompletionParams):
   }, 'Marked plan issue closed after terminal task without PR');
 }
 
+/** A blocked run holds its epic queue with an explanation; a later normal run releases it. */
+async function syncEpicQueueOutcome({ issueRef, claudeResult, postProcessingResult, correlatedLogger }: TaskCompletionParams): Promise<void> {
+  const blocked = getTaskCompletionStatus(claudeResult, postProcessingResult) === 'blocked';
+  try {
+    const { syncEpicQueueBlocker } = await import('../issueJobBlocked.js');
+    await syncEpicQueueBlocker({ issueRef, blocked, correlatedLogger });
+  } catch (error) {
+    correlatedLogger.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Could not update the epic execution queue for the run outcome');
+  }
+}
+
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
   const { taskId, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
@@ -177,6 +194,7 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
+    await syncEpicQueueOutcome(taskCompletionParams);
     await closeFailedPlanIssue(taskCompletionParams);
   } catch (stateError) {
     correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update terminal task state');

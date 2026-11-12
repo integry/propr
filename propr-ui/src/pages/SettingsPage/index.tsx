@@ -28,6 +28,7 @@ const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
   const desktop = useDesktop();
   const categoryRoute = useSettingsCategoryRoute();
+  const user = useCurrentUser();
 
   const {
     loading, saveStatus, globalError,
@@ -98,18 +99,6 @@ const AdminSettingsPage: React.FC = () => {
   }
 
   const settingsSections: SettingsNavigationSection[] = [
-    {
-      id: 'usage-tips',
-      category: 'general',
-      searchText: 'usage tips documentation',
-      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
-    },
-    {
-      id: 'experimental',
-      category: 'general',
-      searchText: 'experimental features opt-in voice briefings microphone speech briefing catch me up dashboard AI summary summaries activity overview summarization LLM cost enable disable desktop browser',
-      content: <ExperimentalSettingsSection dashboardSummaryEnabled={settings.dashboard_summary_enabled === true} onDashboardSummaryChange={handleDashboardSummaryChange} />
-    },
     {
       id: 'model-selection',
       category: 'models',
@@ -266,7 +255,6 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
-    ...maintenanceSections(),
     {
       id: 'ultrafix',
       category: 'ultrafix',
@@ -340,6 +328,19 @@ const AdminSettingsPage: React.FC = () => {
       category: 'notifications',
       searchText: 'personal notifications browser web push inbox badge quiet hours timezone plans tasks reviews pull requests indexing system failures',
       content: <NotificationSettingsSection />
+    },
+    ...maintenanceSections(user),
+    {
+      id: 'usage-tips',
+      category: 'experimental',
+      searchText: 'usage tips documentation',
+      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
+    },
+    {
+      id: 'experimental',
+      category: 'experimental',
+      searchText: 'experimental features opt-in voice briefings microphone speech briefing catch me up dashboard AI summary summaries activity overview summarization LLM cost enable disable desktop browser',
+      content: <ExperimentalSettingsSection dashboardSummaryEnabled={settings.dashboard_summary_enabled === true} onDashboardSummaryChange={handleDashboardSummaryChange} />
     }
   ];
 

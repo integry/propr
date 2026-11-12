@@ -124,6 +124,18 @@
             "minLength": 1,
             "pattern": "^(?=[\\s\\S]*\\S)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$"
           }
+        },
+        "require_up_to_date": {
+          "type": "boolean",
+          "default": false,
+          "description": "Merge only a head that contains the latest base commit. A behind PR is updated from its base (one PR per repository at a time) and merged after CI passes on the updated head."
+        },
+        "max_branch_updates_per_hour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 3,
+          "description": "Most branch updates ProPR requests for one PR in any hour when require_up_to_date is set."
         }
       }
     },
@@ -151,6 +163,13 @@
           }
         }
       }
+    },
+    "on_blocker": {
+      "enum": [
+        "continue",
+        "report"
+      ],
+      "description": "What a run does when it cannot complete its task as specified. continue (default) keeps the normal outcome; report tells the agent to stop without partial changes and end its final message with a PROPR_BLOCKED: line, which ProPR reports as a blocked run: no commit, no pull request, no done label."
     }
   }
 }
