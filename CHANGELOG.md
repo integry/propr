@@ -42,6 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool-policy checks pass against both binaries. Codex 0.167 rewords the
   Daybreak provider refusal that ProPR's `daybreak=false` override already
   avoids.
+- **Bundled Antigravity CLI 1.5.6**: the `propr/agent` image moves from
+  Antigravity CLI 1.4.0 to 1.5.6 (release `6212266538958848`, SHA-512 checked
+  against Google's install manifest). The model catalog is unchanged: Gemini 3.8
+  Flash, Gemini 4 Argon, Claude Opus/Sonnet 5.5 and GPT-OSS 120B. Gemini 4
+  Carbon is not added because the CLI offers it only to ADC sign-ins.
+  - From 1.5.0, a run cut short by `--print-timeout` exits with code `3`,
+    prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to
+    stderr. ProPR always passes `--print-timeout`, and now records such a
+    task as timed out with the CLI's explanation, instead of a generic
+    failure. Analysis runs no longer accept the partial answer, and native
+    goal attempts report the same message.
+  - From 1.5.2, `-p --dangerously-skip-permissions` denies actions outside the
+    workspace when a Gemini Enterprise admin requires review. The Agents and
+    Models page documents this.
+  - 1.5.5 fixes `agy -p` sometimes never exiting after printing its result.
 
 ### Deprecated
 

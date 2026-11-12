@@ -242,7 +242,7 @@ test('Gemini 4 Argon is one namespaced Antigravity model with 1M limits', () => 
     assert.strictEqual(model?.shortAlias, 'argon');
     assert.strictEqual(model?.openRouterId, 'google/gemini-4-argon');
     assert.strictEqual(model?.minAgentVersion, '1.4.0');
-    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.4.0');
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.6');
     assert.strictEqual(model?.contextWindow, '1M');
     assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);

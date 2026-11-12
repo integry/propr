@@ -171,6 +171,12 @@ Each model has one catalog entry and base label. Select reasoning effort separat
 
 Antigravity CLI 1.4.0 no longer offers Gemini 3.1 Pro and runs Gemini 4 Argon in its place. ProPR does the same: agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, and the old Pro label and `pro` alias select Gemini 4 Argon.
 
+Gemini 4 Carbon is not in the catalog. Antigravity CLI 1.5.6 offers it only to accounts signed in with Application Default Credentials (`AGY_ADC_AUTH`), and the setup above signs in with `agy login`.
+
+:::note[Gemini Enterprise review policy]
+ProPR runs Antigravity tasks with `--dangerously-skip-permissions`. From Antigravity CLI 1.5.2, when a Gemini Enterprise admin requires review of agent actions, that flag no longer approves actions outside the workspace in headless runs: the CLI denies them. Work inside the task's worktree is unaffected, but a step that needs a path outside it fails instead of running. Ask the admin to relax the review requirement for the account ProPR uses if tasks need such actions.
+:::
+
 ## OpenCode Models
 
 Built-in free models:
