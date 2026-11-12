@@ -7,7 +7,7 @@ import {
     type IssueJobData, type RepositoryValidationResult,
 } from '@propr/core';
 import { escalateOneStep, type EscalationModel, type EscalationStep } from './ultrafixEscalationPolicy.js';
-import { resolveHandoffCandidate, resolveModel, type CandidateSkip } from './ultrafixEscalation.js';
+import { canonicalModelId, resolveHandoffCandidate, resolveModel, type CandidateSkip } from './ultrafixEscalation.js';
 
 /**
  * Escalation of implementation (issue) runs: start cheap and climb only after a
@@ -39,6 +39,8 @@ export interface ImplementationEscalationDeps {
     resolveCurrent?: (model: string, effort?: ReasoningLevel) => Promise<EscalationModel | null>;
     /** A handoff candidate, with the same availability and provider-usage checks as Ultrafix. */
     resolveCandidate?: (candidate: string, skipped: CandidateSkip[]) => Promise<EscalationModel | null>;
+    /** The canonical agent:model ID of a configured entry (bare IDs and aliases resolved), or null when unresolvable. */
+    canonicalModel?: (model: string) => Promise<string | null>;
     logger?: Pick<Logger, 'info' | 'warn'>;
 }
 
@@ -52,6 +54,23 @@ function rungText(rung: EscalationRung): string {
     return `${rung.model} (${rung.effort ?? 'default effort'})`;
 }
 
+const EFFORT_SUFFIX = /-(low|medium|high)$/;
+
+/** Whether `id` names the same model as `rung`, ignoring an effort encoded in the model ID. */
+function sameModel(id: string, rung: EscalationModel): boolean {
+    return rung.effortInModel ? id.replace(EFFORT_SUFFIX, '') === rung.model.replace(EFFORT_SUFFIX, '') : id === rung.model;
+}
+
+/** The current model, then the configured handoff models by canonical ID, without aliases of an earlier entry. */
+async function initialLadderModels(current: EscalationModel, configured: string[], canonical: (model: string) => Promise<string>): Promise<string[]> {
+    const models = [current.model];
+    for (const entry of configured) {
+        const id = await canonical(entry);
+        if (!sameModel(id, current) && !models.includes(id)) models.push(id);
+    }
+    return models;
+}
+
 /** Computes one ladder step for a run on `model` at `effort`, or null when the ladder has no step left. */
 export async function planImplementationEscalation(
     input: { model: string; effort?: ReasoningLevel; ladder?: ImplementationEscalationLadder; reason: ImplementationEscalationReason },
@@ -60,17 +79,25 @@ export async function planImplementationEscalation(
 ): Promise<ImplementationEscalation | null> {
     const resolveCurrent = deps.resolveCurrent ?? ((model: string, effort?: ReasoningLevel) => resolveModel(model, false, effort));
     const resolveCandidate = deps.resolveCandidate ?? resolveHandoffCandidate;
+    const canonical = async (model: string) => await (deps.canonicalModel ?? canonicalModelId)(model) ?? model;
     const current = await resolveCurrent(input.model, input.effort);
     if (!current) return null;
     // A lineage keeps the ladder it started with; settings changes apply to new lineages.
     const ladder = input.ladder ?? {
-        models: [current.model, ...settings.models.filter(model => model !== current.model)],
+        models: await initialLadderModels(current, settings.models, canonical),
         maxReasoningLevels: settings.maxReasoningLevels, modelIndex: 0, climbs: 0,
     };
     const from = { model: current.model, ...(current.effort ? { effort: current.effort } : {}) };
     const state = { models: ladder.models, maxReasoningLevels: ladder.maxReasoningLevels, modelIndex: ladder.modelIndex, climbs: ladder.climbs, current: { ...current } };
     const skipped: CandidateSkip[] = [];
-    const step = await escalateOneStep(state, candidate => resolveCandidate(candidate, skipped));
+    // Rungs already run by this lineage; an alias of one of them would restart it at its base effort.
+    const used = await Promise.all(ladder.models.slice(0, ladder.modelIndex + 1).map(canonical));
+    const step = await escalateOneStep(state, async candidate => {
+        const resolved = await resolveCandidate(candidate, skipped);
+        if (!resolved || !(sameModel(current.model, resolved) || sameModel(resolved.model, current) || used.some(id => sameModel(id, resolved)))) return resolved;
+        skipped.push({ candidate, reason: 'equivalent_model', resolvedModel: resolved.model });
+        return null;
+    });
     for (const skip of skipped) deps.logger?.info({ ...skip, reason: input.reason, skipReason: skip.reason }, 'Implementation escalation: candidate skipped');
     if (!step) return null;
     return {
@@ -146,10 +173,16 @@ export interface ValidationFollowupParams {
 }
 
 export interface ValidationFollowupDeps extends ImplementationEscalationDeps {
-    /** Atomic once-only claim; resolves false when this task already had its follow-up. */
+    /** Atomically reserves the task's follow-up as pending delivery; false when a reservation already exists. */
     claim?: (key: string, ttlSeconds: number) => Promise<boolean>;
+    /** The reservation state: 'pending' until the follow-up is queued, then 'delivered'; null when none. */
+    readClaim?: (key: string) => Promise<string | null>;
+    /** Atomically moves a pending reservation to delivered; false when it was not pending (another invocation finished it). */
+    completeClaim?: (key: string, ttlSeconds: number) => Promise<boolean>;
+    /** Drops a reservation that is still pending. */
     release?: (key: string) => Promise<void>;
     enqueue?: (data: CommentJobData, jobId: string) => Promise<void>;
+    jobExists?: (jobId: string) => Promise<boolean>;
     recordEvent?: (taskId: string, event: ReturnType<typeof implementationEscalationEvent>) => Promise<void>;
     postComment?: (owner: string, repo: string, issueNumber: number, body: string) => Promise<void>;
     randomId?: () => string;
@@ -198,10 +231,20 @@ async function issueRedis() {
     return (await import('./issueJob/config.js')).redisClient;
 }
 
-const DEFAULT_FOLLOWUP_DEPS: Required<Pick<ValidationFollowupDeps, 'claim' | 'release' | 'enqueue' | 'recordEvent' | 'postComment' | 'randomId'>> = {
-    claim: async (key, ttl) => await (await issueRedis()).set(key, '1', 'EX', ttl, 'NX') === 'OK',
-    release: async key => { await (await issueRedis()).del(key); },
+const CLAIM_PENDING = 'pending';
+const CLAIM_DELIVERED = 'delivered';
+const COMPLETE_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]) return 1 end return 0";
+const RELEASE_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0";
+
+type FollowupIo = Required<Pick<ValidationFollowupDeps, 'claim' | 'readClaim' | 'completeClaim' | 'release' | 'enqueue' | 'jobExists' | 'recordEvent' | 'postComment' | 'randomId'>>;
+
+const DEFAULT_FOLLOWUP_DEPS: FollowupIo = {
+    claim: async (key, ttl) => await (await issueRedis()).set(key, CLAIM_PENDING, 'EX', ttl, 'NX') === 'OK',
+    readClaim: async key => await (await issueRedis()).get(key),
+    completeClaim: async (key, ttl) => Number(await (await issueRedis()).eval(COMPLETE_CLAIM_SCRIPT, 1, key, CLAIM_PENDING, CLAIM_DELIVERED, String(ttl))) === 1,
+    release: async key => { await (await issueRedis()).eval(RELEASE_CLAIM_SCRIPT, 1, key, CLAIM_PENDING); },
     enqueue: async (data, jobId) => { await issueQueue.add('processPullRequestComment', data, { jobId }); },
+    jobExists: async jobId => Boolean(await issueQueue.getJob(jobId)),
     recordEvent: recordTimelineEvent,
     postComment: postIssueComment,
     randomId: randomUUID,
@@ -227,6 +270,22 @@ function validationFollowupJob(
 }
 
 /**
+ * Reserves the task's follow-up. A reservation still pending was left by an
+ * invocation that stopped before delivering it (or is delivering it now), so it
+ * is recovered rather than counted as a completed follow-up.
+ */
+async function reserveValidationFollowup(io: FollowupIo, key: string): Promise<'claimed' | 'recovered' | 'delivered'> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (await io.claim(key, VALIDATION_FOLLOWUP_CLAIM_TTL_SECONDS)) return 'claimed';
+        const state = await io.readClaim(key);
+        if (state === CLAIM_PENDING) return 'recovered';
+        // Gone between the two reads (released or expired): claim again once.
+        if (state !== null) return 'delivered';
+    }
+    return 'delivered';
+}
+
+/**
  * After an implementation run opened a pull request whose repository validation
  * failed, queues one follow-up on it, one step up the ladder, asking the agent to
  * fix the failing commands. Off unless enabled; at most once per task. The
@@ -247,16 +306,23 @@ export async function requestValidationFollowup(params: ValidationFollowupParams
         correlatedLogger.info({ taskId, pullRequestNumber: pullRequest.number }, 'Repository validation failed, but the escalation ladder has no higher step; no automatic follow-up');
         return 'ladder_exhausted';
     }
-    const io = { ...DEFAULT_FOLLOWUP_DEPS, ...deps };
+    const io: FollowupIo = { ...DEFAULT_FOLLOWUP_DEPS, ...deps };
     const key = validationFollowupClaimKey(taskId);
-    if (!await io.claim(key, VALIDATION_FOLLOWUP_CLAIM_TTL_SECONDS)) return 'duplicate';
     const jobId = `pr-validation-followup-${issueRef.repoOwner}-${issueRef.repoName}-${pullRequest.number}-${shortHash(taskId)}`;
+    const reservation = await reserveValidationFollowup(io, key);
+    if (reservation === 'delivered') return 'duplicate';
     try {
-        await io.enqueue(validationFollowupJob(params, escalation, { pullRequestNumber: pullRequest.number, validation, correlationId: io.randomId() }), jobId);
+        // A recovered reservation may already have its job queued; the deterministic job ID keeps a re-add idempotent.
+        if (reservation === 'claimed' || !await io.jobExists(jobId)) {
+            await io.enqueue(validationFollowupJob(params, escalation, { pullRequestNumber: pullRequest.number, validation, correlationId: io.randomId() }), jobId);
+        }
     } catch (error) {
         await io.release(key).catch(() => undefined);
         throw error;
     }
+    // Only the invocation that marks the reservation delivered reports it, so a concurrent recovery posts one notice.
+    if (!await io.completeClaim(key, VALIDATION_FOLLOWUP_CLAIM_TTL_SECONDS)) return 'duplicate';
+    if (reservation === 'recovered') correlatedLogger.info({ taskId, jobId }, 'Implementation escalation: recovered an interrupted validation follow-up reservation');
     const event = implementationEscalationEvent(escalation, { pullRequestNumber: pullRequest.number, followupJobId: jobId });
     await io.recordEvent(taskId, event).catch(error => {
         correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Could not record the escalation on the task timeline');

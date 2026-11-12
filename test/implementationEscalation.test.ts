@@ -40,7 +40,8 @@ await mock.module('@propr/core', { namedExports: {
     resolveAgentModelReasoningLevel,
     resolveRuntimeModelReasoningLevel,
     resolveLlmLabel: async (model: string) => ({ agentAlias: model.split(':')[0], model: model.split(':')[1] }),
-    resolveConfiguredModel: async (model: string) => model,
+    // Like the real resolver, a bare model ID resolves to its agent's qualified ID.
+    resolveConfiguredModel: async (model: string) => model.includes(':') ? model : `${Object.values(configs).find(config => config.supportedModels.includes(model))?.alias}:${model}`,
     issueQueue: { add: async (name: string, data: Record<string, unknown>, opts: { jobId: string }) => { enqueued.push({ name, data, jobId: opts.jobId }); } },
     getAuthenticatedOctokit: async () => ({ request: async (_route: string, params: { body: string }) => { comments.push(params.body); } }),
     getStateManager: () => ({ getTaskState: async () => ({ state: 'completed' }) }),
@@ -50,7 +51,7 @@ await mock.module('../packages/core/src/services/syntheticUsageSnapshotProvider.
     AliasSpecificAgentTankSnapshotProvider: class { async getSnapshot(alias: string) { return usage[alias] ?? null; } },
 } });
 
-const { planImplementationEscalation, escalateReplacementJob, implementationEscalationEvent, requestValidationFollowup } = await import('../src/jobs/implementationEscalation.js');
+const { planImplementationEscalation, escalateReplacementJob, implementationEscalationEvent, requestValidationFollowup, validationFollowupClaimKey } = await import('../src/jobs/implementationEscalation.js');
 const { createTaskReplacementService } = await import('../src/taskReplacement/service.js');
 const { createTaskReplacementStore, recordReplayableIssueTask } = await import('../src/taskReplacement/store.js');
 
@@ -97,6 +98,27 @@ test('a handoff skips unavailable, disabled and usage-exhausted candidates, like
     assert.equal((await planImplementationEscalation({ model: 'claude:claude-sonnet-5-5', reason: 'infra_lost' }, settings))?.to.model, 'claude:claude-opus-5-5');
     configs.codex.enabled = true;
     assert.equal((await planImplementationEscalation({ model: 'claude:claude-sonnet-5-5', reason: 'infra_lost' }, settings))?.to.model, 'codex:gpt-6');
+});
+
+test('an alias of the current model is not a handoff, so the run never restarts the same model at a lower effort', async () => {
+    settings = { ...settings, maxReasoningLevels: 0, models: ['claude-sonnet-5-5'] };
+    // The bare ID resolves to the current model: no step is left, and the current high effort is kept.
+    assert.equal(await planImplementationEscalation({ model: 'claude:claude-sonnet-5-5', effort: 'high', reason: 'provider_transient' }, settings), null);
+    assert.equal(await escalateReplacementJob({ agentAlias: 'claude', modelName: 'claude-sonnet-5-5', reasoningLevel: 'high' }, 'provider_transient'), null);
+
+    settings.models = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude:claude-opus-5-5'];
+    const handoff = await planImplementationEscalation({ model: 'claude:claude-sonnet-5-5', effort: 'high', reason: 'provider_transient' }, settings);
+    assert.deepEqual(handoff && [handoff.step, handoff.to], ['model_handoff', { model: 'claude:claude-opus-5-5', effort: 'medium' }]);
+    assert.deepEqual(handoff?.ladder.models, ['claude:claude-sonnet-5-5', 'claude:claude-opus-5-5'], 'the ladder holds canonical IDs without aliases');
+});
+
+test('a carried ladder skips aliases of the current or an earlier rung', async () => {
+    settings.maxReasoningLevels = 0;
+    const carried = { models: ['claude:claude-sonnet-5-5', 'claude-sonnet-5-5'], maxReasoningLevels: 0, modelIndex: 0, climbs: 0 };
+    assert.equal(await planImplementationEscalation({ model: 'claude:claude-sonnet-5-5', effort: 'high', ladder: carried, reason: 'infra_lost' }, settings), null);
+    const pastHandoff = { models: ['claude:claude-sonnet-5-5', 'claude:claude-opus-5-5', 'claude-sonnet-5-5', 'codex:gpt-6'], maxReasoningLevels: 0, modelIndex: 1, climbs: 0 };
+    const next = await planImplementationEscalation({ model: 'claude:claude-opus-5-5', effort: 'high', ladder: pastHandoff, reason: 'infra_lost' }, settings);
+    assert.deepEqual(next && [next.to.model, next.ladder.modelIndex], ['codex:gpt-6', 3]);
 });
 
 test('the escalation event names from, to and reason', async () => {
@@ -248,8 +270,15 @@ function followupParams(overrides: Record<string, unknown> = {}) {
 }
 
 function claims() {
-    const held = new Set<string>();
-    return { claim: async (key: string) => !held.has(key) && !!held.add(key), release: async (key: string) => { held.delete(key); } };
+    const held = new Map<string, string>();
+    return {
+        held,
+        claim: async (key: string) => !held.has(key) && !!held.set(key, 'pending'),
+        readClaim: async (key: string) => held.get(key) ?? null,
+        completeClaim: async (key: string) => held.get(key) === 'pending' && !!held.set(key, 'delivered'),
+        release: async (key: string) => { if (held.get(key) === 'pending') held.delete(key); },
+        jobExists: async (jobId: string) => enqueued.some(job => job.jobId === jobId),
+    };
 }
 
 test('a failed validation queues one escalated follow-up asking to fix the failing commands', async () => {
@@ -296,4 +325,40 @@ test('a follow-up the queue rejected releases its claim, so a retry of the run c
     const guard = claims();
     await assert.rejects(requestValidationFollowup(followupParams(), { ...guard, enqueue: async () => { throw new Error('redis down'); } }), /redis down/);
     assert.equal(await requestValidationFollowup(followupParams(), guard), 'queued');
+});
+
+test('a reservation interrupted before its job was queued is recovered instead of suppressing the follow-up', async () => {
+    settings.validationFollowupEnabled = true;
+    const guard = claims();
+    // A previous invocation stopped right after reserving the follow-up.
+    guard.held.set(validationFollowupClaimKey('issue-task-1'), 'pending');
+    assert.equal(await requestValidationFollowup(followupParams(), guard), 'queued');
+    assert.equal(enqueued.length, 1);
+    assert.equal(comments.length, 1);
+    assert.equal(guard.held.get(validationFollowupClaimKey('issue-task-1')), 'delivered');
+    assert.equal(await requestValidationFollowup(followupParams(), guard), 'duplicate');
+    assert.equal(enqueued.length, 1);
+});
+
+test('a reservation interrupted after its job was queued is completed without queueing it twice', async () => {
+    settings.validationFollowupEnabled = true;
+    const guard = claims();
+    let stop = true;
+    const interrupted = { ...guard, completeClaim: async (key: string) => { if (stop) throw new Error('worker stopped'); return guard.completeClaim(key); } };
+    await assert.rejects(requestValidationFollowup(followupParams(), interrupted), /worker stopped/);
+    assert.equal(enqueued.length, 1);
+    assert.equal(guard.held.get(validationFollowupClaimKey('issue-task-1')), 'pending', 'an undelivered reservation is not a completed follow-up');
+    stop = false;
+    assert.equal(await requestValidationFollowup(followupParams(), guard), 'queued');
+    assert.equal(enqueued.length, 1, 'the existing deterministic job is reused');
+    assert.equal(comments.length, 1);
+});
+
+test('when a concurrent recovery delivered the follow-up first, only that invocation reports it', async () => {
+    settings.validationFollowupEnabled = true;
+    const guard = claims();
+    const raced = { ...guard, completeClaim: async () => false };
+    assert.equal(await requestValidationFollowup(followupParams(), raced), 'duplicate');
+    assert.equal(enqueued.length, 1);
+    assert.deepEqual([comments.length, history.length], [0, 0]);
 });

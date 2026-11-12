@@ -9,7 +9,7 @@ import { advanceEscalation, type EscalationModel } from './ultrafixEscalationPol
 
 export type CandidateSkip = {
     candidate: string;
-    reason: 'agent_unavailable' | 'agent_disabled' | 'model_unsupported' | 'usage_limit' | 'model_resolution_failed';
+    reason: 'agent_unavailable' | 'agent_disabled' | 'model_unsupported' | 'usage_limit' | 'model_resolution_failed' | 'equivalent_model';
     resolvedModel?: string;
     sessionPercent?: number;
     weeklyPercent?: number;
@@ -22,6 +22,16 @@ function availabilitySkipReason(
     if (!agent.config.enabled) return 'agent_disabled';
     if (!agent.config.supportedModels.includes(id)) return 'model_unsupported';
     return undefined;
+}
+
+/** The canonical agent:model ID of a configured model (bare IDs and aliases resolved), without availability checks. */
+export async function canonicalModelId(model: string): Promise<string | null> {
+    try {
+        const { agentAlias, model: id } = await resolveLlmLabel(await resolveConfiguredModel(model));
+        return agentAlias && id ? `${agentAlias}:${id}` : null;
+    } catch {
+        return null;
+    }
 }
 
 /**
