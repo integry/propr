@@ -585,3 +585,60 @@ test('a goal whose agent is at its ceiling is deferred before the attempt claim'
   assert.deepEqual(await processGoalJob(job as never, { checkAgentCapacity: async () => {}, claim } as never), { status: 'skipped', reason: 'goal_claim_fence' });
   assert.equal(claim.mock.callCount(), 1);
 });
+
+// A delivery the claim would reject must reach that fence while its agent is still
+// full, leave the waiting lists it joined, and not be delayed again.
+for (const stop of ['paused', 'cancelled', 'superseded', 'already claimed'] as const) {
+  test(`a deferred goal delivery that becomes ${stop} retires at the claim fence while its agent stays full`, async () => {
+    const { DelayedError } = await import('bullmq');
+    const { AgentRegistry, configureAgentCapacityRedis, db, getStateManager } = await import('@propr/core');
+    const { checkGoalAgentCapacity } = await import('../src/jobs/goalCapacity.ts');
+    const { claimGoalAttempt } = await import('../src/jobs/goalAttemptState.ts');
+    const data: GoalJobData = { goalId: `capacity-${stop}`, taskId: `capacity-task-${stop}`, repoOwner: 'acme', repoName: 'repo', generation: 1, claimId: 'claim-1' };
+    await db('goals').insert({ goal_id: data.goalId, owner_id: 'owner', owner_login: 'alice', repository: 'acme/repo',
+      objective: 'Ship it', launch_strategy: 'direct', initial_prompt: 'Ship it', agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'test',
+      current_task_id: data.taskId, desired_state: 'running', run_generation: data.generation, run_claim: data.claimId });
+    const env = { ...process.env };
+    Object.assign(process.env, { PROPR_AGENT_RUN_LIMIT: '2', PROPR_INSTANCE_ID: 'goal-capacity', PROPR_AGENT_RUN_ALIAS_LIMITS: 'codex=1' });
+    const waiters = new Map<string, Set<string>>();
+    // The only holder of codex is live for the whole test: the agent never frees up.
+    configureAgentCapacityRedis({
+      eval: async () => [0, 'codex', 1, 0],
+      zadd: async (key: string, _nx: string, _score: number, member: string) => { waiters.set(key, (waiters.get(key) ?? new Set()).add(member)); return 1; },
+      zrem: async (key: string, member: string) => { waiters.get(key)?.delete(member); return 1; },
+    } as never);
+    const registry = mock.method(AgentRegistry, 'getInstance', () => ({
+      ensureInitialized: async () => {},
+      getAgentById: () => ({ config: { alias: 'codex' } }),
+      getAgentByAlias: () => ({ config: { alias: 'codex' } }),
+      beginRoutingSession: () => ({ select: async () => ({ synthetic: false, physicalAgentAlias: 'codex' }) }),
+    }) as never);
+    const timeline = mock.method(getStateManager(), 'getTaskState', async () => null);
+    let delayed = 0;
+    const job = { data: data as GoalJobData & Record<string, unknown>, token: 't', queueName: 'goals', id: `job-${stop}`,
+      moveToDelayed: async () => { delayed++; }, updateData: async (next: never) => { job.data = next; } };
+    const dependencies = { checkAgentCapacity: checkGoalAgentCapacity, claim: claimGoalAttempt,
+      withHeartbeat: async () => assert.fail('a fenced delivery never runs') } as never;
+    const waiting = () => [...waiters.values()].reduce((count, members) => count + members.size, 0);
+    try {
+      await assert.rejects(processGoalJob(job as never, dependencies), DelayedError);
+      assert.equal(delayed, 1);
+      assert.equal(waiting(), 1, 'the first delivery waits on the codex list');
+      if (stop === 'paused' || stop === 'cancelled') await db('goals').where({ goal_id: data.goalId }).update({ desired_state: stop });
+      if (stop === 'superseded') await db('goals').where({ goal_id: data.goalId }).update({ run_generation: 2, run_claim: 'claim-2' });
+      if (stop === 'already claimed') await db('goals').where({ goal_id: data.goalId }).update({ claimed_at: db.fn.now() });
+
+      assert.deepEqual(await processGoalJob(job as never, dependencies), { status: 'skipped', reason: 'goal_claim_fence' });
+      assert.equal(delayed, 1, 'the retired delivery is not delayed again');
+      assert.equal(waiting(), 0, 'the retired delivery leaves the codex waiting list');
+      assert.equal(job.data.agentCapacityAliases, undefined);
+      assert.equal(job.data.agentCapacityDeferrals, undefined);
+    } finally {
+      timeline.mock.restore();
+      registry.mock.restore();
+      configureAgentCapacityRedis(undefined);
+      process.env = env;
+      await db('goals').where({ goal_id: data.goalId }).delete();
+    }
+  });
+}
