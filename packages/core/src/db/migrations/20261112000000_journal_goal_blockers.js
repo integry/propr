@@ -11,6 +11,13 @@
  * nothing, and a closed blocker is never reopened, so each blocker journals at
  * most one opening and one closing.
  *
+ * Blockers opened before this migration have no journal entry, and a refreshed
+ * observation appends none, so the migration journals an `open` event for each
+ * blocker that is still open for its goal's current attempt. Without it a
+ * cursorless `until: blocked` wait could never see a blocker that is already
+ * waiting on the operator. Blockers of an earlier attempt or a finished goal
+ * are left unjournaled, as no wait can match them.
+ *
  * Adding a nullable column without a foreign key is a plain `ALTER TABLE ADD
  * COLUMN` in SQLite, so `goal_events` is not rebuilt. These triggers belong to
  * `goal_blockers`: a later migration that rebuilds that table must recreate
@@ -39,6 +46,12 @@ export async function up(knex) {
     table.uuid('blocker_id');
     table.index(['blocker_id']);
   });
+  await knex.raw(`INSERT INTO goal_events (goal_id, kind, state, previous_state, blocker_id, run_generation, created_at)
+    SELECT goal_blockers.goal_id, 'blocker', 'open', NULL, goal_blockers.blocker_id, goal_blockers.run_generation, ${now}
+    FROM goal_blockers JOIN goals ON goals.goal_id = goal_blockers.goal_id
+    WHERE goal_blockers.status = 'open' AND goals.result_state IS NULL
+      AND goal_blockers.run_claim = goals.run_claim AND goal_blockers.run_generation = goals.run_generation
+    ORDER BY goal_blockers.first_observed_at, goal_blockers.blocker_id`);
   for (const trigger of triggers) await knex.raw(trigger);
 }
 
