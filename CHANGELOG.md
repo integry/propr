@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Review quality by effort**: `GET /api/stats/review-scores` adds `by_effort`,
+  the same figures per implementer model and reasoning level, with PRs whose
+  level was never recorded grouped under `unknown`; `models` keeps the
+  per-model totals. The review-scores CSV now has one row per model and effort
+  (new `implementer_reasoning_level` column), `propr stats review-scores` prints
+  model, effort, merged PRs, runs to merge and cost per merged PR, and the
+  Analytics "Agent efficacy by model" pane shows effort under each model.
 - **LLM cost export**: `GET /api/stats/cost` (JSON) and `GET /api/stats/cost.csv`
   group recorded agent executions by any of day, repository, agent, model,
   reasoning level, execution type and outcome, with executions, tasks,

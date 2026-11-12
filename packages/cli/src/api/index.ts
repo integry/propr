@@ -269,7 +269,7 @@ export type {
 
 // Stats API
 export { getReviewScoreSummary, getCostExport, getCostExportCsv, COST_GROUP_KEYS } from "./stats.js";
-export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreQuery, MeanFigure, CostExport, CostExportQuery, CostFigures, CostGroupKey, CostRow } from "./stats.js";
+export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreEffortSummary, ReviewScoreQuery, MeanFigure, CostExport, CostExportQuery, CostFigures, CostGroupKey, CostRow } from "./stats.js";
 
 // Goals API
 export {

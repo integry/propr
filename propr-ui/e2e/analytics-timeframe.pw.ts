@@ -60,6 +60,11 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
       return route.fulfill({ json: { period, repository: 'all', prs_scored: 6 * scale, scores_recorded: 14 * scale, models: [
         { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', ...figures(4 * scale, 6.4, 8.6, 3 * scale, 1.84) },
         { implementer_model: 'gpt-5.6', implementer_agent: 'codex', ...figures(2 * scale, 5.9, 8.1, scale, null) },
+      ], by_effort: [
+        { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', implementer_reasoning_level: 'high', ...figures(2 * scale, 6.2, 8.4, scale, 1.42) },
+        { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', implementer_reasoning_level: 'xhigh', ...figures(scale, 6.6, 9.1, scale, 2.65) },
+        { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', implementer_reasoning_level: 'unknown', ...figures(scale, 6.6, 8.5, scale, 1.47) },
+        { implementer_model: 'gpt-5.6', implementer_agent: 'codex', implementer_reasoning_level: 'medium', ...figures(2 * scale, 5.9, 8.1, scale, null) },
       ] } });
     }
     return route.fulfill({ json: {
@@ -305,6 +310,9 @@ test('the agent efficacy matrix shows one figure per cell, denominators on hover
   await expect(rows.first().getByTestId('review-quality-delta')).toHaveText('+2.2 ▲');
   await expect(rows.first().getByTestId('review-quality-final')).toHaveAttribute('title', 'Mean over 40 PRs');
   await expect(rows.nth(1).getByTestId('review-quality-runs')).toHaveText('—');
+  // Effort is the secondary grouping: a row per level under a model with several, a tag on one with a single level.
+  await expect(pane.getByTestId('review-quality-effort-row')).toHaveText([/^High effort/, /^XHigh effort/, /^Unknown effort/]);
+  await expect(rows.nth(1).getByTestId('review-quality-effort-tag')).toHaveText('Medium effort');
   await expect(pane.getByText(/n=\d/)).toHaveCount(0);
   // Every column fits the pane: nothing scrolls sideways.
   const table = pane.getByTestId('review-quality-table');
