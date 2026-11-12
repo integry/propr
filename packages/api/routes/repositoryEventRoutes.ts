@@ -57,6 +57,24 @@ function single(query: Record<string, unknown>, name: string): string | undefine
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * `afterCursor` as given. Unlike {@link single}, a present but empty or
+ * non-string value is not treated as absent: an absent cursor starts at the
+ * current end of the journal, so collapsing a malformed one into "absent"
+ * would hand back a later cursor that skips unread events.
+ */
+function cursor(query: Record<string, unknown>): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(query, 'afterCursor')) return undefined;
+  const raw = query.afterCursor;
+  if (Array.isArray(raw) && raw.length > 1) throw new InvalidQuery('afterCursor may be given once.');
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new RepositoryEventWaitError('CURSOR_INVALID', 'afterCursor is not a repository event cursor.', 400);
+  }
+  if (value.length > 512) throw new InvalidQuery('afterCursor is too long.');
+  return value;
+}
+
 /** Comma-separated or repeated values, deduplicated. */
 function list(query: Record<string, unknown>, name: string): string[] | undefined {
   const raw = query[name];
@@ -93,8 +111,7 @@ function parseQuery(query: Record<string, unknown>, wait: boolean): ParsedQuery 
   if (planId !== undefined && planId.length > 255) throw new InvalidQuery('planId is too long.');
   const fromStart = single(query, 'fromStart');
   if (fromStart !== undefined && fromStart !== 'true' && fromStart !== 'false') throw new InvalidQuery('fromStart must be true or false.');
-  const afterCursor = single(query, 'afterCursor');
-  if (afterCursor !== undefined && afterCursor.length > 512) throw new InvalidQuery('afterCursor is too long.');
+  const afterCursor = cursor(query);
   let timeoutSeconds = 0;
   if (wait) {
     const normalized = normalizeRepositoryEventWaitTimeoutSeconds(single(query, 'timeoutSeconds'));
@@ -144,6 +161,7 @@ export function createRepositoryEventRoutes(deps: RepositoryEventRoutesDeps) {
     let parsed: ParsedQuery;
     try { parsed = parseQuery(req.query ?? {}, wait); }
     catch (error) {
+      if (sendJournalError(res, error)) return null;
       if (!(error instanceof InvalidQuery)) throw error;
       res.status(400).json({ code: 'INVALID_INPUT', message: error.message });
       return null;

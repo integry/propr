@@ -4,7 +4,7 @@ import { after, afterEach, beforeEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import type { Request, Response } from 'express';
-import { closeConnection } from '@propr/core';
+import { appendRepositoryEvent, closeConnection } from '@propr/core';
 import { createRepositoryEventRoutes } from '../routes/repositoryEventRoutes.js';
 import { activeRepositoryEventWaiterCount, waitForRepositoryEvents } from '../services/repositoryEventWait.js';
 
@@ -108,4 +108,50 @@ test('a disconnect during the wait releases it, and every exit path removes the 
   const failed = connection();
   await assert.rejects(failing.waitEvents(failed.req, failed.res as unknown as Response), /config unavailable/);
   assert.equal(failed.res.listenerCount('close'), 0);
+});
+
+test('an explicitly empty or non-string afterCursor is a cursor error on both endpoints, not a fresh boundary', async () => {
+  const appended = await appendRepositoryEvent(db, {
+    repository, domain: 'pull_request', type: 'head_changed', entityId: 7, prNumber: 7, headSha: 'a'.repeat(40), payload: {},
+  }, { publish: false });
+  assert.equal(appended.status, 'appended', 'the repository has an event the caller has not read');
+  const calls: string[] = [];
+  const routes = createRepositoryEventRoutes({
+    db,
+    configuredRepositories: async () => [repository],
+    verifyAccess: async () => {},
+    listEvents: async () => { calls.push('list'); throw new Error('no read for a malformed cursor'); },
+    waitForEvents: async () => { calls.push('wait'); throw new Error('no wait for a malformed cursor'); },
+  });
+  // `?afterCursor=` and `?afterCursor` parse to '', `?afterCursor[x]=y` to an object.
+  for (const afterCursor of ['', [''], { x: 'y' }, [{ x: 'y' }]]) {
+    for (const endpoint of ['listEvents', 'waitEvents'] as const) {
+      const { req, res } = connection();
+      req.query = { ...req.query, afterCursor } as Request['query'];
+      await routes[endpoint](req, res as unknown as Response);
+      assert.equal(res.statusCode, 400, `${endpoint} ${JSON.stringify(afterCursor)}`);
+      const body = res.body as { code: string; cursor?: unknown; hint?: unknown };
+      assert.equal(body.code, 'CURSOR_INVALID');
+      assert.equal(typeof body.hint, 'string');
+      assert.equal(body.cursor, undefined, 'no replacement cursor is returned');
+      assert.equal(res.listenerCount('close'), 0);
+    }
+  }
+  assert.deepEqual(calls, [], 'the journal is never read from a substituted boundary');
+
+  // The real journal service on the same input also refuses rather than answering at the end.
+  const real = createRepositoryEventRoutes({ db, configuredRepositories: async () => [repository], verifyAccess: async () => {} });
+  for (const endpoint of ['listEvents', 'waitEvents'] as const) {
+    const { req, res } = connection();
+    req.query = { ...req.query, afterCursor: '' } as Request['query'];
+    await real[endpoint](req, res as unknown as Response);
+    assert.equal(res.statusCode, 400);
+    assert.equal((res.body as { code: string }).code, 'CURSOR_INVALID');
+  }
+
+  // An absent afterCursor still starts at the current end.
+  const absent = connection();
+  await real.listEvents(absent.req, absent.res as unknown as Response);
+  assert.equal(absent.res.statusCode, 200);
+  assert.deepEqual((absent.res.body as { events: unknown[] }).events, []);
 });
