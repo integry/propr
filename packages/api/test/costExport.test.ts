@@ -39,7 +39,7 @@ async function seedExecution(seed: ExecutionSeed): Promise<number> {
   return Number((row as { execution_id: number }).execution_id ?? row);
 }
 
-async function seedLog(log: { task?: string | null; session?: string | null; model: string; at: string; type: string; agent: string }): Promise<void> {
+async function seedLog(log: { task?: string | null; session?: string | null; model: string; at: string; type: string; agent: string | null }): Promise<void> {
   await db('llm_logs').insert({
     execution_type: log.type, model_name: log.model, start_time: log.at, success: true,
     session_id: log.session ?? null, task_id: log.task ?? null, agent_alias: log.agent,
@@ -130,6 +130,40 @@ test('agent and execution type come from the matching LLM log call', async () =>
     ['codex', 'review', 1],
     [null, null, 2],
   ]);
+});
+
+test('agent and execution type come from one matching call; nothing is borrowed from other runs of the task', async () => {
+  const scratch = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  await scratch.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+  const previous = db;
+  db = scratch;
+  try {
+    await db('tasks').insert({ task_id: 'gamma-1', repository: 'acme/gamma', task_type: 'issue', created_at: daysAgo(5) });
+    // A: its matching call recorded the type but no agent; the task's review call recorded codex.
+    await seedExecution({ task: 'gamma-1', at: daysAgo(2), model: 'opus', session: 's-a' });
+    await seedLog({ task: 'gamma-1', session: 's-a', model: 'opus', at: daysAgo(2), type: 'implementation', agent: null });
+    await seedLog({ task: 'gamma-1', session: 's-review', model: 'gpt', at: daysAgo(2), type: 'review', agent: 'codex' });
+    // B: a session no call of the task recorded, on a model no session-less call used.
+    await seedExecution({ task: 'gamma-1', at: daysAgo(1), model: 'sonnet', session: 's-b' });
+    // C: no session; the nearer of two session-less same-model calls matches, never another session's call.
+    await seedExecution({ task: 'gamma-1', at: daysAgo(1, 12), model: 'haiku' });
+    await seedLog({ task: 'gamma-1', model: 'haiku', at: daysAgo(3), type: 'summarization', agent: 'claude' });
+    await seedLog({ task: 'gamma-1', model: 'haiku', at: daysAgo(1, 11), type: 'context-analysis', agent: 'claude' });
+    await seedLog({ task: 'gamma-1', session: 's-other', model: 'haiku', at: daysAgo(1, 12), type: 'review', agent: 'codex' });
+
+    const result = await loadCostExport(db, window30d, ['agent', 'execution_type']);
+    assert.deepEqual(result.rows.map(row => [row.agent, row.execution_type, row.executions]), [
+      ['claude', 'context-analysis', 1],
+      [null, 'implementation', 1],
+      [null, null, 1],
+    ]);
+    const byAgent = await loadCostExport(db, window30d, ['agent']);
+    assert.deepEqual(byAgent.rows.map(row => [row.agent, row.executions]), [['claude', 1], [null, 2]]);
+    assert.equal(byAgent.totals.executions, 3);
+  } finally {
+    db = previous;
+    await scratch.destroy();
+  }
 });
 
 test('repository filters leave out executions of other repositories and those without a task', async () => {

@@ -3,11 +3,10 @@
  * repository, agent, model, reasoning level, execution type and outcome.
  *
  * An execution is one `llm_executions` row. Its repository comes from its
- * task; its agent and execution type from the `llm_logs` call that recorded
- * the same run (same task, preferring the same session, then the same model,
- * then the nearest start). A dimension that was never recorded is null, never
- * a guess, and a group none of whose executions recorded a cost has a null
- * cost rather than $0.
+ * task; its agent and execution type from the one `llm_logs` call that
+ * recorded the same run (see `loggedRuns`). A dimension that was never
+ * recorded is null, never a guess, and a group none of whose executions
+ * recorded a cost has a null cost rather than $0.
  */
 
 import type { Request, Response } from 'express';
@@ -68,18 +67,31 @@ export function parseCostGroupBy(value: unknown): { keys: CostGroupKey[] } | { i
   return { keys: COST_GROUP_KEYS.filter(key => parts.includes(key)) };
 }
 
-/** A column of the `llm_logs` call that recorded the same run as execution `e`. */
-function loggedRunColumn(column: 'agent_alias' | 'execution_type', byTask: boolean): string {
-  const nearest = `abs(julianday(l.start_time) - julianday(e.start_time))`;
-  const viaTask = `(select l.${column} from llm_logs l where l.task_id = e.task_id and l.${column} is not null
-    order by (case when l.session_id = e.session_id then 0 else 1 end),
-      (case when l.model_name = e.model_name then 0 else 1 end), ${nearest}, l.log_id limit 1)`;
-  const viaSession = `(select l.${column} from llm_logs l where l.session_id = e.session_id and l.${column} is not null
-    order by ${nearest}, l.log_id limit 1)`;
-  // Only task-less executions fall back to the unindexed session lookup.
-  return byTask
-    ? `CASE WHEN e.task_id IS NOT NULL THEN ${viaTask} WHEN e.session_id IS NOT NULL THEN ${viaSession} END`
-    : `CASE WHEN e.session_id IS NOT NULL THEN ${viaSession} END`;
+/**
+ * The one `llm_logs` call that recorded each execution in the window: a call of
+ * the same task in the same session, or, when neither has a session (both are
+ * written from one result), of the same task on the same model; a task-less
+ * execution matches only a call of its session. Among matches the same
+ * session, then the same model, then the nearest start wins. Both dimensions
+ * are read from that one call, so an execution with no matching call has
+ * neither.
+ */
+function loggedRuns(db: Knex, byTask: boolean, window: AnalyticsWindow | null): Knex.Raw {
+  const candidates = (match: string) => {
+    const query = db('llm_executions as re').join('llm_logs as l', db.raw(match))
+      .select('re.execution_id', 'l.agent_alias', 'l.execution_type', db.raw(`row_number() over (
+        partition by re.execution_id
+        order by (case when l.session_id = re.session_id then 0 else 1 end),
+          (case when l.model_name = re.model_name then 0 else 1 end),
+          abs(julianday(l.start_time) - julianday(re.start_time)), l.log_id
+      ) as rank`));
+    return whereCreatedWithin(query, 're.start_time', window);
+  };
+  const viaSession = candidates(`l.session_id = re.session_id${byTask ? ' and re.task_id is null' : ''}`);
+  const viaTask = candidates(`l.task_id = re.task_id and (l.session_id = re.session_id
+    or (l.session_id is null and re.session_id is null and l.model_name = re.model_name))`);
+  const ranked = byTask ? db.queryBuilder().unionAll([viaTask, viaSession]) : viaSession;
+  return db.raw(`(select execution_id, agent_alias, execution_type from (?) where rank = 1) as run`, [ranked]);
 }
 
 interface ExecutionSchema { hasLogs: boolean; logsHaveTask: boolean; hasReasoning: boolean; hasCache: boolean }
@@ -109,10 +121,10 @@ function executionRows(
   const dimensions: Record<CostGroupKey, string> = {
     day: 'date(e.start_time)',
     repository: 't.repository',
-    agent: hasLogs ? loggedRunColumn('agent_alias', logsHaveTask) : 'NULL',
+    agent: hasLogs ? 'run.agent_alias' : 'NULL',
     model: `NULLIF(e.model_name, '')`,
     reasoning_level: hasReasoning ? `NULLIF(e.reasoning_level, '')` : 'NULL',
-    execution_type: hasLogs ? loggedRunColumn('execution_type', logsHaveTask) : 'NULL',
+    execution_type: hasLogs ? 'run.execution_type' : 'NULL',
     outcome: `CASE WHEN e.success = ? THEN 'failed' ELSE 'success' END`,
   };
   const query = db('llm_executions as e')
@@ -121,6 +133,9 @@ function executionRows(
     .select(db.raw(hasCache
       ? 'coalesce(e.cache_creation_input_tokens, 0) as cache_creation_input_tokens, coalesce(e.cache_read_input_tokens, 0) as cache_read_input_tokens'
       : '0 as cache_creation_input_tokens, 0 as cache_read_input_tokens'));
+  if (hasLogs && (groupBy.includes('agent') || groupBy.includes('execution_type'))) {
+    query.leftJoin(loggedRuns(db, logsHaveTask, window), 'run.execution_id', 'e.execution_id');
+  }
   for (const key of groupBy) {
     query.select(db.raw(`${dimensions[key]} as ${key}`, key === 'outcome' ? [false] : []));
   }
