@@ -22,6 +22,16 @@ export interface ReviewScoreModelSummary {
   cycles_to_goal: MeanFigure & { attempted: number };
   merge_rate: { value: number | null; merged: number; n: number };
   cost_per_merged_pr: { usd: number | null; n: number };
+  /** Mean change from each PR's initial score to its final score. */
+  score_delta: MeanFigure;
+  /** Mean agent runs started at or before the merge, over merged PRs with recorded runs. */
+  runs_to_merge: MeanFigure;
+}
+
+/** The same figures for one implementer model at one reasoning level (effort). */
+export interface ReviewScoreEffortSummary extends ReviewScoreModelSummary {
+  /** The implementation's recorded reasoning level, or `unknown` when none was recorded (historical data). */
+  implementer_reasoning_level: string;
 }
 
 export interface ReviewScoreSummary {
@@ -29,7 +39,10 @@ export interface ReviewScoreSummary {
   repository: string;
   prs_scored: number;
   scores_recorded: number;
+  /** Per implementer model, over every effort. */
   models: ReviewScoreModelSummary[];
+  /** Per implementer model and effort; absent from servers that predate it. */
+  by_effort?: ReviewScoreEffortSummary[];
 }
 
 export interface ReviewScoreQuery {
@@ -38,8 +51,9 @@ export interface ReviewScoreQuery {
 }
 
 /**
- * Per implementer model: PRs scored, first and final review scores, cycles to
- * the Ultrafix goal, merge rate and cost per merged PR.
+ * Per implementer model, and per model and effort: PRs scored, first and final
+ * review scores, cycles to the Ultrafix goal, merge rate, runs to merge and
+ * cost per merged PR.
  */
 export async function getReviewScoreSummary(query: ReviewScoreQuery = {}, client?: ApiClient): Promise<ReviewScoreSummary> {
   const apiClient = client ?? (await createApiClient());

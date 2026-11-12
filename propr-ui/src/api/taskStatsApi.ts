@@ -209,12 +209,21 @@ export interface ReviewScoreModelSummary {
   runs_to_merge?: ReviewScoreMean;
 }
 
+/** The same figures for one implementer model at one reasoning level (effort). */
+export interface ReviewScoreEffortSummary extends ReviewScoreModelSummary {
+  /** The implementation's recorded reasoning level, or `unknown` when none was recorded. */
+  implementer_reasoning_level: string;
+}
+
 export interface ReviewScoreSummaryResponse {
   period: string | null;
   repository: string;
   prs_scored: number;
   scores_recorded: number;
+  /** Per implementer model, over every effort. */
   models: ReviewScoreModelSummary[];
+  /** Per implementer model and effort; absent from servers that predate it. */
+  by_effort?: ReviewScoreEffortSummary[];
 }
 
 export const getReviewScoreSummary = async (period?: AnalyticsTimeframe): Promise<ReviewScoreSummaryResponse> => {
