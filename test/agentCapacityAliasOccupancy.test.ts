@@ -6,7 +6,10 @@
  *   holder releases, and never inherits a ceiling it was not given;
  * - a job of a newer admission generation is not deferred by a live,
  *   renewing older-generation holder: it reaches the acquire, which fences
- *   and drains that holder before admitting it.
+ *   and drains that holder before admitting it;
+ * - a draining parent whose nested execution's worker died (lease expired,
+ *   never finished) does not defer the next job of the parent's alias: that
+ *   job reaches the acquire, whose recovery frees the child and then the parent.
  *
  * Redis: a spawned `redis-server` when available (PROPR_TEST_REDIS_SERVER),
  * otherwise REDIS_HOST / REDIS_PORT (CI starts one with scripts/ci-redis.sh).
@@ -84,7 +87,7 @@ after(async () => {
     configureAgentCapacityRedis(undefined);
     if (redis) {
         // Shared Redis: delete only this run's keys.
-        for (const name of instances) await redis.del(...agentAdmissionKeys(name), agentCapacityWaitersKey(name, 'constructor'), agentCapacityWaitersKey(name, 'local'));
+        for (const name of instances) await redis.del(...agentAdmissionKeys(name), agentCapacityWaitersKey(name, 'constructor'), agentCapacityWaitersKey(name, 'local'), agentCapacityWaitersKey(name, 'cloud'));
         redis.disconnect();
     }
     server?.kill('SIGTERM');
@@ -193,6 +196,51 @@ test('a newer admission generation is not deferred by a live older-generation ho
     }
     assert.equal(await redis!.hlen(agentAdmissionKeys(name)[0]), 0, 'no holder left behind');
 });
+
+for (const childAlias of ['local', 'cloud']) {
+    test(`a finished parent whose nested execution (${childAlias}) died does not defer the next job of its alias; its acquire recovers both`, integration(), async () => {
+        const name = instance(`stranded-${childAlias}`);
+        const config: AdmissionConfig = { instance: name, limit: 2, aliasLimits: parseAgentRunAliasLimits('local=1,cloud=1', 2) };
+        const events: string[] = [];
+        const options = { client: redis!, docker: recording('n', events), config, pollMs: 10 };
+        const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'local', nesting: { register: `goal:${name}` } });
+        const child = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: childAlias, nesting: { parent: `goal:${name}` } });
+        assert.ok(parent && child);
+        const [holders] = agentAdmissionKeys(name);
+        const records = async () => Object.entries(await redis!.hgetall(holders)).map(([token, value]) => ({ token, ...JSON.parse(value) as { state: string; parent?: string; shared?: boolean; deadline: number } }));
+        assert.equal((await records()).find(r => r.parent)!.shared, childAlias === 'local' ? true : undefined);
+        // The parent completes while its nested execution runs: draining, its slot still charged.
+        await parent.finish();
+        assert.equal((await records()).find(r => !r.parent)!.state, 'draining');
+        assert.equal(await agentAliasHasCapacity('local', { config }), false, 'a live nested execution keeps its finished parent charged');
+        // The nested execution's worker dies without finishing: its lease expires.
+        const nested = (await records()).find(r => r.parent)!;
+        const { token, ...value } = nested;
+        await redis!.hset(holders, token, JSON.stringify({ ...value, deadline: 0 }));
+        await delay(50);
+        assert.equal(await agentAliasHasCapacity('local', { config }), true, 'only an admission attempt can recover the stranded child');
+
+        Object.assign(process.env, { PROPR_AGENT_RUN_LIMIT: '2', PROPR_INSTANCE_ID: name, PROPR_AGENT_RUN_ALIAS_LIMITS: 'local=1,cloud=1' });
+        try {
+            // The next ordinary queued job on the parent's alias is not deferred...
+            const registry = { beginRoutingSession: () => ({ select: async () => ({ physicalAgentAlias: 'local', physicalModel: 'model', synthetic: false }) }) };
+            const context = await checkJobAgentCapacity({ data: {}, updateData: async () => {} } as never, [{ agentAlias: 'local' }], { registry: registry as never });
+            assert.equal(context?.reservations[0]?.directAlias, 'local', 'not deferred');
+            // ...and its acquire removes the child's container, releases child and parent, then admits.
+            const admitted = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'local' });
+            assert.ok(admitted);
+            assert.ok(events.indexOf('remove n-2') >= 0 && events.indexOf('remove n-2') < events.indexOf('create n-3'), events.join(', '));
+            assert.deepEqual((await records()).map(r => r.state), ['running'], 'only the new holder remains');
+            await admitted.finish();
+        } finally {
+            for (const key of ['PROPR_AGENT_RUN_LIMIT', 'PROPR_INSTANCE_ID', 'PROPR_AGENT_RUN_ALIAS_LIMITS']) {
+                if (key in previous) process.env[key] = previous[key]; else delete process.env[key];
+            }
+            await child.finish().catch(() => undefined);
+        }
+        assert.equal(await redis!.hlen(holders), 0, 'no holder left behind');
+    });
+}
 
 test('a release seen by a newer-generation process wakes a waiter despite live older holders', integration(), async () => {
     const name = instance('generation-wake');

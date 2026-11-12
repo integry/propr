@@ -108,18 +108,25 @@ if stored then
   if ok and type(config) == 'table' and (tonumber(config.generation) or 0) < tonumber(ARGV[1]) then reconcile = 1 end
 end
 local live, recoverable = {}, {}
-local all, parents = redis.call('HGETALL', KEYS[1]), {}
+local all, parents, stranded = redis.call('HGETALL', KEYS[1]), {}, {}
 for i=1,#all,2 do
   local r = cjson.decode(all[i+1])
-  if r.parent then parents[r.parent] = true end
+  if r.parent then
+    parents[r.parent] = true
+    -- A nested execution whose process may be gone: only recovery frees it.
+    if r.state == 'recovering' or r.deadline <= now then stranded[r.parent] = true end
+  end
 end
 for i=1,#all,2 do
   local r = cjson.decode(all[i+1])
   -- A nested execution on its parent's alias is charged under the parent's
   -- slot. A finished (draining) parent keeps its slot while nested work runs;
-  -- without any, only recovery frees it.
+  -- without any, only recovery frees it. Nor can a nested execution that
+  -- expired or is recovering, whatever its alias, so its draining parent lets
+  -- jobs reach the acquire: its recovery releases that child (and the parent
+  -- after its last one), and it refuses to reuse the slot while live ones remain.
   if r.alias and not r.shared then
-    if r.state == 'recovering' or (r.state == 'draining' and not parents[all[i]]) or (r.state ~= 'draining' and r.deadline <= now) then
+    if r.state == 'recovering' or (r.state == 'draining' and (not parents[all[i]] or stranded[all[i]])) or (r.state ~= 'draining' and r.deadline <= now) then
       recoverable[r.alias] = (recoverable[r.alias] or 0) + 1
     else
       live[r.alias] = (live[r.alias] or 0) + 1
