@@ -326,6 +326,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'review_and_improve_pr', 'start_goal',
     // Plan issue fields recording the plan item and its prerequisite issues.
     'plan_item_id', 'depends_on_issues',
+    // Statuses of the blocked-by links publish_plan records in dependencyLinks.
+    'existing',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
   ]);

@@ -15,6 +15,7 @@ import {
 import type { TaskDraftConfig } from './planning/planningTypes.js';
 import { normalizePlanItems } from '@propr/shared';
 import { recordPlanIssueDependencies } from '../config/planIssueDependencies.js';
+import { syncPlanDependencyLinks, type PlanDependencyLinksResult } from './planDependencyLinks.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -58,6 +59,8 @@ type TaskExecutionContextConfig = Partial<TaskDraftConfig> & {
   executionResults?: CreatedIssue[];
   executionFailures?: Array<{ taskIndex: number; title: string; error: string }>;
   executedAt?: string;
+  /** GitHub "blocked by" links of the last publication; absent for a plan without dependencies. */
+  dependencyLinks?: PlanDependencyLinksResult;
 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -330,6 +333,24 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
   // Prerequisites resolve to issue numbers only once every issue exists.
   await recordPlanIssueDependencies(draftId, planJson);
+
+  // Second pass: link each issue on GitHub as blocked by its prerequisites.
+  // Best effort; failures are recorded per link and never fail the publication.
+  try {
+    const dependencyLinks = await syncPlanDependencyLinks({
+      request: (route, parameters) => octokit.request(route, parameters),
+      owner,
+      repo: repoName,
+      plan: planJson,
+      issueNumbers: planJson.map(task => task.issue_number),
+      issueIds: new Map(results.flatMap(issue => issue.id === undefined ? [] : [[issue.number, issue.id] as [number, number]])),
+      logger: correlatedLogger,
+    });
+    if (dependencyLinks) updatedConfig.dependencyLinks = dependencyLinks;
+    else delete updatedConfig.dependencyLinks;
+  } catch (linkError) {
+    correlatedLogger.warn({ draftId, err: (linkError as Error).message }, 'Failed to sync GitHub dependency links');
+  }
 
   await db!('task_drafts')
     .where({ draft_id: draftId })

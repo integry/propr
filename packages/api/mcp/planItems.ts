@@ -1,7 +1,10 @@
 import type { Knex } from 'knex';
 import type { z } from 'zod';
 import { normalizePlanItems, resolvePlanItemIssueDependencies, serializeDependsOnIssues } from '@propr/shared';
+import { logger, syncPlanDependencyLinks, type GitHubRequest, type PlanDependencyLinksResult } from '@propr/core';
 import { McpError } from './config.js';
+import type { McpPrincipal } from './policy.js';
+import { withinPublicationLease } from './planPublication.js';
 import { preparePlanForStorage, type PreparedPlan } from '../routes/plannerHelpers/validation.js';
 
 function invalidPlanItems(message: string, errors: unknown[]): McpError {
@@ -72,4 +75,26 @@ export async function recordPublishedDependencies(db: Knex, claim: PublicationCl
     if (!updated) complete = false;
   }
   return complete;
+}
+
+/**
+ * Second publication pass: links each published issue on GitHub as blocked by
+ * its prerequisites, with the caller's credential. Each request stays inside
+ * the publication lease, and `renewClaim` runs before each dependant issue so a
+ * slow GitHub cannot let another attempt take the claim over mid-way. Link
+ * failures are returned per link and never thrown; only a claim error is.
+ */
+export async function linkPublishedDependencies(options: {
+  principal: McpPrincipal; repository: string; tasks: unknown[];
+  issues: ReadonlyMap<number, { number: number; id?: number }>;
+  leaseDeadline: () => number; renewClaim: () => Promise<void>;
+}): Promise<PlanDependencyLinksResult | null> {
+  const [owner, repo] = options.repository.split('/');
+  const issues = [...options.issues.values()];
+  const request: GitHubRequest = (route, parameters) => withinPublicationLease(options.leaseDeadline(), signal =>
+    options.principal.github.request(route, { ...parameters, request: { signal } }));
+  return syncPlanDependencyLinks({ request, owner, repo, plan: options.tasks, logger,
+    issueNumbers: options.tasks.map((_task, index) => options.issues.get(index)?.number),
+    issueIds: new Map(issues.flatMap(issue => typeof issue.id === 'number' ? [[issue.number, issue.id] as [number, number]] : [])),
+    beforeIssue: () => options.renewClaim() });
 }
