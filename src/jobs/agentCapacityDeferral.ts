@@ -103,7 +103,8 @@ function refusedAliases(error: unknown): string[] {
 
 function refusalReason(error: unknown): string {
     const ceilings = ((error as { ceilings?: Record<string, number> }).ceilings) ?? {};
-    const names = refusedAliases(error).map(alias => ceilings[alias] === undefined ? alias : `${alias} (limit ${ceilings[alias]})`);
+    // Own entries only: an alias named `constructor` must not print the inherited function.
+    const names = refusedAliases(error).map(alias => Object.hasOwn(ceilings, alias) ? `${alias} (limit ${ceilings[alias]})` : alias);
     return `Waiting for agent capacity${names.length ? `: ${names.join(', ')}` : ''}`;
 }
 

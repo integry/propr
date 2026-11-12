@@ -6,7 +6,7 @@ import logger from '../utils/logger.js';
 import { checkAbortSignal, plannerAbortSignalKeyForTask } from '../claude/docker/dockerAbortController.js';
 import { ExecutionAbortedError, getExecutionAbortError } from '../claude/docker/dockerExecutionOwnership.js';
 import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
-import { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
+import { AGENT_RUN_ALIAS_LIMITS_ENV, agentRunAliasCeiling, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
 import { aliasCapacityWait, isAgentCapacityError, wakeAgentCapacityWaiters } from './agentCapacity.js';
 
 /** Fleet's existing server-side activation boundary is PROPR_FLEET_CONTROL_SECRET.
@@ -197,12 +197,13 @@ export async function agentAdmissionMetrics(client: AdmissionRedis, instance: st
  * holder occupies its alias until removal is confirmed. Holders without an
  * alias (pre-upgrade records, exempt launches) appear under no alias. */
 export async function agentAdmissionAliasHolders(client: AdmissionRedis, instance: string): Promise<Record<string, number>> {
-    const counts: Record<string, number> = {};
+    // A Map, so an alias such as `constructor` never reads an inherited property.
+    const counts = new Map<string, number>();
     for (const value of Object.values(await client.hgetall(agentAdmissionKeys(instance)[0]))) {
         const { alias } = JSON.parse(value) as { alias?: string };
-        if (alias) counts[alias] = (counts[alias] ?? 0) + 1;
+        if (alias) counts.set(alias, (counts.get(alias) ?? 0) + 1);
     }
-    return counts;
+    return Object.fromEntries(counts);
 }
 
 /** Launches that have no registered direct agent and are deliberately
@@ -225,7 +226,7 @@ export class AgentAdmissionIdentityError extends Error {
 export function resolveAdmissionAlias(config: AdmissionConfig, identity: { agentAlias?: string; exemption?: AgentAdmissionExemption }): { alias: string; ceiling: string; log: Record<string, string | number> } {
     const alias = identity.agentAlias?.trim() ?? '';
     if (!alias && !identity.exemption && config.aliasLimits) throw new AgentAdmissionIdentityError();
-    const ceiling = alias ? config.aliasLimits?.[alias] : undefined;
+    const ceiling = agentRunAliasCeiling(config.aliasLimits, alias);
     const log = { ...(alias ? { agentAlias: alias } : {}), ...(ceiling === undefined ? {} : { aliasLimit: ceiling }) };
     return { alias, ceiling: ceiling === undefined ? '' : String(ceiling), log };
 }

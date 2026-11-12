@@ -16,13 +16,14 @@ import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AdmissionRedis } from './agentRunAdmission.js';
+import { agentRunAliasCeiling } from './agentRunAliasLimits.js';
 
 /** The direct agent (alias) is at its ceiling; the caller should wait or defer. */
 export class AgentCapacityError extends Error {
     readonly aliases: string[];
     readonly ceilings: Record<string, number>;
     constructor(aliases: string[], ceilings: Record<string, number> = {}, message?: string) {
-        const names = aliases.map(alias => ceilings[alias] === undefined ? `'${alias}'` : `'${alias}' (limit ${ceilings[alias]})`).join(', ');
+        const names = aliases.map(alias => Object.hasOwn(ceilings, alias) ? `'${alias}' (limit ${ceilings[alias]})` : `'${alias}'`).join(', ');
         super(message ?? `Waiting for agent capacity: ${names || 'agent'} at its ceiling`);
         this.name = 'AgentCapacityError';
         this.aliases = aliases;
@@ -75,7 +76,7 @@ export function configureAgentCapacityRedis(client: Redis | undefined): void {
 interface CapacityOptions { config?: AdmissionConfig | null; client?: Redis }
 
 function aliasCeiling(config: AdmissionConfig | null | undefined, alias: string): number | undefined {
-    return alias ? config?.aliasLimits?.[alias] : undefined;
+    return agentRunAliasCeiling(config?.aliasLimits, alias);
 }
 
 /** Whether any per-agent ceiling is configured; without one no job is ever deferred for agent capacity. */
@@ -91,10 +92,20 @@ function resolveConfig(options: CapacityOptions): AdmissionConfig | null {
 // Read-only. Classifies each aliased holder by Redis server time, the same
 // clock the admission script's `expired` uses: `recoverable` holders (deadline
 // passed, or already `recovering`) still occupy their alias, but only an
-// admission attempt's recovery can free them.
+// admission attempt's recovery can free them. The first reply element is 1
+// when the stored admission configuration has an older generation than the
+// caller's (ARGV[1]): the caller's first admission attempt reconciles it,
+// fencing and draining every older holder. Read with the holders, in one
+// snapshot. An unreadable configuration is left for the acquire to reject.
 const OCCUPANCY_SCRIPT = `
 local t = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
+local reconcile = 0
+local stored = redis.call('GET', KEYS[2])
+if stored then
+  local ok, config = pcall(cjson.decode, stored)
+  if ok and type(config) == 'table' and (tonumber(config.generation) or 0) < tonumber(ARGV[1]) then reconcile = 1 end
+end
 local live, recoverable = {}, {}
 for _,value in ipairs(redis.call('HVALS', KEYS[1])) do
   local r = cjson.decode(value)
@@ -106,7 +117,7 @@ for _,value in ipairs(redis.call('HVALS', KEYS[1])) do
     end
   end
 end
-local result = {}
+local result = {reconcile}
 for alias, count in pairs(live) do table.insert(result, alias); table.insert(result, count); table.insert(result, 0) end
 for alias, count in pairs(recoverable) do table.insert(result, alias); table.insert(result, 0); table.insert(result, count) end
 return result
@@ -114,25 +125,44 @@ return result
 
 export interface AgentAliasOccupancy { live: number; recoverable: number }
 
+export interface AgentAdmissionOccupancy {
+    /** Holders per direct agent alias. A Map, so any valid alias (even `constructor`) reads only its own entry. */
+    aliases: Map<string, AgentAliasOccupancy>;
+    /** The stored admission configuration has an older generation than the caller's. */
+    reconciliationPending: boolean;
+}
+
 /** Holders per direct agent alias, split into `live` ones (deadline not yet
  * passed) and `recoverable` ones (expired, or `recovering`). A recoverable
  * holder still occupies its alias, but its process may be gone, so nothing
  * but the recovery in an admission attempt will ever release it: a capacity
- * pre-check must let such a job reach the acquire rather than defer it. */
-export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 'eval'>, instance: string): Promise<Record<string, AgentAliasOccupancy>> {
-    const rows = await client.eval(OCCUPANCY_SCRIPT, 1, agentAdmissionKeys(instance)[0]) as Array<string | number>;
-    const occupancy: Record<string, AgentAliasOccupancy> = {};
+ * pre-check must let such a job reach the acquire rather than defer it.
+ * `generation` is the caller's admission generation (absent = 0). */
+export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 'eval'>, instance: string, generation = 0): Promise<AgentAdmissionOccupancy> {
+    const [holders, configKey] = agentAdmissionKeys(instance);
+    const [reconcile, ...rows] = await client.eval(OCCUPANCY_SCRIPT, 2, holders, configKey, String(generation)) as Array<string | number>;
+    const aliases = new Map<string, AgentAliasOccupancy>();
     for (let i = 0; i < rows.length; i += 3) {
-        const entry = occupancy[String(rows[i])] ??= { live: 0, recoverable: 0 };
+        const alias = String(rows[i]);
+        const entry = aliases.get(alias) ?? { live: 0, recoverable: 0 };
+        aliases.set(alias, entry);
         entry.live += Number(rows[i + 1]);
         entry.recoverable += Number(rows[i + 2]);
     }
-    return occupancy;
+    return { aliases, reconciliationPending: Number(reconcile) === 1 };
 }
 
-/** Holders of `alias` that block a job from reaching the acquire: only live ones. */
-async function liveAliasHolders(client: Redis, instance: string, alias: string): Promise<number> {
-    return (await agentAdmissionAliasOccupancy(client, instance))[alias]?.live ?? 0;
+/**
+ * Holders of `alias` that block a job from reaching the acquire: only live
+ * ones, and none while the caller's newer admission generation is still to be
+ * reconciled. That reconciliation (fence every older holder, remove its
+ * container, release it) runs only inside an admission attempt, so counting
+ * older-generation holders here would defer every job of the new generation
+ * before any reached it, for as long as the old processes keep renewing.
+ */
+async function blockingAliasHolders(client: Redis, config: AdmissionConfig, alias: string): Promise<number> {
+    const { aliases, reconciliationPending } = await agentAdmissionAliasOccupancy(client, config.instance, config.generation ?? 0);
+    return reconciliationPending ? 0 : aliases.get(alias)?.live ?? 0;
 }
 
 /**
@@ -146,14 +176,16 @@ async function liveAliasHolders(client: Redis, instance: string, alias: string):
  * inside an admission attempt. Counting such a holder here would defer every
  * job of the alias before any reached that recovery, so a holder whose process
  * died would block the alias forever. Those jobs proceed to the acquire, which
- * recovers (removal confirmed before reuse) and then admits or waits.
+ * recovers (removal confirmed before reuse) and then admits or waits. For the
+ * same reason a caller whose admission generation is newer than the stored
+ * one always proceeds: its acquire fences and drains the older holders.
  */
 export async function agentAliasHasCapacity(alias: string, options: CapacityOptions = {}): Promise<boolean> {
     const config = resolveConfig(options);
     const ceiling = aliasCeiling(config, alias);
     if (!config || ceiling === undefined) return true;
     try {
-        return await withCapacityClient(options.client, client => liveAliasHolders(client, config.instance, alias)) < ceiling;
+        return await withCapacityClient(options.client, client => blockingAliasHolders(client, config, alias)) < ceiling;
     } catch (error) {
         logger.debug({ alias, error: (error as Error).message }, 'Agent capacity pre-check unavailable; the admission boundary decides');
         return true;
@@ -223,8 +255,9 @@ export async function wakeAgentCapacityWaiters(alias: string, options: CapacityO
     if (!config || ceiling === undefined) return 0;
     return withCapacityClient(options.client, async client => {
         const key = agentCapacityWaitersKey(config.instance, alias);
-        // Same rule as the pre-check: a woken job may be the one that recovers an expired holder.
-        const free = ceiling - await liveAliasHolders(client, config.instance, alias);
+        // Same rule as the pre-check: a woken job may be the one that recovers an expired holder,
+        // or reconciles this process's newer admission generation.
+        const free = ceiling - await blockingAliasHolders(client, config, alias);
         if (free <= 0) return 0;
         const queues = new Map<string, Queue>();
         let woken = 0;
@@ -367,8 +400,9 @@ export async function reserveAgentCapacity(
     } catch (error) {
         if (!isAgentCapacityError(error)) throw error;
         // Name each saturated alias with its configured ceiling.
-        const limits = resolveConfig({})?.aliasLimits ?? {};
-        throw new AgentCapacityError(error.aliases, { ...Object.fromEntries(error.aliases.filter(alias => limits[alias] !== undefined).map(alias => [alias, limits[alias]])), ...error.ceilings });
+        const config = resolveConfig({});
+        const limits = error.aliases.flatMap(alias => { const ceiling = aliasCeiling(config, alias); return ceiling === undefined ? [] : [[alias, ceiling] as const]; });
+        throw new AgentCapacityError(error.aliases, { ...Object.fromEntries(limits), ...error.ceilings });
     }
     if (!selection.synthetic) await assertAgentAliasCapacity(selection.physicalAgentAlias);
     return {
