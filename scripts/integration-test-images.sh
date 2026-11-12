@@ -549,7 +549,7 @@ fi
 
 if [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
   echo ""
-  echo "▸ verifying Antigravity Gemini 3.7 image support"
+  echo "▸ verifying Antigravity CLI image support"
   AGENT_TAG="$AGENT_TAG" \
     ANTIGRAVITY_CONFIG_PATH="$HOME/.gemini" \
     ./scripts/verify-antigravity-image.sh
