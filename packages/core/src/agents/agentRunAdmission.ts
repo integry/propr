@@ -7,13 +7,25 @@ import logger from '../utils/logger.js';
 import { checkAbortSignal, plannerAbortSignalKeyForTask } from '../claude/docker/dockerAbortController.js';
 import { ExecutionAbortedError, getExecutionAbortError } from '../claude/docker/dockerExecutionOwnership.js';
 import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
+import { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
 
 /** Fleet's existing server-side activation boundary is PROPR_FLEET_CONTROL_SECRET.
  * WORKER_CONCURRENCY is provisioned by Fleet, not the persisted UI setting.
  * Deliberately separate from #2989's per-worker CONFIG_REPO resolver. */
-export interface AdmissionConfig { instance: string; limit: number; generation?: number }
+export interface AdmissionConfig {
+    instance: string; limit: number; generation?: number;
+    /** Per-direct-agent ceilings. Deliberately outside the fenced identity:
+     * each acquire passes the current value, so changes need no drain. */
+    aliasLimits?: AgentRunAliasLimits;
+}
 
 export function resolveAgentRunAdmission(env: NodeJS.ProcessEnv = process.env): AdmissionConfig | null {
+    const config = resolveGlobalAgentRunAdmission(env);
+    const aliasLimits = parseAgentRunAliasLimits(env[AGENT_RUN_ALIAS_LIMITS_ENV], config?.limit ?? null);
+    return config && aliasLimits ? { ...config, aliasLimits } : config;
+}
+
+function resolveGlobalAgentRunAdmission(env: NodeJS.ProcessEnv): AdmissionConfig | null {
     const hosted = Boolean(env.PROPR_FLEET_CONTROL_SECRET);
     if (!hosted && env.PROPR_AGENT_RUN_LIMIT === undefined) return null;
     const raw = hosted ? env.WORKER_CONCURRENCY : env.PROPR_AGENT_RUN_LIMIT;
@@ -40,12 +52,24 @@ if op == 'acquire' then
   local config = redis.call('GET', KEYS[2])
   if not config then return -1 end
   if config ~= ARGV[4] then return redis.error_reply('Agent admission configuration/daemon mismatch; drain before reconfiguration') end
+  -- ARGV[6] is the direct agent alias ('' when unattributed) and ARGV[7] its
+  -- ceiling ('' when none). Holders without an alias (written before alias
+  -- support, or exempt launches) count toward the global limit only.
+  local alias, ceiling = ARGV[6] or '', tonumber(ARGV[7] or '')
+  local same = 0
   local all = redis.call('HVALS', KEYS[1])
   for _,value in ipairs(all) do
-    if cjson.decode(value).state == 'recovering' then return 0 end
+    local r = cjson.decode(value)
+    -- A recovering holder still counts (globally and for its alias) until
+    -- its removal is confirmed; nothing is admitted meanwhile.
+    if r.state == 'recovering' then return 0 end
+    if alias ~= '' and r.alias == alias then same = same + 1 end
   end
-  if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[5]) then return 0 end
-  redis.call('HSET', KEYS[1], token, cjson.encode({deadline=now+tonumber(ARGV[3]), state='reserved'}))
+  if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[5]) then return 2 end
+  if ceiling and same >= ceiling then return 3 end
+  local record = {deadline=now+tonumber(ARGV[3]), state='reserved'}
+  if alias ~= '' then record.alias = alias end
+  redis.call('HSET', KEYS[1], token, cjson.encode(record))
   return 1
 end
 if op == 'initialize' then
@@ -169,11 +193,67 @@ export async function agentAdmissionMetrics(client: AdmissionRedis, instance: st
     return counts;
 }
 
+/** Holder count per direct agent alias, every state included: a recovering
+ * holder occupies its alias until removal is confirmed. Holders without an
+ * alias (pre-upgrade records, exempt launches) appear under no alias. */
+export async function agentAdmissionAliasHolders(client: AdmissionRedis, instance: string): Promise<Record<string, number>> {
+    const counts: Record<string, number> = {};
+    for (const value of Object.values(await client.hgetall(agentAdmissionKeys(instance)[0]))) {
+        const { alias } = JSON.parse(value) as { alias?: string };
+        if (alias) counts[alias] = (counts[alias] ?? 0) + 1;
+    }
+    return counts;
+}
+
+/** Launches that have no registered direct agent and are deliberately
+ * charged to the global limit only. Listed in the architecture doc. */
+export type AgentAdmissionExemption = 'legacy-claude-analysis';
+
+/** Why an acquire attempt did not admit: the global limit, the alias's own
+ * ceiling, or a holder whose removal is still unconfirmed. */
+export type AgentAdmissionWaitReason = 'global_limit' | 'alias_limit' | 'recovering';
+const WAIT_REASONS: Record<number, AgentAdmissionWaitReason> = { 0: 'recovering', 2: 'global_limit', 3: 'alias_limit' };
+
+export class AgentAdmissionIdentityError extends Error {
+    constructor() {
+        super('Agent admission cannot identify the direct agent for this launch; PROPR_AGENT_RUN_ALIAS_LIMITS requires every admitted launch to carry its agent alias');
+        this.name = 'AgentAdmissionIdentityError';
+    }
+}
+
+/** The alias charged for a launch ('' = global limit only) and its ceiling. */
+export function resolveAdmissionAlias(config: AdmissionConfig, identity: { agentAlias?: string; exemption?: AgentAdmissionExemption }): { alias: string; ceiling: string; log: Record<string, string | number> } {
+    const alias = identity.agentAlias?.trim() ?? '';
+    if (!alias && !identity.exemption && config.aliasLimits) throw new AgentAdmissionIdentityError();
+    const ceiling = alias ? config.aliasLimits?.[alias] : undefined;
+    const log = { ...(alias ? { agentAlias: alias } : {}), ...(ceiling === undefined ? {} : { aliasLimit: ceiling }) };
+    return { alias, ceiling: ceiling === undefined ? '' : String(ceiling), log };
+}
+
+/** Maps a non-admitting acquire reply to its reason; logs and reports changes. */
+function waitReasonReporter(instance: string, log: Record<string, string | number>, onWaiting?: (reason: AgentAdmissionWaitReason) => void) {
+    let current: AgentAdmissionWaitReason | undefined;
+    return (result: unknown) => {
+        const reason = WAIT_REASONS[result as number];
+        if (!reason) throw new Error('Unexpected agent admission reply');
+        if (reason === current) return;
+        current = reason;
+        logger.info({ instance, ...log, reason }, 'Physical agent admission waiting');
+        onWaiting?.(reason);
+    };
+}
+
 export interface AdmissionOptions {
     /** Resolve time-sensitive arguments synchronously at the physical create boundary. */
     createArgs?: () => string[] | Promise<string[]>;
     signal?: AbortSignal;
     taskId?: string;
+    /** Alias of the direct agent that runs (never a synthetic alias). */
+    agentAlias?: string;
+    /** A documented launch without a registered agent: global limit only. */
+    exemption?: AgentAdmissionExemption;
+    /** Observes each change of the reason an acquire is still waiting. */
+    onWaiting?: (reason: AgentAdmissionWaitReason) => void;
     extraEnvVars?: Record<string, string>;
     cwd?: string;
     /** Infrastructure injection for real Redis tests; never sourced from request data. */
@@ -214,6 +294,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     assertNativeLogAdmission(args);
     const config = options.config ?? resolveAgentRunAdmission();
     if (!config) return null;
+    const { alias, ceiling, log } = resolveAdmissionAlias(config, options);
     const ownedClient = options.client ? undefined : createAdmissionClient();
     const client = options.client ?? ownedClient!;
     const environment = { ...process.env, ...options.extraEnvVars };
@@ -229,7 +310,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     let renewal: Promise<void> = Promise.resolve();
     let closed = false;
     const call = (op: string, owner = token, extra = '', limit = '') =>
-        client.eval(SCRIPT, 2, holders, configKey, op, owner, String(leaseMs), extra, limit);
+        client.eval(SCRIPT, 2, holders, configKey, op, owner, String(leaseMs), extra, limit, alias, ceiling);
     const checkCancelled = async () => {
         checkAdmissionAbort(signal);
         if (options.taskId && await checkAbortSignal(options.taskId, plannerAbortSignalKeyForTask(options.taskId))) {
@@ -292,7 +373,8 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await checkCancelled();
         const identity = JSON.stringify({ limit: config.limit, daemon: await runtime.daemon(), ...(config.generation ? { generation: config.generation } : {}) });
         await checkCancelled();
-        logger.info({ instance: config.instance, limit: config.limit }, 'Waiting for physical agent admission');
+        logger.info({ instance: config.instance, limit: config.limit, ...log }, 'Waiting for physical agent admission');
+        const reportWait = waitReasonReporter(config.instance, log, options.onWaiting);
         while (true) {
             await client.zadd(waiting, Date.now() + 30_000, token);
             await recover(identity);
@@ -303,6 +385,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
                 await initialize(identity);
                 continue;
             }
+            reportWait(result);
             await delay(options.pollMs ?? 250, undefined, { signal });
         }
         await client.zrem(waiting, token);
@@ -318,7 +401,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await checkCancelled();
         if (await call('attach', token, id) !== 1) throw new Error('Agent admission lost before container start');
         checkAdmissionAbort(signal);
-        logger.info({ instance: config.instance, containerId: id, ...await agentAdmissionMetrics(client, config.instance) }, 'Physical agent admitted');
+        logger.info({ instance: config.instance, containerId: id, ...log, ...await agentAdmissionMetrics(client, config.instance) }, 'Physical agent admitted');
         return { id, args: ['start', '--attach', '--interactive', id], environment, signal, finish };
     } catch (error) {
         try { await finish(); }
@@ -334,10 +417,12 @@ export interface SpawnedAgentLaunch { createArgs: readonly string[]; environment
 
 /** Native goal sessions use the same admission, retaining it until child close
  * and confirmed container removal. Network-policy setup remains outside this. */
-export async function spawnAdmittedAgent(args: string[], spawnChild: (args: string[], launch: SpawnedAgentLaunch) => ChildProcess): Promise<ChildProcess> {
+export interface AgentAdmissionIdentity { agentAlias?: string; exemption?: AgentAdmissionExemption }
+
+export async function spawnAdmittedAgent(args: string[], spawnChild: (args: string[], launch: SpawnedAgentLaunch) => ChildProcess, identity: AgentAdmissionIdentity = {}): Promise<ChildProcess> {
     const { getExecutionOwnershipContext } = await import('../claude/docker/dockerExecutionOwnership.js');
     const taskLabel = args.find(arg => arg.startsWith('propr.task.id='));
-    const admission = await prepareAdmittedAgent(args, { signal: getExecutionOwnershipContext()?.signal, taskId: taskLabel?.slice('propr.task.id='.length) });
+    const admission = await prepareAdmittedAgent(args, { signal: getExecutionOwnershipContext()?.signal, taskId: taskLabel?.slice('propr.task.id='.length), ...identity });
     if (!admission) return spawnChild(args, { createArgs: args });
     let child: ChildProcess;
     try { checkAdmissionAbort(admission.signal); child = spawnChild(admission.args, { createArgs: args, environment: admission.environment }); }
