@@ -55,6 +55,16 @@ test('drops checkboxes, HTML comments and list items inside code fences', () => 
   assert.deepEqual(texts('```\n## Acceptance criteria\n- fenced\n```\n'), []);
 });
 
+test('ignores HTML comments spanning headings and list items', () => {
+  const hidden = '<!--\n## Acceptance criteria\n- Obsolete requirement\n-->\n\n## Acceptance criteria\n- Actual requirement\n';
+  assert.deepEqual(extractAcceptanceCriteria(hidden), [{ id: 'AC1', text: 'Actual requirement' }]);
+  const inside = '## Acceptance criteria\n- First <!-- hidden\n- Not an item\n## Not a heading\n--> still first\n- Second\n<!-- - hidden item -->\n- Third\n';
+  assert.deepEqual(texts(inside), ['First still first', 'Second', 'Third']);
+  assert.deepEqual(texts('## Acceptance criteria\n- Kept\n<!-- unclosed\n- Hidden\n'), ['Kept']);
+  // Comment delimiters inside fenced code are literal and hide nothing.
+  assert.deepEqual(texts('```\n<!--\n```\n## Acceptance criteria\n- Visible\n```\n-->\n```\n- Also visible\n'), ['Visible', 'Also visible']);
+});
+
 test('bounds the count and the length of each criterion', () => {
   const many = ['## Acceptance criteria', ...Array.from({ length: MAX_ACCEPTANCE_CRITERIA + 5 }, (_, index) => `- item ${index + 1}`)].join('\n');
   const criteria = extractAcceptanceCriteria(many);
@@ -101,4 +111,27 @@ test('pairs each criterion with the agent statement and marks the rest not addre
   const [bounded] = evaluateAcceptanceCriteria(criteria.slice(0, 1), `AC1: N/A — ${'y'.repeat(1000)}`);
   assert.equal(bounded.status, 'not_applicable');
   assert.equal(bounded.evidence?.length, MAX_ACCEPTANCE_EVIDENCE_LENGTH);
+});
+
+test('ignores statements in fenced examples and HTML comments, keeping the last real statement', () => {
+  const criteria = [{ id: 'AC1', text: 'A' }, { id: 'AC2', text: 'B' }];
+  const report = [
+    '- AC1: not met — implementation missing',
+    '- AC2: met — `src/b.ts`',
+    'Report each criterion like this:',
+    '```md',
+    '- AC1: met — src/feature.ts',
+    '```',
+    '~~~',
+    '- AC2: not met — example',
+    '~~~',
+    '<!--',
+    '- AC1: met — hidden',
+    '-->',
+  ].join('\n');
+  assert.deepEqual(evaluateAcceptanceCriteria(criteria, report), [
+    { id: 'AC1', text: 'A', status: 'not_met', evidence: 'implementation missing' },
+    { id: 'AC2', text: 'B', status: 'met', evidence: '`src/b.ts`' },
+  ]);
+  assert.equal(evaluateAcceptanceCriteria(criteria.slice(0, 1), `${report}\n- AC1: met — src/a.ts`)[0].status, 'met');
 });

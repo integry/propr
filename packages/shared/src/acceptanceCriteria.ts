@@ -53,19 +53,6 @@ function trimTrailing(text: string, characters: string): string {
     return text.slice(0, end);
 }
 
-function withoutHtmlComments(text: string): string {
-    let result = '';
-    let position = 0;
-    for (;;) {
-        const start = text.indexOf('<!--', position);
-        if (start < 0) return result + text.slice(position);
-        const end = text.indexOf('-->', start + 4);
-        result += `${text.slice(position, start)} `;
-        if (end < 0) return result;
-        position = end + 3;
-    }
-}
-
 function setextLevel(line: string): number {
     if (/^ {0,3}=+[ \t]*$/.test(line)) return 1;
     if (/^ {0,3}-+[ \t]*$/.test(line)) return 2;
@@ -88,7 +75,7 @@ function indentWidth(whitespace: string): number {
 }
 
 function cleanItemText(text: string): string {
-    return withoutHtmlComments(text)
+    return text
         .replace(/^\s*\[[ xX]\]\s*/, '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -106,6 +93,59 @@ function nextFence(line: string, fence: string | null): { fence: string | null; 
     const match = FENCE.exec(line);
     if (fence) return { fence: match && match[1][0] === fence[0] && match[1].length >= fence.length ? null : fence, isFence: true };
     return match ? { fence: match[1], isFence: true } : { fence: null, isFence: false };
+}
+
+interface VisibleLine {
+    text: string;
+    /** A code fence delimiter or a line inside fenced code. */
+    fenced: boolean;
+}
+
+/** Removes `<!-- ... -->` comments from one line, given whether a comment is already open at its start. */
+function stripLineComments(line: string, inComment: boolean): { text: string; inComment: boolean } {
+    let text = '';
+    let position = 0;
+    let open = inComment;
+    for (;;) {
+        if (open) {
+            const end = line.indexOf('-->', position);
+            if (end < 0) return { text, inComment: true };
+            position = end + 3;
+            open = false;
+            text += ' ';
+        }
+        const start = line.indexOf('<!--', position);
+        if (start < 0) return { text: text + line.slice(position), inComment: false };
+        text += line.slice(position, start);
+        position = start + 4;
+        open = true;
+    }
+}
+
+/**
+ * The lines as rendered: HTML comment contents, including comments spanning
+ * lines, are dropped (each line kept, so line boundaries hold), and fenced code
+ * is marked. Comment delimiters inside fenced code are literal text.
+ */
+function visibleLines(lines: readonly string[]): VisibleLine[] {
+    const visible: VisibleLine[] = [];
+    let fence: string | null = null;
+    let inComment = false;
+    for (const line of lines) {
+        if (!inComment) {
+            const fenced = nextFence(line, fence);
+            fence = fenced.fence;
+            if (fenced.isFence) {
+                visible.push({ text: line, fenced: true });
+                continue;
+            }
+        }
+        const stripped = stripLineComments(line, inComment);
+        inComment = stripped.inComment;
+        // A line that was only comment reads as blank, like the rendered output.
+        visible.push({ text: stripped.text.trim() ? stripped.text : '', fenced: false });
+    }
+    return visible;
 }
 
 /** The heading `lines[index]` starts, and how many lines it spans. */
@@ -187,13 +227,14 @@ function joinParts(parts: readonly string[]): string {
  * The list items under the first heading matching "Acceptance criteria"
  * (case-insensitive, any ATX or setext level), up to the next heading of the
  * same or a higher level. Each top-level item is one criterion; nested items
- * and continuation lines are folded into it. Checkboxes are dropped. At most
+ * and continuation lines are folded into it. Checkboxes and HTML comments are dropped. At most
  * MAX_ACCEPTANCE_CRITERIA criteria of at most MAX_ACCEPTANCE_CRITERION_LENGTH
  * characters each.
  */
 export function extractAcceptanceCriteria(body: string | null | undefined): AcceptanceCriterion[] {
     if (!body) return [];
-    return listItems(criteriaSection(body.slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/)))
+    const lines = visibleLines(body.slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/)).map(line => line.text);
+    return listItems(criteriaSection(lines))
         .map(joinParts)
         .filter(Boolean)
         .map((text, index) => ({ id: `AC${index + 1}`, text: bound(text, MAX_ACCEPTANCE_CRITERION_LENGTH) }));
@@ -235,7 +276,8 @@ function parseStatementLine(line: string): { id: string; status: AcceptanceCrite
 
 /**
  * Pair each criterion with the agent's last statement about it. A criterion
- * without a statement is `not_addressed`.
+ * without a statement is `not_addressed`. Statements inside fenced code (such
+ * as a format example) or HTML comments are not the agent's report and are ignored.
  */
 export function evaluateAcceptanceCriteria(
     criteria: readonly AcceptanceCriterion[],
@@ -243,8 +285,9 @@ export function evaluateAcceptanceCriteria(
 ): AcceptanceCriterionResult[] {
     const statements = new Map<string, { status: AcceptanceCriterionStatus; evidence: string }>();
     const known = new Set(criteria.map(criterion => criterion.id));
-    for (const line of (agentReport ?? '').slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/)) {
-        const statement = parseStatementLine(line);
+    for (const line of visibleLines((agentReport ?? '').slice(0, MAX_SCANNED_LENGTH).split(/\r?\n/))) {
+        if (line.fenced) continue;
+        const statement = parseStatementLine(line.text);
         if (statement && known.has(statement.id)) statements.set(statement.id, statement);
     }
     return criteria.map(criterion => {
