@@ -160,7 +160,9 @@ export type {
 
 export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type AutoMergeReevaluationOptions, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export type { AutoMergeEvaluationOutcome } from './webhook/autoMergeEvaluation.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
+export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';
 export { retryPendingEpicMergeProgress } from './webhook/epicPRHandler.js';
@@ -628,6 +630,7 @@ export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingCheck
 export * from './services/usageTips/index.js';
 
 export * from './workflow/repositoryWorkflow.js';
+export * from './workflow/blockerReport.js';
 export * from './network/egressAllowlist.js';
 export * from './network/egressProxy.js';
 export * from './network/networkPolicy.js';
@@ -648,6 +651,7 @@ export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
+export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/reviewScoreStore.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login

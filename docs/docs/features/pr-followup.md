@@ -197,6 +197,9 @@ MCP `get_repository_configuration` returns the stored override and
   the setting on: every 5 minutes with `GITHUB_EVENT_INTAKE_MODE=polling` (which
   never receives push events) and every 15 minutes otherwise.
   `MERGE_CONFLICT_SWEEP_INTERVAL_MS` overrides the interval.
+- **Auto-merge branch update.** With `auto_merge.require_up_to_date`, a branch
+  update ProPR requests before merging that fails because of conflicts is
+  evaluated immediately (see [Up-to-date branches](./repository-workflow.md#up-to-date-branches)).
 
 GitHub computes mergeability lazily and answers `mergeable: null` right after a
 push, so ProPR re-reads the pull request after 2, 5, 10 and 20 seconds before

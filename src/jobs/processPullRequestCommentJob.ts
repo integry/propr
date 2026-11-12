@@ -25,6 +25,7 @@ import {
 import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext, restorePendingComments } from './prPendingComments.js';
 import { executeReviewProcessing, type PRJobContext } from './prCommentReviewJob.js';
 import { applyWorkflowCostCap, pullRequestRunCostCapTarget, withRunCostCap } from './runCostCap.js';
+import { workflowReportsBlockers } from './blockedRunText.js';
 import { resolveUltrafixFixExecution } from './ultrafixEscalation.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
@@ -341,7 +342,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         });
 
         const postResult = await handlePostExecution(
-            { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken, visualPreviewSettings, linkedIssue: linkedIssueResult.linkedIssue },
+            { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken, visualPreviewSettings, linkedIssue: linkedIssueResult.linkedIssue,
+                reportsBlockers: workflowReportsBlockers(repositoryWorkflow) },
             taskUrl,
         );
 
@@ -349,14 +351,24 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             ref: context, continuation: publication.continuation, commandMode: job.data.commandMode,
             ultrafix: Boolean(job.data.ultrafixMeta), redis: redisClient, octokit,
         });
-        if (!stopped) await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+        if (!stopped) await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, blocked: postResult.blocked });
         await publication.finishCompletion();
         // The owed commit, push and completion comment are published; the handoff
         // is retained at cleanup_pending until worktree cleanup frees the branch.
         await markExecutionHandoffCleanupPending(state, correlatedLogger);
 
-        return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
+        return { ...followUpJobStatus(postResult), commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
     });
+}
+
+/**
+ * The job result status of a follow-up that reached its completion comment. A
+ * blocked run already ended its task with terminal reason `blocked`; its job
+ * completes normally and is flagged.
+ */
+function followUpJobStatus(result: { partial: boolean; blocked?: boolean }): { status: 'partial' | 'complete'; blocked?: true } {
+    if (result.blocked) return { status: 'complete', blocked: true };
+    return { status: result.partial ? 'partial' : 'complete' };
 }
 
 // Follow-ups, /fix, ultrafix cycles and reviews run, and record how they end, under their spend cap.

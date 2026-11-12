@@ -9,6 +9,7 @@ import { isTerminalStatus, isInProgressStatus } from '../../webhook/statusMachin
 import { labelPlanIssueForProcessing, finalizeEpicPlanIfComplete, reconcileTerminalInProgressIssues } from '../../webhook/planIssueTrigger.js';
 import { queuedModelLabel } from './epicQueueModelLabel.js';
 import { isAwaitingHumanMergeReason } from './epicQueueHumanMerge.js';
+import { AGENT_BLOCKED_REASON_LIKE, isAgentBlockedReason } from './epicQueueBlockedHead.js';
 import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
@@ -300,6 +301,9 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   }
   const draft = await database('task_drafts').where({ draft_id: draftId }).first('paused', 'context_config');
   if (!draft || draft.paused) return;
+  // A head whose run stopped on a reported blocker is never re-dispatched by recovery:
+  // a person resolves the blocker and requests processing again.
+  if (isAgentBlockedReason(queue.blockedReason)) return;
   // Clear the explanation if a blocked issue has been reopened. A head waiting for a
   // human merge keeps its explanation until the merge advances the queue.
   if (queue.blockedReason && issue.status !== PlanIssueStatus.PENDING && !isAwaitingHumanMergeReason(queue.blockedReason)) {
@@ -322,6 +326,8 @@ async function dispatchPendingQueueHead(queue: EpicExecutionQueue, contextConfig
   // Recheck pause and issue state in the same statement as the dispatch claim.
   claim.whereExists(database('task_drafts').select('draft_id').where({ draft_id: draftId, paused: false }));
   claim.whereExists(database('plan_issues').select('id').where({ draft_id: draftId, issue_number: issueNumber, status: 'pending' }));
+  // A blocker recorded after this queue was read still holds the head.
+  claim.where(reason => reason.whereNull('blocked_reason').orWhere('blocked_reason', 'not like', AGENT_BLOCKED_REASON_LIKE));
   const changed = await claim.update({ head_started_at: timestamp, blocked_reason: null, updated_at: timestamp });
   if (!changed) return;
   const context = typeof contextConfig === 'string' ? JSON.parse(contextConfig || '{}') : contextConfig;

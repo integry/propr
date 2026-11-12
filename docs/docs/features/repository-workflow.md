@@ -33,11 +33,14 @@ auto_merge:
     - ".github/workflows/**"
     - "packages/core/src/db/migrations/**"
     - "package.json"
+  require_up_to_date: true
+  max_branch_updates_per_hour: 3
 network:
   mode: restricted
   allow:
     - "registry.npmjs.org"
     - "*.internal.example.com"
+on_blocker: report
 ```
 
 All fields are optional. Use `{}` for an empty policy; a file that is empty or contains only comments (for example, the scaffold with every section commented out) is also treated as an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors once; the job is not retried, because the same base commit would fail the same way. A malformed instance `worker_concurrency` setting is not a workflow error: ProPR falls back to `WORKER_CONCURRENCY` (default 5). Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
@@ -63,7 +66,96 @@ Each invocation (including provider retries with a new container) has its own li
 
 `hooks.timeout_ms` applies separately to each hook and validation command. It defaults to 600,000 ms and cannot exceed that ceiling. Timeout sends TERM to the command process group, followed by KILL after a five-second grace period. The instance's overall agent execution timeout still applies to the entire container, including hooks.
 
-When `after_create` is omitted, `.propr/setup.sh` remains implicit if present and keeps its existing nonfatal failure behavior (`PROPR_REPO_SETUP_STRICT=1` makes failures fatal). An explicit `after_create` replaces it. Repositories **without a workflow file keep the existing setup execution unchanged**, including its timeout behavior.
+When `after_create` is omitted, `.propr/setup.sh` remains implicit if present and keeps its existing nonfatal failure behavior (`PROPR_REPO_SETUP_STRICT=1` makes failures fatal). A multi-line hook is one `bash -c` script whose exit status is that of its last command, so start it with `set -euo pipefail` to make every step count. An explicit `after_create` replaces it. Repositories **without a workflow file keep the existing setup execution unchanged**, including its timeout behavior.
+
+### Fresh worktrees
+
+Every attempt starts from a fresh worktree of the base commit in a new container. Anything that is not committed is absent: `.env` files, generated clients, build outputs and installed dependencies. Anything an earlier container created inside itself is gone too. Several runs of one repository can be active at once (see `limits.max_parallel_tasks`), so anything outside the container that is addressed by a fixed name, such as a test database on a shared server, a Docker volume or a host path, collides across runs. Use `after_create` to rebuild the worktree's ignored state and to name shared resources per run, and `before_remove` to remove them.
+
+Hooks receive this environment:
+
+| Variable | Value | Unique per run? |
+| --- | --- | --- |
+| `PROPR_WORKSPACE` | The repository checkout inside the container (`/home/node/workspace`); hooks start in it | No, same path in every container |
+| `PROPR_CACHE_DIR` | A writable directory outside the repository, created for the container | Private to the container; discarded with it |
+| `PROPR_AGENT_TYPE` | `claude`, `codex`, `antigravity`, `opencode` or `vibe` | No, parallel runs often share it |
+
+None of these values identifies a run, so generate an ID in `after_create` and keep it in `PROPR_CACHE_DIR`, where `before_remove` in the same container can read it.
+
+**What the cache directory is for.** `PROPR_CACHE_DIR` is for package-manager caches (`npm_config_cache`, `PIP_CACHE_DIR`), tool downloads and state handed from one hook to the next. It lives outside the worktree, so nothing in it is committed, but it does not survive the container: do not use it to share data between runs. Anything a hook writes inside the worktree must be git-ignored. ProPR commits the workspace after the run, so un-ignored env files or generated output would end up in the pull request.
+
+**Create env files from an example.** Commit a `.env.example` with safe local defaults, git-ignore `.env`, and copy it in `.propr/setup.sh` (or in an explicit `after_create`):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$PROPR_WORKSPACE"
+
+# .env is git-ignored; never commit real secrets to the example.
+if [ ! -f .env ]; then
+  cp .env.example .env
+fi
+```
+
+**Run code generation before the agent starts.** Generate clients, types and other ignored artifacts in `after_create`, so the agent sees a project that builds. The hook fails the attempt if generation fails, instead of leaving the agent to work against missing files:
+
+```yaml
+hooks:
+  after_create: |
+    set -euo pipefail
+    [ -f .env ] || cp .env.example .env
+    export npm_config_cache="$PROPR_CACHE_DIR/npm"
+    npm ci
+    npm run codegen --if-present
+```
+
+A multi-line hook is one `bash -c` script whose exit status is that of its last command, so start it with `set -euo pipefail` to make every step count. An explicit `after_create` replaces the implicit `.propr/setup.sh`; call it from the hook (`bash .propr/setup.sh`) if you still need both. Use `before_run` for steps that must run last, such as a build that depends on the generated code. Do not regenerate in `validation`: validation commands must not modify files.
+
+**Name databases, ports and volumes per run.** Derive every shared name from one run ID and write it to the git-ignored `.env`, so the application, the tests and the agent all pick it up. Ports bound inside the container are private to it (containers have their own network namespace), but a free port avoids clashing with services the agent itself starts:
+
+```bash
+# In .propr/setup.sh, after creating .env
+# One connection for creation, the application and cleanup. libpq tools
+# (createdb, dropdb) read these variables; before_remove reloads them.
+cat >"$PROPR_CACHE_DIR/pg.env" <<'PG'
+export PGHOST=db.internal.example.com PGPORT=5432 PGUSER=app
+PG
+. "$PROPR_CACHE_DIR/pg.env"
+
+run_id="${PROPR_AGENT_TYPE}_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+echo "$run_id" >"$PROPR_CACHE_DIR/run-id"
+
+db="app_test_$run_id"
+createdb "$db"
+port="$(node -e 'const s=require("net").createServer().listen(0,()=>{console.log(s.address().port);s.close()})')"
+
+{
+  echo "DATABASE_URL=postgres://$PGUSER@$PGHOST:$PGPORT/$db"
+  echo "PORT=$port"
+  echo "COMPOSE_PROJECT_NAME=propr_$run_id"   # prefixes Compose volumes and networks
+  echo "SQLITE_PATH=$PROPR_CACHE_DIR/app.sqlite"
+} >>.env
+```
+
+The `app` role needs permission to create databases on that server, and its password must reach the hooks and the application without a prompt, for example from a `PGPASSWORD` or `~/.pgpass` your agent image provides (libpq and most drivers read both). Never write the password into `.env.example`.
+
+This recipe connects to PostgreSQL directly, so it needs ordinary outbound networking (`network.mode: open`, the default) and a database server the agent container can reach. A restricted run has no network interface and only an HTTP(S) proxy as its route out, so `createdb` cannot connect there and the failed `after_create` aborts the attempt; adding the database host to `network.allow` does not change that. For restricted runs, use a database server installed in the agent image and listening on loopback, or skip database setup.
+
+Keep SQLite files and other local state in `PROPR_CACHE_DIR` or a git-ignored path in the worktree, never at a fixed path on a shared mount. In restricted [network mode](#network), `network.allow` admits only HTTP(S) traffic that goes through the proxy (package registries, HTTP APIs), not direct database or other raw TCP connections. An entry without a port allows only ports 80 and 443, so write `host:port` for a service on any other port, and remember that repository entries never reach private addresses (see [Restricted network mode](./execution-safety.md#restricted-network-mode)).
+
+**Clean up in `before_remove`.** It runs before the container exits, including after setup or `before_run` failures, so it must tolerate a run that never got as far as creating its resources:
+
+```yaml
+hooks:
+  after_create: bash .propr/setup.sh
+  before_remove: |
+    run_id="$(cat "$PROPR_CACHE_DIR/run-id" 2>/dev/null)" || exit 0
+    . "$PROPR_CACHE_DIR/pg.env"   # same server and user as createdb
+    dropdb --if-exists "app_test_$run_id"
+    docker compose -p "propr_$run_id" down --volumes || true
+```
+
+Cleanup is best effort: a failing `before_remove` is logged and ignored, and forced container removal after a cancellation can interrupt it. Use a recognisable prefix (`app_test_`, `propr_`) so a periodic job can remove resources whose runs never cleaned up.
 
 ## Instructions and validation
 
@@ -72,6 +164,34 @@ When `after_create` is omitted, `.propr/setup.sh` remains implicit if present an
 `validation` adds commands the agent must run and report before finishing. ProPR also executes them in order after the agent exits, with the hook timeout applied to each command, and appends the observed results to the completion summary: `Passed`, `Failed (exit N)`, `Timed out` (the command reached its time limit), `Killed (exit 137)` (killed before its limit, for example by the out-of-memory killer) or `Not run`. Validation shares the instance's overall execution timeout with the agent, so ProPR also bounds it as a whole. It stops starting commands early enough to leave time for `after_run`, `before_remove` and container teardown, and shortens a command's timeout to the remaining budget. That reserve is 30 seconds plus, for each configured `after_run` and `before_remove` hook, 60 seconds and a five-second grace period. If `hooks.timeout_ms` is set explicitly, each cleanup hook reserves its full timeout instead (still capped by the instance ceiling), so set it only when cleanup really needs that long. The remaining commands are reported as `Not run (execution time limit reached)`, and the completed agent run is kept rather than reported as an execution timeout. A failing validation command does not suppress later commands or erase implementation work. Command output is available in execution logs. Validation commands should be safe to repeat and **must not modify files**: they run in the task workspace after the agent and before ProPR commits, so changes they make (for example `lint --fix`, regenerated snapshots or build output that is not ignored) are committed with the agent's work. Use check-only variants such as `eslint .` or `prettier --check`.
 
 Results are authoritative only when the container wrapper runs as root and drops repository commands and the agent to the unprivileged `node` user, as the supported agent images do. Otherwise each result is marked `(unverified: container wrapper was not running as root)`, because an agent sharing the wrapper's user could write its own results. If an agent's transport did not capture the container output, results read `Not observed`.
+
+## Reporting blockers
+
+By default (`on_blocker: continue`, or no `on_blocker` key) a run that cannot do what was asked still ends like any other run: a run without changes is reported as complete. Set `on_blocker: report` to let the agent stop and say what blocked it instead:
+
+```yaml
+on_blocker: report   # continue (default) | report
+```
+
+With `report`, issue implementation and PR follow-up (including `/fix` and Ultrafix fix steps) prompts tell the agent: if the task cannot be completed as specified, do not deliver a reduced or placeholder version; revert any partial changes and end the final message with a line that starts with the marker `PROPR_BLOCKED:`, followed by a short explanation of what blocked it and what is needed. For example:
+
+```text
+PROPR_BLOCKED: The payment API credentials are not available in this environment; a sandbox key is needed to run the integration tests.
+```
+
+ProPR looks for the marker only in the agent's final message, and only when it starts a top-level line: a marker inside a code block, a quote, a list item or the middle of a sentence (for example quoted tool output or file contents) is ignored. Only runs that end normally are checked; timeouts, spend-cap stops and failures keep their usual handling. The explanation is limited to 2,000 characters and secrets are redacted, as for other agent text.
+
+When the agent reports a blocker:
+
+- **Issues:** nothing is committed and no pull request is opened. The processing label is removed, the done label is not added and a linked plan issue keeps its status. ProPR comments on the issue that the run stopped on a blocker and quotes the explanation.
+- **Epic execution queues:** a blocked issue is not finished, so the plan's queue does not advance past it under either advance policy, and a parallel execution does not complete. The queue's blocked reason (shown on the plan page and in MCP `get_plan`) says that the issue stopped on a blocker. Queue recovery does not restart or close the issue. Once you resolve the blocker and request processing again, a run that ends without a blocker clears the reason, and the queue continues as usual when the issue merges or completes without changes.
+- **Follow-ups and `/fix`:** nothing is committed or pushed and selected review findings stay pending. The completion comment states the blocker instead of the no-change text.
+- **Ultrafix:** a blocked fix step stops the loop with the reason `fix_step_blocked` instead of counting as a completed fix.
+- If the agent left changes in the worktree anyway, they are not committed and the comment lists the files.
+
+The task ends `completed` with the terminal reason `blocked`, shown in task history and in MCP `get_task` and `get_task_events`. A blocked run is not retried and is never handed to a replacement provider. ProPR also creates a warning in the Inbox for it (a `task` notification with `metadata.event` set to `task.blocked`).
+
+With `continue` or without the key, prompts and outcomes are unchanged.
 
 ## Auto-merge policy
 
@@ -82,6 +202,8 @@ Results are authoritative only when the container wrapper runs as root and drops
 | `enabled` | `true` | `false` never arms auto-merge, even when the label is present. |
 | `method` | repository default | `merge`, `squash` or `rebase`. Without it ProPR uses squash, as before, unless the repository disallows squash merges. |
 | `protected_paths` | none | Globs. If any changed file matches one, auto-merge is not armed. |
+| `require_up_to_date` | `false` | ProPR's own merge waits until the PR head contains the latest base commit. A behind PR is updated from its base and merged only after CI passes on the updated head. See [Up-to-date branches](#up-to-date-branches). |
+| `max_branch_updates_per_hour` | `3` | With `require_up_to_date`, the most branch updates ProPR requests for one PR in any hour (1 to 30). |
 
 `.propr` and everything below it (`.propr/**`) are always protected, whatever the configuration says, including a `.propr` file or symlink added by the PR, so an agent cannot change repository policy and merge it unattended.
 
@@ -105,6 +227,37 @@ A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.p
 **New commits.** When an armed PR receives a new head (or is retargeted to another base), ProPR evaluates the policy again. If it no longer allows auto-merge, for example because a follow-up commit touched a protected path, ProPR disables auto-merge on the PR, records a timeline event and comments. Only auto-merge that ProPR itself enabled is withdrawn; auto-merge a person or another GitHub App enabled is left alone.
 
 **Epic queues.** An Epic queue advances when the head's PR is merged, not when auto-merge is armed. If auto-merge is skipped for the head's PR, the queue stays active and shows *Waiting for human merge* with the reason; it resumes as soon as a person merges the PR.
+
+### Up-to-date branches
+
+GitHub only reports a PR as cleanly mergeable for its current head, and a PR that is merely behind its base waits until something else changes it. Where branch protection does not require up-to-date branches, two PRs that each pass alone can also merge and break the base together. `require_up_to_date: true` gives ProPR's own auto-merge merge-queue-like behaviour:
+
+1. When a labelled PR passes every other gate (labels, Ultrafix state, CI, mergeability, active work, policy) ProPR compares its head with the latest commit of the base branch. A head that contains it merges as before.
+2. A behind head is not merged. ProPR updates the branch through GitHub's update-branch API, passing the head SHA it evaluated so a concurrent push is never overwritten.
+3. The updated head runs CI. The check-run webhooks and the auto-merge sweep evaluate it again, and it merges only once its own CI has passed (and the base has not moved again).
+
+ProPR's comparison and the merge that follows run one at a time per repository, so two PRs that are each current against the same base cannot both merge: the second one is compared again against the base the first merge produced, and is updated instead of merged. ProPR renews that ownership while the merge is in progress and checks it again just before merging. If it was lost (for example, the process stalled past its five-minute expiry), the PR is not merged and is compared again later.
+
+A PR that is waiting (for another PR's turn or merge, for its own branch update, or for its update rate limit) is recorded for retry. The auto-merge sweep then re-evaluates it about once a minute, even if no further check event arrives and the PR is not part of a plan. It stays recorded until an evaluation settles it: the PR merges or closes, becomes a draft, loses the `auto-merge` label (or its Ultrafix loop fails), or the repository policy leaves it for a person. Checks that are still running or have failed keep it recorded, and so does any mergeability GitHub reports other than clean (not computed yet, conflicts, blocked): the final result of a re-run or of a new head may arrive while GitHub has not computed mergeability yet or other work on the PR is still running, and an approval produces no check event. An evaluation that could not decide, for example because CI or the PR could not be read, keeps it for the next sweep too. A PR that is not recorded again for a day is dropped.
+
+GitHub's own auto-merge would merge a behind head without this comparison, so ProPR does not arm it under `require_up_to_date`. The `auto-merge` label keeps the merge intent, and ProPR merges the PR itself from check events and the auto-merge sweep. A GitHub auto-merge request ProPR armed earlier (for example before the option was enabled) is withdrawn with a comment the next time ProPR evaluates the PR; a request a person or another App armed is left alone.
+
+Only one PR per repository is brought up to date at a time: the oldest eligible PR (lowest number) holds the repository's turn until its updated head merges, its CI fails, it is closed, or an hour passes without progress. Each PR gets at most `max_branch_updates_per_hour` updates per hour; a PR that reaches the limit gives up its turn so a busy base branch cannot cause an update loop, and is updated again once the hour has passed.
+
+If GitHub cannot update the branch because of merge conflicts, ProPR queues [automatic merge-conflict resolution](./pr-followup.md#automatic-merge-conflict-resolution) when it is enabled for the repository; otherwise it comments on the PR explaining why auto-merge is waiting. Without the option, a behind PR is skipped exactly as before.
+
+Each decision is recorded with the same auto-merge timeline event, at most once per head and base:
+
+| Reason | When |
+| --- | --- |
+| `updated_branch` | The head was behind; ProPR requested a branch update. |
+| `waiting_for_ci_updated_head` | CI has not passed yet on the updated head (or failed on it, which ends the PR's turn). |
+| `waiting_branch_update_pending` | The requested update has not produced a new head yet. |
+| `waiting_branch_update_serialized` | Another PR in the repository holds the turn, an older PR is eligible, or another PR's comparison and merge are in progress. |
+| `waiting_branch_update_rate_limited` | The PR reached `max_branch_updates_per_hour`. |
+| `waiting_branch_update_conflict` | The update failed because of conflicts; the event says whether automatic resolution was queued. |
+| `waiting_branch_update_failed` | GitHub refused the update for another reason. |
+| `waiting_base_comparison_unavailable` | GitHub could not compare the head with the base branch; nothing is merged. |
 
 ## Network
 

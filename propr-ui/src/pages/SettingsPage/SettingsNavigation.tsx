@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   Bot,
-  ChevronLeft,
   ChevronRight,
   GitPullRequest,
   type LucideIcon,
@@ -11,38 +10,39 @@ import {
   RefreshCcw,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
-  X
+  FlaskConical,
+  Wrench
 } from 'lucide-react';
 import { SETTINGS_BLOCK, SETTINGS_CONTAINER } from './settingsStyles';
 import SettingsInspector from './SettingsInspector';
+import { MobileCategoryHeader, SettingsSearchField } from './SettingsNavigationParts';
 import { useDesktopLayout } from '../../hooks/useDesktopLayout';
 
 export type SettingsCategoryId =
-  | 'general'
   | 'models'
   | 'workflow'
   | 'ultrafix'
   | 'sandbox'
   | 'agent-extensions'
   | 'integrations'
-  | 'notifications';
+  | 'notifications'
+  | 'maintenance'
+  | 'experimental';
 
 interface SettingsCategory {
   id: SettingsCategoryId;
   label: string;
   description: string;
   icon: LucideIcon;
+  /**
+   * Leave the category out of the list when the viewer has no section in it,
+   * rather than offer an empty page (Maintenance is administrator-only).
+   */
+  hideWhenEmpty?: boolean;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const SETTINGS_CATEGORIES: SettingsCategory[] = [
-  {
-    id: 'general',
-    label: 'General',
-    description: 'Application preferences for this workspace.',
-    icon: SlidersHorizontal
-  },
   {
     id: 'models',
     label: 'AI Models & Reasoning',
@@ -84,10 +84,23 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     label: 'Notifications',
     description: 'Choose which updates reach your inbox and browser.',
     icon: Bell
+  },
+  {
+    id: 'maintenance',
+    label: 'Maintenance',
+    description: 'Operator upkeep: instance data and held follow-ups.',
+    icon: Wrench,
+    hideWhenEmpty: true
+  },
+  {
+    id: 'experimental',
+    label: 'Experimental',
+    description: 'Opt-in features and preferences that do not change how agents run.',
+    icon: FlaskConical
   }
 ];
 
-export const DEFAULT_SETTINGS_CATEGORY: SettingsCategoryId = 'general';
+export const DEFAULT_SETTINGS_CATEGORY: SettingsCategoryId = SETTINGS_CATEGORIES[0].id;
 
 export interface SettingsNavigationSection {
   id: string;
@@ -159,62 +172,6 @@ const SettingsRailTab: React.FC<SettingsRailTabProps> = ({ category, selected, f
   );
 };
 
-/** The settings search box, with a clear button once something is typed. */
-const SettingsSearchField: React.FC<{ query: string; onQueryChange(query: string): void }> = ({ query, onQueryChange }) => (
-  <div className="relative">
-    <label htmlFor="settings-search" className="sr-only">Search settings</label>
-    <Search
-      aria-hidden="true"
-      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-    />
-    <input
-      id="settings-search"
-      type="search"
-      value={query}
-      onChange={event => onQueryChange(event.target.value)}
-      placeholder="Search settings..."
-      className="h-9 w-full rounded border border-slate-300 bg-slate-50 pl-9 pr-9 text-sm text-slate-900 placeholder:text-slate-400 focus:border-primary-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary-500"
-    />
-    {query && (
-      <button
-        type="button"
-        onClick={() => onQueryChange('')}
-        aria-label="Clear settings search"
-        className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-      >
-        <X aria-hidden="true" className="h-3.5 w-3.5" />
-      </button>
-    )}
-  </div>
-);
-
-/**
- * The phone header inside a category: a back button to the category list and
- * the category's name. The page header (and its demo-mode notice) is hidden
- * here, so a read-only hint explains why the controls are inert.
- */
-const MobileCategoryHeader: React.FC<{ label: string; isReadOnly: boolean; onBack(): void }> = ({ label, isReadOnly, onBack }) => (
-  <div className="flex-shrink-0 border-b border-slate-200 bg-white md:hidden" data-settings-mobile-header>
-    <div className="flex items-center px-2 py-1.5">
-      <button
-        type="button"
-        onClick={onBack}
-        aria-label="Back to Settings"
-        className="inline-flex flex-shrink-0 items-center gap-0.5 rounded px-1.5 py-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-      >
-        <ChevronLeft aria-hidden="true" className="h-5 w-5" />
-        Settings
-      </button>
-      <span className="min-w-0 flex-1 truncate pr-2 text-center text-sm font-semibold text-slate-900">{label}</span>
-      {/* Balances the back button so the title stays centred. */}
-      <span aria-hidden="true" className="w-[5.5rem] flex-shrink-0" />
-    </div>
-    {isReadOnly && (
-      <p className="px-4 pb-2 text-center text-[12px] text-amber-700">Demo mode is read-only.</p>
-    )}
-  </div>
-);
-
 interface SettingsCategoryPanelProps {
   category: SettingsCategory;
   sections: SettingsNavigationSection[];
@@ -274,6 +231,20 @@ const SettingsCategoryPanel: React.FC<SettingsCategoryPanelProps> = ({
   );
 };
 
+/** The categories to list: all of them, less any hide-when-empty one without sections. */
+const visibleSettingsCategories = (sections: SettingsNavigationSection[]): SettingsCategory[] =>
+  SETTINGS_CATEGORIES.filter(category =>
+    !category.hideWhenEmpty || sections.some(section => section.category === category.id));
+
+/**
+ * The category to open. A link to one this viewer cannot see (?tab=maintenance
+ * for a non-administrator) opens the default category instead of an empty page.
+ */
+const openableCategory = (visible: SettingsCategory[], requested: SettingsCategoryId): SettingsCategory =>
+  visible.find(category => category.id === requested)
+    ?? visible.find(category => category.id === DEFAULT_SETTINGS_CATEGORY)
+    ?? visible[0];
+
 /**
  * Settings as a split-pane console: a vertical category rail on the left, a
  * reading pane held to `max-w-2xl`, and on 2xl screens an inspector that
@@ -300,8 +271,9 @@ const SettingsNavigation: React.FC<SettingsNavigationProps> = ({
   const isDesktop = useDesktopLayout();
   const tabRefs = useRef<Partial<Record<SettingsCategoryId, HTMLButtonElement | null>>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
-  const activeCategory = controlledActiveCategory ?? localActiveCategory;
-  const activeCategoryDetails = SETTINGS_CATEGORIES.find(category => category.id === activeCategory) ?? SETTINGS_CATEGORIES[0];
+  const visibleCategories = useMemo(() => visibleSettingsCategories(sections), [sections]);
+  const activeCategoryDetails = openableCategory(visibleCategories, controlledActiveCategory ?? localActiveCategory);
+  const activeCategory = activeCategoryDetails.id;
   const normalizedQuery = query.trim();
 
   // A route that names a category (a deep link, or a notification opening
@@ -332,15 +304,15 @@ const SettingsNavigation: React.FC<SettingsNavigationProps> = ({
   const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number): void => {
     let nextIndex: number | null = null;
     if (event.key in NEXT_TAB_KEYS) {
-      nextIndex = (index + NEXT_TAB_KEYS[event.key] + SETTINGS_CATEGORIES.length) % SETTINGS_CATEGORIES.length;
+      nextIndex = (index + NEXT_TAB_KEYS[event.key] + visibleCategories.length) % visibleCategories.length;
     } else if (event.key === 'Home') {
       nextIndex = 0;
     } else if (event.key === 'End') {
-      nextIndex = SETTINGS_CATEGORIES.length - 1;
+      nextIndex = visibleCategories.length - 1;
     }
     if (nextIndex === null) return;
     event.preventDefault();
-    const next = SETTINGS_CATEGORIES[nextIndex].id;
+    const next = visibleCategories[nextIndex].id;
     // Wider screens show the rail beside the pane, so arrows select as they
     // move. On phones selecting would replace the list with the category
     // (a routed category opens there), hiding the item just focused, so
@@ -395,7 +367,7 @@ const SettingsNavigation: React.FC<SettingsNavigationProps> = ({
               aria-label="Settings categories"
               aria-orientation="vertical"
             >
-              {SETTINGS_CATEGORIES.map((category, index) => (
+              {visibleCategories.map((category, index) => (
                 <SettingsRailTab
                   key={category.id}
                   category={category}
@@ -428,7 +400,7 @@ const SettingsNavigation: React.FC<SettingsNavigationProps> = ({
               </div>
             )}
 
-            {SETTINGS_CATEGORIES.map(category => (
+            {visibleCategories.map(category => (
               <SettingsCategoryPanel
                 key={category.id}
                 category={category}

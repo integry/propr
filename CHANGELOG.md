@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@propr/client` types. `propr stats cost [--period] [--repository]
   [--group-by] [--json|--csv]` and the MCP read tool `get_cost_breakdown`
   return the same data. See the Cost export section of the metrics docs.
+- **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
+  option in `.propr/workflow.yml` (default `false`) makes ProPR's own
+  auto-merge behave like a merge queue. A labelled PR that passes every other
+  gate but is behind its base is updated through GitHub's update-branch API
+  (pinned to the evaluated head) instead of merged, and merges only after CI
+  passes on the updated head. One PR per repository (the oldest eligible) is
+  updated at a time, each PR gets at most `max_branch_updates_per_hour`
+  (default 3) updates, and conflicts use the opt-in automatic conflict
+  resolution or leave an explaining comment. The comparison and the merge are
+  serialised per repository under a renewed, token-checked ownership that is
+  confirmed just before the merge, so two current PRs cannot merge together.
+  Waiting PRs, including PRs outside a plan, are retried by the auto-merge
+  sweep. GitHub's native auto-merge is not armed under the option (ProPR withdraws
+  its own earlier request). Every decision is recorded with the auto-merge
+  timeline event.
 
 ### Fixed
 

@@ -181,23 +181,29 @@ export async function maybeEnableAutoMerge(
             owner, repo, prNumber: pullRequestNumber, opportunity: 'ultrafix_goal', issueNumber: planIssue.issue_number, log: correlatedLogger,
         });
         if (!gate.arm || !gate.pullRequest) return;
-        // Arm only the head the policy evaluated; a newer head needs its own decision.
-        const result = await enableAutoMerge({
-            owner, repoName: repo, prNumber: pullRequestNumber, mergeMethod: gate.mergeMethod,
-            expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
-        });
-        if (result.success) return;
-        correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
-        if (!result.unavailable) return;
-        if (isAutoMergeDisabledForRepository(result.error)) {
-            const suggestionError = await suggestEnablingAutoMerge(owner, repo, pullRequestNumber);
-            if (suggestionError) correlatedLogger.warn({ pullRequestNumber, error: suggestionError.message }, 'Failed to suggest enabling GitHub auto-merge');
+        if (gate.directMergeOnly) {
+            // `require_up_to_date`: GitHub's auto-merge would merge a behind head, so it
+            // is not armed; ProPR's guarded merge path updates or merges the PR instead.
+            correlatedLogger.info({ pullRequestNumber }, 'require_up_to_date after ultrafix success, evaluating a direct merge');
+        } else {
+            // Arm only the head the policy evaluated; a newer head needs its own decision.
+            const result = await enableAutoMerge({
+                owner, repoName: repo, prNumber: pullRequestNumber, mergeMethod: gate.mergeMethod,
+                expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
+            });
+            if (result.success) return;
+            correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
+            if (!result.unavailable) return;
+            if (isAutoMergeDisabledForRepository(result.error)) {
+                const suggestionError = await suggestEnablingAutoMerge(owner, repo, pullRequestNumber);
+                if (suggestionError) correlatedLogger.warn({ pullRequestNumber, error: suggestionError.message }, 'Failed to suggest enabling GitHub auto-merge');
+            }
+            // GitHub cannot wait for this PR (setting off, or already mergeable), and
+            // CI may have finished before the goal was reached, so no later check
+            // event would merge it. Merge directly through the same gates instead;
+            // only this finishing job is excluded from the active-work check.
+            correlatedLogger.info({ pullRequestNumber }, 'GitHub auto-merge unavailable after ultrafix success, evaluating a direct merge');
         }
-        // GitHub cannot wait for this PR (setting off, or already mergeable), and
-        // CI may have finished before the goal was reached, so no later check
-        // event would merge it. Merge directly through the same gates instead;
-        // only this finishing job is excluded from the active-work check.
-        correlatedLogger.info({ pullRequestNumber }, 'GitHub auto-merge unavailable after ultrafix success, evaluating a direct merge');
         await reevaluatePRAutoMerge(owner, repo, pullRequestNumber, {
             correlationId: pr.correlationId ?? `ultrafix-automerge-${owner}-${repo}-${pullRequestNumber}`,
             ignoreWorkIds: pr.currentJobId ? [pr.currentJobId] : [],
