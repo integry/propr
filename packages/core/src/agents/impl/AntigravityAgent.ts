@@ -25,6 +25,7 @@ import { resolveAgentTerminationReason } from '../termination.js';
 import type { AgentWatchdogTrip } from '../../claude/docker/agentActivityWatchdog.js';
 import { buildAntigravityDockerArgs } from './utils/antigravityDockerArgsBuilder.js';
 import { readBoundedProviderOutputFile } from './utils/boundedProviderOutput.js';
+import { detectAntigravityPrintTimeout } from './utils/antigravityPrintTimeout.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -49,6 +50,11 @@ function resolveAntigravityModelIdentity(reportedModel: string | undefined, requ
 }
 
 function resolveAntigravityExecutionError(terminalStatus: 'success' | 'error' | undefined, protocolError: string | undefined, hasStreamEnvelopes: boolean, modelIdentityError: string | undefined): string | undefined { return resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes) ?? modelIdentityError; }
+
+/** A print timeout leaves a partial answer on stdout; an analysis must never accept it. */
+function resolveAntigravityAnalysisError(result: { stderr: string; exitCode: number | null }, parsed: { terminalStatus?: 'success' | 'error'; protocolError?: string; hasStreamEnvelopes: boolean }, modelIdentityError: string | undefined): string | undefined {
+    return detectAntigravityPrintTimeout(result.stderr, result.exitCode)?.message ?? resolveAntigravityExecutionError(parsed.terminalStatus, parsed.protocolError, parsed.hasStreamEnvelopes, modelIdentityError);
+}
 
 function resolveAntigravityEvidenceConflict(stdoutModel: string | undefined, transcriptModel: string | undefined, stdoutConversation: string | undefined, transcriptConversation: string | undefined): string | undefined {
     if (stdoutConversation && transcriptConversation && stdoutConversation !== transcriptConversation) return `Conflicting Antigravity conversation identities: stdout reported "${stdoutConversation}" but transcript reported "${transcriptConversation}"`;
@@ -181,8 +187,10 @@ export class AntigravityAgent implements Agent {
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const modelIdentity = resolveAntigravityModelIdentity(response.reportedModel ?? response.modelUsed, effectiveModel, response.hasStreamEnvelopes, opts.requestedCliModel); const resolvedModel = modelIdentity.modelUsed;
-        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: result.stderr });
-        const executionError = resolveAntigravityExecutionError(response.terminalStatus, response.protocolError, response.hasStreamEnvelopes, modelIdentity.error);
+        // CLI 1.5.0+ exits 3 with an AGY_ERROR line when --print-timeout cuts the run short.
+        const printTimeout = detectAntigravityPrintTimeout(result.stderr, result.exitCode);
+        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: result.stderr }) ?? (printTimeout ? 'timeout' : undefined);
+        const executionError = printTimeout ? `${printTimeout.message} Raise ANTIGRAVITY_TIMEOUT_MS if the task needs longer.` : resolveAntigravityExecutionError(response.terminalStatus, response.protocolError, response.hasStreamEnvelopes, modelIdentity.error);
         const success = result.exitCode === 0 && !terminationReason && !executionError;
         const agentResult: AgentExecutionResult = {
             success, executionTimeMs: executionTime,
@@ -191,7 +199,7 @@ export class AntigravityAgent implements Agent {
             providerModel: response.reportedModel ?? response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
-            error: success ? undefined : result.stderr || executionError || 'Antigravity execution failed',
+            error: success ? undefined : (printTimeout ? executionError : undefined) || result.stderr || executionError || 'Antigravity execution failed',
             terminationReason
         };
 
@@ -383,7 +391,7 @@ export class AntigravityAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const { summary, tokenUsage, sessionId, modelUsed, reportedModel, terminalStatus, protocolError, hasStreamEnvelopes } = parseAntigravityJsonl(result.stdout);
             const modelIdentity = resolveAntigravityModelIdentity(reportedModel ?? modelUsed, effectiveModel, hasStreamEnvelopes, requestedCliModel); const resolvedModel = modelIdentity.modelUsed;
-            const resolvedProtocolError = resolveAntigravityExecutionError(terminalStatus, protocolError, hasStreamEnvelopes, modelIdentity.error);
+            const resolvedProtocolError = resolveAntigravityAnalysisError(result, { terminalStatus, protocolError, hasStreamEnvelopes }, modelIdentity.error);
 
             if (isSuccessfulAnalysisResult(result, summary, resolvedProtocolError)) {
                 const analysisText = (summary || '').trim();

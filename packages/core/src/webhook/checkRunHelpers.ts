@@ -554,8 +554,12 @@ export interface PRAutoMergeInfo {
     headBranch: string;
     mergeable: boolean | null;
     mergeableState: string;
+    /** Whether GitHub's native auto-merge is armed on the PR (by anyone). */
+    autoMergeArmed?: boolean;
     /** GitHub PR state (`open` or `closed`); absent when the PR could not be read. */
     state?: string;
+    /** Set when the PR could not be read; every other field is then a placeholder. */
+    unavailable?: boolean;
 }
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
@@ -749,7 +753,8 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             baseBranch,
             headBranch,
             mergeable,
-            mergeableState
+            mergeableState,
+            autoMergeArmed: Boolean((prResponse.data as { auto_merge?: unknown }).auto_merge),
         };
     } catch (error) {
         logger.warn({
@@ -768,7 +773,8 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             baseBranch: '',
             headBranch: '',
             mergeable: null,
-            mergeableState: 'unknown'
+            mergeableState: 'unknown',
+            unavailable: true,
         };
     }
 }
@@ -777,6 +783,14 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
  * Checks if the linked issue (if any) has the auto-merge label.
  */
 export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: string, prNumber: number): Promise<boolean> {
+    return await readLinkedIssueAutoMergeLabel(owner, repoName, prNumber) === true;
+}
+
+/**
+ * Like {@link linkedIssueHasAutoMergeLabel}, but `null` when the PR or a linked
+ * issue could not be read, so a caller can tell "no label" from "unknown".
+ */
+export async function readLinkedIssueAutoMergeLabel(owner: string, repoName: string, prNumber: number): Promise<boolean | null> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -827,7 +841,7 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
             prNumber,
             error: (error as Error).message
         }, 'Failed to check linked issue labels');
-        return false;
+        return null;
     }
 }
 

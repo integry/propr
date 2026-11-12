@@ -50,8 +50,10 @@ export async function finishUltrafixLoop(input: {
     reviewStatus: ReviewOutputStatus;
     isPartial: boolean;
     decisionReason: string;
+    /** The step stopped on a reported blocker. */
+    blocked?: boolean;
 }): Promise<ContinuationResult> {
-    const { params, state, latestScore, reviewStatus, isPartial, decisionReason } = input;
+    const { params, state, latestScore, reviewStatus, isPartial, decisionReason, blocked } = input;
     const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
     const workEpoch = params.ultrafixMeta?.workEpoch ?? 0;
     const identity = { owner, repo, pr: pullRequestNumber };
@@ -71,7 +73,9 @@ export async function finishUltrafixLoop(input: {
         if (!goalReached) {
             const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
             const cleanPartialReview = cleanReviewMissedGoal && isPartial;
-            const manualReason = state.escalation?.exhausted
+            const manualReason = blocked
+                ? 'The fix step stopped on a blocker it could not resolve, so the loop was stopped instead of counting it as a completed fix. Resolve the blocker described in the fix comment, then restart Ultrafix.'
+                : state.escalation?.exhausted
                 ? 'All available escalation models and reasoning levels stalled. Manual review and merge are now required.'
                 : cleanPartialReview
                 ? 'The latest review had partial diff coverage, so it cannot establish merge readiness. Manual review and merge are now required.'
@@ -109,7 +113,7 @@ export async function finishUltrafixLoop(input: {
         reason: decisionReason,
         score: latestScore,
         cycleCount: state.cycleCount,
-        outcome: goalReached ? 'goal_reached' : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted',
+        outcome: goalReached ? 'goal_reached' : blocked ? 'stopped' : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted',
         goal: state.goal,
         maxCycles: state.maxCycles,
     };

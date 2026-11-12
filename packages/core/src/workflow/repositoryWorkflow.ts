@@ -6,6 +6,7 @@ import { validateAutoMergeConfig, type AutoMergeConfig } from './autoMergePolicy
 import { parseCostCapUsd } from '../budget/runCostCap.js';
 import { validateEgressAllowlist } from '../network/egressAllowlist.js';
 import { AGENT_NETWORK_MODES, type RepositoryNetworkConfig } from '../network/networkPolicy.js';
+import { blockerReportPrompt } from './blockerReport.js';
 
 export { RepositoryWorkflowPolicyError };
 
@@ -13,6 +14,9 @@ export const WORKFLOW_PATH = '.propr/workflow.yml';
 export const WORKFLOW_MAX_BYTES = 128 * 1024;
 export const WORKFLOW_TIMEOUT_MS = 600_000;
 export type WorkflowHook = 'after_create' | 'before_run' | 'after_run' | 'before_remove';
+/** `report`: a run that cannot complete its task stops and reports the blocker; `continue` (default) keeps today's behaviour. */
+export const ON_BLOCKER_MODES = ['continue', 'report'] as const;
+export type OnBlockerMode = typeof ON_BLOCKER_MODES[number];
 export interface RepositoryWorkflow {
     hooks?: Partial<Record<WorkflowHook, string>> & { timeout_ms?: number };
     instructions?: string;
@@ -23,6 +27,8 @@ export interface RepositoryWorkflow {
     auto_merge?: AutoMergeConfig;
     /** Agent container network policy; the instance may enforce restricted mode. */
     network?: RepositoryNetworkConfig;
+    /** What a run does when it cannot complete its task as specified. */
+    on_blocker?: OnBlockerMode;
 }
 export interface ResolvedRepositoryWorkflow {
     revision: string;
@@ -84,7 +90,7 @@ function parseWorkflowDocument(source: string): unknown {
 export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
     if (Buffer.byteLength(source) > WORKFLOW_MAX_BYTES) invalid('file exceeds 128 KiB');
     const value = parseWorkflowDocument(source);
-    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge', 'network'], 'workflow');
+    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge', 'network', 'on_blocker'], 'workflow');
     if (config.hooks !== undefined) {
         const hooks = object(config.hooks, ['after_create', 'before_run', 'after_run', 'before_remove', 'timeout_ms'], 'hooks');
         for (const [key, value] of Object.entries(hooks)) {
@@ -109,6 +115,7 @@ export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
         if (limits.max_parallel_tasks !== undefined) positiveInteger(limits.max_parallel_tasks, 'limits.max_parallel_tasks');
     }
     if (config.network !== undefined) validateNetwork(config.network);
+    if (config.on_blocker !== undefined && !(ON_BLOCKER_MODES as readonly unknown[]).includes(config.on_blocker)) invalid('on_blocker must be "continue" or "report"');
     if (config.auto_merge !== undefined) {
         const error = validateAutoMergeConfig(config.auto_merge);
         if (error) invalid(error);
@@ -166,6 +173,11 @@ export function refineWorkflowPreviews(settings: VisualPreviewSettings, workflow
         instructions: [settings.instructions, previews.instructions].filter(Boolean).join('\n\n') || undefined };
 }
 
+/** Whether the run's workflow asks agents to stop and report a blocker (`on_blocker: report`). */
+export function reportsBlockers(workflow?: Pick<ResolvedRepositoryWorkflow, 'config'> | null): boolean {
+    return workflow?.config.on_blocker === 'report';
+}
+
 export function repositoryWorkflowPrompt(workflow?: ResolvedRepositoryWorkflow): string {
     if (!workflow) return '';
     const commands = workflow.config.validation ?? [];
@@ -173,5 +185,6 @@ export function repositoryWorkflowPrompt(workflow?: ResolvedRepositoryWorkflow):
         `Repository workflow: ${WORKFLOW_PATH} on ${workflow.baseBranch} at ${workflow.revision}.`,
         workflow.instructionText,
         commands.length ? `Before finishing, run these repository validation commands and report each command's result (passed, failed, or unable to run, with reason) in your completion summary:\n${commands.map(command => `- ${command}`).join('\n')}` : '',
+        reportsBlockers(workflow) ? blockerReportPrompt() : '',
     ].filter(Boolean).join('\n\n');
 }

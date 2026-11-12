@@ -46,7 +46,7 @@ async function mockStorage(page: Page) {
 test('native self-hosted storage inventory, export and explicit cleanup confirmation', async ({ page }) => {
   const executed = await mockStorage(page);
   await page.setViewportSize({ width: 1280, height: 1000 });
-  await page.goto('/settings?tab=integrations');
+  await page.goto('/settings?tab=maintenance');
   await page.getByPlaceholder('Search settings...').fill('database export');
   const section = page.getByRole('region', { name: 'Instance data', exact: true });
   await expect(section.getByText('sample/docs', { exact: true })).toBeVisible();
@@ -90,7 +90,7 @@ for (const { width, zoom, label } of [
   test(`instance data fits and cleanup remains accessible at ${label}`, async ({ page }) => {
     const executed = await mockStorage(page);
     await page.setViewportSize({ width, height: 844 });
-    await page.goto('/settings?tab=integrations');
+    await page.goto('/settings?tab=maintenance');
     if (zoom !== 1) await page.evaluate(value => { document.documentElement.style.zoom = String(value); }, zoom);
     if (width < 768) await page.getByRole('button', { name: 'Back to Settings' }).click();
     await page.getByPlaceholder('Search settings...').fill('database export');
@@ -162,7 +162,7 @@ test.describe('touch access at high zoom equivalent width', () => {
 
   test('inventory scrolls by swipe and cleanup can be confirmed by touch', async ({ page }) => {
     const executed = await mockStorage(page);
-    await page.goto('/settings?tab=integrations');
+    await page.goto('/settings?tab=maintenance');
     await page.getByRole('button', { name: 'Back to Settings' }).tap();
     await page.getByPlaceholder('Search settings...').fill('database export');
     const section = page.getByRole('region', { name: 'Instance data', exact: true });

@@ -4,6 +4,7 @@ import { AuthProvider } from '../../contexts/AuthContext';
 import type { CurrentUser } from '../../api/proprTypes';
 import MaintenanceSection from './MaintenanceSection';
 import * as api from '../../api/followupHandoffsApi';
+import { maintenanceSections } from './settingsDataSections';
 
 vi.mock('../../api/followupHandoffsApi', async importOriginal => ({
   ...await importOriginal<typeof import('../../api/followupHandoffsApi')>(),
@@ -31,11 +32,31 @@ afterEach(cleanup);
 describe('MaintenanceSection', () => {
   it('renders nothing for members and for admins without the runtime permission', () => {
     render(view({ ...admin, role: 'member' }));
-    expect(screen.queryByText('Maintenance')).not.toBeInTheDocument();
+    expect(screen.queryByText('Held follow-ups')).not.toBeInTheDocument();
     cleanup();
     render(view({ ...admin, permissions: ['instance.manage_settings'] }));
-    expect(screen.queryByText('Maintenance')).not.toBeInTheDocument();
+    expect(screen.queryByText('Held follow-ups')).not.toBeInTheDocument();
     expect(api.listFollowupHandoffs).not.toHaveBeenCalled();
+  });
+
+  it('is headed by what it holds, not by the Maintenance category it sits in', async () => {
+    render(view());
+    expect(screen.getByRole('region', { name: 'Held follow-ups' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Maintenance' })).toBeNull();
+    await screen.findByRole('link', { name: 'integry/propr#3423' });
+  });
+
+  it('sits under Maintenance after instance data, only for administrators who may manage the runtime', () => {
+    const sections = maintenanceSections(admin);
+    expect(sections.map(section => [section.id, section.category])).toEqual([
+      ['instance-storage', 'maintenance'],
+      ['maintenance', 'maintenance'],
+    ]);
+    expect(sections[1].searchText).toMatch(/held follow-ups/);
+    expect(maintenanceSections({ ...admin, permissions: ['instance.manage_settings'] }).map(section => section.id)).toEqual(['instance-storage']);
+    // A viewer who can use neither section gets none, so the category drops out of the list.
+    expect(maintenanceSections({ ...admin, role: 'member' })).toEqual([]);
+    expect(maintenanceSections(null)).toEqual([]);
   });
 
   it('lists held follow-ups with the reason, the branch and the next action', async () => {

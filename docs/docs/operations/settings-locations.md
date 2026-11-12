@@ -16,7 +16,7 @@ Use the MCP `find_setting` tool to search this same catalog by setting name, ali
 
 | Setting | UI | MCP | CLI | Environment | Restart | Notes |
 |---|---|---|---|---|---|---|
-| **Usage tips**<br />`automation.usage_tips_enabled` | Settings → General → Usage tips | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update usage_tips_enabled <value>` | — | No |  |
+| **Usage tips**<br />`automation.usage_tips_enabled` | Settings → Experimental → Usage tips | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update usage_tips_enabled <value>` | — | No |  |
 | **Default coding agent**<br />`models.default_agent_alias` | Settings → AI Models & Reasoning → Model selection | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update default_agent_alias <value>` | — | No |  |
 | **Worker concurrency**<br />`automation.worker_concurrency` | Settings → Workflow & PR Rules → Processing | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update worker_concurrency <value>` | `WORKER_CONCURRENCY` | No |  [Reference](./configuration-reference.md). |
 | **Allowed GitHub users**<br />`trigger.user_allowlist` | Settings → Workflow & PR Rules → GitHub trigger whitelist | read: `get_trigger_access_configuration`<br />write: `update_trigger_access_configuration` | `propr setting update github_user_whitelist <csv>` | `GITHUB_USER_WHITELIST` | No |  [Reference](./configuration-reference.md). |
@@ -27,7 +27,7 @@ Use the MCP `find_setting` tool to search this same catalog by setting name, ali
 | **Provider failure replacements**<br />`automation.max_provider_replacements` | Settings → Workflow & PR Rules → Processing | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update max_provider_replacements <value>` | `MAX_PROVIDER_REPLACEMENTS` | No |  [Reference](./configuration-reference.md). |
 | **Automatic merge-conflict resolution (default for repositories)**<br />`automation.auto_resolve_merge_conflicts` | Settings → Workflow & PR Rules → Repository defaults | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update auto_resolve_merge_conflicts <value>` | — | No |  |
 | **Follow-ups only from assigned users**<br />`automation.followup_requires_assignment` | Settings → Workflow & PR Rules → Repository defaults | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update followup_requires_assignment <value>` | — | No |  |
-| **Dashboard AI summaries**<br />`models.dashboard_summary_enabled` | Settings → General → Experimental | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update dashboard_summary_enabled <value>` | — | No | Experimental; off by default. Each summary update is an LLM call on the summarization model. |
+| **Dashboard AI summaries**<br />`models.dashboard_summary_enabled` | Settings → Experimental → Opt-in features | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update dashboard_summary_enabled <value>` | — | No | Experimental; off by default. Each summary update is an LLM call on the summarization model. |
 | **Model reasoning level**<br />`models.model_reasoning_level` | Settings → AI Models & Reasoning → Model selection | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update model_reasoning_level <value>` | — | No |  |
 | **Pull request review model**<br />`review.model` | Settings → AI Models & Reasoning → PR review | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update pr_review_model <value>` | — | No |  |
 | **Pull request review prompt**<br />`review.prompt` | Settings → AI Models & Reasoning → PR review | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update pr_review_prompt <value>` | — | No |  |
@@ -88,7 +88,7 @@ Use the MCP `find_setting` tool to search this same catalog by setting name, ali
 | Setting | UI | MCP | CLI | Environment | Restart | Notes |
 |---|---|---|---|---|---|---|
 | **Notification preferences and quiet hours**<br />`notifications.preferences` | Settings → Notifications | read: `get_notification_preferences`<br />write: `update_notification_preferences` | — | — | No |  |
-| **Voice and desktop notification preferences**<br />`notifications.device_capabilities` | Settings → General → Experimental → Voice briefings; Settings → Notifications → Desktop notifications | browser only | — | — | No | These are device-local browser or desktop capabilities. |
+| **Voice and desktop notification preferences**<br />`notifications.device_capabilities` | Settings → Experimental → Opt-in features → Voice briefings; Settings → Notifications → Desktop notifications | browser only | — | — | No | These are device-local browser or desktop capabilities. |
 
 ## Environment settings
 

@@ -12,7 +12,7 @@ export default function ExperimentalSettingsSection({ dashboardSummaryEnabled, o
 }) {
   return (
     <SettingsSection
-      title="Experimental"
+      title="Opt-in features"
       description="Early features that are off by default and may change between releases."
     >
       <VoiceBriefingsToggle />

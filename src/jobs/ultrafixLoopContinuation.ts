@@ -59,6 +59,8 @@ export interface UltrafixContinuationParams {
     currentReviewCommentIds?: number[];
     /** Number of review results the current job attempted to post. */
     currentReviewResultCount?: number;
+    /** The completed step stopped on a reported blocker: the loop ends instead of recording the step. */
+    blockedStep?: boolean;
 }
 
 export {
@@ -75,6 +77,9 @@ export {
     resumeDeferredContinuation,
     sweepUltrafixResumeCandidates,
 } from './ultrafixDeferredResume.js';
+
+/** Stop reason of a loop whose step reported a blocker. */
+export const ULTRAFIX_BLOCKED_STEP_REASON = 'fix_step_blocked';
 
 export interface ContinuationResult {
     continued: boolean;
@@ -276,6 +281,15 @@ export async function continueUltrafixLoop(
             reason: state && stateWorkEpoch !== workEpoch ? 'ultrafix_superseded' : 'no_active_loop',
             outcome: 'stopped',
         };
+    }
+
+    // A blocked fix step changed nothing, so it is not a completed fix; another
+    // cycle would hit the same blocker. Stop the loop with that reason.
+    if (params.blockedStep) {
+        return finishUltrafixLoop({
+            params, state, latestScore: null, reviewStatus: 'invalid', isPartial: false,
+            decisionReason: ULTRAFIX_BLOCKED_STEP_REASON, blocked: true,
+        });
     }
 
     // 2. Record the completed action
