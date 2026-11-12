@@ -368,7 +368,7 @@ async function trackUltrafix(deps: ToolDeps, row: Operation, context: TrackingCo
   result.continuation = { ...result.continuation, sourceTaskId: task.task_id,
     taskId: progress.latestTaskId ?? task.task_id };
   receipt.lifecycleProgress = progress;
-  receipt.state = legacyState ?? (progress.outcome === 'goal_reached' || progress.outcome === 'cycles_exhausted' ? 'completed'
+  receipt.state = legacyState ?? (['goal_reached', 'cycles_exhausted', 'style_findings_only'].includes(String(progress.outcome)) ? 'completed'
     : progress.outcome === 'stopped' ? 'cancelled' : progress.outcome === 'failed' ? 'failed' : 'running');
 }
 

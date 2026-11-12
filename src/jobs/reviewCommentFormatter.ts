@@ -13,6 +13,7 @@
 import { getModelName, type AnalysisResult } from '@propr/core';
 import { formatFixCommand } from '@propr/shared';
 import type { ReviewAssignment } from './prReviewRunner.js';
+import { countFindingsByCategory, type ReviewFindingCategoryCounts } from './reviewFindingCategory.js';
 import {
     FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parsePublishableReview, parseStructuredReview,
     publishedReviewScore, renderPublicReview,
@@ -136,6 +137,7 @@ const currentCheckScoreCap = (hasCurrentCheckFailure?: boolean) => hasCurrentChe
 export interface EffectiveReviewScore {
     score: number;
     blockerCount: number;
+    blockerCategoryCounts: ReviewFindingCategoryCounts;
     suggestionCount: number;
 }
 
@@ -154,6 +156,7 @@ export function effectiveReviewScore(
     return {
         score: publishedReviewScore(parsed.score, currentCheckScoreCap(options.hasCurrentCheckFailure)),
         blockerCount: parsed.actionableFindings.length,
+        blockerCategoryCounts: countFindingsByCategory(parsed.actionableFindings),
         suggestionCount: parsed.suggestions.length,
     };
 }

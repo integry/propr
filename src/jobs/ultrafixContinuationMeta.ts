@@ -9,7 +9,7 @@ interface ContinuationMetaInput {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
-    outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+    outcome?: 'goal_reached' | 'cycles_exhausted' | 'style_findings_only' | 'stopped' | 'failed';
     goal?: number;
     maxCycles?: number;
     blockingChecks?: string[];

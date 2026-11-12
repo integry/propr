@@ -32,6 +32,7 @@ import type {
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
+import type { ReviewFindingCategory } from './reviewFindingCategory.js';
 import {
     enqueueNextStep,
     evaluateReadiness,
@@ -81,6 +82,8 @@ export {
 /** Stop reason of a loop whose step reported a blocker. */
 export const ULTRAFIX_BLOCKED_STEP_REASON = 'fix_step_blocked';
 
+export type UltrafixLoopOutcome = 'goal_reached' | 'cycles_exhausted' | 'style_findings_only' | 'stopped' | 'failed';
+
 export interface ContinuationResult {
     continued: boolean;
     reason: string;
@@ -88,7 +91,7 @@ export interface ContinuationResult {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
-    outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+    outcome?: UltrafixLoopOutcome;
     goal?: number;
     maxCycles?: number;
     /** Blocking checks holding a deferred review back (non-blocking checks are never listed). */
@@ -164,12 +167,20 @@ async function enqueueCurrentNextAction(
     };
 }
 
+interface CollectedReviewOutput {
+    latestScore: number | null;
+    reviewStatus: ReviewOutputStatus;
+    isPartial: boolean;
+    /** Category of every remaining blocker in the current result set. */
+    findingCategories: ReviewFindingCategory[];
+}
+
 async function collectReviewOutput(
     params: UltrafixContinuationParams,
     goal: number,
-): Promise<{ latestScore: number | null; reviewStatus: ReviewOutputStatus; isPartial: boolean }> {
+): Promise<CollectedReviewOutput> {
     if (params.completedAction !== 'review') {
-        return { latestScore: null, reviewStatus: 'invalid', isPartial: false };
+        return { latestScore: null, reviewStatus: 'invalid', isPartial: false, findingCategories: [] };
     }
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, correlationId } = params;
     try {
@@ -199,12 +210,16 @@ async function collectReviewOutput(
                 ),
             });
         }
+        const findingCategories = pendingState.reviewStatus === 'valid_with_blockers'
+            ? pendingState.unprocessedComments.flatMap(comment => comment.actionableFindings.map(finding => finding.category))
+            : [];
         correlatedLogger.info(
             {
                 pullRequestNumber,
                 latestScore: pendingState.latestScore,
                 reviewStatus: pendingState.reviewStatus,
                 isPartial: pendingState.isPartial,
+                findingCategories,
                 goal,
             },
             'Ultrafix loop: parsed latest review output',
@@ -213,13 +228,14 @@ async function collectReviewOutput(
             latestScore: pendingState.latestScore,
             reviewStatus: pendingState.reviewStatus,
             isPartial: pendingState.isPartial,
+            findingCategories,
         };
     } catch (err) {
         correlatedLogger.warn(
             { error: (err as Error).message, pullRequestNumber },
             'Ultrafix loop: failed to parse review output, scheduling a review retry',
         );
-        return { latestScore: null, reviewStatus: 'invalid', isPartial: false };
+        return { latestScore: null, reviewStatus: 'invalid', isPartial: false, findingCategories: [] };
     }
 }
 
@@ -334,11 +350,14 @@ export async function continueUltrafixLoop(
     }
 
     // 4. Get the latest review score
-    const { latestScore, reviewStatus, isPartial } = await collectReviewOutput(params, updatedState.goal);
+    const review = await collectReviewOutput(params, updatedState.goal);
+    const { latestScore, reviewStatus, isPartial } = review;
 
     // 5. Determine next action
-    const decision = determineNextAction(updatedState, latestScore, reviewStatus, isPartial);
-    updatedState = await applyReviewEscalation(params, updatedState, { latestScore, reviewStatus, isPartial }, decision);
+    const decision = determineNextAction(updatedState, latestScore, reviewStatus, {
+        isPartial, findingCategories: review.findingCategories,
+    });
+    updatedState = await applyReviewEscalation(params, updatedState, review, decision);
     if (!updatedState) return { continued: false, reason: 'ultrafix_superseded' };
     correlatedLogger.info(
         { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore, isPartial },
@@ -354,6 +373,7 @@ export async function continueUltrafixLoop(
             reviewStatus,
             isPartial,
             decisionReason: decision.reason,
+            styleFindingsOnly: decision.styleFindingsOnly,
         });
     }
 
