@@ -207,19 +207,46 @@ export function clearedBlock(database: Knex) {
     blocked_kind: null, blocked_reason: null, blocked_at: null };
 }
 
+type Guard = (query: Knex.QueryBuilder) => void;
+
 /** Settles the observed occurrence as done. Only one observer wins; the others see zero changed rows. */
-export async function markQueueIssueDone(database: Knex, owner: Owner, item: QueueIssueRef, timestamp: number): Promise<boolean> {
-  return Boolean(await ownedIssue(database, owner, item).whereNotIn('state', SETTLED_STATES)
-    .update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }));
+export async function markQueueIssueDone(database: Knex, owner: Owner, item: QueueIssueRef,
+  { timestamp, guard }: { timestamp: number; guard?: Guard }): Promise<boolean> {
+  const query = ownedIssue(database, owner, item).whereNotIn('state', SETTLED_STATES);
+  guard?.(query);
+  return Boolean(await query.update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }));
 }
 
 /** Completes the active execution once every issue is settled. Returns true for the single winner. */
-export async function completeSettledExecution(database: Knex, owner: Owner, timestamp: number): Promise<boolean> {
-  return Boolean(await database('epic_execution_queues')
+export async function completeSettledExecution(database: Knex, owner: Owner, timestamp: number, guard?: Guard): Promise<boolean> {
+  const query = database('epic_execution_queues')
     .where({ draft_id: owner.draftId, execution_id: owner.executionId, status: 'active' })
     .whereNotExists(database(EPIC_QUEUE_ISSUES).select('issue_number')
-      .where({ draft_id: owner.draftId, execution_id: owner.executionId }).whereNotIn('state', SETTLED_STATES))
-    .update({ status: 'completed', blocked_reason: null, updated_at: timestamp }));
+      .where({ draft_id: owner.draftId, execution_id: owner.executionId }).whereNotIn('state', SETTLED_STATES));
+  guard?.(query);
+  return Boolean(await query.update({ status: 'completed', blocked_reason: null, updated_at: timestamp }));
+}
+
+/**
+ * The issue's current plan status, (non)terminal as `isTerminalStatus` defines it (merged or closed), for a guard
+ * in the same statement as a queue write. Literal statuses: suites mock the plan issue manager with partial exports.
+ */
+export function planIssueWithStatus(database: Knex, draftId: string, issueNumbers: number[], terminal: boolean): Knex.QueryBuilder {
+  const statuses = ['merged', 'closed'];
+  const query = database('plan_issues').select('id').where({ draft_id: draftId }).whereIn('issue_number', issueNumbers);
+  return terminal ? query.whereIn('status', statuses) : query.whereNotIn('status', statuses);
+}
+
+/**
+ * A parallel child settles when its plan issue becomes terminal, but it can be reopened and
+ * processed again while its siblings still run. Its row is then back in flight, so blocker
+ * handling and recovery track the new run. Fenced on the current plan status, so a delayed
+ * observer of the earlier terminal status never reopens a child that settled again.
+ */
+export async function reopenParallelQueueIssue(database: Knex, owner: Owner, item: QueueIssueRef, timestamp: number): Promise<boolean> {
+  return Boolean(await ownedIssue(database, owner, item, { parallel: true }).whereIn('state', SETTLED_STATES)
+    .whereExists(planIssueWithStatus(database, owner.draftId, [item.issueNumber], false))
+    .update({ state: 'dispatched', dispatched_at: timestamp, blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }));
 }
 
 /**

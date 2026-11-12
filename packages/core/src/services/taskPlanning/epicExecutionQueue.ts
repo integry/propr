@@ -11,8 +11,8 @@ import { queuedModelLabel } from './epicQueueModelLabel.js';
 import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
 import {
   EPIC_QUEUE_ISSUES, SETTLED_STATES, UNSTARTED_EPIC_REASON, blockQueueIssue, clearedBlock, completeSettledExecution, epicQueueHead,
-  getEpicExecutionQueue, initialIssueRows, isSettled, markQueueIssueDone, ownedIssue, unblockQueueIssue,
-  type EpicAdvancePolicy, type EpicExecutionQueue, type EpicQueueIssue, type EpicQueueStatus,
+  getEpicExecutionQueue, initialIssueRows, isSettled, markQueueIssueDone, ownedIssue, planIssueWithStatus,
+  reopenParallelQueueIssue, unblockQueueIssue, type EpicAdvancePolicy, type EpicExecutionQueue, type EpicQueueIssue, type EpicQueueStatus,
 } from './epicQueueState.js';
 
 export * from './epicQueueState.js';
@@ -144,7 +144,7 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   }
   await releaseEpicIssueLabels(queue, { item: head, status: currentStatus, timestamp }, database);
   // Fenced by the observed position: a requeue during the label handoff starts a new occurrence.
-  if (!await markQueueIssueDone(database, queue, head, timestamp)) return;
+  if (!await markQueueIssueDone(database, queue, head, { timestamp })) return;
   await settleOrStartNext(queue, deps, timestamp);
 }
 
@@ -154,7 +154,10 @@ async function settleOrStartNext(queue: EpicExecutionQueue, deps: EpicQueueDepen
   else await startEpicQueueHead(queue.draftId, deps);
 }
 
-/** Parallel children finish in any order; each terminal child is done, and the last one completes the execution. */
+/**
+ * Parallel children finish in any order; each terminal child is done, and the last one completes the execution.
+ * A done child that is reopened and processed again before then is back in flight.
+ */
 async function completeParallelEpicQueue(queue: EpicExecutionQueue, deps: EpicQueueDependencies): Promise<void> {
   const database = deps.database ?? db;
   if (queue.status !== 'active') return;
@@ -163,10 +166,18 @@ async function completeParallelEpicQueue(queue: EpicExecutionQueue, deps: EpicQu
   const timestamp = (deps.now ?? Date.now)();
   for (const item of queue.items) {
     const child = children.find(candidate => candidate.issue_number === item.issueNumber);
-    if (!isSettled(item) && child && isTerminalStatus(child.status)) await markQueueIssueDone(database, queue, item, timestamp);
+    if (!child) continue;
+    // Both transitions recheck the current plan status, so a status read above that has since changed never wins.
+    if (isTerminalStatus(child.status)) {
+      if (!isSettled(item)) await markQueueIssueDone(database, queue, item, { timestamp,
+        guard: query => query.whereExists(planIssueWithStatus(database, queue.draftId, [item.issueNumber], true)) });
+    } else if (isSettled(item)) await reopenParallelQueueIssue(database, queue, item, timestamp);
   }
   if (children.length !== queue.issues.length || !children.every(child => isTerminalStatus(child.status))) return;
-  if (await completeSettledExecution(database, queue, timestamp)) await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
+  if (await completeSettledExecution(database, queue, timestamp,
+    query => query.whereNotExists(planIssueWithStatus(database, queue.draftId, queue.issues, false)))) {
+    await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
+  }
 }
 
 /** Finalization is owed until labeling succeeds or there is no epic PR to label. */
@@ -393,8 +404,9 @@ async function reconcileQueueHead(draftId: string, deps: EpicQueueDependencies):
   const database = deps.database ?? db;
   const queue = await getEpicExecutionQueue(draftId, deps);
   if (!queue) return;
-  // Every parallel child can be running; a sequential queue has only its head in flight.
-  const inFlight = queue.parallel ? queue.items.filter(item => !isSettled(item)) : [epicQueueHead(queue)].filter(item => item !== null);
+  // Every parallel child can be running, a done one too once it is reopened (only in-progress issues are reconciled);
+  // a sequential queue has only its head in flight.
+  const inFlight = queue.parallel ? queue.items : [epicQueueHead(queue)].filter(item => item !== null);
   if (!inFlight.length) return;
   const issues = await database('plan_issues').where({ draft_id: queue.draftId })
     .whereIn('issue_number', inFlight.map(item => item.issueNumber)).select<PlanIssue[]>();
