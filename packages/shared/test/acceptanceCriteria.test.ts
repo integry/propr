@@ -49,6 +49,16 @@ test('folds nested items and continuation lines into their parent criterion', ()
   assert.deepEqual(texts('## Acceptance criteria\n  - indented top level\n  - second\n    - nested'), ['indented top level', 'second; nested']);
 });
 
+test('keeps sibling items apart however their markers are indented', () => {
+  // A marker left of the previous item's content column starts a sibling, not a child.
+  assert.deepEqual(texts('## Acceptance criteria\n- Backend works\n - Documents usage'), ['Backend works', 'Documents usage']);
+  assert.deepEqual(texts('## Acceptance criteria\n  - First\n - Second\n- Third\n   - Child of third'), ['First', 'Second', 'Third; Child of third']);
+  assert.deepEqual(texts('## Acceptance criteria\n1. First\n  2. Second\n   3. Third\n      4. Child of third'), ['First', 'Second', 'Third; Child of third']);
+  // The same holds after the first item's children.
+  assert.deepEqual(texts('## Acceptance criteria\n- Parent\n  - child\n - Sibling\n   - its child'), ['Parent; child', 'Sibling; its child']);
+  assert.deepEqual(extractAcceptanceCriteria('## Acceptance criteria\n- Backend works\n - Documents usage').map(criterion => criterion.id), ['AC1', 'AC2']);
+});
+
 test('drops checkboxes, HTML comments and list items inside code fences', () => {
   const body = '## Acceptance criteria\n- [ ] Open\n- [x] Done\n- [X] Also done <!-- note -->\n```md\n- fenced\n## Not a heading\n```\n- After fence\n- [ ]\n';
   assert.deepEqual(texts(body), ['Open', 'Done', 'Also done', 'After fence']);

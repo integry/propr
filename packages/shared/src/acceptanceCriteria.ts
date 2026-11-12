@@ -79,11 +79,13 @@ function bound(text: string, max: number): string {
 }
 
 /**
- * A line inside the criteria section: text; a heading held by a list item, which
- * is a part of that item; or null for a break, such as a sub-heading or a
- * top-level code fence, that ends the current item.
+ * A line inside the criteria section: text, with whether a list item that opened
+ * inside the section holds it (so it is a nested item or a continuation, never a
+ * criterion of its own); a heading held by such an item, which is a part of it;
+ * or null for a break, such as a sub-heading or a top-level code fence, that
+ * ends the current item.
  */
-type SectionLine = string | { heading: string } | null;
+type SectionLine = { text: string; inItem: boolean } | { heading: string } | null;
 
 const LEADING_WHITESPACE = /^[ \t]*/;
 /** Most list items one line is read as opening, as in `- 1. text`; keeps long marker runs linear. */
@@ -356,7 +358,7 @@ function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
         // Held by a list item that opened inside the section, so part of a criterion.
         const inItem = sectionLevel > 0 && visible[index].column > sectionColumn;
         if (visible[index].fenced) {
-            if (sectionLevel) section.push(inItem ? '' : null);
+            if (sectionLevel) section.push(inItem ? { text: '', inItem } : null);
             continue;
         }
         const found = headingAt(lines, index);
@@ -368,48 +370,46 @@ function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
             index += found.span - 1;
             continue;
         }
-        if (sectionLevel) section.push(lines[index]);
+        if (sectionLevel) section.push({ text: lines[index], inItem });
     }
     return section;
 }
 
 /**
- * Groups section lines into items: each top-level list item starts one, nested
- * items and headings become further parts, and continuation lines extend the
- * last part. Whatever ends a list (a sub-heading, a top-level fence, a
- * paragraph) also ends its indentation, so the next list's first item is
- * top-level again.
+ * Groups section lines into items: each list item not held by another item
+ * opened in the section starts one, items and headings held by one become
+ * further parts, and continuation lines extend the last part. Whether an item
+ * holds a line follows the list structure: a marker left of the previous item's
+ * content column starts a sibling, however the two markers are indented.
  */
 function listItems(section: readonly SectionLine[]): string[][] {
     const items: string[][] = [];
     let current: string[] | null = null;
-    let topIndent = -1;
     let previousBlank = true;
     for (const line of section) {
-        if (line !== null && typeof line === 'object') {
+        if (line !== null && 'heading' in line) {
             // As after a blank line, nothing continues the heading lazily.
             current?.push(line.heading);
             previousBlank = true;
             continue;
         }
-        if (line === null || !line.trim()) {
-            if (line === null) [current, topIndent] = [null, -1];
+        if (line === null || !line.text.trim()) {
+            if (line === null) current = null;
             previousBlank = true;
             continue;
         }
-        const item = LIST_ITEM.exec(line);
+        const item = LIST_ITEM.exec(line.text);
         if (item) {
-            const indent = columnWidth(item[1]);
-            if (topIndent < 0) topIndent = indent;
-            if (indent <= topIndent) {
+            if (line.inItem) current?.push(item[2] ?? '');
+            else {
                 if (items.length >= MAX_ACCEPTANCE_CRITERIA) break;
                 current = [item[2] ?? ''];
                 items.push(current);
-            } else current?.push(item[2] ?? '');
-        } else if (current && (/^[ \t]/.test(line) || !previousBlank)) {
+            }
+        } else if (current && (/^[ \t]/.test(line.text) || !previousBlank)) {
             // Indented or lazy continuation; a plain paragraph after a blank line ends the item.
-            current[current.length - 1] += ` ${line.trim()}`;
-        } else [current, topIndent] = [null, -1];
+            current[current.length - 1] += ` ${line.text.trim()}`;
+        } else current = null;
         previousBlank = false;
     }
     return items;
