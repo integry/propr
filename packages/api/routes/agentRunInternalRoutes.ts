@@ -43,6 +43,26 @@ export function agentContainerMcpUrl(environment: NodeJS.ProcessEnv = process.en
   return `${base}/api/mcp`;
 }
 
+/** Receipts of mutating tools that certainly changed nothing: a definite failure, or a hand-off to the browser. */
+const NON_MUTATING_OPERATION_STATES = ['failed', 'browser_required'];
+
+/**
+ * Mutating MCP operations a grant performed: every non-read-only tool call
+ * leaves one `mcp_operations` receipt under its grant (an idempotent replay
+ * does not), minus those that definitely did nothing. Null when unreadable.
+ */
+export async function countGrantMutatingOperations(database: Knex, grantId: string): Promise<number | null> {
+  try {
+    const row = await database('mcp_operations').where({ grant_id: grantId })
+      .whereNotIn('state', NON_MUTATING_OPERATION_STATES).whereNot('lifecycle', 'failed')
+      .count<{ count: number | string }[]>({ count: '*' }).first();
+    return Number(row?.count ?? 0);
+  } catch (error) {
+    logger.warn({ grantId, err: error instanceof Error ? error.message : String(error) }, '[agent-runs] Could not count MCP grant mutations');
+    return null;
+  }
+}
+
 type SignedBody = { phase: AgentRunGrantPhase; grantId?: string; expiredBy?: number };
 
 function sendError(res: Response, status: number, code: string, message: string): void {
@@ -127,12 +147,19 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
     if (!body) return;
     const runId = req.params.runId as string;
     try {
-      const revoked = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy });
+      const ended = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy, now });
       // How much the grant was used, so the worker can tell a run whose agent
       // never reached the endpoint from one that simply chose not to call it.
-      const activity = revoked ? await loadMcpGrantActivity(database, [revoked]) : null;
-      const calls = revoked ? (activity ? activity.get(revoked)?.recentRequests ?? 0 : null) : null;
-      res.json({ revoked: revoked !== null, grantId: revoked, calls });
+      const grantId = ended?.grantId ?? null;
+      const activity = grantId ? await loadMcpGrantActivity(database, [grantId]) : null;
+      const calls = grantId ? (activity ? activity.get(grantId)?.recentRequests ?? 0 : null) : null;
+      // Counted once the grant is revoked: a receipt is admitted under SQLite's write lock
+      // (`McpPolicy.admit`, `BEGIN IMMEDIATE`), so every operation the grant performed is already visible here
+      // and nothing is admitted under it afterwards. A grant the phase ended before is counted
+      // the same way: a worker that stopped between its revoke and the write of that count
+      // recovers it here.
+      const mutatingOperations = grantId ? await countGrantMutatingOperations(database, grantId) : null;
+      res.json({ revoked: ended?.revoked === true, grantId, calls, mutatingOperations });
     } catch (error) {
       sendGrantError(res, error, 'revoke', runId);
     }

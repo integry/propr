@@ -8,6 +8,7 @@ import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { AgentConfirmDialog } from './AgentConfirmDialog';
 import { AgentRunApprovalPanel } from './AgentRunApprovalPanel';
+import { AgentRunNoChangeBadge } from './AgentRunNoChangeBadge';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import { AUTONOMY_BADGE_CLASSES, AUTONOMY_LABELS } from './agentPresentation';
 import { CANCELLABLE_RUN_STATES, RUN_TRIGGER_LABELS, formatTimestamp, isTerminalRunState } from './agentRunPresentation';
@@ -93,6 +94,7 @@ const AgentRunHeader: React.FC<{ run: AutomationRunRecord; actions?: React.React
     <div className="flex items-start justify-between gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <AgentRunStateBadge state={run.state} data-testid="agent-run-state" />
+        <AgentRunNoChangeBadge run={run} />
         <span className="text-sm text-slate-700" title={run.triggerSource ?? undefined}>
           {RUN_TRIGGER_LABELS[run.trigger]}
           {run.triggerSource && <span className="text-slate-500"> · {run.triggerSource}</span>}

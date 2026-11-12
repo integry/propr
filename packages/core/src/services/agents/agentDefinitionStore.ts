@@ -47,6 +47,8 @@ export interface StoredAgentDefinition {
   /** Next UTC fire time (epoch ms); null unless enabled, scheduled and a cron is set. */
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Turn the schedule off when the unproductive-run notification fires (`agentRunProductivity`). */
+  pauseWhenUnproductive: boolean;
   enabled: boolean;
   /** Optimistic concurrency token, incremented on every field update. */
   revision: number;
@@ -61,6 +63,7 @@ export interface AgentDefinitionRow {
   capabilities: string | null; include_previous_reports: boolean | number; previous_reports_limit: number;
   schedule_cron: string | null; schedule_timezone: string | null; schedule_enabled: boolean | number;
   next_run_at: number | null; autonomy_mode: string; enabled: boolean | number; revision: number;
+  pause_when_unproductive?: boolean | number | null;
   created_at: number; updated_at: number;
   /** Claimed schedule slot without a run receipt yet; only the scheduler reads it. */
   pending_schedule_slot?: number | string | null;
@@ -84,6 +87,7 @@ export interface CreateAgentDefinitionInput {
   scheduleCron?: string | null;
   scheduleEnabled?: boolean;
   autonomyMode?: AutomationAutonomyMode;
+  pauseWhenUnproductive?: boolean;
   enabled?: boolean;
 }
 
@@ -145,6 +149,7 @@ export function rowToAgentDefinition(row: AgentDefinitionRow): StoredAgentDefini
     scheduleEnabled: Boolean(row.schedule_enabled),
     nextRunAt: row.next_run_at == null ? null : Number(row.next_run_at),
     autonomyMode: isAutomationAutonomyMode(row.autonomy_mode) ? row.autonomy_mode : DEFAULT_AUTOMATION_AUTONOMY_MODE,
+    pauseWhenUnproductive: Boolean(row.pause_when_unproductive),
     enabled: Boolean(row.enabled),
     revision: Number(row.revision),
     createdAt: Number(row.created_at),
@@ -195,6 +200,7 @@ export async function createAgentDefinition(
     schedule_enabled: scheduleEnabled,
     next_run_at: computeAgentDefinitionNextRunAt({ scheduleCron, scheduleEnabled, enabled }, timestamp),
     autonomy_mode: input.autonomyMode ?? DEFAULT_AUTOMATION_AUTONOMY_MODE,
+    pause_when_unproductive: input.pauseWhenUnproductive ?? false,
     enabled,
     revision: 0,
     created_at: timestamp,
@@ -247,6 +253,7 @@ function patchToRowChanges(patch: AgentDefinitionPatch): Partial<AgentDefinition
   if (patch.includePreviousReports !== undefined) changes.include_previous_reports = patch.includePreviousReports;
   if (patch.previousReportsLimit !== undefined) changes.previous_reports_limit = patch.previousReportsLimit;
   if (patch.autonomyMode !== undefined) changes.autonomy_mode = patch.autonomyMode;
+  if (patch.pauseWhenUnproductive !== undefined) changes.pause_when_unproductive = patch.pauseWhenUnproductive;
   return changes;
 }
 

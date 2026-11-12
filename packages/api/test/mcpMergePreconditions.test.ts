@@ -239,6 +239,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
     requireScope: () => undefined,
     requirePermission: () => undefined,
     repository: async () => undefined,
+    admit: async () => undefined,
   };
   const deps = { db, policy, taskQueue: {}, runtimeBuildQueue: {}, redisClient: {} } as unknown as ToolDeps;
   const principal = {
