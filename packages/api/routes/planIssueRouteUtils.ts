@@ -1,8 +1,8 @@
 import { PlanIssueStatus, logger } from '@propr/core';
-import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
+import { MAX_RUN_COST_CAP_USD, withPlanIssueDependencies } from '@propr/shared';
 
 // Plan issue responses carry the item id and prerequisite issue numbers.
-export { withPlanIssueDependencies } from '@propr/shared';
+export { withPlanIssueDependencies };
 export interface ImplementationSettings { useEpic: boolean; autoMerge: boolean; }
 export interface ImplementationSettingsOverrides { useEpic?: boolean; autoMerge?: boolean; }
 export interface ResolvedUltrafixSettings { runUltrafix: boolean; ultrafixGoal: number | null; ultrafixMaxCycles: number | null; }
@@ -205,6 +205,9 @@ type IssueWithNormalizedUltrafix<T extends { issue_number: number; run_ultrafix?
 type IssueWithPersistedUltrafix<T extends { issue_number: number; run_ultrafix?: boolean | number | null; ultrafix_goal?: unknown; ultrafix_max_cycles?: unknown }> =
   Omit<T, 'run_ultrafix' | 'ultrafix_goal' | 'ultrafix_max_cycles'> & { run_ultrafix: boolean | null; ultrafix_goal: number | null; ultrafix_max_cycles: number | null };
 
+type IssueForResponse<T extends { issue_number: number; run_ultrafix?: boolean | number | null; ultrafix_goal?: unknown; ultrafix_max_cycles?: unknown }> =
+  ReturnType<typeof withPlanIssueDependencies<IssueWithPersistedUltrafix<T>>>;
+
 export function buildIssueForImplementation<T extends {
   issue_number: number;
   run_ultrafix?: boolean | number | null;
@@ -248,9 +251,10 @@ export function resolveIssueForResponse<T extends {
   run_ultrafix?: boolean | number | null;
   ultrafix_goal?: unknown;
   ultrafix_max_cycles?: unknown;
-}>(planIssue: T): IssueWithPersistedUltrafix<T> {
+}>(planIssue: T): IssueForResponse<T> {
   const ultrafixSettings = resolvePersistedIssueUltrafixSettings(planIssue);
-  return buildIssueForResponse(planIssue, ultrafixSettings);
+  // Every REST issue response parses plan_item_id and depends_on_issues the same way.
+  return withPlanIssueDependencies(buildIssueForResponse(planIssue, ultrafixSettings));
 }
 
 export function buildEffectiveIssueUltrafixUpdate<T extends {
