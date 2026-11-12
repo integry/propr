@@ -8,7 +8,7 @@ import {
 import { loadTokenOutlierSettings } from '../packages/core/src/config/tokenOutlierSettings.ts';
 import {
     TOKEN_SAMPLES_TABLE, describeTokenOutlierAlert, evaluateTokenOutlier, loadTokenOutlierAutomationPause, medianTokens,
-    readTokenBaseline, recordTokenUsageSample, type TokenOutlierAlert, type TokenUsageSample,
+    readTokenBaseline, recordTokenUsageSample, type TokenOutlierAlert, type TokenOutlierNotificationOutcome, type TokenUsageSample,
 } from '../packages/core/src/utils/tokenOutlierAlert.ts';
 import { createAgentRunCostGate } from '../packages/core/src/services/agents/agentRunCostGate.ts';
 import type { StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
@@ -21,6 +21,7 @@ let db: Knex;
 let alerts: TokenOutlierAlert[];
 let settings: TokenOutlierSettings;
 let clock: Date;
+let deliver: (alert: TokenOutlierAlert) => Promise<TokenOutlierNotificationOutcome>;
 
 before(async () => {
     db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
@@ -39,13 +40,18 @@ beforeEach(async () => {
     alerts = [];
     settings = { ...DEFAULT_TOKEN_OUTLIER_SETTINGS };
     clock = NOW;
+    deliver = async () => 'delivered';
 });
 
 const deps = () => ({
     database: db,
     now: () => clock,
     loadSettings: async () => settings,
-    notify: async (alert: TokenOutlierAlert) => { alerts.push(alert); },
+    notify: async (alert: TokenOutlierAlert) => {
+        const outcome = await deliver(alert);
+        alerts.push(alert);
+        return outcome;
+    },
 });
 
 async function record(overrides: Partial<TokenUsageSample> = {}) {
@@ -57,6 +63,10 @@ async function record(overrides: Partial<TokenUsageSample> = {}) {
         executionId, taskId: 'task-1', repository: 'acme/widgets', model: 'claude-opus-5-5', executionType: 'implementation',
         success: true, totalTokens: 1_000_000, number: 42, kind: 'issue', ...overrides,
     }, deps());
+}
+
+async function alertedRows(): Promise<number> {
+    return db(TOKEN_SAMPLES_TABLE).whereNotNull('alerted_at').count({ count: '*' }).first().then(row => Number(row?.count));
 }
 
 /** Successful runs of `tokens` each, on their own tasks so none of them is deduplicated. */
@@ -154,6 +164,51 @@ describe('alert and deduplication', () => {
         assert.equal((await record({ taskId: 'task-big', totalTokens: 7_000_000 })).alerted, false);
         assert.equal(alerts.length, 1);
         assert.equal(await db(TOKEN_SAMPLES_TABLE).whereNotNull('alerted_at').count({ count: '*' }).first().then(row => Number(row?.count)), 1);
+    });
+
+    test('a suppressed notification leaves the task unalerted and does not count toward the pause', async () => {
+        settings.token_outlier_pause_alerts = 1;
+        await seedBaseline(TOKEN_OUTLIER_MIN_HISTORY);
+        deliver = async () => 'suppressed';
+        assert.equal((await record({ taskId: 'task-big', totalTokens: 6_000_000 })).alerted, false);
+        assert.equal(await alertedRows(), 0);
+        assert.equal(await loadTokenOutlierAutomationPause(['acme/widgets'], deps()), null);
+
+        // Notifications turned back on: the task still gets its one alert.
+        deliver = async () => 'delivered';
+        assert.equal((await record({ taskId: 'task-big', totalTokens: 7_000_000 })).alerted, true);
+        assert.equal(await alertedRows(), 1);
+        assert.deepEqual(alerts.at(-1)?.pause, { alerts: 1, windowHours: 24 });
+        assert.notEqual(await loadTokenOutlierAutomationPause(['acme/widgets'], deps()), null);
+    });
+
+    test('a failed notification propagates, leaves the task unalerted and is retried by its next outlier run', async () => {
+        settings.token_outlier_pause_alerts = 1;
+        await seedBaseline(TOKEN_OUTLIER_MIN_HISTORY);
+        deliver = async () => { throw new Error('notification store unavailable'); };
+        await assert.rejects(record({ taskId: 'task-big', totalTokens: 6_000_000 }), /notification store unavailable/);
+        assert.equal(await alertedRows(), 0);
+        assert.equal(await loadTokenOutlierAutomationPause(['acme/widgets'], deps()), null);
+
+        deliver = async () => 'delivered';
+        assert.equal((await record({ taskId: 'task-big', totalTokens: 7_000_000 })).alerted, true);
+        assert.equal(await alertedRows(), 1);
+        assert.equal((await record({ taskId: 'task-big', totalTokens: 8_000_000 })).alerted, false);
+    });
+
+    test('concurrent outlier runs of one task are marked once', async () => {
+        await seedBaseline(TOKEN_OUTLIER_MIN_HISTORY);
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let inFlight = 0;
+        deliver = async () => { inFlight++; await gate; return 'delivered'; };
+        const pending = [record({ taskId: 'task-big', totalTokens: 6_000_000 }), record({ taskId: 'task-big', totalTokens: 7_000_000 })];
+        // Both runs pass the already-alerted check before either is marked.
+        while (inFlight < 2) await new Promise(resolve => setImmediate(resolve));
+        release();
+        const results = await Promise.all(pending);
+        assert.deepEqual(results.map(result => result.alerted).sort(), [false, true]);
+        assert.equal(await alertedRows(), 1);
     });
 
     test('an execution without a task is recorded for the baseline but cannot alert', async () => {

@@ -55,12 +55,19 @@ export interface TokenOutlierDependencies {
     database?: Knex;
     now?: () => Date;
     loadSettings?: () => Promise<TokenOutlierSettings>;
-    notify?: (alert: TokenOutlierAlert) => Promise<void>;
+    notify?: (alert: TokenOutlierAlert) => Promise<TokenOutlierNotificationOutcome>;
 }
+
+/**
+ * What the notifier did: `delivered` once the Inbox event is persisted,
+ * `suppressed` when nothing was raised (notifications off, no recipients).
+ * A failed delivery rejects instead.
+ */
+export type TokenOutlierNotificationOutcome = 'delivered' | 'suppressed';
 
 export interface TokenOutlierResult {
     evaluation: TokenOutlierEvaluation;
-    /** True only when this call raised the task's alert. */
+    /** True only when this call raised the task's alert and its notification was delivered. */
     alerted: boolean;
 }
 
@@ -149,25 +156,36 @@ export async function recordTokenUsageSample(sample: TokenUsageSample, deps: Tok
     if (evaluation.status !== 'outlier' || !sample.taskId) return { evaluation, alerted: false };
     // One alert per task: later runs of the same task (follow-ups, retries) stay quiet.
     if (await taskAlreadyAlerted(database, sample.taskId)) return { evaluation, alerted: false };
-    await database(TOKEN_SAMPLES_TABLE).where({ execution_id: sample.executionId }).update({ alerted_at: recordedAt.toISOString() });
 
+    // The alert is not marked yet: it counts toward the pause only once delivered,
+    // so the pause the notification announces includes this pending alert.
     let pause: TokenOutlierAlert['pause'] = null;
     const pauseAlerts = settings.token_outlier_pause_alerts;
     if (pauseAlerts > 0) {
         const windowHours = settings.token_outlier_pause_window_hours;
         const since = new Date(recordedAt.getTime() - windowHours * 3_600_000);
-        const alerts = await countRecentTokenOutlierAlerts(database, [sample.repository], since);
+        const alerts = await countRecentTokenOutlierAlerts(database, [sample.repository], since) + 1;
         if (alerts >= pauseAlerts) pause = { alerts, windowHours };
     }
     logger.warn({
         taskId: sample.taskId, repository: sample.repository, model: sample.model, executionType: sample.executionType,
         totalTokens: sample.totalTokens, baselineTokens: evaluation.baselineTokens, ratio: evaluation.ratio, paused: !!pause,
     }, 'Execution token use far above its baseline');
-    await notify({
+    // A rejection propagates with the task left unmarked, so a later outlier run
+    // of the task retries; the notification's per-task deduplication key keeps
+    // a retry from raising a second Inbox event.
+    const outcome = await notify({
         sample, baselineTokens: evaluation.baselineTokens, ratio: evaluation.ratio, samples: evaluation.samples,
         multiplier: settings.token_outlier_multiplier, pause,
     });
-    return { evaluation, alerted: true };
+    if (outcome !== 'delivered') return { evaluation, alerted: false };
+    // Marked only when no other execution of the task was marked meanwhile, so
+    // concurrent outlier runs of one task count once toward the pause.
+    const marked = await database(TOKEN_SAMPLES_TABLE)
+        .where({ execution_id: sample.executionId })
+        .whereNotExists(database(TOKEN_SAMPLES_TABLE).where({ task_id: sample.taskId }).whereNotNull('alerted_at').select('execution_id'))
+        .update({ alerted_at: recordedAt.toISOString() });
+    return { evaluation, alerted: Number(marked) > 0 };
 }
 
 export interface TokenOutlierPause {
@@ -232,13 +250,16 @@ async function repositoryNotificationsEnabled(repository: string): Promise<boole
     return entries.length === 0 || entries.some(entry => (entry as { notificationsEnabled?: boolean }).notificationsEnabled !== false);
 }
 
-/** The `warning` Inbox notification on the task, deduplicated per task, for every instance member. */
-export async function notifyTokenOutlier(alert: TokenOutlierAlert): Promise<void> {
+/**
+ * The `warning` Inbox notification on the task, deduplicated per task, for
+ * every instance member. Resolves `delivered` once the event is persisted.
+ */
+export async function notifyTokenOutlier(alert: TokenOutlierAlert): Promise<TokenOutlierNotificationOutcome> {
     const { sample } = alert;
-    if (!sample.taskId || !await repositoryNotificationsEnabled(sample.repository)) return;
+    if (!sample.taskId || !await repositoryNotificationsEnabled(sample.repository)) return 'suppressed';
     const members = await db('instance_members').distinct('github_user_id') as Array<{ github_user_id?: unknown }>;
     const recipients = members.flatMap(row => typeof row.github_user_id === 'string' ? [{ userId: row.github_user_id, pushEnabled: true }] : []);
-    if (recipients.length === 0) return;
+    if (recipients.length === 0) return 'suppressed';
     const [{ createNotificationEvent }, { getModelName }] = await Promise.all([
         import('../services/notificationService.js'), import('../config/modelAliases.js'),
     ]);
@@ -260,4 +281,5 @@ export async function notifyTokenOutlier(alert: TokenOutlierAlert): Promise<void
             automationsPaused: !!alert.pause,
         },
     }, recipients);
+    return 'delivered';
 }

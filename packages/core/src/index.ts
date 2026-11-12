@@ -651,7 +651,7 @@ export {
     recordTokenUsageSample, evaluateTokenOutlier, medianTokens, readTokenBaseline, countRecentTokenOutlierAlerts,
     loadTokenOutlierAutomationPause, describeTokenOutlierAlert, notifyTokenOutlier, formatTokenCount, TOKEN_SAMPLES_TABLE,
 } from './utils/tokenOutlierAlert.js';
-export type { TokenUsageSample, TokenBaselineKey, TokenOutlierEvaluation, TokenOutlierAlert, TokenOutlierDependencies, TokenOutlierResult, TokenOutlierPause } from './utils/tokenOutlierAlert.js';
+export type { TokenUsageSample, TokenBaselineKey, TokenOutlierEvaluation, TokenOutlierAlert, TokenOutlierDependencies, TokenOutlierResult, TokenOutlierPause, TokenOutlierNotificationOutcome } from './utils/tokenOutlierAlert.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/reviewScoreStore.js';
