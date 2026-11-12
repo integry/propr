@@ -56,7 +56,7 @@ The planning agent writes the plan to files instead of returning it in its reply
 
 ## Task Dependencies
 
-Each plan task has a stable id, and may name the tasks whose code it needs first (`dependsOn`). The planner adds a dependency only when one task cannot be built without another; most tasks have none. Each task card shows the steps it depends on. Ids and dependencies are kept through refinement, reordering, plan history and restore; deleting a task removes it from the tasks that depended on it, and restoring it puts it back. ProPR rejects a plan whose dependencies name a missing task, the task itself, or form a cycle.
+Each plan task has a stable id, and may name its direct prerequisites, the tasks whose code it needs first (`dependsOn`). The planner adds a dependency only when one task cannot be built without another; most tasks have none, and plan order alone implies no dependency. A task lists only its direct prerequisites: in a chain A → B → C, C names B but not A. When the planner lists an indirect prerequisite anyway, ProPR drops it from generated and refined plans; plans you save yourself are kept as written. Each task card shows the steps it depends on. Ids and dependencies are kept through refinement, reordering, plan history and restore; deleting a task removes it from the tasks that depended on it, and restoring it puts it back. ProPR rejects a plan whose dependencies name a missing task, the task itself, or form a cycle.
 
 When the plan is finalized, each created issue records the issues it depends on. Execution order is unchanged for now: plans still run in task order.
 

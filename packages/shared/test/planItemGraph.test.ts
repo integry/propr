@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   assignPlanItemIds, normalizePlanItems, parseDependsOnIssues, preparePlanItemsFromModel,
-  resolvePlanItemIssueDependencies, validatePlanItemGraph, withPlanIssueDependencies,
+  reducePlanItemDependencies, resolvePlanItemIssueDependencies, validatePlanItemGraph, withPlanIssueDependencies,
 } from '../src/planItemGraph.js';
 
 const item = (id: string | undefined, dependsOn?: unknown, title = id ? id.toUpperCase() : 'Untitled') =>
@@ -60,6 +60,42 @@ test('model-written plans are repaired: repeated ids replaced, dangling, self an
   assert.match(repaired[2].id, /^item-/, 'the repeated id gets a fresh one');
   assert.equal(validatePlanItemGraph(repaired).valid, true);
   assert.deepEqual(repaired.slice(3).map(entry => entry.dependsOn ?? []), [['d'], []]);
+});
+
+const edgesOf = (plan: unknown[]) => (plan as Array<{ id: string; dependsOn?: string[] }>).map(entry => [entry.id, entry.dependsOn]);
+
+test('dependsOn is reduced to direct prerequisites: a chain loses the transitive entry', () => {
+  const reduced = reducePlanItemDependencies([item('a'), item('b', ['a']), item('c', ['a', 'b'])]);
+  assert.deepEqual(edgesOf(reduced), [['a', undefined], ['b', ['a']], ['c', ['b']]]);
+  assert.deepEqual(edgesOf(reducePlanItemDependencies([item('a'), item('b', ['a']), item('c', ['b', 'a'])]))[2], ['c', ['b']],
+    'the order of the entries does not matter');
+});
+
+test('a diamond keeps both direct prerequisites', () => {
+  const plan = [item('a'), item('b', ['a']), item('c', ['a']), item('d', ['b', 'c'])];
+  assert.deepEqual(reducePlanItemDependencies(plan), plan);
+});
+
+test('a task listing every predecessor of a 5-step chain keeps only its immediate predecessor', () => {
+  const plan = [item('s1'), item('s2', ['s1']), item('s3', ['s2']), item('s4', ['s3']), item('s5', ['s1', 's2', 's3', 's4'])];
+  assert.deepEqual(edgesOf(reducePlanItemDependencies(plan)), [['s1', undefined], ['s2', ['s1']], ['s3', ['s2']], ['s4', ['s3']], ['s5', ['s4']]]);
+  const allPredecessors = [item('s1'), item('s2', ['s1']), item('s3', ['s1', 's2']), item('s4', ['s1', 's2', 's3']), item('s5', ['s1', 's2', 's3', 's4'])];
+  assert.deepEqual(edgesOf(reducePlanItemDependencies(allPredecessors)), [['s1', undefined], ['s2', ['s1']], ['s3', ['s2']], ['s4', ['s3']], ['s5', ['s4']]]);
+});
+
+test('an already minimal graph is returned unchanged, item for item', () => {
+  const plan = [item('ui', ['api', 'docs']), item('schema'), item('api', ['schema']), item('docs'), item('free')];
+  const reduced = reducePlanItemDependencies(plan);
+  assert.deepEqual(reduced, plan);
+  reduced.forEach((entry, index) => assert.equal(entry, plan[index]));
+});
+
+test('model-written plans are reduced to direct prerequisites, user-saved plans are stored as written', () => {
+  const plan = [item('a'), item('b', ['a']), item('c', ['a', 'b'])];
+  assert.deepEqual(edgesOf(preparePlanItemsFromModel(plan)), [['a', undefined], ['b', ['a']], ['c', ['b']]]);
+  const normalized = normalizePlanItems(plan);
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.ok && JSON.stringify(normalized.plan), JSON.stringify(plan));
 });
 
 test('dependencies resolve to issue numbers by position, including forward references', () => {

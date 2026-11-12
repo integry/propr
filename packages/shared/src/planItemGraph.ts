@@ -243,6 +243,45 @@ export function prunePlanItemDependencies<T>(items: readonly T[]): T[] {
   return plan;
 }
 
+/**
+ * Transitive reduction of `dependsOn`: drops an entry when it is already a
+ * prerequisite, directly or indirectly, of another entry of the same item, so
+ * each item lists only its direct prerequisites. The remaining entries keep
+ * their order, and an item left with none loses the field. Expects an acyclic
+ * graph (run it after validation or pruning); items it does not change are
+ * returned as the same objects.
+ */
+export function reducePlanItemDependencies<T>(items: readonly T[]): T[] {
+  const edges = new Map<string, string[]>();
+  for (const item of items.map(asRecord)) {
+    if (hasId(item) && !edges.has(item!.id as string)) edges.set(item!.id as string, planItemDependencies(item));
+  }
+  const reachable = new Map<string, Set<string>>();
+  const ancestorsOf = (id: string, visiting: Set<string> = new Set()): Set<string> => {
+    const known = reachable.get(id);
+    if (known) return known;
+    const result = new Set<string>();
+    visiting.add(id);
+    for (const next of edges.get(id) ?? []) {
+      if (visiting.has(next)) continue;
+      result.add(next);
+      for (const further of ancestorsOf(next, visiting)) result.add(further);
+    }
+    visiting.delete(id);
+    reachable.set(id, result);
+    return result;
+  };
+  return items.map(item => {
+    const record = asRecord(item);
+    if (!record || !Array.isArray(record.dependsOn)) return item;
+    const dependencies = planItemDependencies(record);
+    const kept = dependencies.filter((dependency, position) =>
+      dependencies.indexOf(dependency) === position
+      && !dependencies.some(other => other !== dependency && ancestorsOf(other).has(dependency)));
+    return kept.length === record.dependsOn.length ? item : withDependencies(record, kept) as T;
+  });
+}
+
 export interface PlanItemIssueDependencies {
   index: number;
   itemId: string | null;
@@ -299,7 +338,10 @@ export function parseDependsOnIssues(value: unknown): number[] {
  * refinement), which is repaired instead of rejected: a malformed or repeated
  * id is replaced by a fresh one so it cannot capture another item's
  * dependents, items without an id get one, and references that name no item,
- * the item itself, or close a cycle are dropped. Valid ids are kept as given.
+ * the item itself, or close a cycle are dropped. Entries reachable through
+ * another entry of the same item are dropped too, so each item lists only its
+ * direct prerequisites. Valid ids are kept as given. Plans a user saves are not
+ * reduced; they are validated and stored as written.
  */
 export function preparePlanItemsFromModel<T>(items: readonly T[]): T[] {
   const seen = new Set<string>();
@@ -318,7 +360,7 @@ export function preparePlanItemsFromModel<T>(items: readonly T[]): T[] {
     seen.add(fresh);
     return { ...record, id: fresh } as T;
   });
-  return prunePlanItemDependencies(assignPlanItemIds(withUniqueIds));
+  return reducePlanItemDependencies(prunePlanItemDependencies(assignPlanItemIds(withUniqueIds)));
 }
 
 /** A plan issue row as returned by the API: its plan item id and prerequisite issue numbers parsed. */

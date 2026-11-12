@@ -363,13 +363,15 @@ models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
 Every plan item has a stable `id`, unique within the plan, and may list in
-`dependsOn` the ids of other items in the same plan that must be implemented
-first. `create_plan` and `update_plan` (and the web UI's draft update) assign an
+`dependsOn` the ids of its direct prerequisites, other items in the same plan
+that must be implemented first. `create_plan` and `update_plan` (and the web UI's draft update) assign an
 id to items sent without one, never change an existing id, and reject with
 `PLAN_INVALID` a duplicate id or a `dependsOn` entry that names no item, the item
 itself, or closes a cycle; the message names the item, and `details.errors`
 lists every problem. Ids and `dependsOn` survive refinement, plan revisions and
-restore. Plans without `dependsOn` are valid and are the default. On
+restore. Plans without `dependsOn` are valid and are the default. Plans sent
+through these tools are stored as written; only generated and refined plans have
+indirect prerequisites removed from `dependsOn`. On
 publication each issue in `get_plan.issues` records `plan_item_id` and
 `depends_on_issues`, its prerequisites as issue numbers; issues published
 before dependencies existed read `null` and `[]`. Scheduling does not use

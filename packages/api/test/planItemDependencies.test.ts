@@ -103,6 +103,22 @@ test('stored plans get ids for items without one and keep every existing id and 
   assert.equal((await restUpdate(db, { plan_json: 'not a plan' })).statusCode, 400);
 });
 
+test('user-saved plans keep transitive dependsOn entries as written', async t => {
+  const chain = [task('A', { id: 'a' }), task('B', { id: 'b', dependsOn: ['a'] }), task('C', { id: 'c', dependsOn: ['a', 'b'] })];
+  const db = await setup(t);
+  const { call } = mcp(db);
+  const created = await call('create_plan', { idempotencyKey: 'create-transitive', name: 'Plan', prompt: 'Prompt', plan: chain });
+  assert.deepEqual(JSON.parse((await db('task_drafts').where({ draft_id: (created.data as { planId: string }).planId }).first()).plan_json), chain);
+
+  const { mcp_revision: revision } = await db('task_drafts').where({ draft_id: draftId }).first();
+  await call('update_plan', { idempotencyKey: 'update-transitive', planId: draftId, expectedRevision: revision, plan: chain });
+  assert.deepEqual(await storedPlan(db), chain);
+
+  await db('task_drafts').where({ draft_id: draftId }).update({ plan_json: JSON.stringify([task('Initial', { id: 'initial' })]) });
+  assert.equal((await restUpdate(db, { plan_json: chain })).statusCode, 200);
+  assert.deepEqual(await storedPlan(db), chain);
+});
+
 test('plan revisions and restore keep item ids and dependsOn', async t => {
   const original = [task('Schema', { id: 'schema' }), task('API', { id: 'api', dependsOn: ['schema'] })];
   const db = await setup(t, original);
