@@ -359,7 +359,8 @@ decisions are in Settings → Maintenance → Held follow-ups.
 
 Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates
-a draft; `publish_plan` creates GitHub issues with the non-executing
+a draft (with plan items it opens in Studio at Review, so its issues can be
+read before publishing); `publish_plan` creates GitHub issues with the non-executing
 `propr-planned` label. `implement_plan` requires selected issue numbers and
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.

@@ -102,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP-created plans open in Studio at Review**: `create_plan` called with
+  plan items stored the draft as `draft`, so Studio opened it at Define and
+  showed no issues until it was published. A draft created or updated with
+  plan items is now stored as `review`; prompt-only drafts stay `draft`. A
+  migration moves existing drafts that already hold plan items to `review`.
 - **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
   runners `scripts/ci-install-chromium.sh` bounds apt with
   `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each
