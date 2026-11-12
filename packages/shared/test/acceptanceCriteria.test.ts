@@ -69,6 +69,35 @@ test('ignores fenced examples inside nested list items', () => {
     { id: 'AC1', text: 'Validate input: Reject malformed input, including this example:' },
     { id: 'AC2', text: 'Document usage.' },
   ]);
+  // Nested items and continuation text after a fence stay in their criterion.
+  const after = [
+    '## Acceptance criteria',
+    '- Validate input:',
+    '',
+    '  ```text',
+    '  - Accept malformed input.',
+    '  ```',
+    '  - Reject malformed input',
+    '    with a clear error.',
+    '  Log each rejection.',
+    '- Document usage.',
+  ].join('\n');
+  assert.deepEqual(texts(after), ['Validate input: Reject malformed input with a clear error. Log each rejection.', 'Document usage.']);
+  const afterNested = [
+    '## Acceptance criteria',
+    '- Validate input:',
+    '  - Reject malformed input, including this example:',
+    '    ~~~',
+    '    - Accept malformed input.',
+    '    ~~~',
+    '    and report it.',
+    '  - Keep valid input.',
+    '- Document usage.',
+  ].join('\n');
+  assert.deepEqual(texts(afterNested), ['Validate input: Reject malformed input, including this example: and report it. Keep valid input.', 'Document usage.']);
+  // A top-level fence still ends the item, and an unindented paragraph after an item's fence is not part of it.
+  assert.deepEqual(texts('## Acceptance criteria\n- First\n```\ncode\n```\n  - Orphan\n- Second\n'), ['First', 'Second']);
+  assert.deepEqual(texts('## Acceptance criteria\n- First\n  ```\n  code\n  ```\nNot a criterion.\n- Second\n'), ['First', 'Second']);
   // A fence in a top-level item, and one a less-indented line ends with its list item.
   assert.deepEqual(texts('## Acceptance criteria\n1. First\n   ~~~\n   - example\n   ~~~\n2. Second\n'), ['First', 'Second']);
   assert.deepEqual(texts('## Acceptance criteria\n- First\n  ```\n  - example\n- Second\n'), ['First', 'Second']);

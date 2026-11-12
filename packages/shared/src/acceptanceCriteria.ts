@@ -78,7 +78,10 @@ function bound(text: string, max: number): string {
     return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-/** A line inside the criteria section; null marks a break such as a code fence that ends the current item. */
+/**
+ * A line inside the criteria section; null marks a break, such as a sub-heading
+ * or a top-level code fence, that ends the current item.
+ */
 type SectionLine = string | null;
 
 const LEADING_WHITESPACE = /^[ \t]*/;
@@ -116,13 +119,19 @@ class FenceTracker {
     private fence: OpenFence | null = null;
     private previousBlank = true;
 
-    /** Whether `line` is a fence delimiter or fenced code. */
-    isFenced(line: string): boolean {
+    /**
+     * The content column of the list item holding the fence when `line` is a
+     * fence delimiter or fenced code (0 for a top-level fence), otherwise -1.
+     */
+    fenceColumn(line: string): number {
         const blank = !line.trim();
         const indent = columnWidth(LEADING_WHITESPACE.exec(line)?.[0] ?? '');
+        const held = this.fence?.column;
         const fenced = this.fence ? this.continueFence(line, blank, indent) : this.openFence(line, blank, indent);
         this.previousBlank = blank;
-        return fenced;
+        if (!fenced) return -1;
+        // A closing delimiter clears the fence, and a less-indented line can end it and open another.
+        return this.fence?.column ?? held ?? 0;
     }
 
     private continueFence(line: string, blank: boolean, indent: number): boolean {
@@ -164,6 +173,8 @@ interface VisibleLine {
     text: string;
     /** A code fence delimiter or a line inside fenced code. */
     fenced: boolean;
+    /** Fenced code held by a list item, which the fence does not end. */
+    inListItem: boolean;
 }
 
 /** Removes `<!-- ... -->` comments from one line, given whether a comment is already open at its start. */
@@ -197,14 +208,15 @@ function visibleLines(lines: readonly string[]): VisibleLine[] {
     const fences = new FenceTracker();
     let inComment = false;
     for (const line of lines) {
-        if (!inComment && fences.isFenced(line)) {
-            visible.push({ text: line, fenced: true });
+        const fenceColumn = inComment ? -1 : fences.fenceColumn(line);
+        if (fenceColumn >= 0) {
+            visible.push({ text: line, fenced: true, inListItem: fenceColumn > 0 });
             continue;
         }
         const stripped = stripLineComments(line, inComment);
         inComment = stripped.inComment;
         // A line that was only comment reads as blank, like the rendered output.
-        visible.push({ text: stripped.text.trim() ? stripped.text : '', fenced: false });
+        visible.push({ text: stripped.text.trim() ? stripped.text : '', fenced: false, inListItem: false });
     }
     return visible;
 }
@@ -221,7 +233,8 @@ function headingAt(lines: readonly string[], index: number): { heading: Heading;
 
 /**
  * The lines under the first "Acceptance criteria" heading, up to the next
- * heading of the same or a higher level. Fenced code becomes one break.
+ * heading of the same or a higher level. A top-level code fence is a break; a
+ * fence inside a list item reads as blank lines, so the item continues after it.
  */
 function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
     const lines = visible.map(line => line.text);
@@ -229,7 +242,7 @@ function criteriaSection(visible: readonly VisibleLine[]): SectionLine[] {
     let sectionLevel = 0;
     for (let index = 0; index < lines.length; index++) {
         if (visible[index].fenced) {
-            if (sectionLevel) section.push(null);
+            if (sectionLevel) section.push(visible[index].inListItem ? '' : null);
             continue;
         }
         const found = headingAt(lines, index);
