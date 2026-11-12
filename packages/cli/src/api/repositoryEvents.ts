@@ -42,10 +42,17 @@ function params(query: RepositoryEventQuery): Record<string, string | number | u
   };
 }
 
-/** Events after a cursor; without one, the current cursor and no history (unless `fromStart`). */
+/**
+ * Events after a cursor; without one, the current cursor and no history (unless `fromStart`).
+ * A request without a cursor or `fromStart` establishes the server's current
+ * end, so a retry after a lost response could move that boundary past events
+ * appended meanwhile: it is sent exactly once, and a failure surfaces instead.
+ * Requests with a cursor or `fromStart` are replayable and keep retries.
+ */
 export async function listRepositoryEvents(query: RepositoryEventQuery, client?: ApiClient): Promise<RepositoryEventListResult> {
   const apiClient = client ?? (await createApiClient());
-  return (await apiClient.get<RepositoryEventListResult>("/api/repository-events", { params: params(query) })).data;
+  const replayable = query.afterCursor !== undefined || query.fromStart === true;
+  return (await apiClient.get<RepositoryEventListResult>("/api/repository-events", { params: params(query), retry: replayable })).data;
 }
 
 /**

@@ -30,7 +30,7 @@ const filterShape = () => ({
   limit: z.number().int().min(1).max(REPOSITORY_EVENT_LIST_MAX_LIMIT).default(REPOSITORY_EVENT_LIST_DEFAULT_LIMIT),
 });
 
-/** The journal records the configured spelling of a repository; the grant check is case-insensitive. */
+/** The configured spelling of a repository (the journal and the grant check match it case-insensitively). */
 async function journalRepository(repository: string): Promise<string> {
   const configured = (await loadMonitoredReposRaw()).find(repo => repo.name.toLowerCase() === repository.toLowerCase());
   return configured?.name ?? repository;

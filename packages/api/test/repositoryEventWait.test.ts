@@ -237,3 +237,109 @@ test('authorization is re-checked before each further read', async () => {
   notifyRepositoryEventWaiters(repository);
   await assert.rejects(pending, /revoked/);
 });
+
+const OLD = '2026-01-01T00:00:00.000Z';
+const prune = () => pruneRepositoryEvents(db, { olderThanDays: 30, now: () => Date.parse('2026-11-12T00:00:00.000Z') });
+
+test('a completely pruned repository still issues resumable cursors without one', async () => {
+  await append({ occurredAt: OLD });
+  const last = await append({ occurredAt: OLD });
+  await append({ repository: otherRepository });
+  await prune();
+
+  const current = await list();
+  assert.deepEqual(current.events, []);
+  assert.equal(seqOf(current.cursor), last, 'the current position is the retention floor, not 0');
+  assert.deepEqual((await list({ afterCursor: current.cursor })).events, [], 'the issued cursor is not expired');
+
+  const history = await list({ fromStart: true });
+  assert.deepEqual(history.events, []);
+  assert.deepEqual((await list({ afterCursor: history.cursor })).events, [], 'an empty fromStart read returns a valid resume point');
+
+  for (const fromStart of [false, true]) {
+    const timedOut = await wait({ fromStart, timeoutSeconds: 0 });
+    assert.equal(timedOut.outcome, 'timeout');
+    assert.deepEqual((await list({ afterCursor: timedOut.cursor })).events, [], `a cursorless wait (fromStart ${fromStart}) times out on a valid cursor`);
+  }
+  const next = await append();
+  assert.deepEqual((await list({ afterCursor: current.cursor })).events.map(event => seqOf(event.cursor)), [next]);
+});
+
+test('a complete fromStart page of retained events below the floor resumes at the floor', async () => {
+  // Retention deletes by age: an older-stamped event appended later raises the floor past a kept one.
+  const kept = await append();
+  const pruned = await append({ occurredAt: OLD });
+  await prune();
+  const history = await list({ fromStart: true });
+  assert.deepEqual(history.events.map(event => seqOf(event.cursor)), [kept]);
+  assert.equal(seqOf(history.cursor), pruned);
+  assert.deepEqual((await list({ afterCursor: history.cursor })).events, []);
+});
+
+/** Run retention once, right after the statement matching `sql` is issued on `db`. */
+function pruneAfterQuery(sql: RegExp): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const onQuery = (query: { sql: string }) => {
+      if (!sql.test(query.sql)) return;
+      db.off('query', onQuery);
+      prune().then(resolve, reject);
+    };
+    db.on('query', onQuery);
+  });
+}
+
+test('retention committing during a read never yields a page that skips unread events', async () => {
+  const start = (await list()).cursor;
+  const unread = await append({ occurredAt: OLD });
+  const later = await append();
+  // Retention runs as soon as the read has looked at the floor.
+  const pruning = pruneAfterQuery(/repository_event_floors/);
+  const page = await list({ afterCursor: start });
+  await pruning;
+  // The page comes from the snapshot the floor was checked in: it still holds the unread event.
+  assert.deepEqual(page.events.map(event => seqOf(event.cursor)), [unread, later]);
+  await rejects(list({ afterCursor: start }), 'CURSOR_EXPIRED', 410);
+});
+
+test('retention pruning past the position of an open wait reports CURSOR_EXPIRED', async () => {
+  const start = (await list()).cursor;
+  await append({ type: 'head_changed', occurredAt: OLD });
+  const cursorWait = wait({ afterCursor: start, types: ['merged'], timeoutSeconds: 10 });
+  const freshWait = wait({ ownerId: '456', types: ['merged'], timeoutSeconds: 10 });
+  const fromStartWait = wait({ ownerId: '789', fromStart: true, types: ['merged'], timeoutSeconds: 10 });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(activeRepositoryEventWaiterCount(repository), 3);
+  await prune();
+  // A newer old-stamped event: the fresh waits' positions are now behind the floor too.
+  await append({ type: 'head_changed', occurredAt: OLD });
+  await prune();
+  notifyRepositoryEventWaiters(repository);
+  await rejects(cursorWait, 'CURSOR_EXPIRED', 410);
+  await rejects(freshWait, 'CURSOR_EXPIRED', 410);
+  await rejects(fromStartWait, 'CURSOR_EXPIRED', 410);
+});
+
+test('events stored under another spelling of the repository are read, bounded and pruned as one journal', async () => {
+  // The configuration says acme/app; a webhook recorded GitHub's Acme/App.
+  const stored = 'Acme/App';
+  const before = (await list()).cursor;
+  const webhook = await append({ repository: stored, type: 'opened' });
+  const configured = await append({ type: 'merged' });
+
+  assert.deepEqual((await list({ fromStart: true })).events.map(event => seqOf(event.cursor)), [webhook, configured]);
+  assert.deepEqual((await list({ afterCursor: before })).events.map(event => [event.type, event.repository]), [['opened', repository], ['merged', repository]]);
+  assert.equal(seqOf((await list()).cursor), configured);
+
+  const current = (await list()).cursor;
+  const pending = wait({ afterCursor: current, timeoutSeconds: 10 });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const woke = await append({ repository: stored, type: 'closed' });
+  notifyRepositoryEventWaiters(stored);
+  assert.deepEqual((await pending).events.map(event => seqOf(event.cursor)), [woke]);
+
+  // Retention records the floor under the stored spelling; it still expires cursors of the configured one.
+  const stale = await append({ repository: stored, occurredAt: OLD });
+  await prune();
+  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, stale - 1) }), 'CURSOR_EXPIRED', 410);
+  assert.equal(seqOf((await list()).cursor), stale);
+});

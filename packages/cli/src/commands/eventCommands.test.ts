@@ -58,3 +58,28 @@ test("the API helpers send the documented query parameters", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("a cursorless list establishing the current end is sent once; replayable lists keep retries", async () => {
+  const urls: URL[] = [];
+  const originalFetch = globalThis.fetch;
+  // Every attempt fails in transport, as when the response establishing the boundary is lost.
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    urls.push(new URL(String(input)));
+    throw new TypeError("fetch failed");
+  }) as typeof fetch;
+  try {
+    const client = new ApiClient({ getRemoteUrl: () => "http://propr.test", getGithubToken: () => "token" } as unknown as ConfigManager);
+    await assert.rejects(listRepositoryEvents({ repository: "acme/app" }, client), /Network error/);
+    assert.equal(urls.length, 1, "a retry would establish a later boundary and skip events appended in between");
+
+    urls.length = 0;
+    await assert.rejects(listRepositoryEvents({ repository: "acme/app", afterCursor: "rec1.c" }, client), /Network error/);
+    assert.equal(urls.length, 3, "a read after a cursor is replayable");
+
+    urls.length = 0;
+    await assert.rejects(listRepositoryEvents({ repository: "acme/app", fromStart: true }, client), /Network error/);
+    assert.equal(urls.length, 3, "a read from the start is replayable");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
