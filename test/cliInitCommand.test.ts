@@ -47,6 +47,22 @@ describe("scaffoldProprDirectory", () => {
       assert.match(setup, /npm ci/);
       assert.match(setup, /propr runtime packages/);
       assert.doesNotMatch(setup, /sudo apt-get/);
+      assert.match(setup, /cp \.env\.example \.env/);
+      assert.match(setup, /npm run codegen --if-present/);
+
+      const workflow = await readFile(path.join(proprDir, "workflow.yml"), "utf-8");
+      assert.deepStrictEqual(parseRepositoryWorkflow(workflow), { hooks: { timeout_ms: 600000 } });
+      // Uncommenting the inline after_create example yields a valid policy.
+      const inline = workflow.match(/^  # after_create: \|\n((?:  # {3}.*\n)+)/m);
+      assert.ok(inline, "workflow.yml has an inline after_create example");
+      const enabled = workflow.replace(
+        inline[0],
+        `  after_create: |\n${inline[1].replace(/^  # {3}/gm, "    ")}`,
+      );
+      assert.deepStrictEqual(parseRepositoryWorkflow(enabled).hooks, {
+        after_create: "set -euo pipefail\n[ -f .env ] || cp .env.example .env\nnpm ci\nnpm run codegen --if-present\n",
+        timeout_ms: 600000,
+      });
 
       const setupMode = (await stat(path.join(proprDir, "setup.sh"))).mode & 0o777;
       assert.strictEqual(setupMode, 0o755);

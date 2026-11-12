@@ -42,7 +42,7 @@ Broad tasks produce PRs that stall in review. Prefer smaller issues that produce
 
 ## Match The Agent Environment To CI
 
-Agents run in isolated execution containers. Use `.propr/setup.sh` (scaffolded by `propr init`) to install the dependencies and task-specific tooling the agent needs, so it can build and run the project the same way CI does. Keeping the agent environment and CI aligned means changes that look right in the run also pass the pipeline, and it lets `/fix` repair environment problems in scope. See [ProPR CLI](../features/propr-cli.md).
+Agents run in isolated execution containers. Use `.propr/setup.sh` (scaffolded by `propr init`) to install the dependencies and task-specific tooling the agent needs, so it can build and run the project the same way CI does. Each run starts from a fresh worktree, so recreate git-ignored env files and generated code there, and give databases, ports and volumes per-run names so parallel runs do not collide; see [Fresh worktrees](../features/repository-workflow.md#fresh-worktrees) for copyable recipes. Keeping the agent environment and CI aligned means changes that look right in the run also pass the pipeline, and it lets `/fix` repair environment problems in scope. See [ProPR CLI](../features/propr-cli.md).
 
 ## Document Conventions
 
@@ -56,6 +56,7 @@ ProPR's planning and review draw on repository knowledge. A clear `README`, a `C
 - Workflow `GITHUB_TOKEN` scoped to least privilege; third-party actions pinned to SHAs; secrets kept out of logs
 - Lint rules cap file size and complexity to keep diffs reviewable
 - `.propr/setup.sh` installs the same dependencies CI uses
+- Setup recreates git-ignored env files and generated code, and names shared test resources per run ([Fresh worktrees](../features/repository-workflow.md#fresh-worktrees))
 - Issues are scoped small enough to produce focused PRs
 - Conventions documented in `README`/`CONTRIBUTING`
 

@@ -113,6 +113,31 @@ for (const placement of commonOptionPlacements) {
   });
 }
 
+test("init repo scaffolds commented fresh-worktree examples for env files and codegen", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "propr-init-repo-fresh-"));
+  const repo = join(fixture, "repo");
+  const home = join(fixture, "home");
+  mkdirSync(repo);
+  mkdirSync(home);
+
+  try {
+    runCli(["init", "repo"], repo, home);
+    const setup = readFileSync(join(repo, ".propr", "setup.sh"), "utf8");
+    assert.match(setup, /^#   cp \.env\.example \.env$/m);
+    assert.match(setup, /^# npm run codegen --if-present$/m);
+    assert.doesNotMatch(setup, /^\s*cp \.env\.example/m, "env-file example stays commented out");
+
+    const workflow = readFileSync(join(repo, ".propr", "workflow.yml"), "utf8");
+    assert.match(workflow, /repository-workflow#fresh-worktrees/);
+    assert.match(workflow, /^  # after_create: \|$/m);
+    assert.match(workflow, /^  #   \[ -f \.env \] \|\| cp \.env\.example \.env$/m);
+    assert.match(workflow, /^  #   npm run codegen --if-present$/m);
+    assert.doesNotMatch(workflow, /^\s*after_create:/m, "after_create stays commented out");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 for (const json of [false, true]) {
   for (const placement of commonOptionPlacements) {
     test(
