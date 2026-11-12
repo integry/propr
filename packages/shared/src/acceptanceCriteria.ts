@@ -31,8 +31,12 @@ export const MAX_ACCEPTANCE_EVIDENCE_LENGTH = 300;
 /**
  * Input bounds that keep parsing fast: micromark is quadratic in some inputs,
  * such as many lazy continuation lines or table rows, and in containers nested
- * on one line (`- - - …`, `> > …`), which also overflow the stack when deep
- * enough. Only the text before the first line past a bound is parsed.
+ * on one line (`- - - …`, `> > …`), whose cost grows with the depth of every
+ * such line and which overflow the stack when deep enough. Only the text
+ * before the first line past the length or line bound is parsed. A line nested
+ * too deep is read as blank instead, so the lines after it still are: it may be
+ * literal fenced-code content, which GitHub renders as text, and then hides
+ * nothing; outside code it is nested far below any criterion.
  * 65,536 characters is GitHub's limit for an issue body.
  */
 const MAX_PARSED_LENGTH = 65_536;
@@ -55,18 +59,21 @@ const HIDDEN = new Set<string>(['code', 'html', 'blockquote']);
 /** A parsed document with its source, which node positions index into. */
 interface Document { source: string; tree: Root }
 
-/** `markdown` up to the first line past the parse bounds. */
+/** `markdown` up to the first line past the parse bounds, with each line nested too deep blanked. */
 function parsedSource(markdown: string): string {
     const source = markdown.slice(0, MAX_PARSED_LENGTH);
+    let parsed = '';
     let start = 0;
     for (let line = 0; start < source.length; line++) {
         const newline = source.indexOf('\n', start);
         const end = newline < 0 ? source.length : newline;
         const text = source.slice(start, end);
-        if (line >= MAX_PARSED_LINES || (TOO_DEEP.test(text) && !THEMATIC_BREAK.test(text))) return source.slice(0, start);
+        if (line >= MAX_PARSED_LINES) break;
+        parsed += TOO_DEEP.test(text) && !THEMATIC_BREAK.test(text) ? '' : text;
+        parsed += newline < 0 ? '' : '\n';
         start = end + 1;
     }
-    return source;
+    return parsed;
 }
 
 function parse(markdown: string): Document {
@@ -100,13 +107,16 @@ function inlineSource(document: Document, node: Parent): string {
         }
     };
     collectHtml(node);
-    let text = '';
+    const pieces: string[] = [];
     let position = first;
     for (const [start, end] of cuts) {
-        text += `${document.source.slice(position, start)} `;
+        pieces.push(document.source.slice(position, start));
         position = end;
     }
-    return text + document.source.slice(position, last);
+    pieces.push(document.source.slice(position, last));
+    // Each comment reads as one space, with the spaces beside it, so the text around it is neither joined nor
+    // spread; the spaces within the text, such as in a literal, and its line breaks stay as written.
+    return pieces.map(piece => piece.replace(/^[ \t]+|[ \t]+$/g, '')).filter(Boolean).join(' ');
 }
 
 /** `Acceptance criteria`, optionally emphasised and followed by a colon. */
@@ -150,9 +160,12 @@ function itemParts(document: Document, item: ListItem | List, parts: string[] = 
 
 const EMPTY_TASK = /^\[[ xX]\]$/;
 
+/** Line breaks and the indentation of continuation lines read as one space; the spaces within a line, such as in a literal, stay as written. */
+const LINE_BREAK = /[ \t]*\r?\n[ \t]*/g;
+
 function joinParts(parts: readonly string[]): string {
     return parts
-        .map(part => part.replace(/\s+/g, ' ').trim())
+        .map(part => part.replace(LINE_BREAK, ' ').trim())
         .filter(Boolean)
         .reduce((text, part) => (text ? `${text}${/[:;,.]$/.test(text) ? ' ' : '; '}${part}` : part), '');
 }
@@ -218,7 +231,8 @@ function parseStatementLine(line: string): { id: string; status: AcceptanceCrite
     }
     if (!found) return null;
     rest = trimTrailing(found[1].replace(/^[\s*_`]*(?:[:\-–—|,;.(]\s*)?/, ''), ' \t|*_').trim();
-    return { id: `AC${Number(idMatch[1])}`, status: found[0], evidence: bound(rest.replace(/\s+/g, ' '), MAX_ACCEPTANCE_EVIDENCE_LENGTH) };
+    // `line` is one line, so the evidence is kept as written, including the spaces within a literal.
+    return { id: `AC${Number(idMatch[1])}`, status: found[0], evidence: bound(rest, MAX_ACCEPTANCE_EVIDENCE_LENGTH) };
 }
 
 /**

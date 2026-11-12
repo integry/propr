@@ -332,7 +332,7 @@ test('ignores statements in fenced examples inside block quotes', () => {
     ['> - ```md', '>   - AC1: met — example', '>   ```'],
     ['- Notes:', '  > ```md', '  > - AC1: met — example', '  > ```'],
     ['- > ```md', '  > - AC1: met — example', '  > ```'],
-    // Quotes nested too deep to track read as fenced code.
+    // A line nested too deep to parse reads as blank.
     [`${'> '.repeat(9)}- AC1: met — example`],
   ]) {
     assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), [real, 'Report each criterion like this:', ...example].join('\n')), [notMet], example.join('\n'));
@@ -379,8 +379,37 @@ test('bounds the input that slow Markdown constructs can make expensive', () => 
   assert.equal(lazy.length, 1);
   assert.ok(lazy[0].startsWith('First lazy lazy'));
   evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `| a | b |\n| - | - |\n${'| x | y |\n'.repeat(20_000)}`);
-  // A line nested too deep is not parsed, nor anything after it.
-  assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(9)}deep\n- Dropped\n`), ['Kept']);
+  // A line nested too deep reads as blank: its own text is dropped, the lines after it are parsed as before.
+  assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(9)}deep\n- Also kept\n`), ['Kept', 'Also kept']);
+  assert.deepEqual(texts(`## Acceptance criteria\n- Kept:\n  ${'- > '.repeat(9)}deep\n  - nested\n- Also kept\n`), ['Kept: nested', 'Also kept']);
   assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(4)}nested\n- Also kept\n`).length, 2);
+  // Many such lines, within the length bound, stay cheap.
+  assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${`${'- > '.repeat(20)}deep\n`.repeat(500)}- Also kept\n`), ['Kept', 'Also kept']);
   assert.ok(Date.now() - started < 2000);
+});
+
+test('a fenced example with deeply nested markers hides nothing after it', () => {
+  // The markers are literal code, which GitHub renders as text: the criteria after the example are kept, wherever the example is.
+  const example = ['```text', '> > > > > > > > > example', `${'- '.repeat(12)}another`, '```'];
+  const criteria = ['## Acceptance criteria', '- Works', '- Documented'];
+  assert.deepEqual(texts([...example, '', ...criteria].join('\n')), ['Works', 'Documented']);
+  assert.deepEqual(texts([...criteria, '- Example:', ...example.map(line => `  ${line}`), '- After'].join('\n')), ['Works', 'Documented', 'Example:', 'After']);
+  assert.deepEqual(texts([...example.map(line => `> ${line}`), '', ...criteria].join('\n')), ['Works', 'Documented']);
+  assert.deepEqual(texts([...criteria, ...example, '- After the fence'].join('\n')), ['Works', 'Documented', 'After the fence']);
+  // The same for the agent's report: an example with such markers does not hide the statements after it.
+  const report = ['Format example:', ...example, '', '- AC1: met — `src/a.ts`'].join('\n');
+  assert.deepEqual(evaluateAcceptanceCriteria([{ id: 'AC1', text: 'Works' }], report), [{ id: 'AC1', text: 'Works', status: 'met', evidence: '`src/a.ts`' }]);
+});
+
+test('keeps the whitespace within a criterion and its evidence as written', () => {
+  // Consecutive spaces and tabs inside a literal can be the requirement; only line breaks and continuation indentation read as one space.
+  const body = ['## Acceptance criteria', '- Preserve the exact string `a  b`.', '- Accept `x\t\ty` and  double  spaces', '  on a wrapped line', '  - nested `c   d`', '- Keep `e  f` <!-- note --> and `g  h`'].join('\n');
+  assert.deepEqual(texts(body), [
+    'Preserve the exact string `a  b`.',
+    'Accept `x\t\ty` and  double  spaces on a wrapped line; nested `c   d`',
+    'Keep `e  f` and `g  h`',
+  ]);
+  assert.deepEqual(extractAcceptanceCriteria(body)[0], { id: 'AC1', text: 'Preserve the exact string `a  b`.' });
+  const [result] = evaluateAcceptanceCriteria(extractAcceptanceCriteria(body).slice(0, 1), '- AC1: met — `test/a  b.test.ts` and `x\t\ty`');
+  assert.equal(result.evidence, '`test/a  b.test.ts` and `x\t\ty`');
 });
