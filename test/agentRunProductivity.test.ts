@@ -20,7 +20,7 @@ import {
   type UnproductiveStreakPause,
 } from '../packages/core/src/services/agents/agentRunProductivity.ts';
 
-const { evaluateUnproductiveStreak, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
+const { evaluateUnproductiveStreak, unproductivePauseDeduplicationKey, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
 
 const migrations = fileURLToPath(new URL('../packages/core/src/db/migrations/', import.meta.url));
 const MIGRATION = '20261112000000_add_agent_run_productivity_flags.js';
@@ -217,7 +217,7 @@ describe('unproductive scheduled streak', () => {
     type Event = Record<string, unknown> & { deduplicationKey: string; kind: string; target: Record<string, unknown>; title: string; body: string };
     function streakDeps(threshold = 3) {
       const events: Array<{ event: Event; recipients: unknown }> = [];
-      const seen = new Map<string, { schedulePaused: boolean }>();
+      const seen = new Map<string, { pauseIntended: boolean }>();
       return {
         events,
         deps: {
@@ -230,7 +230,7 @@ describe('unproductive scheduled streak', () => {
           createEvent: (async (event: Event, recipients: unknown) => {
             if (!seen.has(event.deduplicationKey)) events.push({ event, recipients });
             if (!seen.has(event.deduplicationKey)) {
-              seen.set(event.deduplicationKey, { schedulePaused: (event.metadata as { schedulePaused?: unknown } | undefined)?.schedulePaused === true });
+              seen.set(event.deduplicationKey, { pauseIntended: (event.metadata as { pauseIntended?: unknown } | undefined)?.pauseIntended === true });
             }
             return event;
           }) as never,
@@ -291,10 +291,20 @@ describe('unproductive scheduled streak', () => {
       assert.equal(paused?.scheduleEnabled, false);
       assert.equal(paused?.nextRunAt, null);
       assert.equal(paused?.revision, definition.revision + 1, 'counts as an edit, like every system disable');
-      assert.equal(events.length, 1);
-      assert.match(events[0].event.title, /paused/);
-      assert.match(events[0].event.body, /schedule has been paused/);
-      assert.equal((events[0].event.metadata as { schedulePaused: boolean }).schedulePaused, true);
+      // The streak item is stored before the pause, so it states the intent; the pause is told afterwards.
+      assert.equal(events.length, 2);
+      const [streakItem, pausedItem] = events;
+      assert.equal(streakItem.event.deduplicationKey, unproductiveStreakDeduplicationKey(definition.id, 'start'));
+      assert.doesNotMatch(streakItem.event.title, /paused/);
+      assert.match(streakItem.event.body, /set to pause its schedule/);
+      assert.doesNotMatch(streakItem.event.body, /has been paused|was paused/);
+      assert.equal((streakItem.event.metadata as { pauseIntended: boolean }).pauseIntended, true);
+      assert.equal((streakItem.event.metadata as { schedulePaused?: boolean }).schedulePaused, undefined, 'the streak item never states the outcome');
+      assert.equal(pausedItem.event.deduplicationKey, unproductivePauseDeduplicationKey(definition.id, 'start'));
+      assert.match(pausedItem.event.title, /Nightly triage paused/);
+      assert.match(pausedItem.event.body, /schedule was paused after 2 consecutive scheduled runs/);
+      assert.equal((pausedItem.event.metadata as { schedulePaused: boolean }).schedulePaused, true);
+      assert.deepEqual(pausedItem.recipients, [{ userId: 'alice', pushEnabled: false }], 'the owner already had a push for the streak');
     });
 
     test('waiting preview runs do not notify or pause; the verdict follows approval or rejection', async () => {
@@ -324,8 +334,9 @@ describe('unproductive scheduled streak', () => {
       assert.equal(await evaluateUnproductiveStreak(held, evaluate), null);
       const rejected = (await transitionAgentRun(held.id, ['awaiting_approval'], 'rejected', {}, deps()))!;
       assert.equal(await evaluateUnproductiveStreak(rejected, evaluate), 'paused', 'a rejection makes the verdict final');
-      assert.equal(events.length, 1);
-      assert.equal(events[0].event.deduplicationKey, unproductiveStreakDeduplicationKey(definition.id, acted.id));
+      assert.deepEqual(events.map(({ event }) => event.deduplicationKey), [
+        unproductiveStreakDeduplicationKey(definition.id, acted.id), unproductivePauseDeduplicationKey(definition.id, acted.id),
+      ]);
     });
 
     test('a scheduled no-op acting step counts even when its report could not be compared', async () => {
@@ -355,15 +366,17 @@ describe('unproductive scheduled streak', () => {
 
       failing = false;
       assert.equal(await evaluateUnproductiveStreak(await completedRun({ novelty: 'empty' }), flaky), 'paused');
-      assert.equal(events.length, 1);
-      assert.equal(events[0].event.deduplicationKey, unproductiveStreakDeduplicationKey(definition.id, 'start'));
-      assert.match(events[0].event.title, /no change in 3 runs/);
+      assert.deepEqual(events.map(({ event }) => event.deduplicationKey), [
+        unproductiveStreakDeduplicationKey(definition.id, 'start'), unproductivePauseDeduplicationKey(definition.id, 'start'),
+      ]);
+      assert.match(events[0].event.body, /last 3 scheduled runs produced nothing new/);
+      assert.match(events[1].event.title, /no change in 3 runs/);
       assert.equal((await getAgentDefinition(definition.id, 'alice', { database }))?.scheduleEnabled, false);
 
       // The stored item is the evidence: later runs of the streak neither notify nor pause again.
       await updateAgentDefinition(definition.id, 'alice', { scheduleEnabled: true }, deps());
       assert.equal(await evaluateUnproductiveStreak(await completedRun({ novelty: 'unchanged' }), flaky), null);
-      assert.equal(events.length, 1);
+      assert.equal(events.length, 2);
       assert.equal((await getAgentDefinition(definition.id, 'alice', { database }))?.scheduleEnabled, true);
     });
 

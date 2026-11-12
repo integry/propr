@@ -133,9 +133,14 @@ export async function findUnproductiveScheduledStreak(
   return { runs, reachedThreshold: runs.length >= limit, streakKey: breaker };
 }
 
-/** The stored unproductive-streak Inbox item: whether it told the owner the schedule was paused. */
+/**
+ * The stored unproductive-streak Inbox item. `pauseIntended` is the recovery intent:
+ * the item told the owner the schedule is set to be paused, so a pause that failed or
+ * was interrupted after it was stored is still owed. It says nothing about whether the
+ * pause was made; that is recorded with the schedule change (`unproductive_paused_streak`).
+ */
 export interface StoredUnproductiveStreakNotification {
-  schedulePaused: boolean;
+  pauseIntended: boolean;
 }
 
 /** The persisted Inbox item with this deduplication key, or null while none is stored. */
@@ -148,9 +153,9 @@ export async function findUnproductiveStreakNotification(
   if (!row) return null;
   let metadata: unknown = null;
   try { metadata = row.metadata_json ? JSON.parse(row.metadata_json) : null; } catch { metadata = null; }
-  const schedulePaused = typeof metadata === 'object' && metadata !== null
-    && (metadata as { schedulePaused?: unknown }).schedulePaused === true;
-  return { schedulePaused };
+  const pauseIntended = typeof metadata === 'object' && metadata !== null
+    && (metadata as { pauseIntended?: unknown }).pauseIntended === true;
+  return { pauseIntended };
 }
 
 /**

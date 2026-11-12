@@ -18,7 +18,7 @@ import {
   type UnproductiveStreakPause,
 } from '../packages/core/src/services/agents/agentRunProductivity.ts';
 
-const { evaluateUnproductiveStreak, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
+const { evaluateUnproductiveStreak, unproductivePauseDeduplicationKey, unproductiveStreakDeduplicationKey } = await import('../src/jobs/agentRuns/unproductiveStreak.ts');
 
 const migrations = fileURLToPath(new URL('../packages/core/src/db/migrations/', import.meta.url));
 const NOW = Date.UTC(2026, 10, 11, 22, 0);
@@ -68,6 +68,39 @@ async function insertRuns(count: number, flags: RowFlags = {}, prefix = 'run'): 
   }
   for (let start = 0; start < rows.length; start += 100) await database('agent_runs').insert(rows.slice(start, start + 100));
   return ids;
+}
+
+interface StoredItem { eventId: string; title: string; body: string; metadata: Record<string, unknown> }
+
+async function storedItem(deduplicationKey: string): Promise<StoredItem | null> {
+  const row = await database('notification_events').where({ deduplication_key: deduplicationKey })
+    .first<{ event_id: string; title: string; body: string; metadata_json: string | null } | undefined>('event_id', 'title', 'body', 'metadata_json');
+  return row ? { eventId: row.event_id, title: row.title, body: row.body, metadata: JSON.parse(row.metadata_json ?? '{}') } : null;
+}
+
+/** The streak's persisted Inbox items: the streak item, and the one saying the schedule was paused. */
+async function streakItems(streakKey = 'start') {
+  return {
+    streak: await storedItem(unproductiveStreakDeduplicationKey(definition.id, streakKey)),
+    paused: await storedItem(unproductivePauseDeduplicationKey(definition.id, streakKey)),
+  };
+}
+
+/** The streak item is stored before the pause is tried, so it states the intended pause in words true whatever the pause did (F10). */
+function assertStatesIntendedPause(item: StoredItem | null): void {
+  assert.ok(item, 'the streak item is stored');
+  assert.doesNotMatch(item.title, /paused/);
+  assert.match(item.body, /set to pause its schedule when this happens/);
+  assert.match(item.body, /unless pausing is turned off or a newer scheduled run produces something first/);
+  assert.doesNotMatch(item.body, /has been paused|was paused/);
+  assert.equal(item.metadata.pauseIntended, true, 'the recovery intent');
+  assert.equal(item.metadata.schedulePaused, undefined, 'the streak item never states the outcome');
+}
+
+async function receiptChannels(eventId: string) {
+  const row = await database('notification_user_states').where({ event_id: eventId, user_id: 'alice' })
+    .first<{ inbox_enabled: number | boolean; push_enabled: number | boolean }>('inbox_enabled', 'push_enabled');
+  return { inbox: Boolean(row.inbox_enabled), push: Boolean(row.push_enabled) };
 }
 
 describe('streak identity past the scan limit (F5)', () => {
@@ -127,7 +160,7 @@ describe('streak identity past the scan limit (F5)', () => {
 
   test('the owner is told once across the scan boundary', async () => {
     const events: unknown[] = [];
-    const seen = new Map<string, { schedulePaused: boolean }>();
+    const seen = new Map<string, { pauseIntended: boolean }>();
     const evaluate = {
       loadThreshold: async () => 3,
       findStreak: (definitionId: string, limit: number) => findUnproductiveScheduledStreak(definitionId, limit, { database }),
@@ -135,7 +168,7 @@ describe('streak identity past the scan limit (F5)', () => {
       getDefinition: (definitionId: string, ownerId: string) => getAgentDefinition(definitionId, ownerId, { database }),
       pauseSchedule: (definitionId: string, pause: UnproductiveStreakPause) => pauseScheduleForUnproductiveStreak(definitionId, pause, deps()),
       createEvent: (async (event: { deduplicationKey: string }) => {
-        if (!seen.has(event.deduplicationKey)) { events.push(event); seen.set(event.deduplicationKey, { schedulePaused: false }); }
+        if (!seen.has(event.deduplicationKey)) { events.push(event); seen.set(event.deduplicationKey, { pauseIntended: false }); }
         return event;
       }) as never,
     };
@@ -192,15 +225,29 @@ describe('unfinished schedule pause (F4)', () => {
 
   test('a pause that fails after the item is stored is finished by the next run, without a second item', async () => {
     const { evaluate, failNextPause } = await realInbox();
+    // Push is opt-in per kind; with it on, only the streak item pushes.
+    await database('notification_preferences').insert({ user_id: 'alice', notification_kind: 'task', inbox_enabled: true, push_enabled: true });
     await unproductiveRun();
     failNextPause();
     await assert.rejects(evaluateUnproductiveStreak(await unproductiveRun(), evaluate), /database unavailable/);
-    assert.deepEqual(await findUnproductiveStreakNotification(key(), { database }), { schedulePaused: true }, 'the item claims the pause');
+    assert.deepEqual(await findUnproductiveStreakNotification(key(), { database }), { pauseIntended: true }, 'the item records the intended pause');
     assert.equal(await scheduleEnabled(), true);
+    const failed = await streakItems();
+    assertStatesIntendedPause(failed.streak);
+    assert.equal(failed.paused, null, 'a failed pause is not told as made (F10)');
 
     assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), evaluate), 'paused');
     assert.equal(await scheduleEnabled(), false);
     assert.equal(await eventCount(), 1);
+    const { streak, paused } = await streakItems();
+    assert.deepEqual(streak, failed.streak, 'the streak item is never rewritten');
+    assert.ok(paused, 'the run that made the pause says so');
+    assert.match(paused.title, /Nightly triage paused: no change in 3 runs/);
+    assert.match(paused.body, /^Its schedule was paused after 3 consecutive scheduled runs produced nothing new/);
+    assert.equal(paused.metadata.schedulePaused, true);
+    assert.equal(paused.metadata.streakDeduplicationKey, key());
+    assert.deepEqual(await receiptChannels(paused.eventId), { inbox: true, push: false }, 'the streak item already pushed');
+    assert.deepEqual(await receiptChannels(streak.eventId), { inbox: true, push: true });
   });
 
   test('a worker stopped between the item and the pause is recovered the same way', async () => {
@@ -214,6 +261,7 @@ describe('unfinished schedule pause (F4)', () => {
     assert.equal(await scheduleEnabled(), true);
     assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), evaluate), 'paused');
     assert.equal(await scheduleEnabled(), false);
+    assert.ok((await streakItems()).paused, 'the recovered pause is told');
   });
 
   test('once the pause is made, an owner who turns the schedule back on is not overridden', async () => {
@@ -249,6 +297,60 @@ describe('unfinished schedule pause (F4)', () => {
     assert.deepEqual(pauseCalls, []);
   });
 
+  test('a schedule the owner turned off while the item was delivered is not told as paused by this pause (F10)', async () => {
+    const { evaluate } = await realInbox({ onAnnounce: async () => {
+      assert.ok(await updateAgentDefinition(definition.id, 'alice', { scheduleEnabled: false }, deps()));
+    } });
+    await unproductiveRun();
+    assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), evaluate), 'paused', 'the schedule is off');
+    assert.equal((await pauseRecord()).unproductive_paused_streak, key(), 'the pause is recorded, so it is not made later');
+    const items = await streakItems();
+    assertStatesIntendedPause(items.streak);
+    assert.equal(items.paused, null, 'the owner turned it off, not this pause');
+  });
+
+  test('a paused item that cannot be stored keeps the pause and is not sent late (F10)', async () => {
+    const { evaluate } = await realInbox();
+    const pausedKey = unproductivePauseDeduplicationKey(definition.id, 'start');
+    const pausedWrites: string[] = [];
+    const lossy = {
+      ...evaluate,
+      createEvent: (async (event: { deduplicationKey: string }, recipients: unknown) => {
+        if (event.deduplicationKey === pausedKey) { pausedWrites.push(event.deduplicationKey); throw new Error('inbox down'); }
+        return (evaluate.createEvent as unknown as (input: unknown, to: unknown) => Promise<unknown>)(event, recipients);
+      }) as never,
+    };
+    await unproductiveRun();
+    assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), lossy), 'paused');
+    assert.equal(await scheduleEnabled(), false);
+    assert.deepEqual(pausedWrites, [pausedKey]);
+    assertStatesIntendedPause((await streakItems()).streak);
+    // Turned back on, the streak goes on; a paused item now would describe a schedule that is on.
+    await updateAgentDefinition(definition.id, 'alice', { scheduleEnabled: true }, deps());
+    assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), lossy), null);
+    assert.deepEqual(pausedWrites, [pausedKey], 'the paused item is not retried');
+    assert.equal((await streakItems()).paused, null);
+  });
+
+  test('of two evaluations racing to pause, only the one that turned the schedule off says so (F10)', async () => {
+    const { evaluate } = await realInbox();
+    const pausedWrites: string[] = [];
+    const counting = {
+      ...evaluate,
+      createEvent: (async (event: { deduplicationKey: string }, recipients: unknown) => {
+        if (event.deduplicationKey === unproductivePauseDeduplicationKey(definition.id, 'start')) pausedWrites.push(event.deduplicationKey);
+        return (evaluate.createEvent as unknown as (input: unknown, to: unknown) => Promise<unknown>)(event, recipients);
+      }) as never,
+    };
+    await unproductiveRun();
+    const last = await unproductiveRun();
+    const outcomes = await Promise.all([evaluateUnproductiveStreak(last, counting), evaluateUnproductiveStreak(last, counting)]);
+    assert.ok(outcomes.includes('paused'), String(outcomes));
+    assert.equal(pausedWrites.length, 1, 'the evaluation that found the pause made does not tell it again');
+    assert.equal(await scheduleEnabled(), false);
+    assert.ok((await streakItems()).paused);
+  });
+
   const optOut = async () => updateAgentDefinition(definition.id, 'alice', { pauseWhenUnproductive: false }, deps());
   const pauseRecord = async () => (await database('agent_definitions').where({ id: definition.id })
     .first('pending_schedule_slot', 'unproductive_paused_streak', 'schedule_enabled'));
@@ -265,6 +367,9 @@ describe('unfinished schedule pause (F4)', () => {
     const record = await pauseRecord();
     assert.equal(record.unproductive_paused_streak, null, 'the streak is not claimed');
     assert.equal(Number(record.pending_schedule_slot), NOW + 86_400_000, 'the pending slot is kept');
+    const items = await streakItems();
+    assertStatesIntendedPause(items.streak);
+    assert.equal(items.paused, null, 'nothing says the kept schedule was paused (F10)');
   });
 
   test('an owner who turns pausing off after the recovery run read the definition keeps the schedule (F7)', async () => {
@@ -283,6 +388,9 @@ describe('unfinished schedule pause (F4)', () => {
     assert.equal(await evaluateUnproductiveStreak(await unproductiveRun(), racing), null);
     assert.equal(await scheduleEnabled(), true);
     assert.equal((await pauseRecord()).unproductive_paused_streak, null);
+    const items = await streakItems();
+    assertStatesIntendedPause(items.streak);
+    assert.equal(items.paused, null);
   });
 
   /** The streak of two unproductive runs since `streakKey`, as the evaluation found it. */
@@ -382,6 +490,9 @@ describe('streak ended before the pause (F9)', () => {
     assert.equal(Boolean(record.schedule_enabled), true);
     assert.equal(record.unproductive_paused_streak, null, 'the streak is not claimed');
     assert.equal(Number(record.pending_schedule_slot), NOW + 86_400_000, 'the pending slot is kept');
+    const items = await streakItems();
+    assertStatesIntendedPause(items.streak);
+    assert.equal(items.paused, null, 'nothing says the kept schedule was paused (F10)');
     // The productive run started a new streak, which a later run may still pause for.
     assert.equal((await findUnproductiveScheduledStreak(definition.id, 2, { database })).streakKey, acting.id);
   });
@@ -393,7 +504,7 @@ describe('streak ended before the pause (F9)', () => {
     failNextPause();
     await assert.rejects(evaluateUnproductiveStreak(await unproductiveRun(), evaluate), /database unavailable/);
     const key = unproductiveStreakDeduplicationKey(definition.id, 'start');
-    assert.deepEqual(await findUnproductiveStreakNotification(key, { database }), { schedulePaused: true }, 'the item claims the pause');
+    assert.deepEqual(await findUnproductiveStreakNotification(key, { database }), { pauseIntended: true }, 'the item records the intended pause');
 
     // The recovery run finds the old streak, then the acting run completes productively.
     const recovering = await unproductiveRun();
@@ -409,6 +520,9 @@ describe('streak ended before the pause (F9)', () => {
     const record = await definitionRecord();
     assert.equal(Boolean(record.schedule_enabled), true);
     assert.equal(record.unproductive_paused_streak, null);
+    const items = await streakItems();
+    assertStatesIntendedPause(items.streak);
+    assert.equal(items.paused, null);
   });
 
   test('the pause transaction rechecks the streak identity and threshold', async () => {
