@@ -79,6 +79,9 @@ export class PullRequestReadinessUnavailableError extends Error {
 }
 
 interface PullRequestFacts {
+    /** GitHub's spelling of the base repository, which webhooks persist and key internal state by. */
+    owner: string;
+    repo: string;
     state: PullRequestState;
     draft: boolean;
     head: string;
@@ -98,8 +101,13 @@ async function readPullRequest(octokit: ReadinessOctokit, owner: string, repo: s
         const status = (error as { status?: unknown }).status;
         throw new PullRequestReadinessUnavailableError((error as Error).message, typeof status === 'number' ? status : undefined);
     }
+    const baseRepo = data.base?.repo as { name?: unknown; owner?: { login?: unknown } | null } | null | undefined;
+    const canonicalOwner = typeof baseRepo?.owner?.login === 'string' && baseRepo.owner.login ? baseRepo.owner.login : owner;
+    const canonicalRepo = typeof baseRepo?.name === 'string' && baseRepo.name ? baseRepo.name : repo;
     const labels = Array.isArray(data.labels) ? (data.labels as Array<{ name?: string } | string>).map(label => typeof label === 'string' ? label : label.name ?? '') : [];
     return {
+        owner: canonicalOwner,
+        repo: canonicalRepo,
         state: data.merged || data.merged_at ? 'merged' : data.state === 'open' ? 'open' : 'closed',
         draft: data.draft === true,
         head: data.head.sha,
@@ -227,15 +235,18 @@ const isUnsettled = (item: ReadinessGate) => item.status === 'waiting' || item.s
  * be read; every other unreadable signal becomes a gate with status `unknown`.
  */
 export async function evaluatePullRequestReadiness(
-    owner: string,
-    repo: string,
+    requestedOwner: string,
+    requestedRepo: string,
     prNumber: number,
     deps: PullRequestReadinessDeps,
 ): Promise<PullRequestReadiness> {
-    const repository = `${owner}/${repo}`;
     const now = (deps.now ?? Date.now)();
     const octokit = deps.octokit ?? await getAuthenticatedOctokit() as unknown as ReadinessOctokit;
-    const pr = await readPullRequest(octokit, owner, repo, prNumber);
+    const pr = await readPullRequest(octokit, requestedOwner, requestedRepo, prNumber);
+    // GitHub matches owner and name case-insensitively, but review scores, tasks, queued jobs and Redis keys
+    // are stored under GitHub's spelling; every read after the PR uses that identity, never the caller's.
+    const { owner, repo } = pr;
+    const repository = `${owner}/${repo}`;
     const hasLabel = pr.labels.includes('auto-merge');
     const ultrafixLabel = pr.labels.includes('ultrafix');
 

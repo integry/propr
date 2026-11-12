@@ -44,7 +44,7 @@ function fixture(overrides: Partial<Fixture> & { pr?: Record<string, unknown> } 
         ...rest,
         pr: {
             number: 7, node_id: 'PR_7', state: 'open', merged: false, merged_at: null, draft: false, body: '',
-            head: { sha: HEAD, ref: 'feature' }, base: { ref: 'main' }, labels: [], mergeable: true, mergeable_state: 'clean',
+            head: { sha: HEAD, ref: 'feature' }, base: { ref: 'main', repo: { name: 'app', owner: { login: 'acme' } } }, labels: [], mergeable: true, mergeable_state: 'clean',
             changed_files: 1, auto_merge: null, ...pr,
         },
     };
@@ -103,10 +103,10 @@ const score = (overrides: Partial<ScoreFact> = {}): ScoreFact => ({
     task_id: 'review-1', score: 9, goal: null, goal_reached: null, blocker_count: 0, head_sha: HEAD, ...overrides,
 });
 
-async function evaluate(state: Fixture, deps: Partial<Deps> = {}) {
+async function evaluate(state: Fixture, deps: Partial<Deps> = {}, spelling: [owner: string, repo: string] = ['acme', 'app']) {
     const github = fakeGitHub(state);
     const observations = observationStore();
-    const result = await evaluatePullRequestReadiness('acme', 'app', 7, {
+    const result = await evaluatePullRequestReadiness(spelling[0], spelling[1], 7, {
         octokit: github.octokit,
         observations: observations.store,
         loadReviewScores: async () => [score()],
@@ -331,6 +331,39 @@ test('active_work gate: running ProPR work waits and an unreadable queue is unkn
     const unreadable = (await evaluate(fixture(), { loadActiveWork: async () => { throw new Error('redis down'); } })).result;
     assert.deepEqual(gateOf(unreadable, 'active_work'), { gate: 'active_work', status: 'unknown', reason: 'active_work_unavailable' });
     assert.equal(unreadable.verdict, 'unknown');
+});
+
+test('a differently capitalized repository reads the reviews, work and state stored under GitHub\'s spelling', async () => {
+    const reads: string[] = [];
+    const stored = <T>(kind: string, repository: string, hit: T, miss: T): T => {
+        reads.push(`${kind} ${repository}`);
+        return repository === 'acme/app' ? hit : miss;
+    };
+    const deps: Partial<Deps> = {
+        loadReviewScores: async repository => stored('scores', repository, [score({ score: 5 })], []),
+        loadActiveWork: async repository => stored('work', repository,
+            { activeTasks: [{ taskId: 't1', state: 'processing' }], queuedJobs: [] }, { activeTasks: [], queuedJobs: [] }),
+        loadUltrafixState: async (owner, repo) => stored('ultrafix', `${owner}/${repo}`, { active: true, completionStatus: null }, null),
+    };
+    const labelled = fixture({ pr: { labels: [{ name: 'ultrafix' }] } });
+    const canonical = (await evaluate(labelled, deps)).result;
+    const recased = (await evaluate(labelled, deps, ['ACME', 'App'])).result;
+
+    assert.deepEqual(reads.filter(read => !read.endsWith(' acme/app')), [], 'every internal read uses the stored spelling');
+    assert.equal(recased.repository, 'acme/app');
+    for (const gate of ['ai_review', 'ultrafix', 'active_work']) assert.deepEqual(gateOf(recased, gate), gateOf(canonical, gate));
+    assert.equal(gateOf(recased, 'ai_review').reason, 'score_below_goal');
+    assert.equal(gateOf(recased, 'active_work').reason, 'propr_work_active');
+    assert.equal(recased.verdict, canonical.verdict);
+    assert.equal(recased.verdict, 'blocked');
+
+    // A head without CI signal is classified from the observation recorded under the stored spelling.
+    const noCi = fixture({ checkRuns: [] });
+    const observedAt = JSON.stringify({ sha: HEAD, observedAt: NOW - NO_CI_GRACE_MS - 1 });
+    const store = observationStore({ ['auto-merge:head-observed:acme:app:7']: observedAt }).store;
+    const observed = (await evaluate(noCi, { observations: store }, ['ACME', 'App'])).result;
+    assert.equal(observed.checks.reason, (await evaluate(noCi, { observations: store })).result.checks.reason);
+    assert.notEqual(observed.checks.reason, 'waiting_for_ci');
 });
 
 test('policy gate: reported with AutoMergeReason codes only when auto-merge is requested', async () => {
