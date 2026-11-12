@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `source: "review_comments"` its inline review comments (file, line, reply
   thread). The default conversation read never included either, so the
   Instruction learning loop now reads all three.
+- **Weekly codebase drift report template**: a weekly automation template
+  that reports the last 7 days of merged changes (what changed and why, by
+  area), newly added code that duplicates existing helpers (both locations,
+  only for pairs the run has read after searching by name and by behaviour),
+  growth per top-level area with the largest new files, and suggested
+  consolidations. With autonomy raised, the acting step saves the
+  consolidations as repository To-Dos. The default review guidance now also
+  asks reviewers to check new helpers for duplicates and flag them under the
+  `complexity` category when the review uses it.
 
 ### Fixed
 
