@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
-import knex from 'knex';
+import knex, { type Knex } from 'knex';
 import { up } from '../src/db/migrations/20261003000000_add_epic_execution_queues.js';
 import { up as epicQueueFinalization } from '../src/db/migrations/20261003010000_add_epic_queue_finalization.js';
 import { up as epicQueueUseEpic } from '../src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
@@ -36,7 +36,7 @@ await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticate
 const { PlanIssueStatus: S } = await import('../src/config/planIssueManager.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, advanceEpicQueue } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
 const { markEpicQueueAwaitingHumanMerge } = await import('../src/services/taskPlanning/epicQueueHumanMerge.js');
-const { markEpicQueueHeadBlocked } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
+const { agentBlockedHeadReason, markEpicQueueHeadBlocked } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 const { listRepositoryEvents } = await import('../src/services/repositoryEventJournal.js');
 
 await database.schema.createTable('task_drafts', table => {
@@ -103,6 +103,95 @@ test('the agent-blocker and human-merge explanations journal from their own code
   assert.equal(blocked.length, 2, 'a repeated explanation is not a new event');
   assert.match(blocked[0], /^Waiting for human merge:/);
   assert.match(blocked[1], /stopped on a blocker reported by the agent/);
+});
+
+/** The database a writer sees, with another writer's commit landing just before its first transaction opens. */
+function interleaved(before: () => Promise<unknown>): Knex {
+  let fired = false;
+  return new Proxy(database, {
+    get(target, property, receiver) {
+      if (property !== 'transaction') return Reflect.get(target, property, receiver);
+      return async (...args: Parameters<Knex['transaction']>) => {
+        if (!fired) { fired = true; await before(); }
+        return (target.transaction as (...a: unknown[]) => unknown)(...args);
+      };
+    },
+  });
+}
+const blockedReasons = async () => (await journal()).filter(event => event.type === 'blocked').map(event => String(event.payload.blockedReason));
+const humanMerge = { draftId: 'draft', issueNumber: 10, prNumber: 70, reason: 'skipped_protected_path' };
+
+test('a human-merge explanation restored after a concurrent agent blocker is journaled', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
+  await markEpicQueueAwaitingHumanMerge(humanMerge, deps);
+  // Writer A read the human-merge reason; writer B commits the agent blocker before A writes.
+  const racing = interleaved(() => markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }, deps));
+  assert.equal(await markEpicQueueAwaitingHumanMerge(humanMerge, { ...deps, database: racing }), true);
+  const reasons = await blockedReasons();
+  assert.equal(reasons.length, 3, 'the return to the earlier explanation is a transition');
+  assert.match(reasons[0], /^Waiting for human merge:/);
+  assert.match(reasons[1], /stopped on a blocker reported by the agent/);
+  assert.equal(reasons[2], reasons[0]);
+  assert.equal((await getEpicExecutionQueue('draft', deps))!.blockedReason, reasons[2]);
+});
+
+test('an agent blocker restored after a concurrent human-merge explanation is journaled', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
+  await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }, deps);
+  const racing = interleaved(() => markEpicQueueAwaitingHumanMerge(humanMerge, deps));
+  assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }, { ...deps, database: racing }), true);
+  const reasons = await blockedReasons();
+  assert.equal(reasons.length, 3);
+  assert.match(reasons[1], /^Waiting for human merge:/);
+  assert.equal(reasons[2], reasons[0]);
+  assert.equal((await getEpicExecutionQueue('draft', deps))!.blockedReason, reasons[2]);
+});
+
+test('a merge-wait explanation restored after a concurrent human-merge explanation is journaled', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
+  await setStatus(10, S.CLOSED);
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.CLOSED }, deps);
+  const racing = interleaved(() => markEpicQueueAwaitingHumanMerge(humanMerge, deps));
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.CLOSED }, { ...deps, database: racing });
+  const reasons = await blockedReasons();
+  assert.equal(reasons.length, 3);
+  assert.match(reasons[0], /advances only after it is merged/);
+  assert.match(reasons[1], /^Waiting for human merge:/);
+  assert.equal(reasons[2], reasons[0]);
+});
+
+test('a reason replaced between the in-transaction read and the update is re-read before journaling', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
+  await markEpicQueueAwaitingHumanMerge(humanMerge, deps);
+  let replaced = false;
+  // The first read inside the write's transaction is followed by another write of the same row.
+  const racing = new Proxy(database, { get(target, property, receiver) {
+    if (property !== 'transaction') return Reflect.get(target, property, receiver);
+    return (callback: (trx: Knex.Transaction) => Promise<unknown>) => target.transaction(trx => callback(new Proxy(trx, {
+      apply(fn, self, args: [string]) {
+        const builder = Reflect.apply(fn, self, args) as Knex.QueryBuilder;
+        return new Proxy(builder, { get(b, key, r) {
+          const value = Reflect.get(b, key, r);
+          if (key !== 'where' || replaced) return typeof value === 'function' ? value.bind(b) : value;
+          return (...where: unknown[]) => new Proxy((value as (...a: unknown[]) => Knex.QueryBuilder).apply(b, where), { get(w, k, wr) {
+            if (k !== 'first') { const v = Reflect.get(w, k, wr); return typeof v === 'function' ? v.bind(w) : v; }
+            return async (...columns: string[]) => {
+              const row = await w.first(...columns);
+              replaced = true;
+              await trx('epic_execution_queues').where({ draft_id: 'draft' }).update({ blocked_reason: agentBlockedHeadReason(10), updated_at: ++clock });
+              return row;
+            };
+          } });
+        } });
+      },
+    })));
+  } });
+  assert.equal(await markEpicQueueAwaitingHumanMerge(humanMerge, { ...deps, database: racing }), true);
+  assert.ok(replaced);
+  const reasons = await blockedReasons();
+  assert.equal(reasons.length, 2, 'the retry compares against the replaced reason, not the first read');
+  assert.equal(reasons[1], reasons[0]);
+  assert.equal((await getEpicExecutionQueue('draft', deps))!.blockedReason, reasons[0]);
 });
 
 test('a parallel execution journals completed when its last child settles', async () => {

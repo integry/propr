@@ -1,7 +1,7 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
 import { isTerminalStatus } from '../../webhook/statusMachine.js';
-import { epicQueueBlockedEvent, epicQueueJournalRef, updateEpicQueueWithEvent } from './epicQueueJournal.js';
+import { epicQueueJournalRef, setEpicQueueBlocked } from './epicQueueJournal.js';
 
 /**
  * An issue run that ended with the `blocked` outcome (`on_blocker: report`)
@@ -47,9 +47,9 @@ export async function markEpicQueueHeadBlocked({ draftId, issueNumber }: { draft
   const reason = agentBlockedHeadReason(issueNumber);
   // In a parallel execution the blocked child, not the cursor, is the head the event names.
   const ref = { ...epicQueueJournalRef(draftId, active.row), ...(active.row.parallel ? { issues: [issueNumber], cursor: 0 } : {}) };
-  const event = epicQueueBlockedEvent(ref, reason);
-  return Boolean(await updateEpicQueueWithEvent(database, active.guard, { blocked_reason: reason, updated_at: now() },
-    event && { ...event, dedupeKey: `${event.dedupeKey}:${issueNumber}` }));
+  // The cursor guard is the row's own, even when the event names a parallel child.
+  return Boolean(await setEpicQueueBlocked(database, ref, reason,
+    { timestamp: now(), guard: active.guard, dedupeSuffix: `:${issueNumber}` }));
 }
 
 function historyMetadata(metadata: unknown): Record<string, unknown> {

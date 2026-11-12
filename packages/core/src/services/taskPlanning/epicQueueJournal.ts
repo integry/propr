@@ -75,12 +75,37 @@ export function epicQueueBlockedEvent(queue: EpicQueueJournalRef, reason: string
   });
 }
 
-/** Record a blocked explanation on the active head (guarded by its cursor) and journal it. */
+/** Attempts before a blocked write that keeps losing its compare-and-set gives up. */
+const BLOCKED_WRITE_ATTEMPTS = 5;
+
+/**
+ * Record a blocked explanation on the active head (guarded by its cursor) and
+ * journal it. Whether the write is a new explanation is decided from the
+ * reason read inside the write's transaction, never from the caller's earlier
+ * snapshot: another writer may have replaced the reason since, and returning
+ * to an older explanation is still a transition. The update is also guarded on
+ * the reason and timestamp that were read, and re-read on a mismatch.
+ * Returns the number of rows changed.
+ */
 export async function setEpicQueueBlocked(database: Knex, queue: EpicQueueJournalRef, reason: string,
-  { timestamp, guard = {} }: { timestamp: number; guard?: Record<string, unknown> }): Promise<number> {
-  return updateEpicQueueWithEvent(database,
-    { draft_id: queue.draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor, ...guard },
-    { blocked_reason: reason, updated_at: timestamp }, epicQueueBlockedEvent(queue, reason, timestamp));
+  { timestamp, guard = {}, dedupeSuffix = '' }: { timestamp: number; guard?: Record<string, unknown>; dedupeSuffix?: string }): Promise<number> {
+  const where = { draft_id: queue.draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor, ...guard };
+  for (let attempt = 0; attempt < BLOCKED_WRITE_ATTEMPTS; attempt++) {
+    const outcome = await database.transaction(async trx => {
+      const current = await trx('epic_execution_queues').where(where)
+        .first<{ blocked_reason: string | null; updated_at: number } | undefined>('blocked_reason', 'updated_at');
+      if (!current) return 0;
+      const event = epicQueueBlockedEvent({ ...queue, blockedReason: current.blocked_reason, updatedAt: current.updated_at }, reason, timestamp);
+      const changed = await trx('epic_execution_queues')
+        .where({ ...where, blocked_reason: current.blocked_reason, updated_at: current.updated_at })
+        .update({ blocked_reason: reason, updated_at: timestamp });
+      if (!changed) return null;
+      if (event) await appendRepositoryEvent(trx, { ...event, dedupeKey: `${event.dedupeKey}${dedupeSuffix}` });
+      return changed;
+    });
+    if (outcome !== null) return outcome;
+  }
+  return 0;
 }
 
 /** The journal ref of a raw `epic_execution_queues` row. */
