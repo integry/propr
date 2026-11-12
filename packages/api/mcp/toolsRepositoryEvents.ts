@@ -50,7 +50,7 @@ function mcpError(error: unknown): unknown {
   return error;
 }
 
-const CURSOR_CONTRACT = 'Delivery is at-least-once and ordered: pass the cursor of the last event you processed as afterCursor to resume without missing one. Without afterCursor the read starts at the current end of the journal (current cursor, no history) unless fromStart is true. Cursor errors: CURSOR_INVALID, CURSOR_WRONG_REPOSITORY, CURSOR_EXPIRED (older than the retained journal; re-read state, then continue without a cursor).';
+const CURSOR_CONTRACT = 'Delivery is at-least-once and ordered: pass the cursor of the last event you processed as afterCursor to resume without missing one. Without afterCursor the read starts at the current end of the journal (current cursor, no history) unless fromStart is true. Cursor errors: CURSOR_INVALID, CURSOR_WRONG_REPOSITORY, CURSOR_EXPIRED (older than the retained journal). To recover, first list without afterCursor and save the returned cursor, then re-read state, then resume from the saved cursor.';
 
 export function addRepositoryEventTools(tools: McpTool[], deps: ToolDeps): void {
   tools.push({

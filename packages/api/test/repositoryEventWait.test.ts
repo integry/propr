@@ -276,6 +276,54 @@ test('a complete fromStart page of retained events below the floor resumes at th
   assert.deepEqual((await list({ afterCursor: history.cursor })).events, []);
 });
 
+test('fromStart pages through several retained events below the floor in limit-sized pages', async () => {
+  const kept = [await append(), await append(), await append()];
+  const pruned = await append({ occurredAt: OLD });
+  await prune();
+  const seen: number[] = [];
+  let page = await list({ fromStart: true, limit: 1 });
+  for (let pages = 0; pages < 5; pages++) {
+    seen.push(...page.events.map(event => seqOf(event.cursor)));
+    if (!page.truncated) break;
+    page = await list({ afterCursor: page.cursor, limit: 1 });
+  }
+  assert.deepEqual(seen, kept, 'every retained event is returned once, in order');
+  assert.equal(page.truncated, false);
+  assert.equal(seqOf(page.cursor), pruned, 'the last page resumes at the floor');
+  // A per-event cursor below the floor is resumable too (clients keep the last event processed).
+  const first = await list({ fromStart: true, limit: 1 });
+  assert.deepEqual((await list({ afterCursor: first.events[0]!.cursor, limit: 1 })).events.map(event => seqOf(event.cursor)), [kept[1]]);
+  // The same position without the retention generation is an ordinary stale cursor.
+  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, kept[0]!) }), 'CURSOR_EXPIRED', 410);
+  // So is a forged generation.
+  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, kept[0]!, 'forged') }), 'CURSOR_EXPIRED', 410);
+});
+
+test('a retained-history cursor expires once retention prunes the repository again', async () => {
+  const kept = [await append(), await append({ occurredAt: '2026-10-20T00:00:00.000Z' }), await append()];
+  await append({ occurredAt: OLD });
+  await prune();
+  const first = await list({ fromStart: true, limit: 1 });
+  assert.equal(first.truncated, true);
+  // Only an event below the floor ages out: the floor stays, but the unread kept[1] is gone.
+  await pruneRepositoryEvents(db, { olderThanDays: 30, now: () => Date.parse('2026-11-25T00:00:00.000Z') });
+  await rejects(list({ afterCursor: first.cursor, limit: 1 }), 'CURSOR_EXPIRED', 410);
+  await rejects(wait({ afterCursor: first.cursor, timeoutSeconds: 0 }), 'CURSOR_EXPIRED', 410);
+  // Restarting the retained-history read continues normally.
+  const restart = await list({ fromStart: true, limit: 1 });
+  assert.deepEqual((await list({ afterCursor: restart.cursor })).events.map(event => seqOf(event.cursor)), [kept[2]]);
+});
+
+test('a fromStart wait returns a truncated retained-history page whose cursor resumes', async () => {
+  const kept = [await append(), await append()];
+  await append({ occurredAt: OLD });
+  await prune();
+  const result = await wait({ fromStart: true, limit: 1, timeoutSeconds: 0 });
+  assert.deepEqual(result.events.map(event => seqOf(event.cursor)), [kept[0]]);
+  assert.equal(result.truncated, true);
+  assert.deepEqual((await wait({ afterCursor: result.cursor, limit: 1, timeoutSeconds: 0 })).events.map(event => seqOf(event.cursor)), [kept[1]]);
+});
+
 /** Run retention once, right after the statement matching `sql` is issued on `db`. */
 function pruneAfterQuery(sql: RegExp): Promise<unknown> {
   return new Promise((resolve, reject) => {

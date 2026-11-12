@@ -908,14 +908,17 @@ repository. Delivery is at-least-once and ordered: keep the cursor of the
 last event you processed and pass it back as `afterCursor`, and you never
 miss an event. A call without `afterCursor` starts at the current end of the
 journal, so it returns the current cursor and no history, unless you pass
-`fromStart: true` to read the retained history (30 days). Cursor errors carry
-a recovery hint:
+`fromStart: true` to read the retained history (30 days). Page through that
+history with the returned cursor while `truncated` is true; a cursor issued
+inside retained history stays valid until retention next prunes the
+repository, after which it is `CURSOR_EXPIRED`. Cursor errors carry a recovery
+hint:
 
 | Code | Meaning |
 | --- | --- |
-| `CURSOR_INVALID` | Malformed, or not issued by this instance. Start again without `afterCursor`. |
+| `CURSOR_INVALID` | Malformed, or not issued by this instance. Recover as for `CURSOR_EXPIRED`. |
 | `CURSOR_WRONG_REPOSITORY` | Issued for another repository. |
-| `CURSOR_EXPIRED` | Older than the retained journal, so events after it may be gone. Re-read the state, then continue without a cursor. An expired cursor is never reported as an empty result. |
+| `CURSOR_EXPIRED` | Older than the retained journal, so events after it may be gone. Recover in this order: list once without `afterCursor` and save the returned cursor, then re-read the state (for example `get_pull_request_readiness`), then resume from the saved cursor. Taking the cursor first means a change made while you re-read is still delivered after it. An expired cursor is never reported as an empty result. |
 
 `WAIT_LIMIT` means too many repository event waits are open for you on this
 server (the limit counts CLI, REST and MCP waits together). `WAIT_ABORTED`

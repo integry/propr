@@ -32,9 +32,9 @@ export const REPOSITORY_EVENT_ALL_TYPES: readonly string[] = [...new Set(
 
 /** Machine-readable failures of a list or wait, with their recovery instructions. */
 export const REPOSITORY_EVENT_ERRORS = {
-  CURSOR_INVALID: 'The cursor is malformed or was not issued by this instance. Omit afterCursor to start at the current end of the journal, then read the state you care about directly.',
+  CURSOR_INVALID: 'The cursor is malformed or was not issued by this instance. First list once without afterCursor and save the returned cursor, then re-read the state you care about, then resume from the saved cursor.',
   CURSOR_WRONG_REPOSITORY: 'The cursor belongs to a different repository. Use a cursor returned for this repository, or omit afterCursor.',
-  CURSOR_EXPIRED: 'The cursor is older than the retained journal, so events after it may have been pruned. Re-read the state you care about (for example get_pull_request_readiness), then continue without afterCursor.',
+  CURSOR_EXPIRED: 'The cursor is older than the retained journal, so events after it may have been pruned. First list once without afterCursor and save the returned cursor, then re-read the state you care about (for example get_pull_request_readiness), then resume from the saved cursor so no change made during the re-read is missed.',
   WAIT_LIMIT: 'Let an existing wait finish or cancel it before starting another. The limit counts CLI, REST and MCP repository event waits together.',
   WAIT_ABORTED: 'The wait was cancelled by the caller. Nothing changed; wait again with the same cursor.',
   INVALID_INPUT: 'Correct the request parameters and retry.',
@@ -90,13 +90,21 @@ function fromBase64Url(value: string): string {
   return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
 }
 
-/** Opaque cursor for a repository's journal position: `rec1.` + base64url of `{r, s}`. */
-export function encodeRepositoryEventCursor(repository: string, seq: number): string {
-  return CURSOR_PREFIX + toBase64Url(JSON.stringify({ r: repository, s: seq }));
+const MAX_GENERATION_LENGTH = 64;
+
+/**
+ * Opaque cursor for a repository's journal position: `rec1.` + base64url of
+ * `{r, s}`. A position inside retained history below the retention floor (a
+ * `fromStart` page) also carries `g`, the retention generation it was issued
+ * under, so it stays resumable until retention next prunes the repository.
+ */
+export function encodeRepositoryEventCursor(repository: string, seq: number, generation?: string): string {
+  const body = generation ? { r: repository, s: seq, g: generation } : { r: repository, s: seq };
+  return CURSOR_PREFIX + toBase64Url(JSON.stringify(body));
 }
 
 export type DecodedRepositoryEventCursor =
-  | { ok: true; repository: string; seq: number }
+  | { ok: true; repository: string; seq: number; generation?: string }
   | { ok: false; code: 'CURSOR_INVALID' | 'CURSOR_WRONG_REPOSITORY' };
 
 /**
@@ -108,15 +116,17 @@ export function decodeRepositoryEventCursor(cursor: unknown, repository: string)
   if (typeof cursor !== 'string' || !cursor.startsWith(CURSOR_PREFIX) || cursor.length > MAX_CURSOR_LENGTH) {
     return { ok: false, code: 'CURSOR_INVALID' };
   }
-  let parsed: { r?: unknown; s?: unknown };
+  let parsed: { r?: unknown; s?: unknown; g?: unknown };
   try { parsed = JSON.parse(fromBase64Url(cursor.slice(CURSOR_PREFIX.length))); }
   catch { return { ok: false, code: 'CURSOR_INVALID' }; }
   if (!parsed || typeof parsed !== 'object' || typeof parsed.r !== 'string' || !parsed.r.includes('/')
-    || typeof parsed.s !== 'number' || !Number.isSafeInteger(parsed.s) || parsed.s < 0) {
+    || typeof parsed.s !== 'number' || !Number.isSafeInteger(parsed.s) || parsed.s < 0
+    || (parsed.g !== undefined && (typeof parsed.g !== 'string' || parsed.g.length > MAX_GENERATION_LENGTH
+      || !/^[A-Za-z0-9_-]+$/.test(parsed.g)))) {
     return { ok: false, code: 'CURSOR_INVALID' };
   }
   if (parsed.r.toLowerCase() !== repository.toLowerCase()) return { ok: false, code: 'CURSOR_WRONG_REPOSITORY' };
-  return { ok: true, repository: parsed.r, seq: parsed.s };
+  return { ok: true, repository: parsed.r, seq: parsed.s, ...(typeof parsed.g === 'string' ? { generation: parsed.g } : {}) };
 }
 
 export function isRepositoryEventDomain(value: unknown): value is RepositoryEventDomain {

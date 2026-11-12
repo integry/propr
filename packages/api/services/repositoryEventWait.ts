@@ -18,7 +18,14 @@
  * Delivery is at-least-once: the returned cursor is the position of the last
  * returned event (or the starting position when none is returned), so a client
  * that resumes from the last cursor it processed never misses an event.
+ *
+ * Retention deletes by age, so unexpired events can remain below the floor. A
+ * `fromStart` read pages through them with cursors that carry the retention
+ * generation they were issued under; such a cursor stays valid below the floor
+ * until retention next prunes the repository. A cursor without a generation
+ * below `floor - 1` is expired, as before.
  */
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Knex } from 'knex';
 import {
@@ -145,14 +152,14 @@ interface RepositoryEventRow {
 
 const EVENT_COLUMNS = ['seq', 'repository', 'domain', 'type', 'entity_id', 'pr_number', 'issue_number', 'plan_id', 'head_sha', 'payload', 'occurred_at'];
 
-function eventView(row: RepositoryEventRow, repository: string): RepositoryEventView {
+function eventView(row: RepositoryEventRow, repository: string, cursorAt: (seq: number) => string): RepositoryEventView {
   let payload: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(row.payload ?? '{}');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
   } catch { /* a malformed payload reads as empty */ }
   return {
-    cursor: encodeRepositoryEventCursor(repository, Number(row.seq)),
+    cursor: cursorAt(Number(row.seq)),
     domain: row.domain,
     type: row.type,
     // The requested spelling: identity is case-insensitive and rows may be stored under another.
@@ -204,6 +211,20 @@ async function journalBound(db: Knex, repository: string, floor: number): Promis
 }
 
 /**
+ * Retention generation of a repository: a digest of its floor rows (floor and
+ * prune time under every stored spelling). Every prune that deletes any of the
+ * repository's events rewrites `pruned_at`, even when the floor itself does not
+ * move (only events below it expired), so an unchanged generation means
+ * nothing of the repository was deleted since the generation was observed.
+ */
+async function retentionGeneration(db: Knex, repository: string): Promise<string> {
+  const rows = await whereRepository(db('repository_event_floors'), repository)
+    .orderBy('repository', 'asc').select<Array<{ repository: string; floor_seq: number; pruned_at: string | null }>>('repository', 'floor_seq', 'pruned_at');
+  const text = JSON.stringify(rows.map(row => [row.repository, Number(row.floor_seq), row.pruned_at ?? null]));
+  return createHash('sha256').update(text).digest('base64url').slice(0, 22);
+}
+
+/**
  * Highest position this instance has ever issued: the newest `seq` of the
  * whole journal, or the position retention last pruned past when that is
  * higher. A cursor beyond it was never issued here.
@@ -215,7 +236,7 @@ async function issuedHigh(db: Knex): Promise<number> {
 }
 
 /** Where a read starts: after a validated cursor, at the current end, or (`fromStart`) at the beginning. */
-type ReadStart = { kind: 'cursor'; seq: number } | { kind: 'end' } | { kind: 'beginning' };
+type ReadStart = { kind: 'cursor'; seq: number; generation?: string } | { kind: 'end' } | { kind: 'beginning' };
 
 /** Decode a cursor; its position is validated against the journal inside each read. */
 function parseStart(repository: string, options: Pick<RepositoryEventListOptions, 'afterCursor' | 'fromStart'>): ReadStart {
@@ -226,14 +247,14 @@ function parseStart(repository: string, options: Pick<RepositoryEventListOptions
       ? 'afterCursor was issued for a different repository.' : 'afterCursor is not a repository event cursor.';
     throw new RepositoryEventWaitError(decoded.code, message, 400);
   }
-  return { kind: 'cursor', seq: decoded.seq };
+  return { kind: 'cursor', seq: decoded.seq, ...(decoded.generation ? { generation: decoded.generation } : {}) };
 }
 
 const expiredError = () =>
   new RepositoryEventWaitError('CURSOR_EXPIRED', 'afterCursor refers to journal history that is no longer retained.', 410);
 
 type Page = { rows: RepositoryEventRow[]; truncated: boolean };
-interface Snapshot { after: number; page: Page; floor: number }
+interface Snapshot { after: number; page: Page; floor: number; generation: string }
 
 /** Matching events in (after, bound], at most `limit + 1` so truncation is known without a second read. */
 async function readPage(db: Knex, filters: RepositoryEventFilters & { repository: string; after: number; bound: number; limit: number }): Promise<Page> {
@@ -253,8 +274,9 @@ async function readPage(db: Knex, filters: RepositoryEventFilters & { repository
  * snapshot: retention committing in between cannot delete unread events after
  * the check and leave an empty or gapped page that reports success. A cursor
  * (or a position a wait already established) below `floor - 1` may have had
- * events after it pruned, so it is expired; only a `fromStart` read starts
- * there on purpose.
+ * events after it pruned, so it is expired, unless it continues a `fromStart`
+ * read of retained history and carries the repository's current retention
+ * generation (nothing of the repository was pruned since it was issued).
  */
 async function readSnapshot(db: Knex, options: RepositoryEventFilters & { repository: string; start: ReadStart; limit: number }): Promise<Snapshot> {
   return db.transaction(async trx => {
@@ -263,18 +285,21 @@ async function readSnapshot(db: Knex, options: RepositoryEventFilters & { reposi
       throw new RepositoryEventWaitError('CURSOR_INVALID', 'afterCursor does not match this instance\'s journal.', 400);
     }
     const floor = await retentionFloor(trx, options.repository);
-    if (start.kind === 'cursor' && start.seq < floor - 1) throw expiredError();
+    const generation = await retentionGeneration(trx, options.repository);
+    if (start.kind === 'cursor' && start.seq < floor - 1 && start.generation !== generation) throw expiredError();
     const bound = await journalBound(trx, options.repository, floor);
     const after = start.kind === 'cursor' ? start.seq : start.kind === 'end' ? bound : 0;
-    return { after, floor, page: await readPage(trx, { ...options, after, bound, limit: options.limit }) };
+    return { after, floor, generation, page: await readPage(trx, { ...options, after, bound, limit: options.limit }) };
   });
 }
 
 /**
  * The position to resume from: the last returned event, or the start when
  * none was returned. A complete page also covers every retained event up to
- * the floor, so its cursor is never left below `floor - 1`, where it would
- * already be expired (a `fromStart` read of a pruned repository).
+ * the floor, so its cursor is never left below `floor - 1` (a `fromStart`
+ * read of a pruned repository). A truncated page keeps its position, even
+ * below the floor, so retained history is not skipped; that cursor carries
+ * the retention generation (see `cursorAt`).
  */
 function resumeSeq(snapshot: Snapshot): number {
   const last = snapshot.page.rows.at(-1);
@@ -282,10 +307,20 @@ function resumeSeq(snapshot: Snapshot): number {
   return snapshot.page.truncated ? seq : Math.max(seq, snapshot.floor - 1);
 }
 
+/**
+ * Cursor for a position read in this snapshot. Below `floor - 1` only retained
+ * history of a `fromStart` read is returned, so the cursor carries the
+ * retention generation that keeps it resumable there.
+ */
+function cursorAt(repository: string, snapshot: Snapshot, seq: number): string {
+  return encodeRepositoryEventCursor(repository, seq, seq < snapshot.floor - 1 ? snapshot.generation : undefined);
+}
+
 function pageResult(repository: string, snapshot: Snapshot): RepositoryEventListResult {
+  const cursorOf = (seq: number) => cursorAt(repository, snapshot, seq);
   return {
-    events: snapshot.page.rows.map(row => eventView(row, repository)),
-    cursor: encodeRepositoryEventCursor(repository, resumeSeq(snapshot)),
+    events: snapshot.page.rows.map(row => eventView(row, repository, cursorOf)),
+    cursor: cursorOf(resumeSeq(snapshot)),
     truncated: snapshot.page.truncated,
   };
 }
@@ -362,7 +397,7 @@ export async function waitForRepositoryEvents(options: RepositoryEventWaitOption
       if (remaining <= 0) return result(snapshot);
       // From here on the wait has an established position (for `fromStart`
       // or no cursor, the one it would return), checked like a cursor.
-      start = { kind: 'cursor', seq: resumeSeq(snapshot) };
+      start = { kind: 'cursor', seq: resumeSeq(snapshot), generation: snapshot.generation };
       if (options.signal?.aborted) throw abortedError();
       if (!woken) {
         await new Promise<void>(resolve => {

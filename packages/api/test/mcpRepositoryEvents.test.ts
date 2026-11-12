@@ -195,8 +195,13 @@ test('list_repository_events, wait_repository_events and the REST routes share o
 
     // Expired cursors answer 410, distinct from an empty result.
     await db('repository_event_floors').insert({ repository, floor_seq: 3, pruned_at: new Date().toISOString() });
-    envelope(await rest('listEvents', { repository, afterCursor: encodeRepositoryEventCursor(repository, 0) }), 410, 'CURSOR_EXPIRED');
+    const expired = await rest('listEvents', { repository, afterCursor: encodeRepositoryEventCursor(repository, 0) });
+    envelope(expired, 410, 'CURSOR_EXPIRED');
     await assert.rejects(call('list_repository_events', { repository, afterCursor: encodeRepositoryEventCursor(repository, 0) }), { code: 'CURSOR_EXPIRED' });
+    // Recovery takes a fresh boundary before re-reading state, so a change made during the re-read is still delivered.
+    const boundaryFirst = /without afterCursor[^.]*save[^.]*cursor, then re-read[^.]*, then resume from the saved cursor/i;
+    assert.match(String(expired.body!.hint), boundaryFirst);
+    for (const name of ['list_repository_events', 'wait_repository_events']) assert.match(tool(name).description, boundaryFirst);
     assert.equal(activeRepositoryEventWaiterCount(), 0);
   } finally {
     boundary.restore();
