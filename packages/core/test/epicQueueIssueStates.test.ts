@@ -20,7 +20,9 @@ const startIssue = async ({ issueNumber }: { issueNumber: number }) => { starts.
 const deps = { startIssue, finalize: async () => true };
 await mock.module('../src/db/connection.js', { namedExports: { db: database } });
 await mock.module('../src/utils/logger.js', { defaultExport: log });
-await mock.module('../src/services/taskPlanning/epicIssueLabelHandoff.js', { namedExports: { releaseEpicIssueLabels: async () => {} } });
+const releaseLabels = async () => {};
+let labelHandoff: () => Promise<void> = releaseLabels;
+await mock.module('../src/services/taskPlanning/epicIssueLabelHandoff.js', { namedExports: { releaseEpicIssueLabels: () => labelHandoff() } });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => {
   throw new Error('Unexpected GitHub call');
 } } });
@@ -58,6 +60,7 @@ beforeEach(async () => {
   await database('task_drafts').insert({ draft_id: 'draft', context_config: JSON.stringify({ epicLabel: 'base-epic' }) });
   await database('plan_issues').insert([10, 20, 30].map(issue_number => ({ draft_id: 'draft', issue_number, status: 'pending' })));
   starts.length = 0;
+  labelHandoff = releaseLabels;
 });
 
 /** A database whose queue rows were written by the single-cursor schema, then migrated. */
@@ -299,4 +302,82 @@ test('an issue that settled in the active execution is requeued at the tail; an 
   await database('plan_issues').where({ issue_number: 20 }).update({ status: 'merged' });
   await advanceEpicQueue({ draftId: 'draft', issueNumber: 20, status: S.MERGED }, deps);
   assert.deepEqual(starts, [10, 20, 10]);
+});
+
+/** A sequential execution whose head #10 merged, then is requeued while #20 runs. */
+async function requeueSettledHead() {
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'pending' });
+  assert.equal(await appendEpicQueueIssues((await getEpicExecutionQueue('draft'))!, [10]), true);
+}
+const occurrences = async () => (await getEpicExecutionQueue('draft'))?.items.map(item => [item.issueNumber, item.position, item.state, item.blockedKind]);
+/** A database whose first read of the table waits for `resume` (`entered` resolves once it is waiting), then reads current rows. */
+function holdingRead(table: string) {
+  let resume!: () => void;
+  let enter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const held = new Promise<void>(resolve => { resume = resolve; });
+  let holds = 1;
+  const holding = new Proxy(database, { apply(target, thisArg, args) {
+    const builder = Reflect.apply(target, thisArg, args);
+    if (args[0] === table && holds-- > 0) {
+      const first = builder.first.bind(builder);
+      builder.first = async (...columns: string[]) => { enter(); await held; return first(...columns); };
+    }
+    return builder;
+  } });
+  return { holding, entered, resume };
+}
+
+test('an observer whose label handoff returns after a requeue does not settle the requeued occurrence', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
+  await startEpicQueueHead('draft', deps);
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'merged' });
+  let entered!: () => void;
+  let resume!: () => void;
+  const inHandoff = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { resume = resolve; });
+  labelHandoff = async () => { labelHandoff = releaseLabels; entered(); await held; };
+  const stale = advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.MERGED }, deps);
+  await inHandoff;
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.MERGED }, deps);
+  assert.deepEqual(starts, [10, 20]);
+  await requeueSettledHead();
+  resume();
+  await stale;
+  assert.deepEqual(await occurrences(), [[20, 1, 'dispatched', null], [10, 2, 'pending', null]]);
+  await database('plan_issues').where({ issue_number: 20 }).update({ status: 'merged' });
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 20, status: S.MERGED }, deps);
+  assert.deepEqual(starts, [10, 20, 10], 'the requeued issue still runs after its predecessor');
+});
+
+test('an observer of an earlier occurrence does not block the requeued one', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
+  await startEpicQueueHead('draft', deps);
+  const { holding, entered, resume } = holdingRead('plan_issues');
+  const stale = advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.CLOSED }, { ...deps, database: holding });
+  await entered;
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'merged' });
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.MERGED }, deps);
+  await requeueSettledHead();
+  // The stale observer now reads the requeued issue closed without merge.
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'closed' });
+  resume();
+  await stale;
+  assert.deepEqual(await occurrences(), [[20, 1, 'dispatched', null], [10, 2, 'pending', null]]);
+});
+
+test('an observer that read an unclaimed head does not dispatch its requeued occurrence while the successor runs', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] });
+  // Held after it read the head, before its dispatch claim.
+  const { holding, entered, resume } = holdingRead('task_drafts');
+  const stale = startEpicQueueHead('draft', { ...deps, database: holding });
+  await entered;
+  await startEpicQueueHead('draft', deps);
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: 'merged' });
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 10, status: S.MERGED }, deps);
+  await requeueSettledHead();
+  resume();
+  await stale;
+  assert.deepEqual(starts, [10, 20]);
+  assert.deepEqual(await occurrences(), [[20, 1, 'dispatched', null], [10, 2, 'pending', null]]);
 });

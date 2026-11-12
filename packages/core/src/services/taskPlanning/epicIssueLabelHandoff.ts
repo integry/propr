@@ -1,5 +1,5 @@
 import type { Knex } from 'knex';
-import { blockQueueIssue, type EpicExecutionQueue } from './epicQueueState.js';
+import { blockQueueIssue, type EpicExecutionQueue, type QueueIssueRef } from './epicQueueState.js';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../../daemon/configLoader.js';
 import { safeUpdateLabels } from '../../utils/github/labelOperations.js';
@@ -8,11 +8,12 @@ import { PlanIssueStatus } from '../../webhook/statusMachine.js';
 
 /** Keep the issue unsettled until GitHub confirms its processing labels are released. */
 export async function releaseEpicIssueLabels(queue: EpicExecutionQueue,
-  { issueNumber, status, timestamp }: { issueNumber: number; status: PlanIssueStatus; timestamp: number }, database: Knex): Promise<void> {
+  { item, status, timestamp }: { item: QueueIssueRef; status: PlanIssueStatus; timestamp: number }, database: Knex): Promise<void> {
+  const { issueNumber } = item;
   try {
     await releaseIssueLabels(queue.repository, issueNumber, status, database);
   } catch (error) {
-    await blockQueueIssue(database, queue, issueNumber, { kind: 'label_handoff', timestamp,
+    await blockQueueIssue(database, queue, item, { kind: 'label_handoff', timestamp,
       reason: `Could not release issue #${issueNumber}: ${(error as Error).message}` });
     throw error;
   }

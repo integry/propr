@@ -165,31 +165,39 @@ export function initialIssueRows(input: { draftId: string; executionId: string; 
 }
 
 type Owner = { draftId: string; executionId: string };
+/**
+ * One occurrence of an issue in an execution. A requeue moves the row to a new tail position,
+ * so the position an observer read identifies the occurrence it observed.
+ */
+export type QueueIssueRef = Pick<EpicQueueIssue, 'issueNumber' | 'position'>;
 
 /**
  * One issue's row, while its execution is still the plan's active one (plus any further
- * queue conditions). Every per-issue write starts here, so a stale execution never writes.
+ * queue conditions) and the row is still the occurrence the caller read. Every per-issue
+ * write starts here, so a stale execution, or a delayed observer of an earlier occurrence
+ * of a since-requeued issue, never writes.
  */
-export function ownedIssue(database: Knex, owner: Owner, issueNumber: number, queueWhere: Record<string, unknown> = {}): Knex.QueryBuilder {
-  return database(EPIC_QUEUE_ISSUES).where({ draft_id: owner.draftId, execution_id: owner.executionId, issue_number: issueNumber })
+export function ownedIssue(database: Knex, owner: Owner, item: QueueIssueRef, queueWhere: Record<string, unknown> = {}): Knex.QueryBuilder {
+  return database(EPIC_QUEUE_ISSUES)
+    .where({ draft_id: owner.draftId, execution_id: owner.executionId, issue_number: item.issueNumber, position: item.position })
     .whereExists(database('epic_execution_queues').select('draft_id')
       .where({ draft_id: owner.draftId, execution_id: owner.executionId, status: 'active', ...queueWhere }));
 }
 
 /** Blocks an unsettled issue with a structured reason; the dispatch claim is kept. */
-export async function blockQueueIssue(database: Knex, owner: Owner, issueNumber: number, blocked: {
+export async function blockQueueIssue(database: Knex, owner: Owner, item: QueueIssueRef, blocked: {
   kind: EpicQueueBlockedKind; reason: string; timestamp: number; guard?: (query: Knex.QueryBuilder) => void;
 }): Promise<boolean> {
-  const query = ownedIssue(database, owner, issueNumber).whereNotIn('state', SETTLED_STATES);
+  const query = ownedIssue(database, owner, item).whereNotIn('state', SETTLED_STATES);
   blocked.guard?.(query);
   return Boolean(await query.update({ state: 'blocked', blocked_kind: blocked.kind, blocked_reason: blocked.reason,
     blocked_at: blocked.timestamp, updated_at: blocked.timestamp }));
 }
 
 /** Drops a blocked issue's reason (only of the given kinds, when listed); it returns to dispatched while it holds a claim. */
-export async function unblockQueueIssue(database: Knex, owner: Owner, issueNumber: number,
+export async function unblockQueueIssue(database: Knex, owner: Owner, item: QueueIssueRef,
   { timestamp, kinds, queueWhere }: { timestamp: number; kinds?: EpicQueueBlockedKind[]; queueWhere?: Record<string, unknown> }): Promise<boolean> {
-  const query = ownedIssue(database, owner, issueNumber, queueWhere).where({ state: 'blocked' });
+  const query = ownedIssue(database, owner, item, queueWhere).where({ state: 'blocked' });
   if (kinds) query.whereIn('blocked_kind', kinds);
   return Boolean(await query.update({ ...clearedBlock(database), updated_at: timestamp }));
 }
@@ -199,9 +207,9 @@ export function clearedBlock(database: Knex) {
     blocked_kind: null, blocked_reason: null, blocked_at: null };
 }
 
-/** Settles an issue as done. Only one observer wins; the others see zero changed rows. */
-export async function markQueueIssueDone(database: Knex, owner: Owner, issueNumber: number, timestamp: number): Promise<boolean> {
-  return Boolean(await ownedIssue(database, owner, issueNumber).whereNotIn('state', SETTLED_STATES)
+/** Settles the observed occurrence as done. Only one observer wins; the others see zero changed rows. */
+export async function markQueueIssueDone(database: Knex, owner: Owner, item: QueueIssueRef, timestamp: number): Promise<boolean> {
+  return Boolean(await ownedIssue(database, owner, item).whereNotIn('state', SETTLED_STATES)
     .update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }));
 }
 

@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
-import { getEpicExecutionQueue, isEpicQueueIssueInFlight, unblockQueueIssue, blockQueueIssue, type EpicExecutionQueue } from './epicQueueState.js';
+import { epicQueueIssue, getEpicExecutionQueue, isEpicQueueIssueInFlight, unblockQueueIssue, blockQueueIssue,
+  type EpicExecutionQueue, type EpicQueueIssue } from './epicQueueState.js';
 
 /**
  * An issue run that ended with the `blocked` outcome (`on_blocker: report`)
@@ -20,10 +21,11 @@ export function isAgentBlockedReason(reason: string | null | undefined): boolean
 
 type Deps = { database?: Knex; now?: () => number };
 
-/** The active execution in which this issue is in flight: its sequential head, or an unsettled parallel child. */
-async function activeQueueFor(database: Knex, draftId: string, issueNumber: number): Promise<EpicExecutionQueue | null> {
+/** The active execution in which this issue is in flight (its sequential head, or an unsettled parallel child), with the observed occurrence. */
+async function activeQueueFor(database: Knex, draftId: string, issueNumber: number): Promise<{ queue: EpicExecutionQueue; item: EpicQueueIssue } | null> {
   const queue = await getEpicExecutionQueue(draftId, { database });
-  return isEpicQueueIssueInFlight(queue, issueNumber) ? queue : null;
+  const item = epicQueueIssue(queue, issueNumber);
+  return queue && item && isEpicQueueIssueInFlight(queue, issueNumber) ? { queue, item } : null;
 }
 
 /**
@@ -33,10 +35,10 @@ async function activeQueueFor(database: Knex, draftId: string, issueNumber: numb
  */
 export async function markEpicQueueHeadBlocked({ draftId, issueNumber }: { draftId: string; issueNumber: number },
   { database = db, now = Date.now }: Deps = {}): Promise<boolean> {
-  const queue = await activeQueueFor(database, draftId, issueNumber);
-  if (!queue) return false;
-  // Guarded like every other queue write: a newer execution or a settled issue wins.
-  return blockQueueIssue(database, queue, issueNumber, { kind: 'agent_blocked', reason: agentBlockedHeadReason(issueNumber), timestamp: now() });
+  const active = await activeQueueFor(database, draftId, issueNumber);
+  if (!active) return false;
+  // Guarded like every other queue write: a newer execution, a settled issue or a requeued occurrence wins.
+  return blockQueueIssue(database, active.queue, active.item, { kind: 'agent_blocked', reason: agentBlockedHeadReason(issueNumber), timestamp: now() });
 }
 
 /**
@@ -47,7 +49,7 @@ export async function markEpicQueueHeadBlocked({ draftId, issueNumber }: { draft
  */
 export async function clearEpicQueueHeadBlocked({ draftId, issueNumber }: { draftId: string; issueNumber: number },
   { database = db, now = Date.now }: Deps = {}): Promise<boolean> {
-  const queue = await activeQueueFor(database, draftId, issueNumber);
-  if (!queue) return false;
-  return unblockQueueIssue(database, queue, issueNumber, { timestamp: now(), kinds: ['agent_blocked'] });
+  const active = await activeQueueFor(database, draftId, issueNumber);
+  if (!active) return false;
+  return unblockQueueIssue(database, active.queue, active.item, { timestamp: now(), kinds: ['agent_blocked'] });
 }

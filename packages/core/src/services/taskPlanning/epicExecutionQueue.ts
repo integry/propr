@@ -129,7 +129,8 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   const database = deps.database ?? db;
   const queue = await getEpicExecutionQueue(draftId, deps);
   if (queue?.parallel) return queue.issues.includes(issueNumber) ? completeParallelEpicQueue(queue, deps) : undefined;
-  if (!queue || queue.status !== 'active' || !queue.ready || epicQueueHead(queue)?.issueNumber !== issueNumber) return;
+  const head = epicQueueHead(queue);
+  if (!queue || queue.status !== 'active' || !queue.ready || !head || head.issueNumber !== issueNumber) return;
   // Use persisted evidence: a delayed closed event must not block a now-merged head.
   const issue = await database('plan_issues').where({ draft_id: draftId, issue_number: issueNumber }).first('status');
   const currentStatus = issue?.status ?? status;
@@ -137,12 +138,13 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   if (decision === 'ignore') return;
   const timestamp = (deps.now ?? Date.now)();
   if (decision === 'wait') {
-    await blockQueueIssue(database, queue, issueNumber, { kind: 'closed_unmerged', timestamp,
+    await blockQueueIssue(database, queue, head, { kind: 'closed_unmerged', timestamp,
       reason: `Issue #${issueNumber} is ${currentStatus}; this epic advances only after it is merged. Reopen, fix and merge it to continue.` });
     return;
   }
-  await releaseEpicIssueLabels(queue, { issueNumber, status: currentStatus, timestamp }, database);
-  if (!await markQueueIssueDone(database, queue, issueNumber, timestamp)) return;
+  await releaseEpicIssueLabels(queue, { item: head, status: currentStatus, timestamp }, database);
+  // Fenced by the observed position: a requeue during the label handoff starts a new occurrence.
+  if (!await markQueueIssueDone(database, queue, head, timestamp)) return;
   await settleOrStartNext(queue, deps, timestamp);
 }
 
@@ -161,7 +163,7 @@ async function completeParallelEpicQueue(queue: EpicExecutionQueue, deps: EpicQu
   const timestamp = (deps.now ?? Date.now)();
   for (const item of queue.items) {
     const child = children.find(candidate => candidate.issue_number === item.issueNumber);
-    if (!isSettled(item) && child && isTerminalStatus(child.status)) await markQueueIssueDone(database, queue, item.issueNumber, timestamp);
+    if (!isSettled(item) && child && isTerminalStatus(child.status)) await markQueueIssueDone(database, queue, item, timestamp);
   }
   if (children.length !== queue.issues.length || !children.every(child => isTerminalStatus(child.status))) return;
   if (await completeSettledExecution(database, queue, timestamp)) await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
@@ -265,7 +267,7 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   const issueNumber = head.issueNumber;
   const issue = await database('plan_issues').where({ draft_id: draftId, issue_number: issueNumber }).first('status');
   if (!issue) {
-    await blockQueueIssue(database, queue, issueNumber, { kind: 'missing_from_plan', timestamp: (deps.now ?? Date.now)(),
+    await blockQueueIssue(database, queue, head, { kind: 'missing_from_plan', timestamp: (deps.now ?? Date.now)(),
       reason: `Selected issue #${issueNumber} is missing from this plan.` });
     return;
   }
@@ -281,9 +283,8 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   // Clear the explanation if a blocked issue has been reopened. A head waiting for a
   // human merge keeps its explanation until the merge advances the queue.
   if (head.state === 'blocked' && issue.status !== PlanIssueStatus.PENDING) {
-    await database(EPIC_QUEUE_ISSUES).where({ draft_id: draftId, execution_id: queue.executionId, issue_number: issueNumber, state: 'blocked' })
+    await ownedIssue(database, queue, head).where({ state: 'blocked' })
       .whereNotIn('blocked_kind', ['agent_blocked', 'awaiting_human_merge'])
-      .whereExists(database('epic_execution_queues').select('draft_id').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active' }))
       .update(clearedBlock(database));
   }
   if (issue.status !== PlanIssueStatus.PENDING) return;
@@ -296,8 +297,9 @@ async function dispatchPendingQueueHead(queue: EpicExecutionQueue, head: EpicQue
   const issueNumber = head.issueNumber;
   const timestamp = (deps.now ?? Date.now)();
   if (head.dispatchedAt !== null && timestamp - head.dispatchedAt < RETRY_PENDING_AFTER_MS) return;
-  // Compare-and-set on this issue's own claim: two observers can never dispatch it twice.
-  const claim = ownedIssue(database, queue, issueNumber, { ready: true }).whereNotIn('state', SETTLED_STATES);
+  // Compare-and-set on this occurrence's own claim: two observers can never dispatch it twice,
+  // and an observer of an earlier occurrence never claims the requeued one.
+  const claim = ownedIssue(database, queue, head, { ready: true }).whereNotIn('state', SETTLED_STATES);
   if (head.dispatchedAt === null) claim.whereNull('dispatched_at');
   else claim.where({ dispatched_at: head.dispatchedAt });
   // Recheck pause and issue state in the same statement as the dispatch claim.
@@ -314,7 +316,7 @@ async function dispatchPendingQueueHead(queue: EpicExecutionQueue, head: EpicQue
       epicLabel: queue.useEpic && typeof context?.epicLabel === 'string' ? context.epicLabel : undefined, autoMerge: queue.autoMerge });
   } catch (error) {
     // Keep the claim after failure: the external outcome may be uncertain, and recovery retries after fifteen minutes.
-    await blockQueueIssue(database, queue, issueNumber, { kind: 'dispatch_failed', timestamp,
+    await blockQueueIssue(database, queue, head, { kind: 'dispatch_failed', timestamp,
       reason: `Could not start issue #${issueNumber}: ${(error as Error).message}`, guard: query => query.where({ dispatched_at: timestamp }) });
     throw error;
   }
@@ -407,7 +409,7 @@ async function recoverQueueSetup(queue: EpicExecutionQueue, deps: EpicQueueDepen
   if (!repaired && await cancelUnstartedEpicExecutionQueue(queue, deps)) return true;
   const database = deps.database ?? db;
   const timestamp = (deps.now ?? Date.now)();
-  const head = queue.issues[0];
+  const head = queue.items[0];
   await database.transaction(async trx => {
     if (repaired) await unblockQueueIssue(trx, queue, head, { timestamp, kinds: ['setup_not_ready'], queueWhere: { ready: false } });
     else await blockQueueIssue(trx, queue, head, { kind: 'setup_not_ready', timestamp,

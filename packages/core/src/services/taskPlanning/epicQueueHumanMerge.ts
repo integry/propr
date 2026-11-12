@@ -17,7 +17,8 @@ export async function markEpicQueueAwaitingHumanMerge({ draftId, issueNumber, pr
   draftId: string; issueNumber: number; prNumber: number; reason: string;
 }, { database = db, now = Date.now }: { database?: Knex; now?: () => number } = {}): Promise<boolean> {
   const queue = await getEpicExecutionQueue(draftId, { database });
-  if (queue?.status !== 'active' || epicQueueHead(queue)?.issueNumber !== issueNumber) return false;
-  return blockQueueIssue(database, queue, issueNumber, { kind: 'awaiting_human_merge', timestamp: now(),
+  const head = epicQueueHead(queue);
+  if (queue?.status !== 'active' || head?.issueNumber !== issueNumber) return false;
+  return blockQueueIssue(database, queue, head, { kind: 'awaiting_human_merge', timestamp: now(),
     reason: `${AWAITING_HUMAN_MERGE_PREFIX} auto-merge was not armed for PR #${prNumber} (issue #${issueNumber}, ${reason}). The queue resumes once a person merges it.` });
 }
