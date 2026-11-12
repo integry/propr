@@ -1,4 +1,4 @@
-import { MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
+import { MAX_PROVIDER_REPLACEMENTS_LIMIT, TOKEN_OUTLIER_SETTING_NAMES, describeTokenOutlierSettingRange, isTokenOutlierSettingName, parseMaxProviderReplacements, parseTokenOutlierSetting, type TokenOutlierSettings } from '@propr/shared';
 /**
  * System Settings API
  *
@@ -26,9 +26,9 @@ const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
 
 /**
  * System settings configuration object.
- * These settings control global system behavior.
+ * These settings control global system behavior. Includes the token-outlier alert settings (`token_outlier_*`), always present in responses.
  */
-export interface SystemSettings {
+export interface SystemSettings extends Partial<TokenOutlierSettings> {
   usage_tips_enabled: boolean;
   /**
    * Alias of the default implementation agent.
@@ -200,7 +200,7 @@ export type GetSettingsResponse = SystemSettings;
  * Options for updating a setting.
  * Supports partial updates - only include fields you want to change.
  */
-export interface UpdateSettingsOptions {
+export interface UpdateSettingsOptions extends Partial<TokenOutlierSettings> {
   usage_tips_enabled?: boolean;
   /**
    * Alias of the default implementation agent.
@@ -385,6 +385,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "agent_network_mode_enforced",
   "agent_network_allow",
   "agent_network_ignore_repository_allow",
+  ...TOKEN_OUTLIER_SETTING_NAMES,
 ];
 
 /**
@@ -406,6 +407,11 @@ export function isValidSettingKey(key: string): key is SettingKey {
  * @throws Error if the value cannot be parsed for the given key.
  */
 export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean | null {
+  if (isTokenOutlierSettingName(key)) {
+    const parsed = parseTokenOutlierSetting(key, value.trim());
+    if (parsed === null) throw new Error(`Invalid value for ${key}: ${describeTokenOutlierSettingRange(key).replace(`${key} `, "")}`);
+    return parsed;
+  }
   switch (key) {
     case "agent_stall_timeout_ms":
     case "agent_tool_stall_timeout_ms":

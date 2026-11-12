@@ -587,3 +587,15 @@ export * from './extensionProfiles.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+export {
+  TOKEN_OUTLIER_MIN_HISTORY,
+  TOKEN_OUTLIER_SETTING_DEFINITIONS,
+  TOKEN_OUTLIER_SETTING_NAMES,
+  DEFAULT_TOKEN_OUTLIER_SETTINGS,
+  isTokenOutlierSettingName,
+  describeTokenOutlierSettingRange,
+  parseTokenOutlierSetting,
+  type TokenOutlierSettingDefinition,
+  type TokenOutlierSettingName,
+  type TokenOutlierSettings,
+} from './tokenOutlierSettings.js';

@@ -5,7 +5,7 @@ import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, type StageClaim } from './llmMetricsExecutionClaim.js';
-import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
+import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
 const REDIS_PORT: number = parseInt(process.env.REDIS_PORT ?? '6379', 10);
@@ -134,18 +134,6 @@ async function updateAggregatedMetrics(metricsRedis: InstanceType<typeof Redis>,
     ]);
 }
 
-async function checkCostThreshold(metricsRedis: InstanceType<typeof Redis>, metrics: CostCheckMetrics, issueRef: IssueRef): Promise<void> {
-    const { timestamp, correlationId, costUsd, model, numTurns } = metrics;
-    const costThreshold = parseFloat(process.env.LLM_COST_THRESHOLD_USD ?? '10.00');
-    if (costUsd > costThreshold) {
-        const alertEntry: HighCostAlert = { timestamp, correlationId, issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, costUsd, threshold: costThreshold, model, numTurns };
-        await metricsRedis.lpush('llm:metrics:alerts:highcost', JSON.stringify(alertEntry));
-        await metricsRedis.ltrim('llm:metrics:alerts:highcost', 0, 99);
-        logger.warn({ ...alertEntry, message: 'LLM cost exceeded threshold' });
-    }
-}
-
 function extractToolUsage(content: MessageContent[] | undefined): { toolName: string | null; toolInput: unknown | null; toolUseId: string | null } {
     const toolUse = content?.find(b => b.type === 'tool_use');
     return toolUse ? { toolName: toolUse.name ?? null, toolInput: toolUse.input ?? null, toolUseId: toolUse.id ?? null }
@@ -243,10 +231,11 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
-/** Writes the execution row and its details; true once the row is inserted, even if its details then fail. */
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<boolean> {
+interface PersistedExecution { executionId: number | string; taskId: string | null; }
+/** Writes the execution row and its details; the row once inserted, even if its details then fail, else null. */
+async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | null> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId, reasoningLevel } = metrics;
-    let rowInserted = false;
+    let persisted: PersistedExecution | null = null;
     try {
         // Check if taskId exists in tasks table (drafts won't exist)
         // Use null for task_id if it doesn't exist (FK allows null now)
@@ -272,15 +261,36 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             reasoning_level: normalizeStoredReasoningLevel(reasoningLevel)
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
-        rowInserted = true;
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
+        persisted = { executionId, taskId: effectiveTaskId };
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
-    return rowInserted;
+    return persisted;
+}
+
+const PULL_REQUEST_JOB_TYPES = new Set(['pr_comment', 'pr_review', 'merge_conflict']);
+
+/**
+ * Compares the execution's total tokens with its repository/model/execution
+ * type baseline and alerts on an outlier. Best-effort: a failure is logged and
+ * never affects the recording. The module is loaded on first use.
+ */
+async function checkTokenOutlier(persisted: PersistedExecution, issueRef: IssueRef, details: { model: string; success: boolean; totalTokens: number; executionType: string; jobType: string; correlationId?: string }): Promise<void> {
+    try {
+        const { recordTokenUsageSample } = await import('./tokenOutlierAlert.js');
+        await recordTokenUsageSample({
+            executionId: persisted.executionId, taskId: persisted.taskId,
+            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, model: details.model, executionType: details.executionType,
+            success: details.success, totalTokens: details.totalTokens, number: issueRef.number,
+            kind: PULL_REQUEST_JOB_TYPES.has(details.jobType) || details.executionType === 'pr-review' ? 'pull_request' : 'issue',
+        });
+    } catch (error) {
+        logger.warn({ error: (error as Error).message, correlationId: details.correlationId, taskId: persisted.taskId }, 'Could not check execution token use against its baseline');
+    }
 }
 async function storeMetricsToRedis(metricsRedis: InstanceType<typeof Redis>, llmMetrics: LLMMetricsData, correlationId?: string): Promise<void> { await metricsRedis.setex(`llm:metrics:${correlationId}`, 30 * 24 * 3600, JSON.stringify(llmMetrics)); }
 async function storeTimeSeriesEntry(metricsRedis: InstanceType<typeof Redis>, entry: Record<string, unknown>): Promise<void> { await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(entry)); await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999); }
@@ -332,17 +342,20 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
             countingStarted = true;
             await updateAggregatedMetrics(metricsRedis, { model, success, costUsd, numTurns, executionTimeMs, dateKey });
             await storeTimeSeriesEntry(metricsRedis, { timestamp, correlationId, model, success, costUsd, executionTimeSec, numTurns, repository });
-            await checkCostThreshold(metricsRedis, { timestamp, correlationId, costUsd, model, numTurns }, issueRef);
             logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         }
         logConversationDebug(claudeResult, correlationId, taskId);
         const rowClaim = claudeResult ? await claimExecutionStage(metricsRedis, claudeResult, 'row', claimContext) : null;
         if (claudeResult && rowClaim) {
-            const rowInserted = await persistToDatabase(claudeResult, taskId, {
+            const persisted = await persistToDatabase(claudeResult, taskId, {
                 sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd,
                 tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType, reasoningLevel,
             });
-            if (!rowInserted) await releaseExecutionStage(metricsRedis, rowClaim, claimContext);
+            if (!persisted) await releaseExecutionStage(metricsRedis, rowClaim, claimContext);
+            else await checkTokenOutlier(persisted, issueRef, {
+                model, success, totalTokens: cumulativeTokens.totalInputWithCache + cumulativeTokens.outputTokens,
+                executionType: executionType ?? jobType, jobType, correlationId,
+            });
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');
@@ -397,11 +410,6 @@ async function getDailyMetrics(metricsRedis: InstanceType<typeof Redis>): Promis
         return { date: dateKey, successful, failed, total: successful + failed, costUsd };
     }));
 }
-async function getHighCostAlerts(metricsRedis: InstanceType<typeof Redis>): Promise<HighCostAlert[]> {
-    return (await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9))
-        .map((a: string) => { try { return JSON.parse(a) as HighCostAlert; } catch { return null; } })
-        .filter((a): a is HighCostAlert => a !== null);
-}
 
 export const AGENT_WATCHDOG_METRIC_RULES = ['inactivity', 'tool_inactivity', 'degenerate_output'] as const;
 export const agentWatchdogMetricKey = (rule: string): string => `llm:metrics:watchdog:${rule}`;
@@ -429,9 +437,8 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
         const summary = await getTotalMetrics(metricsRedis);
         const modelBreakdown = await getModelMetrics(metricsRedis);
         const dailyMetrics = await getDailyMetrics(metricsRedis);
-        const recentHighCostAlerts = await getHighCostAlerts(metricsRedis);
         const watchdogTrips = await getWatchdogTrips(metricsRedis);
-        return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, watchdogTrips, lastUpdated: new Date().toISOString() };
+        return { summary, modelBreakdown, dailyMetrics, watchdogTrips, lastUpdated: new Date().toISOString() };
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack }, 'Failed to retrieve LLM metrics summary');
         throw error;
