@@ -110,6 +110,15 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         assert.equal((await db('task_drafts').where({ draft_id: bareId }).first()).status, 'draft');
         await call('update_plan', { repository: 'acme/repo', planId: bareId, expectedRevision: 1, plan: args.plan, idempotencyKey: `fill-bare-plan-${modern}` });
         assert.equal((await db('task_drafts').where({ draft_id: bareId }).first()).status, 'review');
+        // Only 'draft' is promoted: a plan update keeps every other editable status.
+        for (const preserved of ['review', 'approved', 'failed']) {
+          await db('task_drafts').where({ draft_id: bareId }).update({ status: preserved });
+          const revision = Number((await db('task_drafts').where({ draft_id: bareId }).first()).mcp_revision);
+          const kept = await call('update_plan', { repository: 'acme/repo', planId: bareId, expectedRevision: revision, plan: [{ ...args.plan[0], title: `Keep ${preserved}` }], idempotencyKey: `keep-${preserved}-plan-${modern}` });
+          assert.equal(kept.data.result.revision, revision + 1);
+          const row = await db('task_drafts').where({ draft_id: bareId }).first();
+          assert.equal(row.status, preserved); assert.equal(JSON.parse(row.plan_json)[0].title, `Keep ${preserved}`);
+        }
         await db('task_drafts').where({ draft_id: bareId }).delete();
         assert.equal(get.data.epicQueue, null);
         const updated = await call('update_plan', { repository: 'acme/repo', planId: id, expectedRevision: 0, name: 'Reviewed reliability', idempotencyKey: `update-plan-${modern}` });
