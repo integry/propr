@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import knex from 'knex';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -27,6 +28,7 @@ test('local package servers over HTTP: Check, exact pins, acknowledgement and re
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
   const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-package-api-custody', PROPR_EXTENSION_NPM_REGISTRY: registry.url });
   const routes = createExtensionLibraryRoutes(store); const app = express();
+  app.use(rateLimit({ windowMs: 60_000, limit: 600 }));
   app.use(express.json());
   app.use((req, _res, next) => {
     const actor = req.get('x-test-actor'); if (actor) req.user = { id: actor, username: 'fixture' } as typeof req.user;

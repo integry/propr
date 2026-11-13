@@ -35,15 +35,15 @@ async function installFixture(t: TestContext) {
   const localDirectory = path.join(root, 'worker-only'); await fs.mkdir(localDirectory);
   await fs.writeFile(path.join(localDirectory, 'package.json'), JSON.stringify({ name: 'worker-only', version: '1.0.0' }));
   await fs.writeFile(path.join(localDirectory, 'credentials.txt'), 'worker-only file');
-  const server = (name: string, dependency: string | ((base: string) => string)) => ({
+  const server = (name: string, dependency: string | ((base: string, redirect: (target: string) => string) => string)) => ({
     name, version: '1.0.0', files: { 'bin.js': '#!/usr/bin/env node\n' },
-    manifest: (base: string) => ({ bin: 'bin.js', dependencies: { 'propr-fixture-dep': '1.0.0', 'internal-package': typeof dependency === 'function' ? dependency(base) : dependency } }),
+    manifest: (base: string, redirect: (target: string) => string) => ({ bin: 'bin.js', dependencies: { 'propr-fixture-dep': '1.0.0', 'internal-package': typeof dependency === 'function' ? dependency(base, redirect) : dependency } }),
   });
   const registry = await npmRegistryFixture([
     // A public package whose dependency names a tarball on the worker's private network.
     server('propr-fixture-private-url', internal.url),
     // The same destination reached through a redirect from the allowed registry host.
-    server('propr-fixture-redirect', base => `${base}/-/redirect/${encodeURIComponent(internal.url)}`),
+    server('propr-fixture-redirect', (_base, redirect) => redirect(internal.url)),
     // Git sources on the same private service, over HTTP and SSH.
     server('propr-fixture-git-http', `git+http://127.0.0.1:${internal.port}/repo.git`),
     server('propr-fixture-git-ssh', `git+ssh://git@127.0.0.1:${internal.port}/repo.git`),

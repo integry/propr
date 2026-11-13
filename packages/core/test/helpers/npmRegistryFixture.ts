@@ -32,8 +32,12 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 });
 `;
 
-/** A fixture package; a manifest function receives the registry's base URL, for dependencies that point back at it. */
-export interface FixturePackage { name: string; version: string; files: Record<string, string>; manifest: Record<string, unknown> | ((base: string) => Record<string, unknown>) }
+/**
+ * A fixture package. A manifest function receives the registry's base URL, for
+ * dependencies that point back at it, and `redirect`, which registers a target
+ * and returns a registry URL that answers with a redirect there.
+ */
+export interface FixturePackage { name: string; version: string; files: Record<string, string>; manifest: Record<string, unknown> | ((base: string, redirect: (target: string) => string) => Record<string, unknown>) }
 interface Published { manifest: Record<string, unknown>; tarball: Buffer; integrity: string }
 
 /** Pack each fixture package with npm and serve packuments, version documents and tarballs over local HTTP. */
@@ -52,24 +56,33 @@ export async function npmRegistryFixture(extra: FixturePackage[] = [], marker = 
   let base = '';
   const requests: string[] = [];
   const document = (name: string, version: string, entry: Published) => ({ ...entry.manifest, ...(entry.manifest.scripts && Object.keys(entry.manifest.scripts as object).some(s => ['preinstall', 'install', 'postinstall'].includes(s)) ? { hasInstallScript: true } : {}), dist: { integrity: entry.integrity, tarball: `${base}/${name}/-/${name}-${version}.tgz` } });
+  // Redirect targets are registered by the fixture itself; a request only picks one by its index.
+  const redirects: string[] = [];
+  const redirect = (target: string) => `${base}/-/redirect/${redirects.push(target) - 1}`;
+  const notFound = (response: http.ServerResponse) => response.writeHead(404, { 'Content-Type': 'application/json' }).end('{"error":"not_found"}');
   const server = http.createServer((request, response) => {
     const url = decodeURIComponent(request.url ?? '/'); requests.push(url);
-    // `/-/redirect/<encoded URL>` answers with a redirect there, as a package-controlled tarball URL could.
-    const redirect = /^\/-\/redirect\/([^/]+)$/.exec(request.url ?? '');
-    if (redirect) { response.writeHead(302, { Location: decodeURIComponent(redirect[1]) }).end(); return; }
-    const tar = /^\/([^/]+)\/-\/[^/]+-([^/]+)\.tgz$/.exec(url);
-    if (tar) {
-      const entry = published.get(tar[1])?.get(tar[2]);
+    // Route by path segments rather than backtracking patterns: `/<name>`, `/<name>/<version>`, `/<name>/-/<name>-<version>.tgz`, `/-/redirect/<index>`.
+    const segments = url.split('/').slice(1);
+    if (segments.at(-1) === '' && segments.length > 1) segments.pop();
+    if (segments.length === 3 && segments[0] === '-' && segments[1] === 'redirect') {
+      const target = /^\d+$/.test(segments[2]) ? redirects[Number(segments[2])] : undefined;
+      if (target === undefined) { notFound(response); return; }
+      response.writeHead(302, { Location: target }).end(); return;
+    }
+    const [name, second, third] = segments;
+    const versions = name ? published.get(name) : undefined;
+    if (segments.length === 3 && second === '-') {
+      const prefix = `${name}-`;
+      const entry = third.startsWith(prefix) && third.endsWith('.tgz') ? versions?.get(third.slice(prefix.length, -'.tgz'.length)) : undefined;
       if (!entry) { response.writeHead(404).end(); return; }
       response.writeHead(200, { 'Content-Type': 'application/octet-stream' }).end(entry.tarball); return;
     }
-    const [, name, version] = /^\/([^/]+)(?:\/([^/]+))?\/?$/.exec(url) ?? [];
-    const versions = name ? published.get(name) : undefined;
-    if (!versions) { response.writeHead(404, { 'Content-Type': 'application/json' }).end('{"error":"not_found"}'); return; }
-    if (version) {
-      const entry = versions.get(version);
-      if (!entry) { response.writeHead(404, { 'Content-Type': 'application/json' }).end('{"error":"not_found"}'); return; }
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(document(name, version, entry))); return;
+    if (!versions || segments.length > 2) { notFound(response); return; }
+    if (second) {
+      const entry = versions.get(second);
+      if (!entry) { notFound(response); return; }
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(document(name, second, entry))); return;
     }
     const all = Object.fromEntries([...versions].map(([v, entry]) => [v, document(name, v, entry)]));
     response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ name, 'dist-tags': { latest: [...versions.keys()].at(-1) }, versions: all }));
@@ -83,7 +96,7 @@ export async function npmRegistryFixture(extra: FixturePackage[] = [], marker = 
         await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
         await fs.writeFile(path.join(directory, file), content, { mode: 0o755 });
       }
-      const manifest = typeof pkg.manifest === 'function' ? pkg.manifest(base) : pkg.manifest;
+      const manifest = typeof pkg.manifest === 'function' ? pkg.manifest(base, redirect) : pkg.manifest;
       await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, license: 'MIT', ...manifest }));
       const { stdout } = await run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', work], { cwd: directory, env: { ...process.env, npm_config_update_notifier: 'false' } });
       const filename = (JSON.parse(stdout) as { filename: string }[])[0].filename;
