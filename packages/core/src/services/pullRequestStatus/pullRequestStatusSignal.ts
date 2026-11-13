@@ -26,6 +26,30 @@ export function requestPullRequestStatusSync(repository: string | null | undefin
     }
 }
 
+/** Resolves the open pull requests of a commit, then signals each; registered with the sync runner. */
+export type PullRequestStatusCommitSyncRunner = (repository: string, sha: string) => void;
+
+let commitRunner: PullRequestStatusCommitSyncRunner | null = null;
+
+export function setPullRequestStatusCommitSyncRunner(next: PullRequestStatusCommitSyncRunner | null): void {
+    commitRunner = next;
+}
+
+/**
+ * Called when a check that names a commit, not a pull request, changes (a
+ * legacy commit status). Never throws and never waits; a no-op unless status
+ * maintenance is enabled.
+ */
+export function requestPullRequestStatusSyncForCommit(repository: string | null | undefined, sha: string | null | undefined): void {
+    if (!commitRunner || typeof repository !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repository)) return;
+    if (typeof sha !== 'string' || !/^[0-9a-f]{7,64}$/i.test(sha)) return;
+    try {
+        commitRunner(repository, sha);
+    } catch {
+        // A status update must never fail the event that signalled it.
+    }
+}
+
 const PULL_REQUEST_TASK_TYPES = new Set(['pr-comment', 'review', 'merge_conflict']);
 
 /** The pull request a task works on or produced, when known. */

@@ -1,5 +1,5 @@
 import { isStatusBlockOnlyEdit } from '../services/pullRequestStatus/pullRequestStatusBlock.js';
-import { requestPullRequestStatusSync } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
+import { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 
 type Payload = Record<string, unknown> & {
     action?: string;
@@ -7,6 +7,8 @@ type Payload = Record<string, unknown> & {
     pull_request?: { number?: number; body?: string | null };
     check_run?: { pull_requests?: Array<{ number?: number }> };
     check_suite?: { pull_requests?: Array<{ number?: number }> };
+    /** `status` events name the commit; its pull requests are resolved later. */
+    sha?: string;
 };
 
 /** Pull request actions that can change the status (state, head, base or mergeability). */
@@ -26,6 +28,10 @@ export function signalPullRequestStatusFromWebhook(payload: unknown, eventType: 
     const repository = event?.repository?.full_name;
     if (eventType === 'pull_request') {
         if (event.action && STATUS_PULL_REQUEST_ACTIONS.has(event.action)) requestPullRequestStatusSync(repository, event.pull_request?.number);
+        return;
+    }
+    if (eventType === 'status') {
+        requestPullRequestStatusSyncForCommit(repository, event?.sha);
         return;
     }
     const pulls = eventType === 'check_run' ? event?.check_run?.pull_requests

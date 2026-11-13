@@ -17,6 +17,7 @@ export interface PullRequestBodyTarget {
 interface StatusCore {
     updatePullRequestBody?: <T>(github: { request: Request }, target: PullRequestBodyTarget) => Promise<T>;
     initialPullRequestStatusBlock?: (repository: string) => Promise<string | null>;
+    recordPullRequestStatusBlock?: (repository: string, prNumber: number) => Promise<void>;
 }
 
 async function loadCore(): Promise<StatusCore | null> {
@@ -50,6 +51,21 @@ export async function initialPullRequestStatusBlock(repository: string): Promise
         return await initial(repository);
     } catch {
         return null;
+    }
+}
+
+/**
+ * Records that a new pull request was created with a status block, so turning
+ * the setting off removes it later even if no update rewrote it. Never throws.
+ */
+export async function recordPullRequestStatusBlock(repository: string, prNumber: number, block: string | null): Promise<void> {
+    if (!block) return;
+    const record = (await loadCore())?.recordPullRequestStatusBlock;
+    if (!record) return;
+    try {
+        await record(repository, prNumber);
+    } catch {
+        // The next status update records it.
     }
 }
 

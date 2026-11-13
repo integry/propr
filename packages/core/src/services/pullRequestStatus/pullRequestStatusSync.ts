@@ -7,9 +7,9 @@ import { getNonBlockingChecksForRepository } from '../../daemon/configLoader.js'
 import { db } from '../../db/connection.js';
 import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
-import { getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
+import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus } from './pullRequestStatus.js';
-import { setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
+import { setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
 import {
     applyPullRequestStatusBlock,
     preservePullRequestStatusBlock,
@@ -32,6 +32,8 @@ export interface PullRequestStatusSyncDeps {
     loadEnabled: (repository: string) => Promise<boolean>;
     sources: Omit<PullRequestStatusSources, 'github'>;
     now: () => Date;
+    /** Open pull requests a commit belongs to, for checks reported against a commit. */
+    findPullRequestsForCommit: (repository: string, sha: string) => Promise<number[]>;
 }
 
 export type PullRequestStatusSyncResult = 'updated' | 'removed' | 'unchanged' | 'skipped';
@@ -48,14 +50,18 @@ export function enablePullRequestStatusSync(deps: Partial<PullRequestStatusSyncD
     runtimeEnabled = true;
     runtimeDeps = deps;
     setPullRequestStatusSyncRunner(schedulePullRequestStatusSync);
+    setPullRequestStatusCommitSyncRunner(schedulePullRequestStatusSyncForCommit);
 }
 
 export function disablePullRequestStatusSync(): void {
     runtimeEnabled = false;
     runtimeDeps = {};
     setPullRequestStatusSyncRunner(null);
+    setPullRequestStatusCommitSyncRunner(null);
     for (const entry of scheduled.values()) if (entry.timer) clearTimeout(entry.timer);
     scheduled.clear();
+    for (const timer of commitLookups.values()) clearTimeout(timer);
+    commitLookups.clear();
 }
 
 export function isPullRequestStatusSyncEnabled(): boolean {
@@ -84,7 +90,13 @@ function resolveDeps(overrides: Partial<PullRequestStatusSyncDeps> = {}): Resolv
             countQueuedJobs,
         },
         now: merged.now ?? (() => new Date()),
+        findPullRequestsForCommit: merged.findPullRequestsForCommit ?? findOpenPullRequestsForCommit,
     };
+}
+
+async function findOpenPullRequestsForCommit(repository: string, sha: string): Promise<number[]> {
+    const [owner, repo] = repository.split('/');
+    return (await findPRsForCommitCached(owner, repo, sha)).map(pull => pull.number);
 }
 
 // --- Per-PR serialization ---
@@ -174,7 +186,10 @@ export async function syncPullRequestStatus(
         const current = pull.body ?? '';
         const next = applyPullRequestStatusBlock(current, block);
         if (next === current || sameRenderedStatus(next, current)) {
-            if (!block) await deps.redis?.del(marker);
+            // The block already in the body (e.g. the one the PR was created
+            // with) is ProPR's too: record it so turning the setting off removes it.
+            if (block) await deps.redis?.set(marker, '1', 'EX', BLOCK_MARKER_TTL_SECONDS);
+            else await deps.redis?.del(marker);
             return block ? 'unchanged' : 'skipped';
         }
         const [owner, repo] = repository.split('/');
@@ -225,6 +240,56 @@ function schedulePullRequestStatusSync(repository: string, number: number): void
     scheduled.set(key, created);
     created.timer = setTimeout(() => runScheduled(repository, number, key), DEFAULT_DEBOUNCE_MS);
     created.timer.unref?.();
+}
+
+/**
+ * Records that a pull request carries a ProPR status block it was created
+ * with, so turning the setting off removes that block on the next transition
+ * even when no update ever rewrote it. Never throws.
+ */
+export async function recordPullRequestStatusBlock(
+    repository: string, prNumber: number, options: { redis?: LockRedis | null } = {},
+): Promise<void> {
+    if (!runtimeEnabled && options.redis === undefined) return;
+    const redis = options.redis !== undefined ? options.redis : resolveDeps().redis;
+    try {
+        await redis?.set(blockMarkerKey(repository, prNumber), '1', 'EX', BLOCK_MARKER_TTL_SECONDS);
+    } catch (error) {
+        logger.warn({ repository, prNumber, error: (error as Error).message }, 'Failed to record the pull request status block; the next update records it');
+    }
+}
+
+// --- Checks reported against a commit ---
+
+const commitLookups = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Open pull requests whose status a commit's check change can alter. Legacy
+ * commit statuses name only the commit, so its pull requests are looked up;
+ * a repository that does not show the status costs no GitHub call.
+ */
+export async function resolvePullRequestsForCommitStatus(
+    repository: string, sha: string, overrides: Partial<PullRequestStatusSyncDeps> = {},
+): Promise<number[]> {
+    const resolved = resolveDeps(overrides);
+    if (!await resolved.loadEnabled(repository)) return [];
+    return await resolved.findPullRequestsForCommit(repository, sha);
+}
+
+/** A burst of status events for one commit costs one pull request lookup. */
+function schedulePullRequestStatusSyncForCommit(repository: string, sha: string): void {
+    if (!runtimeEnabled) return;
+    const key = `${repository.toLowerCase()}@${sha.toLowerCase()}`;
+    if (commitLookups.has(key)) return;
+    const timer = setTimeout(() => {
+        commitLookups.delete(key);
+        void resolvePullRequestsForCommitStatus(repository, sha)
+            .then(prNumbers => { for (const prNumber of prNumbers) schedulePullRequestStatusSync(repository, prNumber); })
+            .catch(error => logger.warn({ repository, sha, error: (error as Error).message },
+                'Failed to find the pull requests of a commit status change; the next transition updates their status'));
+    }, DEFAULT_DEBOUNCE_MS);
+    timer.unref?.();
+    commitLookups.set(key, timer);
 }
 
 // --- Other body writers ---

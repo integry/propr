@@ -40,6 +40,8 @@ export interface PullRequestStatusSources {
 }
 
 const PULL_REQUEST_TASK_TYPES = ['pr-comment', 'review', 'merge_conflict'];
+/** Task types that open a pull request; their `pr_number` is the pull request they produced. */
+const PULL_REQUEST_CREATING_TASK_TYPES = ['issue', 'implementation'];
 const TASK_LIMIT = 20;
 const CHECK_RUN_PAGE = 100;
 const MAX_CHECK_RUN_PAGES = 3;
@@ -78,16 +80,25 @@ export async function loadPullRequestStatusTasks(db: Knex, repository: string, p
     });
 }
 
+/**
+ * Whether ProPR created the pull request. Only creation records count: an
+ * implementation task that produced it, a plan issue, a goal, or an epic
+ * branch. Review, follow-up and conflict tasks prove ProPR worked on a pull
+ * request, which it also does on pull requests people opened.
+ */
 async function isProprPullRequest(
-    db: Knex, pullRequest: { repository: string; prNumber: number; headRef: string }, tasks: PullRequestStatusTask[],
+    db: Knex, pullRequest: { repository: string; prNumber: number; headRef: string },
 ): Promise<boolean> {
     const { repository, prNumber, headRef } = pullRequest;
-    if (tasks.length > 0 || EPIC_BRANCH_PATTERN.test(headRef)) return true;
-    const [planIssue, goal] = await Promise.all([
+    if (EPIC_BRANCH_PATTERN.test(headRef)) return true;
+    const [implementation, planIssue, goal] = await Promise.all([
+        db('tasks').where({ repository, pr_number: prNumber })
+            .andWhere(query => query.whereNull('task_type').orWhereIn('task_type', PULL_REQUEST_CREATING_TASK_TYPES))
+            .first('task_id'),
         db('plan_issues').where({ repository, pr_number: prNumber }).first('id'),
         db('goals').where({ repository, final_pr_number: prNumber }).first('goal_id'),
     ]);
-    return Boolean(planIssue || goal);
+    return Boolean(implementation || planIssue || goal);
 }
 
 async function loadEpicProgress(db: Knex, repository: string, headRef: string): Promise<PullRequestStatusFacts['epic']> {
@@ -127,15 +138,22 @@ async function loadUltrafix(redis: Pick<Redis, 'get'> | null | undefined, owner:
 
 interface CheckRunPage { total_count?: number; check_runs?: Array<{ name?: string; status: string; conclusion: string | null }> }
 
-async function loadCheckRuns(github: PullRequestStatusGitHub, owner: string, repo: string, ref: string): Promise<NonNullable<CheckRunPage['check_runs']>> {
+/**
+ * The head's check runs, at most MAX_CHECK_RUN_PAGES pages. `complete` is
+ * false when the page budget left runs unread: an unread run may be failed or
+ * pending, so the read ones cannot establish that every check passed.
+ */
+async function loadCheckRuns(
+    github: PullRequestStatusGitHub, owner: string, repo: string, ref: string,
+): Promise<{ runs: NonNullable<CheckRunPage['check_runs']>; complete: boolean }> {
     const runs: NonNullable<CheckRunPage['check_runs']> = [];
     for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
         const { data } = await github.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', { owner, repo, ref, per_page: CHECK_RUN_PAGE, page }) as { data: CheckRunPage };
         const pageRuns = data.check_runs ?? [];
         runs.push(...pageRuns);
-        if (pageRuns.length < CHECK_RUN_PAGE || runs.length >= (data.total_count ?? 0)) break;
+        if (pageRuns.length < CHECK_RUN_PAGE || runs.length >= (data.total_count ?? 0)) return { runs, complete: true };
     }
-    return runs;
+    return { runs, complete: false };
 }
 
 /** Blocking checks on the head; nonBlockingChecks neither fail nor hold the status. */
@@ -147,7 +165,7 @@ export async function loadPullRequestStatusChecks(
         sources.github.request('GET /repos/{owner}/{repo}/commits/{ref}/status', { owner, repo, ref, per_page: 100 }),
         sources.loadNonBlockingChecks(owner, repo),
     ]);
-    const checkRuns = runs.status === 'fulfilled' ? runs.value : [];
+    const checkRuns = runs.status === 'fulfilled' ? runs.value.runs : [];
     const statusData = status.status === 'fulfilled' ? status.value.data as { state?: string; total_count?: number; statuses?: Array<{ context?: string; state?: string }> } : null;
     const statuses = Array.isArray(statusData?.statuses) ? statusData.statuses : [];
     const commitStatus = { state: statusData?.state ?? 'success', totalCount: statusData?.total_count ?? statuses.length, statuses };
@@ -155,7 +173,7 @@ export async function loadPullRequestStatusChecks(
     const failed = summary.blockingFailed?.length ?? 0;
     const pending = summary.blockingPending?.length ?? 0;
     return {
-        complete: runs.status === 'fulfilled' && status.status === 'fulfilled',
+        complete: runs.status === 'fulfilled' && runs.value.complete && status.status === 'fulfilled',
         passed: Math.max(0, summary.count - (summary.nonBlockingCount ?? 0) - failed - pending),
         failed,
         pending,
@@ -191,7 +209,7 @@ export async function loadPullRequestStatusFacts(
     const pr = pull ?? (await sources.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber })).data as PullRequestStatusPull;
     const pullRequest = { state: pr.state, merged: pr.merged === true, headSha: pr.head.sha, mergeable: typeof pr.mergeable === 'boolean' ? pr.mergeable : null };
     const tasks = await loadPullRequestStatusTasks(sources.db, repository, prNumber);
-    const isPropr = await isProprPullRequest(sources.db, { repository, prNumber, headRef: pr.head.ref }, tasks);
+    const isPropr = await isProprPullRequest(sources.db, { repository, prNumber, headRef: pr.head.ref });
     const closed = pullRequest.state !== 'open' || pullRequest.merged;
     const empty: PullRequestStatusChecks = { complete: true, passed: 0, failed: 0, pending: 0, failedNames: [] };
     if (closed || !isPropr) {

@@ -7,7 +7,13 @@ process.env.PROPR_DEMO_MODE = 'true';
 
 const { closeConnection } = await import('../src/db/connection.js');
 const { PR_STATUS_BLOCK_START, extractPullRequestStatusBlock, stripPullRequestStatusBlock } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
-const { initialPullRequestStatusBlock, syncPullRequestStatus, updatePullRequestBody } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
+const {
+    disablePullRequestStatusSync, enablePullRequestStatusSync, initialPullRequestStatusBlock, recordPullRequestStatusBlock,
+    resolvePullRequestsForCommitStatus, syncPullRequestStatus, updatePullRequestBody,
+} = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
+const { loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
+const { requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
+const { signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 
 const REPOSITORY = 'integry/propr';
@@ -41,6 +47,7 @@ interface FakePull { state: string; merged: boolean; mergeable: boolean | null; 
 class FakeGitHub {
     pull: FakePull = { state: 'open', merged: false, mergeable: true, body: HUMAN_BODY, head: { sha: 'head-1', ref: '12-feature' } };
     checkRuns: Array<{ name: string; status: string; conclusion: string | null }> = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
+    commitStatus: { state: string; total_count: number; statuses: Array<{ context: string; state: string }> } = { state: 'pending', total_count: 0, statuses: [] };
     calls: Array<{ route: string; params: Record<string, unknown> }> = [];
     patches: string[] = [];
     async request(route: string, params: Record<string, unknown>) {
@@ -51,8 +58,12 @@ class FakeGitHub {
             this.patches.push(this.pull.body);
             return { data: { body: this.pull.body } };
         }
-        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') return { data: { total_count: this.checkRuns.length, check_runs: this.checkRuns } };
-        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: { state: 'pending', total_count: 0, statuses: [] } };
+        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') {
+            const perPage = Number(params.per_page ?? 30);
+            const page = Number(params.page ?? 1);
+            return { data: { total_count: this.checkRuns.length, check_runs: this.checkRuns.slice((page - 1) * perPage, page * perPage) } };
+        }
+        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: this.commitStatus };
         throw new Error(`unexpected route ${route}`);
     }
     writes() { return this.calls.filter(call => !call.route.startsWith('GET ')); }
@@ -110,12 +121,12 @@ function deps(): Partial<PullRequestStatusSyncDeps> {
 }
 
 let taskSeq = 0;
-async function addTask(type: string, state: string, extra: Record<string, unknown> = {}): Promise<string> {
+async function addTask(type: string, state: string, extra: Record<string, unknown> = {}, prNumber: number | null = type === 'issue' ? PR : null): Promise<string> {
     const taskId = `task-${++taskSeq}`;
     const createdAt = new Date(Date.parse('2026-11-13T08:00:00Z') + taskSeq * 60_000).toISOString();
     await database('tasks').insert({
         task_id: taskId, repository: REPOSITORY, issue_number: type === 'issue' ? 12 : PR, task_type: type, created_at: createdAt,
-        initial_job_data: JSON.stringify(extra), pr_number: type === 'issue' ? PR : null,
+        initial_job_data: JSON.stringify(extra), pr_number: prNumber,
     });
     await database('task_history').insert({ task_id: taskId, state });
     return taskId;
@@ -279,4 +290,99 @@ test('an edited webhook caused by a status update triggers no further work', asy
         sender: { login: 'propr[bot]' },
     }, 'pull_request', 'corr-1');
     assert.deepEqual(disposition, { status: 'ignored', reason: 'pull_request_status_edit' });
+});
+
+test('check runs past the page budget are not complete, so the pull request is never ready', async () => {
+    await addTask('issue', 'completed');
+    const passing = Array.from({ length: 300 }, (_, index) => ({ name: `unit-${index}`, status: 'completed', conclusion: 'success' }));
+    github.checkRuns = [...passing, { name: 'integration', status: 'completed', conclusion: 'failure' }];
+    const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+    assert.equal(facts.checks.complete, false, 'the unread fourth page may hold a failed run');
+    assert.equal(facts.checks.failed, 0);
+    await sync();
+    assert.doesNotMatch(statusLine(), /Ready/);
+    assert.match(statusLine(), /⚠️ Needs you · checks could not be read/);
+
+    github.checkRuns = passing;
+    const exact = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+    assert.equal(exact.checks.complete, true, 'exactly three full pages are every run');
+    await sync();
+    assert.match(statusLine(), /✅ Ready · checks: 300 passed/);
+});
+
+test('reviewing or following up on a pull request a person opened does not make it a ProPR pull request', async () => {
+    await addTask('pr-comment', 'completed', { comments: [{ commandMode: 'review' }] });
+    await addTask('review', 'completed');
+    await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'default' }] }, PR);
+    await addTask('merge_conflict', 'completed', {}, PR);
+    const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+    assert.equal(facts.isProprPullRequest, false);
+    assert.ok(facts.tasks.length > 0, 'the activity is still read');
+    assert.equal(await sync(), 'skipped');
+    assert.equal(github.writes().length, 0);
+    assert.equal(github.pull.body, HUMAN_BODY);
+
+    await addTask('issue', 'completed');
+    assert.equal(await sync(), 'updated', 'an implementation task that produced the pull request is creation evidence');
+});
+
+test('a commit status change refreshes the pull requests of its commit', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = [];
+    github.commitStatus = { state: 'pending', total_count: 1, statuses: [{ context: 'ci/legacy', state: 'pending' }] };
+    await sync();
+    assert.match(statusLine(), /🔨 Waiting for CI/);
+
+    const signalled: Array<[string, string]> = [];
+    setPullRequestStatusCommitSyncRunner((repository, sha) => { signalled.push([repository, sha]); });
+    try {
+        signalPullRequestStatusFromWebhook({ repository: { full_name: REPOSITORY }, sha: 'abc1234', state: 'success', context: 'ci/legacy' }, 'status');
+    } finally {
+        setPullRequestStatusCommitSyncRunner(null);
+    }
+    assert.deepEqual(signalled, [[REPOSITORY, 'abc1234']]);
+
+    const lookups: string[] = [];
+    const finder = { findPullRequestsForCommit: async (_repository: string, sha: string) => { lookups.push(sha); return [PR]; } };
+    enabled = false;
+    assert.deepEqual(await resolvePullRequestsForCommitStatus(REPOSITORY, 'abc1234', { ...deps(), ...finder }), []);
+    assert.deepEqual(lookups, [], 'a repository without the status costs no lookup');
+    enabled = true;
+
+    github.commitStatus = { state: 'success', total_count: 1, statuses: [{ context: 'ci/legacy', state: 'success' }] };
+    enablePullRequestStatusSync({ ...deps(), ...finder });
+    try {
+        requestPullRequestStatusSyncForCommit(REPOSITORY, 'abc1234');
+        requestPullRequestStatusSyncForCommit(REPOSITORY, 'abc1234');
+        const deadline = Date.now() + 5_000;
+        while (!/✅ Ready/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    } finally {
+        disablePullRequestStatusSync();
+    }
+    assert.match(statusLine(), /✅ Ready · checks: 1 passed/);
+    assert.deepEqual(lookups, ['abc1234'], 'a burst of status events for one commit is one lookup');
+});
+
+test('the block a pull request was created with is removed after the setting is turned off', async () => {
+    const initial = await initialPullRequestStatusBlock(REPOSITORY, { loadEnabled: async () => true, now: () => clock });
+    github.pull.body = `${initial}\n\n${HUMAN_BODY}`;
+    const implementation = await addTask('issue', 'processing');
+    github.checkRuns = [];
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    assert.equal(await sync(), 'unchanged', 'the synchronization confirms the initial block without a PATCH');
+    assert.equal(github.writes().length, 0);
+    enabled = false;
+    await setTaskState(implementation, 'completed');
+    assert.equal(await sync(), 'removed');
+    assert.equal(github.pull.body, HUMAN_BODY);
+});
+
+test('creating a pull request with the block records it, so the first transition after turning the setting off removes it', async () => {
+    const initial = await initialPullRequestStatusBlock(REPOSITORY, { loadEnabled: async () => true, now: () => clock });
+    github.pull.body = `${initial}\n\n${HUMAN_BODY}`;
+    await recordPullRequestStatusBlock(REPOSITORY, PR, { redis: redis as never });
+    await addTask('issue', 'completed');
+    enabled = false;
+    assert.equal(await sync(), 'removed');
+    assert.equal(github.pull.body, HUMAN_BODY);
 });

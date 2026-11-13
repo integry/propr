@@ -16,9 +16,9 @@ ProPR computes one status for every pull request it created: is it being worked 
 | `working` | A ProPR task for this pull request is queued or running (implementation, follow-up, review, conflict resolution), an Ultrafix loop is active (including while it waits for CI), or checks on the current head are still pending. |
 | `needs_attention` | Nothing is running, and one of these is true: the last ProPR run on the PR failed; an Ultrafix loop ended without reaching its goal (cycles exhausted, failed, or stopped because CI did not settle); a check on the current head failed; the PR conflicts with its base, or the conflict resolution failed; the latest review score is below the instance Ultrafix rating goal; or the checks could not be read. |
 | `ready` | Nothing is running, every check on the current head completed and passed, the PR does not conflict with its base, and the latest review score (if the PR has been reviewed) meets the instance Ultrafix rating goal. |
-| `none` | The pull request is closed or merged, or ProPR did not create it. |
+| `none` | The pull request is closed or merged, or ProPR did not create it. A pull request someone else opened stays `none` even after ProPR reviews it or runs a follow-up on it. |
 
-A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; if one of those checks then fails, it becomes `needs_attention`. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR.
+A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; if one of those checks then fails, it becomes `needs_attention`. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR. ProPR reads up to 300 check runs on the head; if a commit has more, it can't confirm that they all passed, so the status is `needs_attention` with "checks could not be read" rather than `ready`.
 
 Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged.
 
@@ -34,7 +34,7 @@ Turn on **Show the ProPR status in the pull request** for a repository and ProPR
 
 How the line behaves:
 
-- A new issue pull request opens with the line already in it. After that, ProPR updates it whenever the status or its detail changes: a follow-up or review starts or finishes, a review score is recorded, an Ultrafix cycle advances or waits for CI, a loop ends, a check run is created or completes, the PR is pushed to, or conflicts appear.
+- A new issue pull request opens with the line already in it. After that, ProPR updates it whenever the status or its detail changes: a follow-up or review starts or finishes, a review score is recorded, an Ultrafix cycle advances or waits for CI, a loop ends, a check run is created or completes, a commit status on the head changes, the PR is pushed to, or conflicts appear.
 - The line sits between two hidden HTML comments (`<!-- propr:pr-status -->` and `<!-- /propr:pr-status -->`). ProPR only ever rewrites text between them. Everything else in the body stays exactly as it was, including your edits, the implementation summary, the visual preview section, continuation markers, the epic issue list and `Fixes #` lines. If you move the line further down the body, it is updated where you put it.
 - Editing a pull request body adds nothing to the timeline, so the line can change often without filling the conversation. When the only change would be the "updated" time, nothing is sent to GitHub.
 - ProPR ignores the `edited` webhooks its own status updates cause, so they never start more work.
