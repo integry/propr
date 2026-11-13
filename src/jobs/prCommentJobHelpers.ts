@@ -7,8 +7,8 @@ import type { WorkerStateManager } from '@propr/core';
 import { db } from '@propr/core';
 import { filterCommentByAuthor } from '@propr/core';
 import type { UnprocessedComment, CommentJobData } from '@propr/core';
-import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
-import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
+import { extractAcceptanceCriteria, isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
+import type { AcceptanceCriterion, ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
 import { parseLinkedIssueNumbers } from '../github/linkedIssueReferences.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 import { acceptedRequestDigest } from '../shared/workEvidenceMarker.js';
@@ -150,6 +150,8 @@ export interface LinkedIssueResult {
     linkedIssue?: LinkedIssueReference | null;
     bodyHtml?: string;  // HTML with signed image URLs
     linkedIssueLabels: ReasoningLevelLabel[];
+    /** Acceptance criteria parsed from the first linked issue's full, untruncated body; empty without them. */
+    acceptanceCriteria?: AcceptanceCriterion[];
 }
 
 function getLabelName(label: ReasoningLevelLabel): string | null {
@@ -260,6 +262,7 @@ export async function fetchLinkedIssueContext(
         : `Here is the linked issue specification for this pull request:\n\n`;
 
     const linkedIssueLabels: ReasoningLevelLabel[] = [];
+    const issueBodies = new Map<number, string>();
     for (const issueNumber of linkedIssueNumbers) {
         try {
             const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; labels?: ReasoningLevelLabel[]; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
@@ -269,16 +272,16 @@ export async function fetchLinkedIssueContext(
             if (Array.isArray(linkedIssueData.data.labels)) {
                 linkedIssueLabels.push(...linkedIssueData.data.labels);
             }
+            issueBodies.set(issueNumber, linkedIssueData.data.body);
             if (linkedIssueData.data.body_html) {
                 bodyHtmlParts.push(linkedIssueData.data.body_html);
             }
 
             // Use request for mediaType support - paginate doesn't support it well
-            const linkedIssueCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            const { data: linkedIssueComments } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: issueNumber, per_page: 100,
                 mediaType: { format: 'full' }  // Get body_html with signed image URLs
             }) as { data: Array<{ user: { login: string; type?: string }; body: string; body_html?: string }> };
-            const linkedIssueComments = linkedIssueCommentsResp.data;
             bodyHtmlParts.push(...linkedIssueComments.filter(c => c.body_html).map(c => c.body_html as string));
 
             const clarifyingComments = linkedIssueComments.filter(comment => {
@@ -301,7 +304,8 @@ export async function fetchLinkedIssueContext(
     }
 
     const bodyHtml = bodyHtmlParts.length > 0 ? bodyHtmlParts.join('\n') : undefined;
-    return { context: originalTaskSpec, linkedIssueNumber, linkedIssue, bodyHtml, linkedIssueLabels };
+    // The run that opened the PR numbered the first linked issue's criteria.
+    return { context: originalTaskSpec, linkedIssueNumber, linkedIssue, bodyHtml, linkedIssueLabels, acceptanceCriteria: extractAcceptanceCriteria(issueBodies.get(linkedIssueNumber!)) };
 }
 
 export function formatCommentForPrompt(body: string | null): string {

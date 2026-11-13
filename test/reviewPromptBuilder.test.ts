@@ -428,3 +428,29 @@ describe('buildReviewPrompt — demonstrated failure and verification provenance
         }
     });
 });
+
+describe('buildReviewPrompt — acceptance criteria', () => {
+    const acceptanceCriteria = [{ id: 'AC1', text: 'Parses the list' }, { id: 'AC2', text: 'Shows the checklist' }];
+
+    test('lists every criterion id and makes an unmet one a requirement blocker that names it', () => {
+        for (const options of [baseOptions({ acceptanceCriteria }), baseOptions({ acceptanceCriteria, reviewPromptOverride: 'Custom operator guidance.' })]) {
+            const prompt = buildReviewPrompt(options);
+            assert.ok(prompt.includes('**ACCEPTANCE CRITERIA (from the linked issue; verify each one):**\n- AC1: Parses the list\n- AC2: Shows the checklist\n'));
+            assert.ok(prompt.includes('Every criterion the diff does not meet is an F# blocker with category `requirement`: start its title and its violatedRequirement with the id (for example `AC1: ...`).'));
+            assert.ok(prompt.includes('give one line per id stating met, not met, or not applicable'));
+            assert.ok(prompt.indexOf('ACCEPTANCE CRITERIA') > prompt.indexOf('original spec'), 'the criteria follow the objective');
+        }
+    });
+
+    test('without criteria the prompt has no criteria section', () => {
+        assert.ok(!buildReviewPrompt(baseOptions()).includes('ACCEPTANCE CRITERIA'));
+        assert.ok(!buildReviewPrompt(baseOptions({ acceptanceCriteria: [] })).includes('ACCEPTANCE CRITERIA'));
+    });
+
+    test('budget trimming keeps the criteria', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({ acceptanceCriteria, prDiff: large, originalTaskSpec: large }), REVIEW_TOKEN_CEILING);
+        assert.ok(result.estimatedTokens <= REVIEW_TOKEN_CEILING);
+        assert.ok(result.prompt.includes('- AC2: Shows the checklist'));
+    });
+});

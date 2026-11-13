@@ -63,8 +63,8 @@ function pullRequestOctokit(files: Record<string, string> = {}) {
     };
 }
 
-async function publish(octokit: ReturnType<typeof pullRequestOctokit>, worktreePath: string, extra: Record<string, unknown>): Promise<string> {
-    const claudeResult = { success: true, summary: 'Added left-pad.', repositoryValidation: '### Repository validation\n\n- [1] npm test: Passed', repositoryValidationResult: validation, finalResult: { cost_usd: 0.1 } };
+async function publish(octokit: ReturnType<typeof pullRequestOctokit>, worktreePath: string, extra: Record<string, unknown>, summary = 'Added left-pad.'): Promise<string> {
+    const claudeResult = { success: true, summary, repositoryValidation: '### Repository validation\n\n- [1] npm test: Passed', repositoryValidationResult: validation, finalResult: { cost_usd: 0.1 } };
     await createPullRequest(octokit as never, { repoOwner: 'acme', repoName: 'app', number: 7, baseBranch: 'main' } as never, { branchName: '7-pad', worktreePath } as never, {
         commitResult: { commitHash: 'abcdef1234567', commitMessage: 'feat: pad', filesChanged: ['app.js'] }, claudeResult: claudeResult as never,
         modelName: 'claude-opus-4-5-20251101', repoValidation: {} as never, PR_LABEL: 'propr', correlatedLogger: logger as never, issueTitle: 'Pad',
@@ -86,6 +86,23 @@ test('an issue PR description carries the digest of the run diff after the summa
         assert.match(body, /\*\*Validation evidence\*\* \(passed\)\n\n- \[1\] `npm test`: Passed/);
         assert.match(body, /\*\*Diff size:\*\* 3 files changed, \+4\/−2 lines/);
         assert.ok(!body.includes('export const value'), 'no raw diff content');
+    });
+});
+
+test('the digest lists the issue acceptance criteria with the agent statement for each, unaddressed ones included', async () => {
+    await withRepository(async ({ directory, base }) => {
+        const issueBody = '## Context\n\n- not a criterion\n\n## Acceptance criteria\n\n- [ ] Pads the value\n- [ ] Documents usage\n- [ ] Ships a CLI\n';
+        const summary = 'Added left-pad.\n\nAcceptance criteria:\n- AC1: met — `app.js`\n- AC3: not applicable — no CLI in this repository';
+        const body = await publish(pullRequestOctokit(), directory, { diffBase: base, issueBody }, summary);
+        const criteriaAt = body.indexOf('**Acceptance criteria** (1 of 3 met, as stated by the agent)');
+        assert.ok(criteriaAt > body.indexOf('### Review digest') && criteriaAt < body.indexOf('**Risk-tiered paths**'), body);
+        assert.ok(body.includes([
+            '- ✅ **AC1** (met): `Pads the value` — `` `app.js` ``',
+            '- ⚠️ **AC2** (not addressed): `Documents usage`',
+            '- ➖ **AC3** (not applicable): `Ships a CLI` — `no CLI in this repository`',
+        ].join('\n')), body);
+        // No heading, no checklist.
+        assert.ok(!(await publish(pullRequestOctokit(), directory, { diffBase: base, issueBody: 'Just pad it.' }, summary)).includes('**Acceptance criteria**'));
     });
 });
 
@@ -141,6 +158,16 @@ test('the digest is recorded as one task_history metadata event without changing
     assert.equal(inserted[0].reason, 'Review digest: 1 file (+2/−1): 0 high, 1 normal, 0 low risk; validation passed');
     assert.deepEqual(JSON.parse(String(inserted[0].metadata)), { event: 'review.digest', reviewDigest: JSON.parse(JSON.stringify(digest)) });
     assert.deepEqual(reviewDigestEvent(digest).metadata, { event: 'review.digest', reviewDigest: digest });
+    const withCriteria = buildReviewDigest([{ path: 'src/a.ts', linesAdded: 2, linesRemoved: 1 }], validation, {}, {
+        criteria: [{ id: 'AC1', text: 'Adds a' }, { id: 'AC2', text: 'Tests a' }], agentReport: '- AC1: met — `src/a.ts`',
+    })!;
+    const criteriaRows: Array<Record<string, unknown>> = [];
+    await recordReviewDigestEvent('task-1', withCriteria, logger, { database: fakeDatabase(criteriaRows), currentState: async () => 'post_processing' });
+    assert.equal(criteriaRows[0].reason, 'Review digest: 1 file (+2/−1): 0 high, 1 normal, 0 low risk; validation passed; 1/2 acceptance criteria met');
+    assert.deepEqual(JSON.parse(String(criteriaRows[0].metadata)).reviewDigest.acceptanceCriteria, [
+        { id: 'AC1', text: 'Adds a', status: 'met', evidence: '`src/a.ts`' },
+        { id: 'AC2', text: 'Tests a', status: 'not_addressed' },
+    ]);
     // A timeline failure is logged, never thrown.
     const warnings: unknown[] = [];
     await recordReviewDigestEvent('task-1', digest, { warn: (...args: unknown[]) => warnings.push(args) } as never, { database: (() => { throw new Error('down'); }) as never });
