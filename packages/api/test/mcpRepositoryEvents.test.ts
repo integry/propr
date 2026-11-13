@@ -57,6 +57,8 @@ test('list_repository_events, wait_repository_events and the REST routes share o
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   try {
     await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+    const journal = (await db('repository_event_journal_identity').first('journal_id')).journal_id as string;
+    const cursorFor = (cursorRepository: string, seq: number) => encodeRepositoryEventCursor({ journal, repository: cursorRepository, seq });
     const append = async (values: Record<string, unknown>) => {
       const result = await core.appendRepositoryEvent(db, { repository, domain: 'pull_request', type: 'head_changed', entityId: 7, prNumber: 7, ...values } as never, { publish: false });
       assert.equal(result.status, 'appended');
@@ -123,7 +125,7 @@ test('list_repository_events, wait_repository_events and the REST routes share o
       assert.match(error.details.recovery, /afterCursor/);
       return true;
     });
-    await assert.rejects(call('list_repository_events', { repository, afterCursor: encodeRepositoryEventCursor(forbiddenRepository, 0) }), { code: 'CURSOR_WRONG_REPOSITORY' });
+    await assert.rejects(call('list_repository_events', { repository, afterCursor: cursorFor(forbiddenRepository, 0) }), { code: 'CURSOR_WRONG_REPOSITORY' });
     await assert.rejects(call('list_repository_events', { repository: forbiddenRepository }), { code: 'REPOSITORY_FORBIDDEN' });
     await assert.rejects(call('wait_repository_events', { repository: forbiddenRepository, timeoutSeconds: 0 }), { code: 'REPOSITORY_FORBIDDEN' });
     await assert.rejects(call('wait_repository_events', { repository, timeoutSeconds: 31 }), /timeoutSeconds|less than or equal|too_big|31/i);
@@ -179,7 +181,12 @@ test('list_repository_events, wait_repository_events and the REST routes share o
       assert.equal(sent.body!.code, code);
     };
     envelope(await rest('listEvents', { repository, afterCursor: 'rec1.bogus' }), 400, 'CURSOR_INVALID');
-    envelope(await rest('listEvents', { repository, afterCursor: encodeRepositoryEventCursor(forbiddenRepository, 0) }), 400, 'CURSOR_WRONG_REPOSITORY');
+    // A cursor from another instance's journal is rejected even though this journal has reached its position.
+    const foreignCursor = encodeRepositoryEventCursor({ journal: 'another-instance-journal', repository, seq: 1 });
+    envelope(await rest('listEvents', { repository, afterCursor: foreignCursor }), 400, 'CURSOR_INVALID');
+    envelope(await rest('waitEvents', { repository, afterCursor: foreignCursor, timeoutSeconds: '0' }), 400, 'CURSOR_INVALID');
+    await assert.rejects(call('wait_repository_events', { repository, afterCursor: foreignCursor, timeoutSeconds: 0 }), { code: 'CURSOR_INVALID' });
+    envelope(await rest('listEvents', { repository, afterCursor: cursorFor(forbiddenRepository, 0) }), 400, 'CURSOR_WRONG_REPOSITORY');
     envelope(await rest('listEvents', { repository, domains: 'pull_request,nope' }), 400, 'INVALID_INPUT');
     envelope(await rest('listEvents', { repository, limit: '0' }), 400, 'INVALID_INPUT');
     envelope(await rest('listEvents', { repository: 'not a repo' }), 400, 'INVALID_INPUT');
@@ -195,9 +202,9 @@ test('list_repository_events, wait_repository_events and the REST routes share o
 
     // Expired cursors answer 410, distinct from an empty result.
     await db('repository_event_floors').insert({ repository, floor_seq: 3, pruned_at: new Date().toISOString() });
-    const expired = await rest('listEvents', { repository, afterCursor: encodeRepositoryEventCursor(repository, 0) });
+    const expired = await rest('listEvents', { repository, afterCursor: cursorFor(repository, 0) });
     envelope(expired, 410, 'CURSOR_EXPIRED');
-    await assert.rejects(call('list_repository_events', { repository, afterCursor: encodeRepositoryEventCursor(repository, 0) }), { code: 'CURSOR_EXPIRED' });
+    await assert.rejects(call('list_repository_events', { repository, afterCursor: cursorFor(repository, 0) }), { code: 'CURSOR_EXPIRED' });
     // Recovery takes a fresh boundary before re-reading state, so a change made during the re-read is still delivered.
     const boundaryFirst = /without afterCursor[^.]*save[^.]*cursor, then re-read[^.]*, then resume from the saved cursor/i;
     assert.match(String(expired.body!.hint), boundaryFirst);

@@ -11,6 +11,7 @@ import {
   listRepositoryEventsAfterCursor,
   notifyRepositoryEventWaiters,
   waitForRepositoryEvents,
+  repositoryEventJournalId,
   type RepositoryEventWaitOptions,
 } from '../services/repositoryEventWait.js';
 
@@ -19,11 +20,13 @@ const repository = 'acme/app';
 const otherRepository = 'acme/other';
 const ownerId = '123';
 let db: Knex;
+let journal: string;
 
 after(closeConnection);
 beforeEach(async () => {
   db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true, pool: { min: 1, max: 1 } });
   await db.migrate.latest({ directory: migrations });
+  journal = await repositoryEventJournalId(db);
 });
 afterEach(async () => {
   await db.destroy();
@@ -58,7 +61,9 @@ async function rejects(promise: Promise<unknown>, code: string, status?: number)
   });
 }
 
-const seqOf = (cursor: string) => (decodeRepositoryEventCursor(cursor, repository) as { seq: number }).seq;
+const cursorFor = (cursorRepository: string, seq: number, generation?: string) =>
+  encodeRepositoryEventCursor({ journal, repository: cursorRepository, seq, ...(generation ? { generation } : {}) });
+const seqOf = (cursor: string) => (decodeRepositoryEventCursor(cursor, repository, journal) as { seq: number }).seq;
 
 test('without a cursor a list starts at the current end; fromStart returns the retained history', async () => {
   const first = await append({ type: 'opened' });
@@ -120,27 +125,59 @@ test('every cursor error is reported with its code, and an expired cursor differ
   await rejects(list({ afterCursor: 'not-a-cursor' }), 'CURSOR_INVALID', 400);
   await rejects(list({ afterCursor: 'rec1.%%%' }), 'CURSOR_INVALID', 400);
   await rejects(list({ afterCursor: `rec1.${Buffer.from('{"r":"acme/app","s":-1}').toString('base64url')}` }), 'CURSOR_INVALID', 400);
-  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, 9_999) }), 'CURSOR_INVALID', 400);
-  await rejects(list({ afterCursor: encodeRepositoryEventCursor(otherRepository, 0) }), 'CURSOR_WRONG_REPOSITORY', 400);
+  await rejects(list({ afterCursor: cursorFor(repository, 9_999) }), 'CURSOR_INVALID', 400);
+  await rejects(list({ afterCursor: cursorFor(otherRepository, 0) }), 'CURSOR_WRONG_REPOSITORY', 400);
   // Repository names are case-insensitive on GitHub.
-  assert.deepEqual((await list({ afterCursor: encodeRepositoryEventCursor('ACME/App', 0) })).events, []);
+  assert.deepEqual((await list({ afterCursor: cursorFor('ACME/App', 0) })).events, []);
 
   const old = '2026-01-01T00:00:00.000Z';
   const stale = await append({ occurredAt: old });
   const pruned = await append({ occurredAt: old });
   const kept = await append();
-  const beforeStale = encodeRepositoryEventCursor(repository, stale - 1);
+  const beforeStale = cursorFor(repository, stale - 1);
   await pruneRepositoryEvents(db, { olderThanDays: 30, now: () => Date.parse('2026-11-12T00:00:00.000Z') });
 
   // The last pruned position is still a valid resume point: nothing after it was lost.
-  const resumed = await list({ afterCursor: encodeRepositoryEventCursor(repository, pruned) });
+  const resumed = await list({ afterCursor: cursorFor(repository, pruned) });
   assert.deepEqual(resumed.events.map(event => seqOf(event.cursor)), [kept]);
   await rejects(list({ afterCursor: beforeStale }), 'CURSOR_EXPIRED', 410);
-  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, 0) }), 'CURSOR_EXPIRED', 410);
+  await rejects(list({ afterCursor: cursorFor(repository, 0) }), 'CURSOR_EXPIRED', 410);
   await rejects(wait({ afterCursor: beforeStale, timeoutSeconds: 0 }), 'CURSOR_EXPIRED', 410);
   // A repository that was never pruned keeps the start of its journal.
-  assert.deepEqual((await list({ repository: otherRepository, afterCursor: encodeRepositoryEventCursor(otherRepository, 0) })).events, []);
+  assert.deepEqual((await list({ repository: otherRepository, afterCursor: cursorFor(otherRepository, 0) })).events, []);
   await rejects(list({ limit: 101 }), 'INVALID_INPUT', 400);
+});
+
+test('a cursor issued by another journal is rejected even when repository and sequence ranges overlap', async () => {
+  const other = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true, pool: { min: 1, max: 1 } });
+  try {
+    await other.migrate.latest({ directory: migrations });
+    const otherJournal = await repositoryEventJournalId(other);
+    assert.notEqual(otherJournal, journal, 'every database gets its own journal identity');
+    assert.equal(await repositoryEventJournalId(db), journal, 'the identity is durable across reads');
+
+    // Both journals number the same repository's events independently: 1..5 here, 1..2 there.
+    const local: number[] = [];
+    for (let i = 0; i < 5; i++) local.push(await append());
+    for (let i = 0; i < 2; i++) {
+      await appendRepositoryEvent(other, { repository, domain: 'pull_request', type: 'opened', entityId: 7, prNumber: 7, payload: { i } }, { publish: false });
+    }
+    const foreign = await listRepositoryEventsAfterCursor({ db: other, repository });
+    assert.equal(decodeRepositoryEventCursor(foreign.cursor, repository, otherJournal).ok, true);
+    assert.equal(decodeRepositoryEventCursor(foreign.cursor, repository, journal).ok, false);
+
+    // Its position (2) is inside this journal's range, but resuming there would skip local events 1 and 2.
+    await rejects(list({ afterCursor: foreign.cursor }), 'CURSOR_INVALID', 400);
+    await rejects(wait({ afterCursor: foreign.cursor, timeoutSeconds: 0 }), 'CURSOR_INVALID', 400);
+    const forged = encodeRepositoryEventCursor({ journal: otherJournal, repository, seq: local[1]! });
+    await rejects(list({ afterCursor: forged }), 'CURSOR_INVALID', 400);
+    // A cursor without any journal identity is not one this instance issued either.
+    await rejects(list({ afterCursor: `rec1.${Buffer.from(JSON.stringify({ r: repository, s: local[1] })).toString('base64url')}` }), 'CURSOR_INVALID', 400);
+    // The same position issued by this journal resumes normally.
+    assert.deepEqual((await list({ afterCursor: cursorFor(repository, local[1]!) })).events.map(event => seqOf(event.cursor)), local.slice(2));
+  } finally {
+    await other.destroy();
+  }
 });
 
 test('wait returns at once when matching events already exist after the cursor', async () => {
@@ -294,9 +331,9 @@ test('fromStart pages through several retained events below the floor in limit-s
   const first = await list({ fromStart: true, limit: 1 });
   assert.deepEqual((await list({ afterCursor: first.events[0]!.cursor, limit: 1 })).events.map(event => seqOf(event.cursor)), [kept[1]]);
   // The same position without the retention generation is an ordinary stale cursor.
-  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, kept[0]!) }), 'CURSOR_EXPIRED', 410);
+  await rejects(list({ afterCursor: cursorFor(repository, kept[0]!) }), 'CURSOR_EXPIRED', 410);
   // So is a forged generation.
-  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, kept[0]!, 'forged') }), 'CURSOR_EXPIRED', 410);
+  await rejects(list({ afterCursor: cursorFor(repository, kept[0]!, 'forged') }), 'CURSOR_EXPIRED', 410);
 });
 
 test('a retained-history cursor expires once retention prunes the repository again', async () => {
@@ -388,7 +425,7 @@ test('events stored under another spelling of the repository are read, bounded a
   // Retention records the floor under the stored spelling; it still expires cursors of the configured one.
   const stale = await append({ repository: stored, occurredAt: OLD });
   await prune();
-  await rejects(list({ afterCursor: encodeRepositoryEventCursor(repository, stale - 1) }), 'CURSOR_EXPIRED', 410);
+  await rejects(list({ afterCursor: cursorFor(repository, stale - 1) }), 'CURSOR_EXPIRED', 410);
   assert.equal(seqOf((await list()).cursor), stale);
 });
 

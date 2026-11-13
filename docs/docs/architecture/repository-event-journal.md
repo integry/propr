@@ -10,7 +10,7 @@ ProPR records pull request, epic queue and plan issue changes in a durable, appe
 
 The journal is the source of truth. After each append ProPR also publishes a bare `activity:update` event over Socket.IO so the web UI can refresh. That event carries no payload, and a missed one loses nothing: the row is still in the journal.
 
-This page covers the storage, the writer and the event catalog. A read and wait interface for clients comes in a follow-up change.
+This page covers the storage, the writer and the event catalog. Clients read and wait on the journal through `GET /api/repository-events` and `GET /api/repository-events/wait` and the MCP tools `list_repository_events` and `wait_repository_events` (see [Repository change events](../operations/api-reference.md#repository-change-events) in the API reference), or with `propr events list|wait` (see the [ProPR CLI](../features/propr-cli.md#settings-logs-and-system) command reference).
 
 ## Table
 
@@ -105,3 +105,5 @@ The activity envelope (`packages/shared/src/activityEvents.ts`) has a `pull_requ
 The daemon's hourly maintenance sweep (the same one that reclaims stale draft context) deletes events older than 30 days, and only those: an unexpired event survives even if an older-stamped event (a delayed delivery, or an outcome stamped with its merge time) was appended after it. For each pruned repository it stores `floor_seq` in `repository_event_floors`. That value is one past the highest deleted `seq`, and it never moves backwards.
 
 A reader holding cursor `c` for a repository may have missed pruned events when `c < floor_seq - 1`. Unexpired events below the floor stay readable. A `fromStart` read pages through them with cursors that also carry the repository's retention generation (a digest of its `repository_event_floors` rows); such a cursor stays valid below the floor until retention next prunes the repository, which rewrites `pruned_at` even when the floor does not move. This tells an expired cursor apart from an empty result. A repository that has never been pruned has floor `1`.
+
+Sequence numbers are assigned independently by every ProPR instance, so two instances that journal the same repository have overlapping `seq` ranges. Each database therefore has a durable journal identity (`repository_event_journal_identity`, created once by migration), and every cursor carries it. A cursor issued by another journal is rejected with `CURSOR_INVALID` before its position is checked, even when its repository and `seq` fall inside this journal's range, so resuming on the wrong instance never silently skips unread events.

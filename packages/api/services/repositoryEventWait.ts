@@ -24,6 +24,12 @@
  * generation they were issued under; such a cursor stays valid below the floor
  * until retention next prunes the repository. A cursor without a generation
  * below `floor - 1` is expired, as before.
+ *
+ * Every cursor names the journal that issued it (the durable
+ * `repository_event_journal_identity` of this database). Sequence numbers are
+ * assigned independently by every instance, so a cursor from another journal
+ * is rejected as `CURSOR_INVALID` before any position check, even when its
+ * repository and sequence range overlap this journal's.
  */
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -235,16 +241,29 @@ async function issuedHigh(db: Knex): Promise<number> {
   return Math.max(Number(events?.seq ?? 0), Number(floors?.floor ?? 1) - 1);
 }
 
+/**
+ * Durable identity of this database's journal, created by the migration that
+ * adds `repository_event_journal_identity`. Every cursor carries it.
+ */
+export async function repositoryEventJournalId(db: Knex): Promise<string> {
+  const row = await db('repository_event_journal_identity').where({ id: 1 }).first<{ journal_id: string } | undefined>('journal_id');
+  if (!row?.journal_id) throw new Error('The repository event journal has no identity; run the database migrations.');
+  return row.journal_id;
+}
+
 /** Where a read starts: after a validated cursor, at the current end, or (`fromStart`) at the beginning. */
 type ReadStart = { kind: 'cursor'; seq: number; generation?: string } | { kind: 'end' } | { kind: 'beginning' };
 
-/** Decode a cursor; its position is validated against the journal inside each read. */
-function parseStart(repository: string, options: Pick<RepositoryEventListOptions, 'afterCursor' | 'fromStart'>): ReadStart {
+/**
+ * Decode a cursor and check it was issued by this journal; its position is
+ * validated against the journal inside each read.
+ */
+async function parseStart(db: Knex, repository: string, options: Pick<RepositoryEventListOptions, 'afterCursor' | 'fromStart'>): Promise<ReadStart> {
   if (options.afterCursor === undefined) return options.fromStart ? { kind: 'beginning' } : { kind: 'end' };
-  const decoded = decodeRepositoryEventCursor(options.afterCursor, repository);
+  const decoded = decodeRepositoryEventCursor(options.afterCursor, repository, await repositoryEventJournalId(db));
   if (!decoded.ok) {
     const message = decoded.code === 'CURSOR_WRONG_REPOSITORY'
-      ? 'afterCursor was issued for a different repository.' : 'afterCursor is not a repository event cursor.';
+      ? 'afterCursor was issued for a different repository.' : 'afterCursor is not a repository event cursor issued by this instance\'s journal.';
     throw new RepositoryEventWaitError(decoded.code, message, 400);
   }
   return { kind: 'cursor', seq: decoded.seq, ...(decoded.generation ? { generation: decoded.generation } : {}) };
@@ -254,7 +273,7 @@ const expiredError = () =>
   new RepositoryEventWaitError('CURSOR_EXPIRED', 'afterCursor refers to journal history that is no longer retained.', 410);
 
 type Page = { rows: RepositoryEventRow[]; truncated: boolean };
-interface Snapshot { after: number; page: Page; floor: number; generation: string; resume: number }
+interface Snapshot { journal: string; after: number; page: Page; floor: number; generation: string; resume: number }
 
 /** Matching events in (after, bound], at most `limit + 1` so truncation is known without a second read. */
 async function readPage(db: Knex, filters: RepositoryEventFilters & { repository: string; after: number; bound: number; limit: number }): Promise<Page> {
@@ -284,13 +303,14 @@ async function readSnapshot(db: Knex, options: RepositoryEventFilters & { reposi
     if (start.kind === 'cursor' && start.seq > await issuedHigh(trx)) {
       throw new RepositoryEventWaitError('CURSOR_INVALID', 'afterCursor does not match this instance\'s journal.', 400);
     }
+    const journal = await repositoryEventJournalId(trx);
     const floor = await retentionFloor(trx, options.repository);
     const generation = await retentionGeneration(trx, options.repository);
     if (start.kind === 'cursor' && start.seq < floor - 1 && start.generation !== generation) throw expiredError();
     const bound = await journalBound(trx, options.repository, floor);
     const after = start.kind === 'cursor' ? start.seq : start.kind === 'end' ? bound : 0;
     const page = await readPage(trx, { ...options, after, bound, limit: options.limit });
-    return { after, floor, generation, page, resume: await resumePosition(trx, options.repository, { after, page, floor }) };
+    return { journal, after, floor, generation, page, resume: await resumePosition(trx, options.repository, { after, page, floor }) };
   });
 }
 
@@ -319,7 +339,10 @@ async function resumePosition(db: Knex, repository: string, read: { after: numbe
  * retention generation that keeps it resumable there.
  */
 function cursorAt(repository: string, snapshot: Snapshot, seq: number): string {
-  return encodeRepositoryEventCursor(repository, seq, seq < snapshot.floor - 1 ? snapshot.generation : undefined);
+  return encodeRepositoryEventCursor({
+    journal: snapshot.journal, repository, seq,
+    ...(seq < snapshot.floor - 1 ? { generation: snapshot.generation } : {}),
+  });
 }
 
 function pageResult(repository: string, snapshot: Snapshot): RepositoryEventListResult {
@@ -339,7 +362,7 @@ function pageResult(repository: string, snapshot: Snapshot): RepositoryEventList
 export async function listRepositoryEventsAfterCursor(options: RepositoryEventListOptions): Promise<RepositoryEventListResult> {
   const { db, repository } = options;
   const limit = limitOf(options.limit);
-  const start = parseStart(repository, options);
+  const start = await parseStart(db, repository, options);
   return pageResult(repository, await readSnapshot(db, { ...options, start, limit }));
 }
 
@@ -392,7 +415,7 @@ export async function waitForRepositoryEvents(options: RepositoryEventWaitOption
   });
 
   try {
-    let start = parseStart(repository, options);
+    let start = await parseStart(db, repository, options);
     for (;;) {
       woken = false;
       // Every iteration re-checks the floor in the read's own snapshot, so

@@ -91,42 +91,64 @@ function fromBase64Url(value: string): string {
 }
 
 const MAX_GENERATION_LENGTH = 64;
+const MAX_JOURNAL_ID_LENGTH = 64;
+const OPAQUE_ID = /^[A-Za-z0-9_-]+$/;
+
+/** Where a cursor points: the issuing journal, the repository and the journal position. */
+export interface RepositoryEventCursorPosition {
+  /** Durable identity of the journal that issued the cursor. */
+  journal: string;
+  repository: string;
+  seq: number;
+  /** Retention generation, carried only by positions in retained history below the floor. */
+  generation?: string;
+}
 
 /**
  * Opaque cursor for a repository's journal position: `rec1.` + base64url of
- * `{r, s}`. A position inside retained history below the retention floor (a
- * `fromStart` page) also carries `g`, the retention generation it was issued
- * under, so it stays resumable until retention next prunes the repository.
+ * `{j, r, s}`. `j` is the issuing journal's durable identity: sequence numbers
+ * are assigned independently by every instance, so a position is meaningful
+ * only in the journal that issued it. A position inside retained history below
+ * the retention floor (a `fromStart` page) also carries `g`, the retention
+ * generation it was issued under, so it stays resumable until retention next
+ * prunes the repository.
  */
-export function encodeRepositoryEventCursor(repository: string, seq: number, generation?: string): string {
-  const body = generation ? { r: repository, s: seq, g: generation } : { r: repository, s: seq };
+export function encodeRepositoryEventCursor(position: RepositoryEventCursorPosition): string {
+  const { journal, repository, seq, generation } = position;
+  const body = generation ? { j: journal, r: repository, s: seq, g: generation } : { j: journal, r: repository, s: seq };
   return CURSOR_PREFIX + toBase64Url(JSON.stringify(body));
 }
 
 export type DecodedRepositoryEventCursor =
-  | { ok: true; repository: string; seq: number; generation?: string }
+  | ({ ok: true } & RepositoryEventCursorPosition)
   | { ok: false; code: 'CURSOR_INVALID' | 'CURSOR_WRONG_REPOSITORY' };
 
 /**
- * Parse a cursor's shape and its repository binding (case-insensitive, as
- * GitHub repository names are). Whether the position is still retained is
- * checked against the journal.
+ * Parse a cursor's shape, its journal binding and its repository binding
+ * (case-insensitive, as GitHub repository names are). A cursor issued by
+ * another journal is `CURSOR_INVALID` even when repository and position match.
+ * Whether the position is still retained is checked against the journal.
  */
-export function decodeRepositoryEventCursor(cursor: unknown, repository: string): DecodedRepositoryEventCursor {
+export function decodeRepositoryEventCursor(cursor: unknown, repository: string, journal: string): DecodedRepositoryEventCursor {
   if (typeof cursor !== 'string' || !cursor.startsWith(CURSOR_PREFIX) || cursor.length > MAX_CURSOR_LENGTH) {
     return { ok: false, code: 'CURSOR_INVALID' };
   }
-  let parsed: { r?: unknown; s?: unknown; g?: unknown };
+  let parsed: { j?: unknown; r?: unknown; s?: unknown; g?: unknown };
   try { parsed = JSON.parse(fromBase64Url(cursor.slice(CURSOR_PREFIX.length))); }
   catch { return { ok: false, code: 'CURSOR_INVALID' }; }
   if (!parsed || typeof parsed !== 'object' || typeof parsed.r !== 'string' || !parsed.r.includes('/')
+    || typeof parsed.j !== 'string' || parsed.j.length > MAX_JOURNAL_ID_LENGTH || !OPAQUE_ID.test(parsed.j)
     || typeof parsed.s !== 'number' || !Number.isSafeInteger(parsed.s) || parsed.s < 0
     || (parsed.g !== undefined && (typeof parsed.g !== 'string' || parsed.g.length > MAX_GENERATION_LENGTH
-      || !/^[A-Za-z0-9_-]+$/.test(parsed.g)))) {
+      || !OPAQUE_ID.test(parsed.g)))) {
     return { ok: false, code: 'CURSOR_INVALID' };
   }
+  if (parsed.j !== journal) return { ok: false, code: 'CURSOR_INVALID' };
   if (parsed.r.toLowerCase() !== repository.toLowerCase()) return { ok: false, code: 'CURSOR_WRONG_REPOSITORY' };
-  return { ok: true, repository: parsed.r, seq: parsed.s, ...(typeof parsed.g === 'string' ? { generation: parsed.g } : {}) };
+  return {
+    ok: true, journal: parsed.j, repository: parsed.r, seq: parsed.s,
+    ...(typeof parsed.g === 'string' ? { generation: parsed.g } : {}),
+  };
 }
 
 export function isRepositoryEventDomain(value: unknown): value is RepositoryEventDomain {

@@ -247,7 +247,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
   'GET /api/pull-requests/:number/readiness': {
     operationId: 'getPullRequestReadiness',
     summary: 'Get the readiness verdict of a pull request',
-    description: 'Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. See the gate and reason-code tables in the API reference.',
+    description: 'Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. The caller needs read access to the repository on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after it is proven. See the gate and reason-code tables in the API reference.',
     tags: ['Tasks'],
     pathParams: { number: 'Pull request number.' },
     query: PullRequestReadinessQuery,
@@ -255,8 +255,8 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     responses: {
       200: { description: 'The readiness verdict.', schema: PullRequestReadiness },
       400: { description: '`INVALID_INPUT`: the number or repository is malformed.' },
-      404: { description: '`PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it.' },
-      502: { description: '`GITHUB_UNAVAILABLE`: GitHub did not return the pull request; the read is safe to retry.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: the caller cannot read the repository on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it.' },
+      502: { description: '`GITHUB_UNAVAILABLE`: GitHub did not return the pull request, or could not be reached to check repository access; the read is safe to retry.' },
     },
   },
   'GET /api/repository-events': {
