@@ -50,6 +50,7 @@ export async function clearedGraphColumns(trx: Knex): Promise<Record<string, nul
   return await trx.schema.hasColumn('epic_execution_queues', 'mode') ? { mode: null, max_parallel: null } : {};
 }
 
+type ClaimHooks = Pick<GraphDriveHooks, 'database' | 'now'>;
 type PlanStatusRow = { issue_number: number; status: PlanIssueStatus };
 
 const parseContext = (value: unknown) => {
@@ -82,7 +83,7 @@ async function settleGraphIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
  * closure block so it is pending again and the scheduler can claim it once its prerequisites merge.
  * Fenced on the persisted status still being non-terminal; other blockers keep their explanation.
  */
-async function reopenUnclaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: GraphDriveHooks): Promise<void> {
+async function reopenUnclaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: ClaimHooks): Promise<void> {
   if (item.state !== 'blocked' || item.blockedKind !== 'closed_unmerged') return;
   const { database } = hooks;
   await ownedIssue(database, queue, item).where({ state: 'blocked', blocked_kind: 'closed_unmerged' }).whereNull('dispatched_at')
@@ -101,7 +102,7 @@ const isRunningStatus = (status: PlanIssueStatus | undefined): boolean =>
  * queue's retry re-drives it only once its plan status is back to pending. Fenced on the row still being
  * unclaimed and the plan status not being pending (a reopened issue waits for the scheduler instead).
  */
-async function adoptManualStart(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: GraphDriveHooks): Promise<void> {
+async function adoptManualStart(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: ClaimHooks): Promise<void> {
   const { database } = hooks;
   const timestamp = hooks.now();
   await ownedIssue(database, queue, item).whereNull('dispatched_at').whereNotIn('state', SETTLED_STATES)
@@ -109,6 +110,21 @@ async function adoptManualStart(queue: EpicExecutionQueue, item: EpicQueueIssue,
       .whereNot('status', PlanIssueStatus.PENDING))
     .update({ state: database.raw('CASE WHEN state = ? THEN ? ELSE state END', ['pending', 'dispatched']),
       dispatched_at: timestamp, updated_at: timestamp });
+}
+
+/**
+ * A status notification showing a graph issue in progress. An issue the queue never claimed was started
+ * by a person: its slot claim is recorded right away, also while the plan is paused, so a closure without
+ * merge that arrives before the next pass still holds the slot. Nothing is settled or started here.
+ */
+export async function recordObservedGraphStart(queue: EpicExecutionQueue, observed: { issueNumber: number; status: PlanIssueStatus },
+  hooks: ClaimHooks): Promise<void> {
+  if (queue.mode !== 'graph' || queue.status !== 'active' || !queue.ready || !isRunningStatus(observed.status)) return;
+  const item = queue.items.find(candidate => candidate.issueNumber === observed.issueNumber);
+  if (!item || isSettled(item) || item.dispatchedAt !== null) return;
+  // A closed issue that was reopened and started again drops its closure explanation first.
+  await reopenUnclaimedIssue(queue, item, hooks);
+  await adoptManualStart(queue, item, hooks);
 }
 
 /** A claimed issue that is not terminal: clear a stale explanation once it is reopened, retry a lost dispatch. */

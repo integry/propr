@@ -14,7 +14,7 @@ import {
   getEpicExecutionQueue, initialIssueRows, isSettled, markQueueIssueDone, ownedIssue, planIssueWithStatus,
   reopenParallelQueueIssue, unblockQueueIssue, type EpicAdvancePolicy, type EpicExecutionMode, type EpicExecutionQueue, type EpicQueueIssue,
 } from './epicQueueState.js';
-import { assertGraphInput, clearedGraphColumns, driveGraphExecution } from './epicQueueGraph.js';
+import { assertGraphInput, clearedGraphColumns, driveGraphExecution, recordObservedGraphStart } from './epicQueueGraph.js';
 import { persistRecoveredEpicLabel, recoverOwedEpicLabel } from './epicQueueLabelRecovery.js';
 
 export * from './epicQueueState.js';
@@ -434,8 +434,18 @@ export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies =
   return { reconciled };
 }
 
-/** Status writes must never fail because progression failed; recovery retries it. */
+/**
+ * Every persisted plan status change. A terminal one advances the queue; an in-progress one only matters
+ * to a graph execution, which records an issue a person started as its slot claim. Status writes must
+ * never fail because progression failed; recovery retries it.
+ */
 export async function onPlanIssueStatusChanged(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
-  try { await advanceEpicQueue({ draftId, issueNumber, status }); }
+  try {
+    if (isTerminalStatus(status)) await advanceEpicQueue({ draftId, issueNumber, status });
+    else {
+      const queue = await getEpicExecutionQueue(draftId);
+      if (queue?.mode === 'graph') await recordObservedGraphStart(queue, { issueNumber, status }, graphHooks({}));
+    }
+  }
   catch (error) { logger.warn?.({ draftId, issueNumber, status, error: (error as Error).message }, 'Failed to advance epic queue after issue status change'); }
 }
