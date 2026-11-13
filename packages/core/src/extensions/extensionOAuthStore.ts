@@ -141,7 +141,7 @@ export class ExtensionOAuthStore {
     const state = randomBytes(32).toString('base64url'); const stateHash = sha256(state);
     const pkce = createPkce();
     const { clientSecret, ...publicClient } = client;
-    const details: PendingDetails = { issuer: discovery.issuer, metadata: discovery.metadata, client: publicClient, scopes: discovery.scopes, redirectUri: urls.redirectUri, resource: server.url, ...(server.clientId ? { clientId: server.clientId } : {}) };
+    const details: PendingDetails = { issuer: discovery.issuer, metadata: discovery.metadata, client: publicClient, scopes: discovery.scopes, redirectUri: urls.redirectUri, resource: discovery.resource, ...(server.clientId ? { clientId: server.clientId } : {}) };
     await this.library.authorize(actor);
     await this.database(OAUTH_PENDING).where('expires_at', '<=', this.now()).where(q => q.whereNull('claim').orWhere('expires_at', '<=', this.now() - CLAIM_GRACE_MS)).delete();
     await this.database(OAUTH_PENDING).insert({
@@ -150,7 +150,7 @@ export class ExtensionOAuthStore {
       sealed: sealExtensionSecrets({ verifier: pkce.verifier, ...(registration === 'dynamic' && clientSecret ? { clientSecret } : {}) }, pendingIdentity(instanceId, server.name, stateHash), this.environment),
       details: JSON.stringify(details), expires_at: this.now() + STATE_TTL_MS,
     });
-    return { authorizationUrl: authorizationUrl(discovery.metadata, { clientId: client.clientId, redirectUri: urls.redirectUri, challenge: pkce.challenge, state, resource: server.url, scopes: discovery.scopes }) };
+    return { authorizationUrl: authorizationUrl(discovery.metadata, { clientId: client.clientId, redirectUri: urls.redirectUri, challenge: pkce.challenge, state, resource: discovery.resource, scopes: discovery.scopes }) };
   }
   /**
    * Reuse this item's dynamic registration with the same issuer and redirect
@@ -214,7 +214,7 @@ export class ExtensionOAuthStore {
     const identity = { instance_id: row.instance_id, server_name: row.server_name, endpoint: row.endpoint, client_id: client.clientId };
     const values = {
       ...identity, generation: randomUUID(), refresh_lease_owner: null, state: 'connected', registration: client.registration, issuer: details.issuer,
-      metadata: JSON.stringify({ ...details.metadata, authMethod: client.authMethod }), redirect_uri: details.redirectUri,
+      metadata: JSON.stringify({ ...details.metadata, authMethod: client.authMethod }), redirect_uri: details.redirectUri, resource: details.resource,
       sealed: sealExtensionSecrets(this.tokenFields({ ...tokens, ...(client.registration === 'dynamic' && client.clientSecret ? { clientSecret: client.clientSecret } : {}) }), connectionIdentity(identity), this.environment),
       refresh_lease_until: null, connected_by: actor, connected_at: now, updated_at: now,
     };
@@ -374,7 +374,7 @@ export class ExtensionOAuthStore {
       if (!await this.database(OAUTH_CONNECTIONS).where(fence).update({ refresh_lease_until: this.now() + LEASE_MS })) throw new OAuthConnectionReplacedError('OAuth connection changed during refresh');
       let client: OAuthClient;
       try { client = await this.clientFor(row, tokens); } catch (error) { await release(); throw error; }
-      try { refreshed = await refreshTokens(this.transport, metadata, client, { refreshToken: tokens.refreshToken, resource: row.endpoint }, this.now()); }
+      try { refreshed = await refreshTokens(this.transport, metadata, client, { refreshToken: tokens.refreshToken, resource: row.resource }, this.now()); }
       catch (error) {
         if (error instanceof OAuthProtocolError && error.authorization) { await this.needsSignIn(row, owner); throw error; }
         if (attempt >= attempts) { await release(); logger.warn({ server: server.name }, 'Extension OAuth refresh failed; the connection is unchanged'); throw error instanceof OAuthNetworkError ? error : new OAuthNetworkError('OAuth refresh failed'); }

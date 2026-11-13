@@ -121,7 +121,8 @@ export async function discoverOAuth(transport: OAuthTransport, serverUrl: string
   const scopes = configuredScopes?.length ? configuredScopes
     : challenge.scope ? challenge.scope.split(/\s+/).filter(s => scopePattern.test(s))
       : (strings(resourceDocument.scopes_supported) ?? []).filter(s => scopePattern.test(s));
-  return { discoveredFrom, resource: serverUrl, issuer, metadata, scopes: scopes.slice(0, 32) };
+  // The resource indicator (RFC 8707) is the identifier the metadata declares, which may be a parent of the endpoint.
+  return { discoveredFrom, resource, issuer, metadata, scopes: scopes.slice(0, 32) };
 }
 
 /**

@@ -16,6 +16,9 @@ export async function up(knex) {
       t.string('registration').notNullable(); t.text('client_id').notNullable();
       // Public authorization server metadata used for refresh and revocation.
       t.text('issuer').notNullable(); t.text('metadata').notNullable(); t.text('redirect_uri').notNullable();
+      // The resource identifier the protected resource metadata declares (RFC 9728), sent as the RFC 8707
+      // `resource` on refresh. It may be a parent of the endpoint, which stays the binding for custody and routing.
+      t.text('resource').notNullable();
       t.text('sealed').notNullable();
       // A fresh id per sign-in: refreshes, failures and leases of a replaced connection never touch its successor.
       t.string('generation').notNullable();

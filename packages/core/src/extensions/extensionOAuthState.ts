@@ -14,7 +14,9 @@ export const OAUTH_AUDIT = 'extension_oauth_audit';
 export interface OAuthConnectionRow {
   instance_id: string; server_name: string; endpoint: string; state: 'connected' | 'needs_sign_in' | 'disconnecting';
   registration: 'metadata_document' | 'dynamic' | 'preregistered'; client_id: string;
-  issuer: string; metadata: string; redirect_uri: string; sealed: string;
+  issuer: string; metadata: string; redirect_uri: string;
+  /** The resource identifier declared by the protected resource metadata, sent as `resource` on refresh; may be a parent of `endpoint`. */
+  resource: string; sealed: string;
   generation: string; version: number; refresh_lease_until: number | null; refresh_lease_owner: string | null;
   connected_by: string; connected_at: number; updated_at: number;
 }

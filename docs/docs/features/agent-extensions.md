@@ -291,7 +291,9 @@ is disabled with an explanation.
 ### The sign-in
 
 Sign-in uses the authorization code flow with PKCE (`S256`). The request carries
-the `resource` parameter (RFC 8707) set to the MCP server URL, and a `state` that
+the `resource` parameter (RFC 8707) set to the resource identifier the protected
+resource metadata declares (the MCP server URL, or a parent path of it on the
+same origin), and a `state` that
 is random, single-use, expires after 10 minutes and is bound to the
 administrator's session, the library item and its endpoint. The callback refuses
 an unknown, reused or expired `state`, a `state` from another session or
@@ -323,8 +325,8 @@ refreshes a token shortly (one minute) before it expires and after the upstream
 answers `401`; the gateway then retries the call once. Refresh is single-flight
 per item: a second caller waits for the first result, across API processes too,
 and a rotated refresh token is stored atomically with the new access token, so
-concurrent runs never invalidate each other's token. Access tokens are on the
-gateway's redaction list.
+concurrent runs never invalidate each other's token. A refresh carries the same
+`resource` as the sign-in. Access tokens are on the gateway's redaction list.
 
 When the authorization server refuses a refresh (`invalid_grant` and similar),
 the item moves to **Needs sign-in** and administrators receive one Inbox

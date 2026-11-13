@@ -202,6 +202,36 @@ test('refresh before expiry is single-flight, persists a rotated refresh token, 
   assert.equal(f.synthetic.state.upstreamCalls.filter(c => c.method === 'refused').length, 2);
 });
 
+test('a parent resource identifier declared by the metadata is used for authorization, code exchange and refresh; the endpoint stays the binding', async t => {
+  const parent = 'https://8.8.8.8';
+  for (const discovery of ['challenge', 'well_known'] as const) {
+    const f = await fixture(t, { discovery, advertise: { dynamic: true }, accessTtl: 120, resource: parent });
+    assert.equal((await f.oauth.check('1', { url: OAUTH_MCP_URL }, OAUTH_URLS)).resource, parent);
+    await f.save([oauthServer()]);
+    const { authorizationUrl, params } = await f.consent();
+    assert.equal(new URL(authorizationUrl).searchParams.get('resource'), parent);
+    assert.deepEqual(await f.oauth.completeSignIn('1', 'session-a', params), { name: 'docs' });
+    const tokenRequests = () => f.synthetic.state.requests.filter(r => r.url === `${OAUTH_ISSUER}/token`).map(r => new URLSearchParams(r.body ?? ''));
+    assert.deepEqual(tokenRequests().map(form => [form.get('grant_type'), form.get('resource')]), [['authorization_code', parent]]);
+    const [row] = await f.connectionRows();
+    assert.equal(row.resource, parent);
+    assert.equal(row.endpoint, OAUTH_MCP_URL);
+    const { token } = await f.launch();
+    await f.call(token);
+    // Within the refresh margin: the refresh names the declared resource, and the call still goes to the endpoint.
+    f.tick(90 * 1000);
+    assert.match(JSON.stringify(await f.call(token, 2)), /Found the document/);
+    assert.equal(f.synthetic.state.tokenRequests.refresh_token, 1);
+    assert.deepEqual(tokenRequests().map(form => [form.get('grant_type'), form.get('resource')]), [['authorization_code', parent], ['refresh_token', parent]]);
+    assert.equal((await f.connectionRows())[0].state, 'connected');
+  }
+  // A resource that is not the endpoint or a path prefix of it on the same origin is still refused.
+  for (const other of ['https://8.8.8.8/other', 'https://8.8.4.4']) {
+    const f = await fixture(t, { advertise: { dynamic: true }, resource: other });
+    await assert.rejects(f.oauth.check('1', { url: OAUTH_MCP_URL }, OAUTH_URLS), /names another resource/);
+  }
+});
+
 test('a rejected refresh moves to Needs sign-in with one notification; later runs skip the server; a network failure changes nothing', async t => {
   const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 30 });
   await f.save([oauthServer()]);

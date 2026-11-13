@@ -28,6 +28,8 @@ export interface SyntheticOAuthOptions {
   /** Promise and send `iss` in authorization responses (RFC 9207). */
   issParameter?: boolean;
   revocation?: boolean;
+  /** The resource identifier the protected resource metadata declares; a strict provider requires exactly it as `resource`. Defaults to the MCP endpoint. */
+  resource?: string;
   now?: () => number;
 }
 
@@ -38,6 +40,7 @@ const random = (prefix: string) => `${prefix}_${randomBytes(18).toString('base64
 export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
   const now = options.now ?? Date.now;
   const discovery = options.discovery ?? 'challenge';
+  const resource = options.resource ?? OAUTH_MCP_URL;
   const clients = new Map<string, { secret?: string; redirectUris: string[] }>([[PREREGISTERED_CLIENT.id, { secret: PREREGISTERED_CLIENT.secret, redirectUris: [OAUTH_REDIRECT_URI] }]]);
   const codes = new Map<string, IssuedCode>();
   const accessTokens = new Map<string, { expiresAt: number; clientId: string }>();
@@ -79,7 +82,7 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
     client_id_metadata_document_supported: options.advertise?.metadataDocument === true,
     authorization_response_iss_parameter_supported: options.issParameter === true,
   };
-  const resourceMetadata = { resource: OAUTH_MCP_URL, authorization_servers: [OAUTH_ISSUER], scopes_supported: ['docs.read'] };
+  const resourceMetadata = { resource, authorization_servers: [OAUTH_ISSUER], scopes_supported: ['docs.read'] };
 
   // eslint-disable-next-line complexity -- one synthetic provider routes every endpoint
   const transport = async (request: OAuthHttpRequest): Promise<OAuthHttpResponse> => {
@@ -110,6 +113,8 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
       state.tokenRequests.authorization_code++;
       const clientId = authenticate(request, form); const code = codes.get(form.get('code') ?? '');
       if (!clientId) return invalidClient();
+      // RFC 8707: a resource other than the declared identifier is an invalid target.
+      if (form.get('resource') !== resource) return json(400, { error: 'invalid_target' });
       if (!code || code.used || code.clientId !== clientId || code.redirectUri !== form.get('redirect_uri') || code.resource !== form.get('resource')) return json(400, { error: 'invalid_grant' });
       code.used = true;
       if (createHash('sha256').update(form.get('code_verifier') ?? '').digest('base64url') !== code.challenge) return json(400, { error: 'invalid_grant', error_description: 'PKCE verification failed' });
@@ -121,7 +126,8 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
       if (state.refreshFailure === 'network') return json(503, { error: 'temporarily_unavailable' });
       const clientId = authenticate(request, form); const refresh = refreshTokens.get(form.get('refresh_token') ?? '');
       if (!clientId) return invalidClient();
-      if (state.refreshFailure === 'authorization' || !refresh || refresh.clientId !== clientId || form.get('resource') !== OAUTH_MCP_URL) return json(400, { error: 'invalid_grant' });
+      if (form.get('resource') !== resource) return json(400, { error: 'invalid_target' });
+      if (state.refreshFailure === 'authorization' || !refresh || refresh.clientId !== clientId) return json(400, { error: 'invalid_grant' });
       const issued = issueTokens(clientId, refresh.scope);
       if (options.rotate !== false) refreshTokens.delete(form.get('refresh_token')!);
       else { refreshTokens.delete(issued.refresh_token); delete (issued as Partial<typeof issued>).refresh_token; }
@@ -139,7 +145,7 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
     const url = new URL(authorizationUrl);
     const params = url.searchParams;
     const clientId = params.get('client_id')!;
-    if (url.origin + url.pathname !== metadata.authorization_endpoint || params.get('response_type') !== 'code' || params.get('code_challenge_method') !== 'S256' || params.get('resource') !== OAUTH_MCP_URL) throw new Error('Invalid authorization request');
+    if (url.origin + url.pathname !== metadata.authorization_endpoint || params.get('response_type') !== 'code' || params.get('code_challenge_method') !== 'S256' || params.get('resource') !== resource) throw new Error('Invalid authorization request');
     // A Client ID Metadata Document client id is ProPR's own URL; registered clients must know the redirect URI.
     if (clientId === OAUTH_CLIENT_METADATA_URL) { if (!metadata.client_id_metadata_document_supported) throw new Error('Unknown client'); clients.set(clientId, { redirectUris: [OAUTH_REDIRECT_URI] }); }
     const client = clients.get(clientId);
