@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import { up as createPullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../../core/src/db/migrations/20261006000000_create_review_scores.js';
 import { up as addReasoningLevelColumns } from '../../core/src/db/migrations/20261111000000_add_reasoning_level_columns.js';
+import { up as addBlockerCategories } from '../../core/src/db/migrations/20261112000000_add_review_score_blocker_categories.js';
 import { createReviewScoreRoutes, loadReviewScoreSummary, median, reviewScoreSummaryCsv } from '../routes/reviewScoreStats.js';
 import { createAnalyticsCache } from '../routes/analyticsCache.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
@@ -41,7 +42,9 @@ async function seedScore(seed: ScoreSeed): Promise<void> {
     repository_id: seed.repository ?? 'acme/repo', pr_number: seed.pr, task_id: seed.task ?? `review-${seed.pr}-${seed.at}`,
     implementation_task_id: seed.model ? `impl-${seed.pr}` : null, implementer_agent: seed.model ? 'agent' : null,
     implementer_model: seed.model, implementer_reasoning_level: seed.effort ?? null, reviewer_agent: 'codex', reviewer_model: seed.reviewer ?? GPT, score: seed.score,
-    blocker_count: seed.blockers ?? 0, suggestion_count: 0, cycle_number: seed.cycle ?? null, goal: seed.goal ?? null,
+    blocker_count: seed.blockers ?? 0, suggestion_count: 0,
+    // Category counts are stored beside the total and never change the score statistics.
+    blocker_categories: seed.blockers ? JSON.stringify({ correctness: seed.blockers - 1, style: 1 }) : null, cycle_number: seed.cycle ?? null, goal: seed.goal ?? null,
     goal_reached: seed.goal ? seed.goalReached ?? (!seed.blockers && seed.score >= seed.goal) : null,
     source: seed.goal ? 'ultrafix' : 'review', head_sha: `sha-${seed.score}`, created_at: seed.at,
   });
@@ -86,6 +89,7 @@ before(async () => {
   await createPullRequestState(database);
   await createReviewScores(database);
   await addReasoningLevelColumns(database);
+  await addBlockerCategories(database);
 
   // Opus PR 1: Ultrafix from 5 (with a blocker) to a clean 8 at cycle 2, merged, then a stray post-merge review.
   // Implemented at high effort.

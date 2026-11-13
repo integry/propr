@@ -117,6 +117,7 @@ export function formatActionableFindings(findings: ActionableFinding[]): string 
     return findings.map(finding => [
         `### ${finding.id}: ${finding.title}`,
         formatRecordFields([
+            ['category', finding.category],
             ['violatedRequirement', finding.violatedRequirement],
             ['evidence', finding.evidence],
             ['introducedByPR', `true — ${finding.introducedByPRExplanation}`],

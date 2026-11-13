@@ -19,6 +19,7 @@ const reviewComment = {
     actionableFindings: [{
         id: 'F3',
         title: 'Fence consumption',
+        category: 'correctness' as const,
         violatedRequirement: 'Only the lock owner may consume feedback',
         evidence: 'The lock token changed',
         introducedByPR: true as const,
