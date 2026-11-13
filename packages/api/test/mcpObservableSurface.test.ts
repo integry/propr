@@ -288,7 +288,7 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
   const nonToolTokens = new Set([
     'accepted', 'active', 'activity', 'all', 'approved', 'artifacts', 'auth', 'authorization', 'blockers',
     'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'creation', 'cursor',
-    'cycle', 'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
+    'cycle', 'cycles_exhausted', 'style_findings_only', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
     'executed', 'executing', 'failed', 'false', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
     'instructions', 'internal', 'iss', 'issue_created', 'issues', 'items', 'kind', 'labels', 'limit', 'manage',
     'mcp_access_log', 'mcp_operations', 'mcp_records', 'merge', 'merged', 'message', 'model', 'models',
@@ -307,6 +307,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'provider_approval', 'provider_question', 'question', 'questions', 'reason', 'summary',
     // Conditions, outcomes and event fields returned by wait_goal.
     'checkpoint', 'condition', 'event', 'lifecycle', 'matched', 'terminal', 'timed_out', 'unreachable',
+    // The wait_goal blocker condition and the blocker event's statuses.
+    'blocked', 'blocker', 'open', 'resolved', 'superseded',
     // Re-anchoring report fields returned by fix_review_findings.
     'applied', 'skipped', 'comparison', 'same_head', 'compared', 'unavailable', 'code_removed',
     // Reasons fix_review_findings gives for an identifier it cannot locate.
@@ -324,8 +326,34 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Grouping dimensions and figures of get_cost_breakdown rows.
+    'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
+    // Verdicts, gates, statuses and reason codes returned by get_pull_request_readiness.
+    'verdict', 'ready', 'waiting', 'blocked', 'closed', 'gate', 'gates', 'detail', 'pass', 'fail', 'not_applicable', 'checks', 'score',
+    'open', 'not_draft', 'mergeable', 'human_review', 'ai_review', 'active_work', 'policy',
+    'pull_request_open', 'pull_request_merged', 'pull_request_closed',
+    'checks_passing', 'checks_not_passing', 'no_ci', 'waiting_for_ci',
+    'merge_conflict', 'branch_behind_base', 'branch_protection_blocked', 'merge_state_unknown',
+    'no_changes_requested', 'changes_requested', 'review_required', 'review_state_unavailable',
+    'no_review', 'review_stale_head', 'score_below_goal', 'review_scores_unavailable',
+    'ultrafix_active', 'ultrafix_pending', 'ultrafix_failed', 'ultrafix_succeeded', 'ultrafix_state_unavailable', 'ultrafix_not_requested',
+    'no_active_work', 'propr_work_active', 'active_work_unavailable',
+    'armed', 'skipped_protected_path', 'skipped_disabled', 'skipped_empty_diff', 'skipped_policy_invalid', 'skipped_diff_unavailable', 'auto_merge_not_requested', 'auto_merge_request_unavailable', 'pull_request_changed',
+    'eligible', 'ineligible', 'transient', 'pr_label', 'linked_issue_label', 'no_auto_merge_label', 'epic_without_label',
+    'ultrafix_not_succeeded', 'linked_issue_unavailable',
+    // Outcomes, filters, domains and event types of list_repository_events and wait_repository_events.
+    'events', 'timeout', 'domains', 'types', 'domain', 'type', 'payload',
+    'pull_request', 'epic_queue', 'plan_issue',
+    'opened', 'head_changed', 'review_scored', 'ultrafix_started', 'ultrafix_ended', 'auto_merge_decision',
+    'advanced', 'status_changed',
+    // Replacement lineage of get_task: the lineage object, causes, decision states and skip reasons.
+    'lineage', 'infra_lost', 'provider_transient', 'dispatched', 'exhausted',
+    'cap_reached', 'budget_exhausted', 'user_cancelled', 'issue_closed', 'watchdog_stop', 'cost_cap_stop',
+    'blocked_stop', 'goal_task', 'unsupported_task', 'replacement_not_started',
+    // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.
+    'ask_operator', 'goal_question_max_wait_ms',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)

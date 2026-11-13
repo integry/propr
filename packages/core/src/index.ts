@@ -12,7 +12,7 @@ export * from './utils/constants.js';
 export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, recordAgentWatchdogTrip, agentWatchdogMetricKey, AGENT_WATCHDOG_METRIC_RULES } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
-export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
+export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
 export { WorkerStateManager, getStateManager, closeStateManager, TaskStates, isBookkeepingCancellation } from './utils/workerStateManager.js';
 export { taskStateExpectation } from './utils/workerStateTransition.js';
 export { hashTaskAttemptToken } from './utils/taskAttemptGeneration.js';
@@ -158,9 +158,10 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, readActiveTasksForPR, readCiMergeReadiness, classifyCiMergeReadiness, readPRHeadObservation, getUltrafixLoopState, type CiMergeClassification, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type AutoMergeReevaluationOptions, type StatusEventPayload } from './webhook/checkRunHandler.js';
-export type { AutoMergeEvaluationOutcome } from './webhook/autoMergeEvaluation.js';
+export { evaluateAutoMergeEligibilityWithReason, type AutoMergeEvaluationOutcome, type AutoMergeEligibility, type AutoMergeEligibilityReason, type AutoMergeEligibilityResult } from './webhook/autoMergeEvaluation.js';
+export * from './webhook/pullRequestReadiness.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';
@@ -600,7 +601,7 @@ export {
     PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS, PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
     notificationService, createNotificationEvent, assignNotificationRecipients, listNotifications,
     getUnreadNotificationCount, markNotificationRead, dismissNotification, dismissAllNotifications, dismissNotificationReceipts,
-    dismissNotificationsForPullRequest, dismissSupersededPullRequestAttentionNotifications, dismissSystemFailureNotifications,
+    dismissNotificationsByDeduplicationKeys, dismissNotificationsForPullRequest, dismissSupersededPullRequestAttentionNotifications, dismissSystemFailureNotifications,
     getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference, upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';
@@ -656,10 +657,18 @@ export * from './services/agents/agentRunNovelty.js';
 export * from './services/agents/agentRunProductivity.js';
 export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
+export * from './config/tokenOutlierSettings.js';
+export {
+    recordTokenUsageSample, evaluateTokenOutlier, medianTokens, readTokenBaseline, countRecentTokenOutlierAlerts,
+    loadTokenOutlierAutomationPause, describeTokenOutlierAlert, notifyTokenOutlier, formatTokenCount, TOKEN_SAMPLES_TABLE,
+} from './utils/tokenOutlierAlert.js';
+export type { TokenUsageSample, TokenBaselineKey, TokenOutlierEvaluation, TokenOutlierAlert, TokenOutlierDependencies, TokenOutlierResult, TokenOutlierPause, TokenOutlierNotificationOutcome } from './utils/tokenOutlierAlert.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/reviewScoreStore.js';
+// Durable repository change-event journal (pull requests, epic queues, plan issues).
+export * from './services/repositoryEventJournal.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

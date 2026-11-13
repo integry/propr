@@ -16,7 +16,12 @@ interface SubmissionResult {
   state: TaskSubmission['state'];
   issueNumber: number | null;
   issueUrl: string | null;
+  /** The latest attempt the submission is following (compatibility field). */
   taskId: string | null;
+  /** The submission's first execution; never changes once set. */
+  firstTaskId: string | null;
+  /** The newest execution: a label retry or automatic replacement attempt of the same issue. */
+  latestTaskId: string | null;
   error: string | null;
   progress: SubmissionProgress;
 }
@@ -113,11 +118,17 @@ async function ownedSubmission(deps: ToolDeps, principal: McpPrincipal, reposito
   return row;
 }
 
-async function projectSubmission(deps: ToolDeps, row: TaskSubmission) {
+/**
+ * `row` selects the execution the projection follows; `pointers` is the stored submission whose
+ * first and latest task pointers are reported, so a receipt bound to one execution still shows
+ * where the submission has moved since.
+ */
+async function projectSubmission(deps: ToolDeps, row: TaskSubmission, pointers: TaskSubmission = row) {
   const progress = await submissionProgress(deps.db, row);
   const taskId = progress.task?.id ?? row.latest_task_id ?? row.task_id;
   return submissionResult({ id: row.id, state: row.state, issueNumber: row.issue_number,
-    issueUrl: row.issue_url, taskId, error: row.error, progress });
+    issueUrl: row.issue_url, taskId, firstTaskId: pointers.task_id ?? null,
+    latestTaskId: pointers.latest_task_id ?? pointers.task_id ?? null, error: row.error, progress });
 }
 
 function resolvedTaskId(result: Record<string, unknown>): string | undefined {
@@ -136,7 +147,7 @@ async function projectOperationSubmission(deps: ToolDeps, submission: TaskSubmis
   const boundTaskId = resolvedTaskId(result) ?? submission.task_id ?? undefined;
   const current = await projectSubmission(deps, boundTaskId
     ? { ...submission, task_id: boundTaskId, latest_task_id: boundTaskId }
-    : submission);
+    : submission, submission);
   return { current, taskId: boundTaskId ?? current.progress.task?.id ?? current.taskId ?? undefined };
 }
 
@@ -152,7 +163,7 @@ export async function trackTaskSubmission(deps: ToolDeps, row: Operation, princi
     // projected from that resolved task, retaining its terminal progress.
     const taskId = resolvedTaskId(result);
     const resolved = taskId
-      ? await projectSubmission(deps, { ...submission, task_id: taskId, latest_task_id: taskId })
+      ? await projectSubmission(deps, { ...submission, task_id: taskId, latest_task_id: taskId }, submission)
       : undefined;
     const projectedProgress = result.progress && resolved
       ? { ...result.progress, issue: resolved.progress.issue ?? result.progress.issue,
@@ -170,6 +181,9 @@ export async function trackTaskSubmission(deps: ToolDeps, row: Operation, princi
     if (canonical(JSON.parse(serialized)) !== canonical(result)) {
       await deps.db('mcp_operations').where({ id: row.id }).update({ result: serialized, updated_at: Date.now() });
     }
+    // The submission's pointers are read live and never persisted here, so a later replacement
+    // attempt does not rewrite (and re-time) a terminal receipt.
+    if (resolved) receipt.result = { ...refreshed, firstTaskId: resolved.firstTaskId, latestTaskId: resolved.latestTaskId };
     return;
   }
   const { current, taskId } = await projectOperationSubmission(deps, submission, result);

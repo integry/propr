@@ -30,9 +30,14 @@ export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
 };
 
 const fingerprint = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/**
+ * `taskId` is the first execution (as it always was); `firstTaskId` repeats it and
+ * `latestTaskId` follows label retries and automatic replacement attempts of the same issue.
+ */
 const publicSubmission = (row: TaskSubmission) => ({
   id: row.id, state: row.state, issueNumber: row.issue_number, issueUrl: row.issue_url,
-  taskId: row.task_id, error: row.error,
+  taskId: row.task_id, firstTaskId: row.task_id ?? null, latestTaskId: row.latest_task_id ?? row.task_id ?? null,
+  error: row.error,
 });
 
 async function userRepository(req: Request, repository: string) {

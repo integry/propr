@@ -9,10 +9,12 @@
 
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
+import { REASONING_LEVELS } from '@propr/shared';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { chunk } from './dashboardQueries.js';
 import { validateRepository, validateRepositoryFilter } from './validation.js';
 import type { AnalyticsCache } from './analyticsCache.js';
+import { hasColumn } from './analyticsSchema.js';
 import { loadPullRequestCosts, type PullRequestSpend } from './reviewScoreSpend.js';
 
 interface ScoreRow {
@@ -22,6 +24,7 @@ interface ScoreRow {
   task_id: string;
   implementer_model: string | null;
   implementer_agent: string | null;
+  implementer_reasoning_level: string | null;
   score: number;
   blocker_count: number;
   cycle_number: number | null;
@@ -82,17 +85,31 @@ export interface ReviewScoreModelSummary {
   runs_to_merge: MeanFigure;
 }
 
+/** The bucket for PRs whose implementer's effort was never recorded, such as historical scores. */
+export const UNKNOWN_EFFORT = 'unknown';
+
+/** The same figures for the PRs one implementer model produced at one reasoning level (effort). */
+export interface ReviewScoreEffortSummary extends ReviewScoreModelSummary {
+  /** The implementation's recorded reasoning level, or `unknown` when none was recorded. */
+  implementer_reasoning_level: string;
+}
+
 export interface ReviewScoreSummary {
   period: string | null;
   repository: string;
   prs_scored: number;
   scores_recorded: number;
+  /** Per implementer model, over every effort. */
   models: ReviewScoreModelSummary[];
+  /** Per implementer model and effort, ordered as `models`, then by effort with `unknown` last. */
+  by_effort: ReviewScoreEffortSummary[];
 }
 
 interface PullRequestFacts {
   model: string | null;
   agent: string | null;
+  /** The effort recorded with the implementer model, or `unknown`. */
+  effort: string;
   /** The PR's earliest score in its whole history; a merged PR's earliest at or before the merge. */
   initial: number | null;
   final: number | null;
@@ -192,6 +209,7 @@ function pullRequestFacts(
   return {
     model: attributed?.implementer_model ?? null,
     agent: attributed?.implementer_agent ?? null,
+    effort: attributed?.implementer_reasoning_level?.trim() || UNKNOWN_EFFORT,
     // The same starting point the delta runs from, never the window's first score.
     initial: history?.initial ?? null,
     final,
@@ -230,6 +248,37 @@ function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewSc
   };
 }
 
+const compareModels = (left: string | null, right: string | null): number =>
+  left === right ? 0 : left === null ? 1 : right === null ? -1 : left.localeCompare(right);
+
+/** Known levels from lowest to highest effort, then any other recorded level, then `unknown`. */
+function compareEfforts(left: string, right: string): number {
+  const rank = (effort: string): number => {
+    if (effort === UNKNOWN_EFFORT) return Number.MAX_SAFE_INTEGER;
+    const index = (REASONING_LEVELS as readonly string[]).indexOf(effort);
+    return index === -1 ? REASONING_LEVELS.length : index;
+  };
+  return rank(left) - rank(right) || left.localeCompare(right);
+}
+
+/** One row per implementer model and effort, each model's rows in the order of `models`. */
+function summarizeEfforts(models: ReviewScoreModelSummary[], prs: PullRequestFacts[]): ReviewScoreEffortSummary[] {
+  const order = new Map(models.map((model, index) => [model.implementer_model, index]));
+  const groups = new Map<string, { model: string | null; effort: string; prs: PullRequestFacts[] }>();
+  for (const pr of prs) {
+    const key = JSON.stringify([pr.model, pr.effort]);
+    const group = groups.get(key) ?? { model: pr.model, effort: pr.effort, prs: [] };
+    group.prs.push(pr);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .sort((left, right) => (order.get(left.model) ?? 0) - (order.get(right.model) ?? 0) || compareEfforts(left.effort, right.effort))
+    .map(group => {
+      const { implementer_model, implementer_agent, ...figures } = summarizeModel(group.model, group.prs);
+      return { implementer_model, implementer_agent, implementer_reasoning_level: group.effort, ...figures };
+    });
+}
+
 /**
  * Per implementer model, the review quality of PRs scored in the window.
  * With a cache, an all-time read is remembered for a short while.
@@ -238,8 +287,11 @@ export async function loadReviewScoreSummary(
   db: Knex, analyticsWindow: AnalyticsWindow | null, repository = 'all', cache?: AnalyticsCache,
 ): Promise<ReviewScoreSummary> {
   if (cache) return cache.remember(`review-scores|${repository}`, analyticsWindow, () => loadReviewScoreSummary(db, analyticsWindow, repository));
+  // Scores written before effort was recorded have none; an instance without the column has none at all.
+  const effort = await hasColumn(db, 'review_scores', 'implementer_reasoning_level')
+    ? 'implementer_reasoning_level' : db.raw('NULL as implementer_reasoning_level');
   const query = db('review_scores')
-    .select('id', 'repository_id', 'pr_number', 'task_id', 'implementer_model', 'implementer_agent', 'score',
+    .select('id', 'repository_id', 'pr_number', 'task_id', 'implementer_model', 'implementer_agent', effort, 'score',
       'blocker_count', 'cycle_number', 'goal', 'goal_reached', 'created_at')
     .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }]);
   if (repository !== 'all') query.where('repository_id', repository);
@@ -265,20 +317,19 @@ export async function loadReviewScoreSummary(
     loadScoreEndpoints(db, byPullRequest, outcomes),
   ]);
 
+  const facts = [...byPullRequest].map(([key, prRows]) =>
+    pullRequestFacts(prRows, outcomes.get(key), costs.get(key) ?? null, endpoints.get(key) ?? null));
   const byModel = new Map<string | null, PullRequestFacts[]>();
-  for (const [key, prRows] of byPullRequest) {
-    const facts = pullRequestFacts(prRows, outcomes.get(key), costs.get(key) ?? null, endpoints.get(key) ?? null);
-    byModel.set(facts.model, [...(byModel.get(facts.model) ?? []), facts]);
-  }
+  for (const pr of facts) byModel.set(pr.model, [...(byModel.get(pr.model) ?? []), pr]);
   const models = [...byModel].map(([model, prs]) => summarizeModel(model, prs))
-    .sort((left, right) => right.prs_scored - left.prs_scored
-      || (left.implementer_model === null ? 1 : right.implementer_model === null ? -1 : left.implementer_model.localeCompare(right.implementer_model)));
+    .sort((left, right) => right.prs_scored - left.prs_scored || compareModels(left.implementer_model, right.implementer_model));
   return {
     period: analyticsWindow?.timeframe ?? null,
     repository,
     prs_scored: byPullRequest.size,
     scores_recorded: rows.length,
     models,
+    by_effort: summarizeEfforts(models, facts),
   };
 }
 
@@ -301,9 +352,10 @@ export async function withModelScoreFigures<T extends { model: string | null }>(
   });
 }
 
-const CSV_COLUMNS: Array<[string, (model: ReviewScoreModelSummary) => string | number | null]> = [
+const CSV_COLUMNS: Array<[string, (model: ReviewScoreEffortSummary) => string | number | null]> = [
   ['implementer_model', model => model.implementer_model],
   ['implementer_agent', model => model.implementer_agent],
+  ['implementer_reasoning_level', model => model.implementer_reasoning_level],
   ['prs_scored', model => model.prs_scored],
   ['first_score_mean', model => model.first_score.mean],
   ['first_score_median', model => model.first_score.median],
@@ -325,16 +377,17 @@ const CSV_COLUMNS: Array<[string, (model: ReviewScoreModelSummary) => string | n
 ];
 
 /** RFC 4180 cell; unknown is an empty cell, and text cannot start a spreadsheet formula. */
-function csvCell(value: string | number | null): string {
+export function csvCell(value: string | number | null): string {
   if (value === null) return '';
   if (typeof value === 'number') return String(value);
   const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
-export function reviewScoreSummaryCsv(summary: ReviewScoreSummary): string {
+/** One row per implementer model and effort; the per-model totals are the JSON summary's `models`. */
+export function reviewScoreSummaryCsv(summary: Pick<ReviewScoreSummary, 'by_effort'>): string {
   const lines = [CSV_COLUMNS.map(([name]) => name).join(',')];
-  for (const model of summary.models) lines.push(CSV_COLUMNS.map(([, read]) => csvCell(read(model))).join(','));
+  for (const model of summary.by_effort) lines.push(CSV_COLUMNS.map(([, read]) => csvCell(read(model))).join(','));
   return `${lines.join('\r\n')}\r\n`;
 }
 
@@ -349,6 +402,8 @@ export interface PullRequestScoreHistory {
     source: string;
     score: number;
     goal: number | null;
+    /** The review job's goal verdict (Ultrafix cycles); null for a plain `/review`. */
+    goal_reached: boolean | null;
     blocker_count: number;
     suggestion_count: number;
     reviewer_agent: string | null;
@@ -365,13 +420,17 @@ export async function loadPullRequestScores(db: Knex, repository: string, prNumb
   const [scores, state] = await Promise.all([
     db('review_scores').where({ repository_id: repository, pr_number: prNumber })
       .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }])
-      .select('cycle_number', 'source', 'score', 'goal', 'blocker_count', 'suggestion_count', 'reviewer_agent',
-        'reviewer_model', 'implementer_model', 'head_sha', 'task_id', 'created_at') as Promise<PullRequestScoreHistory['scores']>,
+      .select('cycle_number', 'source', 'score', 'goal', 'goal_reached', 'blocker_count', 'suggestion_count', 'reviewer_agent',
+        'reviewer_model', 'implementer_model', 'head_sha', 'task_id', 'created_at') as Promise<Array<Omit<PullRequestScoreHistory['scores'][number], 'goal_reached'> & { goal_reached: boolean | number | null }>>,
     db('notification_pull_request_state').where({ repository, pr_number: prNumber })
       .select('outcome', 'merged_at', 'closed_at').first() as Promise<{ outcome: string | null; merged_at: string | null; closed_at: string | null } | undefined>,
   ]);
   const outcome = state?.outcome === 'merged' || state?.merged_at ? 'merged' : state?.outcome === 'closed' ? 'closed' : null;
-  return { repository, pr_number: prNumber, outcome, merged_at: state?.merged_at ?? null, closed_at: state?.closed_at ?? null, scores };
+  return {
+    repository, pr_number: prNumber, outcome, merged_at: state?.merged_at ?? null, closed_at: state?.closed_at ?? null,
+    // SQLite stores booleans as 0/1; the projection is always a boolean or null.
+    scores: scores.map(score => ({ ...score, goal_reached: score.goal_reached === null || score.goal_reached === undefined ? null : Boolean(score.goal_reached) })),
+  };
 }
 
 interface ReviewScoreRoutesDeps {

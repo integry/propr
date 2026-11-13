@@ -4,6 +4,7 @@
 
 import type { Knex } from 'knex';
 import { whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { failedExecutionSums } from './analyticsAggregates.js';
 import { withModelScoreFigures } from './reviewScoreStats.js';
 import type { AnalyticsCache } from './analyticsCache.js';
 
@@ -12,6 +13,8 @@ interface ModelUsageRow {
   runs?: number | string;
   tasks?: number | string;
   cost?: number | string | null;
+  failed_cost?: number | string | null;
+  failed_runs?: number | string | null;
   input_tokens?: number | string | null;
   output_tokens?: number | string | null;
 }
@@ -28,6 +31,12 @@ export interface ModelUsage {
   tasks: number;
   tokens: number;
   cost_usd: number;
+  /** Of `cost_usd`, executions that succeeded. */
+  successful_cost_usd: number;
+  /** Of `cost_usd`, executions that failed: spend on attempts that delivered nothing. */
+  failed_cost_usd: number;
+  /** Of `runs`, executions that failed. */
+  failed_runs: number;
   /** Mean final review score of the PRs this model implemented; present when review scores are recorded. */
   mean_final_score?: number | null;
   /** Scored PRs behind `mean_final_score`. */
@@ -68,24 +77,33 @@ export function executionTokenSums(db: Knex): { input: Knex.Raw; output: Knex.Ra
 export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow | null, cache?: AnalyticsCache): Promise<ModelUsage[]> {
   // A null and an empty model name are both unknown, and group as one.
   const tokens = executionTokenSums(db);
+  const failed = await failedExecutionSums(db);
   const runsQuery = db('llm_executions as e')
     .select(db.raw(`NULLIF(e.model_name, '') as model_name`))
     .count('* as runs')
     .countDistinct('e.task_id as tasks')
     .sum('e.cost_usd as cost')
     .select(db.raw('? as input_tokens', [tokens.input]), db.raw('? as output_tokens', [tokens.output]))
+    .select(db.raw('? as failed_cost', [failed.cost]), db.raw('? as failed_runs', [failed.runs]))
     .groupByRaw(`NULLIF(e.model_name, '')`);
   whereCreatedWithin(runsQuery, 'e.start_time', analyticsWindow);
 
   const runs = await runsQuery as unknown as ModelUsageRow[];
   const usage: ModelUsage[] = runs
-    .map(row => ({
-      model: row.model_name ?? null,
-      runs: Number(row.runs || 0),
-      tasks: Number(row.tasks || 0),
-      tokens: Number(row.input_tokens || 0) + Number(row.output_tokens || 0),
-      cost_usd: Number(Number(row.cost || 0).toFixed(2)),
-    }))
+    .map(row => {
+      const cost = Number(row.cost || 0);
+      const failedCost = Number(row.failed_cost || 0);
+      return {
+        model: row.model_name ?? null,
+        runs: Number(row.runs || 0),
+        tasks: Number(row.tasks || 0),
+        tokens: Number(row.input_tokens || 0) + Number(row.output_tokens || 0),
+        cost_usd: Number(cost.toFixed(2)),
+        successful_cost_usd: Number((cost - failedCost).toFixed(2)),
+        failed_cost_usd: Number(failedCost.toFixed(2)),
+        failed_runs: Number(row.failed_runs || 0),
+      };
+    })
     // The unknown row is listed last, whatever its size.
     .sort((left, right) => (left.model === null ? 1 : 0) - (right.model === null ? 1 : 0)
       || right.runs - left.runs || right.tokens - left.tokens || String(left.model).localeCompare(String(right.model)));

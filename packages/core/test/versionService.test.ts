@@ -48,7 +48,7 @@ test('Antigravity installer versions only allow latest', async () => {
         throw new Error('fetch should not be called for installer-backed CLI versions');
     };
 
-    assert.equal(await resolveVersion('antigravity', 'default'), '1.5.6');
+    assert.equal(await resolveVersion('antigravity', 'default'), '1.5.8');
     assert.equal(await resolveVersion('antigravity', 'tag', 'latest'), 'latest');
     await assert.rejects(
         () => resolveVersion('antigravity', 'tag', 'preview'),
@@ -79,8 +79,8 @@ test('default Claude Code and Codex versions match the bundled agent image pins'
     const buildScript = repoFile('scripts/build-images.sh');
     const versions = getDefaultAgentCliVersionMatrix();
 
-    assert.equal(versions.claude, '2.1.322');
-    assert.equal(versions.codex, '0.167.2');
+    assert.equal(versions.claude, '2.1.323');
+    assert.equal(versions.codex, '0.168.0');
     for (const [arg, version] of [['CLAUDE_CLI_VERSION', versions.claude], ['CODEX_CLI_VERSION', versions.codex]] as const) {
         const dockerPins = [...dockerfile.matchAll(new RegExp(`^ARG ${arg}=(.+)$`, 'gm'))].map(match => match[1]);
         assert.ok(dockerPins.length > 0, `${arg} pin in Dockerfile.agent`);

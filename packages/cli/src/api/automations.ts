@@ -17,6 +17,7 @@ import type {
   AutomationRunNoChangeReason,
   AutomationRunState,
   AutomationRunTrigger,
+  AutomationTemplateCatalog,
 } from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { mutate } from "./goals.js";
@@ -158,6 +159,13 @@ export async function listAutomations(
     limit: response.data.limit ?? page.limit ?? automations.length,
     offset: response.data.offset ?? page.offset ?? 0,
   };
+}
+
+/** The shipped template catalog. Templates prefill the Web UI form; listing one creates nothing. */
+export async function listAutomationTemplates(options: AutomationApiOptions = {}): Promise<AutomationTemplateCatalog> {
+  const client = await resolveClient(options);
+  const response = await client.get<Partial<AutomationTemplateCatalog>>("/api/automation-definitions/templates");
+  return { version: response.data.version ?? 1, templates: response.data.templates ?? [] };
 }
 
 export async function getAutomation(id: string, options: AutomationApiOptions = {}): Promise<Automation> {

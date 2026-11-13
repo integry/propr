@@ -90,6 +90,9 @@ export interface StatsOverviewUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_cost_usd: number;
+  /** Of `total_cost_usd`, executions that succeeded and that failed; absent from servers that predate the split. */
+  successful_cost_usd?: number;
+  failed_cost_usd?: number;
   /**
    * Distinct tasks with at least one execution per model: the legacy figure
    * the Models table falls back to, labelled Tasks, when a server predates
@@ -151,6 +154,10 @@ export interface StatsOverviewModelUsage {
   tasks: number;
   tokens: number;
   cost_usd: number;
+  /** Of `cost_usd`, executions that succeeded and that failed, and the failed runs; absent from older servers. */
+  successful_cost_usd?: number;
+  failed_cost_usd?: number;
+  failed_runs?: number;
   /** Mean final review score of PRs this model implemented; absent from servers without review scores. */
   mean_final_score?: number | null;
   n_scored?: number;
@@ -202,12 +209,21 @@ export interface ReviewScoreModelSummary {
   runs_to_merge?: ReviewScoreMean;
 }
 
+/** The same figures for one implementer model at one reasoning level (effort). */
+export interface ReviewScoreEffortSummary extends ReviewScoreModelSummary {
+  /** The implementation's recorded reasoning level, or `unknown` when none was recorded. */
+  implementer_reasoning_level: string;
+}
+
 export interface ReviewScoreSummaryResponse {
   period: string | null;
   repository: string;
   prs_scored: number;
   scores_recorded: number;
+  /** Per implementer model, over every effort. */
   models: ReviewScoreModelSummary[];
+  /** Per implementer model and effort; absent from servers that predate it. */
+  by_effort?: ReviewScoreEffortSummary[];
 }
 
 export const getReviewScoreSummary = async (period?: AnalyticsTimeframe): Promise<ReviewScoreSummaryResponse> => {

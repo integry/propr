@@ -29,6 +29,7 @@ import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
+import { installRepositoryEventAppendHook } from './services/repositoryEventWait.js';
 import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createConnectStorageCorsMiddleware, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
@@ -43,6 +44,9 @@ import {
   createAgentVersionRoutes,
   createStatsRoutes,
   createReviewScoreRoutes,
+  createPullRequestReadinessRoutes,
+  createRepositoryEventRoutes,
+  createCostExportRoutes,
   createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
@@ -420,6 +424,11 @@ export function setupRoutes(): void {
   const analyticsCache = createAnalyticsCache();
   const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
   const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
+  const pullRequestReadinessRoutes = createPullRequestReadinessRoutes({ db });
+  const repositoryEventRoutes = createRepositoryEventRoutes({ db });
+  // Journal appends committed in this process wake repository event waiters at once.
+  void installRepositoryEventAppendHook();
+  const costExportRoutes = createCostExportRoutes({ db });
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: isDashboardSummaryEnabled });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
@@ -481,6 +490,9 @@ export function setupRoutes(): void {
     repoTodoRoutes,
     repositoryMediaRoutes,
     reviewScoreRoutes,
+    pullRequestReadinessRoutes,
+    repositoryEventRoutes,
+    costExportRoutes,
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,
@@ -591,8 +603,8 @@ function setupWebhookRoute(): void {
         redis: { set: (key, value, opts) => opts
           ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
           : redisClient.set(key, value) as Promise<string | null> },
-        processor: async (payload, event, cid) => {
-          await processWebhookEvent(payload, event as WebhookEventType, cid);
+        processor: async (payload, event, cid, deliveryId) => {
+          await processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId);
         },
         correlationId,
         mergedPRTaskCanceller: {

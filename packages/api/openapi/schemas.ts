@@ -185,21 +185,6 @@ export const TaskPage = component('TaskPage', z.object({
   totalRuns: z.number().int().optional().describe('With `groupBy=task`: matching runs across all tasks.'),
 }), 'A page of task runs.');
 
-export const TaskEvent = component('TaskEvent', z.object({
-  state: z.string().describe('Lifecycle state entered at this point.'),
-  timestamp: z.string().describe('When the state was entered (ISO 8601).'),
-  reason: z.string().nullable().optional(),
-  message: z.string().optional(),
-  metadata: z.object({}).loose().nullable().optional(),
-}).loose(), 'One entry of a task\'s lifecycle history.');
-
-export const TaskHistory = component('TaskHistory', z.object({
-  taskId: z.string(),
-  history: z.array(TaskEvent).describe('Lifecycle events, oldest first.'),
-  taskInfo: z.object({}).loose().nullable().describe('Repository, issue, pull request and agent details of the task.'),
-  budget: z.object({}).loose().optional().describe('Spend so far against the task\'s cost cap, when a cap applies.'),
-}).loose(), 'A task together with its lifecycle events.');
-
 export const ExtensionLibraryInput = component('ExtensionLibraryInput', extensionLibraryInputSchema as unknown as z.ZodType, 'Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
 export const ExtensionLibrarySave = component('ExtensionLibrarySave', z.strictObject({ input: ExtensionLibraryInput, expectedRevision: z.number().int().min(0), secrets: z.record(z.string(), z.string().nullable()).optional() }));
 export const ExtensionItemEnabledRequest = component('ExtensionItemEnabledRequest', z.strictObject({
@@ -250,7 +235,9 @@ export const TaskSubmission = component('TaskSubmission', z.object({
   state: z.enum(['prepared', 'creating', 'issue_created', 'queued', 'failed']),
   issueNumber: z.number().int().nullable(),
   issueUrl: z.string().nullable(),
-  taskId: z.string().nullable(),
+  taskId: z.string().nullable().describe('The first execution, kept for compatibility; equals `firstTaskId`.'),
+  firstTaskId: z.string().nullable().describe('The submission\'s first execution.'),
+  latestTaskId: z.string().nullable().describe('The newest execution of the submission\'s issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`.'),
   error: z.string().nullable(),
 }), 'Progress of a task submission. `queued` means the run was enqueued.');
 
@@ -333,7 +320,7 @@ export const JsonObject = component('JsonObject', z.object({}).loose(), 'A JSON 
  */
 export const apiQuerySets = z.registry<{ id: string }>();
 
-function querySet<T extends z.ZodObject>(id: string, schema: T): T {
+export function querySet<T extends z.ZodObject>(id: string, schema: T): T {
   apiQuerySets.add(schema, { id });
   return schema;
 }
@@ -470,3 +457,24 @@ export const FollowupHandoffReleaseResult = component('FollowupHandoffReleaseRes
   released: z.boolean(),
   reason: z.string().optional().describe('Refusal code when `released` is false, for example `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered` (a Git worktree registration still holds the branch, even after a forced detach), `worktree_registrations_unavailable` or `cancelled_claims_withdrawal_failed` (the claimed comments of a cancelled request could not be withdrawn from the pending list, so releasing could let them run).'),
 }), 'Outcome of a release request; refusals answer `409` with `released: false`.');
+
+const readinessGateStatus = z.enum(['pass', 'waiting', 'fail', 'unknown', 'not_applicable']);
+export const PullRequestReadinessQuery = querySet('PullRequestReadinessQuery', z.object({ repository: z.string().describe('`owner/repo` of the pull request.') }));
+export const PullRequestReadiness = component('PullRequestReadiness', z.object({
+  repository: z.string(), number: z.number().int().positive(), head: z.string().describe('Head SHA the verdict was evaluated for.'), base: z.string(),
+  state: z.enum(['open', 'merged', 'closed']), draft: z.boolean(),
+  verdict: z.enum(['ready', 'waiting', 'blocked', 'merged', 'closed', 'unknown']).describe('`merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`.'),
+  gates: z.array(z.object({
+    gate: z.enum(['open', 'not_draft', 'checks', 'mergeable', 'human_review', 'ai_review', 'ultrafix', 'active_work', 'policy']),
+    status: readinessGateStatus,
+    reason: z.string().describe('Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`.'),
+    detail: z.string().optional(),
+  })).describe('Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy.'),
+  blockingReasons: z.array(z.string()).describe('Reason codes of gates with status `fail`.'),
+  waitingReasons: z.array(z.string()).describe('Reason codes of gates with status `waiting` or `unknown`.'),
+  review: z.object({ score: z.number(), goal: z.number(), goalReached: z.boolean(), reviewedHead: z.string().nullable(), matchesCurrentHead: z.boolean() }).nullable().describe('Latest persisted ProPR AI review; null when there is none.'),
+  ultrafix: z.object({ active: z.boolean(), completionStatus: z.enum(['succeeded', 'failed']).nullable(), labelPresent: z.boolean() }).nullable().describe('Null when the Ultrafix state could not be read.'),
+  checks: z.object({ reason: z.enum(['checks_passing', 'checks_not_passing', 'no_ci', 'waiting_for_ci', 'unavailable']), blockingFailed: z.array(z.string()), blockingPending: z.array(z.string()), nonBlockingCount: z.number().int().nonnegative() }),
+  autoMerge: z.object({ eligible: z.enum(['eligible', 'ineligible', 'transient']), reason: z.string().describe('Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`.'), policy: z.string().nullable().describe('Auto-merge policy reason; null when auto-merge is not requested.') }),
+  evaluatedAt: isoDateTime,
+}), 'Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state.');

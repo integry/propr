@@ -143,7 +143,7 @@ export function agentRunIssueRef(definition: StoredAgentDefinition): IssueRef {
         repoOwner: owner,
         repoName: repo,
         type: 'agent-run',
-        title: `Agent: ${definition.name}`,
+        title: definition.name,
         subtitle: 'Report run',
     };
 }

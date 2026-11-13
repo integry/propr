@@ -11,6 +11,9 @@ import { queuedModelLabel } from './epicQueueModelLabel.js';
 import { isAwaitingHumanMergeReason } from './epicQueueHumanMerge.js';
 import { AGENT_BLOCKED_REASON_LIKE, isAgentBlockedReason } from './epicQueueBlockedHead.js';
 import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
+import { appendRepositoryEvent } from '../repositoryEventJournal.js';
+import { epicQueueAdvanceEvent, epicQueueEvent, setEpicQueueBlocked, updateEpicQueueWithEvent } from './epicQueueJournal.js';
+import { persistRecoveredEpicLabel, recoverOwedEpicLabel } from './epicQueueLabelRecovery.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
 export type EpicQueueStatus = 'active' | 'completed' | 'cancelled';
@@ -110,7 +113,11 @@ export async function createEpicExecutionQueue(input: {
       });
     if (!replaced) throw new Error('An active epic execution queue already exists for this plan.');
   }
-  return (await getEpicExecutionQueue(input.draftId, { database }))!;
+  const queue = (await getEpicExecutionQueue(input.draftId, { database }))!;
+  // Journaled in the caller's transaction (the MCP claim) when there is one.
+  await appendRepositoryEvent(database, epicQueueEvent(queue, 'started', { issueNumber: queue.issues[0], occurredAt: timestamp,
+    payload: { issues: queue.issues, advanceOn: queue.advanceOn, parallel: queue.parallel }, dedupeKey: `epic:${queue.executionId}:started` }));
+  return queue;
 }
 
 export function decideEpicAdvance(policy: EpicAdvancePolicy, status: PlanIssueStatus): 'advance' | 'wait' | 'ignore' {
@@ -170,16 +177,14 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   if (decision === 'ignore') return;
   const timestamp = (deps.now ?? Date.now)();
   if (decision === 'wait') {
-    await database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor })
-      .update({ blocked_reason: `Issue #${issueNumber} is ${currentStatus}; this epic advances only after it is merged. Reopen, fix and merge it to continue.`, updated_at: timestamp });
+    await setEpicQueueBlocked(database, queue, `Issue #${issueNumber} is ${currentStatus}; this epic advances only after it is merged. Reopen, fix and merge it to continue.`, { timestamp });
     return;
   }
   await releaseEpicIssueLabels(queue, currentStatus, database, timestamp);
   const cursor = queue.cursor + 1;
-  const changed = await database('epic_execution_queues')
-    .where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor })
-    .update({ cursor, head_started_at: null, blocked_reason: null,
-      status: cursor === queue.issues.length ? 'completed' : 'active', updated_at: timestamp });
+  const changed = await updateEpicQueueWithEvent(database, { draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor },
+    { cursor, head_started_at: null, blocked_reason: null, status: cursor === queue.issues.length ? 'completed' : 'active', updated_at: timestamp },
+    epicQueueAdvanceEvent(queue, issueNumber, timestamp));
   if (!changed) return;
   if (cursor === queue.issues.length) await finalizeCompletedEpicQueue(draftId, deps, queue.executionId);
   else await startEpicQueueHead(draftId, deps);
@@ -191,8 +196,10 @@ async function completeParallelEpicQueue(queue: EpicExecutionQueue, deps: EpicQu
   if (queue.status !== 'active') return;
   const children = await database('plan_issues').where({ draft_id: queue.draftId }).whereIn('issue_number', queue.issues).select('status');
   if (children.length !== queue.issues.length || !children.every(child => isTerminalStatus(child.status))) return;
-  const changed = await database('epic_execution_queues').where({ draft_id: queue.draftId, execution_id: queue.executionId, status: 'active' })
-    .update({ cursor: queue.issues.length, blocked_reason: null, status: 'completed', updated_at: (deps.now ?? Date.now)() });
+  const timestamp = (deps.now ?? Date.now)();
+  const changed = await updateEpicQueueWithEvent(database, { draft_id: queue.draftId, execution_id: queue.executionId, status: 'active' },
+    { cursor: queue.issues.length, blocked_reason: null, status: 'completed', updated_at: timestamp },
+    epicQueueEvent(queue, 'completed', { occurredAt: timestamp, payload: { cursor: queue.issues.length }, dedupeKey: `epic:${queue.executionId}:completed` }));
   if (changed) await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
 }
 
@@ -232,56 +239,6 @@ export async function finalizeCompletedEpicQueue(draftId: string, deps: EpicQueu
   }
 }
 
-/**
- * Dispatch can create the epic and label its children even though saving the selector failed.
- * Save an externally verified selector only while the given execution still holds the obligation.
- */
-async function persistRecoveredEpicLabel(database: Knex, queue: EpicExecutionQueue, epicLabel: string,
-  authority: { status: EpicQueueStatus; ready?: boolean }): Promise<boolean> {
-  return database.transaction(async trx => {
-    const draft = await trx('task_drafts').where({ draft_id: queue.draftId }).forUpdate().first('context_config');
-    if (!draft) return false;
-    const parsed = typeof draft.context_config === 'string' ? JSON.parse(draft.context_config || '{}') : draft.context_config;
-    const context = parsed && typeof parsed === 'object' ? parsed : {};
-    // A selector saved concurrently wins; a different branch must not be finalized as this one.
-    if (typeof context.epicLabel === 'string') return context.epicLabel === epicLabel;
-    return Boolean(await trx('task_drafts').where({ draft_id: queue.draftId })
-      .whereExists(trx('epic_execution_queues').select('draft_id')
-        .where({ draft_id: queue.draftId, execution_id: queue.executionId, ...authority }).whereNull('finalized_at'))
-      .update({ context_config: JSON.stringify({ ...context, epicLabel }), updated_at: trx.fn.now() }));
-  });
-}
-
-/**
- * A missing saved selector does not prove that no epic PR exists. Recover the branch from the
- * labels this execution's children carry; without one unambiguous selector, finalization stays owed.
- */
-async function recoverOwedEpicLabel(queue: EpicExecutionQueue, database: Knex): Promise<string | undefined> {
-  const log = logger.withCorrelation(`epic-complete-${queue.draftId}`);
-  // Children of a non-epic execution never carried the inherited epic's selector.
-  if (!queue.useEpic) {
-    log.warn({ draftId: queue.draftId }, 'Epic branch selector is missing; finalization remains owed');
-    return undefined;
-  }
-  const [owner, repo] = queue.repository.split('/');
-  const octokit = await getAuthenticatedOctokit();
-  const found = new Set<string>();
-  for (const issueNumber of queue.issues) {
-    const issue = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
-    for (const label of issue.data.labels) {
-      const name = typeof label === 'string' ? label : label.name;
-      if (name?.startsWith('base-')) found.add(name);
-    }
-  }
-  const [epicLabel] = found;
-  if (found.size !== 1 || !await persistRecoveredEpicLabel(database, queue, epicLabel, { status: 'completed' })) {
-    log.warn({ draftId: queue.draftId, candidates: [...found] }, 'Epic branch selector could not be recovered; finalization remains owed');
-    return undefined;
-  }
-  log.info({ draftId: queue.draftId, epicLabel }, 'Recovered epic branch selector from issue labels');
-  return epicLabel;
-}
-
 /** Claims the label side effect durably; a lost dispatch is retried after 15 minutes. */
 export async function startEpicQueueHead(draftId: string, deps: EpicQueueDependencies = {}): Promise<void> {
   const database = deps.database ?? db;
@@ -291,8 +248,7 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   const issueNumber = queue.issues[queue.cursor];
   const issue = await database('plan_issues').where({ draft_id: draftId, issue_number: issueNumber }).first('status');
   if (!issue) {
-    await database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor })
-      .update({ blocked_reason: `Selected issue #${issueNumber} is missing from this plan.`, updated_at: (deps.now ?? Date.now)() });
+    await setEpicQueueBlocked(database, queue, `Selected issue #${issueNumber} is missing from this plan.`, { timestamp: (deps.now ?? Date.now)() });
     return;
   }
   if (isTerminalStatus(issue.status)) {
@@ -336,8 +292,8 @@ async function dispatchPendingQueueHead(queue: EpicExecutionQueue, contextConfig
       epicLabel: queue.useEpic && typeof context?.epicLabel === 'string' ? context.epicLabel : undefined, autoMerge: queue.autoMerge });
   } catch (error) {
     // Keep the claim after failure: the external outcome may be uncertain, and recovery retries after fifteen minutes.
-    await database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor, head_started_at: timestamp })
-      .update({ blocked_reason: `Could not start issue #${issueNumber}: ${(error as Error).message}`, updated_at: timestamp });
+    await setEpicQueueBlocked(database, queue, `Could not start issue #${issueNumber}: ${(error as Error).message}`,
+      { timestamp, guard: { head_started_at: timestamp } });
     throw error;
   }
 }

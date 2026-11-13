@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- the Redis relay, its rooms and the per-event broadcasters are one transport boundary */
 import { ShellActivityBroadcaster } from './shellActivityBroadcaster.js';
 import { notifyGoalWaiters } from './goalWait.js';
+import { notifyRepositoryEventWaiters } from './repositoryEventWait.js';
 import { Server as SocketIOServer } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { Redis } from 'ioredis';
@@ -219,6 +220,12 @@ export class SocketService {
    * Handle incoming events from Redis and broadcast to WebSocket clients
    */
   private handleEvent(_channel: string, payload: EventPayload | RecipientListNotificationUpdate): void {
+    // A journal append in another process is announced by an activity frame
+    // naming its repository. A wake only makes repository event waiters
+    // re-read the durable journal, so any frame naming a repository may
+    // deliver one, whatever else it carries.
+    const repository = (payload as { repository?: unknown }).repository;
+    if (typeof repository === 'string') notifyRepositoryEventWaiters(repository);
     switch (payload.eventType) {
       // Two published activity formats reach this relay - the envelope's
       // `entityId` shape and the shell surfaces' `subjectId` shape - and either

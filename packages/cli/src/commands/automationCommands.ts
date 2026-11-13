@@ -22,6 +22,7 @@ import {
   getAutomationRun,
   listAutomationRuns,
   listAutomations,
+  listAutomationTemplates,
   rejectAutomationRun,
   triggerAutomationRun,
   type Automation,
@@ -397,6 +398,7 @@ document with a machine-readable error.code.
 
 Examples:
   $ propr automation list
+  $ propr automation templates
   $ propr automation show <automation-id>
   $ propr automation run <automation-id> --wait
   $ propr automation runs <automation-id> --limit 5
@@ -437,6 +439,36 @@ Examples:
         }
       } catch (error) {
         return fail(error, { command: "list", json: options.json });
+      }
+    });
+
+  automation
+    .command("templates")
+    .description("List the shipped automation templates you can start a new automation from in the Web UI")
+    .option("-j, --json", "Output the version 1 automation-templates JSON document")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const catalog = await listAutomationTemplates();
+        if (options.json) {
+          printJson({ kind: "automation-templates", catalogVersion: catalog.version, templates: catalog.templates });
+          return;
+        }
+        if (catalog.templates.length === 0) {
+          console.log("No automation templates are available.");
+          return;
+        }
+        printTable([
+          { heading: "ID", values: catalog.templates.map((item) => item.id) },
+          { heading: "Name", values: catalog.templates.map((item) => truncate(item.name, 32)) },
+          { heading: "Category", values: catalog.templates.map((item) => item.category) },
+          { heading: "Schedule", values: catalog.templates.map((item) => item.schedule) },
+          { heading: "Autonomy", values: catalog.templates.map((item) => item.autonomy) },
+          { heading: "Description", values: catalog.templates.map((item) => truncate(item.description, 60)) },
+        ]);
+        console.log("");
+        console.log("Start from a template on the Automations page of the Web UI (New automation). Nothing is created until you save.");
+      } catch (error) {
+        return fail(error, { command: "templates", json: options.json });
       }
     });
 

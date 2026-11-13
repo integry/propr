@@ -34,12 +34,6 @@ async function getRedisSetMembers(key: string): Promise<string[]> {
     return redis.smembers(key);
 }
 
-async function getRedisListRange(key: string, start: number, stop: number): Promise<string[]> {
-    const redis = getMetricsRedis();
-    if (!redis) return [];
-    return redis.lrange(key, start, stop);
-}
-
 interface ModelMetrics {
     totalRequests: number;
     successful: number;
@@ -60,10 +54,6 @@ interface DailyMetric {
     costUsd: number;
 }
 
-interface HighCostAlert {
-    [key: string]: unknown;
-}
-
 interface LLMMetricsSummary {
     summary: {
         totalRequests: number;
@@ -78,7 +68,6 @@ interface LLMMetricsSummary {
     };
     modelBreakdown: Record<string, ModelMetrics>;
     dailyMetrics: DailyMetric[];
-    recentHighCostAlerts: HighCostAlert[];
     /** Agent runs stopped by the stall/degenerate-output watchdog, per rule. */
     watchdogTrips: Record<string, number>;
     lastUpdated: string;
@@ -136,16 +125,6 @@ async function getDailyMetric(dateKey: string): Promise<DailyMetric> {
     };
 }
 
-function parseHighCostAlerts(alerts: string[]): HighCostAlert[] {
-    return alerts.map((alert: string) => {
-        try {
-            return JSON.parse(alert) as HighCostAlert;
-        } catch {
-            return null;
-        }
-    }).filter((alert: HighCostAlert | null): alert is HighCostAlert => alert !== null);
-}
-
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
     try {
         const totals = await getTotalMetrics();
@@ -170,9 +149,6 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             dailyMetrics.push(await getDailyMetric(dateKey));
         }
 
-        const highCostAlerts = await getRedisListRange('llm:metrics:alerts:highcost', 0, 9);
-        const parsedAlerts = parseHighCostAlerts(highCostAlerts);
-
         const watchdogTrips: Record<string, number> = {};
         for (const rule of WATCHDOG_RULES) {
             watchdogTrips[rule] = parseInt(await getRedisString(`llm:metrics:watchdog:${rule}`) || '0');
@@ -192,7 +168,6 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             },
             modelBreakdown: modelMetrics,
             dailyMetrics,
-            recentHighCostAlerts: parsedAlerts,
             watchdogTrips,
             lastUpdated: new Date().toISOString()
         };

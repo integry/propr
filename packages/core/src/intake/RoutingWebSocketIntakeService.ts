@@ -466,7 +466,7 @@ export class RoutingWebSocketIntakeService {
             // report accepted/blocked/ignored (with reason/billing); a void return
             // means a plain `accepted`. A thrown error is handled below and withholds
             // the ACK so the relay redelivers.
-            disposition = normalizeDisposition(await this.dispatch(payload, rawEventType, correlationId));
+            disposition = normalizeDisposition(await this.dispatch(payload, rawEventType, correlationId, deliveryId));
         } catch (error) {
             this.deliveries.fail(deliveryId);
             log.error(

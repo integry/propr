@@ -1,4 +1,4 @@
-import { MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
+import { MAX_PROVIDER_REPLACEMENTS_LIMIT, TOKEN_OUTLIER_SETTING_NAMES, describeTokenOutlierSettingRange, isTokenOutlierSettingName, parseMaxProviderReplacements, parseTokenOutlierSetting, type TokenOutlierSettings } from '@propr/shared';
 /**
  * System Settings API
  *
@@ -26,9 +26,9 @@ const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
 
 /**
  * System settings configuration object.
- * These settings control global system behavior.
+ * These settings control global system behavior. Includes the token-outlier alert settings (`token_outlier_*`), always present in responses.
  */
-export interface SystemSettings {
+export interface SystemSettings extends Partial<TokenOutlierSettings> {
   usage_tips_enabled: boolean;
   /**
    * Alias of the default implementation agent.
@@ -144,6 +144,9 @@ export interface SystemSettings {
    */
   ultrafix_ci_wait_timeout_ms: number;
 
+  /** Milliseconds a Claude goal's ask_operator question waits for an answer (default 24 hours). */
+  goal_question_max_wait_ms?: number;
+
   /** Agent network policy overrides; null uses the environment default. */
   agent_network_mode?: "open" | "restricted" | null;
   agent_network_mode_enforced?: boolean | null;
@@ -200,7 +203,7 @@ export type GetSettingsResponse = SystemSettings;
  * Options for updating a setting.
  * Supports partial updates - only include fields you want to change.
  */
-export interface UpdateSettingsOptions {
+export interface UpdateSettingsOptions extends Partial<TokenOutlierSettings> {
   usage_tips_enabled?: boolean;
   /**
    * Alias of the default implementation agent.
@@ -310,6 +313,9 @@ export interface UpdateSettingsOptions {
    */
   ultrafix_ci_wait_timeout_ms?: number;
 
+  /** Milliseconds a Claude goal's ask_operator question waits for an answer (at least 60000). */
+  goal_question_max_wait_ms?: number;
+
   /** Agent watchdog overrides; null restores the environment default. */
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
@@ -378,6 +384,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_pause_seconds",
   "default_max_cost_usd",
   "ultrafix_ci_wait_timeout_ms",
+  "goal_question_max_wait_ms",
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
   "agent_degenerate_output_limit",
@@ -385,6 +392,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "agent_network_mode_enforced",
   "agent_network_allow",
   "agent_network_ignore_repository_allow",
+  ...TOKEN_OUTLIER_SETTING_NAMES,
 ];
 
 /**
@@ -406,6 +414,11 @@ export function isValidSettingKey(key: string): key is SettingKey {
  * @throws Error if the value cannot be parsed for the given key.
  */
 export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean | null {
+  if (isTokenOutlierSettingName(key)) {
+    const parsed = parseTokenOutlierSetting(key, value.trim());
+    if (parsed === null) throw new Error(`Invalid value for ${key}: ${describeTokenOutlierSettingRange(key).replace(`${key} `, "")}`);
+    return parsed;
+  }
   switch (key) {
     case "agent_stall_timeout_ms":
     case "agent_tool_stall_timeout_ms":
@@ -464,6 +477,12 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be a number between 1 and 10`);
       }
       return parsed;
+    }
+    case "goal_question_max_wait_ms": {
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 60000) {
+        throw new Error(`Invalid value for ${key}: must be an integer of at least 60000 (one minute)`);
+      }
+      return Number(value);
     }
     case "ultrafix_escalation_patience":
     case "ultrafix_ci_wait_timeout_ms":

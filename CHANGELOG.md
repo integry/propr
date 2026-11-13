@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Gemini 4 Hydrogen (Antigravity)**: Google's fast Gemini 4 model, released
+  2026-11-12, is in the Antigravity catalog as `antigravity-gemini-4-hydrogen`
+  (label `llm-antigravity-hydrogen`, alias `hydrogen`, 1M context). It is the
+  only Antigravity model that offers `xhigh` effort, launched as
+  `gemini-4-hydrogen-xhigh`; low, medium and high run as
+  `gemini-4-hydrogen-<effort>`. Usage is priced at $1.50/M input and $7.50/M
+  output. It needs Antigravity CLI 1.5.8 and supersedes no model. Its
+  availability to `agy login` accounts has not yet been confirmed.
+- **Review quality by effort**: `GET /api/stats/review-scores` adds `by_effort`,
+  the same figures per implementer model and reasoning level, with PRs whose
+  level was never recorded grouped under `unknown`; `models` keeps the
+  per-model totals. The review-scores CSV now has one row per model and effort
+  (new `implementer_reasoning_level` column), `propr stats review-scores` prints
+  model, effort, merged PRs, runs to merge and cost per merged PR, and the
+  Analytics "Agent efficacy by model" pane shows effort under each model.
+- **LLM cost export**: `GET /api/stats/cost` (JSON) and `GET /api/stats/cost.csv`
+  group recorded agent executions by any of day, repository, agent, model,
+  reasoning level, execution type and outcome, with executions, tasks,
+  input/output/cache tokens and cost in USD per row. They take the Analytics
+  `period` and `repository` filters and are in the OpenAPI spec and
+  `@propr/client` types. `propr stats cost [--period] [--repository]
+  [--group-by] [--json|--csv]` and the MCP read tool `get_cost_breakdown`
+  return the same data. See the Cost export section of the metrics docs.
+- **Claude goals can ask you a question**: Claude goal sessions now get an
+  `ask_operator` tool. It takes one question (up to 1,000 characters,
+  optionally with 2-10 suggested answers) and waits for your reply. The
+  question shows under "Needs you", and the next goal input you send is
+  returned to Claude as the answer. Pause and cancel still work while it
+  waits. After the new `goal_question_max_wait_ms` instance setting (default
+  24 hours), or shortly before the attempt's agent timeout if that comes
+  first, Claude is told nobody answered. The tool runs inside the container and needs no network access or
+  new credentials. Ordinary task runs never get it.
+  `get_goal_capabilities` reports question support as
+  `controls.operatorQuestions`.
+- **Automation templates**: a versioned catalog of automation templates ships
+  in `@propr/shared`, generated from `packages/shared/automation-templates/`
+  and checked in CI against the automation definition contract
+  (`npm run automation-templates:check`). The new-automation form offers
+  **Start from a template**, and the empty Automations list shows the
+  templates; choosing one only fills the form, always in `dry_run`, with a
+  note on what to review (repositories, schedule, autonomy) before saving.
+  The first template is **Daily issue triage**: a report of issues that need
+  a human, likely duplicates, proposed severity and security labels and stale
+  issues. The catalog is also served by
+  `GET /api/automation-definitions/templates`, the MCP read tool
+  `list_automation_templates` and `propr automation templates`.
+- **Instruction learning loop template**: a weekly automation template that
+  reads recent pull request discussions through ProPR's MCP tools and
+  proposes short additions to, or removals from, the repository's agent
+  instructions (`AGENTS.md`, `.propr/instructions.md` or the workflow
+  `instructions` file). Each candidate cites at least two pull requests where
+  the same correction was made; the report also lists stale instructions and
+  warns when the instruction files grow too long. With autonomy raised, the
+  acting step creates one ProPR task that opens a pull request with the cited
+  changes for review.
+- **MCP `get_pull_request_discussion` review sources**: `source: "reviews"`
+  pages a pull request's submitted GitHub reviews and
+  `source: "review_comments"` its inline review comments (file, line, reply
+  thread). The default conversation read never included either, so the
+  Instruction learning loop now reads all three.
+- **Weekly codebase drift report template**: a weekly automation template
+  that reports the last 7 days of merged changes (what changed and why, by
+  area), newly added code that duplicates existing helpers (both locations,
+  only for pairs the run has read after searching by name and by behaviour),
+  growth per top-level area with the largest new files, and suggested
+  consolidations. With autonomy raised, the acting step saves the
+  consolidations as repository To-Dos. The default review guidance now also
+  asks reviewers to check new helpers for duplicates and flag them under the
+  `complexity` category when the review uses it.
 - **Claude Fable 5.2 and GPT-6.1 Terra**: Claude Fable 5.2 (`claude-fable-5-2`,
   label `llm-claude-fable52`, 1M context, $8 / $40 per million tokens with
   cache reads at 2.5% of input) is the new target of the plain `fable` and
@@ -18,7 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `llm-claude-fable51`. GPT-6.1 Terra (`gpt-6.1-terra`, label
   `llm-codex-gpt61-terra`, $1 / $5) is added to the Codex catalog; it needs
   Codex 0.165.0 or later, and reviews use its 500K Codex runtime window.
-
 - **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
   option in `.propr/workflow.yml` (default `false`) makes ProPR's own
   auto-merge behave like a merge queue. A labelled PR that passes every other
@@ -37,6 +105,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.323, Codex 0.168.0 and Antigravity CLI 1.5.8**:
+  the `propr/agent` image moves from Claude Code 2.1.322, Codex 0.167.2 and
+  Antigravity CLI 1.5.6.
+  - Antigravity 1.5.8 is release `4602374149505024`, SHA-512 checked against
+    Google's linux_amd64 install manifest. From 1.5.7, headless sessions with
+    no saved Agent Mode start in Auto instead of Default. ProPR always passes
+    `--dangerously-skip-permissions` (tasks and goals) or `--sandbox`
+    (repository inspection), so its runs are unaffected.
+  - Codex stays on 0.168.0: 0.169.0 stops `codex exec` loading a
+    repository's `.codex/config.toml` and project MCP servers in untrusted
+    directories, which needs a separate decision. 0.168.0's bundled model
+    catalog is unchanged.
+  - Claude Code 2.1.323 needs no change: ProPR does not pass `--settings`,
+    which `claude -p` now validates at startup.
+- **Automation runs in the task list**: a run's row is labelled `Automation`
+  instead of `#agent-ru` (the start of its task id), and its title is the
+  automation's name without the `Agent:` prefix.
+- **Shorter link to a preview's original**: a visual preview whose full-size
+  original is kept in ProPR Connect now shows a short `Full-size original`
+  link under the image, instead of a sign-in and retention sentence followed
+  by a separate link.
 - **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
   moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
   tool-policy checks pass against both binaries. Codex 0.167 rewords the

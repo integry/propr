@@ -5,6 +5,7 @@ import pino from 'pino';
 import { up as createPullRequestState } from '../packages/core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../packages/core/src/db/migrations/20261006000000_create_review_scores.js';
 import { up as addReasoningLevels } from '../packages/core/src/db/migrations/20261111000000_add_reasoning_level_columns.js';
+import { up as addBlockerCategories } from '../packages/core/src/db/migrations/20261112000000_add_review_score_blocker_categories.js';
 
 const { buildReviewScoreInputs, persistReviewScores } = await import('../src/jobs/reviewScorePersistence.js');
 const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
@@ -71,6 +72,7 @@ describe('review score persistence', () => {
         await createPullRequestState(database);
         await createReviewScores(database);
         await addReasoningLevels(database);
+        await addBlockerCategories(database);
         await database('tasks').insert([
             { task_id: 'issue-12', repository: 'acme/repo', issue_number: 12, pr_number: 40, task_type: 'issue', model_name: 'opus',
                 initial_job_data: JSON.stringify({ agentAlias: 'claude' }), created_at: '2026-10-01T00:00:00.000Z' },
@@ -109,6 +111,8 @@ describe('review score persistence', () => {
             // published comment and the Ultrafix goal check do.
             score: 6,
             blocker_count: 2,
+            // Records without a category are read as correctness.
+            blocker_categories: JSON.stringify({ correctness: 2, requirement: 0, security: 0, tests: 0, complexity: 0, style: 0 }),
             suggestion_count: 3,
             cycle_number: null,
             goal: null,

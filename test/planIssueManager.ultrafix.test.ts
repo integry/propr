@@ -27,6 +27,15 @@ function createBuilder(tableName: string) {
     orderBy() {
       return this;
     },
+    // The status writers narrow their update to the rows they read in the same transaction.
+    whereIn() {
+      return this;
+    },
+    // An awaited select (with no `.first()`) reads every matching row.
+    then(resolve: (value: Row[]) => unknown, reject?: (error: unknown) => unknown) {
+      const row = rows.get(makeKey(whereClause));
+      return Promise.resolve(row ? [row] : []).then(resolve, reject);
+    },
     limit() {
       return this;
     },
@@ -72,9 +81,11 @@ function createBuilder(tableName: string) {
   };
 }
 
-const mockDb = Object.assign(
+const mockDb: ((tableName: string) => ReturnType<typeof createBuilder>) & {
+  fn: { now: () => string }; transaction: <T>(work: (trx: unknown) => Promise<T>) => Promise<T>;
+} = Object.assign(
   (tableName: string) => createBuilder(tableName),
-  { fn: { now: () => 'now' } }
+  { fn: { now: () => 'now' }, transaction: <T>(work: (trx: unknown) => Promise<T>) => work(mockDb) }
 );
 
 await mock.module('../packages/core/src/db/connection.js', {
@@ -92,6 +103,11 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 const mockCheckAndUpdateDraftStatus = mock.fn(async () => {});
+// The fake database only models plan_issues; journal appends have their own suite.
+await mock.module('../packages/core/src/services/repositoryEventJournal.js', {
+  namedExports: { appendRepositoryEvent: mock.fn(async () => ({ status: 'duplicate' })) },
+});
+
 await mock.module('../packages/core/src/services/taskPlanningService.js', {
   namedExports: {
     checkAndUpdateDraftStatus: mockCheckAndUpdateDraftStatus,
