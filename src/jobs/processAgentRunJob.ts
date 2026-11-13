@@ -506,7 +506,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             const previousReports = await previousReportsFor(definition, run);
             const prompt = deps.buildPrompt({
                 definition,
-                run: { id: run.id, trigger: run.trigger, triggerSource: run.triggerSource, createdAt: run.createdAt },
+                run: { id: run.id, trigger: run.trigger, triggerSource: run.triggerSource, triggerEvent: run.triggerEvent, createdAt: run.createdAt },
                 previousReports,
                 attachments: workspace.attachments,
                 workspace: workspace.promptWorkspace,

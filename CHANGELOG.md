@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automations: run on a blocked epic issue**: an automation can subscribe to
+  the new `plan.issue_blocked` event (`eventTriggers` on the definition, the
+  **Event trigger** setting in the editor) and is then run once per blocked
+  epic queue issue, with the event (repository, plan, execution, issue,
+  reason kind and text, plan and issue links) as its input. The trigger is
+  opt-in, limited to the automation's repositories and optionally to some
+  repositories and blocker reasons. The daemon consumes the durable blocked-event
+  log with a cursor per automation, so each event starts at most one run, also
+  across restarts; events from while an automation was disabled are not run.
+  Event runs are unattended `event` runs under the usual autonomy, capabilities,
+  grants and cost gate, and at most 3 run for the same issue of a plan.
+
 - **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
   option in `.propr/workflow.yml` (default `false`) makes ProPR's own
   auto-merge behave like a merge queue. A labelled PR that passes every other

@@ -4,6 +4,7 @@ import {
   type AutomationAutonomyMode,
   type AutomationCapability,
   type AutomationDefinitionInput,
+  type PlanIssueBlockedReasonKind,
 } from '@propr/shared';
 import type { AutomationDefinitionRecord } from '../../api/automationDefinitionsApi';
 
@@ -22,6 +23,10 @@ export interface AgentEditorForm {
   schedule: string;
   scheduleEnabled: boolean;
   autonomy: AutomationAutonomyMode;
+  /** The `plan.issue_blocked` event trigger and its filters (empty: no filter). */
+  blockedTrigger: boolean;
+  blockedTriggerRepositories: string[];
+  blockedTriggerReasonKinds: PlanIssueBlockedReasonKind[];
 }
 
 export type AgentEditorFormPatch = Partial<AgentEditorForm>;
@@ -38,7 +43,13 @@ export const emptyAgentForm = (): AgentEditorForm => ({
   schedule: '',
   scheduleEnabled: false,
   autonomy: DEFAULT_AUTOMATION_AUTONOMY_MODE,
+  blockedTrigger: false,
+  blockedTriggerRepositories: [],
+  blockedTriggerReasonKinds: [],
 });
+
+const blockedTriggerOf = (definition: AutomationDefinitionRecord) =>
+  (definition.eventTriggers ?? []).find(trigger => trigger.event === 'plan.issue_blocked');
 
 export const formFromDefinition = (definition: AutomationDefinitionRecord): AgentEditorForm => ({
   extensionProfile: definition.extensionProfile,
@@ -53,7 +64,24 @@ export const formFromDefinition = (definition: AutomationDefinitionRecord): Agen
   schedule: definition.scheduleCron ?? '',
   scheduleEnabled: definition.scheduleEnabled && Boolean(definition.scheduleCron),
   autonomy: definition.autonomyMode,
+  blockedTrigger: Boolean(blockedTriggerOf(definition)),
+  blockedTriggerRepositories: [...(blockedTriggerOf(definition)?.repositories ?? [])],
+  blockedTriggerReasonKinds: [...(blockedTriggerOf(definition)?.reasonKinds ?? [])],
 });
+
+const withinAutomation = (form: AgentEditorForm) => form.blockedTriggerRepositories.filter(repository =>
+  form.repositories.some(candidate => candidate.toLowerCase() === repository.toLowerCase()));
+
+/**
+ * The trigger was limited to repositories that were all removed from the automation. An
+ * empty filter means every repository of the automation, so dropping the stale entries would
+ * silently start runs for repositories the user had excluded: the user has to choose again.
+ */
+export const eventTriggerFilterLost = (form: AgentEditorForm): boolean =>
+  form.blockedTrigger && form.blockedTriggerRepositories.length > 0 && withinAutomation(form).length === 0;
+
+export const EVENT_TRIGGER_FILTER_LOST_MESSAGE =
+  'The event trigger was limited to repositories that are no longer in this automation. Choose the repositories it reacts to, or turn it off.';
 
 /** The request body for a create or a full-form update, in the shared input contract. */
 export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput => ({
@@ -68,4 +96,11 @@ export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput =>
   agentId: form.agentId,
   model: form.agentId ? form.model : null,
   previousReportCount: form.previousReportCount,
+  // The repository filter never reaches beyond the automation's own repositories. A filter
+  // that lost every repository is sent as it was, so it is refused rather than widened to all.
+  eventTriggers: form.blockedTrigger ? [{
+    event: 'plan.issue_blocked',
+    repositories: eventTriggerFilterLost(form) ? form.blockedTriggerRepositories : withinAutomation(form),
+    reasonKinds: form.blockedTriggerReasonKinds,
+  }] : [],
 });

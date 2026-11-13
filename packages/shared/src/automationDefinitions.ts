@@ -31,8 +31,61 @@ export type AutomationCapability = typeof AUTOMATION_CAPABILITIES[number];
 export const AUTOMATION_AUTONOMY_MODES = ['dry_run', 'preview', 'auto'] as const;
 export type AutomationAutonomyMode = typeof AUTOMATION_AUTONOMY_MODES[number];
 
-export const AUTOMATION_RUN_TRIGGERS = ['manual', 'schedule', 'api', 'mcp', 'cli'] as const;
+/** `event`: started by an event a definition subscribed to (see `eventTriggers`). */
+export const AUTOMATION_RUN_TRIGGERS = ['manual', 'schedule', 'api', 'mcp', 'cli', 'event'] as const;
 export type AutomationRunTrigger = typeof AUTOMATION_RUN_TRIGGERS[number];
+
+/** Events a definition can subscribe to. Each is opt-in; a definition without `eventTriggers` reacts to none. */
+export const AUTOMATION_TRIGGER_EVENTS = ['plan.issue_blocked'] as const;
+export type AutomationTriggerEventType = typeof AUTOMATION_TRIGGER_EVENTS[number];
+
+/** Why an epic queue issue is blocked: the reason kinds a `plan.issue_blocked` trigger can be limited to. */
+export const PLAN_ISSUE_BLOCKED_REASON_KINDS = [
+  'closed_unmerged',
+  'missing_from_plan',
+  'dispatch_failed',
+  'agent_blocked',
+  'awaiting_human_merge',
+  'label_handoff',
+  'setup_not_ready',
+] as const;
+export type PlanIssueBlockedReasonKind = typeof PLAN_ISSUE_BLOCKED_REASON_KINDS[number];
+
+/**
+ * Loop bound: at most this many event-started runs of one definition for the same issue of
+ * the same plan. Later blocked events for that issue are recorded as skipped runs, so a run
+ * whose own actions block the issue again cannot trigger itself without bound.
+ */
+export const MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE = 3;
+
+/**
+ * An event subscription. `repositories` and `reasonKinds` narrow it; empty means every
+ * repository of the definition and every reason kind. A subscription never reaches beyond
+ * the definition's own repositories.
+ */
+export interface AutomationEventTrigger {
+  event: AutomationTriggerEventType;
+  repositories: string[];
+  reasonKinds: PlanIssueBlockedReasonKind[];
+}
+
+/** The event a run was started by, handed to the run as structured input. */
+export interface AutomationTriggerEvent {
+  type: 'plan.issue_blocked';
+  /** The durable blocked-event id; one run per definition per id. */
+  eventId: number;
+  repository: string;
+  planId: string;
+  planName: string | null;
+  executionId: string;
+  issueNumber: number;
+  reasonKind: string;
+  reason: string;
+  planUrl: string;
+  issueUrl: string;
+  /** Epoch milliseconds. */
+  occurredAt: number;
+}
 
 export const AUTOMATION_RUN_STATES = [
   'queued',
@@ -93,6 +146,8 @@ export interface AutomationDefinitionInput {
   agentId?: string | null;
   model?: string | null;
   previousReportCount?: number;
+  /** Event subscriptions; empty or absent means the definition reacts to no event. */
+  eventTriggers?: AutomationEventTrigger[];
 }
 
 export interface AutomationDefinition {
@@ -108,6 +163,7 @@ export interface AutomationDefinition {
   agentId: string | null;
   model: string | null;
   previousReportCount: number;
+  eventTriggers: AutomationEventTrigger[];
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -129,6 +185,8 @@ export interface AutomationRun {
   automationDefinitionId: string;
   state: AutomationRunState;
   trigger: AutomationRunTrigger;
+  /** For an `event` run: the event that started it, as handed to the run. */
+  triggerEvent: AutomationTriggerEvent | null;
   /** Autonomy captured when the run was queued, so later edits do not change it. */
   autonomy: AutomationAutonomyMode;
   /** Task id of the isolated report run, once spawned. */
@@ -168,6 +226,15 @@ export const AUTOMATION_DEFINITION_CONTRACT = {
     default: DEFAULT_AUTOMATION_PREVIOUS_REPORTS,
     maxCharacters: AUTOMATION_PREVIOUS_REPORTS_MAX_CHARACTERS,
   },
+  eventTriggers: {
+    events: AUTOMATION_TRIGGER_EVENTS,
+    /** One subscription per event; filters are optional and only narrow the definition's repositories. */
+    maxPerEvent: 1,
+    reasonKinds: { 'plan.issue_blocked': PLAN_ISSUE_BLOCKED_REASON_KINDS },
+    requiresRepositories: true,
+    maxRunsPerIssue: MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE,
+    delivery: 'at-most-once per event and definition; events while the definition is disabled are not run later',
+  },
   schedule: {
     format: 'cron-5-field',
     timezone: 'UTC',
@@ -187,6 +254,14 @@ export function isAutomationAutonomyMode(value: unknown): value is AutomationAut
 
 export function isAutomationRunTrigger(value: unknown): value is AutomationRunTrigger {
   return AUTOMATION_RUN_TRIGGERS.includes(value as AutomationRunTrigger);
+}
+
+export function isAutomationTriggerEventType(value: unknown): value is AutomationTriggerEventType {
+  return AUTOMATION_TRIGGER_EVENTS.includes(value as AutomationTriggerEventType);
+}
+
+export function isPlanIssueBlockedReasonKind(value: unknown): value is PlanIssueBlockedReasonKind {
+  return PLAN_ISSUE_BLOCKED_REASON_KINDS.includes(value as PlanIssueBlockedReasonKind);
 }
 
 export function isAutomationRunState(value: unknown): value is AutomationRunState {
@@ -274,6 +349,15 @@ export function validateAutomationDefinitionInput(input: unknown, options: { par
   if (body.agentId != null && (typeof body.agentId !== 'string' || !body.agentId)) return 'agentId must be a non-empty string';
   if (body.model != null && (typeof body.model !== 'string' || !body.model)) return 'model must be a non-empty string';
 
+  if (has(body, 'eventTriggers')) {
+    const eventTriggersError = validateAutomationEventTriggers(body.eventTriggers);
+    if (eventTriggersError) return eventTriggersError;
+    if (has(body, 'repositories')) {
+      const scopeError = validateAutomationEventTriggerScope(body.eventTriggers as AutomationEventTrigger[], body.repositories as string[]);
+      if (scopeError) return scopeError;
+    }
+  }
+
   if (has(body, 'previousReportCount')) {
     const count = body.previousReportCount;
     if (!Number.isSafeInteger(count) || Number(count) < 0 || Number(count) > MAX_AUTOMATION_PREVIOUS_REPORTS) {
@@ -282,4 +366,87 @@ export function validateAutomationDefinitionInput(input: unknown, options: { par
   }
 
   return null;
+}
+
+function validateUniqueList(value: unknown, field: string, check: (item: unknown) => string | null): string | null {
+  if (!Array.isArray(value)) return `${field} must be an array`;
+  for (const item of value) {
+    const error = check(item);
+    if (error) return error;
+  }
+  const keys = value.map(item => String(item).toLowerCase());
+  if (new Set(keys).size !== keys.length) return `${field} must not contain duplicates`;
+  return null;
+}
+
+/** Shape check of `eventTriggers`; the repository scope is checked by `validateAutomationEventTriggerScope`. */
+export function validateAutomationEventTriggers(value: unknown): string | null {
+  if (!Array.isArray(value)) return 'eventTriggers must be an array';
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) return 'eventTriggers entries must be objects';
+    const trigger = entry as Record<string, unknown>;
+    const unknownKey = Object.keys(trigger).find(key => !['event', 'repositories', 'reasonKinds'].includes(key));
+    if (unknownKey) return `eventTriggers entries do not accept ${unknownKey}`;
+    if (!isAutomationTriggerEventType(trigger.event)) return `eventTriggers event must be one of: ${AUTOMATION_TRIGGER_EVENTS.join(', ')}`;
+    if (seen.has(trigger.event)) return 'eventTriggers must not subscribe to the same event twice';
+    seen.add(trigger.event);
+    if (trigger.repositories !== undefined) {
+      if (Array.isArray(trigger.repositories) && trigger.repositories.length > MAX_AUTOMATION_REPOSITORIES) {
+        return `eventTriggers repositories must contain at most ${MAX_AUTOMATION_REPOSITORIES} entries`;
+      }
+      const error = validateUniqueList(trigger.repositories, 'eventTriggers repositories', repository =>
+        typeof repository === 'string' && GOAL_REPOSITORY_PATTERN.test(repository) ? null : 'eventTriggers repositories must be in owner/repo format');
+      if (error) return error;
+    }
+    if (trigger.reasonKinds !== undefined) {
+      const error = validateUniqueList(trigger.reasonKinds, 'eventTriggers reasonKinds', kind =>
+        isPlanIssueBlockedReasonKind(kind) ? null : `eventTriggers reasonKinds must be one of: ${PLAN_ISSUE_BLOCKED_REASON_KINDS.join(', ')}`);
+      if (error) return error;
+    }
+  }
+  return null;
+}
+
+/**
+ * An event never widens what a definition may do: a definition that subscribes to an event
+ * must name its repositories, and a subscription's repository filter must stay within them.
+ */
+export function validateAutomationEventTriggerScope(eventTriggers: readonly AutomationEventTrigger[], repositories: readonly string[]): string | null {
+  if (eventTriggers.length === 0) return null;
+  if (repositories.length === 0) return 'An automation with event triggers must name the repositories it concerns';
+  const allowed = new Set(repositories.map(repository => repository.toLowerCase()));
+  const outside = eventTriggers.flatMap(trigger => trigger.repositories ?? []).filter(repository => !allowed.has(repository.toLowerCase()));
+  if (outside.length > 0) return `Event trigger repositories must be repositories of the automation: ${[...new Set(outside)].join(', ')}`;
+  return null;
+}
+
+/** Normalizes stored or submitted subscriptions: missing filters become empty lists. */
+export function normalizeAutomationEventTriggers(value: unknown): AutomationEventTrigger[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(entry => {
+    const trigger = entry as Partial<AutomationEventTrigger> | null;
+    if (!trigger || !isAutomationTriggerEventType(trigger.event)) return [];
+    return [{
+      event: trigger.event,
+      repositories: Array.isArray(trigger.repositories) ? trigger.repositories.filter((repository): repository is string => typeof repository === 'string') : [],
+      reasonKinds: Array.isArray(trigger.reasonKinds) ? trigger.reasonKinds.filter(isPlanIssueBlockedReasonKind) : [],
+    }];
+  });
+}
+
+/**
+ * Whether a subscription covers an event: the event's repository is one of the definition's
+ * (and of the filter, when it has one), and its reason kind matches the filter, when it has one.
+ */
+export function automationEventTriggerMatches(
+  trigger: AutomationEventTrigger,
+  definitionRepositories: readonly string[],
+  event: { type: AutomationTriggerEventType; repository: string; reasonKind: string },
+): boolean {
+  if (trigger.event !== event.type) return false;
+  const repository = event.repository.toLowerCase();
+  if (!definitionRepositories.some(candidate => candidate.toLowerCase() === repository)) return false;
+  if (trigger.repositories.length > 0 && !trigger.repositories.some(candidate => candidate.toLowerCase() === repository)) return false;
+  return trigger.reasonKinds.length === 0 || (trigger.reasonKinds as readonly string[]).includes(event.reasonKind);
 }

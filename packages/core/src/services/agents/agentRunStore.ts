@@ -9,6 +9,7 @@ import {
   type AutomationAutonomyMode,
   type AutomationRunState,
   type AutomationRunTrigger,
+  type AutomationTriggerEvent,
 } from '@propr/shared';
 import { db } from '../../db/connection.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
@@ -69,6 +70,10 @@ export interface StoredAgentRun {
   ownerId: string;
   trigger: AutomationRunTrigger;
   triggerSource: string | null;
+  /** For an `event` run: the event that started it, handed to the run as input. */
+  triggerEvent: AutomationTriggerEvent | null;
+  /** For an `event` run: the issue it concerns (`plan.issue_blocked:<plan>:<issue>`), which bounds runs per issue. */
+  triggerSubject: string | null;
   idempotencyKey: string | null;
   state: AutomationRunState;
   /** Autonomy captured at creation so later definition edits do not change it. */
@@ -97,6 +102,7 @@ export interface StoredAgentRun {
 export interface AgentRunRow {
   id: string; definition_id: string; owner_id: string; trigger: string; trigger_source: string | null;
   idempotency_key: string | null; state: string; autonomy_mode: string; definition_snapshot: string;
+  trigger_event?: string | null; trigger_subject?: string | null;
   report_task_id: string | null; action_task_id: string | null; report: string | null;
   report_truncated: boolean | number; action_summary: string | null; skip_reason: string | null;
   failure_reason: string | null; approved_by: string | null; operator_note: string | null; deferred_until: number | null; deferrals: number;
@@ -113,11 +119,12 @@ function toNumberOrNull(value: number | string | null | undefined): number | nul
   return value == null ? null : Number(value);
 }
 
-function parseSnapshot(value: string | null | undefined): StoredAgentDefinition | null {
+/** A stored JSON object column; null when absent or unreadable. */
+function parseSnapshot<T = StoredAgentDefinition>(value: string | null | undefined): T | null {
   if (!value) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    return parsed != null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as StoredAgentDefinition : null;
+    return parsed != null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as T : null;
   } catch {
     return null;
   }
@@ -131,6 +138,8 @@ export function rowToAgentRun(row: AgentRunRow): StoredAgentRun {
     ownerId: row.owner_id,
     trigger: row.trigger as AutomationRunTrigger,
     triggerSource: row.trigger_source ?? null,
+    triggerEvent: parseSnapshot<AutomationTriggerEvent>(row.trigger_event),
+    triggerSubject: row.trigger_subject ?? null,
     idempotencyKey: row.idempotency_key ?? null,
     // An unknown stored state is treated as failed so it is never picked up again.
     state: isAutomationRunState(row.state) ? row.state : 'failed',
@@ -168,7 +177,12 @@ export interface CreateAgentRunInput {
   triggerSource?: string | null;
   /** Replays with the same key for the same definition return the existing run. */
   idempotencyKey?: string | null;
+  /** For an `event` run: the event and the subject (issue) it concerns. */
+  triggerEvent?: AutomationTriggerEvent | null;
+  triggerSubject?: string | null;
   initialState?: AgentRunInitialState;
+  /** Checked in the transaction that inserts the receipt; false records nothing and throws `AgentRunAdmissionRefusedError`. */
+  admit?: AgentRunAdmission | null;
   /** Required when `initialState` is `deferred`. */
   deferredUntil?: number | null;
   /** Why the run was held; recorded when `initialState` is `skipped` or `deferred`. */
@@ -179,6 +193,18 @@ export interface CreateAgentRunResult {
   run: StoredAgentRun;
   /** False when an existing run with the same idempotency key was returned. */
   created: boolean;
+}
+
+/** A check that must still hold when a run's receipt is recorded, run in that transaction. */
+export type AgentRunAdmission = (trx: Knex) => Promise<boolean>;
+
+/** The admission fence refused the run: nothing was recorded. */
+export class AgentRunAdmissionRefusedError extends Error {
+  override name = 'AgentRunAdmissionRefusedError';
+}
+
+function triggerEventColumns({ triggerEvent, triggerSubject }: Pick<CreateAgentRunInput, 'triggerEvent' | 'triggerSubject'>): Partial<AgentRunRow> {
+  return { trigger_event: triggerEvent ? JSON.stringify(triggerEvent) : null, trigger_subject: triggerSubject ?? null };
 }
 
 /**
@@ -201,6 +227,7 @@ export async function createAgentRun(
     owner_id: input.definition.ownerId,
     trigger: input.trigger,
     trigger_source: input.triggerSource ?? null,
+    ...triggerEventColumns(input),
     idempotency_key: idempotencyKey,
     state,
     autonomy_mode: input.definition.autonomyMode,
@@ -224,8 +251,11 @@ export async function createAgentRun(
   };
   // RETURNING binds the receipt to this insert: a run transitioned by another
   // process right after creation is still reported as it was created.
-  const [inserted] = await database(TABLE).insert(row).onConflict(['definition_id', 'idempotency_key']).ignore()
-    .returning('*') as AgentRunRow[];
+  const insert = async (trx: Knex) => {
+    if (input.admit && !await input.admit(trx)) throw new AgentRunAdmissionRefusedError('Run admission was refused');
+    return await trx(TABLE).insert(row).onConflict(['definition_id', 'idempotency_key']).ignore().returning('*') as AgentRunRow[];
+  };
+  const [inserted] = input.admit ? await database.transaction(trx => insert(trx)) : await insert(database);
   if (inserted) return { run: rowToAgentRun(inserted), created: true };
   if (idempotencyKey === null) throw new Error('createAgentRun: insert without an idempotency key was ignored');
 

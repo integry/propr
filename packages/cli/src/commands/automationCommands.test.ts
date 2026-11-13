@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { AUTOMATION_RUN_EXIT_CODES, createAutomationCommand } from "./automationCommands.js";
+import { AUTOMATION_RUN_EXIT_CODES, createAutomationCommand, eventTriggerLabels } from "./automationCommands.js";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleLog = console.log;
@@ -336,4 +336,11 @@ test("list and runs print tables, and the group answers to its alias", async () 
   assert.equal(runs.requests[0].url.searchParams.get("limit"), "5");
   assert.match(runs.stdout, /skipped/);
   assert.match(runs.stdout, /No capacity/);
+});
+
+test("event triggers are listed with their filters, and none for an older server", () => {
+  assert.deepEqual(eventTriggerLabels({}), []);
+  assert.deepEqual(eventTriggerLabels({ eventTriggers: [{ event: "plan.issue_blocked", repositories: [], reasonKinds: [] }] }), ["plan.issue_blocked"]);
+  assert.deepEqual(eventTriggerLabels({ eventTriggers: [{ event: "plan.issue_blocked", repositories: ["acme/app"], reasonKinds: ["agent_blocked", "dispatch_failed"] }] }),
+    ["plan.issue_blocked (repos: acme/app; reasons: agent_blocked, dispatch_failed)"]);
 });

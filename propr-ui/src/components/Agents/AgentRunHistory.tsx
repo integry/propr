@@ -6,7 +6,7 @@ import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import {
-  RUN_TRIGGER_LABELS,
+  runTriggerLabel,
   formatRelativeTime,
   formatTimestamp,
   recalledReportPreview,
@@ -83,7 +83,7 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
         <time dateTime={new Date(started).toISOString()} title={formatTimestamp(started)} className="whitespace-nowrap text-slate-700">
           {formatRelativeTime(started, now)}
         </time>
-        <span title={run.triggerSource ?? undefined} className="truncate text-slate-600">{RUN_TRIGGER_LABELS[run.trigger]}</span>
+        <span title={run.triggerSource ?? undefined} className="truncate text-slate-600">{runTriggerLabel(run)}</span>
         <span className="flex justify-end [@container(min-width:36rem)]:justify-start"><AgentRunStateBadge state={run.state} /></span>
         <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs tabular-nums text-slate-500" data-testid="agent-run-duration">
           <Timer className="h-3 w-3 flex-none text-slate-400 [@container(min-width:36rem)]:hidden" aria-hidden="true" />

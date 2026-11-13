@@ -8,6 +8,7 @@ import { AgentScopeSection } from './AgentScopeSection';
 import { AgentPromptSection } from './AgentPromptSection';
 import { AgentCapabilitiesSection } from './AgentCapabilitiesSection';
 import { AgentScheduleSection } from './AgentScheduleSection';
+import { AgentEventTriggerSection } from './AgentEventTriggerSection';
 import { AgentAutonomySection } from './AgentAutonomySection';
 import { BUTTON_CLASSES } from './AgentEditorHeader';
 import { agentDisplayName, defaultRunner } from './agentPresentation';
@@ -112,6 +113,15 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
         <AgentScheduleSection
           enabled={form.scheduleEnabled}
           expression={form.schedule}
+          onChange={update}
+          disabled={readOnly}
+        />
+
+        <AgentEventTriggerSection
+          enabled={form.blockedTrigger}
+          repositories={form.blockedTriggerRepositories}
+          reasonKinds={form.blockedTriggerReasonKinds}
+          automationRepositories={form.repositories}
           onChange={update}
           disabled={readOnly}
         />

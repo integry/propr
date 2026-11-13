@@ -38,7 +38,9 @@ import {
   AUTOMATION_DEFINITION_CONTRACT,
   DEFAULT_AUTOMATION_PREVIOUS_REPORTS,
   MAX_AUTOMATION_ATTACHMENTS,
+  normalizeAutomationEventTriggers,
   validateAutomationDefinitionInput,
+  validateAutomationEventTriggerScope,
   type AutomationDefinitionInput,
   type AutomationRunState,
   type AutomationRunTrigger,
@@ -65,7 +67,7 @@ import { attachCreator, projectCreator, rememberCreator } from '../services/crea
 
 export const AUTOMATION_DEFINITION_ATTACHMENT_ROOT = path.join(process.cwd(), 'storage', 'agent-definitions');
 
-/** Triggers a REST caller may name; `schedule` and `mcp` belong to the daemon and MCP. */
+/** Triggers a REST caller may name; `schedule` and `event` belong to the daemon, `mcp` to MCP. */
 const REST_AGENT_RUN_TRIGGERS = ['manual', 'api', 'cli'] as const satisfies readonly AutomationRunTrigger[];
 const TRIGGER_SOURCE_MAX_LENGTH = 255;
 const IDEMPOTENCY_KEY_MAX_LENGTH = 255;
@@ -174,6 +176,7 @@ export function automationDefinitionInputToPatch(body: Partial<AutomationDefinit
   if (has(input, 'enabled')) patch.enabled = body.enabled;
   if (has(input, 'agentId')) patch.agentAlias = body.agentId ?? null;
   if (has(input, 'model')) patch.modelName = body.model ?? null;
+  if (has(input, 'eventTriggers')) patch.eventTriggers = normalizeAutomationEventTriggers(body.eventTriggers);
   if (has(input, 'previousReportCount')) {
     patch.previousReportsLimit = body.previousReportCount;
     patch.includePreviousReports = body.previousReportCount! > 0;
@@ -231,6 +234,30 @@ async function defaultRemoveAttachmentFiles(definitionId: string, attachments: r
     const file = attachmentPath(definitionId, attachment);
     return file ? fs.remove(file).catch(() => undefined) : undefined;
   }));
+}
+
+/** A subscription stays within the definition's repositories, which the definition must name. */
+function requireEventTriggerScope(definition: Pick<StoredAgentDefinition, 'eventTriggers' | 'repositories'>): void {
+  const error = validateAutomationEventTriggerScope(definition.eventTriggers, definition.repositories);
+  if (error) throw new RouteError(400, error);
+}
+
+/** The scope check for an update that changes the subscriptions or the repositories they must stay within. */
+function requirePatchedEventTriggerScope(current: StoredAgentDefinition, patch: AgentDefinitionPatch): void {
+  if (patch.eventTriggers === undefined && patch.repositories === undefined) return;
+  requireEventTriggerScope({ eventTriggers: patch.eventTriggers ?? current.eventTriggers, repositories: patch.repositories ?? current.repositories });
+}
+
+/**
+ * The revision an update is written onto: the one its checks read. Pinning it,
+ * with or without the caller's `expectedRevision`, makes an edit committed while
+ * those checks await fail with a 409 instead of being merged unchecked.
+ */
+function updateRevision(current: StoredAgentDefinition, expectedRevision: unknown): number {
+  if (expectedRevision !== undefined && expectedRevision !== current.revision) {
+    throw new RouteError(409, `Automation definition was changed (revision ${current.revision}, expected ${String(expectedRevision)}); reload and retry`);
+  }
+  return current.revision;
 }
 
 function requestedTrigger(req: Request, body: Record<string, unknown>): AutomationRunTrigger {
@@ -364,11 +391,13 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       includePreviousReports: input.includePreviousReports, previousReportsLimit: input.previousReportsLimit,
       scheduleCron: input.scheduleCron ?? null, scheduleTimezone: 'UTC', scheduleEnabled: input.scheduleEnabled ?? false,
       nextRunAt: null, autonomyMode: input.autonomyMode ?? AUTOMATION_DEFINITION_CONTRACT.defaultAutonomyMode,
+      eventTriggers: input.eventTriggers ?? [],
       extensionProfile: input.extensionProfile,
       enabled: input.enabled ?? true, revision: 0, createdAt: timestamp, updatedAt: timestamp,
     };
     if (input.extensionProfile && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');
     if (input.extensionProfile) await new ExtensionProfileStore(database).read(requireOwner(req), input.extensionProfile);
+    requireEventTriggerScope(candidate);
     await requireRuntimeValid(candidate);
     if (!await verifyRepositories(req, res, candidate.repositories)) return;
 
@@ -392,11 +421,13 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     const validationError = validateAutomationDefinitionInput(body, { partial: true });
     if (validationError) throw new RouteError(400, validationError);
     const current = await requireDefinition(req, owner);
+    const revision = updateRevision(current, expectedRevision);
     const patch = automationDefinitionInputToPatch(body as Partial<AutomationDefinitionInput>);
     const selectionChanged = patch.extensionProfile && (patch.extensionProfile.instanceId !== current.extensionProfile?.instanceId || patch.extensionProfile.profileId !== current.extensionProfile?.profileId || patch.extensionProfile.revision !== current.extensionProfile?.revision);
     if (selectionChanged && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');
     if (selectionChanged) await new ExtensionProfileStore(database).read(owner, patch.extensionProfile!);
 
+    requirePatchedEventTriggerScope(current, patch);
     if (RUNTIME_FIELDS.some(field => patch[field] !== undefined)) {
       await requireRuntimeValid({ ...current, ...patch } as StoredAgentDefinition);
     }
@@ -404,10 +435,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       if (!await verifyRepositories(req, res, patch.repositories)) return;
     }
 
-    const definition = await updateAgentDefinition(current.id, owner, patch, {
-      ...storeDeps,
-      expectedRevision: expectedRevision as number | undefined,
-    });
+    const definition = await updateAgentDefinition(current.id, owner, patch, { ...storeDeps, expectedRevision: revision });
     if (!definition) throw new RouteError(404, 'Automation definition not found');
     res.json({ definition: await attributedAgentDefinition(definition) });
   });
