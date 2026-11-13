@@ -35,7 +35,7 @@ import {
   createTaskHistoryRoutes, createLiveDetailsRoutes,
   createFileChangesRoutes, createConfigRoutes,
   createTaskAssignmentRoutes,
-  createQueueRoutes, createExecutionRoutes,
+  createQueueRoutes, createAgentRunAdmissionRoutes, createExecutionRoutes,
   createDockerRoutes, createGitHubRoutes,
   createLLMMetricsRoutes, createLlmLogsRoutes,
   createPlannerRoutes, createRelevanceRoutes,
@@ -457,6 +457,7 @@ export function setupRoutes(): void {
 
   const operationalRoutes = createOperationalRouteEntries({
     activeWorkRoutes,
+    agentRunAdmissionRoutes: createAgentRunAdmissionRoutes({ db, taskQueue, redisClient }),
     automationDefinitionRoutes,
     dashboardRoutes,
     dockerRoutes,

@@ -80,6 +80,11 @@ function aliasCeiling(config: AdmissionConfig | null | undefined, alias: string)
     return agentRunAliasCeiling(config?.aliasLimits, alias);
 }
 
+/** The configured ceiling of `alias` (`PROPR_AGENT_RUN_ALIAS_LIMITS`), if any; for messages and reports. */
+export function agentAliasCeiling(alias: string, options: CapacityOptions = {}): number | undefined {
+    return aliasCeiling(resolveConfig(options), alias);
+}
+
 /** Whether any per-agent ceiling is configured; without one no job is ever deferred for agent capacity. */
 export function agentCapacityPolicyConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
     try { return !!resolveAgentRunAdmission(env)?.aliasLimits; } catch { return false; }
@@ -247,8 +252,13 @@ export async function assertAgentAliasCapacity(aliases: string | Iterable<string
 
 /** Sorted set of `[queueName, jobId]` waiters for one alias, scored by when each began waiting. */
 export function agentCapacityWaitersKey(instance: string, alias: string): string {
+    return `${agentCapacityWaitersPrefix(instance)}${alias}`;
+}
+
+/** What every alias's waiters key starts with; the alias follows it. */
+export function agentCapacityWaitersPrefix(instance: string): string {
     // Same hash tag as the admission keys, so they share a cluster slot.
-    return `${agentAdmissionKeys(instance)[0].replace(/:holders$/, '')}:alias-waiters:${alias}`;
+    return `${agentAdmissionKeys(instance)[0].replace(/:holders$/, '')}:alias-waiters:`;
 }
 
 /** Adds the job to each alias's waiting list, keeping its original position. Best effort. */
@@ -277,7 +287,7 @@ export async function forgetAgentCapacityWaiter(aliases: string[], waiter: strin
 }
 
 /** False when the job's stored refusal names only other aliases: it no longer waits for this one. */
-function waitsFor(data: unknown, alias: string): boolean {
+export function jobWaitsForAgentCapacity(data: unknown, alias: string): boolean {
     const aliases = (data as { agentCapacityAliases?: unknown } | null | undefined)?.agentCapacityAliases;
     return !Array.isArray(aliases) || aliases.includes(alias);
 }
@@ -314,7 +324,7 @@ export async function wakeAgentCapacityWaiters(alias: string, options: CapacityO
                     // Waiting for other aliases only. A delayed job has stored its latest refusal, so the
                     // entry is obsolete. One that is not delayed may be joining this list right now (its new
                     // aliases not yet stored): keep the entry, its own post-registration capacity check covers this release.
-                    const waiting = waitsFor(job.data, alias);
+                    const waiting = jobWaitsForAgentCapacity(job.data, alias);
                     if (!waiting && await job.isDelayed()) { await client.zrem(key, waiter); continue; }
                     if (!waiting) continue;
                     woken++;

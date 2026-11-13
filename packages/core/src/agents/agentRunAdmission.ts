@@ -9,6 +9,7 @@ import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
 import { AGENT_RUN_ALIAS_LIMITS_ENV, agentRunAliasCeiling, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
 import { aliasCapacityWait, isAgentCapacityError, wakeAgentCapacityWaiters } from './agentCapacity.js';
 import { ADMISSION_SCRIPT as SCRIPT } from './agentRunAdmissionScript.js';
+import { admissionDetailWriter, admissionWaitTracker, type AgentAdmissionWaitReason } from './agentRunAdmissionWait.js';
 import {
     AGENT_ADMISSION_MAX_NESTING_DEPTH, AGENT_RUN_NESTED_LIMIT_ENV, AgentAdmissionNestingError, DEFAULT_AGENT_RUN_NESTED_LIMIT,
     currentAgentAdmissionNesting, parseAgentRunNestedLimit, type AgentAdmissionNesting,
@@ -109,6 +110,15 @@ export function agentAdmissionKeys(instance: string): [string, string, string, s
     return [`propr:agent-admission:{${scope}}:holders`, `propr:agent-admission:{${scope}}:config`, `propr:agent-admission:{${scope}}:waiting`, `propr:agent-admission:{${scope}}:parents`];
 }
 
+/** Hash of `token -> JSON detail` beside the admission keys (same hash tag): the
+ * alias, task and wait reason of each waiting or admitted token, which the bare
+ * waiting-set members and the holder records do not carry. Read by
+ * `readAgentRunAdmissionSnapshot`, which also removes entries of tokens that are
+ * gone. Never read by the admission decision itself. */
+export function agentAdmissionDetailsKey(instance: string): string {
+    return `${agentAdmissionKeys(instance)[0].replace(/:holders$/, '')}:details`;
+}
+
 interface HolderRecord { state: 'reserved' | 'running' | 'draining' | 'recovering'; alias?: string; id?: string; parent?: string; depth?: number; shared?: boolean; scope?: string }
 async function holderRecords(client: AdmissionRedis, instance: string): Promise<Array<[string, HolderRecord]>> {
     return Object.entries(await client.hgetall(agentAdmissionKeys(instance)[0])).map(([token, value]) => [token, JSON.parse(value) as HolderRecord]);
@@ -168,10 +178,7 @@ export async function agentAdmissionNestedHolders(client: AdmissionRedis, instan
  * charged to the global limit only. Listed in the architecture doc. */
 export type AgentAdmissionExemption = 'legacy-claude-analysis';
 
-/** Why an acquire attempt did not admit: the global limit, the alias's own
- * ceiling, or a holder whose removal is still unconfirmed. */
-export type AgentAdmissionWaitReason = 'global_limit' | 'alias_limit' | 'recovering';
-const WAIT_REASONS: Record<number, AgentAdmissionWaitReason> = { 0: 'recovering', 2: 'global_limit', 3: 'alias_limit' };
+export type { AgentAdmissionWaitReason } from './agentRunAdmissionWait.js';
 
 export class AgentAdmissionIdentityError extends Error {
     constructor() {
@@ -181,25 +188,13 @@ export class AgentAdmissionIdentityError extends Error {
 }
 
 /** The alias charged for a launch ('' = global limit only) and its ceiling. */
-export function resolveAdmissionAlias(config: AdmissionConfig, identity: { agentAlias?: string; exemption?: AgentAdmissionExemption }): { alias: string; ceiling: string; log: Record<string, string | number> } {
+export function resolveAdmissionAlias(config: AdmissionConfig, identity: { agentAlias?: string; exemption?: AgentAdmissionExemption }): { alias: string; ceiling: string; log: Record<string, string | number | null> } {
     const alias = identity.agentAlias?.trim() ?? '';
     if (!alias && !identity.exemption && config.aliasLimits) throw new AgentAdmissionIdentityError();
     const ceiling = agentRunAliasCeiling(config.aliasLimits, alias);
-    const log = { ...(alias ? { agentAlias: alias } : {}), ...(ceiling === undefined ? {} : { aliasLimit: ceiling }) };
+    // Every admission log line names the alias it is charged to (null: global limit only).
+    const log = { agentAlias: alias || null, ...(ceiling === undefined ? {} : { aliasLimit: ceiling }) };
     return { alias, ceiling: ceiling === undefined ? '' : String(ceiling), log };
-}
-
-/** Maps a non-admitting acquire reply to its reason; logs and reports changes. */
-function waitReasonReporter(instance: string, log: Record<string, string | number>, onWaiting?: (reason: AgentAdmissionWaitReason) => void) {
-    let current: AgentAdmissionWaitReason | undefined;
-    return (result: unknown) => {
-        const reason = WAIT_REASONS[result as number];
-        if (!reason) throw new Error('Unexpected agent admission reply');
-        if (reason === current) return;
-        current = reason;
-        logger.info({ instance, ...log, reason }, 'Physical agent admission waiting');
-        onWaiting?.(reason);
-    };
 }
 
 export interface AdmissionOptions {
@@ -305,6 +300,8 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     const call = (op: string, owner = token, extra = '', limit = '') =>
         client.eval(SCRIPT, 3, holders, configKey, parents, op, owner, String(leaseMs), extra, limit, alias, ceiling,
             ...nestingArgs);
+    // Report-only detail of a token (see agentAdmissionDetailsKey); a failed write never affects admission.
+    const writeDetail = admissionDetailWriter(client, agentAdmissionDetailsKey(config.instance));
     const wake = (target: string) => {
         if (agentRunAliasCeiling(config.aliasLimits, target) === undefined) return;
         void wakeAgentCapacityWaiters(target, { config })
@@ -314,10 +311,12 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     // parent's slot back: the reply names it, and it is removed and released here.
     const release = async (owner: string) => {
         let reply = await call('release', owner);
+        if (reply) await writeDetail(owner);
         while (Array.isArray(reply)) {
             const [, parentToken, parentId, parentAlias] = reply as [number, string, string, string];
             if (parentId) await runtime.remove(parentId);
             reply = await call('release', parentToken);
+            if (reply) await writeDetail(parentToken);
             if (parentAlias) wake(parentAlias);
         }
     };
@@ -370,6 +369,8 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
                 await release(token);
             }
             await client.zrem(waiting, token);
+            // A draining parent stays a holder: its detail stays with it until its release.
+            if (!draining) await writeDetail(token);
             if (draining) logger.info({ instance: config.instance, containerId: id, ...log }, 'Physical agent finished; its reservation stays charged until its nested executions end');
             // Released capacity goes to the oldest job deferred for this alias.
             else if (acquired && ceiling) wake(alias);
@@ -412,11 +413,12 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         const identity = JSON.stringify({ limit: config.limit, daemon: await runtime.daemon(), ...(config.generation ? { generation: config.generation } : {}) });
         await checkCancelled();
         logger.info({ instance: config.instance, limit: config.limit, ...log, ...nestingLog }, 'Waiting for physical agent admission');
-        const reportWait = waitReasonReporter(config.instance, log, options.onWaiting);
+        const wait = admissionWaitTracker({ token, alias, taskId: options.taskId, fields: { instance: config.instance, limit: config.limit, ...log }, write: writeDetail, onWaiting: options.onWaiting });
         const aliasWait = aliasCapacityWait(alias, ceiling, options);
         try {
             while (true) {
                 await client.zadd(waiting, Date.now() + 30_000, token);
+                await wait.joined();
                 await recover(identity);
                 await checkCancelled();
                 const result = await call('acquire', token, identity, String(config.limit));
@@ -426,11 +428,12 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
                     await initialize(identity);
                     continue;
                 }
-                reportWait(result);
+                await wait.observe(result);
                 aliasWait.observe(result);
                 await aliasWait.pause(options.pollMs ?? 250, signal);
             }
         } catch (error) { throw aliasWait.failure(error, signal); }
+        await wait.admitted();
         await client.zrem(waiting, token);
         renew();
         await checkCancelled();
@@ -444,7 +447,10 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await checkCancelled();
         if (await call('attach', token, id) !== 1) throw new Error('Agent admission lost before container start');
         checkAdmissionAbort(signal);
-        logger.info({ instance: config.instance, containerId: id, ...log, ...nestingLog, nestedUnderParent: nested, ...await agentAdmissionMetrics(client, config.instance) }, ADMITTED_MESSAGES[String(nested)]);
+        logger.info({
+            instance: config.instance, containerId: id, ...log, ...nestingLog, nestedUnderParent: nested,
+            ...wait.summary(), ...await agentAdmissionMetrics(client, config.instance),
+        }, ADMITTED_MESSAGES[String(nested)]);
         return { id, args: ['start', '--attach', '--interactive', id], environment, signal, finish };
     } catch (error) {
         try { await finish(); }

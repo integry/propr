@@ -109,10 +109,26 @@ function refusedAliases(error: unknown): string[] {
     return Array.isArray(aliases) ? aliases.filter((alias): alias is string => typeof alias === 'string') : [];
 }
 
-function refusalReason(error: unknown): string {
+/**
+ * Each refused alias with its ceiling: the refusal's own, else the configured
+ * one (a refusal raised by routing may not carry it). A Map, so an alias named
+ * `constructor` never reads an inherited property.
+ */
+function refusalCeilings(error: unknown, capacity: Awaited<ReturnType<typeof core>>): Map<string, number> {
     const ceilings = ((error as { ceilings?: Record<string, number> }).ceilings) ?? {};
-    // Own entries only: an alias named `constructor` must not print the inherited function.
-    const names = refusedAliases(error).map(alias => Object.hasOwn(ceilings, alias) ? `${alias} (limit ${ceilings[alias]})` : alias);
+    const result = new Map<string, number>();
+    for (const alias of refusedAliases(error)) {
+        // Suites that mock `@propr/core` with a fixed export list may not provide the lookup.
+        const ceiling = Object.hasOwn(ceilings, alias) ? ceilings[alias]
+            : typeof capacity.agentAliasCeiling === 'function' ? capacity.agentAliasCeiling(alias) : undefined;
+        if (typeof ceiling === 'number') result.set(alias, ceiling);
+    }
+    return result;
+}
+
+/** The timeline line: which agent the job waits for, and that agent's ceiling. */
+function refusalReason(aliases: string[], ceilings: Map<string, number>): string {
+    const names = aliases.map(alias => ceilings.has(alias) ? `${alias} (limit ${ceilings.get(alias)})` : alias);
     return `Waiting for agent capacity${names.length ? `: ${names.join(', ')}` : ''}`;
 }
 
@@ -166,11 +182,13 @@ export async function persistAgentCapacityDeferral<T extends AgentCapacityDeferr
     // its released capacity wakes the jobs that still wait for it.
     const obsolete = previous.filter(alias => !aliases.includes(alias));
     if (obsolete.length) await capacity.forgetAgentCapacityWaiter(obsolete, waiterOf(job));
-    correlatedLogger.info({ taskId: options.taskId, aliases, deferrals, retryAt: new Date(retryAt).toISOString() }, 'Deferred job until its agent has capacity');
+    correlatedLogger.info({ taskId: options.taskId, aliases, reason: 'agent_capacity', deferrals, retryAt: new Date(retryAt).toISOString() }, 'Deferred job until its agent has capacity');
     if (options.stateManager && options.taskId) {
+        const ceilings = refusalCeilings(error, capacity);
         await recordCapacityDeferral({
             kind: 'agent', stateManager: options.stateManager as WorkerStateManager, taskId: options.taskId, correlatedLogger,
-            deferrals, retryAt, reason: refusalReason(error), metadata: { agentCapacityAliases: aliases },
+            deferrals, retryAt, reason: refusalReason(aliases, ceilings),
+            metadata: { agentCapacityAliases: aliases, agentCapacityCeilings: Object.fromEntries(ceilings) },
         });
     }
 }

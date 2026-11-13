@@ -326,6 +326,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'review_and_improve_pr', 'start_goal',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
+    // Stored-configuration check fields and states returned by get_agent_run_admission.
+    'admitting', 'mismatch', 'missing',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)
