@@ -46,10 +46,19 @@ class FakeGitHub {
     calls: Array<{ route: string; params: Record<string, unknown> }> = [];
     /** Every title the pull request was renamed to. */
     renames: string[] = [];
+    /** PATCH requests still to reject without applying them. */
+    rejectPatches = 0;
+    /** Runs when a PATCH arrives, before it is applied or rejected. */
+    onPatch: (() => Promise<void>) | null = null;
     async request(route: string, params: Record<string, unknown>) {
         this.calls.push({ route, params });
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: structuredClone(this.pull) };
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') {
+            await this.onPatch?.();
+            if (this.rejectPatches > 0) {
+                this.rejectPatches--;
+                throw Object.assign(new Error('Validation Failed'), { status: 422 });
+            }
             if (typeof params.body === 'string') this.pull.body = params.body;
             if (typeof params.title === 'string') {
                 this.pull.title = params.title;
@@ -270,6 +279,48 @@ test('a slot a person removed comes back on the next state change, not before', 
     await setTaskState(implementation, 'completed');
     await syncSettled();
     assert.equal(github.pull.title, `✅ ${TITLE}`);
+});
+
+test('a rename GitHub rejected is written again with the same slot, not taken for a slot a person removed', async () => {
+    await addTask('issue', 'completed');
+    github.pull.title = TITLE;
+    await sync();
+    await new Promise(resolve => setTimeout(resolve, SETTLE_MS + 10));
+    github.rejectPatches = 1;
+    let recognisedDuringPatch: string | null = null;
+    github.onPatch = async () => {
+        // The edited webhook of the rename can arrive before the PATCH returns.
+        if (typeof github.calls.at(-1)?.params.title === 'string') {
+            recognisedDuringPatch = await classifyPullRequestStatusEdit(
+                { ...editedWebhook({ title: { from: TITLE } }), pull_request: { ...editedWebhook({}).pull_request as object, title: `✅ ${TITLE}` } }, 'pull_request');
+        }
+    };
+    await assert.rejects(sync(), /Validation Failed/);
+    github.onPatch = null;
+    assert.equal(recognisedDuringPatch, 'own', 'the pending rename is recognised as ProPR\'s own');
+    assert.equal(github.pull.title, TITLE);
+
+    // Another process sees the pending record only through Redis.
+    resetPullRequestTitleStateForTests();
+    await syncSettled();
+    assert.equal(github.pull.title, `✅ ${TITLE}`);
+    assert.deepEqual(github.renames, [`✅ ${TITLE}`]);
+
+    // Once GitHub accepted it, a person removing the slot is respected again.
+    github.pull.title = TITLE;
+    await syncSettled();
+    assert.equal(github.pull.title, TITLE);
+});
+
+test('a rejected 🔨 insertion is written again on the next update', async () => {
+    await addTask('issue', 'processing');
+    github.pull.title = TITLE;
+    github.rejectPatches = 1;
+    await assert.rejects(sync(), /Validation Failed/);
+    assert.equal(github.pull.title, TITLE);
+    await sync();
+    assert.equal(github.pull.title, `🔨 ${TITLE}`);
+    assert.deepEqual(github.renames, [`🔨 ${TITLE}`]);
 });
 
 test('merging or closing removes the slot; turning the setting off removes it on the next transition', async () => {

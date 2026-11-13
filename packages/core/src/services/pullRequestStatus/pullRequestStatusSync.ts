@@ -12,7 +12,7 @@ import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/che
 import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
-import { decidePullRequestTitleForSync, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
+import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
 import {
     setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusRedisProvider, setPullRequestStatusSyncRunner,
 } from './pullRequestStatusSignal.js';
@@ -283,12 +283,15 @@ async function syncPullRequestStatusOnce(
         await lease.assertHeld();
         // Recorded before the PATCH, so the edited webhook it causes is recognised as ProPR's own however fast it arrives.
         if (bodyChanged) await recordPullRequestStatusWrite(deps.redis, repository, prNumber, extractPullRequestStatusBlock(next));
-        if (title.title !== null) await recordPullRequestTitleSlot(deps.redis, repository, prNumber, readStatusSlot(title.title));
+        // The title slot stays pending until GitHub accepts the rename: a rejected one is no slot a person removed.
+        const titleSlot = title.title !== null ? readStatusSlot(title.title) : null;
+        if (title.title !== null) await recordPendingPullRequestTitleSlot(deps.redis, repository, prNumber, titleSlot);
         const [owner, repo] = repository.split('/');
         // Body and title change in one write, so one transition costs one edited event.
         await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner, repo, pull_number: prNumber, ...(bodyChanged ? { body: next } : {}), ...(title.title !== null ? { title: title.title } : {}),
         });
+        if (title.title !== null) await recordPullRequestTitleSlot(deps.redis, repository, prNumber, titleSlot);
         logger.debug({ repository, prNumber, removed: bodyChanged && !written, title: title.title !== null }, 'Updated the pull request status');
         if (!bodyChanged) return { result: written ? 'unchanged' : 'skipped', ...read };
         return { result: written ? 'updated' : 'removed', ...read };

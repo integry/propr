@@ -22,7 +22,10 @@ import { isPullRequestStatusMaintained } from './pullRequestStatusSignal.js';
  *
  * The slot ProPR last left (or found) in each title is recorded, like the body
  * block (pullRequestStatusProvenance), so the `edited` webhook of its own
- * rename is recognised and causes no further work.
+ * rename is recognised and causes no further work. A rename is recorded as
+ * pending before its PATCH and confirmed once GitHub accepted it: only a
+ * confirmed slot missing from the title was removed by a person, and a
+ * rejected rename is written again.
  */
 export type PullRequestTitleRedis = Pick<Redis, 'get' | 'set'>;
 
@@ -40,7 +43,12 @@ const RECORD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** A title ProPR left without a slot (closed, setting off) is recorded as the empty string. */
 const NO_SLOT = '';
 
-interface RecordedSlot { slot: string; at: number }
+interface RecordedSlot {
+    slot: string;
+    at: number;
+    /** Recorded before a rename GitHub has not yet accepted; such a slot may never have reached the title. */
+    pending?: boolean;
+}
 
 const localSlots = new Map<string, RecordedSlot>();
 const pendingSettles = new Map<string, { slot: string; since: number }>();
@@ -60,33 +68,50 @@ async function readSharedSlot(redis: PullRequestTitleRedis | null, key: string):
         const raw = await redis.get(redisKey(key));
         if (!raw) return null;
         const parsed = JSON.parse(raw) as Partial<RecordedSlot> | null;
-        return parsed && typeof parsed.slot === 'string' && typeof parsed.at === 'number' ? { slot: parsed.slot, at: parsed.at } : null;
+        if (!parsed || typeof parsed.slot !== 'string' || typeof parsed.at !== 'number') return null;
+        return { slot: parsed.slot, at: parsed.at, ...(parsed.pending === true ? { pending: true } : {}) };
     } catch (error) {
         logger.debug({ key, error: (error as Error).message }, 'Could not read the recorded pull request title slot');
         return null;
     }
 }
 
-/** The slot ProPR last recorded for the title; undefined when nothing is recorded. */
-async function recordedSlot(redis: PullRequestTitleRedis | null, repository: string, prNumber: number): Promise<string | undefined> {
+/** The slot ProPR last recorded for the title; null when nothing is recorded. */
+async function latestRecordedSlot(redis: PullRequestTitleRedis | null, repository: string, prNumber: number): Promise<RecordedSlot | null> {
     const key = pullRequestBodyKey(repository, prNumber);
     const now = Date.now();
     const candidates = [localSlots.get(key), await readSharedSlot(redis, key)]
         .filter((write): write is RecordedSlot => !!write && now - write.at < RECORD_TTL_MS);
-    if (candidates.length === 0) return undefined;
-    return candidates.reduce((newest, write) => (write.at > newest.at ? write : newest)).slot;
+    if (candidates.length === 0) return null;
+    return candidates.reduce((newest, write) => (write.at > newest.at ? write : newest));
 }
 
 /**
  * Records the slot the title of the pull request has (null: none) as ProPR's
- * latest: before a rename, so its webhook can never arrive ahead of the record,
- * and when a slot is first seen. Never throws.
+ * latest, confirmed: once GitHub accepted a rename, and when a slot is first
+ * seen in the title. Never throws.
  */
 export async function recordPullRequestTitleSlot(
     redis: PullRequestTitleRedis | null, repository: string, prNumber: number, slot: string | null,
 ): Promise<void> {
+    await storeSlot(redis, { repository, prNumber }, { slot: normalizeSlot(slot), at: Date.now() });
+}
+
+/**
+ * Records the slot a rename is about to give the title, before its PATCH, so
+ * its webhook can never arrive ahead of the record. It stays pending, and is
+ * never taken for a slot a person removed, until recordPullRequestTitleSlot
+ * confirms it. Never throws.
+ */
+export async function recordPendingPullRequestTitleSlot(
+    redis: PullRequestTitleRedis | null, repository: string, prNumber: number, slot: string | null,
+): Promise<void> {
+    await storeSlot(redis, { repository, prNumber }, { slot: normalizeSlot(slot), at: Date.now(), pending: true });
+}
+
+async function storeSlot(redis: PullRequestTitleRedis | null, target: { repository: string; prNumber: number }, write: RecordedSlot): Promise<void> {
+    const { repository, prNumber } = target;
     const key = pullRequestBodyKey(repository, prNumber);
-    const write: RecordedSlot = { slot: normalizeSlot(slot), at: Date.now() };
     localSlots.set(key, write);
     if (!redis) return;
     try {
@@ -100,8 +125,9 @@ export async function recordPullRequestTitleSlot(
 export async function isRecordedPullRequestTitleSlot(
     redis: PullRequestTitleRedis | null, repository: string, prNumber: number, title: string | null | undefined,
 ): Promise<boolean> {
-    const recorded = await recordedSlot(redis, repository, prNumber);
-    return recorded !== undefined && recorded === normalizeSlot(readStatusSlot(title));
+    // A pending rename counts: its webhook can arrive before the PATCH returns.
+    const recorded = await latestRecordedSlot(redis, repository, prNumber);
+    return recorded !== null && recorded.slot === normalizeSlot(readStatusSlot(title));
 }
 
 /** The slot a status shows in the title: the state, and beside ⚠️ and ✅ the latest review score. */
@@ -170,12 +196,16 @@ export async function decidePullRequestTitle(input: PullRequestTitleInput): Prom
     const currentSlot = readStatusSlot(title);
     if (normalizeSlot(currentSlot) === desiredSlot) {
         pendingSettles.delete(key);
-        // A slot seen for the first time (a title created with it) is recorded, so a person removing it later is recognised.
-        if (await recordedSlot(redis, repository, prNumber) !== desiredSlot) await recordPullRequestTitleSlot(redis, repository, prNumber, currentSlot);
+        // A slot seen for the first time (a title created with it), or a rename not yet confirmed, is recorded
+        // as confirmed: the title shows it, so a person removing it later is recognised.
+        const recorded = await latestRecordedSlot(redis, repository, prNumber);
+        if (recorded?.slot !== desiredSlot || recorded.pending) await recordPullRequestTitleSlot(redis, repository, prNumber, currentSlot);
         return UNCHANGED;
     }
-    // A person removed the slot: it comes back on the next change of slot, not before.
-    if (currentSlot === null && await recordedSlot(redis, repository, prNumber) === desiredSlot) {
+    // A person removed the slot: it comes back on the next change of slot, not before. A pending
+    // record proves nothing: GitHub may have rejected that rename, which is then written again.
+    const recorded = currentSlot === null ? await latestRecordedSlot(redis, repository, prNumber) : null;
+    if (recorded && !recorded.pending && recorded.slot === desiredSlot) {
         pendingSettles.delete(key);
         return UNCHANGED;
     }
