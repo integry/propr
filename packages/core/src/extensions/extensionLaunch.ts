@@ -35,14 +35,6 @@ function launchContextFor(config: Pick<AgentConfig, 'alias' | 'type'>, options: 
     allowWrite: request.allowWrite === true, autoApply: request.autoApply, additional: { servers: request.servers, skills: request.skills }, maxServers,
   };
 }
-/** Whether any library item would apply to this run; callers use it to choose the network-policy scope. Never throws. */
-export async function extensionsApply(config: Pick<AgentConfig, 'alias' | 'type'>, options: AgentTaskOptions, store = new ExtensionLibraryStore(db)): Promise<boolean> {
-  if (!options.extensions || !['claude', 'codex'].includes(config.type)) return false;
-  try {
-    const { set } = await store.resolveLaunch(launchContextFor(config, options), false);
-    return set.servers.length + set.skills.length > 0;
-  } catch { return Boolean(options.extensions.servers.length || options.extensions.skills.length); }
-}
 // eslint-disable-next-line complexity -- extension authority, staging and physical launch fencing share one cleanup boundary
 export async function executeWithExtensions(config: AgentConfig, options: AgentTaskOptions, execute: (options: AgentTaskOptions) => Promise<AgentExecutionResult>, store = new ExtensionLibraryStore(db)): Promise<AgentExecutionResult> {
   if (!options.extensions) return execute(options);

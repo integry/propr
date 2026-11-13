@@ -58,14 +58,14 @@ export function agentRunExecutionUpdate(alias: string, model: string | undefined
 }
 
 /**
- * Whether extension library items apply to this launch, so the run executes
- * under the network-policy scope they need. Agents without a configuration
- * (and runs without an extension request) never carry extensions.
+ * Whether this launch may receive extension library items, so the run
+ * executes under the network-policy scope they need. Decided without reading
+ * the library: the scope must exist before the launch resolves its items.
+ * Agents without a configuration (and runs without an extension request)
+ * never carry extensions.
  */
-export async function launchCarriesExtensions(resolved: { agent: unknown }, options: AgentTaskOptions): Promise<boolean> {
-    const config = (resolved.agent as { config?: { alias: string; type: string } }).config;
-    if (!config || !options.extensions) return false;
-    // Lazily loaded: the extension launch module is only needed for runs that can carry extensions.
-    const { extensionsApply } = await import('@propr/core');
-    return extensionsApply(config as Parameters<typeof extensionsApply>[0], options);
+export function launchCarriesExtensions(resolved: { agent: unknown }, options: AgentTaskOptions): boolean {
+    const config = (resolved.agent as { config?: { type: string } }).config;
+    // The runtimes whose adapters resolve library items (`executeWithExtensions`).
+    return !!config && !!options.extensions && ['claude', 'codex'].includes(config.type);
 }

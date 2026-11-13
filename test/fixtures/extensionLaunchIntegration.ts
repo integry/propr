@@ -37,6 +37,16 @@ export async function extensionLaunchIntegrationFixture() {
     store,
     database,
     captures: () => captures,
+    /**
+     * Makes the library item apply automatically but disabled, so nothing
+     * applies until the returned `enable` runs; tests call it after the
+     * processor has chosen its network scope, before the launch resolves items.
+     */
+    lateEnabledAutoApply: async () => {
+      const { revision } = await store.readLibrary('1');
+      await store.saveLibrary('1', { version: 1, skills: [], servers: [{ kind: 'https', name: 'docs', url: 'https://8.8.8.8/mcp', authentication: 'none', enabled: false, tools: ['lookup'], capability: 'read', autoApply: true }] }, {}, revision);
+      return { enable: async () => { await store.setItemEnabled('1', { kind: 'server', name: 'docs' }, true); } };
+    },
     execute: (options: AgentTaskOptions, { inspect, networkMode = 'restricted' }: { inspect?: (prepared: AgentTaskOptions) => void; networkMode?: 'open' | 'restricted' } = {}) => executeWithExtensions({ type: 'claude', alias: 'claude' } as AgentConfig, options, async prepared => {
       inspect?.(prepared);
       const token = prepared.toolPolicy!.mcpServers!.find(s => s.name === 'docs')!.bearerToken;

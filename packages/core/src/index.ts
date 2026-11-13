@@ -681,7 +681,6 @@ export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storag
 
 export * from './extensions/extensionProfileStore.js';
 export { migrateExtensionProfilesToLibrary, type ExtensionLibraryMigrationReport } from './extensions/extensionLibraryMigration.js';
-export { extensionsApply } from './extensions/extensionLaunch.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';

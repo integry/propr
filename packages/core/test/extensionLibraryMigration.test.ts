@@ -25,10 +25,10 @@ async function fixture(t: TestContext) {
   const instanceId = (await database('extension_instance_identity').first()).instance_id as string;
   return { database, instanceId, store: new ExtensionLibraryStore(database, environment) };
 }
-interface ProfileSpec { name: string; servers: ExtensionMcpDescriptor[]; secrets?: Record<string, string>; agentScope?: string[]; repositoryScope?: string[]; skillBundleIds?: string[]; enabled?: boolean; deleted?: boolean; key?: string }
+interface ProfileSpec { name: string; servers: ExtensionMcpDescriptor[]; secrets?: Record<string, string>; agentScope?: string[]; repositoryScope?: string[]; skillBundleIds?: string[]; enabled?: boolean; deleted?: boolean; key?: string; id?: string }
 // eslint-disable-next-line max-params -- test helper writes one legacy profile with its custody
 async function profile(database: Knex, instanceId: string, spec: ProfileSpec): Promise<string> {
-  const profileId = randomUUID();
+  const profileId = spec.id ?? randomUUID();
   const snapshot = {
     version: 1, instanceId, profileId, revision: 1, name: spec.name, enabled: spec.enabled ?? true, agentScope: spec.agentScope ?? [], repositoryScope: spec.repositoryScope ?? [],
     mcpServers: spec.servers, skillBundleIds: spec.skillBundleIds ?? [], createdAt: 1, updatedAt: 1, auditActor: '1',
@@ -166,6 +166,40 @@ test('a disabled source selection never maps to an enabled library item', async 
     assert.deepEqual(set.servers, []); assert.deepEqual(set.skills, []);
     assert.ok(set.skipped.every(s => s.reason === 'disabled'), JSON.stringify(set.skipped));
   }
+});
+
+for (const disabledFirst of [true, false]) {
+  test(`a disabled profile does not widen the limits of a skill bundle an enabled profile selects (disabled ${disabledFirst ? 'first' : 'last'})`, async t => {
+    const { database, instanceId, store } = await fixture(t);
+    const bundleId = randomUUID();
+    await database('extension_skill_bundles').insert({ id: bundleId, instance_id: instanceId, descriptor: JSON.stringify({ id: bundleId, instanceId, digest: 'a'.repeat(64), name: 'writing', files: 1, bytes: 1, source: { kind: 'archive', filename: 'x.tar' }, requirements: [], createdAt: 1, auditActor: '1' }), files_json: '[]' });
+    // Profiles migrate in id order; these ids fix which source is merged first.
+    const [early, late] = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002'];
+    const active = await profile(database, instanceId, { id: disabledFirst ? late : early, name: 'Active', servers: [], repositoryScope: ['team/private'], agentScope: ['claude-main'], skillBundleIds: [bundleId] });
+    const inactive = await profile(database, instanceId, { id: disabledFirst ? early : late, name: 'Off', servers: [], skillBundleIds: [bundleId], enabled: false });
+    await migrateExtensionProfilesToLibrary(database, environment, quiet);
+    const library = await store.readLibrary('1');
+    assert.equal(library.skills.length, 1);
+    assert.deepEqual({ enabled: library.skills[0].enabled, repositories: library.skills[0].repositories, agents: library.skills[0].agents }, { enabled: true, repositories: ['team/private'], agents: ['claude-main'] });
+    assert.deepEqual(await store.legacyProfileExtensions(active), { servers: [], skills: [bundleId] });
+    assert.deepEqual(await store.legacyProfileExtensions(inactive), { servers: [], skills: [] });
+    // The enabled profile's automation adds the bundle; elsewhere it stays out of limits.
+    const { set } = await store.resolveLaunch({ agentAlias: 'codex-main', runtime: 'claude', repositories: ['team/public'], allowWrite: false, additional: { servers: [], skills: [bundleId] } }, false);
+    assert.deepEqual(set.skills, []);
+    assert.deepEqual(set.skipped.map(s => s.reason), ['repository']);
+  });
+}
+
+test('a skill bundle selected only by disabled profiles keeps the union of their limits', async t => {
+  const { database, instanceId, store } = await fixture(t);
+  const bundleId = randomUUID();
+  await database('extension_skill_bundles').insert({ id: bundleId, instance_id: instanceId, descriptor: JSON.stringify({ id: bundleId, instanceId, digest: 'a'.repeat(64), name: 'writing', files: 1, bytes: 1, source: { kind: 'archive', filename: 'x.tar' }, requirements: [], createdAt: 1, auditActor: '1' }), files_json: '[]' });
+  await profile(database, instanceId, { name: 'Off A', servers: [], repositoryScope: ['team/a'], skillBundleIds: [bundleId], enabled: false });
+  await profile(database, instanceId, { name: 'Off B', servers: [], repositoryScope: ['team/b'], skillBundleIds: [bundleId], enabled: false });
+  await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  const [skill] = (await store.readLibrary('1')).skills;
+  assert.equal(skill.enabled, false);
+  assert.deepEqual([...skill.repositories].sort(), ['team/a', 'team/b']);
 });
 
 test('nonterminal automation runs keep the extensions their captured definition selected', async t => {

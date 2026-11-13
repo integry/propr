@@ -24,9 +24,9 @@ import { libraryIdentity } from './extensionProfileStore.js';
  *   suffix. A server disabled in one source and enabled in another stays two
  *   items, so a disabled selection never maps to an enabled item;
  * - a skill bundle (one library item per bundle) selected only through
- *   disabled profiles stays disabled; a disabled profile's selection of a
- *   bundle that another enabled profile makes active is left out of its
- *   mapping;
+ *   disabled profiles stays disabled; one with an enabled source takes its
+ *   limits only from its enabled sources, and a disabled profile's selection
+ *   of it is left out of that profile's mapping;
  * - automations that selected a profile add its (possibly renamed) items, and
  *   so do the definition snapshots of their nonterminal runs;
  * - each profile id maps to its item names for queued New Task submissions;
@@ -126,8 +126,11 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
         }
         for (const bundleId of profile.skillBundleIds) {
           const current = skills.get(bundleId); const enabled = profile.enabled;
-          if (current) { current.enabled ||= enabled; current.repositories = union(current.repositories, profile.repositoryScope); current.agents = union(current.agents, profile.agentScope); }
-          else skills.set(bundleId, { enabled, repositories: profile.repositoryScope.length ? [...profile.repositoryScope] : null, agents: profile.agentScope.length ? [...profile.agentScope] : null });
+          const own = { enabled, repositories: profile.repositoryScope.length ? [...profile.repositoryScope] : null, agents: profile.agentScope.length ? [...profile.agentScope] : null };
+          // An enabled bundle's limits come only from its enabled sources: a
+          // disabled profile never widens what an enabled one authorized.
+          if (!current || (enabled && !current.enabled)) skills.set(bundleId, own);
+          else if (enabled === current.enabled) { current.repositories = union(current.repositories, profile.repositoryScope); current.agents = union(current.agents, profile.agentScope); }
           items.skills.push(bundleId);
           if (!enabled) inactiveSkills.set(profile.profileId, (inactiveSkills.get(profile.profileId) ?? new Set()).add(bundleId));
         }

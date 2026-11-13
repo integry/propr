@@ -197,6 +197,10 @@ export class ExtensionLibraryStore {
       if (head.snapshot.revision !== expectedRevision) throw new ExtensionError(409, 'Library revision changed; refresh before saving');
       await this.refuseReferencedRemoval(trx, head.snapshot, parsed);
       const secrets = this.unseal(head); const next: Record<string, string> = {};
+      // Checked before credentials are cleared, dropped with their server or
+      // withheld from a changed endpoint: none may become a public field.
+      const supplied = [...Object.values(secrets), ...Object.values(replacements).filter((token): token is string => token !== null)];
+      if (supplied.some(token => token && JSON.stringify(parsed).includes(token))) throw new ExtensionError(400, 'Secrets cannot appear in public library fields');
       for (const server of bearerServers(parsed.servers)) {
         if (server.kind !== 'https') continue;
         // Changing an endpoint must never transfer a credential silently.

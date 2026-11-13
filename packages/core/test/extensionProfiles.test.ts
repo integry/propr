@@ -105,6 +105,23 @@ test('native durable instance-admin library management, encrypted custody, revis
   await assert.rejects(store.grantSnapshot(token), /expired/);
 });
 
+test('a save that drops a stored credential still refuses that credential in public fields', async t => {
+  const { database, store } = await fixture(t);
+  const stored = await save(store, input([server()]), { docs: secret });
+  const other = server({ name: 'search', url: 'https://8.8.4.4/mcp', authentication: 'none' });
+  const leaks: [string, ExtensionLibraryInput, Record<string, string | null>][] = [
+    ['cleared', input([server({ tools: ['lookup', secret] })]), { docs: null }],
+    ['removed with its server', input([{ ...other, tools: ['lookup', secret] } as ExtensionLibraryServerInput]), {}],
+    ['withheld from a changed endpoint', input([server({ url: 'https://8.8.4.4/mcp', tools: ['lookup', secret] })]), {}],
+    ['replaced', input([server({ tools: ['lookup', secret] })]), { docs: 'REPLACEMENT_EXTENSION_SENTINEL' }],
+  ];
+  for (const [label, library, replacements] of leaks) await assert.rejects(store.saveLibrary('1', library, replacements, stored.revision), /public library/, label);
+  // A supplied replacement is checked even when another field carries it.
+  await assert.rejects(store.saveLibrary('1', input([server(), { ...other, tools: ['lookup', 'NEW_SUPPLIED_SENTINEL'] } as ExtensionLibraryServerInput]), { docs: 'NEW_SUPPLIED_SENTINEL' }, stored.revision), /public library/);
+  assert.equal((await store.readLibrary('1')).revision, stored.revision);
+  assert.ok(!JSON.stringify([await store.history('1'), await database('extension_library_revisions').select('snapshot')]).includes(secret));
+});
+
 test('item limits, runtime, capability, public secrets and tenant substitution fail closed', async t => {
   const { database, store } = await fixture(t);
   await save(store, input([server({ agents: ['claude-main'], repositories: ['team/repo'] })]), { docs: secret });

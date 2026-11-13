@@ -75,8 +75,8 @@ export interface AgentRunProcessorDeps extends ReportNoveltyStore {
     buildPrompt: typeof buildAgentReportPrompt;
     /** Runs the agent inside the instance spend cap (`default_max_cost_usd`). */
     withCostCap: <T>(target: { taskId: string; repoOwner: string; repoName: string; modelName?: string; logger: Logger }, operation: () => Promise<T>) => Promise<T>;
-    /** Whether extension library items apply to this launch, so it runs under the network-policy scope they need. */
-    extensionsApply?: typeof launchCarriesExtensions;
+    /** Whether this launch may receive extension library items, so it runs under the network-policy scope they need. */
+    extensionsApply?: (...args: Parameters<typeof launchCarriesExtensions>) => boolean | Promise<boolean>;
     advanceAfterReport: (run: StoredAgentRun) => Promise<StoredAgentRun | null>;
     /**
      * Enqueues the action phase again for a run an interrupted attempt moved to
