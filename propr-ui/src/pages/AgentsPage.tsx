@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { TERMINAL_AUTOMATION_RUN_STATES, type AutomationRunState, type InstanceCatalogAgent } from '@propr/shared';
@@ -239,6 +239,9 @@ const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rou
  */
 const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> = ({ isNew = false, section = 'settings' }) => {
   const { definitionId = null, runId = null } = useParams();
+  const [searchParams] = useSearchParams();
+  /** `/automations/new?template=<id>` opens the form prefilled from a shipped template. */
+  const templateId = isNew ? searchParams.get('template') : null;
   const navigate = useNavigate();
   const split = useSplitViewport();
   const { isDemoMode } = useDemoMode();
@@ -280,8 +283,9 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
 
   const editor = editing && createPortal(
     <AgentEditor
-      key={definitionId ?? 'new'}
+      key={definitionId ?? `new:${templateId ?? ''}`}
       definitionId={isNew ? null : definitionId}
+      templateId={templateId}
       section={runId ? 'run' : section}
       runId={runId}
       headerControls={split ? (

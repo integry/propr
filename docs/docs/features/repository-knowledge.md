@@ -66,6 +66,21 @@ Use todos to capture:
 
 Todos are most effective when they are connected to a repository, a reason, and a next action. A vague todo such as "clean up auth" is much less useful than a scoped item with the files, risk, and expected outcome attached.
 
+## Weekly Codebase Drift Report
+
+Agent-written code bases grow fast and collect several versions of the same helper. Indexing keeps a summary per file, not per function, so ProPR does not detect duplicates on its own. The **Weekly codebase drift report** [automation template](./agents.md#templates) (`weekly-codebase-drift-report`) fills that gap with a report a maintainer can read in five minutes.
+
+Each Monday (`0 9 * * 1`) the run reads the last 7 days of changes merged into the default branch and the pull requests behind them, and writes:
+
+- **What changed and why**, grouped by area, with a link to each pull request.
+- **Possible duplicates**: newly added functions or modules that appear to repeat existing ones, each with both locations. The run searches with `search_repository_files` by name (`literal` mode) and by behaviour (`semantic` mode), and reads both candidates before listing a pair; a similar name or a search hit alone is never reported.
+- **Growth**: files and lines added and removed per top-level area, and the largest new files.
+- **Suggested consolidations**: a short list, each backed by a duplicate pair or a growth row.
+
+The template needs `repository_read` and `propr_mcp`, so it runs on Claude Code or Codex. It starts in `dry_run`, so a run only writes the report. With autonomy raised to `preview` or `auto`, the acting step saves each suggested consolidation as a repository To-Do (skipping any an open To-Do already covers), where you can schedule it like other maintenance work.
+
+The default pull request review guidance (Settings → AI Models & Reasoning → PR review, which an override replaces) also asks the reviewer to check whether newly added helpers duplicate existing code, so duplicates can be caught before they merge.
+
 ## When Knowledge Is Underpowered
 
 Repository knowledge needs attention when:
