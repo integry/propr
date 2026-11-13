@@ -222,10 +222,12 @@ export const ExtensionLibraryRead = component('ExtensionLibraryRead', z.object({
 export const AutomationExtensions = component('AutomationExtensions', automationExtensionsSchema as unknown as z.ZodType, 'Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.');
 export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType, 'Legacy profile selection; no longer accepted for new submissions.');
 
+const repositoryName = z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.');
 export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object({
   extensionProfile: ExtensionSelection.nullable().optional().describe('Removed: extension profiles were replaced by the instance extension library. A non-null value is refused.'),
-  extensionAllowWrite: z.boolean().optional().describe('Legacy write opt-in that accompanied a profile selection; true without one is refused.'),
-  repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.'),
+  extensionAllowWrite: z.boolean().optional().describe('Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission\'s initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`.'),
+  disableExtensions: z.boolean().optional().describe('Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply.'),
+  repository: repositoryName,
   instruction: z.string().min(1).max(50_000).regex(/\S/).describe('What the agent should do; becomes the GitHub issue body. Must not be only whitespace.'),
   agentAlias: z.string().optional().describe('Agent to route to. Omit to use the instance default.'),
   model: z.string().optional().describe('Model of the agent. Omit to use the agent default.'),
@@ -245,6 +247,8 @@ export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object
   }])),
 }), 'A request to open a GitHub issue and start an implementation run for it.');
 
+export const TaskSubmissionExtensions = component('TaskSubmissionExtensions', z.object({ qualified: z.boolean().describe('False when the agent\'s runtime does not use extensions (only Claude and Codex do).'), revision: z.number().int().describe('Current library revision; tasks resolve the library again at launch.'),
+  servers: z.array(z.object({ name: z.string(), capability: z.enum(['read', 'write']) })).describe('MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.'), skills: z.array(z.object({ name: z.string() })) }), 'Library items that would apply automatically to a task for this repository and agent.');
 export const TaskSubmission = component('TaskSubmission', z.object({
   id: z.string(),
   state: z.enum(['prepared', 'creating', 'issue_created', 'queued', 'failed']),
@@ -360,6 +364,7 @@ export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
   force: z.enum(['true', 'false']).optional().describe('Delete even when the task is still active.'),
 }));
 
+export const TaskSubmissionExtensionsQuery = querySet('TaskSubmissionExtensionsQuery', z.object({ repository: repositoryName, agentAlias: z.string().optional().describe('Agent the task would use. Omit for the instance default.'), model: z.string().optional() }));
 export const TaskFollowupRunsQuery = querySet('TaskFollowupRunsQuery', z.object({
   commentId: z.string().regex(/^[1-9]\d{0,15}$/).describe('The `commentId` the follow-up\'s receipt returned.'),
 }));

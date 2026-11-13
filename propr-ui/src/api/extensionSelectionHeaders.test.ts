@@ -50,3 +50,11 @@ it('a current draft submits directly', async () => {
   await submitTask('current', { repository: 'example/repo', instruction: 'Fix it' }, []);
   expect(api.fetch.mock.calls.map(([url]) => url)).toEqual(['/api/task-submissions']);
 });
+it('a task submission with the write opt-in sends the preflight header; the disable switch alone does not', async () => {
+  await submitTask('write', { repository: 'example/repo', instruction: 'Fix it', extensionAllowWrite: true }, []);
+  expect(lastHeaders().get('X-ProPR-Extensions')).toBe('1');
+  expect(JSON.parse(((api.fetch.mock.lastCall![1] as RequestInit).body as FormData).get('payload') as string)).toEqual({ repository: 'example/repo', instruction: 'Fix it', extensionAllowWrite: true });
+  await submitTask('disabled', { repository: 'example/repo', instruction: 'Fix it', disableExtensions: true }, []);
+  expect(lastHeaders().get('X-ProPR-Extensions')).toBeNull();
+  expect(api.fetch.mock.calls.every(([url]) => !String(url).includes('/retry'))).toBe(true);
+});

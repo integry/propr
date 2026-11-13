@@ -79,3 +79,21 @@ test('extension preparation keeps the ProPR MCP network through to the Claude an
     assert.ok(!args.includes('bridge'));
   }
 });
+
+test('a label-started issue task and a pull request follow-up resolve auto-applied library items at launch', async t => {
+  const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
+  const { taskRunExtensionRequest } = await import('../packages/core/src/extensions/extensionRunResolution.js');
+  // Queued before the item applies automatically; the launch uses the library as it is then.
+  const queued = [taskRunExtensionRequest({ kind: 'issue', repository: 'acme/web', labels: [{ name: 'AI' }] }), taskRunExtensionRequest({ kind: 'pull_request', repository: 'acme/web', labels: ['AI'] })];
+  const { enable } = await fixture.lateEnabledAutoApply();
+  await enable();
+  for (const [index, extensions] of queued.entries()) {
+    const taskId = `auto-apply-${index}`;
+    let prepared: AgentTaskOptions | undefined;
+    const result = await runRepositoryWorkflow({ taskId, repoOwner: 'acme', repoName: 'web', redisClient: {} as any, stateManager: { getTaskState: async () => ({ state: 'claude_execution' }) } as any, correlatedLogger: { warn() {} } as any },
+      () => fixture.execute({ extensions, taskId, issueRef: { repoOwner: 'acme', repoName: 'web', number: 1 }, worktreePath: '/unused', prompt: 'Check documentation', githubToken: '' }, { inspect: options => { prepared = options; } }));
+    assert.equal(result.success, true);
+    assert.deepEqual(prepared!.toolPolicy!.mcpServers!.map(s => s.name), ['docs']);
+  }
+  assert.equal(fixture.captures(), 2);
+});

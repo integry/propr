@@ -77,6 +77,13 @@ export interface AgentExtensionRequest {
     repositories?: string[];
     /** Explicit per-run write authorization; the library cannot grant write capabilities. */
     allowWrite?: boolean;
+    /**
+     * What kind of run this is. Issue tasks and pull request follow-ups honour
+     * the opt-out `labels`; automation runs (the default) ignore them.
+     */
+    kind?: 'automation' | 'issue' | 'pull_request';
+    /** Labels of the run's issue or pull request, read at launch; they only remove items. */
+    labels?: string[];
 }
 
 export interface AgentTaskOptions {

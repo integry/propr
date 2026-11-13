@@ -6,7 +6,7 @@ import { API_BASE_URL } from '../api/apiClient';
 import * as submissions from '../api/taskSubmissions';
 import * as planner from '../api/plannerApi';
 
-vi.mock('../api/taskSubmissions', () => ({ submitTask: vi.fn(), getTaskSubmission: vi.fn(), retryTaskSubmission: vi.fn(), listTaskSnapshots: vi.fn().mockResolvedValue([]), taskSnapshotStorage: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../api/taskSubmissions', () => ({ getTaskExtensionsPreview: vi.fn(), submitTask: vi.fn(), getTaskSubmission: vi.fn(), retryTaskSubmission: vi.fn(), listTaskSnapshots: vi.fn().mockResolvedValue([]), taskSnapshotStorage: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../api/plannerApi', () => ({ createDraft: vi.fn(), uploadAttachment: vi.fn() }));
 vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn().mockResolvedValue({ repositories: [{ name: 'acme/billing', enabled: true }], agents: [{ alias: 'issue-only', enabled: true, supportedModels: ['model-1'], defaultModel: 'model-1' }] }) }));
 vi.mock('../contexts/AuthContext', async importOriginal => ({ ...await importOriginal<typeof import('../contexts/AuthContext')>(), useCurrentUser: () => ({ id: 'alice', permissions: [] }) }));
@@ -16,7 +16,7 @@ function Destination() { const location = useLocation(); return <div data-testid
 const pending = { id: 'submission', state: 'failed' as const, issueNumber: 42, issueUrl: 'https://github.com/acme/billing/issues/42', taskId: null, error: 'Queue unavailable' };
 const renderPage = () => render(<MemoryRouter initialEntries={[{ pathname: '/tasks/new', state: { initialRepository: 'acme/billing', initialPrompt: 'Fix invoice dates', todoIds: ['todo-1'] } }]}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /><Route path="*" element={<Destination />} /></Routes></MemoryRouter>);
 
-beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue(undefined); vi.mocked(submissions.listTaskSnapshots).mockResolvedValue([]); });
+beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); vi.mocked(submissions.getTaskExtensionsPreview).mockResolvedValue({ qualified: true, revision: 1, servers: [], skills: [] }); vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue(undefined); vi.mocked(submissions.listTaskSnapshots).mockResolvedValue([]); });
 describe('New Task issue launcher', () => {
   it('opens a modal with collapsed settings and no promotional cards', async () => {
     renderPage();
@@ -295,9 +295,41 @@ describe('New Task issue launcher', () => {
 });
 
 
-it('offers no extension selection and submits none', async () => {
+it('shows the library items that apply read-only, with the write opt-in only when a write server applies', async () => {
+  vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+  vi.mocked(submissions.getTaskExtensionsPreview).mockResolvedValue({ qualified: true, revision: 3, servers: [{ name: 'docs', capability: 'read' }, { name: 'tracker', capability: 'write' }], skills: [{ name: 'release-notes' }] });
+  renderPage();
+  const applied = await screen.findByTestId('task-extensions-applied');
+  expect(applied).toHaveTextContent('MCP servers: docs');
+  expect(applied).toHaveTextContent('Write MCP servers (opt-in): tracker');
+  expect(applied).toHaveTextContent('Skills: release-notes');
+  await waitFor(() => expect(submissions.getTaskExtensionsPreview).toHaveBeenCalledWith('acme/billing', undefined, undefined, expect.any(AbortSignal)));
+  fireEvent.click(screen.getByLabelText(/Allow write servers/));
+  const run = await screen.findByRole('button', { name: 'Run task' }); await waitFor(() => expect(run).toBeEnabled()); fireEvent.click(run);
+  await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(1));
+  const payload = vi.mocked(submissions.submitTask).mock.calls[0][1];
+  expect(payload).toMatchObject({ extensionAllowWrite: true });
+  expect(payload).not.toHaveProperty('disableExtensions');
+});
+
+it('"Run without extensions" sends the disable switch and withdraws the write opt-in', async () => {
+  vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+  vi.mocked(submissions.getTaskExtensionsPreview).mockResolvedValue({ qualified: true, revision: 3, servers: [{ name: 'tracker', capability: 'write' }], skills: [] });
+  renderPage();
+  fireEvent.click(await screen.findByLabelText(/Allow write servers/));
+  fireEvent.click(screen.getByRole('switch', { name: /Run without extensions/ }));
+  expect(screen.queryByLabelText(/Allow write servers/)).toBeNull();
+  const run = await screen.findByRole('button', { name: 'Run task' }); await waitFor(() => expect(run).toBeEnabled()); fireEvent.click(run);
+  await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(1));
+  const payload = vi.mocked(submissions.submitTask).mock.calls[0][1];
+  expect(payload).toMatchObject({ disableExtensions: true });
+  expect(payload).not.toHaveProperty('extensionAllowWrite');
+});
+
+it('with no applicable library items shows no extension controls and submits no extension fields', async () => {
   vi.mocked(submissions.submitTask).mockResolvedValue(pending);
   renderPage();
+  await waitFor(() => expect(submissions.getTaskExtensionsPreview).toHaveBeenCalled());
   expect(screen.queryByText(/extension/i)).toBeNull();
   expect(screen.queryByLabelText(/MCP write/i)).toBeNull();
   const run = await screen.findByRole('button', { name: 'Run task' }); await waitFor(() => expect(run).toBeEnabled()); fireEvent.click(run);

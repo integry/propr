@@ -74,19 +74,48 @@ test('instance extension library describes skills and MCP servers, shows immutab
 });
 
 
-test('New Task offers no extension selection', async ({ page }) => {
+test('New Task shows the library items that apply, offers the write opt-in and the disable switch, and never reads the admin library', async ({ page }) => {
   await installSettingsFixture(page);
   let libraryRequests = 0;
+  const previews: string[] = [];
+  const submissions: { payload: Record<string, unknown>; header?: string }[] = [];
   await page.route('**/api/instance/catalog', route => route.fulfill({ json: { agents: [{ id: 'claude', kind: 'direct', alias: 'claude', enabled: true, supportedModels: ['claude-sonnet-5-5'], defaultModel: 'claude-sonnet-5-5' }], repositories: [{ name: 'example/docs', enabled: true }] } }));
   await page.route('**/api/instance/extensions/v1**', route => { libraryRequests++; return route.fulfill({ json: { instanceId, library: emptyLibrary } }); });
+  await page.route('**/api/task-submission-extensions?**', route => {
+    previews.push(new URL(route.request().url()).searchParams.get('repository') ?? '');
+    return route.fulfill({ json: { qualified: true, revision: 7, servers: [{ name: 'documentation', capability: 'read' }, { name: 'tracker', capability: 'write' }], skills: [{ name: 'documentation-review' }] } });
+  });
+  await page.route('**/api/task-submissions', async route => {
+    const body = route.request().postData() ?? '';
+    submissions.push({ payload: JSON.parse(/name="payload"\r\n\r\n([^\r]*)/.exec(body)![1]), header: route.request().headers()['x-propr-extensions'] });
+    return route.fulfill({ status: 400, json: { error: 'Synthetic stop' } });
+  });
+  await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/tasks/new');
   const dialog = page.getByRole('dialog', { name: 'New task' });
-  await expect(dialog.getByLabel('Prompt')).toBeVisible();
-  await expect(dialog.getByText(/extension/i)).toHaveCount(0);
-  await expect(dialog.getByLabel(/MCP write capabilities/)).toHaveCount(0);
+  await dialog.getByText('Select a repository', { exact: true }).click();
+  await page.getByRole('button', { name: /example.*docs/ }).click();
+  await dialog.getByLabel('Prompt', { exact: true }).fill('Check the documentation links.');
+  await dialog.locator('summary', { hasText: 'Advanced Options' }).click();
+  const applied = dialog.getByTestId('task-extensions-applied');
+  await expect(applied).toContainText('MCP servers: documentation');
+  await expect(applied).toContainText('Write MCP servers (opt-in): tracker');
+  await expect(applied).toContainText('Skills: documentation-review');
+  expect(previews).toContain('example/docs');
+  await dialog.getByLabel(/Allow write servers/).check();
+  await dialog.getByRole('button', { name: 'Run task', exact: true }).click();
+  await expect.poll(() => submissions.length).toBe(1);
+  expect(submissions[0]).toMatchObject({ payload: { extensionAllowWrite: true }, header: '1' });
+  // The refused request is discarded; the form keeps its choices for another attempt.
+  await dialog.getByRole('switch', { name: /Run without extensions/ }).check();
+  await expect(dialog.getByLabel(/Allow write servers/)).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Run task', exact: true }).click();
+  await expect.poll(() => submissions.length).toBe(2);
+  expect(submissions[1].payload).toMatchObject({ disableExtensions: true });
+  expect(submissions[1].payload).not.toHaveProperty('extensionAllowWrite');
+  expect(submissions[1].header).toBeUndefined();
   expect(libraryRequests).toBe(0);
 });
-
 
 test('extension library item limits use selections and keep unlisted values editable', async ({ page }) => {
   await installSettingsFixture(page);

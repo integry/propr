@@ -10,6 +10,10 @@ import { db } from '../db/connection.js';
 import type { AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../agents/types.js';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext } from './extensionProfileStore.js';
 import { validateSkillFiles, type SkillFile } from './skillBundles.js';
+import {
+  EXTENSION_AUTO_APPLY_SKIP_MESSAGES, applyLabelOptOut, extensionResolutionEvent, hasAutoAppliedItems, honoursOptOutLabels,
+  type ExtensionAutoApplySkip, type ExtensionRunNotes,
+} from './extensionRunResolution.js';
 
 interface LaunchContext { taskId: string; secrets: string[]; mounts: string[]; beforeLaunch: (window?: object, validateResources?: boolean) => Promise<void> }
 const launchContext = new AsyncLocalStorage<LaunchContext>();
@@ -35,8 +39,42 @@ function launchContextFor(config: Pick<AgentConfig, 'alias' | 'type'>, options: 
     allowWrite: request.allowWrite === true, autoApply: request.autoApply, additional: { servers: request.servers, skills: request.skills }, maxServers,
   };
 }
-// eslint-disable-next-line complexity -- extension authority, staging and physical launch fencing share one cleanup boundary
-export async function executeWithExtensions(config: AgentConfig, options: AgentTaskOptions, execute: (options: AgentTaskOptions) => Promise<AgentExecutionResult>, store = new ExtensionLibraryStore(db)): Promise<AgentExecutionResult> {
+export interface ExtensionLaunchHooks {
+  /**
+   * Why this runtime launch cannot use auto-applied items without breaking a
+   * run that works without them, or null. Such a run launches without its
+   * auto-applied items; explicitly added items keep their strict behaviour.
+   */
+  autoApplyConflict?: (options: AgentTaskOptions) => Promise<ExtensionAutoApplySkip | null> | ExtensionAutoApplySkip | null;
+}
+/**
+ * Resolve the run's items against the current library revision, then apply
+ * the run's opt-out labels and the runtime's auto-apply conflicts. Labels only
+ * remove items; nothing here adds one.
+ */
+async function resolveRunExtensions(store: ExtensionLibraryStore, context: ExtensionLaunchContext, options: AgentTaskOptions, hooks: ExtensionLaunchHooks) {
+  const request = options.extensions!;
+  const notes: ExtensionRunNotes = {};
+  const resolve = async (launch: ExtensionLaunchContext) => {
+    const resolved = await store.resolveLaunch(launch, false);
+    const filtered = applyLabelOptOut(resolved.set, request);
+    notes.labelOptOut = filtered.record;
+    return { snapshot: resolved.snapshot, set: filtered.set };
+  };
+  let prepared = await resolve(context);
+  if (hooks.autoApplyConflict && hasAutoAppliedItems(prepared.set, request)) {
+    const reason = await hooks.autoApplyConflict(options);
+    if (reason) {
+      context = { ...context, autoApply: false };
+      prepared = await resolve(context);
+      notes.autoApplySkipped = { reason, message: EXTENSION_AUTO_APPLY_SKIP_MESSAGES[reason] };
+      logger.info({ taskId: options.taskId, reason }, 'Launching this Codex run without its auto-applied extension library items');
+    }
+  }
+  return { context, prepared, notes };
+}
+// eslint-disable-next-line complexity, max-params -- extension authority, staging and physical launch fencing share one cleanup boundary
+export async function executeWithExtensions(config: AgentConfig, options: AgentTaskOptions, execute: (options: AgentTaskOptions) => Promise<AgentExecutionResult>, store = new ExtensionLibraryStore(db), hooks: ExtensionLaunchHooks = {}): Promise<AgentExecutionResult> {
   if (!options.extensions) return execute(options);
   const explicit = options.extensions.servers.length + options.extensions.skills.length > 0;
   if (options.executionMode === 'goal' || !options.taskId) {
@@ -45,10 +83,20 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
   }
   // The run's own MCP servers count against the per-run server limit first.
   const existing = options.toolPolicy?.mcpServers ?? [];
-  const context = launchContextFor(config, options, Math.max(0, EXTENSION_LIMITS.servers - existing.length));
-  const prepared = await store.resolveLaunch(context, false);
+  let resolved: Awaited<ReturnType<typeof resolveRunExtensions>>;
+  try { resolved = await resolveRunExtensions(store, launchContextFor(config, options, Math.max(0, EXTENSION_LIMITS.servers - existing.length)), options, hooks); }
+  catch (error) {
+    // Auto-apply must not break issue tasks and follow-ups that work without
+    // extensions: when the library cannot be read they launch without it.
+    // Explicitly added items, and the fence at container start, still refuse.
+    if (explicit || !honoursOptOutLabels(options.extensions)) throw error;
+    logger.warn({ taskId: options.taskId }, 'Extension library unavailable; launching this task without auto-applied extensions');
+    return execute({ ...options, extensions: null });
+  }
+  const { context, prepared, notes } = resolved;
   const { snapshot, set } = prepared;
-  try { await store.recordResolution(options.taskId, snapshot.revision, set); }
+  const event = extensionResolutionEvent(snapshot, set, options.extensions, notes);
+  try { await store.recordResolution(options.taskId, event); }
   catch { logger.warn({ taskId: options.taskId }, 'Could not record extension resolution'); }
   if (set.skipped.length || set.omitted.length) logger.info({ taskId: options.taskId, skipped: set.skipped, omitted: set.omitted }, 'Some extension library items were not applied to this run');
   if (!set.servers.length && !set.skills.length) return execute({ ...options, extensions: null });
@@ -64,7 +112,7 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
     const endpoint = server.kind === 'https' ? server.url : entry?.kind === 'https' ? entry.url : undefined;
     if (endpoint) await resolveExtensionEndpoint(endpoint, undefined, { network: grantNetwork, ...(entry?.kind === 'https' ? { internalAddresses: entry.addresses } : {}) });
   }
-  const token = await store.createGrant(prepared, options.taskId, grantNetwork, context.allowWrite);
+  const token = await store.createGrant(prepared, options.taskId, grantNetwork, context.allowWrite, event.provenance.source);
   // Reuse the existing worker/Docker-host transport namespace. Bundled hosted
   // and self-hosted layouts already mount it; no provider home is modified.
   const roots = egressSocketRoots();
