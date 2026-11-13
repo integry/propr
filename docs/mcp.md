@@ -384,7 +384,9 @@ into work with `create_task`, `create_plan` or `create_goal`.
 
 `create_goal` accepts the same creation contract as the goal API and web UI;
 `get_goal_capabilities` returns it as `creation` beside the supported agents
-and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
+and models. Each agent's `controls.operatorQuestions` is true when its running
+goals can ask a question that `send_goal_input` answers (Codex, and Claude
+through its `ask_operator` tool). `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
 is an integer from 1 to 32 and defaults to 1 over MCP (the API and UI leave it
 unset when omitted). `checkpointIntervalMinutes` is 5–120 (default 15) and is
 rejected for orchestrated goals. `ultrafix: true` asks the goal agent to run
@@ -826,12 +828,14 @@ result either way:
 | `paused` | A pause the worker confirmed with no queued resume. A pause request is not `paused`. |
 | `terminal` | Any of completed, failed or cancelled. |
 | `checkpoint` | A checkpoint published after the cursor — never an older one. |
-| omitted | Any new durable goal event after the cursor. |
+| `blocked` | The goal's agent opened a question or approval for you. Without a cursor, a still-open blocker of the current attempt matches immediately. Read the question with `get_goal` or `list_goal_attention`. |
+| omitted | Any new durable goal event after the cursor, including a blocker opening or closing. |
 
 The result carries `outcome` (`matched`, `timed_out` or `unreachable`),
 `cursor`, `condition`, `matchedImmediately`, the triggering `event` (`kind`
-`lifecycle` with `state`/`previousState`, or `checkpoint` with the commit and
-pull request) and the current `goal` projection (`lifecycleState`,
+`lifecycle` with `state`/`previousState`, `checkpoint` with the commit and
+pull request, or `blocker` with `blocker.id`, `blocker.status` (`open`,
+`resolved` or `superseded`) and `blocker.category`) and the current `goal` projection (`lifecycleState`,
 `requestedState`, `resultState`, `goalCompleted`, `pauseConfirmed`, checkpoint
 count, final PR). `timed_out` is not a goal failure: call `wait_goal` again with
 the returned cursor. The `goal` projection is current, so on a timeout it can
@@ -915,8 +919,9 @@ with a `responseHint`:
 
 Only explicit signals create a blocker. Silence, slow work, rate limits and
 backoff, infrastructure failures, narrative text and queued corrections never
-do. Sending input does not resolve a question: the blocker stays open until the
-provider resolves the request or the turn ends. A blocker belongs to its
+do. Sending input does not resolve a Codex question: the blocker stays open until the
+provider resolves the request or the turn ends. A Claude `ask_operator` question
+is resolved once ProPR delivers the input as its answer. A blocker belongs to its
 execution attempt, so a recovered or replaced session supersedes it and a
 delayed event from an old attempt cannot bring it back. Provider text is
 untrusted data.
@@ -926,7 +931,7 @@ Provider support, from each integration's structured events:
 | Provider | `question` | `approval` | `paused` |
 | --- | --- | --- | --- |
 | Codex (App Server) | Supported (`item/tool/requestUserInput`, MCP elicitation as a handoff) | Reported, handoff only (`item/*/requestApproval`) | Supported |
-| Claude | Unavailable — headless session with permissions bypassed and no permission-prompt tool | Unavailable | Supported |
+| Claude | Supported (injected `ask_operator` MCP tool, goal sessions only; answered by the next goal input, closed on answer, timeout `goal_question_max_wait_ms` or attempt end) | Unavailable — headless session with permissions bypassed and no permission-prompt tool | Supported |
 | Antigravity | Unavailable — print mode with permissions bypassed | Unavailable | Supported |
 
 `waitingForOperator` is now true for any open blocker, not only a confirmed

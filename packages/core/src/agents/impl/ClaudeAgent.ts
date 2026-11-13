@@ -46,6 +46,9 @@ import {
     claudeSessionTranscriptPath,
     executeClaudeNativeGoal,
 } from './claudeNativeGoal.js';
+import { createOperatorQuestionExchange, removeOperatorQuestionExchange } from './claudeOperatorQuestions.js';
+import { boundGoalQuestionMaxWaitMs, loadGoalQuestionMaxWaitMs } from '../../config/goalQuestionSettings.js';
+import type { OperatorQuestionLaunch } from './utils/operatorQuestionMcpServer.js';
 
 export { UsageLimitError };
 
@@ -222,6 +225,23 @@ export class ClaudeAgent implements Agent {
     }
 
     /**
+     * The `ask_operator` exchange of a goal attempt whose control can record
+     * blockers. A question waits at most the instance setting, bounded by this
+     * agent's own deadline.
+     */
+    private async prepareOperatorQuestions(options: AgentTaskOptions): Promise<OperatorQuestionLaunch | undefined> {
+        if (!options.goalControl?.reportBlocker || !options.goalControl.resolveBlocker) return undefined;
+        try {
+            const maxWaitMs = boundGoalQuestionMaxWaitMs(await loadGoalQuestionMaxWaitMs(), this.timeoutMs);
+            return await createOperatorQuestionExchange(maxWaitMs);
+        } catch (error) {
+            // The goal still runs; it only cannot ask the operator.
+            logger.warn({ taskId: options.taskId, error: (error as Error).message }, 'Could not prepare the operator question tool for a Claude goal');
+            return undefined;
+        }
+    }
+
+    /**
      * Runs one attempt of a native `/goal` session. Claude owns the goal loop
      * through its Stop hook; ProPR steers input, checkpoints, and stops over
      * the session's stream-json stdin and resumes the exact session later.
@@ -243,19 +263,22 @@ export class ClaudeAgent implements Agent {
             // An identity persisted before the provider wrote its first
             // transcript record has nothing to resume; start it under that id.
             const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
-            const buildGoalDockerArgs = async () => {
+            const operatorQuestions = await this.prepareOperatorQuestions(options);
+            // The attempt binds the question launch to its own deadline before building the container.
+            const buildGoalDockerArgs = async (boundQuestions?: OperatorQuestionLaunch) => {
                 const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
                 return buildDockerArgs(this.config, this.maxTurns, {
                     worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number,
                     systemPrompt, tools, environment, taskId,
                     reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
                     ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
+                    ...(boundQuestions ? { operatorQuestions: boundQuestions } : {}),
                 });
             };
             const response = await executeClaudeNativeGoal(
                 { ...options, resumeSessionId: resumable ? sessionId : undefined },
-                { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
-            );
+                { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs, operatorQuestions },
+            ).finally(() => operatorQuestions && removeOperatorQuestionExchange(operatorQuestions));
             if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             logger.info({

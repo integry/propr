@@ -1,5 +1,5 @@
 import { getIntegerSettingOrDefault } from './configSettings.js';
-import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, parseMaxProviderReplacements, parseUsageTipsSettings } from '@propr/shared';
+import { DEFAULT_GOAL_QUESTION_MAX_WAIT_MS, DEFAULT_MAX_PROVIDER_REPLACEMENTS, GOAL_QUESTION_MAX_WAIT_SETTING, MIN_GOAL_QUESTION_MAX_WAIT_MS, parseMaxProviderReplacements, parseUsageTipsSettings } from '@propr/shared';
 import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
@@ -239,7 +239,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       const ultrafixCycles = getIntegerSettingOrDefault({ name: 'ultrafix_max_cycles', value: ultrafixMaxCycles, defaultValue: DEFAULT_ULTRAFIX_MAX_CYCLES, minimum: 1 });
       const ultrafixPause = getIntegerSettingOrDefault({ name: 'ultrafix_pause_seconds', value: ultrafixPauseSeconds, defaultValue: DEFAULT_ULTRAFIX_PAUSE_SECONDS, minimum: 0 });
       const ultrafixCiWait = getIntegerSettingOrDefault({ name: 'ultrafix_ci_wait_timeout_ms', value: await configStore.getConfig('ultrafix_ci_wait_timeout_ms', DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS), defaultValue: DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS, minimum: 1 });
-      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause, ultrafixCiWait]) {
+      const goalQuestionWait = getIntegerSettingOrDefault({ name: GOAL_QUESTION_MAX_WAIT_SETTING, value: await configStore.getConfig(GOAL_QUESTION_MAX_WAIT_SETTING, DEFAULT_GOAL_QUESTION_MAX_WAIT_MS), defaultValue: DEFAULT_GOAL_QUESTION_MAX_WAIT_MS, minimum: MIN_GOAL_QUESTION_MAX_WAIT_MS });
+      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause, ultrafixCiWait, goalQuestionWait]) {
         if (entry.invalid) {
           invalidIntegerSettings[entry.invalid.name] = entry.invalid.value;
         }
@@ -281,6 +282,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         agent_run_usage_pause_percent: await configManager.loadUsagePauseThreshold({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }),
         automation_unproductive_run_threshold: await configManager.loadUnproductiveRunThreshold({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }),
         ultrafix_ci_wait_timeout_ms: ultrafixCiWait.value,
+        goal_question_max_wait_ms: goalQuestionWait.value,
         ...await agentWatchdogSettingsResponse(configStore),
         ...await agentNetworkSettingsResponse(configStore),
         ...await tokenOutlierSettingsResponse(configStore),

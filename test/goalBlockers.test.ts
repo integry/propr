@@ -154,7 +154,11 @@ describe('Codex App Server provider event fixtures', () => {
   test('provider support is documented per provider and unknown providers claim nothing', () => {
     assert.equal(goalBlockerSupport('codex').question, 'supported');
     assert.equal(goalBlockerSupport('codex').approval, 'handoff');
-    for (const provider of ['claude', 'antigravity', 'opencode', null]) {
+    // Claude goals ask through the injected ask_operator tool; there is still no approval signal.
+    assert.equal(goalBlockerSupport('claude').question, 'supported');
+    assert.equal(goalBlockerSupport('claude').approval, 'unavailable');
+    assert.equal(goalBlockerSupport('claude').paused, 'supported');
+    for (const provider of ['antigravity', 'opencode', null]) {
       assert.equal(goalBlockerSupport(provider).question, 'unavailable');
       assert.equal(goalBlockerSupport(provider).approval, 'unavailable');
       assert.equal(goalBlockerSupport(provider).paused, 'supported');
@@ -480,12 +484,14 @@ describe('persisted blocker lifecycle', () => {
       const input = (sequence: number) => ({ sequence, input_id: `input-${sequence}`, goal_id: attempt.goalId, owner_id: 'owner-1',
         idempotency_key: `key-${sequence}`, operation: 'goal.input', payload_hash: 'h', kind: 'input', message: 'm', state: 'pending' });
       await db('goal_inputs').insert(input(4));
-      assert.deepEqual(await recordGoalBlocker(db, attempt, owner, report), { inputBoundary: 4 },
+      const opened = await recordGoalBlocker(db, attempt, owner, report);
+      assert.deepEqual({ ...opened, blockerId: undefined }, { inputBoundary: 4, blockerId: undefined, opened: true },
         'the boundary is captured by the write that opens the blocker');
       // An answer submitted once the blocker is visible lies above the stored boundary,
       // and a repeated event keeps the boundary from when the blocker opened.
       await db('goal_inputs').insert(input(5));
-      assert.deepEqual(await recordGoalBlocker(db, attempt, owner, report), { inputBoundary: 4 }, 'a repeated event refreshes the same row');
+      assert.deepEqual(await recordGoalBlocker(db, attempt, owner, report), { inputBoundary: 4, blockerId: opened!.blockerId, opened: false },
+        'a repeated event refreshes the same row and does not count as a new opening');
       assert.equal((await db('goal_blockers')).length, 1);
       // A delayed event delivered under another attempt's claim does not touch this attempt's row.
       assert.equal(await recordGoalBlocker(db, { ...attempt, claimId: 'claim-1' }, owner, report), null);
@@ -510,6 +516,21 @@ describe('persisted blocker lifecycle', () => {
       assert.deepEqual(statuses, { 'claim-2': 'superseded', 'claim-3': 'open' });
       assert.equal(await closeGoalBlockers(db, attempt.goalId, { claim: 'claim-3' }, 'attempt_ended'), 1);
       assert.equal(await db('goal_blockers').where({ status: 'open' }).count({ count: '*' }).first().then(r => Number(r?.count)), 0);
+
+      // Every opening and closing is journaled once, so a goal wait can return on it;
+      // a refreshed observation and a replayed request journal nothing.
+      const journal = await db('goal_events').where({ goal_id: attempt.goalId, kind: 'blocker' }).orderBy('sequence')
+        .select('blocker_id', 'state', 'previous_state');
+      const blockers = new Map((await db('goal_blockers').select('blocker_id', 'category', 'run_claim'))
+        .map(row => [row.blocker_id, `${row.category}:${row.run_claim}`]));
+      assert.deepEqual(journal.map(row => `${blockers.get(row.blocker_id)} ${row.previous_state ?? '-'}->${row.state}`), [
+        'question:claim-2 -->open',
+        'question:claim-2 open->resolved',
+        'approval:claim-2 -->open',
+        'approval:claim-3 -->open',
+        'approval:claim-2 open->superseded',
+        'approval:claim-3 open->superseded',
+      ]);
     } finally {
       await db.destroy();
     }

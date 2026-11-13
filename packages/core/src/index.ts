@@ -599,7 +599,7 @@ export {
     PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS, PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
     notificationService, createNotificationEvent, assignNotificationRecipients, listNotifications,
     getUnreadNotificationCount, markNotificationRead, dismissNotification, dismissAllNotifications, dismissNotificationReceipts,
-    dismissNotificationsForPullRequest, dismissSupersededPullRequestAttentionNotifications, dismissSystemFailureNotifications,
+    dismissNotificationsByDeduplicationKeys, dismissNotificationsForPullRequest, dismissSupersededPullRequestAttentionNotifications, dismissSystemFailureNotifications,
     getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference, upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';

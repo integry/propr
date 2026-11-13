@@ -84,4 +84,22 @@ export {
     type GoalBlockerAttempt,
     type GoalBlockerOwner,
     type GoalBlockerResolution,
+    type RecordedGoalBlocker,
 } from './goals/goalBlockerStore.js';
+export {
+    GOAL_BLOCKER_NOTIFICATION_EVENT,
+    GOAL_BLOCKER_NOTIFICATION_SUMMARY_LIMIT,
+    dismissClosedGoalBlockerNotifications,
+    dismissClosedGoalBlockerNotificationsSafely,
+    goalBlockerNotificationContent,
+    goalBlockerNotificationKey,
+    notifyGoalBlockerOpened,
+    notifyGoalBlockerOpenedSafely,
+    type GoalBlockerNotificationDeps,
+    type OpenedGoalBlockerNotification,
+} from './goals/goalBlockerNotifications.js';
+export {
+    boundGoalQuestionMaxWaitMs,
+    isValidGoalQuestionMaxWaitMs,
+    loadGoalQuestionMaxWaitMs,
+} from './config/goalQuestionSettings.js';

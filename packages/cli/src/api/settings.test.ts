@@ -49,6 +49,16 @@ test('followup_requires_assignment accepts booleans only', async () => {
   }
 });
 
+test('goal_question_max_wait_ms accepts whole milliseconds of at least one minute', async () => {
+  const { parseSettingValue, VALID_SETTING_KEYS } = await import('./settings.js');
+  assert.ok(VALID_SETTING_KEYS.includes('goal_question_max_wait_ms'));
+  assert.equal(parseSettingValue('goal_question_max_wait_ms', '86400000'), 86_400_000);
+  assert.equal(parseSettingValue('goal_question_max_wait_ms', '60000'), 60_000);
+  for (const value of ['59999', '-1', '1.5', 'one day', '']) {
+    assert.throws(() => parseSettingValue('goal_question_max_wait_ms', value), /at least 60000/);
+  }
+});
+
 test('legacy threshold and response deprecation metadata are not writable CLI setting keys', async () => {
   const { isValidSettingKey } = await import('./settings.js');
   assert.equal(isValidSettingKey('auto_followup_score_threshold'), false);

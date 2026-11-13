@@ -4,7 +4,7 @@ import { loadMonitoredReposRaw } from '@propr/core';
 import { McpError } from './config.js';
 import type { McpPrincipal } from './policy.js';
 import { getAgentActivity } from './agentActivity.js';
-import { goalBlockerHeadline, type GoalAttention, type GoalBlockerGoalState } from '@propr/shared';
+import { GOAL_BLOCKER_NOTIFICATION_EVENT, goalBlockerHeadline, type GoalAttention, type GoalBlockerGoalState } from '@propr/shared';
 import { GOAL_ATTENTION_COLUMNS, loadGoalAttention, whereGoalNeedsAttention } from '../services/goalAttention.js';
 import { compactText, summarizeGoal, summarizeTask } from './listSummaries.js';
 import { applyTaskVisibility, ok, repositorySchema, type McpTool, type ToolDeps } from './tools.js';
@@ -234,7 +234,11 @@ function blockerItems(
       } } : {}),
     }];
   });
-  const cards = inbox.map(notification => ({
+  // A goal already listed from its live attention is not repeated by the card
+  // its blocker created; the card still reports a goal this read did not list.
+  const listedGoals = new Set(stopped.map(item => item.id));
+  const cards = inbox.filter(notification => !(notification.metadata.event === GOAL_BLOCKER_NOTIFICATION_EVENT
+    && typeof notification.metadata.goalId === 'string' && listedGoals.has(notification.metadata.goalId))).map(notification => ({
     id: notification.id, occurredAt: notification.occurredAt,
     kind: 'notification', repository: notification.repository,
     summary: line(notification.title, notification.body),
