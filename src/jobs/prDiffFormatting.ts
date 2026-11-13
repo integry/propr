@@ -52,8 +52,16 @@ export interface PreparedPRDiffFile {
  * review priority order; per-reviewer budgeting later selects which of them
  * fit. Only the bounded I/O guard and GitHub itself can drop files here.
  */
+export interface PRDiffStats {
+    filesChanged: number;
+    additions: number;
+    deletions: number;
+}
+
 export interface PreparedPRDiff {
     summary: string;
+    /** Size of every changed file, including files later omitted from the diff text. */
+    stats?: PRDiffStats;
     files: PreparedPRDiffFile[];
     /** Text changes GitHub returned without patch content. */
     missingPatchFiles: string[];
@@ -77,6 +85,7 @@ export function preparePRDiff(files: PRFile[], ioGuardMaxChars: number): Prepare
     const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
     const prepared: PreparedPRDiff = {
         summary: files.length > 0 ? `**${files.length} files changed** (+${totalAdditions}/-${totalDeletions})` : '',
+        stats: { filesChanged: files.length, additions: totalAdditions, deletions: totalDeletions },
         files: [],
         missingPatchFiles: [],
         ioGuardOmittedFiles: [],

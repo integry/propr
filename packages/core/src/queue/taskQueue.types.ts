@@ -296,6 +296,8 @@ export interface ClaudeOutputResult {
 
 export interface ClaudeResult {
     success: boolean;
+    /** Identifies the agent execution for metrics; see `AgentExecutionResult.executionId`. */
+    executionId?: string;
     sessionId?: string | null;
     conversationId?: string;
     executionTime?: number;

@@ -14,6 +14,11 @@ export class UsageLimitError extends Error {
     resetTimestamp: number;
     retryable: boolean;
     rawErrorMessage?: string;
+    /**
+     * The stream parsed up to the usage-limit event: the turns, token usage and
+     * cost the run consumed before it was stopped, so they can still be recorded.
+     */
+    partialOutput?: ClaudeOutput;
 
     constructor(message: string, resetTimestamp: number, rawErrorMessage?: string) {
         super(message);
@@ -313,10 +318,9 @@ export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
         try {
             processJsonLine(jsonLine, claudeOutput, result.messageTimestamps);
         } catch (error) {
-            // Propagate usage limit detection to trigger upstream requeue logic.
-            if (error instanceof UsageLimitError) {
-                throw error;
-            }
+            // Propagate usage limit detection to trigger upstream requeue logic,
+            // with what the stream showed so far: those turns were still spent.
+            if (error instanceof UsageLimitError) throw Object.assign(error, { partialOutput: error.partialOutput ?? { ...claudeOutput, success: false } });
         }
     }
 

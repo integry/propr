@@ -10,10 +10,14 @@
  * The number of pull requests behind each figure is still one hover away, in
  * the cell's tooltip, so a mean over one PR never passes for one over fifty.
  * A figure with nothing behind it reads as unknown, never as zero.
+ *
+ * Effort is the secondary grouping: a model whose PRs ran at more than one
+ * reasoning level gets an indented row per level beneath its totals, unknown
+ * (historical) effort last; a model with one known level carries it as a tag.
  */
 
 import React from 'react';
-import type { ReviewScoreModelSummary, ReviewScoreSummaryResponse } from '../../api/taskStatsApi';
+import type { ReviewScoreEffortSummary, ReviewScoreModelSummary, ReviewScoreSummaryResponse } from '../../api/taskStatsApi';
 import { formatModelName } from '../../utils/modelDisplay';
 import { SkeletonBlock, SkeletonRegion } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
@@ -64,18 +68,23 @@ const Delta: React.FC<{ value: number | null | undefined; n: number }> = ({ valu
   return <Figure value={text} basis={`Mean over ${prs(n)} with a first and final score`} className={tone} testId="review-quality-delta" />;
 };
 
-const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
-  // Scored PRs with no recorded implementer were written outside an agent run ProPR tracked.
-  const label = row.implementer_model ? formatModelName(row.implementer_model) : UNTRACKED_LABEL;
+const UNKNOWN_EFFORT = 'unknown';
+const LEVEL_LABELS: Record<string, string> = { xhigh: 'XHigh' };
+
+/** `High effort`, `XHigh effort`; effort that was never recorded is `Unknown effort`. */
+const effortLabel = (level: string): string =>
+  `${LEVEL_LABELS[level] ?? `${level.charAt(0).toUpperCase()}${level.slice(1)}`} effort`;
+
+const effortHint = (level: string): string => level === UNKNOWN_EFFORT
+  ? 'Pull requests whose implementing run recorded no reasoning level, such as work from before effort was recorded'
+  : `Pull requests implemented at the ${level} reasoning level`;
+
+/** The figure cells of one row, after its label. */
+const Figures: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
   const runs = row.runs_to_merge;
   const rate = row.merge_rate.value;
   return (
-    <tr className="border-b border-slate-100 last:border-b-0" data-testid="review-quality-row">
-      <td className={`${CELL} min-w-0`}>
-        <span className={`block truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ? label : UNTRACKED_HINT}>
-          {label}
-        </span>
-      </td>
+    <>
       <td className={`${CELL} text-right text-slate-800`}>{row.prs_scored.toLocaleString()}</td>
       <Figure value={score(row.first_score.mean)} basis={`Mean over ${prs(row.first_score.n)} with a known initial score`} testId="review-quality-initial" />
       <Figure value={score(row.final_score.mean)} basis={`Mean over ${prs(row.final_score.n)}`} testId="review-quality-final" />
@@ -90,7 +99,44 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
         value={rate === null ? null : `${Math.round(rate * 100)}%`}
         basis={`${row.merge_rate.merged.toLocaleString()} merged of ${prs(row.merge_rate.n)} merged or closed`}
       />
-    </tr>
+    </>
+  );
+};
+
+const ModelRow: React.FC<{ row: ReviewScoreModelSummary; efforts: ReviewScoreEffortSummary[] }> = ({ row, efforts }) => {
+  // Scored PRs with no recorded implementer were written outside an agent run ProPR tracked.
+  const label = row.implementer_model ? formatModelName(row.implementer_model) : UNTRACKED_LABEL;
+  // One known level is a tag on the model; several get a row each, below.
+  const tag = efforts.length === 1 && efforts[0].implementer_reasoning_level !== UNKNOWN_EFFORT
+    ? efforts[0].implementer_reasoning_level : null;
+  return (
+    <>
+      <tr className={`border-b border-slate-100 ${efforts.length > 1 ? '' : 'last:border-b-0'}`} data-testid="review-quality-row">
+        <td className={`${CELL} min-w-0`}>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={`truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ? label : UNTRACKED_HINT}>
+              {label}
+            </span>
+            {tag && (
+              <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600" title={effortHint(tag)} data-testid="review-quality-effort-tag">
+                {effortLabel(tag)}
+              </span>
+            )}
+          </span>
+        </td>
+        <Figures row={row} />
+      </tr>
+      {efforts.length > 1 && efforts.map(effort => (
+        <tr key={effort.implementer_reasoning_level} className="border-b border-slate-100 bg-slate-50/60 text-slate-600 last:border-b-0" data-testid="review-quality-effort-row">
+          <td className={`${CELL} min-w-0 pl-7 sm:pl-8`}>
+            <span className={`block truncate text-xs ${effort.implementer_reasoning_level === UNKNOWN_EFFORT ? 'italic text-slate-500' : 'text-slate-600'}`} title={effortHint(effort.implementer_reasoning_level)}>
+              {effortLabel(effort.implementer_reasoning_level)}
+            </span>
+          </td>
+          <Figures row={effort} />
+        </tr>
+      ))}
+    </>
   );
 };
 
@@ -124,7 +170,13 @@ const ReviewQualityByModel: React.FC<ReviewQualityByModelProps> = ({ summary, lo
       <table className="w-full min-w-[34rem]" data-testid="review-quality-table">
         <TableHead />
         <tbody>
-          {summary.models.map(row => <ModelRow key={row.implementer_model ?? '(unknown)'} row={row} />)}
+          {summary.models.map(row => (
+            <ModelRow
+              key={row.implementer_model ?? '(unknown)'}
+              row={row}
+              efforts={(summary.by_effort ?? []).filter(effort => effort.implementer_model === row.implementer_model)}
+            />
+          ))}
         </tbody>
       </table>
       <p className="border-t border-slate-100 px-3 py-2 text-xs text-slate-500 sm:px-4" data-testid="review-quality-scope">

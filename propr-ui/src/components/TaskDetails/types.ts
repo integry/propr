@@ -113,7 +113,7 @@ export interface HistoryItemMetadata {
   ultrafixScore?: number;
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
-  ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+  ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'style_findings_only' | 'stopped' | 'failed';
   replacementTaskId?: string;
   attemptNumber?: number;
   syntheticRouting?: {

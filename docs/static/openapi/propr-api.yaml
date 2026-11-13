@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 309
-    documented: 70
+    total: 311
+    documented: 72
     undocumented: 239
 servers:
   - url: "{origin}"
@@ -6872,6 +6872,118 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/stats/cost:
+    get:
+      operationId: getCostExport
+      summary: Export LLM cost grouped by day, repository, agent, model, effort, execution type or outcome
+      description: One row per group of agent executions (`llm_executions`) started in the period. Repository comes from the execution's task; agent and execution type from the matching LLM log call. Executions without a task have no repository and are left out when filtering by repository.
+      tags:
+        - Observability
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: Bounds executions by when they started; omitted means all time.
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 30d
+              - 90d
+              - 1y
+              - all
+        - name: repository
+          in: query
+          required: false
+          description: "`owner/repo`, or `all` (default)."
+          schema:
+            type: string
+        - name: group_by
+          in: query
+          required: false
+          description: Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The grouped rows and their totals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CostExport"
+        "400":
+          description: "`period`, `repository` or `group_by` is invalid."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: CostExportQuery
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/stats/cost.csv:
+    get:
+      operationId: getCostExportCsv
+      summary: Export LLM cost as CSV
+      description: "One row per group of agent executions (`llm_executions`) started in the period. Repository comes from the execution's task; agent and execution type from the matching LLM log call. Executions without a task have no repository and are left out when filtering by repository. A header row, then one row per group: the grouped dimensions in column order, then executions, tasks, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd. Unknown values are empty cells."
+      tags:
+        - Observability
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: Bounds executions by when they started; omitted means all time.
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 30d
+              - 90d
+              - 1y
+              - all
+        - name: repository
+          in: query
+          required: false
+          description: "`owner/repo`, or `all` (default)."
+          schema:
+            type: string
+        - name: group_by
+          in: query
+          required: false
+          description: Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: RFC 4180 CSV attachment.
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          description: "`period`, `repository` or `group_by` is invalid."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: CostExportQuery
+      x-propr-auth: member
+      x-legacy-error: true
   /api/stats/dashboard:
     get:
       operationId: getApiStatsDashboard
@@ -9128,6 +9240,172 @@ components:
         - desktopAuthentication
       additionalProperties: false
       description: Version and capability metadata used for client compatibility negotiation.
+    CostExport:
+      type: object
+      properties:
+        period:
+          anyOf:
+            - type: string
+              enum:
+                - 24h
+                - 7d
+                - 30d
+                - 90d
+                - 1y
+                - all
+            - type: "null"
+          description: The requested period; null for all time.
+        repository:
+          type: string
+          description: "`all` or `owner/repo`."
+        group_by:
+          type: array
+          items:
+            type: string
+            enum:
+              - day
+              - repository
+              - agent
+              - model
+              - reasoning_level
+              - execution_type
+              - outcome
+          description: The grouping dimensions, in column order.
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/CostRow"
+          description: Ascending by each dimension in column order; unrecorded values last.
+        totals:
+          $ref: "#/components/schemas/CostFigures"
+      required:
+        - period
+        - repository
+        - group_by
+        - rows
+        - totals
+      additionalProperties: false
+      description: Recorded LLM executions grouped by the requested dimensions.
+    CostFigures:
+      type: object
+      properties:
+        executions:
+          type: integer
+          minimum: 0
+          description: Agent executions in the row.
+        tasks:
+          type: integer
+          minimum: 0
+          description: Distinct tasks with at least one execution in the row.
+        input_tokens:
+          type: integer
+          minimum: 0
+          description: Input tokens, cache reads and writes included, as each execution was priced.
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_creation_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache writes.
+        cache_read_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache reads.
+        cost_usd:
+          anyOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+          description: Recorded cost in USD; null when no execution in the row recorded a cost.
+      required:
+        - executions
+        - tasks
+        - input_tokens
+        - output_tokens
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+        - cost_usd
+      additionalProperties: false
+      description: Execution, task, token and cost totals.
+    CostRow:
+      type: object
+      properties:
+        day:
+          description: UTC day the execution started, `YYYY-MM-DD`. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        repository:
+          description: "`owner/repo` of the execution's task. Present when grouped by it; null when unrecorded."
+          type:
+            - string
+            - "null"
+        agent:
+          description: Agent alias that ran the execution. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        model:
+          description: Model name. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        reasoning_level:
+          description: Effective reasoning level (effort). Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        execution_type:
+          description: Execution type, for example `implementation` or `review`. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        outcome:
+          description: Present when grouped by outcome.
+          type: string
+          enum:
+            - success
+            - failed
+        executions:
+          type: integer
+          minimum: 0
+          description: Agent executions in the row.
+        tasks:
+          type: integer
+          minimum: 0
+          description: Distinct tasks with at least one execution in the row.
+        input_tokens:
+          type: integer
+          minimum: 0
+          description: Input tokens, cache reads and writes included, as each execution was priced.
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_creation_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache writes.
+        cache_read_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache reads.
+        cost_usd:
+          anyOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+          description: Recorded cost in USD; null when no execution in the row recorded a cost.
+      required:
+        - executions
+        - tasks
+        - input_tokens
+        - output_tokens
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+        - cost_usd
+      additionalProperties: false
+      description: One group of recorded executions.
     DemoModeStatus:
       type: object
       properties:

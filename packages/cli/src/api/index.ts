@@ -268,8 +268,8 @@ export type {
 } from "./system.js";
 
 // Stats API
-export { getReviewScoreSummary } from "./stats.js";
-export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreQuery, MeanFigure } from "./stats.js";
+export { getReviewScoreSummary, getCostExport, getCostExportCsv, COST_GROUP_KEYS } from "./stats.js";
+export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreEffortSummary, ReviewScoreQuery, MeanFigure, CostExport, CostExportQuery, CostFigures, CostGroupKey, CostRow } from "./stats.js";
 
 // Goals API
 export {

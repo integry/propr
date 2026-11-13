@@ -288,7 +288,7 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
   const nonToolTokens = new Set([
     'accepted', 'active', 'activity', 'all', 'approved', 'artifacts', 'auth', 'authorization', 'blockers',
     'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'creation', 'cursor',
-    'cycle', 'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
+    'cycle', 'cycles_exhausted', 'style_findings_only', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
     'executed', 'executing', 'failed', 'false', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
     'instructions', 'internal', 'iss', 'issue_created', 'issues', 'items', 'kind', 'labels', 'limit', 'manage',
     'mcp_access_log', 'mcp_operations', 'mcp_records', 'merge', 'merged', 'message', 'model', 'models',
@@ -326,6 +326,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Grouping dimensions and figures of get_cost_breakdown rows.
+    'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
     // Stored-configuration check fields and states returned by get_agent_run_admission.

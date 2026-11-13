@@ -1,7 +1,7 @@
 import type { Logger } from 'pino';
 import { buildAnalysisSafetySuffix, getAuthenticatedOctokit } from '@propr/core';
 import type { AgentRegistry, AnalysisResult, AnalyzeOptions, SyntheticRoutingSession } from '@propr/core';
-import type { ReasoningLevel } from '@propr/shared';
+import type { AcceptanceCriterion, ReasoningLevel } from '@propr/shared';
 import type { Redis } from 'ioredis';
 import { calculateReviewCost, resolveReviewerBudget, type ReviewBudgetSettings } from './reviewContextHelpers.js';
 import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
@@ -51,6 +51,8 @@ export interface RunReviewsContext {
     originalTaskSpec: string;
     /** Formatted follow-up requests ProPR accepted and completed on this PR. */
     authorizedFollowups?: string;
+    /** The linked issue's acceptance criteria; each reviewer verifies every id. */
+    acceptanceCriteria?: readonly AcceptanceCriterion[];
     commandInstructions?: string;
     /** Untrimmed diff; each reviewer selects the files that fit its own budget. */
     preparedDiff: PreparedPRDiff;
@@ -99,7 +101,7 @@ export async function runSingleReview(
         }, ctx.reviewBudgetSettings);
         const promptResult = buildReviewPromptWithinBudget({
             pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
-            originalTaskSpec: ctx.originalTaskSpec, authorizedFollowups: ctx.authorizedFollowups, repoOwner, repoName, instructions: ctx.commandInstructions,
+            originalTaskSpec: ctx.originalTaskSpec, authorizedFollowups: ctx.authorizedFollowups, acceptanceCriteria: ctx.acceptanceCriteria, repoOwner, repoName, instructions: ctx.commandInstructions,
             fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
             checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
         }, ceiling.ceiling, REVIEW_ANALYSIS_SAFETY_SUFFIX, {

@@ -23,7 +23,8 @@ The analytics page (`/analytics`) and the rest of the UI continue to read the ag
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
 - `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split and, as `usage.cache`, the prompt cache hit rate and estimated savings), total cost, and runs and tasks per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores). The older `usage.models` map is a different figure under a similar name — distinct tasks with at least one execution per model, not runs — kept for clients that predate `model_usage`, which the Models table labels Tasks when it has to fall back to it. It also reports run volume (`runs`), delivery (`delivery`) and autonomy (`autonomy`) — see [Delivery metrics](#delivery-metrics). The delivery, autonomy and review-quality aggregations read PR and task history, so the server reuses them between the page's refreshes: for up to ten seconds for a day period, and for up to a minute for `period=all` (or no period), which reads every PR's history
-- `GET /api/stats/review-scores` — review quality per implementer model (see [Review scores](#review-scores))
+- `GET /api/stats/review-scores` — review quality per implementer model, and per model and effort (see [Review scores](#review-scores))
+- `GET /api/stats/cost` and `GET /api/stats/cost.csv` — recorded LLM cost grouped by day, repository, agent, model, effort, execution type and outcome (see [Cost export](#cost-export))
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
@@ -130,8 +131,8 @@ When a pull request is merged or closed, the webhook handler records the outcome
 
 ### Endpoints
 
-- `GET /api/stats/review-scores?period=&repository=` — one entry per implementer model. `period` takes the Analytics timeframes (`24h`, `7d`, `30d`, `90d`, `1y`, `all`) and bounds which scores count by when they were recorded; `repository` is `all` (the default) or `owner/repo`.
-- `GET /api/stats/review-scores.csv?period=&repository=` — the same summary as CSV, one row per model; an unknown value is an empty cell.
+- `GET /api/stats/review-scores?period=&repository=` — one entry per implementer model in `models`, and one per implementer model and effort in `by_effort`. `period` takes the Analytics timeframes (`24h`, `7d`, `30d`, `90d`, `1y`, `all`) and bounds which scores count by when they were recorded; `repository` is `all` (the default) or `owner/repo`.
+- `GET /api/stats/review-scores.csv?period=&repository=` — the `by_effort` rows as CSV, one row per implementer model and effort, with an `implementer_reasoning_level` column after `implementer_agent`; an unknown figure is an empty cell.
 - `GET /api/pull-requests/<number>/scores?repository=owner/repo` — one PR's score history, oldest first (cycle, source, score, goal, blocker and suggestion counts, reviewer model, head SHA, timestamp), with its recorded outcome.
 
 The pull request is the unit. Each per-model entry reports:
@@ -147,11 +148,13 @@ The pull request is the unit. Each per-model entry reports:
 | `score_delta.mean` | Mean of each PR's final score minus its initial score (`first_score`): whether follow-up work improved the code. Both ends come from the PR's whole score history, not only the period, and a merged PR's from its scores at or before the merge, so the change always runs forward in time | PRs with a final score |
 | `runs_to_merge.mean` | Mean agent executions across a merged PR's implementation attempts and follow-up tasks, started at or before the merge, attached as the delivery band's Runs per merged PR attaches them: an earlier attempt at the same issue that opened no PR counts, a goal task does not | Merged PRs with recorded runs |
 
+Each `by_effort` entry has the same fields for the PRs one implementer model produced at one reasoning level, plus `implementer_reasoning_level`: the level recorded with the implementation the score judges (`review_scores.implementer_reasoning_level`), taken from the same score row as the model. Scores recorded before the level was tracked have none, and those PRs are grouped under the explicit value `unknown` rather than dropped, so a model's effort rows always add up to its `models` entry. Entries follow the order of `models`, then run from the lowest to the highest level, with `unknown` last. The `models` entries keep their meaning: per model, over every effort.
+
 Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`, which the Analytics page labels **Manual / Untracked**: the PR was written by hand, or by an agent run ProPR did not record.
 
 **Cost per merged PR** sums `llm_executions.cost_usd` over every task attached to the pull request: its implementation attempts (the task that opened it and any earlier attempt at the same issue) and every task that acted on the PR afterwards (follow-ups, `/fix`, Ultrafix fixes and reviews, merge-conflict resolution). The cost is the PR's whole recorded spend, not only the spend inside the period. A merged PR none of whose executions recorded a cost is left out of the mean and of `n`, rather than counted as free.
 
-The Analytics page shows the summary as **Agent efficacy by model** — evaluated PRs, initial score, final score, score delta, average runs to merge and merge rate — using the page's `?period=` timeframe. Each cell shows one figure; the PRs behind it are in the cell's tooltip. Task details on a PR show its score history as a step on the task timeline, after every run: the scores in sequence (for example `4 — 6 — 8`), each in its grade's colour (red 0–4, amber 5–6, slate 7–8, teal 9–10), and a list. Once the PR is merged or closed and no run is still working or queued, that outcome is the timeline's last entry. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints the same summary, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
+The Analytics page shows the summary as **Agent efficacy by model** — evaluated PRs, initial score, final score, score delta, average runs to merge and merge rate — using the page's `?period=` timeframe. Each cell shows one figure; the PRs behind it are in the cell's tooltip. Effort is a secondary grouping: a model whose PRs ran at more than one level has an indented row per level beneath its totals (unknown effort last), and a model with a single known level carries it as a tag next to its name. Task details on a PR show its score history as a step on the task timeline, after every run: the scores in sequence (for example `4 — 6 — 8`), each in its grade's colour (red 0–4, amber 5–6, slate 7–8, teal 9–10), and a list. Once the PR is merged or closed and no run is still working or queued, that outcome is the timeline's last entry. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints one row per model and effort (PRs, merged PRs, scores, cycles to goal, merge rate, runs to merge and cost per merged PR); `--json` returns the whole summary, per-model totals included, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
 
 ## Cost Tracking
 
@@ -161,7 +164,21 @@ For directly supported Claude and OpenAI models, ProPR uses the providers' publi
 
 Reasoning effort changes how many thinking/output tokens a model uses; it does not apply a separate price multiplier. Provider usage reports already include reasoning tokens in `output_tokens`, so ProPR bills that output once and records the effective reasoning level in the expanded log details. Codex also reports the reasoning-token subset there when available. A higher effort setting can therefore cost more because it produces more billed output, not because each token has a different rate.
 
-When a single run crosses the cost threshold (`LLM_COST_THRESHOLD_USD`, default `10.00`), ProPR records a high-cost alert; the 10 most recent appear in the aggregated metrics summary. Investigate when:
+### Token-outlier alerts
+
+After each agent execution is recorded, ProPR compares its total tokens (input, output, cache creation and cache reads) with a baseline from its own history: the median of the last successful executions for the same repository, model and execution type. When the run uses more than a multiple of that baseline **and** more than an absolute floor, every instance member gets a `warning` Inbox notification on the task, stating the observed and baseline token counts. Each task alerts at most once, so follow-ups and retries of the same task stay quiet. Repositories with notifications turned off do not alert.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `token_outlier_multiplier` | `4` | Alert above this multiple of the baseline median (1.5–100). |
+| `token_outlier_min_tokens` | `500000` | Runs at or below this many total tokens never alert. |
+| `token_outlier_baseline_runs` | `20` | Successful executions in the baseline (8–200). No alert fires until at least 8 exist. |
+| `token_outlier_pause_alerts` | `0` (off) | After this many alerts for one repository within the window, its scheduled automation runs are skipped until the window has passed. |
+| `token_outlier_pause_window_hours` | `24` | Window for counting alerts toward the pause (1–720). |
+
+Change them with MCP `update_execution_settings` or `propr setting update token_outlier_multiplier 5`. Manual **Run now** and API, MCP or CLI triggers are never paused; a skipped scheduled run shows the reason in its run history.
+
+Investigate when:
 
 - A single run exceeds the expected cost
 - A loop repeats too many times
@@ -170,7 +187,7 @@ When a single run crosses the cost threshold (`LLM_COST_THRESHOLD_USD`, default 
 
 A cost spike should lead to an action: smaller task scope, a different model, or loop limits.
 
-`LLM_COST_THRESHOLD_USD` only alerts. To **enforce** a limit, set a per-run spend cap; a run whose estimated cost reaches it is stopped and its partial work published:
+Token-outlier alerts only notify. To **enforce** a limit, set a per-run spend cap; a run whose estimated cost reaches it is stopped and its partial work published:
 
 | Precedence | Where | Value |
 |---|---|---|
@@ -179,6 +196,40 @@ A cost spike should lead to an action: smaller task scope, a different model, or
 | 3 | Instance: `default_max_cost_usd` (Settings → Workflow & PR Rules, `propr setting update default_max_cost_usd`) | USD; empty or `0` = no cap |
 
 The cap covers implementations, PR follow-ups, `/fix`, ultrafix cycles and reviews. Spend counts the task's recorded LLM calls plus the usage its running agent containers have streamed so far. A malformed or negative value is ignored with a warning (treated as no cap at that level). Retries share the budget: a re-queued attempt (provider usage-limit re-queue or BullMQ retry) may only spend what earlier attempts of the task left. A run stopped at its cap gets the terminal reason `cost_cap_exceeded`, a `budget.exceeded` timeline event, an Inbox notification and a short issue/PR comment; task details and `propr task get --json` show the cap, the spend and the percentage. See [Spend caps](../features/execution-safety.md#spend-caps).
+
+### Cost export
+
+For a finance breakdown, export the recorded spend instead of reading it off the Analytics page:
+
+- `GET /api/stats/cost?period=&repository=&group_by=` — JSON: `period`, `repository`, `group_by`, `rows` and `totals`.
+- `GET /api/stats/cost.csv?period=&repository=&group_by=` — the same rows as CSV, downloaded as `cost-<period>.csv`.
+
+`period` takes the Analytics timeframes (`24h`, `7d`, `30d`, `90d`, `1y`, `all`) and bounds executions by when they started; without it the export covers all time. `repository` is `all` (the default) or `owner/repo`. Both routes use the same authentication as the other `/api/stats/*` routes, and an invalid `period`, `repository` or `group_by` returns `400`.
+
+`group_by` is a comma-separated list (or repeated parameter) of these dimensions; the default is `day`:
+
+| Dimension | Source |
+|---|---|
+| `day` | UTC day the execution started, `YYYY-MM-DD` |
+| `repository` | The execution's task (`tasks.repository`) |
+| `agent` | Agent alias of the LLM log call that recorded the same run |
+| `model` | `llm_executions.model_name` |
+| `reasoning_level` | The effective reasoning level (effort) the execution ran with |
+| `execution_type` | Execution type of the matching LLM log call, for example `implementation`, `review` or `plan-generation` |
+| `outcome` | `success` or `failed` |
+
+Every row is one group of agent executions (`llm_executions`) and carries `executions`, `tasks` (distinct tasks), `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `cost_usd`. `input_tokens` includes cache reads and writes, as each execution's cost was priced; the two cache columns are the part of it that was cache traffic. `totals` gives the same figures over the whole export, so the rows' `executions` and `cost_usd` sum to it.
+
+The agent and execution type come from `llm_logs`: the log call on the same task, preferring the same session, then the same model, then the nearest start. An execution without a task (a plan generation, for example) is matched by its session. A dimension that was never recorded — an execution from before effort was recorded, or one with no matching log call — is `null` (an empty CSV cell) rather than a guess. A group none of whose executions recorded a cost has a `null` cost, not `0`. Executions without a task have no repository; filtering by repository leaves them out.
+
+Rows are ordered by each dimension in column order, unknown values last. The CSV follows the review-scores CSV: a header row, the grouped dimensions in the canonical order above whatever order `group_by` lists them in, then the figure columns in the order listed; RFC 4180 quoting, and text that would start a spreadsheet formula is prefixed with `'`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://propr.example.com/api/stats/cost.csv?period=30d&group_by=day,repository,model,outcome"
+```
+
+From the CLI, `propr stats cost [--period 30d] [--repository owner/repo] [--group-by day,model] [--json|--csv]` prints the table, the JSON or the CSV. Over MCP, the read tool `get_cost_breakdown` (`period`, default `30d`; optional `repository`; `groupBy`, default `["day"]`) returns the same rows, limited to the repositories in the grant when `repository` is omitted.
 
 ### Provider capacity (Agent Tank)
 

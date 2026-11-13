@@ -3,9 +3,9 @@ import assert from 'node:assert';
 
 const { buildReviewComment, getNextAuthenticatedReviewRecordNumbers } = await import('../src/jobs/reviewCommentFormatter.js');
 const {
-    FIX_COMMAND_COPY_LABEL, getNextActionableFindingNumber, getNextReviewSuggestionNumber,
-    parseStructuredReview, renderPublicReview, stripReviewBoilerplate,
+    FIX_COMMAND_COPY_LABEL, parseStructuredReview, renderPublicReview, stripReviewBoilerplate,
 } = await import('../src/jobs/reviewOutputParser.js');
+const { getNextActionableFindingNumber, getNextReviewSuggestionNumber } = await import('../src/jobs/reviewRecordNumbering.js');
 const { buildReviewCommentWithReservedRecordRanges } = await import('../src/jobs/reviewFindingNumberAllocator.js');
 const { closeConnection } = await import('@propr/core');
 

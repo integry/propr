@@ -289,11 +289,13 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
     const inputTokens = Number(usageStats?.inputTokens || 0);
     const outputTokens = Number(usageStats?.outputTokens || 0);
-    const totalCost = recordedSpend ?? 0;
     return {
       total_tokens: inputTokens + outputTokens,
       input_tokens: inputTokens, output_tokens: outputTokens,
-      total_cost_usd: Number(totalCost.toFixed(2)),
+      total_cost_usd: Number((recordedSpend?.total ?? 0).toFixed(2)),
+      // The same spend by outcome: spend on failed attempts delivered nothing.
+      successful_cost_usd: Number((recordedSpend?.successful ?? 0).toFixed(2)),
+      failed_cost_usd: Number((recordedSpend?.failed ?? 0).toFixed(2)),
       models: modelDistribution
     };
   }
@@ -466,13 +468,17 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         completed: currentStats.completed,
         failed: currentStats.failed,
         successRate: calculateSuccessRate(currentStats.completed, currentStats.failed),
-        recordedSpend: currentSpend,
+        recordedSpend: currentSpend?.total ?? null,
+        recordedSpendSuccessful: currentSpend?.successful ?? null,
+        recordedSpendFailed: currentSpend?.failed ?? null,
         dailyTasks: currentStats.dailyCounts,
         previous: {
           tasks: previousStats.total,
           completed: previousStats.completed,
           successRate: calculateSuccessRate(previousStats.completed, previousStats.failed),
-          recordedSpend: previousSpend,
+          recordedSpend: previousSpend?.total ?? null,
+          recordedSpendSuccessful: previousSpend?.successful ?? null,
+          recordedSpendFailed: previousSpend?.failed ?? null,
         },
       });
     } catch (error) {

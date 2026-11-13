@@ -671,8 +671,10 @@ plus stable `artifacts` such as submission, task, comment and pull-request
 identities. Its `progress` is tool-specific. For `run_ultrafix` and `start_ultrafix`, progress names
 the goal, maximum cycles, current `cycle`, phase, last score, per-cycle review
 and fix task IDs, and terminal outcome (`goal_reached`, `cycles_exhausted`,
-`stopped` or `failed`). The lifecycle summary distinguishes reaching the goal
-from merely exhausting the allowed cycles.
+`style_findings_only`, `stopped` or `failed`). `style_findings_only` means the
+latest review's remaining blockers were all stylistic, so no further fix
+was scheduled. The lifecycle summary distinguishes reaching the goal from merely
+exhausting the allowed cycles.
 
 If the handle is no longer in the conversation, use `list_operations`. It is a
 bounded, newest-first receipt index and does not itself refresh backend
@@ -780,6 +782,21 @@ review and ultrafix state with one bounded GraphQL request per repository:
 Use `state: "recent"` with `sinceMinutes`, or `state: "all"`, when completed
 work belongs in the answer. `githubLookups` reports the requested/completed
 enrichment count and whether the bounded lookup was truncated.
+
+For spend rather than progress, `get_cost_breakdown` returns the same rows as
+`GET /api/stats/cost`: recorded agent executions grouped by any of `day`,
+`repository`, `agent`, `model`, `reasoning_level`, `execution_type` and
+`outcome`, each with `executions`, `tasks`, input/output/cache tokens and
+`cost_usd`, plus `totals`:
+
+```json
+{ "period": "30d", "groupBy": ["repository", "model", "outcome"] }
+```
+
+Without `repository` it covers the repositories in the grant (`repositories`
+lists them); executions with no task have no repository and are left out. A
+dimension that was never recorded, or a group with no recorded cost, is
+`null` rather than a guess or `0`.
 
 For what already finished, `get_recent_activity` merges one newest-first
 timeline — terminal tasks, opened and merged pull requests, finished goals,

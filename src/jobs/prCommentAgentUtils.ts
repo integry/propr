@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { runWithNetworkPolicy } from './networkEgress.js';
 import { runRepositoryWorkflow } from './repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '@propr/core';
@@ -346,6 +347,8 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
     // Outside the workflow the agent still runs under the run's network policy (and its timeline record).
     }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
+    // One id for this execution, so the success path and a later failure handler record it once.
+    agentResult.executionId ??= randomUUID();
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
 }
