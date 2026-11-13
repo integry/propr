@@ -63,6 +63,43 @@ async function tablesReady(database: Knex): Promise<boolean> {
   return true;
 }
 
+/**
+ * Whether the profile migration no longer gates launches: it completed (its
+ * marker commits with the migrated data), or there is nothing to migrate
+ * because extension profiles were never set up on this instance.
+ */
+export async function extensionLibraryMigrationSettled(database: Knex): Promise<boolean> {
+  if (!await database.schema.hasTable('extension_library_migration')) return true;
+  if (await database('extension_library_migration').where({ id: 1 }).first('id')) return true;
+  return !await database('extension_instance_identity').where({ id: 1 }).first('instance_id');
+}
+
+/** A definition or run snapshot as stored; snapshots captured before the upgrade carry `extensionProfile`. */
+type LegacyAutomationView = { id: string; extensions?: unknown; extensionProfile?: unknown };
+/**
+ * Whether an automation still has a profile selection the migration has not
+ * translated. Its `extensions` would read as empty, so launching it would
+ * silently drop the extensions it selected.
+ */
+export async function legacyAutomationExtensionsPending(definition: LegacyAutomationView, database: Knex, options: { snapshotOnly?: boolean } = {}): Promise<boolean> {
+  const snapshotSelection = Boolean(definition.extensionProfile) && definition.extensions === undefined;
+  if (!snapshotSelection && (options.snapshotOnly || !await legacyDefinitionRow(definition.id, database))) return false;
+  return !await extensionLibraryMigrationSettled(database);
+}
+/** The stored definition names a profile and has no translated `extensions` yet. */
+async function legacyDefinitionRow(id: string, database: Knex): Promise<boolean> {
+  if (!await database.schema.hasTable('agent_definitions') || !await database.schema.hasColumn('agent_definitions', 'extension_profile') || !await database.schema.hasColumn('agent_definitions', 'extensions')) return false;
+  const row = await database('agent_definitions').where({ id }).whereNull('extensions').first('extension_profile');
+  if (!row?.extension_profile) return false;
+  try { return Boolean(JSON.parse(row.extension_profile)?.profileId); } catch { return false; }
+}
+/** Retry the startup migration now when it has not completed; true once it has settled. */
+export async function ensureExtensionLibraryMigrated(database: Knex, environment: NodeJS.ProcessEnv = process.env, log: Log = defaultLogger): Promise<boolean> {
+  if (await extensionLibraryMigrationSettled(database)) return true;
+  await migrateExtensionProfilesToLibrary(database, environment, log);
+  return extensionLibraryMigrationSettled(database);
+}
+
 export async function migrateExtensionProfilesToLibrary(database: Knex, environment: NodeJS.ProcessEnv = process.env, log: Log = defaultLogger): Promise<ExtensionLibraryMigrationReport> {
   const report: ExtensionLibraryMigrationReport = { migrated: false, profiles: 0, servers: 0, skills: 0, automations: 0, renamed: [], warnings: [] };
   if (!await tablesReady(database) || await database('extension_library_migration').where({ id: 1 }).first()) return report;

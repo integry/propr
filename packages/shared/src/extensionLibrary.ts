@@ -128,6 +128,9 @@ export function extensionItemSkipReason(library: LibraryView, item: ExtensionLib
   if ('kind' in item) {
     if (context.allowWrite === false && item.capability === 'write') return 'write_not_authorized';
     if (item.kind === 'https' && item.authentication === 'bearer' && library.secrets && !library.secrets[item.name]?.configured) return 'secret_not_configured';
+    // Catalog credentials come from the operator environment: callers report their current
+    // availability. Without a status the item is not skipped, so identity problems still refuse.
+    if (item.kind === 'catalog' && library.secrets?.[item.name]?.configured === false) return 'secret_not_configured';
   } else if (library.skillBundles && !library.skillBundles.some(b => b.id === item.bundleId)) return 'not_found';
   return null;
 }

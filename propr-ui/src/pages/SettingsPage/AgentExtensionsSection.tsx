@@ -27,6 +27,24 @@ import {
 import { getInstanceCatalog } from '../../api/proprApi';
 import { SettingsSection } from './SettingsLayout';
 import { AgentExtensionsDescription } from './AgentExtensionsGuide';
+/** JSON with sorted object keys, so equal items compare equal whatever their key order. */
+const canonicalJson = (value: unknown): string => JSON.stringify(value, (_key, v: unknown) =>
+  v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v);
+type LibraryItems = Pick<ExtensionLibraryRevision, 'revision' | 'servers' | 'skills'>;
+/**
+ * Whether `next` is exactly `base` with the one toggle applied: the next
+ * revision, the item's `enabled` switched, and every other item field
+ * unchanged. Anything else, including an unchanged head returned for a toggle
+ * whose state another edit already set, means the library changed elsewhere.
+ */
+function isToggleOnBase(base: LibraryItems, next: LibraryItems, item: ExtensionItemRef, enabled: boolean): boolean {
+  if (next.revision !== base.revision + 1) return false;
+  const servers = base.servers.map((s) => (item.kind === 'server' && s.name === item.name ? { ...s, enabled } : s));
+  const skills = base.skills.map((s) => (item.kind === 'skill' && s.bundleId === item.bundleId ? { ...s, enabled } : s));
+  const target = item.kind === 'server' ? base.servers.find((s) => s.name === item.name) : base.skills.find((s) => s.bundleId === item.bundleId);
+  if (!target || target.enabled === enabled) return false;
+  return canonicalJson(servers) === canonicalJson(next.servers) && canonicalJson(skills) === canonicalJson(next.skills);
+}
 const nextServerName = (servers: ExtensionLibraryServer[]) => {
   let number = 1;
   while (servers.some((server) => server.name === `server-${number}`)) number++;
@@ -486,10 +504,12 @@ export default function AgentExtensionsSection() {
   /**
    * The revision the draft was built from: saving sends it as the expected
    * revision, so edits made elsewhere since then are refused, not overwritten.
-   * It moves only when the draft is reloaded, or when a toggle's revision sits
-   * directly on top of it (then the draft already carries that one change).
+   * It moves only when the draft is reloaded, or when a toggle's revision is
+   * exactly the base plus that one change (then the draft already carries it).
    */
   const baseRevision = useRef(0);
+  /** The saved items of the draft's base revision, to recognise a toggle that changed nothing else. */
+  const baseLibrary = useRef<LibraryItems>({ revision: 0, servers: [], skills: [] });
   const [editorVersion, setEditorVersion] = useState(0);
   const [secrets, setSecrets] = useState<Record<number, string | null>>({});
   const [availableBundles, setAvailableBundles] = useState<ExtensionSkillBundle[]>([]);
@@ -502,6 +522,7 @@ export default function AgentExtensionsSection() {
     setLibrary(next);
     setDraft(draftFrom(next));
     baseRevision.current = next.revision;
+    baseLibrary.current = next;
     setSecrets({});
     setEditorVersion((v) => v + 1);
   };
@@ -522,6 +543,7 @@ export default function AgentExtensionsSection() {
         setLibrary(result.library);
         setDraft(draftFrom(result.library));
         baseRevision.current = result.library.revision;
+        baseLibrary.current = result.library;
         setCatalog(result.catalog ?? []);
         setAvailableBundles(result.bundles ?? []);
       })
@@ -571,10 +593,10 @@ export default function AgentExtensionsSection() {
       const result = await setExtensionItemEnabled(item, enabled);
       setLibrary(result.library);
       applyDraft();
-      // The toggle applies to the current server head. Adopt it as the draft's base only when
-      // nothing else changed in between; otherwise keep the old base so saving this draft conflicts.
-      const current = result.library.revision === baseRevision.current + 1;
-      if (current) baseRevision.current = result.library.revision;
+      // The toggle applies to the current server head. Adopt it as the draft's base only when it is
+      // the base plus this toggle; otherwise keep the old base so saving this draft conflicts.
+      const current = isToggleOnBase(baseLibrary.current, result.library, item, enabled);
+      if (current) { baseRevision.current = result.library.revision; baseLibrary.current = result.library; }
       const state = enabled ? 'Enabled for new runs.' : 'Disabled for new runs.';
       setNotice(current ? state : `${state} The library was changed elsewhere: discard changes to reload it before saving other edits.`);
     });

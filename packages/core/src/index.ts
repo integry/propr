@@ -680,7 +680,7 @@ export { generateManagedDependencies } from './storage/managedDependencies.js';
 export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storage/lifecycle.js';
 
 export * from './extensions/extensionProfileStore.js';
-export { migrateExtensionProfilesToLibrary, type ExtensionLibraryMigrationReport } from './extensions/extensionLibraryMigration.js';
+export { migrateExtensionProfilesToLibrary, ensureExtensionLibraryMigrated, extensionLibraryMigrationSettled, legacyAutomationExtensionsPending, type ExtensionLibraryMigrationReport } from './extensions/extensionLibraryMigration.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';

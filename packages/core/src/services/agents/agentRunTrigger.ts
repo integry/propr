@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
-import { agentSupportsSavedModel, agentTypeSupportsProprMcp, hasAutomationExtensions, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
+import { agentSupportsSavedModel, agentTypeSupportsProprMcp, hasAutomationExtensions, parseAutomationExtensions, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
 import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
@@ -42,7 +42,7 @@ export const AGENT_RUN_JOB_NAMES: Readonly<Record<AgentRunPhase, string>> = {
  */
 export const AGENT_RUN_JOB_OPTIONS: Readonly<JobsOptions> = { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } };
 
-export type AgentRunTriggerErrorCode = 'AGENT_DISABLED' | 'AGENT_INVALID';
+export type AgentRunTriggerErrorCode = 'AGENT_DISABLED' | 'AGENT_INVALID' | 'EXTENSIONS_MIGRATION_PENDING';
 
 export class AgentRunTriggerError extends Error {
   readonly status: number;
@@ -256,6 +256,11 @@ export async function validateAgentDefinitionRuntime(
   definition: StoredAgentDefinition,
   deps: AgentRunTriggerDependencies = {},
 ): Promise<string | null> {
+  // A run snapshot captured before the upgrade still names its profile; launching it before the
+  // migration translated it would run without the extensions it selected.
+  const snapshot = definition as StoredAgentDefinition & { extensionProfile?: unknown };
+  if (snapshot.extensionProfile && snapshot.extensions === undefined
+    && await (await import('../../extensions/extensionLibraryMigration.js')).legacyAutomationExtensionsPending(snapshot, await extensionDatabase(deps.database), { snapshotOnly: true })) return EXTENSIONS_MIGRATION_PENDING_REASON;
   const {
     loadRepos = loadMonitoredReposRaw,
     loadAgents: loadDirectAgents = loadAgents,
@@ -302,6 +307,23 @@ export async function validateAgentDefinitionRuntime(
   return null;
 }
 
+const EXTENSIONS_MIGRATION_PENDING_REASON = 'The extension library migration has not completed, so the extensions this automation selected cannot be resolved yet; it runs once the migration succeeds';
+const extensionDatabase = async (database?: Knex): Promise<Knex> => database ?? (await import('../../db/connection.js')).db;
+/**
+ * A definition still holding an untranslated profile selection would capture
+ * empty `extensions` in its run snapshot, which a later migration cannot
+ * repair. Retry the migration now and use the translated selection; while it
+ * still fails, refuse the run with 409 (a schedule slot stays pending and retries).
+ */
+async function withMigratedLegacyExtensions(definition: StoredAgentDefinition, database?: Knex): Promise<StoredAgentDefinition> {
+  const migration = await import('../../extensions/extensionLibraryMigration.js');
+  const knex = await extensionDatabase(database);
+  if (!await migration.legacyAutomationExtensionsPending(definition, knex)) return definition;
+  if (!await migration.ensureExtensionLibraryMigrated(knex)) throw new AgentRunTriggerError(EXTENSIONS_MIGRATION_PENDING_REASON, 409, 'EXTENSIONS_MIGRATION_PENDING');
+  const row = await knex('agent_definitions').where({ id: definition.id }).first('extensions');
+  return { ...definition, extensions: parseAutomationExtensions(row?.extensions) };
+}
+
 /**
  * Create the run receipt and enqueue its report phase.
  *
@@ -327,6 +349,7 @@ export async function triggerAgentRun(
   }
 
   if (!definition.enabled) throw new AgentRunTriggerError('Automation is disabled', 409, 'AGENT_DISABLED');
+  definition = await withMigratedLegacyExtensions(definition, deps.database);
   const invalid = await validateAgentDefinitionRuntime(definition, deps);
   if (invalid) throw new AgentRunTriggerError(invalid, 400, 'AGENT_INVALID');
 

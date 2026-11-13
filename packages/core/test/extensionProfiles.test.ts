@@ -496,8 +496,16 @@ test('operator catalog projections exclude internals and customers cannot smuggl
   delete store.environment.OPERATOR_DOCS_KEY;
   const pending = await save(store, input([descriptor]));
   assert.equal(pending.secrets.local.configured, false);
-  await assert.rejects(store.resolveLaunch(context), /not configured/);
+  // A catalog server without its operator credential is skipped, never a launch failure.
+  for (const additional of [null, { servers: ['local'], skills: [] }]) {
+    const unconfigured = await store.resolveLaunch({ ...context, additional });
+    assert.deepEqual(unconfigured.set.servers, []);
+    assert.ok(unconfigured.set.skipped.some(s => s.name === 'local' && s.reason === 'secret_not_configured' && s.source === (additional ? 'additional' : 'auto')));
+    assert.ok(unconfigured.set.skipped.every(s => s.reason === 'secret_not_configured'));
+  }
+  // Availability is read from the environment at launch, not from the saved status.
   store.environment.OPERATOR_DOCS_KEY = secret;
+  assert.deepEqual((await store.resolveLaunch(context)).set.servers.map(s => s.name), ['local']);
   const library = await save(store, input([descriptor]));
   assert.deepEqual(library.secrets.local, { count: 1, configured: true });
   const projection = JSON.stringify({ library: await store.readLibrary('1'), history: await store.history('1'), catalog: await store.catalog.publicEntries() });
@@ -570,6 +578,29 @@ test('catalog stdio is callable through both selected authorized launcher polici
   for (const name of await fs.readdir(root)) assert.ok(!(await fs.readFile(path.join(root, name), 'utf8')).includes(secret));
   assert.equal((await database('extension_run_grants')).length, 0);
   assert.ok(!JSON.stringify(await database('extension_library_revisions')).includes(secret));
+});
+
+test('an auto-applied catalog server without credentials is skipped and the run executes without it', async t => {
+  const { database, store } = await fixture(t);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'catalog-unconfigured-')); extensionTestResources(t).defer(() => fs.rm(root, { recursive: true, force: true }));
+  const { operatorCatalogDigest } = await import('../src/extensions/operatorCatalog.js');
+  const { executeWithExtensions, currentExtensionLaunch } = await import('../src/extensions/extensionLaunch.js');
+  const entry = { id: 'synthetic-docs', kind: 'stdio' as const, executable: '/usr/bin/env', args: ['node', '--version'], secretEnv: { API_KEY: 'UNCONFIGURED_DOCS_KEY' }, tools: ['lookup'], capability: 'read' as const };
+  const catalogFile = path.join(root, 'catalog.json'); await fs.writeFile(catalogFile, JSON.stringify([entry]), { mode: 0o600 });
+  store.environment.PROPR_EXTENSION_CATALOG_FILE = catalogFile; delete store.environment.UNCONFIGURED_DOCS_KEY;
+  await save(store, input([{ kind: 'catalog', name: 'local', catalogId: entry.id, digest: operatorCatalogDigest(entry), enabled: true, tools: ['lookup'], capability: 'read' }]));
+  const config = { type: 'claude' as const, alias: 'claude', id: randomUUID(), enabled: true, dockerImage: 'synthetic', configPath: root, supportedModels: ['synthetic'] };
+  const options = { extensions: automatic(), taskId: 'catalog-unconfigured', issueRef: { repoOwner: 'team', repoName: 'repo', number: 1 }, worktreePath: root, prompt: 'Run', githubToken: '' };
+  let executed = false;
+  await executeWithExtensions(config, options, async prepared => {
+    executed = true; assert.equal(prepared.toolPolicy, undefined); assert.equal(currentExtensionLaunch(), undefined);
+    return { success: true, executionTimeMs: 0, modifiedFiles: [], commitMessage: null, logs: '', modelUsed: 'synthetic' };
+  }, store);
+  assert.ok(executed);
+  assert.equal((await database('extension_run_grants')).length, 0);
+  // An invalid catalog identity is still refused rather than skipped.
+  await fs.writeFile(catalogFile, JSON.stringify([{ ...entry, args: ['--changed'] }]));
+  await assert.rejects(executeWithExtensions(config, options, async () => assert.fail('must not execute'), store), /digest changed/);
 });
 
 test('immutable gateway policy enforces allowlist on every call and private DNS re-resolution; catalog exceptions remain bounded', async t => {

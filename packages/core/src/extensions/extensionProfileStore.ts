@@ -1,6 +1,6 @@
  
 import logger from '../utils/logger.js';
-import { OperatorCatalog } from './operatorCatalog.js';
+import { OperatorCatalog, operatorCatalogDigest } from './operatorCatalog.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
@@ -281,7 +281,7 @@ export class ExtensionLibraryStore {
   async resolveLaunch(context: ExtensionLaunchContext, validateResources = true): Promise<PreparedExtensionLaunch> {
     if (!['claude', 'codex'].includes(context.runtime)) throw new ExtensionError(400, 'Extensions require Claude or Codex task execution');
     const { snapshot } = await this.head();
-    const set = resolveExtensionSet(snapshot, resolutionContext(context));
+    const set = resolveExtensionSet(await this.withCurrentCatalogSecrets(snapshot), resolutionContext(context));
     if (validateResources) {
       for (const server of set.servers) {
         if (server.kind === 'catalog') await this.catalog.resolve(server.catalogId, server.digest, server.tools, server.capability);
@@ -289,6 +289,28 @@ export class ExtensionLibraryStore {
       }
     }
     return { snapshot, set };
+  }
+  /**
+   * The library view resolution uses: catalog credential availability is read
+   * from the operator environment now, since the saved status may be stale. A
+   * catalog server whose entry is unavailable or changed gets no status, so it
+   * is not skipped and its use still refuses on identity, as before.
+   */
+  private async withCurrentCatalogSecrets(snapshot: ExtensionLibraryRevision): Promise<ExtensionLibraryRevision> {
+    const catalogServers = snapshot.servers.filter(s => s.kind === 'catalog' && s.enabled);
+    if (!catalogServers.length) return snapshot;
+    const catalog = this.catalog;
+    let entries: Awaited<ReturnType<OperatorCatalog['entries']>> = [];
+    try { entries = await catalog.entries(); } catch { /* an unavailable catalog refuses when an item is used */ }
+    const secrets = { ...snapshot.secrets };
+    for (const server of catalogServers) {
+      if (server.kind !== 'catalog') continue;
+      const entry = entries.find(e => e.id === server.catalogId && operatorCatalogDigest(e) === server.digest);
+      if (!entry) { delete secrets[server.name]; continue; }
+      const values = Object.values(catalog.secrets(entry));
+      secrets[server.name] = { count: values.length, configured: values.every(Boolean) };
+    }
+    return { ...snapshot, secrets };
   }
   /**
    * The prepared items must be unchanged, still enabled, still within their
@@ -299,10 +321,10 @@ export class ExtensionLibraryStore {
     const head = await this.head(database);
     if (head.snapshot.revision === prepared.snapshot.revision) return head.snapshot.revision;
     const changed = () => new ExtensionError(409, 'Extension library changed before launch');
-    const ctx = resolutionContext(context);
+    const ctx = resolutionContext(context); const view = await this.withCurrentCatalogSecrets(head.snapshot);
     for (const item of [...prepared.set.servers, ...prepared.set.skills.map(withoutBundle)]) {
       const current = 'kind' in item ? head.snapshot.servers.find(s => s.name === item.name) : head.snapshot.skills.find(s => s.bundleId === item.bundleId);
-      if (!current || !sameJson(current, item) || extensionItemSkipReason(head.snapshot, current, ctx)) throw changed();
+      if (!current || !sameJson(current, item) || extensionItemSkipReason(view, current, ctx)) throw changed();
     }
     for (const skill of prepared.set.skills) if (!sameJson(head.snapshot.skillBundles.find(b => b.id === skill.bundleId), skill.bundle)) throw changed();
     const bearer = bearerServers(prepared.set.servers);

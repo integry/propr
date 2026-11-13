@@ -98,6 +98,23 @@ describe('AgentExtensionsSection', () => {
     expect(input.servers[0].repositories).toEqual(['example/docs']);
   });
 
+  it('keeps the draft base when a toggle is a no-op on a head another administrator already changed', async () => {
+    // Revision 4 elsewhere disabled the server and narrowed its repositories. The stale Disable
+    // writes nothing and returns that unchanged head, which is still exactly base + 1.
+    const elsewhere = { ...library, revision: 4, servers: [{ ...docs, enabled: false, repositories: ['example/other'] }] };
+    vi.mocked(setExtensionItemEnabled).mockResolvedValue({ library: elsewhere });
+    const view = await section();
+    fireEvent.click(within(view).getAllByRole('checkbox', { name: 'Enabled' })[0]);
+    await waitFor(() => expect(setExtensionItemEnabled).toHaveBeenCalledWith({ kind: 'server', name: 'docs' }, false));
+    expect(await within(view).findByRole('status')).toHaveTextContent('changed elsewhere');
+    fireEvent.click(within(view).getByRole('button', { name: 'Save library' }));
+    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledTimes(1));
+    // Saving the stale draft (wider limit) is sent against revision 3, so the server refuses it.
+    const [input, expectedRevision] = vi.mocked(saveExtensionLibrary).mock.calls[0];
+    expect(expectedRevision).toBe(3);
+    expect(input.servers[0].repositories).toEqual(['example/docs']);
+  });
+
   it('changes a new item only in the draft', async () => {
     vi.mocked(getExtensionLibrary).mockResolvedValue({ instanceId: 'instance', library: { ...library, revision: 0, servers: [], skills: [], skillBundles: [], secrets: {} }, catalog: [] });
     const view = await section();

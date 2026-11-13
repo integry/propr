@@ -90,7 +90,15 @@ export async function submissionExtensionsForRun(row: TaskSubmission | undefined
   if (row.task_id !== run.taskId || row.latest_task_id !== run.taskId || !['queued', 'issue_created'].includes(row.state) || !row.extension_authorization) return {};
   const authorization = unsealExtensionSecrets(row.extension_authorization, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
   if (row.issue_number !== run.issueNumber || row.repository !== run.repository.toLowerCase() || payload.agentAlias !== run.agentAlias || payload.model !== run.model || authorization.payloadDigest !== createHash('sha256').update(row.payload).digest('hex')) throw new Error('Extension submission does not authorize this exact run');
-  const items = await new ExtensionLibraryStore(database, environment).legacyProfileExtensions(payload.extensionProfile.profileId);
+  const store = new ExtensionLibraryStore(database, environment);
+  let items = await store.legacyProfileExtensions(payload.extensionProfile.profileId);
+  if (!items) {
+    // The mapping is written by the startup migration. Until it completes, a missing mapping
+    // is not an absent selection: retry it now, and refuse the run rather than drop the extensions.
+    const { ensureExtensionLibraryMigrated } = await import('../extensions/extensionLibraryMigration.js');
+    if (!await ensureExtensionLibraryMigrated(database, environment)) throw new Error('The extension library migration has not completed, so this submission\'s extensions cannot be resolved yet; retry the task once it succeeds');
+    items = await store.legacyProfileExtensions(payload.extensionProfile.profileId);
+  }
   if (!items) return {};
   return { extensions: { autoApply: false, servers: items.servers, skills: items.skills, repositories: [row.repository], allowWrite: authorization.allowWrite === 'true' && payload.extensionAllowWrite === true } };
 }
