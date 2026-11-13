@@ -19,7 +19,7 @@ there is no launcher to open, the vendor-processing disclosure cannot be reached
 speech-synthesis, speech-recognition, or microphone API is touched.
 
 To turn them on, open **Settings** and select **Enable voice briefings**.
-Administrators find it in **General → Experimental**; members find it under
+Administrators find it in **Experimental → Opt-in features**; members find it under
 **Voice briefings · Experimental** in their personal settings view. The launcher
 appears immediately, without reloading the page.
 

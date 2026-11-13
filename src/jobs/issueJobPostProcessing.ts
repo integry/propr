@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
-import type { ClaudeCodeResponse, WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings } from '@propr/core';
+import type { ClaudeCodeResponse, WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings, ReviewConfig } from '@propr/core';
 import {
     cleanupWorktree, cleanupPreparedVisualPreviewEvidence, commitChanges,
     prepareVisualPreviewEvidence, TaskStates,
@@ -89,6 +89,20 @@ async function handleUnpublishableAgentFailure(options: {
     return { success: false, pr: null, updatedLabels: [], error: errorMessage };
 }
 
+/**
+ * Outcomes that publish nothing, settled before any commit: no publishable
+ * agent work, or a reported blocker (`on_blocker: report`). Null when the run
+ * goes on to commit.
+ */
+async function settleUnpublishedOutcome(options: PostProcessOptions): Promise<PostProcessingResult | null> {
+    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger, taskId } = options;
+    if (!hasPublishableAgentWork(claudeResult)) {
+        return handleUnpublishableAgentFailure({ octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger, taskId });
+    }
+    if (!options.reportsBlockers) return null;
+    return (await import('./issueJobBlocked.js')).settleReportedIssueBlocker(options);
+}
+
 function formatFallbackDiagnostics(claudeResult: ClaudeCodeResponse, postProcessingError: unknown): string {
     const systemError = claudeResult?.success === false && claudeResult.error ? agentFailureLine(claudeResult.error) : '';
     const postProcessingMessage = getErrorMessage(postProcessingError).trim();
@@ -127,6 +141,12 @@ export interface PostProcessOptions {
     taskId?: string;
     stateManager?: WorkerStateManager;
     visualPreviewSettings: VisualPreviewSettings; // Already restricted by the run's workflow snapshot.
+    /** `on_blocker: report` in the run's workflow snapshot: a reported blocker ends the run without publishing. */
+    reportsBlockers?: boolean;
+    /** The task's starting commit, for the review digest. */
+    diffBase?: string;
+    /** `review` from the run's workflow snapshot. */
+    review?: ReviewConfig;
 }
 
 export interface PostProcessResult {
@@ -199,16 +219,8 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
 
     try {
-        if (!hasPublishableAgentWork(claudeResult)) {
-            postProcessingResult = await handleUnpublishableAgentFailure({
-                octokit,
-                issueRef,
-                claudeResult,
-                AI_PROCESSING_TAG,
-                correlatedLogger, taskId,
-            });
-            return { commitResult, postProcessingResult };
-        }
+        postProcessingResult = await settleUnpublishedOutcome(options);
+        if (postProcessingResult) return { commitResult, postProcessingResult };
 
         const completionNote = buildImplementationCompletionNote(claudeResult);
         let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${completionNote}`;
@@ -276,7 +288,9 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueTitle: currentIssueData.data.title,
                 visualPreview: { evidence: preparedVisualPreview.evidence, worktreePath: worktreeInfo.worktreePath },
                 taskId,
-                stateManager
+                stateManager,
+                diffBase: options.diffBase,
+                review: options.review,
             }
         );
 
@@ -298,6 +312,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
     } catch (postProcessingError) {
         // A completed execution or an actual commit can be marked done during
         // fallback. A failed/interrupted run with no commit must remain retryable.
+        // A run that reported a blocker is never marked done.
         const canMarkDone = claudeResult.success || commitResult !== null;
         postProcessingResult = await handlePostProcessingFailure(options, postProcessingError, canMarkDone);
     } finally {
@@ -420,7 +435,8 @@ export async function performFinalValidation(options: FinalValidationOptions): P
     const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData } = options;
     let resolvedPostProcessingResult = postProcessingResult;
 
-    if (claudeResult?.success && worktreeInfo?.branchName) {
+    // A blocked run deliberately published nothing, so there is no pull request to find or recreate.
+    if (claudeResult?.success && worktreeInfo?.branchName && !postProcessingResult?.blocked) {
         try {
             resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId, taskId, stateManager, currentIssueData });
         } catch (validationError) {

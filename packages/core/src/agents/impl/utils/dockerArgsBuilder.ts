@@ -6,6 +6,7 @@ import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } fro
  * for running Claude in a container with proper configuration.
  */
 
+import { currentClaudeModel } from '@propr/shared';
 import logger from '../../../utils/logger.js';
 import type { AgentConfig, AgentToolPolicy } from '../../types.js';
 import { claudeToolPolicyArgs } from '../../agentToolPolicy.js';
@@ -258,13 +259,16 @@ export function buildDockerArgs(
     // Add model parameter if specified
     if (modelName) {
         // Strip agent prefix if present (e.g., "claude:claude-opus-4-6" -> "claude-opus-4-6")
-        const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+        const savedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+        // A saved selection of a model Anthropic has retired runs on its successor.
+        const cleanModelName = currentClaudeModel(savedModelName);
         const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
         const modelIndex = maxTurnsIndex >= 0 ? maxTurnsIndex : dockerArgs.indexOf('--output-format');
         dockerArgs.splice(modelIndex, 0, '--model', cleanModelName);
         logger.info({
             issueNumber,
             requestedModel: cleanModelName,
+            ...(cleanModelName !== savedModelName ? { retiredModel: savedModelName } : {}),
             agentAlias: config.alias
         }, 'Using specific model for Claude agent execution');
     } else {

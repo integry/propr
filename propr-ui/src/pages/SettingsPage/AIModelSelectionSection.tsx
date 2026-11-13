@@ -209,7 +209,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         <SettingsField
           label="Summarization Model"
           htmlFor="summarization_model"
-          helperText="Used for repository indexing and, when enabled under Experimental, dashboard AI summaries."
+          helperText="Used for repository indexing and, when enabled under Experimental → Opt-in features, dashboard AI summaries."
         >
           {hasEnabledAgents ? (
             <select

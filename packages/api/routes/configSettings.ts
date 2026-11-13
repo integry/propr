@@ -1,4 +1,4 @@
-import { MAX_RUN_COST_CAP_USD, MIN_GOAL_QUESTION_MAX_WAIT_MS } from '@propr/shared';
+import { AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN, MAX_RUN_COST_CAP_USD, MIN_GOAL_QUESTION_MAX_WAIT_MS } from '@propr/shared';
 import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
@@ -18,6 +18,7 @@ interface SettingFields {
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
   agent_run_usage_pause_percent?: unknown;
+  automation_unproductive_run_threshold?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
   goal_question_max_wait_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
@@ -46,6 +47,7 @@ export type SettingSaveName =
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
   | 'agent_run_usage_pause_percent'
+  | 'automation_unproductive_run_threshold'
   | 'ultrafix_ci_wait_timeout_ms'
   | 'goal_question_max_wait_ms'
   | AgentWatchdogSettingName
@@ -178,6 +180,12 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     if (v === null) return { error: `agent_run_usage_pause_percent must be an integer from ${AGENT_RUN_USAGE_PAUSE_PERCENT_MIN} to ${AGENT_RUN_USAGE_PAUSE_PERCENT_MAX}`, saves: [], normalized };
     normalized.agent_run_usage_pause_percent = v;
     saves.push({ name: 'agent_run_usage_pause_percent' });
+  }
+  if (fields.automation_unproductive_run_threshold !== undefined) {
+    const v = validateStrictInt(fields.automation_unproductive_run_threshold, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX);
+    if (v === null) return { error: `automation_unproductive_run_threshold must be an integer from ${AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN} to ${AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX}`, saves: [], normalized };
+    normalized.automation_unproductive_run_threshold = v;
+    saves.push({ name: 'automation_unproductive_run_threshold' });
   }
   if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
     const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);

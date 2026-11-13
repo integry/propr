@@ -21,6 +21,7 @@ import { agentFailureLine, taskTerminalReasonForAgentTermination } from '@propr/
 import type {
     ClaudeCodeResponse,
     CommentJobData,
+    ReviewConfig,
     VisualPreviewSettings,
     UnprocessedComment,
     WorkerStateManager,
@@ -43,11 +44,12 @@ import { normalCompletionHandoffMarkers } from './followupHandoffMarker.js';
 import { markExecutionHandoffCommitted, markExecutionHandoffCommentPublished, markExecutionHandoffPushed } from './prCommentHandoffIntegration.js';
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
-import { buildWorkNotificationRecap, fullNotificationSummary } from './notificationRecap.js';
+import { followUpWorkHistoryMetadata } from './prCommentPostExecutionHistory.js';
 import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
+import { followUpReviewDigestSection } from './reviewDigestLazy.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 
-interface PostExecutionState {
+export interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     worktreeInfo: WorktreeInfo | undefined;
     claudeResult: ClaudeCodeResponse | null;
@@ -56,15 +58,17 @@ interface PostExecutionState {
     startingWorkComment: { data: { id: number; html_url: string } } | null;
     /** Durable publication handoff; advanced as commit, push and comment complete. */
     followupHandoff?: FollowupHandoffRecord | null;
+    /** Set once a checkpoint observed a recovery successor adopt the handoff. */
+    followupHandoffOwnershipLost?: boolean;
 }
 
-interface ReadyPostExecutionState extends PostExecutionState {
+export interface ReadyPostExecutionState extends PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
     claudeResult: ClaudeCodeResponse;
     startingWorkComment: { data: { id: number; html_url: string } };
 }
 
-interface PostExecutionContext {
+export interface PostExecutionContext {
     pullRequestNumber: number;
     repoOwner: string;
     repoName: string;
@@ -89,9 +93,11 @@ export interface PublicationCompletion {
     commitResult: Awaited<ReturnType<typeof commitChanges>>;
     changesSummary: string;
     commitMessage: string;
+    /** Review digest markdown for the follow-up commit; absent from older checkpoints and without a diff. */
+    reviewDigestSection?: string;
 }
 
-interface PostExecutionParams {
+export interface PostExecutionParams {
     recoveredCompletion?: PublicationCompletion;
     state: PostExecutionState;
     job: Job<CommentJobData>;
@@ -107,6 +113,10 @@ interface PostExecutionParams {
     visualPreviewSettings?: VisualPreviewSettings;
     /** The source issue the pull request closes, for auto-assignment. */
     linkedIssue?: LinkedIssueReference | null;
+    /** `on_blocker: report` in the run's workflow snapshot: a reported blocker ends the run without publishing. */
+    reportsBlockers?: boolean;
+    /** `review` from the run's workflow snapshot. */
+    review?: ReviewConfig;
 }
 
 interface UndoContextParams {
@@ -120,7 +130,7 @@ interface UndoContextParams {
 
 async function commitAndPush(
     state: ReadyPostExecutionState,
-    context: PostExecutionContext & { salvage?: PublicationSalvage; integrateConflicts?: (worktreePath: string) => Promise<{ commitHash?: string } | null> },
+    context: PostExecutionContext & { salvage?: PublicationSalvage; integrateConflicts?: (worktreePath: string) => Promise<{ commitHash?: string } | null>; review?: ReviewConfig },
     llm: string | null | undefined,
     completionInputs: Omit<PublicationCompletion, 'commitResult' | 'changesSummary' | 'commitMessage'>,
 ) {
@@ -129,18 +139,24 @@ async function commitAndPush(
     const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: context.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: context.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
+    let reviewDigestSection = '';
     if (commitResult) {
         // Durable phase checkpoints around the push: restart recovery must know a
         // clean, pushed worktree means completed publication, not missing work.
         await markExecutionHandoffCommitted(state, commitResult.commitHash);
-        const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage }, { salvage: context.salvage, integrateConflicts: context.integrateConflicts });
+        // Read before the push: conflict integration can move HEAD to a merge commit.
+        reviewDigestSection = await followUpReviewDigestSection({
+            taskId: completionInputs.taskId, worktreePath: state.worktreeInfo.worktreePath, commitHash: commitResult.commitHash,
+            validation: state.claudeResult.repositoryValidationResult, review: context.review, correlatedLogger: context.correlatedLogger,
+        });
+        const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage, reviewDigestSection }, { salvage: context.salvage, integrateConflicts: context.integrateConflicts });
         if (pushResult.commitHash) {
             commitResult.commitHash = pushResult.commitHash;
         }
         await markExecutionHandoffPushed(state, commitResult.commitHash);
     }
 
-    return { commitResult, changesSummary, commitMessage };
+    return { commitResult, changesSummary, commitMessage, reviewDigestSection };
 }
 
 /** A recovered publication uses the source issue its checkpoint saved; legacy checkpoints saved none. */
@@ -188,6 +204,7 @@ interface CompletionCommentPublicationOptions {
     taskUrl: string;
     unprocessedReviewComments: AIReviewComment[];
     visualPreviewEvidence?: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>>['evidence'];
+    reviewDigestSection?: string;
 }
 
 async function updateCompletionComment(state: ReadyPostExecutionState, context: PostExecutionContext, body: string) {
@@ -235,7 +252,8 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         taskUrl,
         consumedReviewCommentIds,
         addressedFeedback,
-        visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined
+        visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined,
+        reviewDigestSection: options.reviewDigestSection,
     }, state.claudeResult);
     // The handoff marker lets restart recovery recognize this completion if the
     // worker dies before its durable checkpoint records the comment URL.
@@ -290,32 +308,6 @@ async function preparePostExecutionPreviews(state: ReadyPostExecutionState, repo
     });
 }
 
-function buildPostExecutionRecap(
-    jobData: CommentJobData,
-    completion: Pick<PublicationCompletion, 'commitResult' | 'changesSummary'>,
-    partial: boolean,
-): string {
-    const { commitResult, changesSummary } = completion;
-    return buildWorkNotificationRecap(changesSummary, {
-        commandMode: jobData.commandMode || 'default',
-        filesChanged: commitResult?.filesChanged?.length,
-        noChanges: !commitResult,
-        partial,
-    });
-}
-
-/**
- * Findings and suggestions a run addressed, recorded on the work summary so the
- * task history distinguishes required corrections from optional follow-ups.
- */
-function buildAddressedFeedbackHistoryMeta(comments: AIReviewComment[]): Record<string, string[]> {
-    const addressed = selectedReviewFeedbackIds(comments);
-    return {
-        ...(addressed.findingIds.length > 0 && { addressedFindingIds: addressed.findingIds }),
-        ...(addressed.suggestionIds.length > 0 && { addressedSuggestionIds: addressed.suggestionIds }),
-    };
-}
-
 /**
  * A follow-up whose push conflicts with commits pushed meanwhile merges them in
  * with the conflict agent instead of failing and rerunning the implementation.
@@ -335,7 +327,15 @@ function conflictIntegrator(params: PostExecutionParams) {
     }, worktreePath);
 }
 
-export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
+export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean; blocked?: boolean }> {
+    // `on_blocker: report`: a run whose agent reported a blocker commits and pushes nothing.
+    if (params.reportsBlockers && await (await import('./prCommentBlocked.js')).settleReportedFollowUpBlocker(params, taskUrl, updateCompletionComment)) {
+        return { partial: false, blocked: true };
+    }
+    return publishPostExecution(params, taskUrl);
+}
+
+async function publishPostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
     const {
         state,
         job,
@@ -362,9 +362,9 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
     try {
         preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId, params.visualPreviewSettings);
-        const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, {
+        const { commitResult, changesSummary, commitMessage, reviewDigestSection } = params.recoveredCompletion ?? await commitAndPush(state, {
             ...context, salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
-            integrateConflicts: conflictIntegrator(params),
+            integrateConflicts: conflictIntegrator(params), review: params.review,
         }, llm, {
             taskId, instructionCommentIds: state.unprocessedComments.map(comment => comment.id),
             jobData: job.data, claudeResult: state.claudeResult, authorsText: state.authorsText,
@@ -383,7 +383,8 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             llm,
             taskUrl,
             unprocessedReviewComments,
-            visualPreviewEvidence: preparedVisualPreview?.evidence
+            visualPreviewEvidence: preparedVisualPreview?.evidence,
+            reviewDigestSection,
         });
         await markExecutionHandoffCommentPublished(state, completionComment.data.html_url);
         correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
@@ -420,10 +421,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
                     ...context.publication.continuation, publication_bundle: null, publication_completion: null,
                 } : undefined,
                 githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-                notificationRecap: buildPostExecutionRecap(job.data, { commitResult, changesSummary }, partial),
-                notificationSummary: fullNotificationSummary(changesSummary),
-                ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
-                ...buildAddressedFeedbackHistoryMeta(unprocessedReviewComments),
+                ...followUpWorkHistoryMetadata(job.data, { commitResult, changesSummary }, partial, unprocessedReviewComments),
                 ...(partial && { incompleteExecution: { reason: terminationReason } }),
                 ...ultrafixHistoryMeta,
             }

@@ -218,6 +218,41 @@ describe('Ultrafix continuation entry point', () => {
         );
     });
 
+    test('a blocked fix step stops the loop instead of counting as a completed fix', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 49, goal: 8 }, false);
+        const before = await loadState(redis as never, 'acme', 'web', 49);
+
+        const result = await continueUltrafixLoop({
+            owner: 'acme',
+            repo: 'web',
+            pullRequestNumber: 49,
+            completedAction: 'fix',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' },
+            redisClient: redis as never,
+            correlatedLogger: logger as never,
+            correlationId: 'blocked-fix-correlation-id',
+            currentJobId: 'blocked-fix-job',
+            blockedStep: true,
+        });
+
+        assert.equal(result.continued, false);
+        assert.equal(result.reason, 'fix_step_blocked');
+        assert.equal(result.outcome, 'stopped');
+        assert.equal(mockQueueAdd.mock.callCount(), 0, 'no further step is queued');
+        assert.equal(mockGetCheckRunsStatus.mock.callCount(), 0);
+        const after = await loadState(redis as never, 'acme', 'web', 49);
+        assert.equal(after?.active, false);
+        assert.equal(after?.completionStatus, 'failed');
+        assert.equal(after?.completionReason, 'fix_step_blocked');
+        assert.equal(after?.fixCount, before?.fixCount, 'the blocked step is not recorded as a completed fix');
+        assert.equal(after?.cycleCount, before?.cycleCount);
+        const stopComment = mockOctokitRequest.mock.calls
+            .map(call => (call.arguments as unknown as [string, { body?: string }])[1]?.body)
+            .find(body => typeof body === 'string' && body.includes('Ultrafix stopped'));
+        assert.match(String(stopComment), /fix step stopped on a blocker/);
+    });
+
     test('successful terminal auto-merge remains inside epoch transition ownership', async () => {
         const redis = createMockRedis();
         await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 44, goal: 8 }, false);

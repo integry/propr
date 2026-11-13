@@ -29,6 +29,7 @@ export function formatTaskTerminalReason(reason: string): string {
     case 'cost_cap_exceeded': return 'The run was stopped because it reached its spend cap.';
     case 'stalled': return 'The agent stopped producing output; the stall watchdog stopped the run.';
     case 'degenerate_output': return 'The agent produced only whitespace output; the watchdog stopped the run.';
+    case 'blocked': return 'The agent stopped and reported a blocker; nothing was committed.';
     case 'pr_merged': return 'The pull request was merged.';
     case 'skipped_issue_done': return 'Skipped because the issue was already completed by another run.';
     default: return 'The task ended.';

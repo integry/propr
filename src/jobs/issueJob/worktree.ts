@@ -9,6 +9,7 @@ import type { ExecuteWorktreeParams, ExecuteWorktreeResult } from './types.js';
 import { fetchIssueComments } from './github.js';
 import { executeAgentAndRecordMetrics } from './agent.js';
 import { performPostProcessing } from '../issueJobPostProcessing.js';
+import { workflowReportsBlockers } from '../blockedRunText.js';
 
 export async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise<ExecuteWorktreeResult> {
   const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
@@ -59,7 +60,8 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
     throw new Error('Execution aborted by user request');
   }
 
-  const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger, taskId, stateManager, visualPreviewSettings });
+  const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger, taskId, stateManager, visualPreviewSettings,
+    reportsBlockers: workflowReportsBlockers(context.repositoryWorkflow), diffBase: fileChangesBase, review: context.repositoryWorkflow?.config.review });
   const commitResult = postProcessResult.commitResult;
   const postProcessingResult = postProcessResult.postProcessingResult;
 

@@ -353,11 +353,12 @@ wait for an operator and block every later command on their pull request;
 `release_followup_handoff` stops tracking it so the next command can run (the
 branch is freed, files and commits are never deleted; a worktree that still
 holds unpublished work is released only with force set to true). The same
-decisions are in Settings → Workflow & PR Rules → Maintenance.
+decisions are in Settings → Maintenance → Held follow-ups.
 
 Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates
-a draft; `publish_plan` creates GitHub issues with the non-executing
+a draft (with plan items it opens in Studio at Review, so its issues can be
+read before publishing); `publish_plan` creates GitHub issues with the non-executing
 `propr-planned` label. `implement_plan` requires selected issue numbers and
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.

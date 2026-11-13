@@ -1,5 +1,8 @@
-/** `stalled` / `degenerate_output`: the agent activity watchdog stopped the run. */
-export type TaskTerminalReason = 'timed_out' | 'cost_cap_exceeded' | 'stalled' | 'degenerate_output' | 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed' | 'cancelled_by_user' | 'pr_merged' | 'skipped_issue_done';
+/**
+ * `stalled` / `degenerate_output`: the agent activity watchdog stopped the run.
+ * `blocked`: the agent stopped and reported a blocker (`on_blocker: report`); nothing was published.
+ */
+export type TaskTerminalReason = 'timed_out' | 'cost_cap_exceeded' | 'stalled' | 'degenerate_output' | 'blocked' | 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed' | 'cancelled_by_user' | 'pr_merged' | 'skipped_issue_done';
 
 export const TaskStates = {
     PENDING: 'pending',

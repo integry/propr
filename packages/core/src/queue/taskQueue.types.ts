@@ -243,6 +243,12 @@ export interface AgentRunJobData {
     correlationId: string;
     /** Action phase only: guidance the approver added, appended to the acting prompt. */
     operatorNote?: string;
+    /**
+     * Action phase only: the mutation count (null when unknown) this job's claimed
+     * acting step still owes its run. Kept with the job when a delivery could not
+     * store it, so the retry settles it although the grant that counted it is gone.
+     */
+    actingMutationsOwed?: { actingMutations: number | null };
 }
 
 export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData | AgentRunJobData;

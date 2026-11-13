@@ -6,6 +6,9 @@
 export type AutoMergePolicyMethod = 'merge' | 'squash' | 'rebase';
 export const AUTO_MERGE_METHODS: readonly AutoMergePolicyMethod[] = ['merge', 'squash', 'rebase'];
 export const AUTO_MERGE_MAX_PROTECTED_PATHS = 200;
+/** Default and ceiling for `auto_merge.max_branch_updates_per_hour`. */
+export const AUTO_MERGE_DEFAULT_BRANCH_UPDATES_PER_HOUR = 3;
+export const AUTO_MERGE_MAX_BRANCH_UPDATES_PER_HOUR = 30;
 /**
  * Repository policy itself always needs a human, whatever the configuration says.
  * A directory pattern protects `.propr` itself as well as its descendants, so a
@@ -17,6 +20,10 @@ export interface AutoMergeConfig {
     enabled?: boolean;
     method?: AutoMergePolicyMethod;
     protected_paths?: string[];
+    /** Update a behind branch from its base and wait for CI on the new head before merging. */
+    require_up_to_date?: boolean;
+    /** Most branch updates ProPR requests for one PR in any hour (with `require_up_to_date`). */
+    max_branch_updates_per_hour?: number;
 }
 
 export type AutoMergeReason =
@@ -25,7 +32,22 @@ export type AutoMergeReason =
     | 'skipped_disabled'
     | 'skipped_empty_diff'
     | 'skipped_policy_invalid'
-    | 'skipped_diff_unavailable';
+    | 'skipped_diff_unavailable'
+    | AutoMergeUpToDateReason;
+
+/**
+ * Decisions taken by `auto_merge.require_up_to_date` after every other gate
+ * allowed the merge: the head did not contain the latest base commit.
+ */
+export type AutoMergeUpToDateReason =
+    | 'updated_branch'
+    | 'waiting_for_ci_updated_head'
+    | 'waiting_branch_update_pending'
+    | 'waiting_branch_update_serialized'
+    | 'waiting_branch_update_rate_limited'
+    | 'waiting_branch_update_conflict'
+    | 'waiting_branch_update_failed'
+    | 'waiting_base_comparison_unavailable';
 
 /** Where ProPR would arm auto-merge; recorded with each decision. */
 export type AutoMergeOpportunity = 'initial_pr' | 'ultrafix_goal' | 'epic_queue_advance' | 'new_head' | 'check_merge';
@@ -49,6 +71,8 @@ export interface AutoMergeDecision {
     method?: AutoMergePolicyMethod;
     /** Human-readable detail for invalid policy decisions. */
     detail?: string;
+    /** Set only when armed with `require_up_to_date`: the per-PR hourly update allowance. */
+    upToDate?: { maxBranchUpdatesPerHour: number };
 }
 
 /** Validate a parsed `auto_merge` block; returns an error message or null. */
@@ -56,29 +80,36 @@ export function validateAutoMergeConfig(value: unknown): string | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return 'auto_merge must be a mapping';
     const record = value as Record<string, unknown>;
     for (const key of Object.keys(record)) {
-        if (!['enabled', 'method', 'protected_paths'].includes(key)) return `unknown field auto_merge.${key}`;
+        if (!['enabled', 'method', 'protected_paths', 'require_up_to_date', 'max_branch_updates_per_hour'].includes(key)) return `unknown field auto_merge.${key}`;
     }
     if (record.enabled !== undefined && typeof record.enabled !== 'boolean') return 'auto_merge.enabled must be a boolean';
+    if (record.require_up_to_date !== undefined && typeof record.require_up_to_date !== 'boolean') return 'auto_merge.require_up_to_date must be a boolean';
+    const updates = record.max_branch_updates_per_hour;
+    if (updates !== undefined && (!Number.isSafeInteger(updates) || (updates as number) < 1 || (updates as number) > AUTO_MERGE_MAX_BRANCH_UPDATES_PER_HOUR)) {
+        return `auto_merge.max_branch_updates_per_hour must be an integer from 1 to ${AUTO_MERGE_MAX_BRANCH_UPDATES_PER_HOUR}`;
+    }
     if (record.method !== undefined && !AUTO_MERGE_METHODS.includes(record.method as AutoMergePolicyMethod)) {
         return 'auto_merge.method must be one of merge, squash or rebase';
     }
-    if (record.protected_paths !== undefined) {
-        const paths = record.protected_paths;
-        if (!Array.isArray(paths) || paths.length > AUTO_MERGE_MAX_PROTECTED_PATHS) {
-            return `auto_merge.protected_paths must be an array of at most ${AUTO_MERGE_MAX_PROTECTED_PATHS} globs`;
+    if (record.protected_paths !== undefined) return validatePathGlobList(record.protected_paths, 'auto_merge.protected_paths', AUTO_MERGE_MAX_PROTECTED_PATHS);
+    return null;
+}
+
+/**
+ * Validate a list of repository-root-anchored globs (`auto_merge.protected_paths`,
+ * `review.risk_paths`); returns an error message or null.
+ */
+export function validatePathGlobList(paths: unknown, field: string, maxItems: number): string | null {
+    if (!Array.isArray(paths) || paths.length > maxItems) return `${field} must be an array of at most ${maxItems} globs`;
+    for (const [index, pattern] of paths.entries()) {
+        if (typeof pattern !== 'string' || !pattern.trim() || pattern.includes('\0')) {
+            return `${field}[${index}] must be a nonempty string without NUL bytes`;
         }
-        for (const [index, pattern] of paths.entries()) {
-            if (typeof pattern !== 'string' || !pattern.trim() || pattern.includes('\0')) {
-                return `auto_merge.protected_paths[${index}] must be a nonempty string without NUL bytes`;
-            }
-            if (normalizePath(pattern).split('/').some(part => part === '..')) {
-                return `auto_merge.protected_paths[${index}] must not contain '..' segments`;
-            }
-            try {
-                compileProtectedPathGlob(pattern);
-            } catch {
-                return `auto_merge.protected_paths[${index}] is not a valid glob`;
-            }
+        if (normalizePath(pattern).split('/').some(part => part === '..')) return `${field}[${index}] must not contain '..' segments`;
+        try {
+            compileProtectedPathGlob(pattern);
+        } catch {
+            return `${field}[${index}] is not a valid glob`;
         }
     }
     return null;
@@ -260,7 +291,13 @@ export function decideAutoMerge(
     if (files.length === 0) return skip('skipped_empty_diff');
     const matchedPaths = findProtectedPaths(files, config.protected_paths);
     if (matchedPaths.length) return skip('skipped_protected_path', { matchedPaths });
-    return { arm: true, reason: 'armed', opportunity, ...(config.method ? { method: config.method } : {}) };
+    return {
+        arm: true, reason: 'armed', opportunity,
+        ...(config.method ? { method: config.method } : {}),
+        ...(config.require_up_to_date === true
+            ? { upToDate: { maxBranchUpdatesPerHour: config.max_branch_updates_per_hour ?? AUTO_MERGE_DEFAULT_BRANCH_UPDATES_PER_HOUR } }
+            : {}),
+    };
 }
 
 const REASON_TEXT: Record<Exclude<AutoMergeReason, 'armed'>, string> = {
@@ -269,6 +306,14 @@ const REASON_TEXT: Record<Exclude<AutoMergeReason, 'armed'>, string> = {
     skipped_empty_diff: 'the PR diff is empty',
     skipped_policy_invalid: 'the base branch `.propr/workflow.yml` could not be read or is invalid',
     skipped_diff_unavailable: 'the PR diff could not be fetched from GitHub',
+    updated_branch: 'the branch was behind its base, so ProPR updated it and will merge once CI passes on the updated head',
+    waiting_for_ci_updated_head: 'CI has not passed yet on the head ProPR updated from the base branch',
+    waiting_branch_update_pending: 'a branch update ProPR requested has not produced a new head yet',
+    waiting_branch_update_serialized: 'another PR in this repository is being brought up to date first',
+    waiting_branch_update_rate_limited: 'the hourly limit of branch updates for this PR (`auto_merge.max_branch_updates_per_hour`) was reached',
+    waiting_branch_update_conflict: 'the branch is behind its base and cannot be updated without resolving merge conflicts',
+    waiting_branch_update_failed: 'GitHub refused to update the branch from its base',
+    waiting_base_comparison_unavailable: 'GitHub could not tell whether the branch contains the latest base commit',
 };
 
 const MAX_LISTED_PATHS = 5;

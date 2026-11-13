@@ -280,6 +280,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ultrafix_pause_seconds: ultrafixPause.value,
         default_max_cost_usd: defaultMaxCostUsd,
         agent_run_usage_pause_percent: await configManager.loadUsagePauseThreshold({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }),
+        automation_unproductive_run_threshold: await configManager.loadUnproductiveRunThreshold({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }),
         ultrafix_ci_wait_timeout_ms: ultrafixCiWait.value,
         goal_question_max_wait_ms: goalQuestionWait.value,
         ...await agentWatchdogSettingsResponse(configStore),

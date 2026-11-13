@@ -190,7 +190,27 @@ test('generateCompletionComment is its parts joined in order', async () => {
     const comment = await generateCompletionComment(result, issueRef);
     // Execution details carry a minute-precision timestamp; compare without it.
     const strip = (text: string) => text.replace(/- Timestamp: .*\n/, '');
-    assert.equal(strip(comment), strip(`${parts.run}${parts.summary}${parts.validation}${parts.logs}---\n${parts.trailer}`));
+    assert.equal(strip(comment), strip(`${parts.run}${parts.summary}${parts.digest}${parts.validation}${parts.logs}---\n${parts.trailer}`));
     assert.match(parts.trailer, /^\*This PR was created automatically/);
     assert.deepEqual(parts.stats, { executionTime: '1m 1s', totalTokens: 0, cost: 0.5 });
+    // Without the run's diff there is no digest, so the comment is unchanged.
+    assert.equal(parts.digest, '');
+    assert.equal(parts.reviewDigest, null);
+});
+
+test('completion parts build the review digest from the run diff and the structured validation result', async () => {
+    const repositoryValidationResult = { overall: 'failed' as const, commands: [{ index: 0, command: 'npm test', status: 'failed' as const, exitCode: 1, verified: true }] };
+    const result = { success: true, summary: 'Done.', repositoryValidation: 'report', repositoryValidationResult };
+    const issueRef = { number: 3, repoOwner: 'acme', repoName: 'app' };
+    const changes = [{ path: 'src/billing/charge.ts', linesAdded: 5, linesRemoved: 1 }, { path: 'src/util.ts', linesAdded: 1, linesRemoved: 0 }];
+    const parts = await generateCompletionCommentParts(result, issueRef, { review: { changes, config: { risk_paths: ['src/util.ts'] } } });
+    assert.equal(parts.reviewDigest?.validation, repositoryValidationResult);
+    assert.deepEqual(parts.reviewDigest?.tiers.high.files.map(file => file.reason), ['payment_path', 'review_risk_paths']);
+    assert.match(parts.digest, /^### Review digest\n[\s\S]*- \[1\] `npm test`: Failed \(exit 1\)\n\n\*\*Diff size:\*\* 2 files changed, \+6\/−1 lines\n\n$/);
+    const empty = await generateCompletionCommentParts(result, issueRef, { review: { changes: [] } });
+    assert.equal(empty.digest, '');
+    assert.equal(empty.reviewDigest, null);
+    // The rendered digest is the {{digest}} placeholder value, trimmed and redacted like the others.
+    assert.equal(buildPrTemplateValues({ digest: parts.digest }).digest, parts.digest.trim());
+    assert.equal(buildPrTemplateValues({}).digest, '');
 });

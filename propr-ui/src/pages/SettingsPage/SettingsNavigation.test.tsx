@@ -28,7 +28,7 @@ const sections: SettingsNavigationSection[] = [
   },
   {
     id: 'usage-tips',
-    category: 'general',
+    category: 'experimental',
     searchText: 'usage tips documentation',
     content: <p>Tip controls</p>
   },
@@ -46,7 +46,24 @@ const sections: SettingsNavigationSection[] = [
   }
 ];
 
-const RoutedSettingsNavigation = () => {
+/** What an administrator sees: the Maintenance category has sections. */
+const adminSections: SettingsNavigationSection[] = [
+  ...sections,
+  {
+    id: 'instance-storage',
+    category: 'maintenance',
+    searchText: 'instance data database export repository cache cleanup',
+    content: <p>Instance data controls</p>
+  },
+  {
+    id: 'maintenance',
+    category: 'maintenance',
+    searchText: 'held follow-ups handoff release resume',
+    content: <p>Held follow-up controls</p>
+  }
+];
+
+const RoutedSettingsNavigation = ({ settingsSections = sections }: { settingsSections?: SettingsNavigationSection[] }) => {
   const categoryRoute = useSettingsCategoryRoute();
   const location = useLocation();
   const navigate = useNavigate();
@@ -55,19 +72,18 @@ const RoutedSettingsNavigation = () => {
       Open notification settings
     </button>
     <output data-testid="settings-location">{location.search}</output>
-    <SettingsNavigation sections={sections} {...categoryRoute} />
+    <SettingsNavigation sections={settingsSections} {...categoryRoute} />
   </>;
 };
 
 describe('SettingsNavigation', () => {
   test('lists the settings domains in a vertical rail beside a constrained reading pane', () => {
-    const { container } = render(<SettingsNavigation sections={sections} />);
+    const { container } = render(<SettingsNavigation sections={adminSections} />);
 
     const rail = screen.getByRole('tablist', { name: 'Settings categories' });
     expect(rail).toHaveAttribute('aria-orientation', 'vertical');
     expect(rail).toHaveClass('flex-col');
     expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([
-      'General',
       'AI Models & Reasoning',
       'Workflow & PR Rules',
       'Ultrafix & Escalation',
@@ -75,14 +91,18 @@ describe('SettingsNavigation', () => {
       'Agent Extensions & Packages',
       'Integrations & MCP',
       'Notifications',
+      'Maintenance',
+      'Experimental',
     ]);
     // Rail items carry no count pill: a number beside an item reads as an alert.
     for (const tab of screen.getAllByRole('tab')) expect(tab.textContent).not.toMatch(/\d/);
 
-    const generalTab = screen.getByRole('tab', { name: 'General' });
-    expect(generalTab).toHaveAttribute('aria-selected', 'true');
-    expect(generalTab).toHaveClass('md:bg-teal-50', 'md:text-teal-700');
-    expect(screen.getByText('Tip controls')).toBeVisible();
+    // The first category opens by default.
+    const modelsTab = screen.getByRole('tab', { name: 'AI Models & Reasoning' });
+    expect(modelsTab).toHaveAttribute('aria-selected', 'true');
+    expect(modelsTab).toHaveClass('md:bg-teal-50', 'md:text-teal-700');
+    expect(screen.getByText('Model controls')).toBeVisible();
+    expect(screen.getByText('Tip controls')).not.toBeVisible();
     expect(screen.getByRole('navigation', { name: 'Settings' })).toContainElement(
       screen.getByRole('searchbox', { name: 'Search settings' })
     );
@@ -90,15 +110,20 @@ describe('SettingsNavigation', () => {
     // The reading pane is held to max-w-2xl and blocks stay flat — no card.
     const pane = container.querySelector('[data-settings-pane]');
     expect(pane).toHaveClass('max-w-2xl');
-    expect(container.querySelector('[data-settings-section="usage-tips"]')).not.toHaveClass('rounded-lg', 'border', 'shadow-sm');
+    expect(container.querySelector('[data-settings-section="model-selection"]')).not.toHaveClass('rounded-lg', 'border', 'shadow-sm');
 
     // The rail names the open domain, so the pane does not repeat it as a heading.
-    expect(screen.queryByRole('heading', { name: 'General' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'AI Models & Reasoning' })).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Sandbox & Network' }));
     expect(screen.getByRole('tab', { name: 'Sandbox & Network' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Network controls')).toBeVisible();
-    expect(screen.getByText('Tip controls')).not.toBeVisible();
+    expect(screen.getByText('Model controls')).not.toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Sandbox & Network' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Experimental' }));
+    expect(screen.getByText('Tip controls')).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Experimental' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Sandbox & Network' })).toBeNull();
   });
 
@@ -184,8 +209,8 @@ describe('SettingsNavigation', () => {
     const { container } = render(
       <SettingsNavigation
         sections={[
-          { id: 'first', category: 'general', searchText: 'first', content: <p>First</p> },
-          { id: 'second', category: 'general', searchText: 'second', content: <p>Second</p> },
+          { id: 'first', category: 'models', searchText: 'first', content: <p>First</p> },
+          { id: 'second', category: 'models', searchText: 'second', content: <p>Second</p> },
         ]}
       />
     );
@@ -199,18 +224,23 @@ describe('SettingsNavigation', () => {
 
   test('moves between rail items with the arrow keys', () => {
     render(<SettingsNavigation sections={sections} />);
-    const general = screen.getByRole('tab', { name: 'General' });
-    general.focus();
+    const models = screen.getByRole('tab', { name: 'AI Models & Reasoning' });
+    models.focus();
 
-    fireEvent.keyDown(general, { key: 'ArrowDown' });
+    fireEvent.keyDown(models, { key: 'ArrowDown' });
+    expect(screen.getByRole('tab', { name: 'Workflow & PR Rules' })).toHaveFocus();
+    expect(screen.getByText('Merge controls')).toBeVisible();
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Workflow & PR Rules' }), { key: 'End' });
+    expect(screen.getByRole('tab', { name: 'Experimental' })).toHaveAttribute('aria-selected', 'true');
+
+    // The hidden Maintenance category is skipped: Notifications sits just above Experimental.
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Experimental' }), { key: 'ArrowUp' });
+    expect(screen.getByRole('tab', { name: 'Notifications' })).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Notifications' }), { key: 'End' });
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Experimental' }), { key: 'ArrowDown' });
     expect(screen.getByRole('tab', { name: 'AI Models & Reasoning' })).toHaveFocus();
-    expect(screen.getByText('Model controls')).toBeVisible();
-
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'AI Models & Reasoning' }), { key: 'End' });
-    expect(screen.getByRole('tab', { name: 'Notifications' })).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Notifications' }), { key: 'ArrowDown' });
-    expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus();
   });
 
   test('on phones the arrow keys move through the category list without opening a category', () => {
@@ -223,21 +253,21 @@ describe('SettingsNavigation', () => {
         </MemoryRouter>
       );
       const rail = container.querySelector('[data-settings-rail]');
-      const general = screen.getByRole('tab', { name: 'General' });
-      general.focus();
-
-      fireEvent.keyDown(general, { key: 'ArrowDown' });
       const models = screen.getByRole('tab', { name: 'AI Models & Reasoning' });
-      expect(models).toHaveFocus();
-      expect(rail).not.toHaveClass('hidden');
-      expect(screen.getByTestId('settings-location')).toHaveTextContent(/^$/);
-      expect(general).toHaveAttribute('aria-selected', 'true');
-      // The focused row is the list's Tab stop, so leaving and returning lands on it.
-      expect(models).toHaveAttribute('tabindex', '0');
-      expect(general).toHaveAttribute('tabindex', '-1');
+      models.focus();
 
       fireEvent.keyDown(models, { key: 'ArrowDown' });
-      fireEvent.keyDown(screen.getByRole('tab', { name: 'Workflow & PR Rules' }), { key: 'End' });
+      const workflow = screen.getByRole('tab', { name: 'Workflow & PR Rules' });
+      expect(workflow).toHaveFocus();
+      expect(rail).not.toHaveClass('hidden');
+      expect(screen.getByTestId('settings-location')).toHaveTextContent(/^$/);
+      expect(models).toHaveAttribute('aria-selected', 'true');
+      // The focused row is the list's Tab stop, so leaving and returning lands on it.
+      expect(workflow).toHaveAttribute('tabindex', '0');
+      expect(models).toHaveAttribute('tabindex', '-1');
+
+      fireEvent.keyDown(workflow, { key: 'End' });
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'Experimental' }), { key: 'ArrowUp' });
       const notifications = screen.getByRole('tab', { name: 'Notifications' });
       expect(notifications).toHaveFocus();
       expect(rail).not.toHaveClass('hidden');
@@ -289,18 +319,82 @@ describe('SettingsNavigation', () => {
   });
 
   test.each(['toString', 'constructor', '__proto__', 'hasOwnProperty'])(
-    'falls back to General for the inherited object key ?tab=%s',
+    'falls back to the default category for the inherited object key ?tab=%s',
     (tab) => {
       render(
         <MemoryRouter initialEntries={[`/settings?tab=${tab}`]}>
           <RoutedSettingsNavigation />
         </MemoryRouter>
       );
-      expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
-      expect(screen.getByText('Tip controls')).toBeVisible();
-      expect(screen.getByRole('complementary', { name: 'About General' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'AI Models & Reasoning' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('Model controls')).toBeVisible();
+      expect(screen.getByRole('complementary', { name: 'About AI Models & Reasoning' })).toBeInTheDocument();
     }
   );
+
+  test('opens old ?tab=general links on Experimental', () => {
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=general']}>
+        <RoutedSettingsNavigation />
+      </MemoryRouter>
+    );
+    expect(screen.getByRole('tab', { name: 'Experimental' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Tip controls')).toBeVisible();
+    expect(screen.getByRole('complementary', { name: 'About Experimental' })).toHaveTextContent('Nothing here changes how agents run.');
+  });
+
+  test('lists instance data, then held follow-ups, under Maintenance', () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={['/settings?tab=maintenance']}>
+        <RoutedSettingsNavigation settingsSections={adminSections} />
+      </MemoryRouter>
+    );
+    expect(screen.getByRole('tab', { name: 'Maintenance' })).toHaveAttribute('aria-selected', 'true');
+    const panel = container.querySelector('#settings-panel-maintenance')!;
+    expect([...panel.querySelectorAll('[data-settings-section]')].map(section => section.getAttribute('data-settings-section')))
+      .toEqual(['instance-storage', 'maintenance']);
+    expect(screen.getByText('Instance data controls')).toBeVisible();
+    expect(screen.getByText('Held follow-up controls')).toBeVisible();
+    expect(container.querySelector('#settings-panel-integrations [data-settings-section="instance-storage"]')).toBeNull();
+    expect(container.querySelector('#settings-panel-workflow [data-settings-section="maintenance"]')).toBeNull();
+  });
+
+  test('hides Maintenance from a viewer with nothing in it, and sends its links to the default category', () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={['/settings?tab=maintenance']}>
+        <RoutedSettingsNavigation />
+      </MemoryRouter>
+    );
+    expect(screen.queryByRole('tab', { name: 'Maintenance' })).toBeNull();
+    expect(container.querySelector('#settings-panel-maintenance')).toBeNull();
+    expect(screen.getAllByRole('tab')).toHaveLength(8);
+    expect(screen.getByRole('tab', { name: 'AI Models & Reasoning' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Model controls')).toBeVisible();
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent('AI Models & Reasoning settings selected.');
+  });
+
+  test('finds the moved sections by search under their new category', () => {
+    render(<SettingsNavigation sections={adminSections} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Workflow & PR Rules' }));
+    const search = screen.getByRole('searchbox', { name: 'Search settings' });
+
+    fireEvent.change(search, { target: { value: 'cache cleanup' } });
+    expect(screen.getByText('Instance data controls')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Maintenance' })).toBeVisible();
+
+    fireEvent.change(search, { target: { value: 'held follow-ups' } });
+    expect(screen.getByText('Held follow-up controls')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Maintenance' })).toBeVisible();
+
+    fireEvent.change(search, { target: { value: 'usage tips' } });
+    expect(screen.getByText('Tip controls')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Experimental' })).toBeVisible();
+
+    // Opening the category a result came from shows it there.
+    fireEvent.click(screen.getByRole('tab', { name: 'Maintenance' }));
+    expect(screen.getByText('Instance data controls')).toBeVisible();
+    expect(screen.getByText('Held follow-up controls')).toBeVisible();
+  });
 
   test('reacts to a notification route while another settings tab is open', () => {
     render(
@@ -317,7 +411,7 @@ describe('SettingsNavigation', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Sandbox & Network' }));
     expect(screen.getByTestId('settings-location')).toHaveTextContent('?flow=desktop&tab=sandbox');
 
-    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'AI Models & Reasoning' }));
     expect(screen.getByTestId('settings-location')).toHaveTextContent('?flow=desktop');
     expect(screen.getByTestId('settings-location')).not.toHaveTextContent('tab=');
   });
@@ -351,7 +445,7 @@ describe('SettingsNavigation', () => {
 
     expect(screen.getByText('No settings found')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
-    expect(screen.getByText('Tip controls')).toBeVisible();
+    expect(screen.getByText('Model controls')).toBeVisible();
   });
 
   test('matches every word case-insensitively', () => {
@@ -364,7 +458,7 @@ describe('SettingsNavigation', () => {
       <SettingsNavigation
         sections={[{
           id: 'model-selection',
-          category: 'general',
+          category: 'models',
           searchText: 'model',
           content: <input aria-label="Model setting" />
         }]}

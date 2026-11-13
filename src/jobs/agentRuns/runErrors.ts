@@ -33,6 +33,17 @@ export class AgentRunSettlementError extends Error {
     }
 }
 
+/**
+ * An ended run's acting-step mutation count could not be stored. Thrown out of
+ * the processor so BullMQ retries; the count is kept with the job meanwhile.
+ */
+export class AgentRunMutationsSettlementError extends Error {
+    constructor(runId: string, cause: unknown) {
+        super(`Could not store the acting step mutation count of agent run ${runId}: ${(cause as Error)?.message ?? String(cause)}`, { cause });
+        this.name = 'AgentRunMutationsSettlementError';
+    }
+}
+
 /** The final message of a finished agent execution; throws `AgentRunReportError` when there is none. */
 function finalMessageFromResult(result: AgentExecutionResult, missing: string): string {
     // An execution the provider stopped early is not a finished result, even with text.
