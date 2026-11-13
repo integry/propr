@@ -45,6 +45,8 @@ test('activity payloads are validated at the Redis trust boundary', () => {
   assert.equal(isActivityUpdatePayload(validPayload), true);
   assert.equal(isActivityUpdatePayload({ ...validPayload, occurredAt: 'yesterday' }), false);
   assert.equal(isActivityUpdatePayload({ ...validPayload, domain: 'invented' }), false);
+  // Published after each repository journal append for a pull request.
+  assert.equal(isActivityUpdatePayload({ ...validPayload, domain: 'pull_request', change: 'progressed', entityId: '70', terminal: false }), true);
   assert.equal(isActivityUpdatePayload({ ...validPayload, change: 'invented' }), false);
   assert.equal(isActivityUpdatePayload({ ...validPayload, entityId: 7 }), false);
   assert.equal(isActivityUpdatePayload({ ...validPayload, eventType: 'task:update' }), false);

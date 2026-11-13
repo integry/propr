@@ -330,6 +330,28 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
+    // Verdicts, gates, statuses and reason codes returned by get_pull_request_readiness.
+    'verdict', 'ready', 'waiting', 'blocked', 'closed', 'gate', 'gates', 'detail', 'pass', 'fail', 'not_applicable', 'checks', 'score',
+    'open', 'not_draft', 'mergeable', 'human_review', 'ai_review', 'active_work', 'policy',
+    'pull_request_open', 'pull_request_merged', 'pull_request_closed',
+    'checks_passing', 'checks_not_passing', 'no_ci', 'waiting_for_ci',
+    'merge_conflict', 'branch_behind_base', 'branch_protection_blocked', 'merge_state_unknown',
+    'no_changes_requested', 'changes_requested', 'review_required', 'review_state_unavailable',
+    'no_review', 'review_stale_head', 'score_below_goal', 'review_scores_unavailable',
+    'ultrafix_active', 'ultrafix_pending', 'ultrafix_failed', 'ultrafix_succeeded', 'ultrafix_state_unavailable', 'ultrafix_not_requested',
+    'no_active_work', 'propr_work_active', 'active_work_unavailable',
+    'armed', 'skipped_protected_path', 'skipped_disabled', 'skipped_empty_diff', 'skipped_policy_invalid', 'skipped_diff_unavailable', 'auto_merge_not_requested', 'auto_merge_request_unavailable', 'pull_request_changed',
+    'eligible', 'ineligible', 'transient', 'pr_label', 'linked_issue_label', 'no_auto_merge_label', 'epic_without_label',
+    'ultrafix_not_succeeded', 'linked_issue_unavailable',
+    // Outcomes, filters, domains and event types of list_repository_events and wait_repository_events.
+    'events', 'timeout', 'domains', 'types', 'domain', 'type', 'payload',
+    'pull_request', 'epic_queue', 'plan_issue',
+    'opened', 'head_changed', 'review_scored', 'ultrafix_started', 'ultrafix_ended', 'auto_merge_decision',
+    'advanced', 'status_changed',
+    // Replacement lineage of get_task: the lineage object, causes, decision states and skip reasons.
+    'lineage', 'infra_lost', 'provider_transient', 'dispatched', 'exhausted',
+    'cap_reached', 'budget_exhausted', 'user_cancelled', 'issue_closed', 'watchdog_stop', 'cost_cap_stop',
+    'blocked_stop', 'goal_task', 'unsupported_task', 'replacement_not_started',
     // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.
     'ask_operator', 'goal_question_max_wait_ms',
   ]);

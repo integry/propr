@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import type { UltrafixOutcome } from '@propr/shared';
 import type { UltrafixCommandMeta, WorkerStateManager } from '@propr/core';
 import { TaskStates, db } from '@propr/core';
 
@@ -9,7 +10,7 @@ interface ContinuationMetaInput {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
-    outcome?: 'goal_reached' | 'cycles_exhausted' | 'style_findings_only' | 'stopped' | 'failed';
+    outcome?: UltrafixOutcome;
     goal?: number;
     maxCycles?: number;
     blockingChecks?: string[];

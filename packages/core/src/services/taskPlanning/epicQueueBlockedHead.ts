@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
 import { isTerminalStatus } from '../../webhook/statusMachine.js';
+import { epicQueueJournalRef, setEpicQueueBlocked } from './epicQueueJournal.js';
 
 /**
  * An issue run that ended with the `blocked` outcome (`on_blocker: report`)
@@ -21,11 +22,11 @@ export function isAgentBlockedReason(reason: string | null | undefined): boolean
 }
 
 type Deps = { database?: Knex; now?: () => number };
-type ActiveRow = { execution_id: string; issues: string; cursor: number; parallel: boolean | number };
+type ActiveRow = Parameters<typeof epicQueueJournalRef>[1] & { parallel: boolean | number };
 
 async function activeQueueFor(database: Knex, draftId: string, issueNumber: number): Promise<{ row: ActiveRow; guard: Record<string, unknown> } | null> {
   const row = await database('epic_execution_queues').where({ draft_id: draftId, status: 'active' })
-    .first<ActiveRow | undefined>('execution_id', 'issues', 'cursor', 'parallel');
+    .first<ActiveRow | undefined>('execution_id', 'repository', 'issues', 'cursor', 'parallel', 'blocked_reason', 'updated_at');
   if (!row) return null;
   const issues = JSON.parse(row.issues) as number[];
   // A parallel execution runs every child at once; a sequential one only its head.
@@ -43,8 +44,12 @@ export async function markEpicQueueHeadBlocked({ draftId, issueNumber }: { draft
   { database = db, now = Date.now }: Deps = {}): Promise<boolean> {
   const active = await activeQueueFor(database, draftId, issueNumber);
   if (!active) return false;
-  return Boolean(await database('epic_execution_queues').where(active.guard)
-    .update({ blocked_reason: agentBlockedHeadReason(issueNumber), updated_at: now() }));
+  const reason = agentBlockedHeadReason(issueNumber);
+  // In a parallel execution the blocked child, not the cursor, is the head the event names.
+  const ref = { ...epicQueueJournalRef(draftId, active.row), ...(active.row.parallel ? { issues: [issueNumber], cursor: 0 } : {}) };
+  // The cursor guard is the row's own, even when the event names a parallel child.
+  return Boolean(await setEpicQueueBlocked(database, ref, reason,
+    { timestamp: now(), guard: active.guard }));
 }
 
 function historyMetadata(metadata: unknown): Record<string, unknown> {

@@ -732,6 +732,92 @@ and a separate current-focus value when available; raw provider reasoning, raw
 protocol envelopes, tool inputs, and tool results are excluded.
 `includeReasoningSummaries: true` opts in to Codex app-server reasoning summaries.
 
+## Idempotency and retries
+
+Three idempotency key contracts exist. They differ in format and in whether a
+key is required:
+
+| Surface | Key | Format | Required |
+| --- | --- | --- | --- |
+| Every MCP mutation | `idempotencyKey` argument | 8–128 characters matching `[\w.-]` (letters, digits, underscore, dot, hyphen) | Yes; a missing or malformed key is rejected before anything runs |
+| REST `POST /api/task-submissions` and `POST /api/goals` | `Idempotency-Key` header | Any string up to 255 characters | Yes; a missing or longer key is `400` |
+| REST `POST /api/automation-definitions/{id}/runs` | `Idempotency-Key` header | Any string up to 255 characters | No; without a key every call creates a run |
+
+**Same key, same payload, replays. Same key, different payload, conflicts.** An
+MCP key is scoped to your user and grant. Repeating a mutation with the same
+key and exactly the same arguments returns the original durable receipt and
+does not act again; the same key with any other argument (including an omitted
+optional one) is `IDEMPOTENCY_CONFLICT` (409). A REST task submission or goal
+creation repeated with the same key and body returns the existing submission or
+goal (and resumes a submission that stopped part way); a different body is
+`409`. An automation run key is scoped to its definition: repeating it returns
+the existing run with `created: false`.
+
+**Uncertain outcomes are not replayed.** A receipt in state `unknown` with
+`error.code: "OUTCOME_UNKNOWN"` means an external effect may have happened (see
+[Errors](#errors)). Do not repeat the call with a new key until you have
+inspected the receipt's artifacts and the target. For a direct task submission,
+`retry_task_submission` reconciles uncertain issue creation without opening a
+second issue.
+
+**How an MCP key reaches REST.** Goal mutations pass your `idempotencyKey`
+through as the REST `Idempotency-Key`. `create_task` does not: it creates the
+REST submission with the key `mcp-{operationId}`, where `operationId` is the
+receipt's handle, so submission keys of different clients, grants and the web
+UI never collide. Read the submission with `get_task_submission` and its
+`submissionId`, not with your MCP key.
+
+**`implement_plan` claims each issue once.** Starting a plan issue records an
+execution claim for it. A second `implement_plan` with a new key that selects an
+issue an earlier receipt already owns is refused with
+`IMPLEMENTATION_ALREADY_REQUESTED` (409); inspect the plan and the earlier
+operation with `get_plan` and `get_operation` instead of retrying.
+
+### Following a submission through replacement attempts
+
+ProPR replaces an issue task automatically when its run is lost with its worker
+(cause `infra_lost`, one replacement per lineage) or ends with a transient
+provider error (cause `provider_transient`, up to the **Provider failure
+replacements** setting, default 2). Only issue tasks are replaced. Goal tasks
+are never replaced (goals use their own recovery), and neither are pull request
+follow-up, review or automation tasks. A replacement is a new task for the same
+issue, so it has a new task ID.
+
+A task submission therefore has two task pointers. `get_task_submission` and
+`list_task_submissions` return both:
+
+- `firstTaskId`: the submission's first execution. It never changes.
+- `latestTaskId`: the newest execution of the submission's issue, which is a
+  replacement attempt or a label retry.
+- `taskId` is kept for compatibility. Over MCP it is the task `progress.task`
+  follows, which is `latestTaskId`. In the REST response of
+  `GET /api/task-submissions/{key}` it is `firstTaskId`.
+
+A `get_operation` receipt stays bound to the execution it already resolved, so
+its `taskId` can lag behind; its `latestTaskId` still shows where the
+submission moved.
+
+`get_task` returns a `lineage` object for every task: `attemptNumber` (1 for
+the original run), `rootTaskId`, `replacesTaskId`, `replacedByTaskId`,
+`replacementCause` (why this attempt was created: `infra_lost`,
+`provider_transient`, or null for the original run) and `replacementState` (the
+replacement decision about this attempt: `pending`, `dispatched`, `skipped`,
+`exhausted`, or null). `lineage.attempts` lists every attempt oldest first, with
+`taskId`, `attemptNumber`, `replacementCause`, `state` and `createdAt`, only
+when the task was replaced or is a replacement. `list_tasks` rows of a
+replacement lineage add `attemptNumber`, `replacesTaskId` and
+`replacedByTaskId`; a first and only attempt omits them. To follow work to its
+end, read `latestTaskId`, or follow `replacedByTaskId` until it is null.
+
+When no replacement follows a failure, the task's events (`get_task_events`)
+contain an entry whose `metadata.event` is `replacement.skipped` and whose
+`metadata.reason` is one of
+`disabled`, `cap_reached`, `budget_exhausted`, `user_cancelled`,
+`issue_closed`, `watchdog_stop`, `cost_cap_stop`, `blocked_stop`, `goal_task`,
+`unsupported_task` or `replacement_not_started`. `replacement.exhausted`
+follows when `cap_reached` or `budget_exhausted` ends the lineage. A dispatched replacement is
+recorded as `replacement.dispatched`.
+
 ## Operating an instance from a chat client
 
 This is the flow the operator surface is built for: find out what is happening,
@@ -896,6 +982,78 @@ than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
 
+#### Waiting for repository changes
+
+A coordinator that needs to know when a pull request, an epic queue or a plan
+issue changed does not have to poll several reads and diff them. ProPR
+appends every such change to a durable per-repository journal, and two
+read-scope tools consume it:
+
+- `list_repository_events` returns the events after a cursor, in journal
+  order: `{events, cursor, truncated}`. `limit` is at most 100;
+  `truncated` means more matching events follow the returned cursor.
+- `wait_repository_events` takes the same arguments plus `timeoutSeconds`
+  (default 15, maximum 30). It returns at once when matching events already
+  exist after the cursor, and otherwise blocks until one is appended or the
+  timeout passes: `{outcome, events, cursor, waitedMs, timeoutSeconds}` with
+  `outcome` `events` or `timeout`. A timeout returns the cursor unchanged.
+
+Both filter with `domains` (`pull_request`, `epic_queue`, `plan_issue`),
+`types`, `pullRequest` and `planId`:
+
+| Domain | Types |
+| --- | --- |
+| `pull_request` | `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed` |
+| `epic_queue` | `started`, `advanced`, `blocked`, `completed` |
+| `plan_issue` | `status_changed` |
+
+Each event carries `cursor`, `domain`, `type`, `repository`, `entityId`,
+`payload` (identifiers and small scalars only, never PR bodies, comment text,
+diffs or logs) and `occurredAt`, plus `pullRequest`, `issueNumber`, `planId`
+and `head` when they apply. Events are hints: read the current state before
+acting on one.
+
+**The cursor contract.** A cursor is an opaque string bound to one
+repository. Delivery is at-least-once and ordered: keep the cursor of the
+last event you processed and pass it back as `afterCursor`, and you never
+miss an event. A call without `afterCursor` starts at the current end of the
+journal, so it returns the current cursor and no history, unless you pass
+`fromStart: true` to read the retained history (30 days). Page through that
+history with the returned cursor while `truncated` is true; a cursor issued
+inside retained history stays valid until retention next prunes the
+repository, after which it is `CURSOR_EXPIRED`. Cursor errors carry a recovery
+hint:
+
+| Code | Meaning |
+| --- | --- |
+| `CURSOR_INVALID` | Malformed, or not issued by this instance. Recover as for `CURSOR_EXPIRED`. |
+| `CURSOR_WRONG_REPOSITORY` | Issued for another repository. |
+| `CURSOR_EXPIRED` | Older than the retained journal, so events after it may be gone. Recover in this order: list once without `afterCursor` and save the returned cursor, then re-read the state (for example `get_pull_request_readiness`), then resume from the saved cursor. Taking the cursor first means a change made while you re-read is still delivered after it. An expired cursor is never reported as an empty result. |
+
+`WAIT_LIMIT` means too many repository event waits are open for you on this
+server (the limit counts CLI, REST and MCP waits together). `WAIT_ABORTED`
+means the call was cancelled; nothing changed. Your access to the repository
+is checked as for `list_pull_requests`, and events of other repositories are
+never returned.
+
+**Coordinator loop.** Wait for changes to a pull request, then read its
+readiness instead of re-reading everything:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42, "timeoutSeconds": 30 }
+```
+
+1. Call `wait_repository_events` with the arguments above (no cursor the
+   first time).
+2. On `outcome` `events`, call `get_pull_request_readiness` with
+   `{ "repository": "acme/web", "number": 42 }` and act on the verdict.
+3. Call `wait_repository_events` again with `afterCursor` set to the returned
+   `cursor`. On `timeout`, call it again with the same cursor.
+
+The same reads are `GET /api/repository-events` and
+`GET /api/repository-events/wait`, and `propr events list` / `propr events
+wait` (`--follow` keeps going on the cursor).
+
 #### Goals waiting on you
 
 `list_goal_attention` lists, bounded and newest goal first, only the goals that
@@ -989,6 +1147,61 @@ and returns image content plus dimensions and byte counts. Only
 `github.com/user-attachments` images are fetched; videos and non-image files
 are rejected with `PREVIEW_NOT_RENDERABLE` and should be opened on GitHub.
 Image content is untrusted, like comment prose.
+
+**Is it ready to integrate?** `get_pull_request_readiness` returns one
+verdict for a pull request, with a coded reason for every gate. It is a pure
+read: it does not comment, label, update the branch or merge, it does not
+arm or withdraw auto-merge, and it leaves ProPR's own state untouched,
+including the marker that records when ProPR first saw a head without CI.
+
+```json
+{ "repository": "acme/web", "number": 42 }
+```
+
+Your GitHub access to the repository is checked the same way as for
+`get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
+sees what the auto-merge path sees, including legacy commit statuses and the
+repository's non-blocking checks.
+
+The `verdict` is `merged` or `closed` when the PR state says so. Otherwise it
+is `blocked` if any gate has status `fail`, else `waiting` if any gate is
+`waiting`, else `unknown` if any gate is `unknown`, else `ready`.
+`blockingReasons` lists the reason codes of failed gates, and `waitingReasons`
+lists those of waiting or unknown gates. `gates` lists every gate, in the order
+of the table below, with `gate`, `status` (`pass`, `waiting`, `fail`, `unknown`
+or `not_applicable`), `reason` and an optional `detail`:
+
+| Gate | Reason codes, by status |
+| --- | --- |
+| `open` | pass: `pull_request_open`. fail: `pull_request_merged`, `pull_request_closed` |
+| `not_draft` | pass: `not_draft`. fail: `draft` |
+| `checks` | pass: `checks_passing`, or `no_ci` once ProPR has seen the head without any CI for two minutes. waiting: `waiting_for_ci` before that, and `checks_not_passing` while blocking checks still run. fail: `checks_not_passing` when a blocking check failed. unknown: `unavailable` (check runs or commit statuses could not be read) |
+| `mergeable` | pass: `mergeable`. fail: `merge_conflict`, `branch_behind_base`. `branch_protection_blocked` waits while checks or a required review are still pending, and fails otherwise. unknown: `merge_state_unknown` |
+| `human_review` | pass: `approved`, `no_changes_requested`. fail: `changes_requested`. waiting: `review_required`. unknown: `review_state_unavailable` |
+| `ai_review` | pass: `goal_reached`. fail: `score_below_goal`. waiting: `review_stale_head` (the latest review is of another head). `no_review` is not applicable, or waiting when the PR has the `ultrafix` label. unknown: `review_scores_unavailable` |
+| `ultrafix` | pass: `ultrafix_succeeded`. fail: `ultrafix_failed`. waiting: `ultrafix_active`, `ultrafix_pending` (label present, no loop has completed). unknown: `ultrafix_state_unavailable`. not applicable: `ultrafix_not_requested` |
+| `active_work` | pass: `no_active_work`. waiting: `propr_work_active`. unknown: `active_work_unavailable`. An unreadable queue is never reported as idle |
+| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`, `auto_merge_request_unavailable` (no direct label and the linked issue could not be read), `pull_request_changed` (the head or base moved while the policy was evaluated). not applicable: `auto_merge_not_requested` |
+
+`ai_review` never holds a PR that ProPR is not reviewing. The newest score of
+the latest review job counts. `review` reports its `score`, its `goal` (the
+cycle's Ultrafix goal, or `ultrafix_rating_goal` for a plain `/review`),
+`goalReached`, `reviewedHead` and `matchesCurrentHead`, and is null when there
+is no review. `ultrafix` reports `active`, `completionStatus` and
+`labelPresent`, and is null when the loop state could not be read.
+
+The policy is read only when the PR or its linked issue carries the
+`auto-merge` label. Otherwise the gate is not applicable and cannot change the
+verdict. `autoMerge` reports eligibility as `eligible`, `ineligible` or
+`transient`, with a reason: `pr_label`, `linked_issue_label`,
+`no_auto_merge_label`, `epic_without_label`, `ultrafix_active`,
+`ultrafix_failed`, `ultrafix_not_succeeded`, `ultrafix_state_unavailable` or
+`linked_issue_unavailable`. Its `policy` field is null when auto-merge was not
+requested. `checks` repeats the CI reason, with the names in `blockingFailed`
+and `blockingPending` and the `nonBlockingCount`. The same verdict is served
+at `GET /api/pull-requests/{number}/readiness?repository=owner/repo` and by
+`propr pr readiness <number> --json`. A pull request that does not exist, or
+that the App cannot see, fails with `PULL_REQUEST_NOT_FOUND`.
 
 **4. Act on it at a known head.** The append-only
 `review_pull_request`, `fix_review_findings`, `run_ultrafix` and

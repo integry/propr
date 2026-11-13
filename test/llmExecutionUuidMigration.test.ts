@@ -34,7 +34,7 @@ test('rows without an execution id are not constrained, and other failures are n
 });
 
 test('the migration rolls back', async () => {
-    await db.migrate.down({ directory: migrations });
+    await db.migrate.down({ directory: migrations, name: '20261113000100_add_llm_execution_uuid.js' });
     assert.equal(await db.schema.hasColumn('llm_executions', 'execution_uuid'), false);
     await db.migrate.latest({ directory: migrations });
     assert.equal(await db.schema.hasColumn('llm_executions', 'execution_uuid'), true);

@@ -5,7 +5,10 @@ import type {
   ActivityUpdatePayload,
   GoalUpdatePayload,
 } from '@propr/shared';
-import type { ActivityUpdatePayload as ScopedActivityUpdatePayload } from '@propr/shared/dist/activityEvents.js';
+import type {
+  ActivityDomain as ScopedActivityDomain,
+  ActivityUpdatePayload as ScopedActivityUpdatePayload,
+} from '@propr/shared/dist/activityEvents.js';
 import type { ShellSnapshot } from '../contexts/SocketContext';
 import { useSocket } from '../contexts/useSocket';
 import { CONNECTED_RECONCILE_MS, useLiveRefreshScheduler } from './useLiveRefreshScheduler';
@@ -16,7 +19,7 @@ export const ALL_SCOPES = 'all';
 /** What a consumer cares about, declared once instead of filtered ad hoc. */
 export interface LiveResourceInterest {
   /** Activity domains that should trigger a refresh. */
-  domains?: readonly (ActivityDomain | 'system')[];
+  domains?: readonly (ActivityDomain | ScopedActivityDomain)[];
   /** Narrow further to specific changes, e.g. only terminal ones. */
   changes?: readonly (ActivityChange | 'progressed' | 'read' | 'dismissed' | 'dismissed_all')[];
   /**

@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 310
-    documented: 71
-    undocumented: 239
+    total: 313
+    documented: 75
+    undocumented: 238
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -52,7 +52,7 @@ tags:
   - name: Planner
     description: Plan Studio drafts, revisions and generation.
   - name: Repositories
-    description: "Repository context: summaries, chat, to-dos, media and GitHub metadata."
+    description: "Repository context: summaries, chat, to-dos, media, GitHub metadata and the change-event journal."
   - name: Observability
     description: Dashboard, statistics, queue, activity and LLM metrics.
   - name: Notifications
@@ -3781,23 +3781,61 @@ paths:
       x-undocumented: true
       x-legacy-error: true
     post:
-      operationId: postApiGoals
-      summary: POST /api/goals
-      description: This route is registered but not documented yet.
+      operationId: createGoal
+      summary: Create a goal
+      description: |-
+        Creates a goal and starts autonomous work on it. The request and response bodies are not described here yet; the MCP tool `create_goal` and `get_goal_capabilities` document the creation contract.
+
+        Creation is idempotent per user and `Idempotency-Key`: repeating a request with the same key and the same body returns the goal it created (`200`) instead of creating another one. Reusing a key with a different body, or a key already used for another goal operation, is rejected with `409`.
+
+        Send JSON, or `multipart/form-data` with the JSON in a `payload` field and up to 10 attachments in `files`.
       tags:
         - Goals
       security:
         - sessionCookie: []
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Client-chosen identity of this creation, for example a UUID. Required; a missing or longer key is rejected with `400`.
+          schema:
+            type: string
+            maxLength: 255
       responses:
         "200":
-          description: Success. The response body is not documented yet.
+          description: "A replay: the goal this key already created, as `{ goal }`."
+        "201":
+          description: The goal was created and its first attempt queued, as `{ goal }`.
+        "400":
+          description: Missing or invalid `Idempotency-Key`, or an invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: The repository is not accessible to this installation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The `Idempotency-Key` was already used with a different body or for a different goal operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: The goal was saved but its first attempt could not be queued; recovery retries it. The body carries `goalId`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
-      x-undocumented: true
       x-legacy-error: true
   /api/goals/attention:
     get:
@@ -6395,6 +6433,60 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/pull-requests/{number}/readiness:
+    get:
+      operationId: getPullRequestReadiness
+      summary: Get the readiness verdict of a pull request
+      description: "Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. The caller needs read access to the repository on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after it is proven. See the gate and reason-code tables in the API reference."
+      tags:
+        - Tasks
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: number
+          in: path
+          required: true
+          description: Pull request number.
+          schema:
+            type: string
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo` of the pull request."
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The readiness verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullRequestReadiness"
+        "400":
+          description: "`INVALID_INPUT`: the number or repository is malformed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the caller cannot read the repository on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "502":
+          description: "`GITHUB_UNAVAILABLE`: GitHub did not return the pull request, or could not be reached to check repository access; the read is safe to retry."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: PullRequestReadinessQuery
+      x-propr-auth: member
   /api/pull-requests/{number}/scores:
     get:
       operationId: getApiPullRequestsNumberScores
@@ -6850,6 +6942,216 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/repository-events:
+    get:
+      operationId: listRepositoryEvents
+      summary: List repository change events after a cursor
+      description: "Reads the durable change-event journal of one repository (pull request, epic queue and plan issue changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned."
+      tags:
+        - Repositories
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance."
+          schema:
+            type: string
+        - name: afterCursor
+          in: query
+          required: false
+          description: Opaque cursor from an earlier response for this repository. Only events after it are returned.
+          schema:
+            type: string
+            maxLength: 512
+        - name: fromStart
+          in: query
+          required: false
+          description: "Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - name: domains
+          in: query
+          required: false
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          schema:
+            type: string
+        - name: types
+          in: query
+          required: false
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          schema:
+            type: string
+        - name: pullRequest
+          in: query
+          required: false
+          description: Only events of this pull request number.
+          schema:
+            type: integer
+            minimum: 1
+        - name: planId
+          in: query
+          required: false
+          description: Only events of this plan.
+          schema:
+            type: string
+            maxLength: 255
+        - name: limit
+          in: query
+          required: false
+          description: Most events returned; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Matching events and the cursor to resume from.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepositoryEventList"
+        "400":
+          description: "`INVALID_INPUT` (a malformed parameter), `CURSOR_INVALID` (the cursor is malformed or was not issued here) or `CURSOR_WRONG_REPOSITORY` (the cursor belongs to another repository). The `hint` says how to recover."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: "`CURSOR_EXPIRED`: the cursor is older than the retained journal, so events after it may have been pruned. This is never reported as an empty result."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: RepositoryEventsQuery
+      x-propr-auth: member
+  /api/repository-events/wait:
+    get:
+      operationId: waitRepositoryEvents
+      summary: Wait for repository change events after a cursor
+      description: "Blocks for at most `timeoutSeconds` (default 15, max 30) until a matching event exists after the cursor, then returns it like the list read. Returns at once when matching events already exist. A timeout is an ordinary `200` with `outcome: timeout` and the starting cursor unchanged. Disconnecting only releases the waiter. Concurrent waits per owner are limited on each API process, counted together with MCP `wait_repository_events`."
+      tags:
+        - Repositories
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance."
+          schema:
+            type: string
+        - name: afterCursor
+          in: query
+          required: false
+          description: Opaque cursor from an earlier response for this repository. Only events after it are returned.
+          schema:
+            type: string
+            maxLength: 512
+        - name: fromStart
+          in: query
+          required: false
+          description: "Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - name: domains
+          in: query
+          required: false
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          schema:
+            type: string
+        - name: types
+          in: query
+          required: false
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          schema:
+            type: string
+        - name: pullRequest
+          in: query
+          required: false
+          description: Only events of this pull request number.
+          schema:
+            type: integer
+            minimum: 1
+        - name: planId
+          in: query
+          required: false
+          description: Only events of this plan.
+          schema:
+            type: string
+            maxLength: 255
+        - name: limit
+          in: query
+          required: false
+          description: Most events returned; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: timeoutSeconds
+          in: query
+          required: false
+          description: Seconds to block when no matching event exists yet; defaults to 15.
+          schema:
+            type: number
+            minimum: 0
+            maximum: 30
+      responses:
+        "200":
+          description: Matching events, or a timeout with the unchanged cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepositoryEventWait"
+        "400":
+          description: "`INVALID_INPUT`, `CURSOR_INVALID` or `CURSOR_WRONG_REPOSITORY`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: "`CURSOR_EXPIRED`: the cursor is older than the retained journal."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: "`WAIT_LIMIT`: too many repository event waits are open for this owner on this server."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: RepositoryEventsWaitQuery
+      x-propr-auth: member
   /api/stats/cost:
     get:
       operationId: getCostExport
@@ -10281,6 +10583,303 @@ components:
       required:
         - unreadCount
       additionalProperties: false
+    PullRequestReadiness:
+      type: object
+      properties:
+        repository:
+          type: string
+        number:
+          type: integer
+          exclusiveMinimum: 0
+        head:
+          type: string
+          description: Head SHA the verdict was evaluated for.
+        base:
+          type: string
+        state:
+          type: string
+          enum:
+            - open
+            - merged
+            - closed
+        draft:
+          type: boolean
+        verdict:
+          type: string
+          enum:
+            - ready
+            - waiting
+            - blocked
+            - merged
+            - closed
+            - unknown
+          description: "`merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`."
+        gates:
+          type: array
+          items:
+            type: object
+            properties:
+              gate:
+                type: string
+                enum:
+                  - open
+                  - not_draft
+                  - checks
+                  - mergeable
+                  - human_review
+                  - ai_review
+                  - ultrafix
+                  - active_work
+                  - policy
+              status:
+                type: string
+                enum:
+                  - pass
+                  - waiting
+                  - fail
+                  - unknown
+                  - not_applicable
+              reason:
+                type: string
+                description: "Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`."
+              detail:
+                type: string
+            required:
+              - gate
+              - status
+              - reason
+            additionalProperties: false
+          description: "Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy."
+        blockingReasons:
+          type: array
+          items:
+            type: string
+          description: Reason codes of gates with status `fail`.
+        waitingReasons:
+          type: array
+          items:
+            type: string
+          description: Reason codes of gates with status `waiting` or `unknown`.
+        review:
+          anyOf:
+            - type: object
+              properties:
+                score:
+                  type: number
+                goal:
+                  type: number
+                goalReached:
+                  type: boolean
+                reviewedHead:
+                  type:
+                    - string
+                    - "null"
+                matchesCurrentHead:
+                  type: boolean
+              required:
+                - score
+                - goal
+                - goalReached
+                - reviewedHead
+                - matchesCurrentHead
+              additionalProperties: false
+            - type: "null"
+          description: Latest persisted ProPR AI review; null when there is none.
+        ultrafix:
+          anyOf:
+            - type: object
+              properties:
+                active:
+                  type: boolean
+                completionStatus:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - succeeded
+                        - failed
+                    - type: "null"
+                labelPresent:
+                  type: boolean
+              required:
+                - active
+                - completionStatus
+                - labelPresent
+              additionalProperties: false
+            - type: "null"
+          description: Null when the Ultrafix state could not be read.
+        checks:
+          type: object
+          properties:
+            reason:
+              type: string
+              enum:
+                - checks_passing
+                - checks_not_passing
+                - no_ci
+                - waiting_for_ci
+                - unavailable
+            blockingFailed:
+              type: array
+              items:
+                type: string
+            blockingPending:
+              type: array
+              items:
+                type: string
+            nonBlockingCount:
+              type: integer
+              minimum: 0
+          required:
+            - reason
+            - blockingFailed
+            - blockingPending
+            - nonBlockingCount
+          additionalProperties: false
+        autoMerge:
+          type: object
+          properties:
+            eligible:
+              type: string
+              enum:
+                - eligible
+                - ineligible
+                - transient
+            reason:
+              type: string
+              description: Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`.
+            policy:
+              description: Auto-merge policy reason; null when auto-merge is not requested.
+              type:
+                - string
+                - "null"
+          required:
+            - eligible
+            - reason
+            - policy
+          additionalProperties: false
+        evaluatedAt:
+          type: string
+          format: date-time
+      required:
+        - repository
+        - number
+        - head
+        - base
+        - state
+        - draft
+        - verdict
+        - gates
+        - blockingReasons
+        - waitingReasons
+        - review
+        - ultrafix
+        - checks
+        - autoMerge
+        - evaluatedAt
+      additionalProperties: false
+      description: Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state.
+    RepositoryEvent:
+      type: object
+      properties:
+        cursor:
+          type: string
+          description: Resumes immediately after this event.
+        domain:
+          type: string
+          enum:
+            - pull_request
+            - epic_queue
+            - plan_issue
+        type:
+          type: string
+          description: Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`.
+        repository:
+          type: string
+        pullRequest:
+          type: integer
+        issueNumber:
+          type: integer
+        planId:
+          type: string
+        entityId:
+          type: string
+          description: PR number, epic execution id or plan issue id, as text.
+        head:
+          description: Head SHA the event was recorded for, when it concerns one.
+          type: string
+        payload:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties: {}
+          description: Identifiers and small scalars only; never PR bodies, comments, diffs or logs.
+        occurredAt:
+          type: string
+          format: date-time
+      required:
+        - cursor
+        - domain
+        - type
+        - repository
+        - entityId
+        - payload
+        - occurredAt
+      additionalProperties: false
+      description: One durable repository change event.
+    RepositoryEventList:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepositoryEvent"
+          description: Matching events after the cursor, in journal order.
+        cursor:
+          type: string
+          description: After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`.
+        truncated:
+          type: boolean
+          description: More matching events exist after `cursor`.
+      required:
+        - events
+        - cursor
+        - truncated
+      additionalProperties: false
+      description: Repository change events after a cursor. Delivery is at-least-once and ordered.
+    RepositoryEventWait:
+      type: object
+      properties:
+        outcome:
+          type: string
+          enum:
+            - events
+            - timeout
+          description: "`events` when matching events were found; `timeout` otherwise, with the starting cursor unchanged."
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepositoryEvent"
+          description: Matching events after the cursor, in journal order.
+        cursor:
+          type: string
+          description: After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`.
+        truncated:
+          type: boolean
+          description: More matching events exist after `cursor`.
+        waitedMs:
+          type: integer
+          minimum: 0
+        timeoutSeconds:
+          type: number
+      required:
+        - outcome
+        - events
+        - cursor
+        - truncated
+        - waitedMs
+        - timeoutSeconds
+      additionalProperties: false
+      description: Outcome of a bounded wait for repository change events.
     TaskAssignees:
       type: object
       properties:
@@ -10339,6 +10938,37 @@ components:
         - logins
       additionalProperties: false
       description: A change to a task's assignees.
+    TaskAttempt:
+      type: object
+      properties:
+        taskId:
+          type: string
+        attemptNumber:
+          type: integer
+          minimum: 1
+          description: 1 for the original run, then 2, 3, … for each automatic replacement.
+        replacementCause:
+          description: "Why this attempt was created: `infra_lost` or `provider_transient`. Null for the original run."
+          type:
+            - string
+            - "null"
+        state:
+          description: Latest lifecycle state of the attempt.
+          type:
+            - string
+            - "null"
+        createdAt:
+          type:
+            - string
+            - "null"
+      required:
+        - taskId
+        - attemptNumber
+        - replacementCause
+        - state
+        - createdAt
+      additionalProperties: false
+      description: One attempt of an automatic-replacement lineage.
     TaskEvent:
       type: object
       properties:
@@ -10477,11 +11107,8 @@ components:
           description: Lifecycle events, oldest first.
         taskInfo:
           anyOf:
-            - type: object
-              properties: {}
-              additionalProperties: {}
+            - $ref: "#/components/schemas/TaskInfo"
             - type: "null"
-          description: Repository, issue, pull request and agent details of the task.
         budget:
           description: Spend so far against the task's cost cap, when a cap applies.
           type: object
@@ -10493,6 +11120,98 @@ components:
         - taskInfo
       additionalProperties: {}
       description: A task together with its lifecycle events.
+    TaskInfo:
+      type: object
+      properties:
+        repoOwner:
+          type: string
+        repoName:
+          type: string
+        number:
+          description: Pull request number for follow-up tasks, otherwise the issue number.
+          anyOf:
+            - type: integer
+            - type: "null"
+        type:
+          description: "`issue`, `pr-comment`, `goal`, `agent-run` and other task types."
+          type: string
+        issueNumber:
+          description: The issue a pull request follow-up task belongs to.
+          type: integer
+        correlationId:
+          type:
+            - string
+            - "null"
+        title:
+          type:
+            - string
+            - "null"
+        subtitle:
+          type:
+            - string
+            - "null"
+        modelName:
+          type:
+            - string
+            - "null"
+        agentAlias:
+          type:
+            - string
+            - "null"
+        taskKind:
+          description: Automation task kind, for automation report and action tasks.
+          type: string
+        commandMode:
+          type: string
+        ultrafixCycle:
+          type: boolean
+          const: true
+        comments:
+          description: Comments a live or queued follow-up task carries.
+          type: array
+          items: {}
+        followupTarget:
+          description: Where `POST /api/task/{taskId}/followup` posts.
+          type: object
+          properties:
+            taskId:
+              type: string
+            repository:
+              type: string
+            kind:
+              type: string
+              enum:
+                - issue
+                - pull_request
+            number:
+              type: integer
+          required:
+            - taskId
+            - repository
+            - kind
+            - number
+          additionalProperties: false
+        attemptNumber:
+          description: Automatic-replacement attempt number; 1 for an original run. Present for every stored task.
+          type: integer
+          minimum: 1
+        replacesTaskId:
+          description: The earlier attempt this task replaced, or null. Present for every stored task.
+          type:
+            - string
+            - "null"
+        replacedByTaskId:
+          description: The newer attempt that replaced this task, or null. Present for every stored task.
+          type:
+            - string
+            - "null"
+        attemptLineage:
+          description: Every attempt of the lineage, oldest first; only when the task was replaced or is a replacement.
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskAttempt"
+      additionalProperties: false
+      description: Repository, issue, pull request, agent and replacement-lineage details of a task. Live and queued tasks without a stored row omit the lineage fields.
     TaskPage:
       type: object
       properties:
@@ -10620,6 +11339,17 @@ components:
             - string
             - "null"
         taskId:
+          description: The first execution, kept for compatibility; equals `firstTaskId`.
+          type:
+            - string
+            - "null"
+        firstTaskId:
+          description: The submission's first execution.
+          type:
+            - string
+            - "null"
+        latestTaskId:
+          description: "The newest execution of the submission's issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`."
           type:
             - string
             - "null"
@@ -10633,6 +11363,8 @@ components:
         - issueNumber
         - issueUrl
         - taskId
+        - firstTaskId
+        - latestTaskId
         - error
       additionalProperties: false
       description: Progress of a task submission. `queued` means the run was enqueued.

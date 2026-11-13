@@ -343,6 +343,57 @@ test('an unpolled successful launch receipt stays with its execution after a lat
   }
 });
 
+test('submission reads report the first execution and the automatic replacement attempt that followed it', async () => {
+  const f = await fixture();
+  try {
+    const receipt = (await f.call('create_task', {
+      repository: 'owner/repo', instruction: 'Fix dates', idempotencyKey: 'replaced-submission',
+    })).data as Receipt;
+    const submission = await f.db('task_submissions').first();
+    await f.db.schema.alterTable('tasks', table => {
+      table.string('replaces_task_id'); table.string('replaced_by_task_id'); table.integer('attempt_number');
+      table.string('lineage_root_task_id'); table.string('replacement_cause'); table.string('replacement_state');
+    });
+    await f.db('tasks').insert({ task_id: 'attempt-1', repository: 'owner/repo', task_type: 'issue' });
+    await associateSubmissionTask(f.db, submission.id, 'attempt-1');
+    await f.db('task_history').insert({ task_id: 'attempt-1', state: 'processing' });
+    const beforeReplacement = (await f.call('get_task_submission', { repository: 'owner/repo', submissionId: submission.id })).data as SubmissionData & Record<string, unknown>;
+    assert.deepEqual([beforeReplacement.taskId, beforeReplacement.firstTaskId, beforeReplacement.latestTaskId], ['attempt-1', 'attempt-1', 'attempt-1']);
+
+    // The run is lost with its worker; the replacement re-enters the issue job, which advances the submission.
+    await f.db('task_history').insert({ task_id: 'attempt-1', state: 'failed', reason: 'orphaned' });
+    await f.db('tasks').where({ task_id: 'attempt-1' }).update({ replaced_by_task_id: 'attempt-2', lineage_root_task_id: 'attempt-1', replacement_state: 'dispatched' });
+    await f.db('tasks').insert({ task_id: 'attempt-2', repository: 'owner/repo', task_type: 'issue', replaces_task_id: 'attempt-1',
+      attempt_number: 2, lineage_root_task_id: 'attempt-1', replacement_cause: 'infra_lost' });
+    await associateSubmissionTask(f.db, submission.id, 'attempt-2');
+    await f.db('task_history').insert({ task_id: 'attempt-2', state: 'processing' });
+
+    const read = (await f.call('get_task_submission', { repository: 'owner/repo', submissionId: submission.id })).data as SubmissionData & Record<string, unknown>;
+    assert.equal(read.firstTaskId, 'attempt-1');
+    assert.equal(read.latestTaskId, 'attempt-2');
+    // MCP `taskId` keeps following the latest attempt, as it did before both pointers were exposed.
+    assert.equal(read.taskId, 'attempt-2');
+    assert.equal(read.progress.task?.id, 'attempt-2');
+    assert.equal(read.progress.stage, 'running');
+    const listed = ((await f.call('list_task_submissions', {})).data as { submissions: Array<Record<string, unknown>> }).submissions;
+    assert.deepEqual(listed.map(item => [item.firstTaskId, item.latestTaskId, item.taskId]), [['attempt-1', 'attempt-2', 'attempt-2']]);
+
+    // A receipt bound to the first execution still names where the submission moved.
+    for (let poll = 0; poll < 2; poll++) {
+      const polled = ((await f.call('get_operation', { operationId: receipt.operationId })).data as Receipt).result as SubmissionData & Record<string, unknown>;
+      assert.equal(polled.firstTaskId, 'attempt-1', `poll ${poll}`);
+      assert.equal(polled.latestTaskId, 'attempt-2', `poll ${poll}`);
+    }
+    // After the receipt resolved, a further attempt is still reported live, without rewriting the stored receipt.
+    const stored = (await f.db('mcp_operations').where({ id: receipt.operationId }).first()) as { result: string; updated_at: number };
+    await f.db('tasks').insert({ task_id: 'attempt-3', repository: 'owner/repo', task_type: 'issue', replaces_task_id: 'attempt-2', attempt_number: 3 });
+    await associateSubmissionTask(f.db, submission.id, 'attempt-3');
+    const resolved = (await f.call('get_operation', { operationId: receipt.operationId })).data as Receipt;
+    assert.equal((resolved.result as SubmissionData & Record<string, unknown>).latestTaskId, 'attempt-3');
+    assert.deepEqual(await f.db('mcp_operations').where({ id: receipt.operationId }).first('result', 'updated_at'), stored && { result: stored.result, updated_at: stored.updated_at });
+  } finally { await f.db.destroy(); }
+});
+
 test('terminal task events between submission and execution tracking reconcile the resolving and durable receipts', async () => {
   for (const terminal of ['completed', 'failed'] as const) {
     const f = await fixture();
