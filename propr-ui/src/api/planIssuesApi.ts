@@ -168,6 +168,8 @@ export type PlanExecutionMode = 'sequential' | 'parallel' | 'graph';
 export type PlanExecutionScheduleState = 'waiting' | 'ready' | 'in_flight' | 'done' | 'skipped' | 'blocked';
 
 export interface PlanExecutionQueue {
+  /** The execution these states belong to; skip and retry name it so a newer execution refuses a stale action. */
+  executionId?: string;
   issues: number[];
   cursor: number;
   head: number | null;
@@ -188,8 +190,14 @@ export interface PlanExecutionQueue {
     schedule?: PlanExecutionScheduleState;
     dependsOn?: number[];
     waitingOn?: number[];
+    /** Prerequisites skipped without releasing their dependents: this issue starts once they are skipped as satisfied. */
+    waitingOnSkipped?: number[];
+    /** A skipped graph issue: whether its dependents may start. */
+    skipSatisfiesDependents?: boolean;
   }>;
 }
+
+export type PlanExecutionQueueIssue = NonNullable<PlanExecutionQueue['issueStates']>[number];
 
 /** Only a sequential execution is a chain; the other modes have no "first unmerged issue" ordering. */
 export const isChainExecution = (queue: PlanExecutionQueue | null | undefined): boolean =>
@@ -219,6 +227,37 @@ export const queueRemainingIssues = async (
   await handleApiResponse(response);
   return response.json();
 };
+
+export interface PlanQueueActionResult {
+  outcome: 'skipped' | 'already_skipped' | 'retried' | 'already_retried';
+  executionId: string;
+  issueNumber: number;
+  queue: PlanExecutionQueue | null;
+}
+
+const queueAction = async (draftId: string, issueNumber: number, action: 'skip' | 'retry', body: Record<string, unknown>): Promise<PlanQueueActionResult> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-queue/issues/${issueNumber}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+/**
+ * Skips a pending or blocked issue of the execution: the queue treats it as finished for scheduling.
+ * In a graph, `satisfiesDependents` lets the issues that depend on it start. The GitHub issue is not touched.
+ */
+export const skipPlanQueueIssue = (draftId: string, issueNumber: number,
+  options: { executionId: string; expectedState?: PlanExecutionQueueIssueState; satisfiesDependents?: boolean }) =>
+  queueAction(draftId, issueNumber, 'skip', options);
+
+/** Clears a blocked issue's blocker and dispatches it again under the queue's normal guards. */
+export const retryPlanQueueIssue = (draftId: string, issueNumber: number,
+  options: { executionId: string; expectedState?: PlanExecutionQueueIssueState }) =>
+  queueAction(draftId, issueNumber, 'retry', options);
 
 /**
  * Updates a plan issue's agent/model configuration or status.

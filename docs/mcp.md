@@ -501,6 +501,48 @@ complete the operation. Queue status is `active`, `completed` or `cancelled`.
 Both new arguments are optional, so omitting them preserves existing
 idempotency receipt hashes.
 
+**Blocked issues.** An issue of an execution that becomes blocked reports `blockedKind` and
+`blockedReason` in its `issueStates` entry. The kinds are `closed_unmerged`
+(closed without merge under the merged advance policy), `missing_from_plan`,
+`dispatch_failed`, `agent_blocked` (the run stopped on a blocker the agent
+reported), `awaiting_human_merge`, `label_handoff` (processing labels not
+released yet) and `setup_not_ready`. `epicQueue.executionId` names the
+execution; the actions below require it.
+
+Becoming blocked is recorded once as a durable event, in the same transaction
+as the state change, whichever process observed it. Repeated sweeps and
+repeated status notifications of the same blocked state (same kind and reason)
+record nothing more; a different blocker on the same issue resolves the old one
+as `replaced` and records a new event, and clearing a blocker records its
+resolution (`cleared`, `retried`, `skipped` or `settled`). `list_plan_blocked_events`
+lists an execution's events oldest first; poll it with the last `nextCursor` to
+read only new events instead of re-reading the whole plan. Each new blocker
+raises one Inbox notification of kind `plan`, linking to the plan, for the plan
+owner and the repository's recipients, deduplicated per blocked state; an
+`agent_blocked` blocker keeps only its existing task notification. Every event
+is also published as plan-domain realtime activity (`blocked`, or `progressed`
+for a resolution), so open views update without a refresh.
+
+`skip_plan_issue` marks a `pending` or `blocked` issue `skipped`, and the queue
+treats it as finished for scheduling: a sequential execution moves on to the
+next issue. In a graph execution its dependents stay `waiting` and report the
+skipped prerequisite in `waitingOnSkipped`; they start only after a skip with
+`satisfiesDependents: true` (skipping again with it releases them). Skipping
+never closes or edits the GitHub issue. `retry_plan_issue` clears a `blocked`
+issue's blocker and dispatches it again under the normal guards (a paused plan
+holds it; a graph starts it once ready within `maxParallel`): a
+`dispatch_failed` or `missing_from_plan` issue is dispatched (or re-checked)
+now, an `agent_blocked` issue goes back to pending first, a `closed_unmerged`
+issue is reopened first, and `awaiting_human_merge` and `label_handoff` keep
+their claim and are re-evaluated. `setup_not_ready` is refused with
+`NOT_RETRYABLE`. A retry works for issues started by `implement_plan`; the
+implementation receipt is not consulted. Both actions take `expectedState` to be
+refused with `STATE_CHANGED` after a change, are refused with `STALE_EXECUTION`
+for a newer or finished execution, `IN_FLIGHT` for an issue in flight and
+`ALREADY_DONE` for a done one, and are idempotent: repeating one returns
+`already_skipped` or `already_retried`. The REST API exposes the same three
+operations under `/api/planner/drafts/{id}/execution-queue`.
+
 Every mutation needs an 8–128 character `idempotencyKey`. Keep it unchanged
 across retries of the same action, and repeat the same arguments exactly.
 Omitting an optional argument and supplying it are different payloads. Reusing a key with different arguments

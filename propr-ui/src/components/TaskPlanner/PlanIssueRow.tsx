@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
-import { PlanIssue, AgentModelPair } from '../../api/planIssuesApi';
+import { PlanIssue, AgentModelPair, type PlanExecutionQueueIssue } from '../../api/planIssuesApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import {
@@ -13,6 +13,8 @@ import {
 import { getContainerClassName, getTitleClassName } from './planIssueRowUtils';
 import { getOutlineTitle } from './planDisplayName';
 import type { PlanIssueDefaultSelection } from './planIssueDefaultSelection';
+import { PlanIssueQueueNotice } from './PlanIssueQueueNotice';
+import type { PlanQueueAction } from './usePlanQueueActions';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
@@ -44,6 +46,13 @@ interface PlanIssueRowProps {
   implementButtonPressed?: boolean;
   showImplementButton?: boolean;
   implementButtonLabel?: string;
+  /** The issue's state in the plan's active execution queue, when it is part of one. */
+  queueState?: PlanExecutionQueueIssue;
+  /** Graph issues that depend on this one. */
+  queueDependents?: number[];
+  /** The queue action in progress for this issue. */
+  queueAction?: PlanQueueAction | null;
+  onQueueAction?: (issueNumber: number, action: PlanQueueAction) => void;
 }
 
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
@@ -67,7 +76,11 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   draftId,
   implementButtonPressed = false,
   showImplementButton = true,
-  implementButtonLabel = 'Implement'
+  implementButtonLabel = 'Implement',
+  queueState,
+  queueDependents,
+  queueAction,
+  onQueueAction,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -180,6 +193,10 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             />
           </div>
         </div>
+        {queueState && onQueueAction && (
+          <PlanIssueQueueNotice state={queueState} dependents={queueDependents} pendingAction={queueAction}
+            disabled={disableImplementation} onAction={action => onQueueAction(issue.issue_number, action)} />
+        )}
       </div>
 
       {/* Expandable Content */}

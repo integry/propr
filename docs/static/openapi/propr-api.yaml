@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 307
-    documented: 69
+    total: 310
+    documented: 72
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -5821,6 +5821,183 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/blocked-events:
+    get:
+      operationId: listPlanExecutionBlockedEvents
+      summary: List the blocked events of a plan's epic execution
+      description: Every time an issue of the execution became blocked (with its reason kind and text), and every resolution of such a blocker, oldest first. A repeated observation of the same blocked state is recorded once. Page with `cursor`; poll with the last `nextCursor` to read only new events.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: executionId
+          in: query
+          required: false
+          description: Defaults to the plan's current execution.
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          description: "`nextCursor` of an earlier page; omit to read from the first event."
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Page size; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: A page of events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueBlockedEventPage"
+        "400":
+          description: The cursor or limit is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: EpicQueueBlockedEventsQuery
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/issues/{issueNumber}/retry:
+    post:
+      operationId: retryPlanExecutionIssue
+      summary: Retry a blocked issue of an epic execution
+      description: "Clears the blocker and dispatches the issue again under the queue's normal guards (a paused plan holds it; a graph starts it once ready within its limit). An issue closed without merge is reopened first; one whose run reported a blocker is put back to pending. A wait for a human merge or a label handoff keeps its claim and is re-evaluated. Works for issues started through MCP `implement_plan`. Idempotent: repeating it answers `already_retried`."
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: issueNumber
+          in: path
+          required: true
+          description: GitHub issue number of an issue in the execution.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpicQueueRetryRequest"
+      responses:
+        "200":
+          description: The blocker is cleared and the issue is dispatched under the normal guards.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionResult"
+        "400":
+          description: The body or issue number is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: The issue is not part of the execution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        "409":
+          description: "Refused: a stale execution (`STALE_EXECUTION`), an issue in flight (`IN_FLIGHT`) or already done (`ALREADY_DONE`), a changed state (`STATE_CHANGED`), or, for retry, an issue that is not blocked (`NOT_BLOCKED`) or waits for setup (`NOT_RETRYABLE`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/issues/{issueNumber}/skip:
+    post:
+      operationId: skipPlanExecutionIssue
+      summary: Skip a pending or blocked issue of an epic execution
+      description: "The queue treats the issue as finished for scheduling: a sequential execution moves on to the next issue; in a graph execution its dependents wait on the skipped prerequisite unless `satisfiesDependents` is true. The GitHub issue is never closed or edited. Idempotent: skipping a skipped issue answers `already_skipped`."
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: issueNumber
+          in: path
+          required: true
+          description: GitHub issue number of an issue in the execution.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpicQueueSkipRequest"
+      responses:
+        "200":
+          description: The issue is skipped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionResult"
+        "400":
+          description: The body or issue number is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: The issue is not part of the execution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        "409":
+          description: "Refused: a stale execution (`STALE_EXECUTION`), an issue in flight (`IN_FLIGHT`) or already done (`ALREADY_DONE`), a changed state (`STATE_CHANGED`), or, for retry, an issue that is not blocked (`NOT_BLOCKED`) or waits for setup (`NOT_RETRYABLE`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
   /api/planner/drafts/{id}/execution-settings:
     patch:
       operationId: patchApiPlannerDraftsIdExecutionSettings
@@ -8996,6 +9173,188 @@ components:
         - credentialGeneration
       additionalProperties: false
       description: Proof of a provisional pairing, used to activate or cancel it.
+    EpicQueueActionError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - NOT_FOUND
+            - STALE_EXECUTION
+            - IN_FLIGHT
+            - ALREADY_DONE
+            - STATE_CHANGED
+            - NOT_BLOCKED
+            - NOT_RETRYABLE
+      required:
+        - error
+        - code
+      additionalProperties: false
+      description: A refused queue action.
+    EpicQueueActionResult:
+      type: object
+      properties:
+        outcome:
+          type: string
+          enum:
+            - skipped
+            - already_skipped
+            - retried
+            - already_retried
+        executionId:
+          type: string
+        issueNumber:
+          type: integer
+          exclusiveMinimum: 0
+        queue:
+          anyOf:
+            - type: object
+              properties: {}
+              additionalProperties: {}
+            - type: "null"
+          description: The execution queue after the action.
+      required:
+        - outcome
+        - executionId
+        - issueNumber
+        - queue
+      additionalProperties: false
+    EpicQueueBlockedEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0
+          description: Monotonic event id; also the list cursor.
+        draftId:
+          type: string
+          description: The plan.
+        executionId:
+          type: string
+        issueNumber:
+          type: integer
+          exclusiveMinimum: 0
+        position:
+          type: integer
+          minimum: 0
+          description: "The occurrence: a requeued issue starts a new one at a new position."
+        type:
+          type: string
+          enum:
+            - blocked
+            - resolved
+        blockedKind:
+          type: string
+          enum:
+            - closed_unmerged
+            - missing_from_plan
+            - dispatch_failed
+            - agent_blocked
+            - awaiting_human_merge
+            - label_handoff
+            - setup_not_ready
+        reason:
+          type: string
+        blockedEventId:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0
+            - type: "null"
+          description: "For a resolved event: the blocked event it resolves."
+        resolution:
+          anyOf:
+            - type: string
+              enum:
+                - cleared
+                - replaced
+                - retried
+                - skipped
+                - settled
+            - type: "null"
+          description: "How the blocker ended: cleared by the queue, replaced by another blocker, retried or skipped by a person, or settled with the issue."
+        createdAt:
+          type: integer
+          description: Epoch milliseconds.
+      required:
+        - id
+        - draftId
+        - executionId
+        - issueNumber
+        - position
+        - type
+        - blockedKind
+        - reason
+        - blockedEventId
+        - resolution
+        - createdAt
+      additionalProperties: false
+      description: One blocked transition of an issue in an epic execution, or the resolution of one.
+    EpicQueueBlockedEventPage:
+      type: object
+      properties:
+        executionId:
+          description: The listed execution; null when the plan never queued work.
+          type:
+            - string
+            - "null"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EpicQueueBlockedEvent"
+        nextCursor:
+          description: Pass as `cursor` to read the events after this page; unchanged when the page is empty.
+          type:
+            - string
+            - "null"
+        hasMore:
+          type: boolean
+      required:
+        - executionId
+        - events
+        - nextCursor
+        - hasMore
+      additionalProperties: false
+    EpicQueueRetryRequest:
+      type: object
+      properties:
+        executionId:
+          type: string
+          description: The execution read from the execution queue; a newer or finished one refuses the retry.
+        expectedState:
+          description: Refuse with `STATE_CHANGED` unless the issue is still in this state.
+          type: string
+          enum:
+            - pending
+            - dispatched
+            - done
+            - blocked
+            - skipped
+      required:
+        - executionId
+      additionalProperties: false
+    EpicQueueSkipRequest:
+      type: object
+      properties:
+        executionId:
+          type: string
+          description: The execution read from the execution queue; a newer or finished one refuses the skip.
+        expectedState:
+          description: Refuse with `STATE_CHANGED` unless the issue is still in this state.
+          type: string
+          enum:
+            - pending
+            - dispatched
+            - done
+            - blocked
+            - skipped
+        satisfiesDependents:
+          description: "Graph executions: treat the skipped issue as a met prerequisite, so its dependents can start. Skipping again with the other value changes only this option."
+          type: boolean
+      required:
+        - executionId
+      additionalProperties: false
     ErrorEnvelope:
       type: object
       properties:

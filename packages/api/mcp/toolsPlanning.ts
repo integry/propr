@@ -13,6 +13,7 @@ import { planStorageUpdates } from '../routes/plannerHelpers/validation.js';
 import { linkPublishedDependencies, prepareMcpPlan, publicationPlanItems, recordPublishedDependencies, validatePublicationPlan } from './planItems.js';
 import { activePublication as parseActivePublication, findMarkedIssue, parseContextConfig, partialPublication, publicationLeaseLapsed, publicationLeaseLapsesAt, publicationSummary, publicationOwner, publicationOwnerStopped, withinPublicationLease, PUBLICATION_LEASE_EXPIRED, PUBLICATION_LEASE_MS, type ActivePublication, type PublishedIssue } from './planPublication.js';
 import { McpOperations } from './operations.js';
+import { addPlanQueueTools } from './toolsPlanQueue.js';
 
 export { planEpicDispatch } from './epicDispatchPolicy.js';
 
@@ -427,4 +428,5 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
     } });
 
   addPlanImplementationTool(tools, deps, planner, target);
+  addPlanQueueTools(tools, deps, target);
 }

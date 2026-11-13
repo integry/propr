@@ -21,6 +21,11 @@ export interface EpicScheduleIssue {
   dependsOn: readonly number[];
   /** Holds a slot: the queue claimed it (or it is running) and it has not settled. */
   inFlight: boolean;
+  /**
+   * A skipped issue satisfies its dependents only when the skip said so (a chain always moves on);
+   * otherwise its dependents keep waiting on it. Ignored for every other state.
+   */
+  satisfiesDependents?: boolean;
 }
 
 export interface EpicScheduleInput {
@@ -46,13 +51,23 @@ export interface EpicSchedule {
 
 const settled = (state: EpicScheduleIssueState) => state === 'done' || state === 'skipped';
 
-/** Prerequisites the issue still waits for: an unsettled one in the execution, or an unmerged one outside it. */
+/** Whether a prerequisite in the execution lets its dependents start: done, or skipped as satisfied. */
+export function satisfiesPrerequisite(issue: Pick<EpicScheduleIssue, 'state' | 'satisfiesDependents'>): boolean {
+  return issue.state === 'done' || (issue.state === 'skipped' && issue.satisfiesDependents !== false);
+}
+
+/** Prerequisites the issue still waits for: an unsatisfied one in the execution, or an unmerged one outside it. */
 export function unmetPrerequisites(issue: EpicScheduleIssue, issues: readonly EpicScheduleIssue[],
   mergedOutside: ReadonlySet<number>): number[] {
   return issue.dependsOn.filter(prerequisite => {
     const inExecution = issues.find(candidate => candidate.issueNumber === prerequisite);
-    return inExecution ? !settled(inExecution.state) : !mergedOutside.has(prerequisite);
+    return inExecution ? !satisfiesPrerequisite(inExecution) : !mergedOutside.has(prerequisite);
   });
+}
+
+/** The prerequisites an issue waits for that were skipped without satisfying their dependents. */
+export function skippedPrerequisites(waitingOn: readonly number[], issues: readonly EpicScheduleIssue[]): number[] {
+  return waitingOn.filter(prerequisite => issues.some(candidate => candidate.issueNumber === prerequisite && candidate.state === 'skipped'));
 }
 
 export function scheduleEpicIssues({ issues, mergedOutside = [], limit = null }: EpicScheduleInput): EpicSchedule {

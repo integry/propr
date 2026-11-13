@@ -160,6 +160,68 @@ export interface DesktopPairingTicket {
   credentialGeneration: string;
 }
 
+/** A refused queue action. */
+export interface EpicQueueActionError {
+  error: string;
+  code: "NOT_FOUND" | "STALE_EXECUTION" | "IN_FLIGHT" | "ALREADY_DONE" | "STATE_CHANGED" | "NOT_BLOCKED" | "NOT_RETRYABLE";
+}
+
+export interface EpicQueueActionResult {
+  outcome: "skipped" | "already_skipped" | "retried" | "already_retried";
+  executionId: string;
+  issueNumber: number;
+  /** The execution queue after the action. */
+  queue: {
+    [key: string]: unknown;
+  } | null;
+}
+
+/** One blocked transition of an issue in an epic execution, or the resolution of one. */
+export interface EpicQueueBlockedEvent {
+  /** Monotonic event id; also the list cursor. */
+  id: number;
+  /** The plan. */
+  draftId: string;
+  executionId: string;
+  issueNumber: number;
+  /** The occurrence: a requeued issue starts a new one at a new position. */
+  position: number;
+  type: "blocked" | "resolved";
+  blockedKind: "closed_unmerged" | "missing_from_plan" | "dispatch_failed" | "agent_blocked" | "awaiting_human_merge" | "label_handoff" | "setup_not_ready";
+  reason: string;
+  /** For a resolved event: the blocked event it resolves. */
+  blockedEventId: number | null;
+  /** How the blocker ended: cleared by the queue, replaced by another blocker, retried or skipped by a person, or settled with the issue. */
+  resolution: "cleared" | "replaced" | "retried" | "skipped" | "settled" | null;
+  /** Epoch milliseconds. */
+  createdAt: number;
+}
+
+export interface EpicQueueBlockedEventPage {
+  /** The listed execution; null when the plan never queued work. */
+  executionId: string | null;
+  events: EpicQueueBlockedEvent[];
+  /** Pass as `cursor` to read the events after this page; unchanged when the page is empty. */
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface EpicQueueRetryRequest {
+  /** The execution read from the execution queue; a newer or finished one refuses the retry. */
+  executionId: string;
+  /** Refuse with `STATE_CHANGED` unless the issue is still in this state. */
+  expectedState?: "pending" | "dispatched" | "done" | "blocked" | "skipped";
+}
+
+export interface EpicQueueSkipRequest {
+  /** The execution read from the execution queue; a newer or finished one refuses the skip. */
+  executionId: string;
+  /** Refuse with `STATE_CHANGED` unless the issue is still in this state. */
+  expectedState?: "pending" | "dispatched" | "done" | "blocked" | "skipped";
+  /** Graph executions: treat the skipped issue as a met prerequisite, so its dependents can start. Skipping again with the other value changes only this option. */
+  satisfiesDependents?: boolean;
+}
+
 /** The common error envelope. New routes return it for every 4xx and 5xx response. */
 export interface ErrorEnvelope {
   /** Stable, machine-readable error code, for example `TASK_NOT_FOUND`. */
@@ -693,6 +755,16 @@ export interface TaskAssigneesQuery {
 export interface TaskFollowupRunsQuery {
   /** The `commentId` the follow-up's receipt returned. */
   commentId: string;
+}
+
+/** Query parameters of `listPlanExecutionBlockedEvents`. */
+export interface EpicQueueBlockedEventsQuery {
+  /** Defaults to the plan's current execution. */
+  executionId?: string;
+  /** `nextCursor` of an earlier page; omit to read from the first event. */
+  cursor?: string;
+  /** Page size; defaults to 50. */
+  limit?: number;
 }
 
 /** Query parameters of `listTasks`. */

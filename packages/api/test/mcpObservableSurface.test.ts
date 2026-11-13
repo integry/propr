@@ -330,6 +330,9 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'existing',
     // Epic execution modes and the per-issue schedule states reported in epicQueue.
     'sequential', 'parallel', 'graph', 'schedule', 'waiting', 'ready', 'in_flight', 'done', 'blocked',
+    // Blocked reason kinds, event resolutions and action outcomes of the blocked-issue tools.
+    'closed_unmerged', 'missing_from_plan', 'dispatch_failed', 'agent_blocked', 'awaiting_human_merge', 'label_handoff',
+    'setup_not_ready', 'replaced', 'cleared', 'retried', 'settled', 'progressed', 'already_skipped', 'already_retried',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
   ]);

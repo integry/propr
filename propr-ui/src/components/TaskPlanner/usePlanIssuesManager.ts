@@ -6,6 +6,7 @@ import { useSocket } from '../../contexts/useSocket';
 import { DraftUpdatePayload, type InstanceCatalogAgent } from '@propr/shared';
 import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, withCreatedIssues, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
+import { usePlanQueueActions } from './usePlanQueueActions';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 
 interface UsePlanIssuesManagerProps {
@@ -154,6 +155,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       console.error('Failed to fetch the instance catalog:', err);
     }
   }, []);
+
+  const queueActions = usePlanQueueActions({ draftId, executionQueue, setExecutionQueue, refresh: fetchIssues, setError });
 
   useEffect(() => {
     const load = async () => {
@@ -423,6 +426,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   return {
     issues, agents, loading, error, clearError, implementingIssue,
     queuedIssueNumbers, queueingRemaining, handleQueueRemaining, chainExecution, executionQueue,
+    queueRowProps: queueActions.rowProps,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, hasActiveIssues, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,

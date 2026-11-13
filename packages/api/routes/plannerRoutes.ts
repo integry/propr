@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
 import multer from 'multer';
+import { createListBlockedEventsHandler, createRetryQueueIssueHandler, createSkipQueueIssueHandler } from './planExecutionQueueActionHandlers.js';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
@@ -321,6 +322,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
   const getExecutionQueue = withAuthCheck(db, createGetExecutionQueueHandler({ verifyOwnership: ownershipVerifier }));
   const queueRemaining = withAuthCheck(db, createQueueRemainingHandler({ verifyOwnership: ownershipVerifier }));
+  const listBlockedEvents = withAuthCheck(db, createListBlockedEventsHandler({ verifyOwnership: ownershipVerifier }));
+  const skipQueueIssue = withAuthCheck(db, createSkipQueueIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const retryQueueIssue = withAuthCheck(db, createRetryQueueIssueHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
   const generate = createGenerateHandler(db);
@@ -381,6 +385,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     uploadAttachment, deleteAttachment, getAttachmentContent, getRepositoryInfo,
     getContextStats, previewContext, downloadContext, generate, refine, finalize,
     resetDraftToSetup, getIssues, implementIssue, updateIssue, getExecutionQueue, queueRemaining,
+    listBlockedEvents, skipQueueIssue, retryQueueIssue,
     validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
     pauseDraftExecution, resumeDraftExecution, updateExecutionSettings,
     listPlanRevisions, getPlanRevision, restorePlanRevision,

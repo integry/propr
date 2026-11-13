@@ -1,7 +1,8 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
-import { epicScheduleState, executionEdges, executionLimit, scheduleEpicIssues, type EpicExecutionMode, type EpicSchedule,
+import { epicScheduleState, executionEdges, executionLimit, scheduleEpicIssues, skippedPrerequisites, type EpicExecutionMode, type EpicSchedule,
   type EpicScheduleIssue } from './epicQueueSchedule.js';
+import { withBlockedEvents, type EpicQueueBlockedResolution } from './epicQueueBlockedEvents.js';
 
 export type { EpicExecutionMode } from './epicQueueSchedule.js';
 
@@ -31,6 +32,8 @@ export interface EpicQueueIssue {
   updatedAt: number;
   /** Prerequisites recorded when a graph execution started; empty in the other modes. */
   dependsOn: number[];
+  /** A skipped graph issue lets its dependents start only when the skip said so. */
+  skipSatisfiesDependents: boolean;
 }
 
 export interface EpicExecutionQueue {
@@ -94,7 +97,7 @@ type QueueRow = {
 type IssueRow = {
   issue_number: number; position: number; state: EpicQueueIssueState; dispatched_at: number | string | null;
   blocked_kind: EpicQueueBlockedKind | null; blocked_reason: string | null; blocked_at: number | string | null; updated_at: number | string;
-  depends_on?: string | null;
+  depends_on?: string | null; skip_satisfies_dependents?: boolean | number | null;
 };
 
 const toNumber = (value: number | string | null): number | null => value === null || value === undefined ? null : Number(value);
@@ -124,6 +127,7 @@ function fromRows(row: QueueRow, rows: IssueRow[], { mergedOutside, runningWitho
     issueNumber: item.issue_number, position: item.position, state: item.state, dispatchedAt: toNumber(item.dispatched_at),
     blockedKind: item.blocked_kind, blockedReason: item.blocked_reason, blockedAt: toNumber(item.blocked_at), updatedAt: Number(item.updated_at),
     dependsOn: mode === 'graph' ? parseDependsOn(item.depends_on) : [],
+    skipSatisfiesDependents: Boolean(item.skip_satisfies_dependents),
   }));
   const parallel = mode === 'parallel';
   // Only a chain has a head; a parallel or graph execution has a set of in-flight issues.
@@ -160,7 +164,7 @@ export async function getEpicExecutionQueue(draftId: string, { database = db }: 
   const graph = executionModeOf(row) === 'graph';
   const items = await database(EPIC_QUEUE_ISSUES).where({ draft_id: draftId, execution_id: row.execution_id })
     .orderBy('position').select<IssueRow[]>('issue_number', 'position', 'state', 'dispatched_at', 'blocked_kind', 'blocked_reason', 'blocked_at',
-      'updated_at', ...(graph ? ['depends_on'] : []));
+      'updated_at', 'skip_satisfies_dependents', ...(graph ? ['depends_on'] : []));
   return fromRows(row, items, graph
     ? { mergedOutside: await mergedOutsidePrerequisites(database, draftId, items), runningWithoutClaim: await runningUnclaimedIssues(database, draftId, items) }
     : { mergedOutside: [], runningWithoutClaim: [] });
@@ -211,7 +215,9 @@ export function epicScheduleIssues(queue: EpicExecutionQueue): EpicScheduleIssue
   const inProgress = new Set(queue.runningWithoutClaim);
   const edges = executionEdges(queue.mode, queue.items);
   return queue.items.map((item, index) => ({ issueNumber: item.issueNumber, position: item.position, state: item.state,
-    dependsOn: edges[index], inFlight: !isSettled(item) && (item.dispatchedAt !== null || item.state === 'dispatched' || inProgress.has(item.issueNumber)) }));
+    dependsOn: edges[index], inFlight: !isSettled(item) && (item.dispatchedAt !== null || item.state === 'dispatched' || inProgress.has(item.issueNumber)),
+    // A chain always moves on past a skipped issue; a graph only when the skip said so.
+    satisfiesDependents: queue.mode !== 'graph' || item.skipSatisfiesDependents }));
 }
 
 /** The execution's current schedule, including the issues that run without a queue claim. */
@@ -224,15 +230,24 @@ export function summarizeEpicQueue(queue: EpicExecutionQueue | null) {
   if (!queue) return null;
   const scheduled = epicScheduleIssues(queue);
   const schedule = epicQueueSchedule(queue);
-  return { issues: queue.issues, cursor: queue.cursor, head: queue.mode === 'sequential' ? queue.issues[queue.cursor] ?? null : null,
+  return { executionId: queue.executionId, issues: queue.issues, cursor: queue.cursor,
+    head: queue.mode === 'sequential' ? queue.issues[queue.cursor] ?? null : null,
     status: queue.status, advanceOn: queue.advanceOn, blockedReason: queue.blockedReason,
     executionMode: queue.mode, maxParallel: executionLimit(queue.mode, queue.maxParallel),
-    issueStates: queue.items.map((item, index) => ({ issue: item.issueNumber, state: item.state,
-      blockedKind: item.state === 'blocked' ? item.blockedKind : null, blockedReason: item.state === 'blocked' ? item.blockedReason : null,
-      // waiting (on waitingOn), ready, in_flight, done, skipped or blocked.
-      schedule: epicScheduleState(scheduled[index], schedule),
-      dependsOn: scheduled[index].dependsOn,
-      waitingOn: schedule.waiting.get(item.issueNumber) ?? [] })) };
+    issueStates: queue.items.map((item, index) => {
+      const waitingOn = schedule.waiting.get(item.issueNumber) ?? [];
+      const blocked = item.state === 'blocked';
+      const skipped = skippedPrerequisites(waitingOn, scheduled);
+      return { issue: item.issueNumber, state: item.state,
+        blockedKind: blocked ? item.blockedKind : null, blockedReason: blocked ? item.blockedReason : null,
+        // waiting (on waitingOn), ready, in_flight, done, skipped or blocked.
+        schedule: epicScheduleState(scheduled[index], schedule),
+        dependsOn: scheduled[index].dependsOn,
+        waitingOn,
+        // Prerequisites skipped without satisfying their dependents: this issue starts only once they are skipped as satisfied.
+        ...(skipped.length ? { waitingOnSkipped: skipped } : {}),
+        ...(item.state === 'skipped' && queue.mode === 'graph' ? { skipSatisfiesDependents: item.skipSatisfiesDependents } : {}) };
+    }) };
 }
 
 /**
@@ -274,22 +289,70 @@ export function ownedIssue(database: Knex, owner: Owner, item: QueueIssueRef, qu
       .where({ draft_id: owner.draftId, execution_id: owner.executionId, status: 'active', ...queueWhere }));
 }
 
-/** Blocks an unsettled issue with a structured reason; the dispatch claim is kept. */
+const occurrenceOf = (owner: Owner, item: QueueIssueRef) => ({ draftId: owner.draftId, executionId: owner.executionId,
+  issueNumber: item.issueNumber, position: item.position });
+
+/**
+ * Runs one guarded write of an issue's row and, when it changed the row, records the blocked
+ * transition it made in the same transaction (see epicQueueBlockedEvents).
+ */
+export async function writeQueueIssue(database: Knex, { owner, item, resolution, timestamp }: { owner: Owner; item: QueueIssueRef;
+  resolution: EpicQueueBlockedResolution; timestamp: number }, write: (trx: Knex) => Promise<number>): Promise<boolean> {
+  return withBlockedEvents(database, async (trx, record) => {
+    const changed = await write(trx);
+    if (changed) await record(occurrenceOf(owner, item), resolution, timestamp);
+    return Boolean(changed);
+  });
+}
+
+/**
+ * Blocks an unsettled issue with a structured reason; the dispatch claim is kept. The transition is
+ * detected in the guarded statement itself: an issue already blocked with the same kind and reason is
+ * left as it is (its blocked time too), so repeated sweeps and notifications record no further event.
+ * Returns true when the issue is (now or already) blocked so.
+ */
 export async function blockQueueIssue(database: Knex, owner: Owner, item: QueueIssueRef, blocked: {
   kind: EpicQueueBlockedKind; reason: string; timestamp: number; guard?: (query: Knex.QueryBuilder) => void;
 }): Promise<boolean> {
-  const query = ownedIssue(database, owner, item).whereNotIn('state', SETTLED_STATES);
-  blocked.guard?.(query);
-  return Boolean(await query.update({ state: 'blocked', blocked_kind: blocked.kind, blocked_reason: blocked.reason,
-    blocked_at: blocked.timestamp, updated_at: blocked.timestamp }));
+  const guarded = (trx: Knex) => {
+    const query = ownedIssue(trx, owner, item).whereNotIn('state', SETTLED_STATES);
+    blocked.guard?.(query);
+    return query;
+  };
+  const same = (query: Knex.QueryBuilder) => query.where({ state: 'blocked', blocked_kind: blocked.kind, blocked_reason: blocked.reason });
+  return withBlockedEvents(database, async (trx, record) => {
+    const changed = await guarded(trx).whereNot(other => same(other))
+      .update({ state: 'blocked', blocked_kind: blocked.kind, blocked_reason: blocked.reason, blocked_at: blocked.timestamp, updated_at: blocked.timestamp });
+    if (changed) {
+      await record(occurrenceOf(owner, item), 'cleared', blocked.timestamp);
+      return true;
+    }
+    return Boolean(await same(guarded(trx)).first('issue_number'));
+  });
 }
 
 /** Drops a blocked issue's reason (only of the given kinds, when listed); it returns to dispatched while it holds a claim. */
 export async function unblockQueueIssue(database: Knex, owner: Owner, item: QueueIssueRef,
-  { timestamp, kinds, queueWhere }: { timestamp: number; kinds?: EpicQueueBlockedKind[]; queueWhere?: Record<string, unknown> }): Promise<boolean> {
-  const query = ownedIssue(database, owner, item, queueWhere).where({ state: 'blocked' });
-  if (kinds) query.whereIn('blocked_kind', kinds);
-  return Boolean(await query.update({ ...clearedBlock(database), updated_at: timestamp }));
+  { timestamp, kinds, queueWhere, resolution = 'cleared' }: { timestamp: number; kinds?: EpicQueueBlockedKind[]; queueWhere?: Record<string, unknown>;
+    resolution?: EpicQueueBlockedResolution }): Promise<boolean> {
+  return writeQueueIssue(database, { owner, item, resolution, timestamp }, trx => {
+    const query = ownedIssue(trx, owner, item, queueWhere).where({ state: 'blocked' });
+    if (kinds) query.whereIn('blocked_kind', kinds);
+    return query.update({ ...clearedBlock(trx), updated_at: timestamp });
+  });
+}
+
+/**
+ * Clears a stale explanation of a blocked issue, keeping the kinds that only a person or a merge resolves.
+ * `guard` adds conditions to the same statement.
+ */
+export async function clearQueueIssueBlock(database: Knex, owner: Owner, item: QueueIssueRef,
+  { timestamp, keepKinds, guard }: { timestamp: number; keepKinds: EpicQueueBlockedKind[]; guard?: (query: Knex.QueryBuilder, trx: Knex) => void }): Promise<boolean> {
+  return writeQueueIssue(database, { owner, item, resolution: 'cleared', timestamp }, trx => {
+    const query = ownedIssue(trx, owner, item).where({ state: 'blocked' }).whereNotIn('blocked_kind', keepKinds);
+    guard?.(query, trx);
+    return query.update({ ...clearedBlock(trx), updated_at: timestamp });
+  });
 }
 
 export function clearedBlock(database: Knex) {
@@ -302,9 +365,11 @@ type Guard = (query: Knex.QueryBuilder) => void;
 /** Settles the observed occurrence as done. Only one observer wins; the others see zero changed rows. */
 export async function markQueueIssueDone(database: Knex, owner: Owner, item: QueueIssueRef,
   { timestamp, guard }: { timestamp: number; guard?: Guard }): Promise<boolean> {
-  const query = ownedIssue(database, owner, item).whereNotIn('state', SETTLED_STATES);
-  guard?.(query);
-  return Boolean(await query.update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }));
+  return writeQueueIssue(database, { owner, item, resolution: 'settled', timestamp }, trx => {
+    const query = ownedIssue(trx, owner, item).whereNotIn('state', SETTLED_STATES);
+    guard?.(query);
+    return query.update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp });
+  });
 }
 
 /** Completes the active execution once every issue is settled. Returns true for the single winner. */
@@ -334,7 +399,8 @@ export function planIssueWithStatus(database: Knex, draftId: string, issueNumber
  * observer of the earlier terminal status never reopens a child that settled again.
  */
 export async function reopenParallelQueueIssue(database: Knex, owner: Owner, item: QueueIssueRef, timestamp: number): Promise<boolean> {
-  return Boolean(await ownedIssue(database, owner, item, { parallel: true }).whereIn('state', SETTLED_STATES)
+  // A skipped child stays skipped: a person moved the execution past it.
+  return Boolean(await ownedIssue(database, owner, item, { parallel: true }).where({ state: 'done' })
     .whereExists(planIssueWithStatus(database, owner.draftId, [item.issueNumber], false))
     .update({ state: 'dispatched', dispatched_at: timestamp, blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }));
 }
