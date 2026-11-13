@@ -82,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Shorter link to a preview's original**: a visual preview whose full-size
+  original is kept in ProPR Connect now shows a short `Full-size original`
+  link under the image, instead of a sign-in and retention sentence followed
+  by a separate link.
 - **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
   moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
   tool-policy checks pass against both binaries. Codex 0.167 rewords the
