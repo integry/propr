@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
 import logger from '../../utils/logger.js';
+import { journalEpicQueueBlocked } from './epicQueueJournal.js';
 
 /**
  * The durable log of blocked transitions in epic executions. Every queue write that can
@@ -82,6 +83,8 @@ export async function syncBlockedEvents(trx: Knex, occurrence: BlockedOccurrence
   if (now) {
     ids.push(await insertEvent(trx, { ...base, event: 'blocked', blocked_kind: now.kind, blocked_reason: now.reason,
       blocked_event_id: null, resolution: null }));
+    // The repository event journal mirrors each new explanation in the same transaction.
+    await journalEpicQueueBlocked(trx, occurrence, now.reason, timestamp);
   }
   return ids;
 }

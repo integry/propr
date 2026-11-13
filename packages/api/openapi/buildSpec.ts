@@ -30,7 +30,7 @@ const TAGS: { name: string; description: string; prefixes: string[] }[] = [
   { name: 'Task submissions', description: 'Idempotent creation of new tasks from an instruction.', prefixes: ['/api/task-submissions'] },
   { name: 'Goals', description: 'Long-running goals and their inputs.', prefixes: ['/api/goals'] },
   { name: 'Planner', description: 'Plan Studio drafts, revisions and generation.', prefixes: ['/api/planner'] },
-  { name: 'Repositories', description: 'Repository context: summaries, chat, to-dos, media and GitHub metadata.', prefixes: ['/api/repos', '/api/summaries', '/api/repositories', '/api/github', '/api/preview-media', '/api/user'] },
+  { name: 'Repositories', description: 'Repository context: summaries, chat, to-dos, media, GitHub metadata and the change-event journal.', prefixes: ['/api/repos', '/api/summaries', '/api/repositories', '/api/repository-events', '/api/github', '/api/preview-media', '/api/user'] },
   { name: 'Observability', description: 'Dashboard, statistics, queue, activity and LLM metrics.', prefixes: ['/api/dashboard', '/api/stats', '/api/queue', '/api/activity', '/api/metrics', '/api/llm-', '/api/usage-tips'] },
   { name: 'Notifications', description: 'Inbox notifications, preferences and Web Push subscriptions.', prefixes: ['/api/notifications'] },
   { name: 'Voice', description: 'Spoken briefings.', prefixes: ['/api/voice'] },

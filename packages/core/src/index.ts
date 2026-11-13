@@ -160,9 +160,10 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, readActiveTasksForPR, readCiMergeReadiness, classifyCiMergeReadiness, readPRHeadObservation, getUltrafixLoopState, type CiMergeClassification, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type AutoMergeReevaluationOptions, type StatusEventPayload } from './webhook/checkRunHandler.js';
-export type { AutoMergeEvaluationOutcome } from './webhook/autoMergeEvaluation.js';
+export { evaluateAutoMergeEligibilityWithReason, type AutoMergeEvaluationOutcome, type AutoMergeEligibility, type AutoMergeEligibilityReason, type AutoMergeEligibilityResult } from './webhook/autoMergeEvaluation.js';
+export * from './webhook/pullRequestReadiness.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';
@@ -670,6 +671,8 @@ export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/taskPlanning/epicQueueActions.js';
 export { deliverEpicQueueBlockedEvents, blockedNotificationKey } from './services/taskPlanning/epicQueueBlockedNotify.js';
 export * from './services/reviewScoreStore.js';
+// Durable repository change-event journal (pull requests, epic queues, plan issues).
+export * from './services/repositoryEventJournal.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

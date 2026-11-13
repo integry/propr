@@ -3,6 +3,8 @@ import { db } from '../../db/connection.js';
 import { epicScheduleState, executionEdges, executionLimit, scheduleEpicIssues, skippedPrerequisites, type EpicExecutionMode, type EpicSchedule,
   type EpicScheduleIssue } from './epicQueueSchedule.js';
 import { withBlockedEvents, type EpicQueueBlockedResolution } from './epicQueueBlockedEvents.js';
+import { appendRepositoryEvent, type RepositoryEventInput } from '../repositoryEventJournal.js';
+import { epicQueueCompletedEvent } from './epicQueueJournal.js';
 
 export type { EpicExecutionMode } from './epicQueueSchedule.js';
 
@@ -364,22 +366,34 @@ type Guard = (query: Knex.QueryBuilder) => void;
 
 /** Settles the observed occurrence as done. Only one observer wins; the others see zero changed rows. */
 export async function markQueueIssueDone(database: Knex, owner: Owner, item: QueueIssueRef,
-  { timestamp, guard }: { timestamp: number; guard?: Guard }): Promise<boolean> {
-  return writeQueueIssue(database, { owner, item, resolution: 'settled', timestamp }, trx => {
+  { timestamp, guard, event }: { timestamp: number; guard?: Guard; event?: RepositoryEventInput | null }): Promise<boolean> {
+  return writeQueueIssue(database, { owner, item, resolution: 'settled', timestamp }, async trx => {
     const query = ownedIssue(trx, owner, item).whereNotIn('state', SETTLED_STATES);
     guard?.(query);
-    return query.update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp });
+    const changed = await query.update({ state: 'done', blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp });
+    // Journaled by the single winner, in the transaction of the transition.
+    if (changed && event) await appendRepositoryEvent(trx, event);
+    return changed;
   });
 }
 
-/** Completes the active execution once every issue is settled. Returns true for the single winner. */
-export async function completeSettledExecution(database: Knex, owner: Owner, timestamp: number, guard?: Guard): Promise<boolean> {
-  const query = database('epic_execution_queues')
-    .where({ draft_id: owner.draftId, execution_id: owner.executionId, status: 'active' })
-    .whereNotExists(database(EPIC_QUEUE_ISSUES).select('issue_number')
-      .where({ draft_id: owner.draftId, execution_id: owner.executionId }).whereNotIn('state', SETTLED_STATES));
-  guard?.(query);
-  return Boolean(await query.update({ status: 'completed', blocked_reason: null, updated_at: timestamp }));
+/**
+ * Completes the active execution once every issue is settled, and journals it. Returns true for the single winner.
+ * `fromIssue` names the sequential head whose settling completed the execution.
+ */
+export async function completeSettledExecution(database: Knex, owner: Owner & { repository: string; issues: number[] }, timestamp: number,
+  { guard, fromIssue }: { guard?: Guard; fromIssue?: number } = {}): Promise<boolean> {
+  const work = async (trx: Knex) => {
+    const query = trx('epic_execution_queues')
+      .where({ draft_id: owner.draftId, execution_id: owner.executionId, status: 'active' })
+      .whereNotExists(trx(EPIC_QUEUE_ISSUES).select('issue_number')
+        .where({ draft_id: owner.draftId, execution_id: owner.executionId }).whereNotIn('state', SETTLED_STATES));
+    guard?.(query);
+    if (!await query.update({ status: 'completed', blocked_reason: null, updated_at: timestamp })) return false;
+    await appendRepositoryEvent(trx, epicQueueCompletedEvent(owner, owner.issues.length, timestamp, fromIssue));
+    return true;
+  };
+  return (database as Knex.Transaction).isTransaction ? work(database) : database.transaction(trx => work(trx));
 }
 
 /**

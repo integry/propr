@@ -576,6 +576,105 @@ export interface NotificationUnreadCount {
   unreadCount: number;
 }
 
+/** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */
+export interface PullRequestReadiness {
+  repository: string;
+  number: number;
+  /** Head SHA the verdict was evaluated for. */
+  head: string;
+  base: string;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** `merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`. */
+  verdict: "ready" | "waiting" | "blocked" | "merged" | "closed" | "unknown";
+  /** Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy. */
+  gates: Array<{
+    gate: "open" | "not_draft" | "checks" | "mergeable" | "human_review" | "ai_review" | "ultrafix" | "active_work" | "policy";
+    status: "pass" | "waiting" | "fail" | "unknown" | "not_applicable";
+    /** Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`. */
+    reason: string;
+    detail?: string;
+  }>;
+  /** Reason codes of gates with status `fail`. */
+  blockingReasons: string[];
+  /** Reason codes of gates with status `waiting` or `unknown`. */
+  waitingReasons: string[];
+  /** Latest persisted ProPR AI review; null when there is none. */
+  review: {
+    score: number;
+    goal: number;
+    goalReached: boolean;
+    reviewedHead: string | null;
+    matchesCurrentHead: boolean;
+  } | null;
+  /** Null when the Ultrafix state could not be read. */
+  ultrafix: {
+    active: boolean;
+    completionStatus: "succeeded" | "failed" | null;
+    labelPresent: boolean;
+  } | null;
+  checks: {
+    reason: "checks_passing" | "checks_not_passing" | "no_ci" | "waiting_for_ci" | "unavailable";
+    blockingFailed: string[];
+    blockingPending: string[];
+    nonBlockingCount: number;
+  };
+  autoMerge: {
+    eligible: "eligible" | "ineligible" | "transient";
+    /** Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`. */
+    reason: string;
+    /** Auto-merge policy reason; null when auto-merge is not requested. */
+    policy: string | null;
+  };
+  evaluatedAt: string;
+}
+
+/** One durable repository change event. */
+export interface RepositoryEvent {
+  /** Resumes immediately after this event. */
+  cursor: string;
+  domain: "pull_request" | "epic_queue" | "plan_issue";
+  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`. */
+  type: string;
+  repository: string;
+  pullRequest?: number;
+  issueNumber?: number;
+  planId?: string;
+  /** PR number, epic execution id or plan issue id, as text. */
+  entityId: string;
+  /** Head SHA the event was recorded for, when it concerns one. */
+  head?: string;
+  /** Identifiers and small scalars only; never PR bodies, comments, diffs or logs. */
+  payload: {
+    [key: string]: unknown;
+  };
+  occurredAt: string;
+}
+
+/** Repository change events after a cursor. Delivery is at-least-once and ordered. */
+export interface RepositoryEventList {
+  /** Matching events after the cursor, in journal order. */
+  events: RepositoryEvent[];
+  /** After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`. */
+  cursor: string;
+  /** More matching events exist after `cursor`. */
+  truncated: boolean;
+}
+
+/** Outcome of a bounded wait for repository change events. */
+export interface RepositoryEventWait {
+  /** `events` when matching events were found; `timeout` otherwise, with the starting cursor unchanged. */
+  outcome: "events" | "timeout";
+  /** Matching events after the cursor, in journal order. */
+  events: RepositoryEvent[];
+  /** After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`. */
+  cursor: string;
+  /** More matching events exist after `cursor`. */
+  truncated: boolean;
+  waitedMs: number;
+  timeoutSeconds: number;
+}
+
 /** The assignees of a task's GitHub issue or pull request. */
 export interface TaskAssignees {
   subject: TaskSubject;
@@ -599,6 +698,18 @@ export interface TaskAssigneesUpdate {
   logins: string[];
   /** `replace` (default) makes `logins` the whole set; `add` keeps current assignees. */
   mode?: "add" | "replace";
+}
+
+/** One attempt of an automatic-replacement lineage. */
+export interface TaskAttempt {
+  taskId: string;
+  /** 1 for the original run, then 2, 3, … for each automatic replacement. */
+  attemptNumber: number;
+  /** Why this attempt was created: `infra_lost` or `provider_transient`. Null for the original run. */
+  replacementCause: string | null;
+  /** Latest lifecycle state of the attempt. */
+  state: string | null;
+  createdAt: string | null;
 }
 
 /** One entry of a task's lifecycle history. */
@@ -661,15 +772,50 @@ export interface TaskHistory {
   taskId: string;
   /** Lifecycle events, oldest first. */
   history: TaskEvent[];
-  /** Repository, issue, pull request and agent details of the task. */
-  taskInfo: {
-    [key: string]: unknown;
-  } | null;
+  taskInfo: TaskInfo | null;
   /** Spend so far against the task's cost cap, when a cap applies. */
   budget?: {
     [key: string]: unknown;
   };
   [key: string]: unknown;
+}
+
+/** Repository, issue, pull request, agent and replacement-lineage details of a task. Live and queued tasks without a stored row omit the lineage fields. */
+export interface TaskInfo {
+  repoOwner?: string;
+  repoName?: string;
+  /** Pull request number for follow-up tasks, otherwise the issue number. */
+  number?: number | null;
+  /** `issue`, `pr-comment`, `goal`, `agent-run` and other task types. */
+  type?: string;
+  /** The issue a pull request follow-up task belongs to. */
+  issueNumber?: number;
+  correlationId?: string | null;
+  title?: string | null;
+  subtitle?: string | null;
+  modelName?: string | null;
+  agentAlias?: string | null;
+  /** Automation task kind, for automation report and action tasks. */
+  taskKind?: string;
+  commandMode?: string;
+  ultrafixCycle?: true;
+  /** Comments a live or queued follow-up task carries. */
+  comments?: unknown[];
+  /** Where `POST /api/task/{taskId}/followup` posts. */
+  followupTarget?: {
+    taskId: string;
+    repository: string;
+    kind: "issue" | "pull_request";
+    number: number;
+  };
+  /** Automatic-replacement attempt number; 1 for an original run. Present for every stored task. */
+  attemptNumber?: number;
+  /** The earlier attempt this task replaced, or null. Present for every stored task. */
+  replacesTaskId?: string | null;
+  /** The newer attempt that replaced this task, or null. Present for every stored task. */
+  replacedByTaskId?: string | null;
+  /** Every attempt of the lineage, oldest first; only when the task was replaced or is a replacement. */
+  attemptLineage?: TaskAttempt[];
 }
 
 /** A page of task runs. */
@@ -721,7 +867,12 @@ export interface TaskSubmission {
   state: "prepared" | "creating" | "issue_created" | "queued" | "failed";
   issueNumber: number | null;
   issueUrl: string | null;
+  /** The first execution, kept for compatibility; equals `firstTaskId`. */
   taskId: string | null;
+  /** The submission's first execution. */
+  firstTaskId: string | null;
+  /** The newest execution of the submission's issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`. */
+  latestTaskId: string | null;
   error: string | null;
 }
 
@@ -816,6 +967,12 @@ export interface InstanceStorageResultQuery {
   instanceId: string;
 }
 
+/** Query parameters of `getPullRequestReadiness`. */
+export interface PullRequestReadinessQuery {
+  /** `owner/repo` of the pull request. */
+  repository: string;
+}
+
 /** Query parameters of `getTaskAssignees`. */
 export interface TaskAssigneesQuery {
   /** `false` serves the stored set without calling GitHub. */
@@ -835,6 +992,26 @@ export interface EpicQueueBlockedEventsQuery {
   /** `nextCursor` of an earlier page; omit to read from the first event. */
   cursor?: string;
   /** Page size; defaults to 50. */
+  limit?: number;
+}
+
+/** Query parameters of `listRepositoryEvents`. */
+export interface RepositoryEventsQuery {
+  /** `owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance. */
+  repository: string;
+  /** Opaque cursor from an earlier response for this repository. Only events after it are returned. */
+  afterCursor?: string;
+  /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
+  fromStart?: "true" | "false";
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  domains?: string;
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  types?: string;
+  /** Only events of this pull request number. */
+  pullRequest?: number;
+  /** Only events of this plan. */
+  planId?: string;
+  /** Most events returned; defaults to 50. */
   limit?: number;
 }
 
@@ -859,4 +1036,26 @@ export interface ListTasksQuery {
   assignee?: string;
   /** With `task`: refresh that run's assignees from GitHub first. */
   syncAssignees?: "true" | "false";
+}
+
+/** Query parameters of `waitRepositoryEvents`. */
+export interface RepositoryEventsWaitQuery {
+  /** `owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance. */
+  repository: string;
+  /** Opaque cursor from an earlier response for this repository. Only events after it are returned. */
+  afterCursor?: string;
+  /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
+  fromStart?: "true" | "false";
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  domains?: string;
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  types?: string;
+  /** Only events of this pull request number. */
+  pullRequest?: number;
+  /** Only events of this plan. */
+  planId?: string;
+  /** Most events returned; defaults to 50. */
+  limit?: number;
+  /** Seconds to block when no matching event exists yet; defaults to 15. */
+  timeoutSeconds?: number;
 }

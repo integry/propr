@@ -1,4 +1,5 @@
 import type { Knex } from 'knex';
+import { isUltrafixOutcome, type UltrafixOutcome } from '@propr/shared';
 import { isUltrafixCommandTool } from './ultrafix.js';
 
 export const PICKUP_DEADLINE_MS = 10 * 60 * 1000;
@@ -11,7 +12,7 @@ export const COMMAND_NOT_PICKED_UP_FAILURE = {
   message: 'No worker picked up the command comment. Check that event intake is running (get_setup_status) and that the PR carries a processing label or the author is allowed.',
 } as const;
 
-export type UltrafixOutcome = 'goal_reached' | 'cycles_exhausted' | 'style_findings_only' | 'stopped' | 'failed';
+export type { UltrafixOutcome };
 export type UltrafixPhase = 'review' | 'fix' | 'waiting_for_ci' | 'paused' | 'stopping' | 'done';
 
 export interface CommandPickup {
@@ -135,8 +136,7 @@ function taskMode(data: Record<string, unknown>): 'review' | 'fix' | undefined {
 }
 
 function outcomeFrom(value: unknown): UltrafixOutcome | null {
-  return ['goal_reached', 'cycles_exhausted', 'style_findings_only', 'stopped', 'failed'].includes(String(value))
-    ? value as UltrafixOutcome : null;
+  return isUltrafixOutcome(value) ? value : null;
 }
 
 /** Reconstruct one ultrafix epoch exclusively from durable task and history rows. */

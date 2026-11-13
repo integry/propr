@@ -182,6 +182,7 @@ export async function stopUltrafixLoopForCiTimeout(input: UltrafixCiTimeoutStopI
             completionReason: ULTRAFIX_CI_TIMEOUT_REASON,
             finalScore: input.lastScore ?? null,
             workEpoch,
+            outcome: 'failed',
         });
         if (!completed) return false;
         await clearDeferredContinuationIfCurrent(redis, identity, workEpoch);

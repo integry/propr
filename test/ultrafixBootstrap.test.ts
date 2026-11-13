@@ -23,7 +23,7 @@ await mock.module('../src/jobs/reviewCommentGatherer.js', {
 });
 
 const { createUltrafixDeps } = await import('../src/jobs/ultrafixBootstrap.js');
-const { invalidateUltrafixAutomaticWork, loadState } = await import('../src/jobs/ultrafixOrchestrationService.js');
+const { invalidateUltrafixAutomaticWork, loadState, startLoop } = await import('../src/jobs/ultrafixOrchestrationService.js');
 
 test('the bootstrap startLoop keeps the instructions and the user that started the loop', async () => {
     const redis = createUltrafixRedis();
@@ -57,7 +57,9 @@ test('a startup superseded before its state commit writes nothing', async () => 
 
 test('the daemon wires the same startLoop, unwrapped', async () => {
     const daemon = await readFile(new URL('../src/daemon.ts', import.meta.url), 'utf8');
-    const deps = /setUltrafixDeps\(\{([\s\S]*?)\}\);/.exec(daemon)?.[1] ?? '';
+    // The daemon installs the shared bootstrap deps rather than its own wrapper.
+    assert.match(daemon, /setUltrafixDeps\(createUltrafixDeps\(\)\);/);
+    assert.match(daemon, /import \{ createUltrafixDeps \} from '\.\/jobs\/ultrafixBootstrap\.js';/);
     // Passed through as-is, so every StartLoopOptions field reaches the loop.
-    assert.match(deps, /^\s*startLoop,\s*$/m);
+    assert.equal(createUltrafixDeps().startLoop, startLoop);
 });

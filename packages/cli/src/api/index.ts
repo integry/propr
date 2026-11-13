@@ -270,6 +270,10 @@ export type {
 // Stats API
 export { getReviewScoreSummary, getCostExport, getCostExportCsv, COST_GROUP_KEYS } from "./stats.js";
 export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreEffortSummary, ReviewScoreQuery, MeanFigure, CostExport, CostExportQuery, CostFigures, CostGroupKey, CostRow } from "./stats.js";
+export { getPullRequestReadiness } from "./pullRequests.js";
+export { listRepositoryEvents, waitRepositoryEvents } from "./repositoryEvents.js";
+export type { RepositoryEventQuery, RepositoryEventListResult, RepositoryEventWaitResult, RepositoryEventView } from "./repositoryEvents.js";
+export type { PullRequestReadiness, PullRequestReadinessGate, ReadinessGateStatus } from "./pullRequests.js";
 
 // Goals API
 export {

@@ -31,7 +31,7 @@ function recordingClient(body: unknown, status = 200) {
 
 const submission: ProprApi.TaskSubmission = {
   id: 'submission-1', state: 'queued', issueNumber: 12, issueUrl: 'https://github.com/acme/app/issues/12',
-  taskId: 'task-1', error: null,
+  taskId: 'task-1', firstTaskId: 'task-1', latestTaskId: 'task-1', error: null,
 };
 
 const pairingId = `dpr_${'A'.repeat(22)}`;

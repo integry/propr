@@ -18,6 +18,8 @@ import { assertGraphInput, clearedGraphColumns, driveGraphExecution, recordObser
 import { persistRecoveredEpicLabel, recoverOwedEpicLabel } from './epicQueueLabelRecovery.js';
 import { deliverPendingEpicQueueBlockedEvents, withBlockedEvents } from './epicQueueBlockedEvents.js';
 import { dispatchRetriedParallelChildren } from './epicQueueParallelRetry.js';
+import { appendRepositoryEvent } from '../repositoryEventJournal.js';
+import { epicQueueAdvancedEvent, epicQueueStartedEvent } from './epicQueueJournal.js';
 
 export * from './epicQueueState.js';
 export * from './epicQueueSchedule.js';
@@ -80,6 +82,9 @@ export async function createEpicExecutionQueue(input: {
     }
     await trx(EPIC_QUEUE_ISSUES).insert(initialIssueRows({ draftId: input.draftId, executionId, issues: input.issues, parallel,
       ready, headStartedAt: input.headStartedAt ?? null, timestamp, dependsOn: graph ? input.dependsOn ?? new Map() : undefined }));
+    // Journaled with the execution itself, in the caller's transaction (the MCP claim) when there is one.
+    await appendRepositoryEvent(trx, epicQueueStartedEvent({ draftId: input.draftId, executionId, repository: input.repository,
+      issues: input.issues, advanceOn: row.advance_on, parallel }, timestamp));
   });
   return (await getEpicExecutionQueue(input.draftId, { database }))!;
 }
@@ -162,13 +167,16 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   }
   await releaseEpicIssueLabels(queue, { item: head, status: currentStatus, timestamp }, database);
   // Fenced by the observed position: a requeue during the label handoff starts a new occurrence.
-  if (!await markQueueIssueDone(database, queue, head, { timestamp })) return;
-  await settleOrStartNext(queue, deps, timestamp);
+  const nextIndex = queue.items.findIndex(item => item.position > head.position && !isSettled(item));
+  const event = nextIndex === -1 ? null
+    : epicQueueAdvancedEvent(queue, head, { issueNumber: queue.items[nextIndex].issueNumber, cursor: nextIndex }, timestamp);
+  if (!await markQueueIssueDone(database, queue, head, { timestamp, event })) return;
+  await settleOrStartNext(queue, deps, timestamp, issueNumber);
 }
 
 /** After an issue settled: complete the execution when nothing is left, otherwise start the next head. */
-async function settleOrStartNext(queue: EpicExecutionQueue, deps: EpicQueueDependencies, timestamp: number): Promise<void> {
-  if (await completeSettledExecution(deps.database ?? db, queue, timestamp)) await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
+async function settleOrStartNext(queue: EpicExecutionQueue, deps: EpicQueueDependencies, timestamp: number, fromIssue?: number): Promise<void> {
+  if (await completeSettledExecution(deps.database ?? db, queue, timestamp, { fromIssue })) await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
   else await startEpicQueueHead(queue.draftId, deps);
 }
 
@@ -198,7 +206,7 @@ async function completeParallelEpicQueue(queue: EpicExecutionQueue, deps: EpicQu
   const requiredChildren = children.filter(child => required.includes(child.issue_number));
   if (requiredChildren.length !== required.length || !requiredChildren.every(child => isTerminalStatus(child.status))) return;
   if (await completeSettledExecution(database, queue, timestamp,
-    query => query.whereNotExists(planIssueWithStatus(database, queue.draftId, required, false)))) {
+    { guard: query => query.whereNotExists(planIssueWithStatus(database, queue.draftId, required, false)) })) {
     await finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId);
   }
 }

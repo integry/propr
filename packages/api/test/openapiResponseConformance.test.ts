@@ -6,7 +6,7 @@ import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { z } from 'zod';
-import { closeConnection, runCostCapKey } from '@propr/core';
+import { associateSubmissionTask, closeConnection, runCostCapKey } from '@propr/core';
 import { configureDemoMode } from '../demoMode.js';
 import { DesktopAuthService } from '../desktopAuthService.js';
 import {
@@ -17,11 +17,11 @@ import {
   DesktopPairingStart,
   DesktopPairingStartRequest,
   DesktopPairingTicket,
-  TaskHistory,
   TaskPage,
   TaskSubmission,
   TaskSubmissionRequest,
 } from '../openapi/schemas.js';
+import { TaskHistory } from '../openapi/schemasTaskHistory.js';
 import type { FlatRequest } from '../requestTypes.js';
 import { createDesktopAuthRoutes } from '../routes/desktopAuthRoutes.js';
 import { createTaskHistoryRoutes } from '../routes/taskHistoryRoutes.js';
@@ -166,6 +166,32 @@ describe('Handler responses match the published schemas', () => {
       assert.ok(body.budget, 'the budget branch should be covered');
     });
 
+    it('from the database, with the automatic-replacement lineage pinned', async () => {
+      const db = await migratedDatabase();
+      await db('tasks').insert([
+        { task_id: 'attempt-1', repository: 'acme/app', task_type: 'issue', issue_number: 12, created_at: '2026-10-06T08:00:00.000Z',
+          replaced_by_task_id: 'attempt-2', lineage_root_task_id: 'attempt-1', replacement_state: 'dispatched' },
+        { task_id: 'attempt-2', repository: 'acme/app', task_type: 'issue', issue_number: 12, created_at: '2026-10-06T09:00:00.000Z',
+          replaces_task_id: 'attempt-1', attempt_number: 2, lineage_root_task_id: 'attempt-1', replacement_cause: 'infra_lost' },
+      ]);
+      await db('task_history').insert([
+        { task_id: 'attempt-1', state: 'failed', timestamp: '2026-10-06T08:30:00.000Z' },
+        { task_id: 'attempt-2', state: 'processing', timestamp: '2026-10-06T09:01:00.000Z' },
+      ]);
+      const replacement = (await history(db, 'attempt-2')).taskInfo as Record<string, unknown>;
+      assert.equal(replacement.attemptNumber, 2);
+      assert.equal(replacement.replacesTaskId, 'attempt-1');
+      assert.equal(replacement.replacedByTaskId, null);
+      assert.deepEqual((replacement.attemptLineage as Array<Record<string, unknown>>).map(attempt => attempt.taskId), ['attempt-1', 'attempt-2']);
+      const original = (await history(db, 'attempt-1')).taskInfo as Record<string, unknown>;
+      assert.equal(original.replacedByTaskId, 'attempt-2');
+      // The schema types each lineage field, so a renamed or retyped field fails conformance.
+      const info = TaskHistory.shape.taskInfo.unwrap();
+      for (const field of ['attemptNumber', 'replacesTaskId', 'replacedByTaskId', 'attemptLineage']) assert.ok(field in info.shape, field);
+      assert.equal(info.safeParse({ ...replacement, attemptNumber: '2' }).success, false);
+      assert.equal(info.safeParse({ ...replacement, attemptLineage: [{ taskId: 'attempt-1' }] }).success, false);
+    });
+
     it('falling back to live worker state in Redis', async () => {
       const db = await migratedDatabase();
       const body = await history(db, 'live-task', {
@@ -245,6 +271,16 @@ describe('Handler responses match the published schemas', () => {
     assert.equal(retried.sent.status, 200, JSON.stringify(retried.sent.body));
     assertConforms(TaskSubmission, retried.sent.body, 'POST /api/task-submissions/{key}/retry');
     assert.equal((retried.sent.body as { state: string }).state, 'queued');
+
+    // An automatic replacement attempt advances only the latest pointer; `taskId` stays the first execution.
+    const submission = (await db('task_submissions').first())!;
+    await associateSubmissionTask(db, submission.id, 'attempt-1');
+    await associateSubmissionTask(db, submission.id, 'attempt-2');
+    const replaced = recorder();
+    await routes.get(request(), replaced.response);
+    assertConforms(TaskSubmission, replaced.sent.body, 'GET /api/task-submissions/{key} after a replacement');
+    const pointers = replaced.sent.body as { taskId: string; firstTaskId: string; latestTaskId: string };
+    assert.deepEqual([pointers.taskId, pointers.firstTaskId, pointers.latestTaskId], ['attempt-1', 'attempt-1', 'attempt-2']);
   });
 
   it('desktop pairing routes return the pairing schemas for the bodies they accept', async () => {

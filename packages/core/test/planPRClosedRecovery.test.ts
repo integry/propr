@@ -47,6 +47,10 @@ await mock.module('../src/services/notificationService.js', { namedExports: { no
   dismissNotificationsForPullRequest: async () => undefined,
   recordPullRequestOutcome: async (outcome: Record<string, unknown>) => { outcomes.push(outcome); },
 } } });
+// The journal imports the real database connection, whose open handle keeps
+// this process alive after the tests finish. These cases only send closed and
+// reopened events, which the journal ignores.
+await mock.module('../src/webhook/pullRequestJournalEvents.js', { namedExports: { journalPullRequestWebhook: async () => undefined } });
 const { handlePlanPRUpdate } = await import('../src/webhook/planIssueTracking.js');
 
 const MERGED_AT = '2026-10-02T12:00:00Z';

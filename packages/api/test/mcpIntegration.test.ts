@@ -22,6 +22,7 @@ import { up as lifecycleMigration } from '../../core/src/db/migrations/202610010
 import { up as taskSubmissions } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
 import { up as submissionIdentity } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
 import { up as taskFinalResult } from '../../core/src/db/migrations/20260925000000_add_final_result_to_tasks.js';
+import { up as taskReplacementLineage } from '../../core/src/db/migrations/20261006000000_add_task_replacement_lineage.js';
 import { up as planRevisions } from '../../core/src/db/migrations/20260928000000_add_task_draft_plan_revisions.js';
 import { up as planRevisionCauses } from '../../core/src/db/migrations/20261002000000_add_plan_revision_causes.js';
 import { up as epicExecutionQueues } from '../../core/src/db/migrations/20261003000000_add_epic_execution_queues.js';
@@ -46,6 +47,7 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
   await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await pullRequestState(db);
   await mcpMigration(db);
   await lifecycleMigration(db); await taskSubmissions(db); await submissionIdentity(db); await taskFinalResult(db);
+  await taskReplacementLineage(db);
   await planRevisions(db); await planRevisionCauses(db);
   await epicExecutionQueues(db); await epicQueueFinalization(db); await epicQueueUseEpic(db); await epicQueueParallel(db);
   await planIssueDependencies(db); await epicQueueIssueStates(db); await epicQueueBlockedEvents(db);
