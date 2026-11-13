@@ -238,7 +238,7 @@ test('createPullRequest never publishes a secret from a title placeholder', asyn
     assert.equal(published[0].title, 'fix/[REDACTED_GITHUB_TOKEN]: Fix login');
 });
 
-test('with the PR status setting on, a new issue pull request opens with the status block first', async () => {
+test('a new issue pull request opens with the status block first, with no setting involved', async () => {
     const { disablePullRequestStatusSync, enablePullRequestStatusSync } = await import('@propr/core');
     const octokit = contentsOctokit({}, {});
     const published: Array<Record<string, unknown>> = [];
@@ -257,14 +257,8 @@ test('with the PR status setting on, a new issue pull request opens with the sta
         commitResult: null, claudeResult: null, modelName: 'claude-opus-4-5-20251101', repoValidation: {} as never, PR_LABEL: 'propr',
         correlatedLogger: logger as never, issueTitle: 'Fix login',
     });
-    const markers = new Map<string, string>();
-    const redis = {
-        async get(key: string) { return markers.get(key) ?? null; },
-        async set(key: string, value: string) { markers.set(key, value); return 'OK'; },
-        async del(key: string) { return markers.delete(key) ? 1 : 0; },
-        async eval() { return 0; },
-    };
-    enablePullRequestStatusSync({ loadEnabled: async repository => repository === 'acme/app', redis: redis as never });
+    const redis = { async set() { return 'OK'; }, async eval() { return 0; } };
+    enablePullRequestStatusSync({ redis: redis as never });
     try {
         await create();
     } finally {
@@ -272,12 +266,9 @@ test('with the PR status setting on, a new issue pull request opens with the sta
     }
     const body = String(published[0].body);
     assert.match(body, /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 Implementing · updated \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n/);
-    assert.deepEqual([...markers.keys()], ['propr:pr-status:block:acme/app:9'], 'the block it was created with is recorded, so turning the setting off removes it');
 
-    // With the setting off the body is exactly what it was before the setting existed.
-    markers.clear();
+    // A process that does not maintain the status (library use) writes the body as before.
     await create();
-    assert.equal(markers.size, 0);
     assert.equal(String(published[1].body), body.replace(/^<!-- propr:pr-status -->[\s\S]*?<!-- \/propr:pr-status -->\n\n/, ''));
     assert.doesNotMatch(String(published[1].body), /propr:pr-status/);
 });

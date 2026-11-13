@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { createRepoCommand, parsePrStatusFlag } from "./repoCommands.js";
+import { createRepoCommand, parsePrTitleStatusFlag } from "./repoCommands.js";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleError = console.error;
@@ -12,11 +12,11 @@ afterEach(() => {
   console.log = originalConsoleLog;
 });
 
-test("--pr-status converts on/off and sends nothing when absent", () => {
-  assert.deepEqual(parsePrStatusFlag(undefined), {});
-  assert.deepEqual(parsePrStatusFlag("on"), { prStatusDisplay: true });
-  assert.deepEqual(parsePrStatusFlag("OFF"), { prStatusDisplay: false });
-  assert.throws(() => parsePrStatusFlag("yes"), /--pr-status must be on or off/);
+test("--pr-title-status converts on/off and sends nothing when absent", () => {
+  assert.deepEqual(parsePrTitleStatusFlag(undefined), {});
+  assert.deepEqual(parsePrTitleStatusFlag("on"), { prTitleStatus: true });
+  assert.deepEqual(parsePrTitleStatusFlag("OFF"), { prTitleStatus: false });
+  assert.throws(() => parsePrTitleStatusFlag("yes"), /--pr-title-status must be on or off/);
 });
 
 async function postedRepos(args: string[], stored: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
@@ -35,15 +35,15 @@ async function postedRepos(args: string[], stored: Record<string, unknown>[]): P
   return posted;
 }
 
-test("repo add and toggle send prStatusDisplay only when --pr-status is given", async () => {
-  const [added] = await postedRepos(["add", "integry/propr", "--pr-status", "on"], []);
-  assert.equal(added.prStatusDisplay, true);
+test("repo add and toggle send prTitleStatus only when --pr-title-status is given", async () => {
+  const [added] = await postedRepos(["add", "integry/propr", "--pr-title-status", "off"], []);
+  assert.equal(added.prTitleStatus, false);
   const [plain] = await postedRepos(["add", "integry/propr"], []);
-  assert.equal("prStatusDisplay" in plain, false);
+  assert.equal("prTitleStatus" in plain, false);
 
-  const stored = { id: "repo-1", name: "integry/propr", enabled: true, prStatusDisplay: true };
-  const [off] = await postedRepos(["toggle", "integry/propr", "--pr-status", "off"], [stored]);
-  assert.equal(off.prStatusDisplay, false);
+  const stored = { id: "repo-1", name: "integry/propr", enabled: true, prTitleStatus: false };
+  const [on] = await postedRepos(["toggle", "integry/propr", "--pr-title-status", "on"], [stored]);
+  assert.equal(on.prTitleStatus, true);
   const [kept] = await postedRepos(["toggle", "integry/propr", "--enable"], [stored]);
-  assert.equal(kept.prStatusDisplay, true);
+  assert.equal(kept.prTitleStatus, false);
 });

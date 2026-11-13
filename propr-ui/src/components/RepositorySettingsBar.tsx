@@ -9,7 +9,7 @@ import { RepositoryVisualPreviewControl, type RepositoryVisualPreviewSettings } 
 import { RepositoryAutoResolveConflictsControl } from './RepositoryAutoResolveConflictsControl';
 import { NonBlockingChecksControl } from './NonBlockingChecksControl';
 import { RepositoryAutoAssignControl, type RepositoryAutoAssignHandlers } from './RepositoryAutoAssignControl';
-import { RepositoryPrStatusControl } from './RepositoryPrStatusControl';
+import { RepositoryPrTitleStatusControl } from './RepositoryPrTitleStatusControl';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 
@@ -213,7 +213,7 @@ interface RepositorySettingsBarProps {
   onToggleNotifications: (repoId: string) => void;
   onUpdateAutoResolveMergeConflicts?: (repoId: string, value: boolean | null) => void;
   autoAssignHandlers?: RepositoryAutoAssignHandlers;
-  onTogglePrStatusDisplay?: (repoId: string) => void;
+  onTogglePrTitleStatus?: (repoId: string) => void;
   onUpdateVisualPreview: (repoId: string, settings: RepositoryVisualPreviewSettings) => void;
   isReadOnly: boolean;
 }
@@ -221,7 +221,7 @@ interface RepositorySettingsBarProps {
 export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
   repo, indexingStatus, onToggle, onRemove, onStopIndexing, onReindex,
   onToggleStar, onToggleHidden, onToggleAutoCiFollowup, onToggleCancelCiDuringFollowup, onUpdateCancelCiWorkflows, onUpdateNonBlockingChecks,
-  onToggleNotifications, onUpdateAutoResolveMergeConflicts, autoAssignHandlers, onTogglePrStatusDisplay, onUpdateVisualPreview, isReadOnly,
+  onToggleNotifications, onUpdateAutoResolveMergeConflicts, autoAssignHandlers, onTogglePrTitleStatus, onUpdateVisualPreview, isReadOnly,
 }) => {
   const { isDemoMode } = useDemoMode();
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -295,7 +295,7 @@ export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
               {onUpdateNonBlockingChecks && <NonBlockingChecksControl key={`non-blocking-${repo.id}`} repo={repo} onUpdate={onUpdateNonBlockingChecks} />}
               {onUpdateAutoResolveMergeConflicts && <RepositoryAutoResolveConflictsControl repo={repo} onUpdate={onUpdateAutoResolveMergeConflicts} isReadOnly={isReadOnly} />}
               {autoAssignHandlers && <RepositoryAutoAssignControl key={`auto-assign-${repo.id}`} repo={repo} {...autoAssignHandlers} isReadOnly={isReadOnly} />}
-              {onTogglePrStatusDisplay && <RepositoryPrStatusControl repo={repo} onToggle={onTogglePrStatusDisplay} isReadOnly={isReadOnly} />}
+              {onTogglePrTitleStatus && <RepositoryPrTitleStatusControl repo={repo} onToggle={onTogglePrTitleStatus} isReadOnly={isReadOnly} />}
               <RepositoryVisualPreviewControl key={repo.id} repo={repo} onUpdate={onUpdateVisualPreview} isReadOnly={isReadOnly} />
             </div>
           </div>

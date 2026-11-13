@@ -2,12 +2,12 @@
 sidebar_position: 7
 sidebar_label: "PR Status"
 title: "See whether a ProPR pull request is working, needs you, or is ready"
-description: "ProPR computes one status for each of its pull requests and can keep it live as the first line of the pull request body."
+description: "ProPR computes one status for each of its pull requests and keeps it live as the first line of the pull request body."
 ---
 
 # PR Status
 
-ProPR computes one status for every pull request it created: is it being worked on, does it need a person, or is it ready to merge? The same answer appears at the top of the pull request (when the repository turns it on) and in the MCP tools `get_pull_request`, `list_pull_requests` and `get_work_overview`, so you don't have to read the comment thread to find out.
+ProPR computes one status for every pull request it created: is it being worked on, does it need a person, or is it ready to merge? The same answer appears at the top of the pull request and in the MCP tools `get_pull_request`, `list_pull_requests` and `get_work_overview`, so you don't have to read the comment thread to find out.
 
 ## States
 
@@ -24,7 +24,7 @@ Besides the state, the status has a `detail` object for display: the current act
 
 ## The status line in the pull request body
 
-Turn on **Show the ProPR status in the pull request** for a repository and ProPR keeps a single line as the first thing in the body of every open pull request it created:
+ProPR keeps a single line as the first thing in the body of every open pull request it created, in every repository:
 
 > **ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated 09:41 UTC
 
@@ -41,18 +41,18 @@ How the line behaves:
 - When the pull request is merged or closed, the line is removed.
 - If an update fails, the task, review or loop that caused it carries on as normal. The failure is logged, and the next change tries again.
 
-The setting is off by default. While it is off, nothing is written. If you turn it off, the line is removed from each open pull request the next time that pull request's status changes.
+The line has no setting and can't be turned off. ProPR already owns that part of the body, and the edits leave no timeline entry, so there is nothing to opt out of. Pull requests ProPR did not create never get the line.
 
-## Turn it on
+## The title setting
 
-The setting is per repository and applies to every branch entry of that repository.
+The repository setting **Show the PR state as a leading emoji in the pull request title** (`prTitleStatus`) controls the pull request title only. It does not affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. The title emoji itself arrives in a later release; until then, the setting is stored but changes nothing.
 
 | Where | How |
 | --- | --- |
-| Web UI | Repositories → repository → Automation → **Show the ProPR status in the pull request** |
-| MCP | `update_repository_configuration` with `prStatusDisplay: true`; `get_repository_configuration` reads it |
-| CLI | `propr repo toggle owner/repo --pr-status on` (or `--pr-status on` on `propr repo add`) |
-| REST | `prStatusDisplay` on the repository entries of `POST /api/config/repos` |
+| Web UI | Repositories → repository → Automation → **Show the PR state as a leading emoji in the pull request title** |
+| MCP | `update_repository_configuration` with `prTitleStatus: false` or `true`; `get_repository_configuration` reads it |
+| CLI | `propr repo toggle owner/repo --pr-title-status off` (or `--pr-title-status <on\|off>` on `propr repo add`) |
+| REST | `prTitleStatus` on the repository entries of `POST /api/config/repos` |
 
 ## Read the status through MCP
 
@@ -75,4 +75,4 @@ The setting is per repository and applies to every branch entry of that reposito
 }
 ```
 
-The status is computed the same way whether or not the body line is turned on.
+The status is computed the same way for the body line and the MCP tools.

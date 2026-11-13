@@ -135,8 +135,8 @@ export interface MonitoredRepo {
   autoResolveMergeConflicts?: boolean | null;
   /** Whether ProPR assigns its finished pull requests. Missing values are off. */
   autoAssignPullRequests?: boolean;
-  /** Whether ProPR keeps a live status line at the top of its pull request bodies. Missing values are off. */
-  prStatusDisplay?: boolean;
+  /** Whether the pull request title shows the PR state as a leading emoji. Controls the title only. Missing values are on. */
+  prTitleStatus?: boolean;
   /** GitHub login to assign; missing or null assigns the issue author. */
   autoAssignDefaultAssignee?: string | null;
   /** Whether a review is also requested from the assignee. Missing values are off. */

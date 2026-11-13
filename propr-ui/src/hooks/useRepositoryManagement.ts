@@ -28,8 +28,8 @@ import {
   resolveRepositoryAutoAssign,
   toggleRepositoryAutoAssign,
   toggleRepositoryAutoAssignReview,
-  resolveRepositoryPrStatusDisplay,
-  toggleRepositoryPrStatusDisplay,
+  resolveRepositoryPrTitleStatus,
+  toggleRepositoryPrTitleStatus,
   updateRepositoryAutoAssignTarget,
   updateRepositoryCancelCiWorkflows,
   updateRepositoryNonBlockingChecks,
@@ -88,7 +88,7 @@ export interface UseRepositoryManagementResult {
   handleToggleAutoAssign: (repoId: string) => void;
   handleUpdateAutoAssignTarget: (repoId: string, login: string | null) => void;
   handleToggleAutoAssignReview: (repoId: string) => void;
-  handleTogglePrStatusDisplay: (repoId: string) => void;
+  handleTogglePrTitleStatus: (repoId: string) => void;
   handleUpdateVisualPreview: (repoId: string, settings: VisualPreviewSettings) => void;
   handleToggleStar: (repoId: string) => Promise<void>;
   handleToggleHidden: (repoId: string) => Promise<void>;
@@ -154,14 +154,15 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
             const autoAssignPullRequests = repoObj.autoAssignPullRequests === true;
             const autoAssignDefaultAssignee = parseAutoAssignDefaultAssignee(repoObj.autoAssignDefaultAssignee) ?? null;
             const autoAssignRequestReview = repoObj.autoAssignRequestReview === true;
-            const prStatusDisplay = repoObj.prStatusDisplay === true;
+            // Absent means on, the product default.
+            const prTitleStatus = repoObj.prTitleStatus !== false;
             const visualPreview = parseVisualPreview(repoObj.visualPreview);
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, nonBlockingChecks, notificationsEnabled, autoResolveMergeConflicts, autoAssignPullRequests, autoAssignDefaultAssignee, autoAssignRequestReview, prStatusDisplay, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, nonBlockingChecks, notificationsEnabled, autoResolveMergeConflicts, autoAssignPullRequests, autoAssignDefaultAssignee, autoAssignRequestReview, prTitleStatus, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;
@@ -388,7 +389,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       autoAssignPullRequests: autoAssign.enabled,
       autoAssignDefaultAssignee: autoAssign.defaultAssignee,
       autoAssignRequestReview: autoAssign.requestReview,
-      prStatusDisplay: resolveRepositoryPrStatusDisplay(repos, repositoryKey),
+      prTitleStatus: resolveRepositoryPrTitleStatus(repos, repositoryKey),
       visualPreview,
       alias: newAlias.trim() || undefined,
       baseBranch: newBaseBranch.trim() || undefined
@@ -501,9 +502,9 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     performAutoSave(newRepos);
   };
 
-  const handleTogglePrStatusDisplay = (repoId: string) => {
+  const handleTogglePrTitleStatus = (repoId: string) => {
     if (!canManageRepositories) return;
-    const newRepos = toggleRepositoryPrStatusDisplay(repos, repoId);
+    const newRepos = toggleRepositoryPrTitleStatus(repos, repoId);
     if (newRepos === repos) return;
     setRepos(newRepos);
     performAutoSave(newRepos);
@@ -557,7 +558,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, loadRepos, handleStopIndexing, handleReindexRepo, handleAddRepo,
-    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks, handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleToggleAutoAssign, handleUpdateAutoAssignTarget, handleToggleAutoAssignReview, handleTogglePrStatusDisplay, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
+    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks, handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleToggleAutoAssign, handleUpdateAutoAssignTarget, handleToggleAutoAssignReview, handleTogglePrTitleStatus, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
     handleRetry, setError
   };
 }

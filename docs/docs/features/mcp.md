@@ -45,7 +45,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Find what you started and whether it finished | `list_operations`, then `get_operation` |
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
 | Whether a ProPR pull request is working, needs you, or is ready ([PR status](./pr-status.md)) | `proprStatus` on `get_pull_request`, `list_pull_requests` and `get_work_overview` |
-| Show the [PR status line](./pr-status.md#the-status-line-in-the-pull-request-body) in a repository's pull request bodies | `update_repository_configuration` with `prStatusDisplay` (default `false`); `get_repository_configuration` reads it |
+| Show the PR state as a leading emoji in a repository's pull request titles ([title setting](./pr-status.md#the-title-setting); controls the title only, the body status line is always written) | `update_repository_configuration` with `prTitleStatus` (default `true`); `get_repository_configuration` reads it |
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |
 | Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
 | Turn on the [assignment gate](./assignment.md#the-assignment-gate) | `update_execution_settings` with `followup_requires_assignment: true` (default `false`); `get_execution_settings` reads it |

@@ -11,21 +11,21 @@ import type { McpPrincipal } from '../mcp/policy.js';
 
 const entry = (id: string, name: string, extra: Partial<RepoToMonitor> = {}): RepoToMonitor => ({ id, name, enabled: true, ...extra });
 
-test('prStatusDisplay is validated as a boolean and defaults off', () => {
+test('prTitleStatus is validated as a boolean and defaults on', () => {
   const normalized = normalizeRepoConfig({ id: 'a', name: 'integry/propr', enabled: true });
   assert.ok(normalized.ok);
-  assert.equal(normalized.value.prStatusDisplay, false);
-  const on = normalizeRepoConfig({ id: 'a', name: 'integry/propr', enabled: true, prStatusDisplay: true });
-  assert.ok(on.ok);
-  assert.equal(on.value.prStatusDisplay, true);
-  const invalid = normalizeRepoConfig({ id: 'a', name: 'integry/propr', enabled: true, prStatusDisplay: 'yes' });
-  assert.deepEqual(invalid, { ok: false, error: 'Invalid prStatusDisplay format for integry/propr: must be a boolean' });
-  assert.equal(withDefaultRepoOptions(entry('a', 'integry/propr')).prStatusDisplay, false);
-  assert.equal(withDefaultRepoOptions(entry('a', 'integry/propr', { prStatusDisplay: true })).prStatusDisplay, true);
+  assert.equal(normalized.value.prTitleStatus, true);
+  const off = normalizeRepoConfig({ id: 'a', name: 'integry/propr', enabled: true, prTitleStatus: false });
+  assert.ok(off.ok);
+  assert.equal(off.value.prTitleStatus, false);
+  const invalid = normalizeRepoConfig({ id: 'a', name: 'integry/propr', enabled: true, prTitleStatus: 'yes' });
+  assert.deepEqual(invalid, { ok: false, error: 'Invalid prTitleStatus format for integry/propr: must be a boolean' });
+  assert.equal(withDefaultRepoOptions(entry('a', 'integry/propr')).prTitleStatus, true);
+  assert.equal(withDefaultRepoOptions(entry('a', 'integry/propr', { prTitleStatus: false })).prTitleStatus, false);
 });
 
-test('prStatusDisplay is repository-wide and kept by clients that omit it', () => {
-  const previous = [entry('main', 'integry/propr', { prStatusDisplay: true }), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other')];
+test('prTitleStatus is repository-wide and kept by clients that omit it', () => {
+  const previous = [entry('main', 'integry/propr', { prTitleStatus: false }), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other')];
   const normalize = (incoming: unknown[]) => incoming.map(repo => {
     const result = normalizeRepoConfig(repo);
     assert.ok(result.ok);
@@ -33,16 +33,16 @@ test('prStatusDisplay is repository-wide and kept by clients that omit it', () =
   });
   // A legacy client that does not know the field keeps the stored repository value.
   const legacy = [entry('main', 'integry/propr'), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other')];
-  assert.deepEqual(preserveRepoSettings(previous, normalize(legacy), legacy).map(repo => [repo.id, repo.prStatusDisplay]), [['main', true], ['dev', true], ['other', false]]);
+  assert.deepEqual(preserveRepoSettings(previous, normalize(legacy), legacy).map(repo => [repo.id, repo.prTitleStatus]), [['main', false], ['dev', false], ['other', true]]);
   // An explicit change on one branch entry applies to every entry of the repository.
-  const on = [entry('main', 'integry/propr', { prStatusDisplay: true }), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other', { prStatusDisplay: true })];
-  assert.deepEqual(preserveRepoSettings(previous, normalize(on), on).map(repo => [repo.id, repo.prStatusDisplay]), [['main', true], ['dev', true], ['other', true]]);
-  const off = [entry('main', 'integry/propr', { prStatusDisplay: false }), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other')];
-  assert.deepEqual(preserveRepoSettings(previous, normalize(off), off).map(repo => [repo.id, repo.prStatusDisplay]), [['main', false], ['dev', false], ['other', false]]);
+  const on = [entry('main', 'integry/propr', { prTitleStatus: true }), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other', { prTitleStatus: false })];
+  assert.deepEqual(preserveRepoSettings(previous, normalize(on), on).map(repo => [repo.id, repo.prTitleStatus]), [['main', true], ['dev', true], ['other', false]]);
+  const off = [entry('main', 'integry/propr', { prTitleStatus: false }), entry('dev', 'integry/propr', { baseBranch: 'dev' }), entry('other', 'integry/other')];
+  assert.deepEqual(preserveRepoSettings(previous, normalize(off), off).map(repo => [repo.id, repo.prTitleStatus]), [['main', false], ['dev', false], ['other', true]]);
 });
 
-test('MCP repository configuration sets and reads prStatusDisplay', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'mcp-pr-status-'));
+test('MCP repository configuration sets and reads prTitleStatus', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mcp-pr-title-status-'));
   process.env.DATA_DIR = root; process.env.DB_FILENAME = path.join(root, 'core.sqlite'); process.env.NODE_ENV = 'test';
   const core = await import('@propr/core');
   try {
@@ -65,23 +65,24 @@ test('MCP repository configuration sets and reads prStatusDisplay', async () => 
     let key = 0;
     const call = async (name: string, args: Record<string, unknown>) => {
       const tool = catalog.find(candidate => candidate.name === name)!;
-      return (await executeTool(tool, { ...args, ...(tool.readOnly ? {} : { idempotencyKey: `pr-status-${key++}` }) }, principal, deps)).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+      return (await executeTool(tool, { ...args, ...(tool.readOnly ? {} : { idempotencyKey: `pr-title-status-${key++}` }) }, principal, deps)).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
     };
-    const stored = async (name: string) => (await core.loadMonitoredReposRaw()).filter(repo => repo.name === name).map(repo => repo.prStatusDisplay);
+    const stored = async (name: string) => (await core.loadMonitoredReposRaw()).filter(repo => repo.name === name).map(repo => repo.prTitleStatus);
 
-    assert.equal((await call('get_repository_configuration', { repository: 'acme/one' })).prStatusDisplay, false);
-    const enabled = await call('update_repository_configuration', { repository: 'acme/one', prStatusDisplay: true });
-    assert.equal(enabled.state, 'completed', JSON.stringify(enabled));
-    assert.deepEqual(await stored('acme/one'), [true, true]);
-    assert.deepEqual(await stored('acme/two'), [false]);
-    assert.equal((await call('get_repository_configuration', { repository: 'acme/one' })).prStatusDisplay, true);
-    assert.equal(await core.loadRepositoryPrStatusDisplay('ACME/one'), true);
+    assert.equal((await call('get_repository_configuration', { repository: 'acme/one' })).prTitleStatus, true, 'on by default');
+    const disabled = await call('update_repository_configuration', { repository: 'acme/one', prTitleStatus: false });
+    assert.equal(disabled.state, 'completed', JSON.stringify(disabled));
+    assert.deepEqual(await stored('acme/one'), [false, false]);
+    assert.deepEqual(await stored('acme/two'), [true]);
+    assert.equal((await call('get_repository_configuration', { repository: 'acme/one' })).prTitleStatus, false);
+    assert.equal(await core.loadRepositoryPrTitleStatus('ACME/one'), false);
+    assert.equal(await core.loadRepositoryPrTitleStatus('acme/two'), true);
 
     assert.equal((await call('update_repository_configuration', { repository: 'acme/one', alias: 'One' })).state, 'completed');
-    assert.deepEqual(await stored('acme/one'), [true, true], 'an update that omits the field keeps it');
+    assert.deepEqual(await stored('acme/one'), [false, false], 'an update that omits the field keeps it');
 
-    assert.equal((await call('update_repository_configuration', { repository: 'acme/one', prStatusDisplay: false })).state, 'completed');
-    assert.deepEqual(await stored('acme/one'), [false, false]);
+    assert.equal((await call('update_repository_configuration', { repository: 'acme/one', prTitleStatus: true })).state, 'completed');
+    assert.deepEqual(await stored('acme/one'), [true, true]);
   } finally {
     await core.closeConnection();
     await rm(root, { recursive: true, force: true });

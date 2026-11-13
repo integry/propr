@@ -456,7 +456,7 @@ propr repo add owner/repo --auto-assign on --auto-assign-to octocat --auto-assig
 propr repo toggle owner/repo --auto-assign on          # Assign PRs to the source issue author
 propr repo toggle owner/repo --auto-assign-to none     # Clear the default assignee
 propr repo toggle owner/repo --auto-assign-review off  # Stop requesting reviews
-propr repo toggle owner/repo --pr-status on            # Keep a live ProPR status line in PR bodies
+propr repo toggle owner/repo --pr-title-status off     # No PR state emoji in PR titles
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
@@ -467,7 +467,7 @@ Automatic CI follow-up is configured per repository and is **off by default**. E
 
 Automatic pull request assignment is per repository and **off by default**, as are both of its sub-options. `--auto-assign <on|off>` turns it on or off. `--auto-assign-to <login|none>` sets the person to assign; with none, which is the default, the source issue author is assigned, and bot authors are skipped. `--auto-assign-review <on|off>` also requests that person's review (default off). The options apply to every branch of the repository, and flags you leave out keep their stored value. `propr repo list` shows them in the **Auto-assign PRs** column. See [Automatic Pull Request Assignment](./pr-followup.md#automatic-pull-request-assignment).
 
-The [PR status line](./pr-status.md) is per repository and **off by default**. `--pr-status <on|off>` turns it on or off for every branch of the repository; leaving the flag out keeps the stored value.
+The [PR title status](./pr-status.md#the-title-setting) is per repository and **on by default**. It controls only whether the pull request title shows the PR state as a leading emoji; the status line in the pull request body is always written and has no setting. `--pr-title-status <on|off>` turns it on or off for every branch of the repository; leaving the flag out keeps the stored value.
 
 Visual previews are also per-repository and **off by default**. `--preview-types` accepts `image`, `video`, or `image,video`; use `--preview-instructions` to add project-specific capture details. See [Visual Previews](./visual-previews.md) for generation and publication behavior.
 

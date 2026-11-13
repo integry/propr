@@ -3,4 +3,4 @@ export * from './pullRequestStatusBlock.js';
 export * from './pullRequestStatusFacts.js';
 export * from './pullRequestStatusSync.js';
 export * from './pullRequestStatusSignal.js';
-export * from '../../config/repositoryPrStatusSetting.js';
+export * from '../../config/repositoryPrTitleStatusSetting.js';

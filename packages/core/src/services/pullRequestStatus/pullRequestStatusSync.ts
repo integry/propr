@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
-import { loadRepositoryPrStatusDisplay } from '../../config/repositoryPrStatusSetting.js';
 import { loadUltrafixRatingGoal } from '../../config/configManagerUltrafix.js';
 import { getNonBlockingChecksForRepository } from '../../daemon/configLoader.js';
 import { db } from '../../db/connection.js';
@@ -24,12 +23,12 @@ import {
     type PullRequestStatusSources,
 } from './pullRequestStatusFacts.js';
 
-type LockRedis = Pick<Redis, 'set' | 'eval' | 'get' | 'del'>;
+/** The body lock needs set/eval; the status facts read Ultrafix state with get. */
+type LockRedis = Pick<Redis, 'set' | 'eval' | 'get'>;
 
 export interface PullRequestStatusSyncDeps {
     github: PullRequestStatusGitHub;
     redis: LockRedis | null;
-    loadEnabled: (repository: string) => Promise<boolean>;
     sources: Omit<PullRequestStatusSources, 'github'>;
     now: () => Date;
     /** Open pull requests a commit belongs to, for checks reported against a commit. */
@@ -74,14 +73,12 @@ async function countQueuedJobs(repository: string, prNumber: number): Promise<nu
 
 type ResolvedDeps = Omit<PullRequestStatusSyncDeps, 'github'> & { github: () => Promise<PullRequestStatusGitHub> };
 
-/** GitHub is resolved lazily: a repository with the setting off and no block costs no GitHub call. */
 function resolveDeps(overrides: Partial<PullRequestStatusSyncDeps> = {}): ResolvedDeps {
     const merged = { ...runtimeDeps, ...overrides };
     const redis = merged.redis !== undefined ? merged.redis : getUltrafixStateRedis();
     return {
         github: async () => merged.github ?? await getAuthenticatedOctokit() as unknown as PullRequestStatusGitHub,
         redis,
-        loadEnabled: merged.loadEnabled ?? loadRepositoryPrStatusDisplay,
         sources: merged.sources ?? {
             db,
             redis,
@@ -106,16 +103,9 @@ const LOCK_WAIT_MS = 20_000;
 const LOCK_POLL_MS = 150;
 const RELEASE_SCRIPT = 'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
 const localChains = new Map<string, Promise<unknown>>();
-/** A PR left open untouched this long keeps its block if the setting is turned off meanwhile. */
-const BLOCK_MARKER_TTL_SECONDS = 180 * 24 * 60 * 60;
 
 function prKey(repository: string, prNumber: number): string {
     return `${repository.toLowerCase()}#${prNumber}`;
-}
-
-/** Redis marker: ProPR wrote a block on this PR, so turning the setting off must remove it. */
-function blockMarkerKey(repository: string, prNumber: number): string {
-    return `propr:pr-status:block:${repository.toLowerCase()}:${prNumber}`;
 }
 
 /**
@@ -157,45 +147,33 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
 }
 
 async function desiredBlock(
-    deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull; enabled: boolean },
+    deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
 ): Promise<string | null> {
-    const { repository, prNumber, pull, enabled } = target;
-    if (!enabled || pull.state !== 'open' || pull.merged) return null;
+    const { repository, prNumber, pull } = target;
+    if (pull.state !== 'open' || pull.merged) return null;
     const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
     return renderPullRequestStatusBlock(computePullRequestStatus(facts), deps.now());
 }
 
 /**
- * Brings the status block of one pull request up to date: writes it when the
- * repository shows the status and the PR is an open ProPR PR, removes it
- * otherwise (closed, merged, or the setting was turned off). Sends no PATCH
- * when the rendered status is unchanged.
+ * Brings the status block of one pull request up to date: writes it on every
+ * open ProPR PR, in every repository, and removes it once the PR is closed or
+ * merged. There is no setting for it. Sends no PATCH when the rendered status
+ * is unchanged.
  */
 export async function syncPullRequestStatus(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps> = {},
 ): Promise<PullRequestStatusSyncResult> {
     const resolved = resolveDeps(overrides);
-    const enabled = await resolved.loadEnabled(repository);
-    const marker = blockMarkerKey(repository, prNumber);
-    // With the setting off, only a PR ProPR wrote a block on needs a read.
-    if (!enabled && resolved.redis && !await resolved.redis.get(marker)) return 'skipped';
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async () => {
         const pull = await readPull(deps.github, repository, prNumber);
-        const block = await desiredBlock(deps, { repository, prNumber, pull, enabled });
+        const block = await desiredBlock(deps, { repository, prNumber, pull });
         const current = pull.body ?? '';
         const next = applyPullRequestStatusBlock(current, block);
-        if (next === current || sameRenderedStatus(next, current)) {
-            // The block already in the body (e.g. the one the PR was created
-            // with) is ProPR's too: record it so turning the setting off removes it.
-            if (block) await deps.redis?.set(marker, '1', 'EX', BLOCK_MARKER_TTL_SECONDS);
-            else await deps.redis?.del(marker);
-            return block ? 'unchanged' : 'skipped';
-        }
+        if (next === current || sameRenderedStatus(next, current)) return block ? 'unchanged' : 'skipped';
         const [owner, repo] = repository.split('/');
         await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
-        if (block) await deps.redis?.set(marker, '1', 'EX', BLOCK_MARKER_TTL_SECONDS);
-        else await deps.redis?.del(marker);
         logger.debug({ repository, prNumber, removed: !block }, 'Updated the pull request status block');
         return block ? 'updated' : 'removed';
     });
@@ -242,38 +220,18 @@ function schedulePullRequestStatusSync(repository: string, number: number): void
     created.timer.unref?.();
 }
 
-/**
- * Records that a pull request carries a ProPR status block it was created
- * with, so turning the setting off removes that block on the next transition
- * even when no update ever rewrote it. Never throws.
- */
-export async function recordPullRequestStatusBlock(
-    repository: string, prNumber: number, options: { redis?: LockRedis | null } = {},
-): Promise<void> {
-    if (!runtimeEnabled && options.redis === undefined) return;
-    const redis = options.redis !== undefined ? options.redis : resolveDeps().redis;
-    try {
-        await redis?.set(blockMarkerKey(repository, prNumber), '1', 'EX', BLOCK_MARKER_TTL_SECONDS);
-    } catch (error) {
-        logger.warn({ repository, prNumber, error: (error as Error).message }, 'Failed to record the pull request status block; the next update records it');
-    }
-}
-
 // --- Checks reported against a commit ---
 
 const commitLookups = new Map<string, NodeJS.Timeout>();
 
 /**
  * Open pull requests whose status a commit's check change can alter. Legacy
- * commit statuses name only the commit, so its pull requests are looked up;
- * a repository that does not show the status costs no GitHub call.
+ * commit statuses name only the commit, so its pull requests are looked up.
  */
 export async function resolvePullRequestsForCommitStatus(
     repository: string, sha: string, overrides: Partial<PullRequestStatusSyncDeps> = {},
 ): Promise<number[]> {
-    const resolved = resolveDeps(overrides);
-    if (!await resolved.loadEnabled(repository)) return [];
-    return await resolved.findPullRequestsForCommit(repository, sha);
+    return await resolveDeps(overrides).findPullRequestsForCommit(repository, sha);
 }
 
 /** A burst of status events for one commit costs one pull request lookup. */
@@ -319,20 +277,14 @@ export async function updatePullRequestBody<T = { data: { body?: string | null }
 
 /**
  * The block a new ProPR pull request is created with, so the status is in the
- * body from the first moment: the creating task is still running. Null when
- * the repository does not show the status.
+ * body from the first moment: the creating task is still running. Null only
+ * when this process does not maintain the status (library use and tests).
  */
 export async function initialPullRequestStatusBlock(
     repository: string,
-    options: { activity?: 'implementing' | 'follow_up'; loadEnabled?: (repository: string) => Promise<boolean>; now?: () => Date } = {},
+    options: { activity?: 'implementing' | 'follow_up'; now?: () => Date } = {},
 ): Promise<string | null> {
-    if (!runtimeEnabled && !options.loadEnabled) return null;
-    try {
-        if (!await (options.loadEnabled ?? runtimeDeps.loadEnabled ?? loadRepositoryPrStatusDisplay)(repository)) return null;
-    } catch (error) {
-        logger.warn({ repository, error: (error as Error).message }, 'Failed to read the pull request status setting; creating the pull request without the block');
-        return null;
-    }
+    if (!runtimeEnabled) return null;
     const type = options.activity === 'follow_up' ? 'pr-comment' : 'issue';
     const status = computePullRequestStatus({
         pullRequest: { state: 'open', merged: false, headSha: '', mergeable: null },

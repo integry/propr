@@ -1,4 +1,4 @@
-import { initialPullRequestStatusBlock, pullRequestStatusBlockLength, recordPullRequestStatusBlock, withPullRequestStatusBlock, writePullRequestBody } from '../github/pullRequestBodyWriter.js';
+import { initialPullRequestStatusBlock, pullRequestStatusBlockLength, withPullRequestStatusBlock, writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import type { Logger } from 'pino';
 import {
     generateCompletionCommentParts,
@@ -284,7 +284,6 @@ export async function createPullRequest(
             prNumber: prResponse.data.number,
             prUrl: prResponse.data.html_url
         }, 'PR created successfully');
-        await recordPullRequestStatusBlock(`${issueRef.repoOwner}/${issueRef.repoName}`, prResponse.data.number, statusBlock);
 
         // Add PR label and model label (for followup comments to use the same model)
         const modelLabel = getPullRequestModelLabel(issueRef, modelName);
