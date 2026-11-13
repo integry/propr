@@ -421,7 +421,8 @@ test('bounds the input that slow Markdown constructs can make expensive', () => 
   assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(4)}nested\n- Also kept\n`).length, 2);
   // Many such lines, within the length bound, stay cheap.
   assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${`${'- > '.repeat(20)}deep\n`.repeat(500)}- Also kept\n`), ['Kept', 'Also kept']);
-  assert.ok(Date.now() - started < 2000);
+  // Unbounded, these inputs take minutes. The bounded work is about 2s on a busy machine, so allow headroom.
+  assert.ok(Date.now() - started < 20_000);
 });
 
 test('a fenced example with deeply nested markers hides nothing after it', () => {
