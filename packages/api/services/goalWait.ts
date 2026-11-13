@@ -26,6 +26,7 @@ import {
   GOAL_WAIT_CURSOR_ERRORS,
   goalWaitLifecycleState,
   goalWaitStateMatches,
+  type GoalWaitBlockerStatus,
   type GoalWaitCondition,
   type GoalWaitCursorErrorCode,
   type GoalWaitEvent,
@@ -117,10 +118,12 @@ export function decodeGoalWaitCursor(cursor: string, goalId: string): number {
 interface GoalEventRow {
   sequence: number;
   goal_id: string;
-  kind: 'lifecycle' | 'checkpoint';
+  kind: 'lifecycle' | 'checkpoint' | 'blocker';
   state: string | null;
   previous_state: string | null;
   checkpoint_id: string | null;
+  blocker_id?: string | null;
+  blocker_category?: string | null;
   created_at: string;
   checkpoint_kind?: string | null;
   commit_sha?: string | null;
@@ -158,15 +161,34 @@ const GOAL_COLUMNS = [
 function eventQuery(db: Knex, goalId: string): Knex.QueryBuilder {
   return db('goal_events')
     .leftJoin('goal_checkpoints', 'goal_checkpoints.checkpoint_id', 'goal_events.checkpoint_id')
+    .leftJoin('goal_blockers', 'goal_blockers.blocker_id', 'goal_events.blocker_id')
     .where('goal_events.goal_id', goalId)
     .select(
       'goal_events.sequence', 'goal_events.goal_id', 'goal_events.kind', 'goal_events.state', 'goal_events.previous_state',
       'goal_events.checkpoint_id', 'goal_events.created_at', 'goal_checkpoints.kind as checkpoint_kind',
       'goal_checkpoints.commit_sha', 'goal_checkpoints.pr_number', 'goal_checkpoints.pr_url',
+      'goal_events.blocker_id', 'goal_blockers.category as blocker_category',
     );
 }
 
 function eventView(row: GoalEventRow): GoalWaitEvent {
+  if (row.kind === 'blocker') {
+    // A blocker event carries the blocker's status, never a lifecycle state.
+    return {
+      cursor: encodeGoalWaitCursor(row.goal_id, Number(row.sequence)),
+      sequence: Number(row.sequence),
+      kind: 'blocker',
+      state: null,
+      previousState: null,
+      checkpoint: null,
+      blocker: row.blocker_id ? {
+        id: row.blocker_id,
+        status: row.state as GoalWaitBlockerStatus,
+        category: row.blocker_category ?? null,
+      } : null,
+      occurredAt: row.created_at,
+    };
+  }
   return {
     cursor: encodeGoalWaitCursor(row.goal_id, Number(row.sequence)),
     sequence: Number(row.sequence),
@@ -252,6 +274,7 @@ export interface GoalWaitOptions {
 function eventQualifies(event: GoalEventRow, until: GoalWaitCondition | undefined): boolean {
   if (!until) return true;
   if (until === 'checkpoint') return event.kind === 'checkpoint';
+  if (until === 'blocked') return event.kind === 'blocker' && event.state === 'open';
   return event.kind === 'lifecycle' && goalWaitStateMatches(until, event.state);
 }
 
@@ -302,6 +325,23 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
   const journalBound = async (): Promise<number> => {
     const newest = await db('goal_events').where({ goal_id: goalId }).max({ sequence: 'sequence' }).first();
     return Number(newest?.sequence ?? 0);
+  };
+
+  /**
+   * Newest journaled opening, at or below the bound, of a blocker that is still
+   * open and belongs to the goal's current attempt (the same fence the
+   * attention projection applies), or undefined when the goal waits on nobody.
+   */
+  const openBlockerEvent = async (bound: number): Promise<GoalEventRow | undefined> => {
+    return await eventQuery(db, goalId)
+      .join('goals', 'goals.goal_id', 'goal_events.goal_id')
+      .where('goal_events.kind', 'blocker').where('goal_events.state', 'open')
+      .where('goal_events.sequence', '<=', bound)
+      .where('goal_blockers.status', 'open')
+      .whereNull('goals.result_state')
+      .whereRaw('goal_blockers.run_claim = goals.run_claim')
+      .whereRaw('goal_blockers.run_generation = goals.run_generation')
+      .orderBy('goal_events.sequence', 'desc').first() as GoalEventRow | undefined;
   };
 
   /** Newest lifecycle event, optionally at or below a snapshot bound. */
@@ -355,7 +395,10 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
       // immediate check reads the state as of that boundary, so a transition
       // committed after it is reported later as an event, with its own cursor.
       boundary = await journalBound();
-      if (until && until !== 'checkpoint') {
+      if (until === 'blocked') {
+        const blocker = await openBlockerEvent(boundary);
+        if (blocker) return await finish({ outcome: 'matched', boundary, event: blocker, matchedImmediately: true });
+      } else if (until && until !== 'checkpoint') {
         const lifecycle = await lifecycleEvent(boundary);
         const state = lifecycle?.state ?? goalWaitLifecycleState(goal);
         if (goalWaitStateMatches(until, state)) {

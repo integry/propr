@@ -144,6 +144,8 @@ test('the goal event journal triggers survive every later migration and still jo
         const triggers = await database('sqlite_master').where({ type: 'trigger' }).whereLike('name', 'goal_events_%')
             .orderBy('name').select('name', 'tbl_name');
         assert.deepEqual(triggers.map(trigger => ({ ...trigger })), [
+            { name: 'goal_events_blocker_insert', tbl_name: 'goal_blockers' },
+            { name: 'goal_events_blocker_update', tbl_name: 'goal_blockers' },
             { name: 'goal_events_checkpoint_insert', tbl_name: 'goal_checkpoints' },
             { name: 'goal_events_checkpoint_update', tbl_name: 'goal_checkpoints' },
             { name: 'goal_events_lifecycle_insert', tbl_name: 'goals' },
@@ -165,12 +167,24 @@ test('the goal event journal triggers survive every later migration and still jo
         await database('goal_checkpoints').insert(checkpoint('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'completed'));
         await database('goal_checkpoints').insert(checkpoint('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'processing'));
         await database('goal_checkpoints').where({ checkpoint_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }).update({ state: 'completed' });
+        const blockerId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+        await database('goal_blockers').insert({
+            blocker_id: blockerId, goal_id: goalId, owner_id: 'owner-1', repository: 'acme/repo', task_id: 'goal-task-1',
+            run_generation: 1, run_claim: 'claim-1', provider: 'claude', category: 'question', source: 'ask_operator',
+            request_key: 'question-1', summary: 'Which region?', response_actions: '[]', status: 'open',
+        });
+        await database('goal_blockers').where({ blocker_id: blockerId }).update({ last_observed_at: database.fn.now() });
+        await database('goal_blockers').where({ blocker_id: blockerId }).update({ status: 'resolved', resolution: 'answered' });
         await database('goals').where({ goal_id: goalId }).update({ result_state: 'completed' });
         const events = await database('goal_events').where({ goal_id: goalId }).orderBy('sequence');
-        assert.deepEqual(events.map(event => event.kind === 'checkpoint' ? `checkpoint:${event.checkpoint_id}` : `${event.previous_state}->${event.state}`), [
+        assert.deepEqual(events.map(event => event.kind === 'checkpoint' ? `checkpoint:${event.checkpoint_id}`
+            : event.kind === 'blocker' ? `blocker:${event.blocker_id}:${event.previous_state}->${event.state}`
+                : `${event.previous_state}->${event.state}`), [
             'null->queued',
             'checkpoint:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             'checkpoint:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            `blocker:${blockerId}:null->open`,
+            `blocker:${blockerId}:open->resolved`,
             'queued->completed',
         ]);
     } finally {

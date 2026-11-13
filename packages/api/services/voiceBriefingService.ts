@@ -4,6 +4,7 @@ import type { Knex } from 'knex';
 import type { NotificationService } from '@propr/core';
 import {
   buildIssueTaskId,
+  GOAL_BLOCKER_NOTIFICATION_EVENT,
   normalizeISO8601Timestamp,
   VOICE_BRIEFING_MAX_ITEMS,
   voiceBriefingResponseSchema,
@@ -375,7 +376,7 @@ function notificationCandidate(notification: Notification): CandidateItem[] {
     title,
     repository,
     status: notification.severity,
-    summary: safeSummary(title, repository, `needs ${notification.severity} attention`),
+    summary: safeSummary(title, repository, notificationStatusSummary(notification)),
     href: notificationPath(notification),
     requiresAttention: true,
     actions,
@@ -415,7 +416,23 @@ function notificationIdentity(notification: Notification): string[] {
   }
 }
 
+/** The goal a task or pull request notification belongs to, when it names one. */
+function notificationGoalId(notification: Notification): string | undefined {
+  const target = notification.target;
+  if (target.type !== 'task' && target.type !== 'pull_request') return undefined;
+  return nonEmptyString(notification.metadata?.goalId)?.trim() || undefined;
+}
+
+function notificationStatusSummary(notification: Notification): string {
+  // The title already says whether it is a question or an approval.
+  if (notification.metadata?.event === GOAL_BLOCKER_NOTIFICATION_EVENT) return 'is waiting for you';
+  return `needs ${notification.severity} attention`;
+}
+
 function notificationPath(notification: Notification): string {
+  // A goal's cards open the goal console, as Inbox and push click-through do.
+  const goalId = notificationGoalId(notification);
+  if (goalId) return `/goals/${safePathSegment(goalId)}`;
   const target = notification.target;
   switch (target.type) {
     case 'plan': return `/studio/${safePathSegment(target.draftId)}`;

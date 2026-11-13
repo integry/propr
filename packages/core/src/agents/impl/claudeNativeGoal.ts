@@ -28,6 +28,12 @@ import { boundedProviderDiagnostic } from './utils/boundedProviderOutput.js';
 import { LiveAgentOutput } from './utils/liveAgentOutput.js';
 import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { processDockerResult } from './utils/dockerResultProcessor.js';
+import { ClaudeOperatorQuestions, type ClaudeOperatorQuestionChannel } from './claudeOperatorQuestions.js';
+import {
+    boundOperatorQuestionLaunch,
+    CLAUDE_OPERATOR_QUESTION_POLICY,
+    type OperatorQuestionLaunch,
+} from './utils/operatorQuestionMcpServer.js';
 
 const execFileAsync = promisify(execFile);
 const CONTROL_POLL_MS = 400;
@@ -335,6 +341,8 @@ export interface ClaudeGoalContext {
     sessionId: string;
     transcriptPath: string;
     startedAt: number;
+    /** The session's `ask_operator` questions; absent when the tool was not injected. */
+    questions?: ClaudeOperatorQuestionChannel;
 }
 
 interface TurnObservation {
@@ -428,12 +436,23 @@ class ClaudeGoalProtocol {
     }
 
     private async deliverInputs(turnId: string): Promise<GoalControlSnapshotState | null> {
+        const { questions } = this.context;
+        // Questions are reported before inputs are read, so an input submitted
+        // once a question was visible lies above that question's boundary.
+        await questions?.sync(turnId);
         const snapshot = await this.control.load();
-        if (snapshot.desiredState !== 'running') return snapshot.desiredState;
+        if (snapshot.desiredState !== 'running') {
+            // The interrupt that follows cannot end the turn while a tool call
+            // still blocks on the operator, so the question is closed first.
+            await questions?.closeOpen('turn_ended', `the goal was ${snapshot.desiredState}`);
+            return snapshot.desiredState;
+        }
         for (const input of snapshot.pendingInputs) {
             // The turn can end while earlier inputs are being acknowledged;
             // anything left stays pending for the turn that will observe it.
             if (this.stream.hasResult) break;
+            // The next input after an open question is its answer, delivered as the tool result.
+            if (await questions?.answer(input, turnId)) continue;
             this.stream.send(input.message);
             await this.control.markInputDelivered(input.id, turnId);
         }
@@ -457,6 +476,8 @@ class ClaudeGoalProtocol {
                 declaration = parseGoalCheckpointDeclaration(this.stream.textsAfter(cursor).join('\n'));
             }
             if (result) {
+                // A finished turn has no tool call left waiting on the operator.
+                await this.context.questions?.closeOpen('turn_ended', 'the turn ended');
                 await this.control.setActiveTurn(null);
                 return { result, stopRequested, declaration };
             }
@@ -526,6 +547,8 @@ class ClaudeGoalProtocol {
             if (Date.now() >= deadline) throw new Error('Claude goal session did not finish its turn in time');
             await this.stream.waitForActivity(Math.min(CONTROL_POLL_MS, deadline - Date.now()));
             await this.control.heartbeat();
+            // The acknowledgement-only turn takes no questions; decline one rather than wait on it.
+            await this.context.questions?.sync(null);
             if (!stopRequested) {
                 stopRequested = await this.requestedStop();
                 if (stopRequested) this.stream.interrupt();
@@ -579,7 +602,10 @@ class ClaudeGoalProtocol {
         // A fresh session receives its launch context before the goal exists,
         // so the goal's first turn already works under ProPR's delivery policy.
         if (pending.length && !options.resumeSessionId) {
-            const launch = pending.map(message => message.text).join('\n\n');
+            const launch = [
+                ...pending.map(message => message.text),
+                ...(this.context.questions ? [CLAUDE_OPERATOR_QUESTION_POLICY] : []),
+            ].join('\n\n');
             const context = await this.runContextTurn(`${CLAUDE_GOAL_CONTEXT_PREAMBLE}\n\n${launch}`);
             if (context.stopRequested) return this.stop(context.stopRequested, state);
             if (context.result.isError) {
@@ -705,11 +731,14 @@ export interface ClaudeNativeGoalLaunch {
     /** Direct agent alias charged by physical admission. */
     agentAlias: string;
     diagnostics?: DiagnosticAgent;
-    buildDockerArgs(): Promise<string[]>;
+    /** Receives the question launch bound to this attempt's deadline, when the session has the tool. */
+    buildDockerArgs(operatorQuestions?: OperatorQuestionLaunch): Promise<string[]>;
     sessionId: string;
     transcriptPath: string;
     model: string;
     timeoutMs: number;
+    /** Exchange of the injected `ask_operator` tool; absent when the session has no such tool. */
+    operatorQuestions?: OperatorQuestionLaunch;
 }
 
 function resolveClaudeGoalExecution(options: AgentTaskOptions): { control: GoalExecutionControl; command: string } {
@@ -733,7 +762,12 @@ export async function executeClaudeNativeGoal(
     const ownership = getExecutionOwnershipContext();
     // The identity is assigned up front, so persist it before any provider work.
     await options.onSessionId?.(launch.sessionId);
-    const dockerArgs = await launch.buildDockerArgs();
+    // The kill timer below starts later than `start`, so questions measured
+    // from `start + timeoutMs` always close before the attempt is killed.
+    const operatorQuestions = launch.operatorQuestions
+        ? boundOperatorQuestionLaunch(launch.operatorQuestions, start + launch.timeoutMs, launch.timeoutMs, start)
+        : undefined;
+    const dockerArgs = await launch.buildDockerArgs(operatorQuestions);
     if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     assertNativeLogAdmission(launch.diagnostics);
@@ -748,6 +782,9 @@ export async function executeClaudeNativeGoal(
     const stream = new ClaudeGoalStream(child, options.taskId, records => control.appendOutput(records));
     void detectContainer(getDockerRunContainerName(args), options.onContainerId);
     const deadline = setTimeout(() => child.kill('SIGTERM'), launch.timeoutMs);
+    const questions = operatorQuestions
+        ? new ClaudeOperatorQuestions(operatorQuestions, control, launch.sessionId)
+        : undefined;
     let completion: ClaudeGoalCompletion;
     try {
         completion = await runClaudeGoalProtocol(stream, options, {
@@ -756,6 +793,7 @@ export async function executeClaudeNativeGoal(
             sessionId: launch.sessionId,
             transcriptPath: launch.transcriptPath,
             startedAt: start,
+            questions,
         });
     } catch (error) {
         const abortError = getExecutionAbortError(ownership?.signal);
@@ -763,6 +801,8 @@ export async function executeClaudeNativeGoal(
     } finally {
         clearTimeout(deadline);
         ownership?.signal.removeEventListener('abort', abort);
+        // A question still open when the attempt ends can no longer be answered.
+        await questions?.closeOpen('attempt_ended', 'the goal attempt ended').catch(() => undefined);
         await control.setActiveTurn(null).catch(() => undefined);
         await stream.shutdown();
     }

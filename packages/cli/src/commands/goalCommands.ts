@@ -550,7 +550,9 @@ function printGoalWait(goalId: string, result: GoalWaitChainResult): void {
   if (result.outcome === "matched") {
     const what = result.event?.kind === "checkpoint"
       ? `checkpoint ${result.event.checkpoint?.commitSha ?? result.event.checkpoint?.id ?? ""}`.trim()
-      : result.event?.state ?? result.goal?.lifecycleState;
+      : result.event?.kind === "blocker"
+        ? `${result.event.blocker?.category ?? "blocker"} ${result.event.blocker?.status ?? "open"} (run 'propr goal inspect ${goalId}' to answer)`
+        : result.event?.state ?? result.goal?.lifecycleState;
     console.log(`Matched ${condition}: ${what}${result.matchedImmediately ? " (already true)" : ""}.`);
   } else if (result.outcome === "unreachable") {
     console.log(`Cannot match ${condition}: the goal is ${result.goal?.lifecycleState} and records no further events after this cursor.`);
