@@ -28,7 +28,7 @@ const REFRESH_MARGIN_MS = 60 * 1000;
  */
 const LEASE_MS = 3 * EXTENSION_LIMITS.timeoutMs;
 const LEASE_WAIT_MS = 15 * 1000;
-/** A consumed state stays until its callback finishes; expiry cleanup leaves it this long past its expiry. */
+/** A state held by its start or consumed by its callback stays until that finishes; expiry cleanup leaves it this long past its expiry. */
 const CLAIM_GRACE_MS = 60 * 1000;
 const DISCONNECTING = 'The server is being disconnected; connect again when it has finished';
 /** The connection a refresh started for was disconnected, replaced or its lease lost: its result is discarded. */
@@ -59,8 +59,8 @@ export const setExtensionOAuth = (store: ExtensionLibraryStore, oauth: Extension
  * The current library server named `name` and its administrator-entered
  * credential (for OAuth: the pre-registered client secret). Never authorizes.
  */
-async function currentServerCredential(library: ExtensionLibraryStore, name: string): Promise<{ instanceId: string; server: ExtensionLibraryServer | undefined; secret: string | undefined }> {
-  const head = await library.head();
+async function currentServerCredential(library: ExtensionLibraryStore, name: string, database?: Knex): Promise<{ instanceId: string; server: ExtensionLibraryServer | undefined; secret: string | undefined }> {
+  const head = await library.head(database);
   const { instanceId, revision } = head.snapshot;
   const server = head.snapshot.servers.find(s => s.name === name);
   const secrets = server && credentialServers([server]).length ? unsealLibrarySecrets(head.secretsEncrypted, instanceId, revision, library.environment) : {};
@@ -126,31 +126,53 @@ export class ExtensionOAuthStore {
     if (!urls.redirectUri) throw new ExtensionError(409, 'Connect requires a public HTTPS base URL for this instance (API_PUBLIC_URL)');
     if (typeof sessionId !== 'string' || !sessionId) throw new ExtensionError(403, 'Sign-in requires a browser session');
     await this.library.authorize(actor); await this.tables();
-    const { instanceId, server, secret } = await currentServerCredential(this.library, name);
-    if (!isOAuthServer(server)) throw new ExtensionError(404, 'OAuth library server unavailable');
-    let discovery;
-    try { discovery = await discoverOAuth(this.transport, server.url, server.scopes); }
-    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed'); }
-    if (!discovery) throw new ExtensionError(409, 'The server answered without requiring authorization');
-    const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl });
-    let client: OAuthClient;
-    if (registration === 'preregistered') client = preregisteredClient(discovery.metadata, server.clientId!, secret);
-    else if (registration === 'metadata_document') client = { registration, clientId: urls.clientMetadataUrl!, authMethod: 'none' };
-    else if (registration === 'dynamic') client = await this.dynamicClient(instanceId, server, discovery.metadata, urls.redirectUri);
-    else throw new ExtensionError(409, 'The authorization server supports no client registration ProPR can use. Enter a pre-registered client id, or use a Bearer token.');
     const state = randomBytes(32).toString('base64url'); const stateHash = sha256(state);
-    const pkce = createPkce();
-    const { clientSecret, ...publicClient } = client;
-    const details: PendingDetails = { issuer: discovery.issuer, metadata: discovery.metadata, client: publicClient, scopes: discovery.scopes, redirectUri: urls.redirectUri, resource: discovery.resource, ...(server.clientId ? { clientId: server.clientId } : {}) };
-    await this.library.authorize(actor);
-    await this.database(OAUTH_PENDING).where('expires_at', '<=', this.now()).where(q => q.whereNull('claim').orWhere('expires_at', '<=', this.now() - CLAIM_GRACE_MS)).delete();
-    await this.database(OAUTH_PENDING).insert({
-      state_hash: stateHash, instance_id: instanceId, server_name: server.name, endpoint: server.url, actor, session_hash: sessionHash(sessionId),
-      // A dynamically registered secret is sealed with the verifier; a pre-registered one is read from the library at the callback.
-      sealed: sealExtensionSecrets({ verifier: pkce.verifier, ...(registration === 'dynamic' && clientSecret ? { clientSecret } : {}) }, pendingIdentity(instanceId, server.name, stateHash), this.environment),
-      details: JSON.stringify(details), expires_at: this.now() + STATE_TTL_MS,
+    // The attempt is recorded before its first request and held by this start until its state is issued. Disconnect and
+    // binding changes delete pending rows, this record included, so they cancel a start still discovering or registering.
+    const attempt = { state_hash: stateHash, claim: `start:${randomUUID()}` };
+    const { instanceId, server, secret } = await this.database.transaction(async trx => {
+      // Writing first takes the write lock, so every Disconnect and library save committed later sees the record.
+      await trx(OAUTH_PENDING).where('expires_at', '<=', this.now()).where(q => q.whereNull('claim').orWhere('expires_at', '<=', this.now() - CLAIM_GRACE_MS)).delete();
+      await this.library.authorize(actor, trx);
+      const current = await currentServerCredential(this.library, name, trx);
+      if (!isOAuthServer(current.server)) throw new ExtensionError(404, 'OAuth library server unavailable');
+      // The record carries the binding a library save compares; the sign-in details are written when the start completes.
+      await trx(OAUTH_PENDING).insert({
+        ...attempt, instance_id: current.instanceId, server_name: current.server.name, endpoint: current.server.url, actor, session_hash: sessionHash(sessionId),
+        sealed: '', details: JSON.stringify(current.server.clientId ? { clientId: current.server.clientId } : {}), expires_at: this.now() + STATE_TTL_MS,
+      });
+      return { instanceId: current.instanceId, server: current.server, secret: current.secret };
     });
-    return { authorizationUrl: authorizationUrl(discovery.metadata, { clientId: client.clientId, redirectUri: urls.redirectUri, challenge: pkce.challenge, state, resource: discovery.resource, scopes: discovery.scopes }) };
+    try {
+      let discovery;
+      try { discovery = await discoverOAuth(this.transport, server.url, server.scopes); }
+      catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed'); }
+      if (!discovery) throw new ExtensionError(409, 'The server answered without requiring authorization');
+      const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl });
+      let client: OAuthClient;
+      if (registration === 'preregistered') client = preregisteredClient(discovery.metadata, server.clientId!, secret);
+      else if (registration === 'metadata_document') client = { registration, clientId: urls.clientMetadataUrl!, authMethod: 'none' };
+      else if (registration === 'dynamic') client = await this.dynamicClient(instanceId, server, discovery.metadata, urls.redirectUri);
+      else throw new ExtensionError(409, 'The authorization server supports no client registration ProPR can use. Enter a pre-registered client id, or use a Bearer token.');
+      const pkce = createPkce();
+      const { clientSecret, ...publicClient } = client;
+      const details: PendingDetails = { issuer: discovery.issuer, metadata: discovery.metadata, client: publicClient, scopes: discovery.scopes, redirectUri: urls.redirectUri, resource: discovery.resource, ...(server.clientId ? { clientId: server.clientId } : {}) };
+      await this.database.transaction(async trx => {
+        // Only while the record still exists: a Disconnect or binding change that committed meanwhile cancelled this start.
+        if (await trx(OAUTH_PENDING).where(attempt).update({
+          // A dynamically registered secret is sealed with the verifier; a pre-registered one is read from the library at the callback.
+          sealed: sealExtensionSecrets({ verifier: pkce.verifier, ...(registration === 'dynamic' && clientSecret ? { clientSecret } : {}) }, pendingIdentity(instanceId, server.name, stateHash), this.environment),
+          // Released: the callback presenting this state may claim it from now on.
+          details: JSON.stringify(details), expires_at: this.now() + STATE_TTL_MS, claim: null,
+        }) !== 1) throw new ExtensionError(409, 'The sign-in was cancelled; connect again');
+        await this.library.authorize(actor, trx);
+      });
+      return { authorizationUrl: authorizationUrl(discovery.metadata, { clientId: client.clientId, redirectUri: urls.redirectUri, challenge: pkce.challenge, state, resource: discovery.resource, scopes: discovery.scopes }) };
+    } catch (error) {
+      // A start that did not issue its state leaves no record behind.
+      await this.database(OAUTH_PENDING).where(attempt).delete();
+      throw error;
+    }
   }
   /**
    * Reuse this item's dynamic registration with the same issuer and redirect

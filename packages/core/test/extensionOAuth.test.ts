@@ -423,6 +423,60 @@ test('Disconnect or a binding change while the code exchange is outstanding canc
   }
 });
 
+test('Disconnect or a binding change while discovery or registration is outstanding cancels the start', async t => {
+  type F = Awaited<ReturnType<typeof hooked>>;
+  const dynamic = { provider: { advertise: { dynamic: true } }, server: oauthServer(), secrets: {} };
+  const preregistered = { provider: { advertise: {} }, server: oauthServer({ clientId: PREREGISTERED_CLIENT.id }), secrets: { docs: PREREGISTERED_CLIENT.secret } };
+  const discovering = (request: OAuthHttpRequest) => request.method === 'POST' && request.url === OAUTH_MCP_URL;
+  const registering = (request: OAuthHttpRequest) => new URL(request.url).pathname === '/register';
+  const cases = [
+    // Reconnect of a connected server: Disconnect returns while the start is still discovering.
+    { name: 'disconnect during discovery', ...dynamic, connected: true, hold: discovering, change: (f: F) => f.oauth.disconnect('1', 'docs') },
+    { name: 'disconnect during registration', ...dynamic, connected: false, hold: registering, change: (f: F) => f.oauth.disconnect('1', 'docs') },
+    { name: 'new URL during discovery', ...dynamic, connected: true, hold: discovering, change: (f: F) => f.save([oauthServer({ url: 'https://8.8.8.8/v2/mcp' })]) },
+    { name: 'removed during registration', ...dynamic, connected: false, hold: registering, change: (f: F) => f.save([]) },
+    { name: 'new client id during discovery', ...preregistered, connected: false, hold: discovering, change: (f: F) => f.save([oauthServer({ clientId: 'replacement-client' })], { docs: REPLACEMENT_SECRET }) },
+    // Back on the endpoint the start read: only the cancelled record tells this start from a new one.
+    { name: 'URL changed and restored during discovery', ...dynamic, connected: false, hold: discovering, change: async (f: F) => { await f.save([oauthServer({ url: 'https://8.8.8.8/v2/mcp' })]); await f.save([oauthServer()]); } },
+  ];
+  for (const item of cases) {
+    let armed = false; const holding = deferred(); const answer = deferred();
+    const f = await hooked(t, item.provider, async (request, forward) => {
+      const response = await forward();
+      if (armed && item.hold(request)) { armed = false; holding.resolve(); await answer.promise; }
+      return response;
+    });
+    await f.save([item.server], { ...item.secrets });
+    if (item.connected) await f.connect();
+    armed = true;
+    const start = f.oauth.startSignIn('1', 'session-a', 'docs', OAUTH_URLS);
+    await holding.promise;
+    assert.equal((await f.database('extension_oauth_pending').select()).length, 1, `${item.name}: the start is recorded before its first request completes`);
+    await item.change(f);
+    answer.resolve();
+    await assert.rejects(start, /cancelled/, item.name);
+    assert.deepEqual(await f.database('extension_oauth_pending').select(), [], `${item.name}: no pending sign-in is recorded`);
+    assert.deepEqual(await f.connectionRows(), [], `${item.name}: no connection is restored`);
+  }
+
+  // A library save that keeps the binding leaves the start, and its sign-in, intact.
+  let armed = false; const holding = deferred(); const answer = deferred();
+  const f = await hooked(t, preregistered.provider, async (request, forward) => {
+    const response = await forward();
+    if (armed && discovering(request)) { armed = false; holding.resolve(); await answer.promise; }
+    return response;
+  });
+  await f.save([preregistered.server], { ...preregistered.secrets });
+  armed = true;
+  const start = f.oauth.startSignIn('1', 'session-a', 'docs', OAUTH_URLS);
+  await holding.promise;
+  await f.save([preregistered.server, oauthServer({ name: 'other', url: 'https://8.8.8.8/other/mcp' })]);
+  answer.resolve();
+  const { authorizationUrl } = await start;
+  assert.deepEqual(await f.oauth.completeSignIn('1', 'session-a', f.synthetic.authorize(authorizationUrl)), { name: 'docs' });
+  assert.equal((await f.connectionRows())[0].state, 'connected');
+});
+
 test('a refresh of a replaced connection neither overwrites its successor nor is joined by it', async t => {
   for (const phase of ['write', 'single-flight'] as const) {
     const delivering = deferred(); const answer = deferred(); let refreshes = 0;

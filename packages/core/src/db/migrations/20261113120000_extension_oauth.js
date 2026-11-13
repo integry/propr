@@ -34,7 +34,8 @@ export async function up(knex) {
       t.text('endpoint').notNullable(); t.string('actor').notNullable(); t.string('session_hash').notNullable();
       t.text('sealed').notNullable(); t.text('details').notNullable();
       t.bigInteger('expires_at').notNullable();
-      // Set by the callback that consumed the state; Disconnect and binding changes delete the row to cancel it.
+      // Held by the start until it issues the state, then by the callback that consumed it; Disconnect and
+      // binding changes delete the row to cancel either.
       t.string('claim');
     });
   }
