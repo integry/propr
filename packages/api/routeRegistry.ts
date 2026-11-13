@@ -8,11 +8,8 @@ import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summa
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
 import {
-  requireAgentTankUsageAccess,
-  requireManageAgents,
-  requireManageMembers,
-  requireManageRuntime,
-  requireManageSettings,
+  requireAgentTankUsageAccess, requireManageAgents, requireManageMembers,
+  requireManageRuntime, requireManageSettings,
 } from './permissionGuards.js';
 import { withDemoViewerBoundary } from './demoViewerRoutes.js';
 import { timeApiRouteHandler } from './apiPerformanceTiming.js';
