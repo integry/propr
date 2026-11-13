@@ -382,7 +382,14 @@ export function agentCapacityRaceWaitMs(): number | undefined {
 export function aliasCapacityWait(alias: string, ceiling: string, options: { capacityRaceWaitMs?: number; timeoutReason?: unknown }) {
     const raceWaitMs = options.capacityRaceWaitMs ?? agentCapacityRaceWaitMs();
     let since: number | undefined;
+    // The caller's own timeout can land anywhere in the wait loop (a Redis call,
+    // the cancellation check, the pause): while waiting on the ceiling, it is a capacity wait.
+    const failure = (error: unknown, signal: AbortSignal): unknown =>
+        since !== undefined && options.timeoutReason !== undefined && signal.aborted && signal.reason === options.timeoutReason
+            ? new AgentCapacityWaitTimeoutError(alias, Number(ceiling))
+            : error;
     return {
+        failure,
         observe(result: unknown) {
             since = result === 3 ? since ?? Date.now() : undefined;
             if (since !== undefined && raceWaitMs !== undefined && Date.now() - since >= raceWaitMs) {
@@ -391,12 +398,7 @@ export function aliasCapacityWait(alias: string, ceiling: string, options: { cap
         },
         async pause(ms: number, signal: AbortSignal) {
             try { await delay(ms, undefined, { signal }); }
-            catch (error) {
-                if (since !== undefined && options.timeoutReason !== undefined && signal.reason === options.timeoutReason) {
-                    throw new AgentCapacityWaitTimeoutError(alias, Number(ceiling));
-                }
-                throw error;
-            }
+            catch (error) { throw failure(error, signal); }
         },
     };
 }

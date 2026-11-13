@@ -414,21 +414,23 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         logger.info({ instance: config.instance, limit: config.limit, ...log, ...nestingLog }, 'Waiting for physical agent admission');
         const reportWait = waitReasonReporter(config.instance, log, options.onWaiting);
         const aliasWait = aliasCapacityWait(alias, ceiling, options);
-        while (true) {
-            await client.zadd(waiting, Date.now() + 30_000, token);
-            await recover(identity);
-            await checkCancelled();
-            const result = await call('acquire', token, identity, String(config.limit));
-            const admitted = admittedReply(result, nestedLimit);
-            if (admitted) { acquired = true; nested = admitted === 'nested'; break; }
-            if (result === -1) {
-                await initialize(identity);
-                continue;
+        try {
+            while (true) {
+                await client.zadd(waiting, Date.now() + 30_000, token);
+                await recover(identity);
+                await checkCancelled();
+                const result = await call('acquire', token, identity, String(config.limit));
+                const admitted = admittedReply(result, nestedLimit);
+                if (admitted) { acquired = true; nested = admitted === 'nested'; break; }
+                if (result === -1) {
+                    await initialize(identity);
+                    continue;
+                }
+                reportWait(result);
+                aliasWait.observe(result);
+                await aliasWait.pause(options.pollMs ?? 250, signal);
             }
-            reportWait(result);
-            aliasWait.observe(result);
-            await aliasWait.pause(options.pollMs ?? 250, signal);
-        }
+        } catch (error) { throw aliasWait.failure(error, signal); }
         await client.zrem(waiting, token);
         renew();
         await checkCancelled();
