@@ -65,7 +65,9 @@ describe('AgentExtensionsSection', () => {
   });
 
   it('switches a saved item off through the enable endpoint without saving the draft', async () => {
-    vi.mocked(setExtensionItemEnabled).mockResolvedValue({ library: { ...library, revision: 4, servers: [{ ...docs, enabled: false }] } });
+    vi.mocked(setExtensionItemEnabled)
+      .mockResolvedValueOnce({ library: { ...library, revision: 4, servers: [{ ...docs, enabled: false }] } })
+      .mockResolvedValueOnce({ library: { ...library, revision: 5, servers: [{ ...docs, enabled: false }], skills: [{ ...library.skills[0], enabled: false }] } });
     const view = await section();
     fireEvent.change(within(view).getByLabelText('Stable server name'), { target: { value: 'docs' } });
     const enabled = within(view).getAllByRole('checkbox', { name: 'Enabled' });
@@ -76,7 +78,24 @@ describe('AgentExtensionsSection', () => {
     await waitFor(() => expect(setExtensionItemEnabled).toHaveBeenCalledWith({ kind: 'skill', bundleId }, false));
     expect(saveExtensionLibrary).not.toHaveBeenCalled();
     fireEvent.click(within(view).getByRole('button', { name: 'Save library' }));
-    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledWith(expect.anything(), 4, {}));
+    // Each toggle revision sat directly on the draft's base, so the draft is still current.
+    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledWith(expect.anything(), 5, {}));
+  });
+
+  it('keeps the draft base revision when a toggle reveals edits made elsewhere, so saving conflicts', async () => {
+    // Another administrator saved revision 4 (narrowing the server's repositories); this toggle lands as revision 5.
+    const elsewhere = { ...library, revision: 5, servers: [{ ...docs, repositories: ['example/other'] }], skills: [{ ...library.skills[0], enabled: false }] };
+    vi.mocked(setExtensionItemEnabled).mockResolvedValue({ library: elsewhere });
+    const view = await section();
+    fireEvent.click(within(view).getAllByRole('checkbox', { name: 'Enabled' })[1]);
+    await waitFor(() => expect(setExtensionItemEnabled).toHaveBeenCalledWith({ kind: 'skill', bundleId }, false));
+    expect(await within(view).findByRole('status')).toHaveTextContent('changed elsewhere');
+    fireEvent.click(within(view).getByRole('button', { name: 'Save library' }));
+    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledTimes(1));
+    // The stale draft (still holding the wider limit) is submitted against revision 3, which the server refuses.
+    const [input, expectedRevision] = vi.mocked(saveExtensionLibrary).mock.calls[0];
+    expect(expectedRevision).toBe(3);
+    expect(input.servers[0].repositories).toEqual(['example/docs']);
   });
 
   it('changes a new item only in the draft', async () => {

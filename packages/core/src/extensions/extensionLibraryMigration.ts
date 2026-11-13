@@ -3,6 +3,7 @@ import {
   EXTENSION_LIBRARY_LIMITS, EXTENSION_LIBRARY_VERSION, extensionLibraryServerSchema, extensionLibrarySkillSchema,
   type ExtensionLibraryRevision, type ExtensionLibraryServer, type ExtensionLibrarySkill, type ExtensionMcpDescriptor,
   type ExtensionSecretStatus, type ExtensionSkillBundle, type LegacyExtensionProfileRevision,
+  AUTOMATION_RUN_STATES, isTerminalAutomationRunState,
 } from '@propr/shared';
 import defaultLogger from '../utils/logger.js';
 import { sealExtensionSecrets, unsealExtensionSecrets } from './privateSecrets.js';
@@ -17,10 +18,17 @@ import { libraryIdentity } from './extensionProfileStore.js';
  *   with the profile's scopes as its limits and `autoApply: false`, so no
  *   run's behaviour changes;
  * - identical servers (kind, url or catalog id and digest, tools, capability,
- *   authentication and credential) merge, with the union of their limits (an
- *   empty source limit keeps the merged limit empty); different servers that
- *   share a name get a deterministic `-2`, `-3`... suffix;
- * - automations that selected a profile add its (possibly renamed) items;
+ *   authentication, credential and enabled state) merge, with the union of
+ *   their limits (an empty source limit keeps the merged limit empty);
+ *   different servers that share a name get a deterministic `-2`, `-3`...
+ *   suffix. A server disabled in one source and enabled in another stays two
+ *   items, so a disabled selection never maps to an enabled item;
+ * - a skill bundle (one library item per bundle) selected only through
+ *   disabled profiles stays disabled; a disabled profile's selection of a
+ *   bundle that another enabled profile makes active is left out of its
+ *   mapping;
+ * - automations that selected a profile add its (possibly renamed) items, and
+ *   so do the definition snapshots of their nonterminal runs;
  * - each profile id maps to its item names for queued New Task submissions;
  * - Bearer tokens are re-bound to the library revision; an undecryptable
  *   credential leaves the item without one and logs a warning.
@@ -36,9 +44,11 @@ interface Candidate { server: ExtensionMcpDescriptor; token?: string; status?: E
 
 const union = (a: string[] | null, b: string[]) => (a === null || !b.length ? null : [...new Set([...a, ...b])]);
 const limit = (value: string[] | null, max: number) => (value ?? []).slice(0, max);
-const identity = (server: ExtensionMcpDescriptor, token: string | undefined) => JSON.stringify(server.kind === 'https'
-  ? ['https', server.url, [...server.tools].sort(), server.capability, server.authentication, token ?? null]
-  : ['catalog', server.catalogId, server.digest, [...server.tools].sort(), server.capability]);
+// Enabled state is part of the identity: merging an inactive source into an active item would activate it for that source.
+const identity = (server: ExtensionMcpDescriptor, token: string | undefined, enabled: boolean) => JSON.stringify(server.kind === 'https'
+  ? ['https', server.url, [...server.tools].sort(), server.capability, server.authentication, token ?? null, enabled]
+  : ['catalog', server.catalogId, server.digest, [...server.tools].sort(), server.capability, enabled]);
+const NONTERMINAL_RUN_STATES = AUTOMATION_RUN_STATES.filter(state => !isTerminalAutomationRunState(state));
 function suffixed(name: string, taken: Set<string>): string {
   for (let n = 2; ; n++) {
     const suffix = `-${n}`; const candidate = name.slice(0, 48 - suffix.length) + suffix;
@@ -90,14 +100,16 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
       const candidates = new Map<string, Candidate>(); const byIdentity = new Map<string, string>();
       const skills = new Map<string, { enabled: boolean; repositories: string[] | null; agents: string[] | null }>();
       const mapping = new Map<string, { servers: string[]; skills: string[] }>();
+      // Skills a disabled profile selected: kept in its mapping only if the merged item stays disabled.
+      const inactiveSkills = new Map<string, Set<string>>();
       for (const profile of profiles) {
         const secrets = secretsByProfile.get(profile.profileId);
         const items = { servers: [] as string[], skills: [] as string[] };
         for (const server of [...profile.mcpServers].sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
           const token = server.kind === 'https' && server.authentication === 'bearer' ? secrets?.[server.name] : undefined;
-          const key = identity(server, token);
-          let name = byIdentity.get(key);
           const enabled = profile.enabled && server.enabled;
+          const key = identity(server, token, enabled);
+          let name = byIdentity.get(key);
           if (name) {
             const merged = candidates.get(name)!;
             merged.enabled ||= enabled; merged.repositories = union(merged.repositories, profile.repositoryScope); merged.agents = union(merged.agents, profile.agentScope);
@@ -117,6 +129,7 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
           if (current) { current.enabled ||= enabled; current.repositories = union(current.repositories, profile.repositoryScope); current.agents = union(current.agents, profile.agentScope); }
           else skills.set(bundleId, { enabled, repositories: profile.repositoryScope.length ? [...profile.repositoryScope] : null, agents: profile.agentScope.length ? [...profile.agentScope] : null });
           items.skills.push(bundleId);
+          if (!enabled) inactiveSkills.set(profile.profileId, (inactiveSkills.get(profile.profileId) ?? new Set()).add(bundleId));
         }
         mapping.set(profile.profileId, items);
       }
@@ -148,6 +161,7 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
         skillBundles.push(descriptors.get(bundleId)!);
       }
       const keptServers = new Set(servers.map(s => s.name)); const keptSkills = new Set(librarySkills.map(s => s.bundleId));
+      const activeSkills = new Set(librarySkills.filter(s => s.enabled).map(s => s.bundleId));
       report.servers = servers.length - (head?.servers.length ?? 0); report.skills = librarySkills.length - (head?.skills.length ?? 0);
       if (report.servers || report.skills) {
         const revision = (head?.revision ?? 0) + 1; const now = Date.now();
@@ -162,7 +176,8 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
         await trx('extension_library_revisions').insert({ instance_id: instanceId, revision, snapshot: JSON.stringify(snapshot), secrets_encrypted: sealExtensionSecrets(sealed, libraryIdentity(instanceId, revision), environment) });
       }
       for (const [profileId, items] of mapping) {
-        const kept = { servers: items.servers.filter(n => keptServers.has(n)), skills: items.skills.filter(id => keptSkills.has(id)) };
+        const inactive = inactiveSkills.get(profileId);
+        const kept = { servers: items.servers.filter(n => keptServers.has(n)), skills: items.skills.filter(id => keptSkills.has(id) && !(inactive?.has(id) && activeSkills.has(id))) };
         mapping.set(profileId, kept);
         await trx('extension_legacy_profile_items').insert({ profile_id: profileId, servers: JSON.stringify(kept.servers), skills: JSON.stringify(kept.skills) }).onConflict('profile_id').ignore();
       }
@@ -174,6 +189,18 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
           if (!items) report.warnings.push(`Automation ${automation.id} selected an unavailable extension profile; it now adds no extensions`);
           await trx('agent_definitions').where({ id: automation.id }).update({ extensions: JSON.stringify(items ?? { servers: [], skills: [] }) });
           report.automations += 1;
+        }
+      }
+      // Runs already created capture their definition: translate the selection of those that can still launch.
+      if (await trx.schema.hasTable('agent_runs') && await trx.schema.hasColumn('agent_runs', 'definition_snapshot')) {
+        const runs = await trx('agent_runs').whereIn('state', NONTERMINAL_RUN_STATES).whereNotNull('definition_snapshot').select('id', 'definition_snapshot');
+        for (const run of runs) {
+          let snapshot: Record<string, unknown>; try { snapshot = JSON.parse(run.definition_snapshot); } catch { continue; }
+          if (!snapshot || typeof snapshot !== 'object' || !snapshot.extensionProfile || snapshot.extensions) continue;
+          const profileId = (snapshot.extensionProfile as { profileId?: unknown }).profileId;
+          const items = typeof profileId === 'string' ? mapping.get(profileId) : undefined;
+          if (!items) report.warnings.push(`Automation run ${run.id} selected an unavailable extension profile; it now adds no extensions`);
+          await trx('agent_runs').where({ id: run.id }).update({ definition_snapshot: JSON.stringify({ ...snapshot, extensions: items ?? { servers: [], skills: [] } }) });
         }
       }
       report.migrated = true;

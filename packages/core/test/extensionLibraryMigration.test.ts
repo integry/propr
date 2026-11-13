@@ -137,3 +137,60 @@ test('a fresh installation without profiles only records completion', async t =>
   assert.equal((await database('extension_library_revisions')).length, 0);
   assert.ok(await database('extension_library_migration').first());
 });
+
+test('a disabled source selection never maps to an enabled library item', async t => {
+  const { database, instanceId, store } = await fixture(t);
+  const bundleId = randomUUID(); const inactiveBundleId = randomUUID();
+  for (const id of [bundleId, inactiveBundleId]) {
+    await database('extension_skill_bundles').insert({ id, instance_id: instanceId, descriptor: JSON.stringify({ id, instanceId, digest: 'a'.repeat(64), name: `skill-${id}`, files: 1, bytes: 1, source: { kind: 'archive', filename: 'x.tar' }, requirements: [], createdAt: 1, auditActor: '1' }), files_json: '[]' });
+  }
+  const active = await profile(database, instanceId, { name: 'Active', servers: [docs()], secrets: { docs: 'SHARED_SENTINEL_TOKEN' }, repositoryScope: ['team/web'], skillBundleIds: [bundleId] });
+  // The same server and credential, but disabled in this enabled profile.
+  const serverOff = await profile(database, instanceId, { name: 'Server off', servers: [docs({ enabled: false })], secrets: { docs: 'SHARED_SENTINEL_TOKEN' }, repositoryScope: ['team/api'] });
+  // A disabled profile sharing the server and the skill bundle, plus a bundle only it selects.
+  const profileOff = await profile(database, instanceId, { name: 'Profile off', servers: [docs()], secrets: { docs: 'SHARED_SENTINEL_TOKEN' }, skillBundleIds: [bundleId, inactiveBundleId], enabled: false });
+  await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  const library = await store.readLibrary('1');
+  const enabledDocs = library.servers.filter(s => s.enabled);
+  assert.deepEqual(enabledDocs.length, 1); assert.deepEqual(enabledDocs[0].repositories, ['team/web'], 'disabled sources do not widen the active item');
+  assert.equal(library.servers.length, 2, 'the disabled copies stay one separate, disabled item');
+  const disabledDocs = library.servers.find(s => !s.enabled)!;
+  assert.deepEqual(await store.legacyProfileExtensions(active), { servers: [enabledDocs[0].name], skills: [bundleId] });
+  assert.deepEqual(await store.legacyProfileExtensions(serverOff), { servers: [disabledDocs.name], skills: [] });
+  assert.deepEqual(await store.legacyProfileExtensions(profileOff), { servers: [disabledDocs.name], skills: [inactiveBundleId] });
+  assert.deepEqual(library.skills.map(s => [s.bundleId, s.enabled]).sort(), [[bundleId, true], [inactiveBundleId, false]].sort());
+  // An automation that selected either inactive source launches with nothing.
+  for (const profileId of [serverOff, profileOff]) {
+    const additional = (await store.legacyProfileExtensions(profileId))!;
+    const { set } = await store.resolveLaunch({ agentAlias: 'claude-main', runtime: 'claude', repositories: ['team/api'], allowWrite: true, additional }, false);
+    assert.deepEqual(set.servers, []); assert.deepEqual(set.skills, []);
+    assert.ok(set.skipped.every(s => s.reason === 'disabled'), JSON.stringify(set.skipped));
+  }
+});
+
+test('nonterminal automation runs keep the extensions their captured definition selected', async t => {
+  const { database, instanceId } = await fixture(t);
+  await database.schema.createTable('agent_runs', c => { c.string('id').primary(); c.string('state'); c.text('definition_snapshot'); });
+  const profileId = await profile(database, instanceId, { name: 'Docs', servers: [docs({ authentication: 'none' })] });
+  const snapshot = (extra: Record<string, unknown>) => JSON.stringify({ id: 'bound', name: 'Bound', repositories: ['team/repo'], ...extra });
+  await database('agent_runs').insert([
+    { id: 'queued', state: 'queued', definition_snapshot: snapshot({ extensionProfile: JSON.parse(selection(instanceId, profileId)) }) },
+    { id: 'awaiting', state: 'awaiting_approval', definition_snapshot: snapshot({ extensionProfile: JSON.parse(selection(instanceId, profileId)) }) },
+    { id: 'acting', state: 'acting', definition_snapshot: snapshot({ extensionProfile: JSON.parse(selection(instanceId, profileId)) }) },
+    { id: 'missing', state: 'queued', definition_snapshot: snapshot({ extensionProfile: JSON.parse(selection(instanceId, randomUUID())) }) },
+    { id: 'done', state: 'completed', definition_snapshot: snapshot({ extensionProfile: JSON.parse(selection(instanceId, profileId)) }) },
+    { id: 'new', state: 'queued', definition_snapshot: snapshot({ extensions: { servers: [], skills: [] } }) },
+  ]);
+  const before = Object.fromEntries((await database('agent_runs')).map(r => [r.id, r.definition_snapshot]));
+  const report = await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  const runs = Object.fromEntries((await database('agent_runs')).map(r => [r.id, r.definition_snapshot]));
+  for (const id of ['queued', 'awaiting', 'acting']) {
+    const parsed = JSON.parse(runs[id]);
+    assert.deepEqual(parsed.extensions, { servers: ['docs'], skills: [] }, id);
+    assert.equal(parsed.name, 'Bound'); assert.ok(parsed.extensionProfile, 'the old selection is kept');
+  }
+  assert.deepEqual(JSON.parse(runs.missing).extensions, { servers: [], skills: [] });
+  assert.ok(report.warnings.some(w => w.includes('missing')));
+  assert.equal(runs.done, before.done, 'terminal runs are history and stay unchanged');
+  assert.equal(runs.new, before.new);
+});

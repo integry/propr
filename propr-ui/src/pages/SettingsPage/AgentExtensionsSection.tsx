@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- library editing and discovery share the same editor state and callbacks */
-import { useEffect, useId, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useEffect, useId, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import {
   EXTENSION_LIBRARY_LIMITS,
   type InstanceCatalogResponse,
@@ -483,6 +483,13 @@ export default function AgentExtensionsSection() {
   const [catalog, setCatalog] = useState<ExtensionCatalogEntry[]>([]);
   const [library, setLibrary] = useState<ExtensionLibraryRevision>();
   const [draft, setDraft] = useState<LibraryDraft>(draftFrom);
+  /**
+   * The revision the draft was built from: saving sends it as the expected
+   * revision, so edits made elsewhere since then are refused, not overwritten.
+   * It moves only when the draft is reloaded, or when a toggle's revision sits
+   * directly on top of it (then the draft already carries that one change).
+   */
+  const baseRevision = useRef(0);
   const [editorVersion, setEditorVersion] = useState(0);
   const [secrets, setSecrets] = useState<Record<number, string | null>>({});
   const [availableBundles, setAvailableBundles] = useState<ExtensionSkillBundle[]>([]);
@@ -494,6 +501,7 @@ export default function AgentExtensionsSection() {
   const load = (next: ExtensionLibraryRevision) => {
     setLibrary(next);
     setDraft(draftFrom(next));
+    baseRevision.current = next.revision;
     setSecrets({});
     setEditorVersion((v) => v + 1);
   };
@@ -513,6 +521,7 @@ export default function AgentExtensionsSection() {
         if (!active) return;
         setLibrary(result.library);
         setDraft(draftFrom(result.library));
+        baseRevision.current = result.library.revision;
         setCatalog(result.catalog ?? []);
         setAvailableBundles(result.bundles ?? []);
       })
@@ -562,7 +571,12 @@ export default function AgentExtensionsSection() {
       const result = await setExtensionItemEnabled(item, enabled);
       setLibrary(result.library);
       applyDraft();
-      setNotice(enabled ? 'Enabled for new runs.' : 'Disabled for new runs.');
+      // The toggle applies to the current server head. Adopt it as the draft's base only when
+      // nothing else changed in between; otherwise keep the old base so saving this draft conflicts.
+      const current = result.library.revision === baseRevision.current + 1;
+      if (current) baseRevision.current = result.library.revision;
+      const state = enabled ? 'Enabled for new runs.' : 'Disabled for new runs.';
+      setNotice(current ? state : `${state} The library was changed elsewhere: discard changes to reload it before saving other edits.`);
     });
   };
   const bundleInfo = [...new Map([...availableBundles, ...(library?.skillBundles ?? [])].map((b) => [b.id, b])).values()];
@@ -746,7 +760,7 @@ export default function AgentExtensionsSection() {
                   void action(async () => {
                     const result = await saveExtensionLibrary(
                       { version: 1, servers: draft.servers, skills: draft.skills },
-                      library.revision,
+                      baseRevision.current,
                       Object.fromEntries(draft.servers.flatMap((server, index) =>
                         server.kind === 'https' && server.authentication === 'bearer' && Object.prototype.hasOwnProperty.call(secrets, index)
                           ? [[server.name, secrets[index]]] : [])),
