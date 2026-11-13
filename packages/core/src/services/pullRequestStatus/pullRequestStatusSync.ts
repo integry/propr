@@ -9,8 +9,8 @@ import { db } from '../../db/connection.js';
 import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
-import { computePullRequestStatus, type EpicStatusFacts, type PullRequestStatus } from './pullRequestStatus.js';
-import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
+import { computePullRequestStatus, isUndeterminedPullRequestStatus, type EpicStatusFacts, type PullRequestStatus } from './pullRequestStatus.js';
+import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicSyncOutcome, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
@@ -278,7 +278,7 @@ async function syncPullRequestStatusOnce(
     const resolved = resolveDeps(overrides);
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
     const { notes, ...outcome } = await syncUnderBodyLock(deps, repository, prNumber);
-    await syncEpicSideOfStatus(deps.github, { repository, prNumber }, notes);
+    await syncEpicSideOfStatus(deps.github, deps.redis, { repository, prNumber }, notes);
     return outcome;
 }
 
@@ -286,6 +286,8 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
         const desired = await statusForLatestPull(deps, repository, prNumber);
         const { status, pull, checksReadFailed } = desired;
+        // Sub-PRs left unread may be working (undeterminedEpicSyncOutcome).
+        if (isUndeterminedPullRequestStatus(status)) return { ...undeterminedEpicSyncOutcome(pull), checksReadFailed, notes: epicSyncNotes(desired, false) };
         const title = await decidePullRequestTitleForSync({
             repository, prNumber, pull, status, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
         });

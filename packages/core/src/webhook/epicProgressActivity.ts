@@ -51,3 +51,28 @@ export function extractEpicProgressActivityLines(body: string | null | undefined
     return (body ?? '').split('\n').filter(line => ACTIVITY_LINE_PATTERN.test(line));
 }
 
+
+const MERGED_CHILDREN_LINE_PATTERN = /^Merged child PRs: /;
+const PROGRESS_BAR_LINE_PATTERN = /^`[█░]*` \d+%$/;
+
+/**
+ * `body` (a progress comment by buildEpicProgressComment) with its "In
+ * progress" and "Up next" lines replaced by `lines`, every other line kept as
+ * its writer left it; null when `body` has no line they can follow.
+ */
+export function replaceEpicProgressActivityLines(body: string, lines: string[]): string | null {
+    const kept: string[] = [];
+    for (const line of body.split('\n')) {
+        if (ACTIVITY_LINE_PATTERN.test(line)) {
+            // Each activity line is its own paragraph: drop its blank line with it.
+            if (kept.at(-1) === '') kept.pop();
+            continue;
+        }
+        kept.push(line);
+    }
+    let anchor = kept.findIndex(line => MERGED_CHILDREN_LINE_PATTERN.test(line));
+    if (anchor < 0) anchor = kept.findIndex(line => PROGRESS_BAR_LINE_PATTERN.test(line));
+    if (anchor < 0) return null;
+    kept.splice(anchor + 1, 0, ...lines.flatMap(line => ['', line]));
+    return kept.join('\n');
+}

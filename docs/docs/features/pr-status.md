@@ -89,10 +89,12 @@ An epic pull request collects the sub-PRs of a plan: its own branch only receive
 | State | When |
 | --- | --- |
 | `working` | Not every issue is merged, and a sub-PR or an issue of the epic is being worked on (a sub-PR whose own status is `working`, or an issue that started and has no sub-PR yet), ProPR is working on the epic PR itself, or the plan's queue is about to start its next issue. |
-| `needs_attention` | Not every issue is merged and nothing is running: a sub-PR needs you, a sub-PR is `ready` and waits to be merged into the epic branch, the plan's queue is paused, the epic PR conflicts with its base, or nothing is left to start. Also when every issue is merged but a check on the epic PR's head failed or it conflicts with its base. |
+| `needs_attention` | Not every issue is merged and nothing is running: a sub-PR needs you, an issue's run stopped on a blocker the agent reported, a sub-PR is `ready` and waits to be merged into the epic branch, the plan's queue is paused, the epic PR conflicts with its base, or nothing is left to start. Also when every issue is merged but a check on the epic PR's head failed or it conflicts with its base. |
 | `ready` | Every issue is merged into the epic branch, every check on the epic PR's current head completed and passed, and it does not conflict with its base. |
 
-A sub-PR that is `ready` but not merged yet makes the epic `needs_attention`, so the list of pull requests shows that a merge is waiting on you. An epic shows no review score.
+A sub-PR that is `ready` but not merged yet makes the epic `needs_attention`, so the list of pull requests shows that a merge is waiting on you. An issue whose run stopped on a reported blocker is not in progress, although it stays started until a person acts: the line reads `#3476 stopped on a blocker`, unless other work of the epic is running. An epic shows no review score.
+
+ProPR reads the status of up to 10 of an epic's open sub-PRs per update. When none of the work it read is running but more sub-PRs are open, one it did not read could be: the line and the title are then left as they were, rather than say the epic waits on you.
 
 The body line leads with the progress, then says what is running or what waits on you:
 
@@ -118,10 +120,10 @@ In progress: #3523 (issue #3475, Let an automation run when a plan issue is bloc
 Up next: none
 ```
 
-- **In progress** lists every open sub-PR into the epic branch as `#PR (issue #N, title)`, followed by its status in a few words (for example "review 6/10, Ultrafix cycle 3 of 10" or "ready to merge"), and every plan issue that started but has no sub-PR yet as `#issue (title)`. It is left out when nothing is in progress.
+- **In progress** lists every open sub-PR into the epic branch as `#PR (issue #N, title)`, followed by its status in a few words (for example "review 6/10, Ultrafix cycle 3 of 10" or "ready to merge"), and every plan issue that started but has no sub-PR yet as `#issue (title)` (followed by "stopped on a blocker" when its run did). It is left out when nothing is in progress.
 - **Up next** lists the plan issues that have not started, in queue order. Once the last issue is in progress it reads "none"; when nothing is in progress or up next, both lines are left out.
 
-Titles come from the epic PR's issue list. The comment is updated in the same update as the epic's status line: when a sub-PR into the epic branch opens, changes status or merges, and when an issue starts. Nothing is sent to GitHub when the rendered comment is unchanged. The comment itself is still created by the first merge into the epic branch, as before.
+Titles come from the epic PR's issue list. The comment is updated in the same update as the epic's status line: when a sub-PR into the epic branch opens, changes status or merges, and when an issue starts. Nothing is sent to GitHub when the rendered comment is unchanged. The comment itself is still created by the first merge into the epic branch, as before, and its counts and "Merged child PRs" are still written only by the merge progress update; the status update changes only the two lines above. The two updates take turns on the same per-epic lock, and the status update reads the epic again once it holds it: once the epic PR has merged, it leaves the comment and its final report alone.
 
 ## Read the status through MCP
 
@@ -144,4 +146,4 @@ Titles come from the epic PR's issue list. The comment is updated in the same up
 }
 ```
 
-The status is computed the same way for the body line and the MCP tools. For an epic pull request, `detail.epic` holds `merged`, `total` and `focus` (the sub-PR or issue the line names, with the sub-PR's own status), and the epic reasons are `epic_child_needs_attention`, `epic_child_ready`, `epic_queue_paused` and `epic_idle`. Reading an epic's status also reads the status of up to 10 of its open sub-PRs.
+The status is computed the same way for the body line and the MCP tools. For an epic pull request, `detail.epic` holds `merged`, `total` and `focus` (the sub-PR or issue the line names, with the sub-PR's own status), and the epic reasons are `epic_child_needs_attention`, `epic_issue_blocked`, `epic_child_ready`, `epic_queue_paused`, `epic_idle` and `epic_children_unread` (no work read is running, but sub-PRs beyond the read budget were not read; `detail.epic.unreadChildren` counts them, and the body line and title keep their previous state). Reading an epic's status also reads the status of up to 10 of its open sub-PRs.

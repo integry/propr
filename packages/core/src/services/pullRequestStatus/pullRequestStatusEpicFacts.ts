@@ -2,7 +2,7 @@ import type { Knex } from 'knex';
 import { stripStatusSlot } from '@propr/shared';
 import type { PlanIssue } from '../../config/planIssueManager.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
-import { isAgentBlockedReason } from '../taskPlanning/epicQueueBlockedHead.js';
+import { agentBlockedIssueNumber, isAgentBlockedReason } from '../taskPlanning/epicQueueBlockedHead.js';
 import {
     computeEpicMergeProgress, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
 } from '../../webhook/epicMergeProgress.js';
@@ -150,7 +150,9 @@ async function childStatuses(
         const issueNumber = issueOf(child);
         const title = (issueNumber !== null ? context.titles.get(issueNumber) : undefined) ?? childTitle(child.title);
         // A pull request from another epic branch into this one is not a sub-PR whose status is read (no epic reads another).
-        if (index >= MAX_EPIC_CHILD_STATUSES || EPIC_BRANCH_PATTERN.test(child.headRef ?? '')) return { prNumber: child.number, issueNumber, title, status: null };
+        if (EPIC_BRANCH_PATTERN.test(child.headRef ?? '')) return { prNumber: child.number, issueNumber, title, status: null };
+        // Beyond the read budget the status is unknown, which is not the same as no ProPR status (computeEpicStatus).
+        if (index >= MAX_EPIC_CHILD_STATUSES) return { prNumber: child.number, issueNumber, title, status: null, statusUnread: true };
         const pull = (await sources.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { ...target, pull_number: child.number })).data as PullRequestStatusPull;
         return { prNumber: child.number, issueNumber, title, status: await sources.loadChildStatus(child.number, pull) };
     }));
@@ -179,9 +181,17 @@ export async function loadEpicStatusFacts(
     const open = children.filter(child => child.open);
     const openNumbers = new Set(open.map(child => child.number));
     const mergedNumbers = new Set(children.filter(child => child.merged).map(child => child.number));
+    // An issue whose run stopped on a reported blocker stays in progress (epicQueueBlockedHead), but nothing runs for it.
+    const blockedIssue = plan.queue?.status === 'active' ? agentBlockedIssueNumber(plan.queue.blockedReason) : null;
     const startedIssues: EpicIssueRef[] = issues
         .filter(issue => STARTED.has(issue.status) && !(issue.pr_number != null && (openNumbers.has(issue.pr_number) || mergedNumbers.has(issue.pr_number))))
-        .map(issue => ({ issueNumber: issue.issue_number, title: titles.get(issue.issue_number) ?? null, working: RUNNING.has(issue.status) }));
+        .map(issue => {
+            const blocked = issue.issue_number === blockedIssue;
+            return {
+                issueNumber: issue.issue_number, title: titles.get(issue.issue_number) ?? null,
+                working: RUNNING.has(issue.status) && !blocked, ...(blocked ? { blocked } : {}),
+            };
+        });
     const excluded = new Set(plan.issues.filter(issue => !issues.includes(issue)).map(issue => issue.issue_number));
     const pending = new Set(issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number));
     return {
@@ -194,5 +204,6 @@ export async function loadEpicStatusFacts(
         queuePaused: plan.paused && plan.queue?.status === 'active',
         progress,
         planName: plan.name,
+        epicBranch,
     };
 }

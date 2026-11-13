@@ -35,6 +35,8 @@ const REASON_TEXT: Record<PullRequestAttentionReason, string> = {
     checks_unavailable: 'checks could not be read',
     epic_child_needs_attention: 'a sub-PR needs you',
     epic_child_ready: 'a sub-PR waits to be merged',
+    epic_issue_blocked: 'an issue stopped on a blocker',
+    epic_children_unread: 'sub-PR status not read',
     epic_queue_paused: 'queue paused',
     epic_idle: 'nothing in progress',
 };
@@ -125,6 +127,7 @@ function epicParts(status: PullRequestStatus, maxNames: number): string[] {
     }
     if (detail.reason === 'epic_child_ready' && focus) return [epicFocusText({ ...focus, status: null }, 'waits to be merged into the epic branch', 'pull_request')];
     if (detail.reason === 'epic_child_needs_attention' && focus) return [epicFocusText(focus, 'needs you', 'pull_request')];
+    if (detail.reason === 'epic_issue_blocked' && focus) return [epicFocusText(focus, 'stopped on a blocker', 'issue')];
     return [reasonText(status, maxNames)];
 }
 

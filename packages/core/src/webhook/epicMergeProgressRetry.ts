@@ -117,6 +117,49 @@ function epicProgressBranchField(owner: string, repo: string, epicBranch: string
     return `${owner.toLowerCase()}/${repo.toLowerCase()}#${epicBranch}`;
 }
 
+/** The per-epic lease every writer of the epic's progress comment serializes on. */
+function epicProgressLockKey(owner: string, repo: string, epicBranch: string): string {
+    return `${EPIC_PROGRESS_LOCK_PREFIX}${epicProgressBranchField(owner, repo, epicBranch)}`;
+}
+
+const STATUS_LEASE_WAIT_MS = 5_000;
+const STATUS_LEASE_POLL_MS = 150;
+
+/**
+ * Runs `work` under the same per-epic lease as {@link runEpicProgressUpdate},
+ * for a writer that keeps no retry obligation (the status sync): it waits
+ * briefly for the lease and gives up when the merge progress update keeps
+ * it, since that update signals a status sync once it is done. `work` must
+ * call `lease.assertOwned()` before its write. A merge progress update that
+ * finds the lease held meanwhile defers to its retry sweep, as for any busy lease.
+ */
+export async function withEpicProgressLeaseIfFree<T>(
+    target: { owner: string; repo: string; epicBranch: string },
+    redis: Pick<Redis, 'set' | 'eval'>,
+    work: (lease: EpicProgressLease) => Promise<T>,
+    { waitMs = STATUS_LEASE_WAIT_MS, pollMs = STATUS_LEASE_POLL_MS }: { waitMs?: number; pollMs?: number } = {},
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
+    const lockKey = epicProgressLockKey(target.owner, target.repo, target.epicBranch);
+    const token = randomUUID();
+    const deadline = Date.now() + waitMs;
+    while (await redis.set(lockKey, token, 'PX', EPIC_PROGRESS_LOCK_TTL_MS, 'NX') !== 'OK') {
+        if (Date.now() >= deadline) return { acquired: false };
+        await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+    const lease: EpicProgressLease = {
+        assertOwned: async () => {
+            if (Number(await redis.eval(COMPARE_AND_EXTEND_KEY, 1, lockKey, token, String(EPIC_PROGRESS_LOCK_TTL_MS))) !== 1) {
+                throw new EpicProgressLeaseLostError();
+            }
+        },
+    };
+    try {
+        return { acquired: true, value: await work(lease) };
+    } finally {
+        await redis.eval(COMPARE_AND_DELETE_KEY, 1, lockKey, token).catch(() => undefined);
+    }
+}
+
 /**
  * Keep each target separate: a child can be redirected to a successor while
  * the original epic still needs its final-merge confirmation. Unknown targets
@@ -180,7 +223,7 @@ export async function runEpicProgressUpdate(
     { redis, update, now = Date.now, log = logger.withCorrelation('epic-merge-progress') }: EpicProgressUpdateOptions,
 ): Promise<EpicProgressUpdateOutcome> {
     const field = epicProgressRetryField(target);
-    const lockKey = `${EPIC_PROGRESS_LOCK_PREFIX}${epicProgressBranchField(target.owner, target.repo, target.epicBranch)}`;
+    const lockKey = epicProgressLockKey(target.owner, target.repo, target.epicBranch);
     const token = randomUUID();
     /**
      * Records a retry for an update that must not run now. 'skipped' means

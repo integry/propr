@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { readStatusSlot, renderStatusSlot } from '@propr/shared';
 import {
     computePullRequestStatus,
+    isUndeterminedPullRequestStatus,
     type EpicChildStatus,
     type EpicStatusFacts,
     type PullRequestStatus,
@@ -180,4 +181,57 @@ test('the progress comment lists what is in progress and what is next', () => {
     assert.match(last, /\nUp next: none\n/);
     const idle = renderOpenEpicProgressComment({ ...facts, children: [], startedIssues: [], upNext: [] })!;
     assert.doesNotMatch(idle, /In progress|Up next/, 'empty lines are left out');
+});
+
+// --- an issue stopped on a reported blocker ---
+
+test('an issue stopped on a reported blocker needs a person, not a hammer', () => {
+    const status = computePullRequestStatus(epic({ startedIssues: [{ issueNumber: 3476, title: 'Blocked', working: false, blocked: true }] }));
+    assert.equal(status.state, 'needs_attention');
+    assert.equal(status.detail.reason, 'epic_issue_blocked');
+    assert.equal(status.detail.epic?.focus?.issueNumber, 3476);
+    assert.match(line(status), /^\*\*ProPR\*\* ⚠️ 3 of 5 issues merged · #3476 stopped on a blocker · /);
+    // Even a status still marked working is not running once the issue is blocked.
+    assert.equal(computePullRequestStatus(epic({ startedIssues: [{ issueNumber: 3476, title: null, working: true, blocked: true }] })).detail.reason, 'epic_issue_blocked');
+});
+
+test('running sibling work still wins over a blocked issue', () => {
+    const blocked = { issueNumber: 3476, title: null, working: false, blocked: true };
+    const sibling = computePullRequestStatus(epic({ startedIssues: [blocked, { issueNumber: 3477, title: null, working: true }] }));
+    assert.equal(sibling.state, 'working');
+    assert.equal(sibling.detail.epic?.focus?.issueNumber, 3477);
+    const child3523 = computePullRequestStatus(epic({ startedIssues: [blocked], children: [child(ULTRAFIX_CHILD)] }));
+    assert.equal(child3523.state, 'working');
+    assert.equal(child3523.detail.epic?.focus?.prNumber, 3523);
+});
+
+test('the progress comment names a blocked issue as stopped', () => {
+    const activity = epicProgressActivity({ merged: 1, total: 3, startedIssues: [{ issueNumber: 3476, title: 'Blocked', working: false, blocked: true }] });
+    assert.equal(activity.inProgress[0].state, 'stopped on a blocker');
+});
+
+// --- sub-PRs beyond the status read budget ---
+
+test('a sub-PR whose status was not read keeps the epic undetermined rather than waiting on a person', () => {
+    const ready = Array.from({ length: 10 }, (_, index) => child(READY_CHILD, 3600 + index, 3700 + index));
+    const unread: EpicChildStatus = { prNumber: 3610, issueNumber: 3710, title: 'Eleventh', status: null, statusUnread: true };
+    const status = computePullRequestStatus(epic({ children: [...ready, unread] }));
+    assert.equal(status.state, 'needs_attention');
+    assert.equal(status.detail.reason, 'epic_children_unread');
+    assert.equal(status.detail.epic?.unreadChildren, 1);
+    assert.ok(isUndeterminedPullRequestStatus(status), 'the status sync does not publish it');
+    // Without the unread sub-PR the same facts are established: a ready sub-PR waits to be merged.
+    const known = computePullRequestStatus(epic({ children: ready }));
+    assert.equal(known.detail.reason, 'epic_child_ready');
+    assert.equal(isUndeterminedPullRequestStatus(known), false);
+    // A child with no ProPR status (null, read) is not unread.
+    assert.equal(computePullRequestStatus(epic({ children: [...ready, { ...unread, statusUnread: false }] })).detail.reason, 'epic_child_ready');
+});
+
+test('a working sub-PR within the read budget still settles the epic as working', () => {
+    const unread: EpicChildStatus = { prNumber: 3610, issueNumber: 3710, title: null, status: null, statusUnread: true };
+    const status = computePullRequestStatus(epic({ children: [child(ULTRAFIX_CHILD), unread] }));
+    assert.equal(status.state, 'working');
+    assert.equal(isUndeterminedPullRequestStatus(status), false);
+    assert.equal(computePullRequestStatus(epic({ children: [unread], nextIssueQueued: true })).state, 'working');
 });

@@ -12,8 +12,12 @@ const { resetPullRequestTitleStateForTests, setPullRequestTitleSettleMsForTests 
 const { setPullRequestStatusEpicSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { createEpicSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicSync.js');
 const { signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
-const { EPIC_PROGRESS_MARKER, buildEpicProgressComment } = await import('../src/webhook/epicMergeProgress.js');
+const { EPIC_PROGRESS_MARKER, buildEpicProgressComment, extractEpicProgressActivityLines } = await import('../src/webhook/epicMergeProgress.js');
 const { isEpicPullRequestTitle } = await import('../src/webhook/planIssueTracking.js');
+const { syncEpicProgressCommentForStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicSync.js');
+const { EPIC_PROGRESS_SCRIPTS, runEpicProgressUpdate, withEpicProgressLeaseIfFree } = await import('../src/webhook/epicMergeProgressRetry.js');
+const { agentBlockedHeadReason } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
+const { EPIC_FINAL_MERGE_MARKER } = await import('../src/webhook/epicMergeProgress.js');
 
 const REPOSITORY = 'integry/propr';
 const EPIC_BRANCH = '800-epic-short-name-x7y';
@@ -24,6 +28,9 @@ const EPIC_BODY = [
     '### Auto-close', 'When this PR is merged, the following issues will be automatically closed:', '',
     'Fixes #800', 'Fixes #801', 'Fixes #802', '', '---', '*Created automatically by ProPR*',
 ].join('\n');
+
+const PROGRESS_AFTER_910 = { merged: 1, total: 3, excluded: 0, mergedPullRequests: [910] };
+const PROGRESS_AFTER_911 = { merged: 2, total: 3, excluded: 0, mergedPullRequests: [910, 911] };
 
 interface FakePull {
     number: number; state: string; merged: boolean; merged_at: string | null; mergeable: boolean | null; body: string; title: string;
@@ -42,7 +49,14 @@ class FakeGitHub {
     pulls = new Map<number, FakePull>();
     comments: Array<{ id: number; body: string; user: { login: string } }> = [];
     writes: Array<{ route: string; params: Record<string, unknown> }> = [];
+    /** Runs after each write, as a concurrent writer would act between this pass's requests. */
+    afterWrite: ((route: string) => void) | null = null;
     async request(route: string, params: Record<string, unknown>) {
+        const result = await this.handle(route, params);
+        if (!route.startsWith('GET ')) this.afterWrite?.(route);
+        return result;
+    }
+    private async handle(route: string, params: Record<string, unknown>) {
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: structuredClone(this.pulls.get(Number(params.pull_number))) };
         if (route === 'GET /repos/{owner}/{repo}/pulls') {
             const listed = [...this.pulls.values()].filter(candidate =>
@@ -121,7 +135,8 @@ beforeEach(async () => {
     // Sub-PR #910 (issue #800) merged; #911 (issue #801) is open, ProPR's, checks passing: ready and waiting to be merged.
     github.pulls.set(910, pull(910, { state: 'closed', merged: true, merged_at: '2026-11-13T08:00:00Z', base: { ref: EPIC_BRANCH, sha: 'e1' } }));
     github.pulls.set(911, pull(911, { title: '✅ [801 by Claude Opus 5.5] Second issue', head: { sha: 'h911', ref: '801/claude-second', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
-    github.comments.push({ id: 1, body: `### Epic progress: Scheduler primitives\n\nold\n${EPIC_PROGRESS_MARKER}`, user: { login: 'propr-dev[bot]' } });
+    // As the merge progress update wrote it when #910 merged, before the status sync added activity lines.
+    github.comments.push({ id: 1, body: buildEpicProgressComment(PROGRESS_AFTER_910, 'Scheduler primitives'), user: { login: 'propr-dev[bot]' } });
 
     await database('task_drafts').insert({ draft_id: 'draft-1', repository: REPOSITORY, name: 'Scheduler primitives', context_config: JSON.stringify({ epicLabel: `base-${EPIC_BRANCH}` }) });
     await database('plan_issues').insert([
@@ -146,10 +161,13 @@ function statusLine(number = EPIC): string {
     return extractPullRequestStatusBlock(github.pulls.get(number)!.body)?.split('\n')[1] ?? '';
 }
 
+/** #911 merges; the merge progress update rewrites the counts, keeping the activity lines it found. */
 async function mergeSubPr911(): Promise<void> {
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
     await database('epic_execution_queues').update({ cursor: 2 });
+    const comment = github.comments.find(candidate => candidate.body.includes(EPIC_PROGRESS_MARKER))!;
+    comment.body = buildEpicProgressComment(PROGRESS_AFTER_911, 'Scheduler primitives', undefined, extractEpicProgressActivityLines(comment.body));
 }
 
 test('a ready sub-PR waiting to be merged shows ⚠️ with the count, and the block names it', async () => {
@@ -166,7 +184,7 @@ test('the progress comment lists the open sub-PR and the next issue; an unchange
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     const comment = github.progressComment();
     assert.equal(comment, buildEpicProgressComment(
-        { merged: 1, total: 3, excluded: 0, mergedPullRequests: [910] }, 'Scheduler primitives', undefined,
+        PROGRESS_AFTER_910, 'Scheduler primitives', undefined,
         ['In progress: #911 (issue #801, Second issue) - ready to merge', 'Up next: #802 (Third issue)'],
     ));
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
@@ -235,4 +253,138 @@ test('an epic signal, by branch or by plan, schedules the update of the open epi
     await new Promise(resolve => setTimeout(resolve, 1_200));
     runner.stop();
     assert.deepEqual(scheduled, [EPIC], 'a burst of signals costs one lookup');
+});
+
+// --- the status pass and the merge progress update share the epic ---
+
+/** The Redis of the epic progress lease: keys, the retry hash, and its scripts matched by identity. */
+class FakeLeaseRedis {
+    keys = new Map<string, string>();
+    retries = new Map<string, string>();
+    locked: string[] = [];
+    async set(key: string, value: string) {
+        this.locked.push(key);
+        if (this.keys.has(key)) return null;
+        this.keys.set(key, value);
+        return 'OK' as const;
+    }
+    async eval(script: string, _count: number, key: string, ...args: string[]) {
+        if (script === EPIC_PROGRESS_SCRIPTS.compareAndExtendKey) return this.keys.get(key) === args[0] ? 1 : 0;
+        if (script === EPIC_PROGRESS_SCRIPTS.compareAndDeleteKey) return this.keys.get(key) === args[0] && this.keys.delete(key) ? 1 : 0;
+        if (script === EPIC_PROGRESS_SCRIPTS.compareAndDeleteField) return this.retries.get(args[0]) === args[1] && this.retries.delete(args[0]) ? 1 : 0;
+        throw new Error('unexpected script');
+    }
+    async hget(_key: string, field: string) { return this.retries.get(field) ?? null; }
+    async hset(_key: string, field: string, value: string) { this.retries.set(field, value); return 1; }
+    async hgetall() { return Object.fromEntries(this.retries); }
+}
+
+const LOCK_KEY = `epic:merge-progress-lock:${REPOSITORY}#${EPIC_BRANCH}`;
+const OPEN_EPIC_FACTS = {
+    merged: 1, total: 3, progress: PROGRESS_AFTER_910, planName: 'Scheduler primitives', epicBranch: EPIC_BRANCH,
+    children: [], startedIssues: [{ issueNumber: 801, title: 'Second issue', working: true }], upNext: [{ issueNumber: 802, title: 'Third issue' }],
+};
+const FINALIZED = buildEpicProgressComment(PROGRESS_AFTER_910, 'Scheduler primitives', 'main');
+
+function mergeEpicAndFinalizeComment(): void {
+    Object.assign(github.epic(), { state: 'closed', merged: true, merged_at: '2026-11-13T09:40:00Z' });
+    github.comments[0].body = FINALIZED;
+}
+
+test('an epic that merges while the status pass reads its facts keeps its finalized progress comment', async () => {
+    github.afterWrite = route => { if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') mergeEpicAndFinalizeComment(); };
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(github.progressComment(), FINALIZED, 'the merged epic is read again before the comment is written');
+    assert.equal(github.writes.filter(write => write.route.includes('/issues/comments/')).length, 0);
+});
+
+test('a final-merge confirmation keeps the status pass off the comment even while GitHub still lists the epic open', async () => {
+    const before = github.progressComment();
+    github.comments.push({ id: 2, body: `### ✅ Epic merged\n${EPIC_FINAL_MERGE_MARKER}`, user: { login: 'propr-dev[bot]' } });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(github.progressComment(), before);
+    github.comments.pop();
+    github.comments[0].body = FINALIZED;
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(github.progressComment(), FINALIZED, 'a progress comment that already reports the merge is left alone');
+});
+
+test('counts the merge progress update writes while the status pass reads are kept; only the activity lines change', async () => {
+    // The merge writer counted #911 (the triggering child) before GitHub's list shows it merged.
+    github.afterWrite = route => {
+        if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') github.comments[0].body = buildEpicProgressComment(PROGRESS_AFTER_911, 'Scheduler primitives');
+    };
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(github.progressComment(), buildEpicProgressComment(
+        PROGRESS_AFTER_911, 'Scheduler primitives', undefined,
+        ['In progress: #911 (issue #801, Second issue) - ready to merge', 'Up next: #802 (Third issue)'],
+    ));
+});
+
+test('the status pass waits for the merge progress lease and reads the epic again under it', async () => {
+    const redis = new FakeLeaseRedis();
+    redis.keys.set(LOCK_KEY, 'merge-writer');
+    // The merge progress update finalizes the comment, then releases the lease.
+    setTimeout(() => { mergeEpicAndFinalizeComment(); redis.keys.delete(LOCK_KEY); }, 300);
+    await syncEpicProgressCommentForStatus(github as never, redis, { repository: REPOSITORY, prNumber: EPIC }, OPEN_EPIC_FACTS);
+    assert.ok(redis.locked.every(key => key === LOCK_KEY) && redis.locked.length > 1, 'the same lease as the merge progress update, polled until free');
+    assert.equal(github.progressComment(), FINALIZED);
+    assert.equal(redis.keys.size, 0);
+});
+
+test('under a free lease the status pass writes the activity lines and releases the lease', async () => {
+    const redis = new FakeLeaseRedis();
+    await syncEpicProgressCommentForStatus(github as never, redis, { repository: REPOSITORY, prNumber: EPIC }, OPEN_EPIC_FACTS);
+    assert.match(github.progressComment(), /\n\nIn progress: #801 \(Second issue\)\n\nUp next: #802 \(Third issue\)\n/);
+    assert.deepEqual(redis.locked, [LOCK_KEY]);
+    assert.equal(redis.keys.size, 0);
+});
+
+test('a merge progress update arriving while the status pass holds the lease defers to its retry', async () => {
+    const redis = new FakeLeaseRedis();
+    let ran = false;
+    const target = { owner: 'integry', repo: 'propr', epicBranch: EPIC_BRANCH, epicPrNumber: EPIC, mergedChildPrNumber: 911 };
+    const held = await withEpicProgressLeaseIfFree(target, redis, async () =>
+        await runEpicProgressUpdate(target, { redis, update: async () => { ran = true; return true; } }));
+    assert.deepEqual(held, { acquired: true, value: 'retry_scheduled' });
+    assert.equal(ran, false, 'the merge progress update never writes alongside the status pass');
+    assert.equal(redis.retries.size, 1, 'its obligation is kept for the retry sweep');
+});
+
+// --- an issue stopped on a reported blocker ---
+
+test('a queue head stopped on a reported blocker shows ⚠️, not in progress', async () => {
+    await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
+    Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
+    await database('plan_issues').where({ issue_number: 802 }).update({ status: 'processing' });
+    await database('epic_execution_queues').update({ cursor: 2 });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 in progress · /, 'a running head is in progress');
+    await database('epic_execution_queues').update({ blocked_reason: agentBlockedHeadReason(802) });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · #802 stopped on a blocker · /);
+    assert.match(github.progressComment(), /\nIn progress: #802 \(Third issue\) - stopped on a blocker\n/);
+});
+
+// --- sub-PRs beyond the status read budget ---
+
+test('an epic whose unread sub-PRs could be working keeps its published status', async () => {
+    // #911 is being worked on: the epic is published as working.
+    await database('task_history').insert({ task_id: 't-911', state: 'processing' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    const working = statusLine();
+    assert.match(working, /🔨 1 of 3 issues merged · #801 in progress/);
+    // Ten more open pull requests into the epic branch: the last one is beyond the read budget.
+    for (let number = 920; number < 930; number++) {
+        github.pulls.set(number, pull(number, { head: { sha: `h${number}`, ref: `x-${number}`, repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    }
+    await database('task_history').insert({ task_id: 't-911', state: 'completed' });
+    const writes = github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length;
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(statusLine(), working, 'no state is claimed from incomplete sub-PR statuses');
+    assert.equal(github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length, writes, 'neither the block nor the title is written');
+    // Once the unread pull request is gone, the status is known again: #911 waits to be merged (the other PRs count, without ProPR status).
+    github.pulls.delete(929);
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /⚠️ 1 of 12 issues merged · #911 \(issue #801\) waits to be merged/);
 });

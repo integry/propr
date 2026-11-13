@@ -1,12 +1,14 @@
 import type { Knex } from 'knex';
+import type { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 import {
     buildEpicProgressComment, renderEpicProgressActivity, syncOpenEpicProgressComment, type EpicProgressActivity,
 } from '../../webhook/epicMergeProgress.js';
+import { withEpicProgressLeaseIfFree } from '../../webhook/epicMergeProgressRetry.js';
 import type { EpicStatusFacts } from './pullRequestStatus.js';
-import { describeChildStatus } from './pullRequestStatusBlock.js';
+import { describeChildStatus, extractPullRequestStatusBlock } from './pullRequestStatusBlock.js';
 import { paginatingGitHub } from './pullRequestStatusEpicFacts.js';
-import type { PullRequestStatusGitHub } from './pullRequestStatusFacts.js';
+import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullRequestStatusFacts.js';
 import {
     requestEpicPullRequestStatusSync, setPullRequestStatusEpicSyncRunner, type PullRequestStatusEpicSyncRunner,
 } from './pullRequestStatusSignal.js';
@@ -24,7 +26,9 @@ export function epicProgressActivity(epic: EpicStatusFacts): EpicProgressActivit
             ...(epic.children ?? []).map(child => ({
                 prNumber: child.prNumber, issueNumber: child.issueNumber, title: child.title, state: describeChildStatus(child.status, 'comment') || null,
             })),
-            ...(epic.startedIssues ?? []).map(issue => ({ prNumber: null, issueNumber: issue.issueNumber, title: issue.title })),
+            ...(epic.startedIssues ?? []).map(issue => ({
+                prNumber: null, issueNumber: issue.issueNumber, title: issue.title, state: issue.blocked ? 'stopped on a blocker' : null,
+            })),
         ],
         upNext: (epic.upNext ?? []).map(issue => ({ issueNumber: issue.issueNumber, title: issue.title })),
     };
@@ -36,20 +40,33 @@ export function renderOpenEpicProgressComment(epic: EpicStatusFacts): string | n
     return buildEpicProgressComment(epic.progress, epic.planName || 'Untitled Plan', undefined, renderEpicProgressActivity(epicProgressActivity(epic)));
 }
 
+/** The epic progress lease needs set/eval (withEpicProgressLeaseIfFree); null runs unguarded, as in tests. */
+export type EpicProgressLeaseRedis = Pick<Redis, 'set' | 'eval'>;
+
 /**
- * Updates the open epic's progress comment, whatever prTitleStatus says;
- * no GitHub write when the rendered comment is unchanged. Never throws: the
- * next transition of the epic writes it again.
+ * Updates the activity lines of the open epic's progress comment, whatever
+ * prTitleStatus says; no GitHub write when they are unchanged. The write is
+ * serialized with the merge progress update on the epic's progress lease, and
+ * the epic and its comment are read again under it (syncOpenEpicProgressComment),
+ * so a merge, or a finalized comment, written while this pass read its facts
+ * is never overwritten. A lease the merge progress update keeps is left to it:
+ * it signals a status sync once it is done. Never throws: the next transition
+ * of the epic writes it again.
  */
 export async function syncEpicProgressCommentForStatus(
-    github: PullRequestStatusGitHub, target: { repository: string; prNumber: number }, epic: EpicStatusFacts,
+    github: PullRequestStatusGitHub, redis: EpicProgressLeaseRedis | null, target: { repository: string; prNumber: number }, epic: EpicStatusFacts,
 ): Promise<void> {
-    const body = renderOpenEpicProgressComment(epic);
-    if (body === null) return;
+    if (!epic.progress || !epic.epicBranch) return;
+    const activity = renderEpicProgressActivity(epicProgressActivity(epic));
     const [owner, repo] = target.repository.split('/');
+    const write = async (assertOwned: () => Promise<void>) =>
+        await syncOpenEpicProgressComment(paginatingGitHub(github), { owner, repo, epicPrNumber: target.prNumber }, { activity, assertOwned });
     try {
-        const result = await syncOpenEpicProgressComment(paginatingGitHub(github), { owner, repo, epicPrNumber: target.prNumber }, () => body);
-        if (result === 'updated') logger.debug(target, 'Updated the epic progress comment');
+        const outcome = redis
+            ? await withEpicProgressLeaseIfFree({ owner, repo, epicBranch: epic.epicBranch }, redis, async lease => await write(lease.assertOwned))
+            : { acquired: true as const, value: await write(async () => undefined) };
+        if (!outcome.acquired) logger.debug(target, 'The epic progress update holds the epic; it signals the status sync that refreshes the comment');
+        else if (outcome.value === 'updated') logger.debug(target, 'Updated the epic progress comment');
     } catch (error) {
         logger.warn({ ...target, error: (error as Error).message }, 'Failed to update the epic progress comment; the next epic update writes it');
     }
@@ -133,14 +150,27 @@ export interface EpicSyncNotes {
 }
 
 /**
+ * The update of an epic whose status is undetermined (isUndeterminedPullRequestStatus):
+ * none: unread sub-PRs may be working, so the published block and title stay rather
+ * than claim the epic waits on a person, until enough sub-PR statuses are read.
+ */
+export function undeterminedEpicSyncOutcome(pull: PullRequestStatusPull) {
+    logger.debug({ baseRef: pull.base?.ref }, 'The epic status is undetermined (sub-PRs unread); the status is left as published');
+    return {
+        result: extractPullRequestStatusBlock(pull.body ?? '') !== null ? 'unchanged' as const : 'skipped' as const,
+        awaitingMergeability: false, open: true, baseSha: pull.base?.sha ?? null, titleSettleInMs: null,
+    };
+}
+
+/**
  * After the block: an open epic's progress comment is updated from the same
  * facts, and a sub-PR whose rendered status changed (or that closed) has its
  * epic PR updated, since the epic's state depends on it.
  */
 export async function syncEpicSideOfStatus(
-    github: PullRequestStatusGitHub, target: { repository: string; prNumber: number }, notes: EpicSyncNotes,
+    github: PullRequestStatusGitHub, redis: EpicProgressLeaseRedis | null, target: { repository: string; prNumber: number }, notes: EpicSyncNotes,
 ): Promise<void> {
-    if (notes.epic) await syncEpicProgressCommentForStatus(github, target, notes.epic);
+    if (notes.epic) await syncEpicProgressCommentForStatus(github, redis, target, notes.epic);
     if (notes.statusChanged && notes.baseRef) requestEpicPullRequestStatusSync(target.repository, notes.baseRef);
 }
 

@@ -38,6 +38,14 @@ export type PullRequestAttentionReason =
     | 'epic_child_needs_attention'
     /** Epic: a sub-PR is ready and waits to be merged into the epic branch. */
     | 'epic_child_ready'
+    /** Epic: an issue's run stopped on a blocker the agent reported, and waits on a person. */
+    | 'epic_issue_blocked'
+    /**
+     * Epic: no sub-PR or issue read is working, but sub-PRs left unread by the
+     * read budget could be, so whether the epic waits on a person is unknown.
+     * The status sync does not publish it (isUndeterminedPullRequestStatus).
+     */
+    | 'epic_children_unread'
     /** Epic: the plan's execution queue is paused. */
     | 'epic_queue_paused'
     /** Epic: issues are left, but nothing runs or is queued to start. */
@@ -90,8 +98,10 @@ export interface EpicChildStatus {
     /** The plan issue the sub-PR implements, when known. */
     issueNumber: number | null;
     title: string | null;
-    /** The sub-PR's own status, from this computation; null when it is not a ProPR pull request. */
+    /** The sub-PR's own status, from this computation; null when it is not a ProPR pull request, or was not read. */
     status: PullRequestStatus | null;
+    /** The status was not read (the read budget): null `status` then says nothing about the sub-PR. */
+    statusUnread?: boolean;
 }
 
 /** A plan issue of an epic, without a sub-PR. */
@@ -100,6 +110,8 @@ export interface EpicIssueRef {
     title: string | null;
     /** A run is implementing the issue now. */
     working?: boolean;
+    /** The issue's run stopped on a blocker the agent reported (the queue's recorded reason): nothing runs until a person acts. */
+    blocked?: boolean;
 }
 
 /**
@@ -121,6 +133,8 @@ export interface EpicStatusFacts {
     /** The full merge progress, for the epic progress comment. */
     progress?: EpicMergeProgress;
     planName?: string | null;
+    /** The epic branch, for the epic progress lease. */
+    epicBranch?: string;
 }
 
 /** What the status block says an epic is doing or waits on. */
@@ -135,6 +149,8 @@ export interface EpicStatusDetail {
     merged: number;
     total: number;
     focus?: EpicStatusFocus | null;
+    /** Open sub-PRs whose status was not read (the read budget), for `epic_children_unread`. */
+    unreadChildren?: number;
 }
 
 export interface PullRequestStatusFacts {
@@ -308,17 +324,34 @@ function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts)
 
     const workingChild = children.find(child => child.status?.state === 'working');
     if (workingChild) return withFocus('working', childFocus(workingChild), { activity: workingChild.status!.detail.activity });
-    const workingIssue = (epic.startedIssues ?? []).find(issue => issue.working);
+    // A blocked issue's run has stopped, whatever its persisted status says.
+    const workingIssue = (epic.startedIssues ?? []).find(issue => issue.working && !issue.blocked);
     if (workingIssue) return withFocus('working', issueFocus(workingIssue), { activity: 'implementing' });
     const ownWork = activeProprWork(own);
     if (ownWork) return withFocus('working', null, { activity: ownWork });
     if (epic.nextIssueQueued && !epic.queuePaused) return withFocus('working', issueFocus(epic.upNext?.[0]), { activity: 'queued' });
 
+    // Nothing read is working; a sub-PR whose status was not read may be, so no attention state is established.
+    const unreadChildren = (epic.children ?? []).filter(child => child.statusUnread).length;
+    if (unreadChildren > 0) {
+        return { state: 'needs_attention', detail: { ...detail, reason: 'epic_children_unread', epic: { merged: epic.merged, total: epic.total, focus: null, unreadChildren } } };
+    }
     const attention = children.find(child => child.status?.state === 'needs_attention');
     if (attention) return withFocus('needs_attention', childFocus(attention), { reason: 'epic_child_needs_attention' });
+    const blockedIssue = (epic.startedIssues ?? []).find(issue => issue.blocked);
+    if (blockedIssue) return withFocus('needs_attention', issueFocus(blockedIssue), { reason: 'epic_issue_blocked' });
     const ready = children.find(child => child.status?.state === 'ready');
     if (ready) return withFocus('needs_attention', childFocus(ready), { reason: 'epic_child_ready' });
     if (epic.queuePaused) return withFocus('needs_attention', null, { reason: 'epic_queue_paused' });
     if (facts.pullRequest.mergeable === false) return withFocus('needs_attention', null, { reason: 'merge_conflict' });
     return withFocus('needs_attention', null, { reason: 'epic_idle' });
+}
+
+/**
+ * The status could not be determined from the facts read (an epic whose
+ * unread sub-PRs may be working): surfaces that keep a published status leave
+ * it as it is rather than replace it with this one.
+ */
+export function isUndeterminedPullRequestStatus(status: PullRequestStatus | null): boolean {
+    return status?.detail.reason === 'epic_children_unread';
 }
