@@ -1,5 +1,9 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
+import { epicScheduleState, executionEdges, executionLimit, scheduleEpicIssues, type EpicExecutionMode, type EpicSchedule,
+  type EpicScheduleIssue } from './epicQueueSchedule.js';
+
+export type { EpicExecutionMode } from './epicQueueSchedule.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
 export type EpicQueueStatus = 'active' | 'completed' | 'cancelled';
@@ -25,6 +29,8 @@ export interface EpicQueueIssue {
   blockedReason: string | null;
   blockedAt: number | null;
   updatedAt: number;
+  /** Prerequisites recorded when a graph execution started; empty in the other modes. */
+  dependsOn: number[];
 }
 
 export interface EpicExecutionQueue {
@@ -48,6 +54,17 @@ export interface EpicExecutionQueue {
   useEpic: boolean;
   /** Parallel epics dispatch every child up front; the row only owes epic finalization. */
   parallel: boolean;
+  /** sequential: a chain with a limit of one; parallel: no edges; graph: the plan's dependsOn edges. */
+  mode: EpicExecutionMode;
+  /** The stored in-flight limit of a graph execution (null: unbounded). */
+  maxParallel: number | null;
+  /** Prerequisites outside a graph execution that are merged (satisfied); read with the queue. */
+  mergedOutside: number[];
+  /**
+   * Unclaimed graph issues whose persisted plan status is in progress (a person started them):
+   * they hold a slot and report in flight, for dispatch and for every summary alike. Read with the queue.
+   */
+  runningWithoutClaim: number[];
   /** Durable initial dispatch intent; plan_issues retains the old model for label removal. */
   headSelection: { agent_alias: string; model_name: string } | null;
   /** Outstanding epic completion labeling, independent of the current children's branch. */
@@ -71,11 +88,13 @@ type QueueRow = {
   status: EpicQueueStatus; advance_on: EpicAdvancePolicy; blocked_reason: string | null;
   auto_merge: boolean | number; use_epic: boolean | number; parallel: boolean | number; ready: boolean | number;
   head_selection: string | null; owes_epic_finalization: boolean | number;
+  mode?: EpicExecutionMode | null; max_parallel?: number | null;
   created_at: number; updated_at: number; finalized_at: number | null; finalization_started_at: number | null;
 };
 type IssueRow = {
   issue_number: number; position: number; state: EpicQueueIssueState; dispatched_at: number | string | null;
   blocked_kind: EpicQueueBlockedKind | null; blocked_reason: string | null; blocked_at: number | string | null; updated_at: number | string;
+  depends_on?: string | null;
 };
 
 const toNumber = (value: number | string | null): number | null => value === null || value === undefined ? null : Number(value);
@@ -84,23 +103,44 @@ export function isSettled(item: EpicQueueIssue): boolean {
   return SETTLED_STATES.includes(item.state);
 }
 
-function fromRows(row: QueueRow, rows: IssueRow[]): EpicExecutionQueue {
+function parseDependsOn(value: string | null | undefined): number[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((issue): issue is number => Number.isInteger(issue)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function executionModeOf(row: { mode?: EpicExecutionMode | null; parallel: boolean | number }): EpicExecutionMode {
+  return row.mode === 'graph' || row.mode === 'sequential' || row.mode === 'parallel' ? row.mode : row.parallel ? 'parallel' : 'sequential';
+}
+
+function fromRows(row: QueueRow, rows: IssueRow[], { mergedOutside, runningWithoutClaim }:
+  { mergedOutside: number[]; runningWithoutClaim: number[] }): EpicExecutionQueue {
+  const mode = executionModeOf(row);
   const items = rows.map(item => ({
     issueNumber: item.issue_number, position: item.position, state: item.state, dispatchedAt: toNumber(item.dispatched_at),
     blockedKind: item.blocked_kind, blockedReason: item.blocked_reason, blockedAt: toNumber(item.blocked_at), updatedAt: Number(item.updated_at),
+    dependsOn: mode === 'graph' ? parseDependsOn(item.depends_on) : [],
   }));
-  const parallel = Boolean(row.parallel);
+  const parallel = mode === 'parallel';
+  // Only a chain has a head; a parallel or graph execution has a set of in-flight issues.
+  const chain = mode === 'sequential';
   const completed = row.status === 'completed';
-  const headIndex = parallel || completed ? -1 : items.findIndex(item => !isSettled(item));
+  const headIndex = !chain || completed ? -1 : items.findIndex(item => !isSettled(item));
   const head = headIndex === -1 ? undefined : items[headIndex];
-  const cursor = completed ? items.length : parallel ? 0 : headIndex === -1 ? items.length : headIndex;
-  const issueReason = parallel ? latestBlocked(items)?.blockedReason : head?.state === 'blocked' ? head.blockedReason : null;
+  const cursor = completed ? items.length : !chain ? 0 : headIndex === -1 ? items.length : headIndex;
+  const issueReason = !chain ? latestBlocked(items)?.blockedReason : head?.state === 'blocked' ? head.blockedReason : null;
   return {
     draftId: row.draft_id, executionId: row.execution_id, repository: row.repository,
     issues: items.map(item => item.issueNumber), items, cursor, status: row.status, advanceOn: row.advance_on,
     blockedReason: row.blocked_reason ?? issueReason ?? null,
     unstarted: row.status === 'cancelled' && row.blocked_reason === UNSTARTED_EPIC_REASON,
     autoMerge: Boolean(row.auto_merge), useEpic: Boolean(row.use_epic), parallel, ready: Boolean(row.ready),
+    mode, maxParallel: mode === 'graph' && row.max_parallel !== null && row.max_parallel !== undefined ? Number(row.max_parallel) : null,
+    mergedOutside, runningWithoutClaim,
     headSelection: row.head_selection ? JSON.parse(row.head_selection) : null,
     owesEpicFinalization: Boolean(row.owes_epic_finalization),
     headStartedAt: head?.dispatchedAt ?? null, createdAt: row.created_at, updatedAt: row.updated_at,
@@ -117,14 +157,37 @@ function latestBlocked(items: EpicQueueIssue[]): EpicQueueIssue | undefined {
 export async function getEpicExecutionQueue(draftId: string, { database = db }: { database?: Knex } = {}): Promise<EpicExecutionQueue | null> {
   const row = await database('epic_execution_queues').where({ draft_id: draftId }).first<QueueRow | undefined>();
   if (!row) return null;
+  const graph = executionModeOf(row) === 'graph';
   const items = await database(EPIC_QUEUE_ISSUES).where({ draft_id: draftId, execution_id: row.execution_id })
-    .orderBy('position').select<IssueRow[]>('issue_number', 'position', 'state', 'dispatched_at', 'blocked_kind', 'blocked_reason', 'blocked_at', 'updated_at');
-  return fromRows(row, items);
+    .orderBy('position').select<IssueRow[]>('issue_number', 'position', 'state', 'dispatched_at', 'blocked_kind', 'blocked_reason', 'blocked_at',
+      'updated_at', ...(graph ? ['depends_on'] : []));
+  return fromRows(row, items, graph
+    ? { mergedOutside: await mergedOutsidePrerequisites(database, draftId, items), runningWithoutClaim: await runningUnclaimedIssues(database, draftId, items) }
+    : { mergedOutside: [], runningWithoutClaim: [] });
+}
+
+/**
+ * Unclaimed, unsettled graph issues whose plan status is neither pending nor terminal: they run without a
+ * queue claim. Literal statuses: suites mock the plan issue manager with partial exports.
+ */
+async function runningUnclaimedIssues(database: Knex, draftId: string, items: IssueRow[]): Promise<number[]> {
+  const unclaimed = items.filter(item => item.dispatched_at === null && !SETTLED_STATES.includes(item.state)).map(item => item.issue_number);
+  if (!unclaimed.length) return [];
+  return database('plan_issues').where({ draft_id: draftId }).whereIn('issue_number', unclaimed)
+    .whereNotIn('status', ['pending', 'merged', 'closed']).pluck('issue_number');
+}
+
+/** A prerequisite that is not part of the execution counts as satisfied only once its plan issue is merged. */
+async function mergedOutsidePrerequisites(database: Knex, draftId: string, items: IssueRow[]): Promise<number[]> {
+  const inExecution = new Set(items.map(item => item.issue_number));
+  const outside = [...new Set(items.flatMap(item => parseDependsOn(item.depends_on)))].filter(issue => !inExecution.has(issue));
+  if (!outside.length) return [];
+  return database('plan_issues').where({ draft_id: draftId, status: 'merged' }).whereIn('issue_number', outside).pluck('issue_number');
 }
 
 /** The issue a sequential execution is working on: its first issue that is neither done nor skipped. */
 export function epicQueueHead(queue: EpicExecutionQueue | null): EpicQueueIssue | null {
-  if (!queue || queue.parallel || queue.status === 'completed') return null;
+  if (!queue || queue.mode !== 'sequential' || queue.status === 'completed') return null;
   return queue.items.find(item => !isSettled(item)) ?? null;
 }
 
@@ -132,30 +195,57 @@ export function epicQueueIssue(queue: EpicExecutionQueue | null, issueNumber: nu
   return queue?.items.find(item => item.issueNumber === issueNumber) ?? null;
 }
 
-/** Whether the issue is in flight in an active execution: its sequential head, or an unsettled parallel child. */
+/**
+ * Whether the issue is in flight in an active execution: its sequential head, an unsettled parallel child,
+ * or an unsettled graph issue the queue claimed (an unclaimed one still waits for its turn).
+ */
 export function isEpicQueueIssueInFlight(queue: EpicExecutionQueue | null, issueNumber: number): boolean {
   if (queue?.status !== 'active') return false;
-  if (!queue.parallel) return epicQueueHead(queue)?.issueNumber === issueNumber;
+  if (queue.mode === 'sequential') return epicQueueHead(queue)?.issueNumber === issueNumber;
   const item = epicQueueIssue(queue, issueNumber);
-  return Boolean(item && !isSettled(item));
+  return Boolean(item && !isSettled(item) && (queue.mode === 'parallel' || item.dispatchedAt !== null));
+}
+
+/** The execution's issues as the scheduler sees them: edges and slots follow the mode. */
+export function epicScheduleIssues(queue: EpicExecutionQueue): EpicScheduleIssue[] {
+  const inProgress = new Set(queue.runningWithoutClaim);
+  const edges = executionEdges(queue.mode, queue.items);
+  return queue.items.map((item, index) => ({ issueNumber: item.issueNumber, position: item.position, state: item.state,
+    dependsOn: edges[index], inFlight: !isSettled(item) && (item.dispatchedAt !== null || item.state === 'dispatched' || inProgress.has(item.issueNumber)) }));
+}
+
+/** The execution's current schedule, including the issues that run without a queue claim. */
+export function epicQueueSchedule(queue: EpicExecutionQueue): EpicSchedule {
+  return scheduleEpicIssues({ issues: epicScheduleIssues(queue), mergedOutside: queue.mergedOutside,
+    limit: executionLimit(queue.mode, queue.maxParallel) });
 }
 
 export function summarizeEpicQueue(queue: EpicExecutionQueue | null) {
   if (!queue) return null;
-  return { issues: queue.issues, cursor: queue.cursor, head: queue.parallel ? null : queue.issues[queue.cursor] ?? null,
+  const scheduled = epicScheduleIssues(queue);
+  const schedule = epicQueueSchedule(queue);
+  return { issues: queue.issues, cursor: queue.cursor, head: queue.mode === 'sequential' ? queue.issues[queue.cursor] ?? null : null,
     status: queue.status, advanceOn: queue.advanceOn, blockedReason: queue.blockedReason,
-    issueStates: queue.items.map(item => ({ issue: item.issueNumber, state: item.state,
-      blockedKind: item.state === 'blocked' ? item.blockedKind : null, blockedReason: item.state === 'blocked' ? item.blockedReason : null })),
-    ...(queue.parallel ? { executionMode: 'parallel' as const } : {}) };
+    executionMode: queue.mode, maxParallel: executionLimit(queue.mode, queue.maxParallel),
+    issueStates: queue.items.map((item, index) => ({ issue: item.issueNumber, state: item.state,
+      blockedKind: item.state === 'blocked' ? item.blockedKind : null, blockedReason: item.state === 'blocked' ? item.blockedReason : null,
+      // waiting (on waitingOn), ready, in_flight, done, skipped or blocked.
+      schedule: epicScheduleState(scheduled[index], schedule),
+      dependsOn: scheduled[index].dependsOn,
+      waitingOn: schedule.waiting.get(item.issueNumber) ?? [] })) };
 }
 
-/** Initial per-issue rows: a parallel execution dispatched every child at request time. */
+/**
+ * Initial per-issue rows: a parallel execution dispatched every child at request time; a sequential
+ * or graph execution dispatched only its first issue (the one that establishes the epic branch).
+ */
 export function initialIssueRows(input: { draftId: string; executionId: string; issues: number[]; parallel: boolean;
-  ready: boolean; headStartedAt: number | null; timestamp: number }) {
+  ready: boolean; headStartedAt: number | null; timestamp: number; dependsOn?: ReadonlyMap<number, readonly number[]> }) {
   return input.issues.map((issueNumber, position) => {
     const dispatchedAt = input.parallel ? input.timestamp : position === 0 ? input.headStartedAt : null;
     const setup = !input.ready && !input.parallel && position === 0;
     return {
+      ...(input.dependsOn ? { depends_on: JSON.stringify([...(input.dependsOn.get(issueNumber) ?? [])]) } : {}),
       draft_id: input.draftId, execution_id: input.executionId, issue_number: issueNumber, position,
       state: setup ? 'blocked' : dispatchedAt === null ? 'pending' : 'dispatched', dispatched_at: dispatchedAt,
       blocked_kind: setup ? 'setup_not_ready' : null, blocked_reason: setup ? SETUP_PENDING_REASON : null,

@@ -145,7 +145,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const {
     issues, agents, loading, error, clearError, implementingIssue,
-    queuedIssueNumbers, queueingRemaining, handleQueueRemaining,
+    queuedIssueNumbers, queueingRemaining, handleQueueRemaining, chainExecution,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
@@ -351,7 +351,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               onModelChange={handleModelChange}
               implementing={implementingIssue === issue.issue_number}
               disableImplementation={isSavingExecutionSettings || isReadOnly}
-              isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+              isFirstPending={issue.status === 'pending' && (!chainExecution || issue.issue_number === firstPendingIssueNumber)}
               isQueued={queuedIssueNumbers.has(issue.issue_number)}
               defaultSelection={planDefaultSelection}
               showImplementButton={showRowImplementButton(useEpic, issueCount) && !queuedIssueNumbers.has(issue.issue_number)}

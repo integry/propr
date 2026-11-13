@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { PlanIssue, STATUS_CONFIG, getPlanIssues, getPlanExecutionQueue, implementIssue, queueRemainingIssues, updatePlanIssue, AgentModelPair, type PlanExecutionQueue } from '../../api/planIssuesApi';
+import { PlanIssue, STATUS_CONFIG, getPlanIssues, getPlanExecutionQueue, implementIssue, queueRemainingIssues, updatePlanIssue, AgentModelPair, isChainExecution, type PlanExecutionQueue } from '../../api/planIssuesApi';
 import { getInstanceCatalog } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
@@ -111,8 +111,12 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     return new Set(issues.filter(issue => issue.status === 'pending' && waiting.has(issue.issue_number)).map(issue => issue.issue_number));
   }, [executionQueue, issues]);
 
+  // A graph or parallel execution starts issues by readiness, not by position, so earlier unmerged issues are no ordering hazard.
+  const chainExecution = useMemo(() => isChainExecution(executionQueue), [executionQueue]);
+
   const getUnmergedIssuesBefore = useCallback((issueNumber: number) => {
     const unmerged: Array<{ issue_number: number; title?: string }> = [];
+    if (!chainExecution) return unmerged;
     for (const issue of sortedIssues) {
       if (issue.issue_number >= issueNumber) break;
       if (issue.status !== 'merged') {
@@ -123,7 +127,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       }
     }
     return unmerged;
-  }, [sortedIssues, issueTitles]);
+  }, [sortedIssues, issueTitles, chainExecution]);
 
   const fetchIssues = useCallback(async () => {
     try {
@@ -418,7 +422,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   return {
     issues, agents, loading, error, clearError, implementingIssue,
-    queuedIssueNumbers, queueingRemaining, handleQueueRemaining,
+    queuedIssueNumbers, queueingRemaining, handleQueueRemaining, chainExecution, executionQueue,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, hasActiveIssues, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,

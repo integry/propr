@@ -117,7 +117,10 @@ test('terminal policy skips closed and merged entries and finalizes after last e
   assert.deepEqual(starts, []);
   assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), {
     issues: [10, 30, 40], cursor: 3, head: null, status: 'completed', advanceOn: 'terminal', blockedReason: null,
-    issueStates: [10, 30, 40].map(issue => ({ issue, state: 'done', blockedKind: null, blockedReason: null })),
+    // Sequential is a chain with a limit of one: each issue depends on the one before it.
+    executionMode: 'sequential', maxParallel: 1,
+    issueStates: [[10, []], [30, [10]], [40, [30]]].map(([issue, dependsOn]) => ({ issue, state: 'done', blockedKind: null, blockedReason: null,
+      schedule: 'done', dependsOn, waitingOn: [] })),
   });
   assert.deepEqual(finalizations, ['draft']);
 });

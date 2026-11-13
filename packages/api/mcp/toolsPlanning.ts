@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { getEpicExecutionQueue, summarizeEpicQueue, summarizePlanDependencyLinks, type EpicAdvancePolicy } from '@propr/core';
+import { getEpicExecutionQueue, summarizeEpicQueue, summarizePlanDependencyLinks } from '@propr/core';
 import { withPlanIssueDependencies } from '@propr/shared';
 import type { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { McpError } from './config.js';
@@ -14,20 +14,7 @@ import { linkPublishedDependencies, prepareMcpPlan, publicationPlanItems, record
 import { activePublication as parseActivePublication, findMarkedIssue, parseContextConfig, partialPublication, publicationLeaseLapsed, publicationLeaseLapsesAt, publicationSummary, publicationOwner, publicationOwnerStopped, withinPublicationLease, PUBLICATION_LEASE_EXPIRED, PUBLICATION_LEASE_MS, type ActivePublication, type PublishedIssue } from './planPublication.js';
 import { McpOperations } from './operations.js';
 
-/** Pure dispatch policy; schemas deliberately leave new options absent on old replays. */
-export function planEpicDispatch({ issues, planOrder, useEpic, epicExecution, epicAdvanceOn, modelCount }: {
-  issues: number[]; planOrder: number[]; useEpic: boolean;
-  epicExecution?: 'sequential' | 'parallel'; epicAdvanceOn?: EpicAdvancePolicy; modelCount: number;
-}): { mode: 'sequential' | 'parallel'; advanceOn: EpicAdvancePolicy; dispatchNow: number[]; queued: number[] } {
-  const mode = useEpic ? epicExecution ?? 'sequential' : 'parallel';
-  const advanceOn = epicAdvanceOn ?? 'merged';
-  if (mode === 'parallel') return { mode, advanceOn, dispatchNow: [...issues], queued: [] };
-  if (modelCount > 1) throw new McpError('INVALID_INPUT', 'Sequential epics require one model per issue: comparing models would create multiple PRs into the same epic branch. Use epicExecution: "parallel" for model comparisons.');
-  const selected = new Set(issues);
-  const ordered = planOrder.filter(number => selected.has(number));
-  if (ordered.length !== issues.length) throw new McpError('INVALID_INPUT', 'Selected issues must appear once in plan publication order.');
-  return { mode, advanceOn, dispatchNow: ordered.slice(0, 1), queued: ordered.slice(1) };
-}
+export { planEpicDispatch } from './epicDispatchPolicy.js';
 
 function staleDeleteRevision(currentRevision: number): McpError {
   return new McpError('STALE_REVISION', 'Plan revision changed. Read it again, or omit expectedRevision to delete the current revision.', 409,

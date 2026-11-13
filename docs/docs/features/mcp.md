@@ -114,8 +114,14 @@ models) and labels the epic PR once every issue finishes; non-epic calls keep th
 is the default: closed or failed heads record a `blockedReason` and wait until
 fixed and merged. `epicAdvanceOn: "terminal"` advances on any core terminal
 issue state. `pause_plan` holds the successor and `resume_plan` starts it.
+`epicExecution: "graph"` (epics, one model, advancing on merge) starts each
+issue once its `dependsOn` prerequisites are merged into the epic branch, at most
+`maxParallel` at once, in publication order; `maxParallel` is valid only with
+graph mode. The REST implement route accepts the same `epicExecution` and
+`maxParallel`.
 `get_plan` and `get_operation` expose the queue's issues, cursor, head, status,
-advanceOn and blockedReason. The result reports executionMode, started and
+advanceOn and blockedReason, its execution mode and limit, and for each issue
+whether it is waiting on prerequisites (and which), ready, in flight, done or blocked. The result reports executionMode, started and
 queued; a sequential receipt remains accepted until the queue completes.
 Unselected pending issues never start through the queue.
 

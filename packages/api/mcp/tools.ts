@@ -5,7 +5,7 @@ import packageInfo from '../package.json' with { type: 'json' };
 import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
-import { agentSupportsSavedModel, parseTaskAssignmentFilter, type InstancePermission } from '@propr/shared';
+import { agentSupportsSavedModel, parseDependsOnIssues, parseTaskAssignmentFilter, type InstancePermission } from '@propr/shared';
 import {
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
@@ -30,7 +30,8 @@ import { McpOperations, type OperationResult, type Operation } from './operation
 import { syncLifecycle } from './operationLifecycle.js';
 import { callWorkflow, type WorkflowHandler } from './adapter.js';
 import { addTaskSubmissionTools, trackTaskSubmission } from './toolsTaskSubmissions.js';
-import { addPlanningTools, planEpicDispatch } from './toolsPlanning.js';
+import { addPlanningTools } from './toolsPlanning.js';
+import { planEpicDispatch, type EpicDispatch } from './epicDispatchPolicy.js';
 import { addPullRequestTools } from './toolsPullRequests.js';
 import { addContextTools } from './toolsContext.js';
 import { addAdministrationTools } from './toolsAdministration.js';
@@ -600,7 +601,7 @@ async function validatePlanImplementation(principal: McpPrincipal, args: Args,
   if (new Set(args.issues).size !== args.issues.length) throw new McpError('INVALID_INPUT', 'Select each issue only once.');
   // Reject comparisons before any claims or GitHub calls.
   planEpicDispatch({ issues: args.issues, planOrder: args.issues, useEpic: args.useEpic,
-    epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
+    epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length, maxParallel: args.maxParallel });
   const [agents, synthetic] = await Promise.all([loadAgents(), loadSyntheticAgents()]);
   for (const model of args.models) {
     const supported = agents.some(agent => agent.enabled && agent.alias === model.agent_alias && agentSupportsSavedModel(agent, model.model_name))
@@ -613,16 +614,51 @@ async function validatePlanImplementation(principal: McpPrincipal, args: Args,
   return available;
 }
 
+/** Each plan issue's recorded prerequisites and the merged issues that satisfy prerequisites outside a selection. */
+async function planGraphInput(db: ToolDeps['db'], args: Args) {
+  if (args.epicExecution !== 'graph') return {};
+  const rows = await db('plan_issues').where({ draft_id: args.planId }).select('issue_number', 'status', 'depends_on_issues');
+  return { dependencies: new Map<number, number[]>(rows.map(row => [row.issue_number, parseDependsOnIssues(row.depends_on_issues)])),
+    mergedIssues: new Set<number>(rows.filter(row => row.status === 'merged').map(row => row.issue_number)) };
+}
+
+function graphQueueOptions(dispatch: EpicDispatch) {
+  return dispatch.mode === 'graph' ? { mode: 'graph' as const, maxParallel: dispatch.maxParallel, dependsOn: dispatch.dependsOn } : {};
+}
+
+/** A graph starts every ready issue up to its limit once ready; report what the queue holds now. */
+async function implementationResponse({ planId, issues, dispatch, executionId, results }: {
+  planId: string; issues: number[]; dispatch: EpicDispatch; executionId?: string; results: unknown[];
+}) {
+  const graphQueue = dispatch.mode === 'graph' ? await getEpicExecutionQueue(planId) : null;
+  const started = graphQueue && graphQueue.executionId === executionId
+    ? graphQueue.items.filter(item => item.dispatchedAt !== null).map(item => item.issueNumber) : dispatch.dispatchNow;
+  return { status: 202, data: { planId, issues, executionMode: dispatch.mode,
+    ...(executionId ? { executionId } : {}), ...(dispatch.mode === 'graph' ? { maxParallel: dispatch.maxParallel } : {}),
+    advanceOn: dispatch.advanceOn, started, queued: [...dispatch.dispatchNow, ...dispatch.queued].filter(number => !started.includes(number)), results,
+    message: implementationMessage(dispatch.mode) } };
+}
+
+function implementationMessage(mode: string): string {
+  if (mode === 'sequential') return 'Epic implementation requested. Remaining selected issues are queued in publication order.';
+  if (mode === 'graph') return 'Epic implementation requested. Each remaining issue starts once its prerequisites are merged into the epic branch, within maxParallel, in publication order.';
+  return 'Implementation requested. Inspect plan issues and tasks for execution state.';
+}
+
 /** Register implementation dispatch separately from plan editing and publication. */
 export function addPlanImplementationTool(
   tools: McpTool[], deps: ToolDeps, planner: ReturnType<typeof createPlannerRoutes>, target: McpTool['target'],
 ): void {
   const { db, policy } = deps;
-  tools.push({ name: 'implement_plan', description: 'Start selected published plan issues. Epics default to sequential execution in publication order with one model, advancing on merge; epicExecution: parallel restores fan-out and epicAdvanceOn: terminal advances on closure too. Paused plans hold the next issue. Ultrafix is bounded to 10 cycles; an omitted ultrafixGoal defaults to the instance ultrafix rating goal.', scope: 'execute', target,
-    schema: z.object({ ...mutationShape, ...planShape, issues: z.array(z.number().int().positive()).min(1).max(20), models: z.array(z.object({ agent_alias: idSchema, model_name: idSchema }).strict()).min(1).max(4), useEpic: z.boolean().default(false), epicExecution: z.enum(['sequential', 'parallel']).optional(), epicAdvanceOn: z.enum(['merged', 'terminal']).optional(), autoMerge: z.boolean().default(false), runUltrafix: z.boolean().default(false), ultrafixGoal: ultrafixGoalSchema, ultrafixMaxCycles: z.number().int().min(1).max(10).default(3) }).strict(), run: async ({ principal, args, operationId }) => {
+  tools.push({ name: 'implement_plan', description: 'Start selected published plan issues. Epics default to sequential execution in publication order with one model, advancing on merge; epicExecution: parallel restores fan-out and epicAdvanceOn: terminal advances on closure too. epicExecution: graph (epics only, one model, advances on merge) starts each issue once every plan dependsOn prerequisite is merged into the epic branch, at most maxParallel (1-20, default unbounded) at once, in publication order; maxParallel is valid only with graph. Paused plans hold the next issue. Ultrafix is bounded to 10 cycles; an omitted ultrafixGoal defaults to the instance ultrafix rating goal.', scope: 'execute', target,
+    schema: z.object({ ...mutationShape, ...planShape, issues: z.array(z.number().int().positive()).min(1).max(20), models: z.array(z.object({ agent_alias: idSchema, model_name: idSchema }).strict()).min(1).max(4), useEpic: z.boolean().default(false), epicExecution: z.enum(['sequential', 'parallel', 'graph']).optional(), maxParallel: z.number().int().min(1).max(20).optional(), epicAdvanceOn: z.enum(['merged', 'terminal']).optional(), autoMerge: z.boolean().default(false), runUltrafix: z.boolean().default(false), ultrafixGoal: ultrafixGoalSchema, ultrafixMaxCycles: z.number().int().min(1).max(10).default(3) }).strict(), run: async ({ principal, args, operationId }) => {
       const available = await validatePlanImplementation(principal, args, deps);
+      const graphInput = await planGraphInput(db, args);
       const dispatch = planEpicDispatch({ issues: args.issues, planOrder: available.map(issue => issue.issue_number),
-        useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
+        useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length,
+        maxParallel: args.maxParallel, ...graphInput });
+      // A chain and a graph dispatch only their head now; the queue starts the rest.
+      const queuedMode = dispatch.mode === 'sequential' || dispatch.mode === 'graph';
       const queued = new Set(dispatch.queued);
       const ultrafixGoal = args.runUltrafix ? await resolveUltrafixGoal(args.ultrafixGoal) : null;
       const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallelExecutionId?: string }> => {
@@ -648,10 +684,11 @@ export function addPlanImplementationTool(
             ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
           });
         }
-        if (dispatch.mode === 'sequential') {
+        if (queuedMode) {
           const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
             issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,
-            autoMerge: args.autoMerge, headSelection: args.models[0], ready: false, headStartedAt: Date.now() }, { database: tx });
+            autoMerge: args.autoMerge, headSelection: args.models[0], ready: false, headStartedAt: Date.now(),
+            ...graphQueueOptions(dispatch) }, { database: tx });
           await tx('mcp_records').where({ kind: 'issue_execution' })
             .whereIn('id', args.issues.map((number: number) => `${args.planId}:${number}`))
             .update({ value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id, executionId: queue.executionId }) });
@@ -708,7 +745,7 @@ export function addPlanImplementationTool(
         }
         throw error;
       }
-      if (dispatch.mode === 'sequential') {
+      if (queuedMode) {
         for (const number of dispatch.queued) {
           await prepareIssue(number);
           await callWorkflow(planner.updateIssue, principal, { params: { id: args.planId, issueNumber: String(number) },
@@ -716,9 +753,6 @@ export function addPlanImplementationTool(
         }
         await readyEpicExecutionQueue(args.planId, executionId);
       }
-      return { status: 202, data: { planId: args.planId, issues: args.issues, executionMode: dispatch.mode,
-        ...(executionId ? { executionId } : {}),
-        advanceOn: dispatch.advanceOn, started: dispatch.dispatchNow, queued: dispatch.queued, results,
-        message: dispatch.mode === 'sequential' ? 'Epic implementation requested. Remaining selected issues are queued in publication order.' : 'Implementation requested. Inspect plan issues and tasks for execution state.' } };
+      return implementationResponse({ planId: args.planId, issues: args.issues, dispatch, executionId, results });
     } });
 }

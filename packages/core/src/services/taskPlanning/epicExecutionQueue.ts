@@ -12,10 +12,13 @@ import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
 import {
   EPIC_QUEUE_ISSUES, SETTLED_STATES, UNSTARTED_EPIC_REASON, blockQueueIssue, clearedBlock, completeSettledExecution, epicQueueHead,
   getEpicExecutionQueue, initialIssueRows, isSettled, markQueueIssueDone, ownedIssue, planIssueWithStatus,
-  reopenParallelQueueIssue, unblockQueueIssue, type EpicAdvancePolicy, type EpicExecutionQueue, type EpicQueueIssue, type EpicQueueStatus,
+  reopenParallelQueueIssue, unblockQueueIssue, type EpicAdvancePolicy, type EpicExecutionMode, type EpicExecutionQueue, type EpicQueueIssue,
 } from './epicQueueState.js';
+import { assertGraphInput, clearedGraphColumns, driveGraphExecution, recordObservedGraphStart } from './epicQueueGraph.js';
+import { persistRecoveredEpicLabel, recoverOwedEpicLabel } from './epicQueueLabelRecovery.js';
 
 export * from './epicQueueState.js';
+export * from './epicQueueSchedule.js';
 
 type StartIssue = (input: Parameters<typeof labelPlanIssueForProcessing>[0]) => Promise<void>;
 export interface EpicQueueDependencies {
@@ -37,15 +40,21 @@ export async function createEpicExecutionQueue(input: {
   draftId: string; repository: string; issues: number[]; advanceOn?: EpicAdvancePolicy;
   headSelection?: { agent_alias: string; model_name: string };
   autoMerge?: boolean; useEpic?: boolean; parallel?: boolean; ready?: boolean; headStartedAt?: number;
+  /** graph: schedule by `dependsOn` (issue -> prerequisite issues) with an optional `maxParallel`. */
+  mode?: EpicExecutionMode; maxParallel?: number | null; dependsOn?: ReadonlyMap<number, readonly number[]>;
 }, { database = db, now = Date.now }: EpicQueueDependencies = {}): Promise<EpicExecutionQueue> {
   if (!input.issues.length || new Set(input.issues).size !== input.issues.length) {
     throw new Error('An epic queue requires distinct selected issues.');
   }
+  assertGraphInput(input);
   const timestamp = now();
   const executionId = randomUUID();
-  const parallel = input.parallel ?? false;
+  const graph = input.mode === 'graph';
+  const parallel = input.parallel ?? input.mode === 'parallel';
   const ready = input.ready ?? true;
   const row = {
+    // Only a graph execution writes its mode and limit; the other modes are still read from `parallel`.
+    ...(graph ? { mode: 'graph', max_parallel: input.maxParallel ?? null } : {}),
     draft_id: input.draftId, execution_id: executionId, repository: input.repository, issues: JSON.stringify(input.issues),
     head_selection: input.headSelection ? JSON.stringify(input.headSelection) : null,
     owes_epic_finalization: input.useEpic ?? true,
@@ -58,7 +67,7 @@ export async function createEpicExecutionQueue(input: {
     const inserted = await trx('epic_execution_queues').insert(row).onConflict('draft_id').ignore().returning('draft_id');
     if (!inserted.length) {
       const replaced = await trx('epic_execution_queues').where({ draft_id: input.draftId })
-        .whereIn('status', ['completed', 'cancelled']).update({ ...row,
+        .whereIn('status', ['completed', 'cancelled']).update({ ...row, ...(graph ? {} : await clearedGraphColumns(trx)),
           // Transfer the unresolved obligation atomically with revoking the old execution.
           owes_epic_finalization: trx.raw('CASE WHEN owes_epic_finalization = ? AND finalized_at IS NULL THEN ? ELSE ? END',
             [true, true, row.owes_epic_finalization]),
@@ -67,7 +76,7 @@ export async function createEpicExecutionQueue(input: {
       await trx(EPIC_QUEUE_ISSUES).where({ draft_id: input.draftId }).whereNot({ execution_id: executionId }).delete();
     }
     await trx(EPIC_QUEUE_ISSUES).insert(initialIssueRows({ draftId: input.draftId, executionId, issues: input.issues, parallel,
-      ready, headStartedAt: input.headStartedAt ?? null, timestamp }));
+      ready, headStartedAt: input.headStartedAt ?? null, timestamp, dependsOn: graph ? input.dependsOn ?? new Map() : undefined }));
   });
   return (await getEpicExecutionQueue(input.draftId, { database }))!;
 }
@@ -129,6 +138,8 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   const database = deps.database ?? db;
   const queue = await getEpicExecutionQueue(draftId, deps);
   if (queue?.parallel) return queue.issues.includes(issueNumber) ? completeParallelEpicQueue(queue, deps) : undefined;
+  // Any status change can make graph issues ready, also a merged prerequisite outside the execution.
+  if (queue?.mode === 'graph') return driveGraphExecution(queue, graphHooks(deps), { issueNumber, status });
   const head = epicQueueHead(queue);
   if (!queue || queue.status !== 'active' || !queue.ready || !head || head.issueNumber !== issueNumber) return;
   // Use persisted evidence: a delayed closed event must not block a now-merged head.
@@ -216,62 +227,13 @@ export async function finalizeCompletedEpicQueue(draftId: string, deps: EpicQueu
   }
 }
 
-/**
- * Dispatch can create the epic and label its children even though saving the selector failed.
- * Save an externally verified selector only while the given execution still holds the obligation.
- */
-async function persistRecoveredEpicLabel(database: Knex, queue: EpicExecutionQueue, epicLabel: string,
-  authority: { status: EpicQueueStatus; ready?: boolean }): Promise<boolean> {
-  return database.transaction(async trx => {
-    const draft = await trx('task_drafts').where({ draft_id: queue.draftId }).forUpdate().first('context_config');
-    if (!draft) return false;
-    const parsed = typeof draft.context_config === 'string' ? JSON.parse(draft.context_config || '{}') : draft.context_config;
-    const context = parsed && typeof parsed === 'object' ? parsed : {};
-    // A selector saved concurrently wins; a different branch must not be finalized as this one.
-    if (typeof context.epicLabel === 'string') return context.epicLabel === epicLabel;
-    return Boolean(await trx('task_drafts').where({ draft_id: queue.draftId })
-      .whereExists(trx('epic_execution_queues').select('draft_id')
-        .where({ draft_id: queue.draftId, execution_id: queue.executionId, ...authority }).whereNull('finalized_at'))
-      .update({ context_config: JSON.stringify({ ...context, epicLabel }), updated_at: trx.fn.now() }));
-  });
-}
-
-/**
- * A missing saved selector does not prove that no epic PR exists. Recover the branch from the
- * labels this execution's children carry; without one unambiguous selector, finalization stays owed.
- */
-async function recoverOwedEpicLabel(queue: EpicExecutionQueue, database: Knex): Promise<string | undefined> {
-  const log = logger.withCorrelation(`epic-complete-${queue.draftId}`);
-  // Children of a non-epic execution never carried the inherited epic's selector.
-  if (!queue.useEpic) {
-    log.warn({ draftId: queue.draftId }, 'Epic branch selector is missing; finalization remains owed');
-    return undefined;
-  }
-  const [owner, repo] = queue.repository.split('/');
-  const octokit = await getAuthenticatedOctokit();
-  const found = new Set<string>();
-  for (const issueNumber of queue.issues) {
-    const issue = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
-    for (const label of issue.data.labels) {
-      const name = typeof label === 'string' ? label : label.name;
-      if (name?.startsWith('base-')) found.add(name);
-    }
-  }
-  const [epicLabel] = found;
-  if (found.size !== 1 || !await persistRecoveredEpicLabel(database, queue, epicLabel, { status: 'completed' })) {
-    log.warn({ draftId: queue.draftId, candidates: [...found] }, 'Epic branch selector could not be recovered; finalization remains owed');
-    return undefined;
-  }
-  log.info({ draftId: queue.draftId, epicLabel }, 'Recovered epic branch selector from issue labels');
-  return epicLabel;
-}
-
 /** Claims the label side effect durably; a lost dispatch is retried after 15 minutes. */
 export async function startEpicQueueHead(draftId: string, deps: EpicQueueDependencies = {}): Promise<void> {
   const database = deps.database ?? db;
   const queue = await getEpicExecutionQueue(draftId, deps);
   if (!queue || queue.status !== 'active' || !queue.ready) return;
   if (queue.parallel) return completeParallelEpicQueue(queue, deps);
+  if (queue.mode === 'graph') return driveGraphExecution(queue, graphHooks(deps));
   const head = epicQueueHead(queue);
   // Every issue settled but completion was not recorded (an interrupted advance).
   if (!head) return settleOrStartNext(queue, deps, (deps.now ?? Date.now)());
@@ -300,6 +262,12 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   }
   if (issue.status !== PlanIssueStatus.PENDING) return;
   await dispatchPendingQueueHead(queue, head, draft.context_config, deps);
+}
+
+function graphHooks(deps: EpicQueueDependencies) {
+  return { database: deps.database ?? db, now: deps.now ?? Date.now, startIssue: deps.startIssue ?? labelPlanIssueForProcessing,
+    retryDispatch: (queue: EpicExecutionQueue, item: EpicQueueIssue, contextConfig: unknown) => dispatchPendingQueueHead(queue, item, contextConfig, deps),
+    finalize: (queue: EpicExecutionQueue) => finalizeCompletedEpicQueue(queue.draftId, deps, queue.executionId) };
 }
 
 async function dispatchPendingQueueHead(queue: EpicExecutionQueue, head: EpicQueueIssue, contextConfig: unknown, deps: EpicQueueDependencies): Promise<void> {
@@ -405,8 +373,9 @@ async function reconcileQueueHead(draftId: string, deps: EpicQueueDependencies):
   const queue = await getEpicExecutionQueue(draftId, deps);
   if (!queue) return;
   // Every parallel child can be running, a done one too once it is reopened (only in-progress issues are reconciled);
-  // a sequential queue has only its head in flight.
-  const inFlight = queue.parallel ? queue.items : [epicQueueHead(queue)].filter(item => item !== null);
+  // any unsettled graph issue can be running; a sequential queue has only its head in flight.
+  const inFlight = queue.parallel ? queue.items : queue.mode === 'graph' ? queue.items.filter(item => !isSettled(item))
+    : [epicQueueHead(queue)].filter(item => item !== null);
   if (!inFlight.length) return;
   const issues = await database('plan_issues').where({ draft_id: queue.draftId })
     .whereIn('issue_number', inFlight.map(item => item.issueNumber)).select<PlanIssue[]>();
@@ -465,8 +434,18 @@ export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies =
   return { reconciled };
 }
 
-/** Status writes must never fail because progression failed; recovery retries it. */
+/**
+ * Every persisted plan status change. A terminal one advances the queue; an in-progress one only matters
+ * to a graph execution, which records an issue a person started as its slot claim. Status writes must
+ * never fail because progression failed; recovery retries it.
+ */
 export async function onPlanIssueStatusChanged(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
-  try { await advanceEpicQueue({ draftId, issueNumber, status }); }
+  try {
+    if (isTerminalStatus(status)) await advanceEpicQueue({ draftId, issueNumber, status });
+    else {
+      const queue = await getEpicExecutionQueue(draftId);
+      if (queue?.mode === 'graph') await recordObservedGraphStart(queue, { issueNumber, status }, graphHooks({}));
+    }
+  }
   catch (error) { logger.warn?.({ draftId, issueNumber, status, error: (error as Error).message }, 'Failed to advance epic queue after issue status change'); }
 }

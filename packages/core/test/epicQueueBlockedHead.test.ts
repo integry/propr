@@ -244,7 +244,8 @@ for (const restart of ['status hook', 'lost status hook'] as const) {
     await database('task_history').insert({ task_id: 'task-10b', state: 'completed', timestamp: 2, metadata: JSON.stringify(BLOCKED_HISTORY) });
     assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), true);
     let queue = await getEpicExecutionQueue('draft');
-    assert.deepEqual(issueState(queue, 10), { issue: 10, state: 'blocked', blockedKind: 'agent_blocked', blockedReason: agentBlockedHeadReason(10) });
+    assert.deepEqual(issueState(queue, 10), { issue: 10, state: 'blocked', blockedKind: 'agent_blocked', blockedReason: agentBlockedHeadReason(10),
+      schedule: 'blocked', dependsOn: [], waitingOn: [] });
     assert.equal(queue?.blockedReason, agentBlockedHeadReason(10));
 
     // Recovery and the sibling's merge keep the blocked child and the execution active.
