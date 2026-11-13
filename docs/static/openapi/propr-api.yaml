@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 309
-    documented: 71
+    total: 315
+    documented: 77
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4323,6 +4323,189 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/audit:
+    get:
+      operationId: getAgentExtensionOAuthAudit
+      summary: "Read the OAuth audit trail: connect, disconnect, discarded and Needs sign-in events with the actor and time, newest first."
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Audit events; never tokens.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/callback:
+    get:
+      operationId: completeAgentExtensionOAuth
+      summary: OAuth redirect URI. Validates the single-use state (bound to the session, item and endpoint), the issuer, exchanges the code with the PKCE verifier and stores the tokens. Returns a small HTML page.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: HTML result page that tells the Settings tab to refresh.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/check:
+    post:
+      operationId: checkAgentExtensionOAuth
+      summary: Run OAuth discovery for an MCP server URL (401 challenge or well-known protected resource metadata, then authorization server metadata) and report which registration method a sign-in would use. Stores nothing and sends no credential.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthCheckRequest"
+      responses:
+        "200":
+          description: Discovery result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionOAuthCheckResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/client-metadata.json:
+    get:
+      operationId: getAgentExtensionOAuthClientMetadata
+      summary: ProPR's public OAuth Client ID Metadata Document; its URL is the client id. Not found without a public HTTPS base URL.
+      tags:
+        - Configuration
+      security: []
+      responses:
+        "200":
+          description: "Client metadata: ProPR's name and this instance's redirect URI."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/disconnect:
+    post:
+      operationId: disconnectAgentExtensionOAuth
+      summary: Revoke the connection at the provider when it advertises revocation, then delete the stored tokens. Recorded in the OAuth audit trail; creates no library revision.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthItemRequest"
+      responses:
+        "200":
+          description: Whether the provider confirmed revocation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/start:
+    post:
+      operationId: startAgentExtensionOAuth
+      summary: Start the OAuth sign-in of an `oauth` library server for this administrator session. Requires a public HTTPS base URL.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthItemRequest"
+      responses:
+        "200":
+          description: Authorization URL to open in a new tab.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionOAuthStartResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -9203,6 +9386,16 @@ components:
                     enum:
                       - none
                       - bearer
+                      - oauth
+                  scopes:
+                    maxItems: 32
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[\x21\x23-\x5b\x5d-\x7e]{1,256}$
+                  clientId:
+                    type: string
+                    pattern: ^[\x21-\x7e]{1,512}$
                   repositories:
                     default: []
                     maxItems: 64
@@ -9399,6 +9592,8 @@ components:
             - secrets
             - skillBundles
           additionalProperties: {}
+        oauth:
+          $ref: "#/components/schemas/ExtensionOAuthInstanceInfo"
         bundles:
           type: array
           items:
@@ -9469,6 +9664,7 @@ components:
         - contract
         - instanceId
         - library
+        - oauth
         - bundles
         - catalog
         - usage
@@ -9558,6 +9754,134 @@ components:
       required:
         - input
         - expectedRevision
+      additionalProperties: false
+    ExtensionOAuthCheckRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        clientId:
+          type: string
+        scopes:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+      required:
+        - url
+      additionalProperties: false
+    ExtensionOAuthCheckResponse:
+      type: object
+      properties:
+        check:
+          type: object
+          properties:
+            authorizationRequired:
+              type: boolean
+            discoveredFrom:
+              type: string
+              enum:
+                - challenge
+                - well_known
+            resource:
+              type: string
+            issuer:
+              type: string
+            scopes:
+              type: array
+              items:
+                type: string
+            registration:
+              anyOf:
+                - type: string
+                  enum:
+                    - metadata_document
+                    - dynamic
+                    - preregistered
+                - type: "null"
+            message:
+              type: string
+            redirectUri:
+              type:
+                - string
+                - "null"
+          required:
+            - authorizationRequired
+            - registration
+            - message
+            - redirectUri
+          additionalProperties: false
+      required:
+        - check
+      additionalProperties: false
+    ExtensionOAuthInstanceInfo:
+      type: object
+      properties:
+        redirectUri:
+          description: Redirect URI to register with a provider; null without a public HTTPS base URL, which disables Connect.
+          type:
+            - string
+            - "null"
+        clientMetadataUrl:
+          description: ProPR's Client ID Metadata Document URL, used as the client id where supported.
+          type:
+            - string
+            - "null"
+        connections:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties:
+            type: object
+            properties:
+              state:
+                type: string
+                enum:
+                  - not_connected
+                  - connected
+                  - needs_sign_in
+              connectedBy:
+                description: Actor id of the administrator who signed in.
+                type: string
+              connectedAt:
+                type: number
+              scopes:
+                description: Scopes the authorization server granted.
+                type: array
+                items:
+                  type: string
+              registration:
+                type: string
+                enum:
+                  - metadata_document
+                  - dynamic
+                  - preregistered
+            required:
+              - state
+            additionalProperties: false
+          description: Connection state by OAuth server name. Tokens are never returned.
+      required:
+        - redirectUri
+        - clientMetadataUrl
+        - connections
+      additionalProperties: false
+      description: OAuth sign-in facts of this instance and the connection state of its OAuth library servers.
+    ExtensionOAuthItemRequest:
+      type: object
+      properties:
+        name:
+          type: string
+      required:
+        - name
+      additionalProperties: false
+    ExtensionOAuthStartResponse:
+      type: object
+      properties:
+        authorizationUrl:
+          type: string
+          description: Provider authorization page to open in a new tab; carries a single-use state bound to this session, PKCE S256 and the resource indicator.
+      required:
+        - authorizationUrl
       additionalProperties: false
     ExtensionSecretReplaceRequest:
       type: object

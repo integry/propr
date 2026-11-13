@@ -588,6 +588,7 @@ export * from './fleetData.js';
 
 export * from './extensionProfiles.js';
 export * from './extensionLibrary.js';
+export * from './extensionOAuth.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';

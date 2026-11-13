@@ -10,7 +10,7 @@ const badge = 'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-s
  * single-item endpoint; a switched-off row stays, dimmed, with its settings.
  * Removing asks for confirmation first.
  */
-export function ExtensionItemRow({ name, kind, capability, item, enabled, pending, busy, notes, onToggle, onEdit, onRemove, testId }: {
+export function ExtensionItemRow({ name, kind, capability, item, enabled, pending, busy, notes, onToggle, onEdit, onRemove, testId, children }: {
   name: string;
   kind: string;
   capability?: 'read' | 'write';
@@ -24,6 +24,8 @@ export function ExtensionItemRow({ name, kind, capability, item, enabled, pendin
   onEdit: () => void;
   onRemove: () => void;
   testId: string;
+  /** Item-specific state and actions shown under the notes, such as an OAuth connection. */
+  children?: ReactNode;
 }) {
   const [confirming, setConfirming] = useState(false);
   return (
@@ -53,6 +55,7 @@ export function ExtensionItemRow({ name, kind, capability, item, enabled, pendin
           ))}
         </ul>
       )}
+      {children}
       <div className="mt-2 flex flex-wrap items-center gap-2 pl-7">
         {confirming ? (
           <>

@@ -15,7 +15,7 @@ import { automationExtensionsSchema, extensionLibraryInputSchema, extensionSelec
  */
 export const apiSchemas = z.registry<{ id: string }>();
 
-function component<T extends z.ZodType>(id: string, schema: T, description?: string): T {
+export function component<T extends z.ZodType>(id: string, schema: T, description?: string): T {
   const described = (description ? schema.describe(description) : schema) as T;
   apiSchemas.add(described, { id });
   return described;
@@ -207,7 +207,7 @@ export const ExtensionItemEnabledRequest = component('ExtensionItemEnabledReques
   enabled: z.boolean(),
 }));
 export const ExtensionSecretReplaceRequest = component('ExtensionSecretReplaceRequest', z.strictObject({ name: z.string(), secret: z.string().nullable(), expectedRevision: z.number().int().min(0).optional() }));
-const ExtensionLibraryRevisionSchema = z.object({
+export const ExtensionLibraryRevisionSchema = z.object({
   version: z.literal(1), instanceId: z.string(), revision: z.number().int().describe('0 before the first save.'),
   createdAt: z.number(), updatedAt: z.number(), auditActor: z.string(),
   servers: z.array(z.object({}).loose()), skills: z.array(z.object({}).loose()),
@@ -215,10 +215,6 @@ const ExtensionLibraryRevisionSchema = z.object({
   skillBundles: z.array(z.object({}).loose()),
 }).loose();
 export const ExtensionLibraryRevisionResponse = component('ExtensionLibraryRevisionResponse', z.object({ library: ExtensionLibraryRevisionSchema }));
-export const ExtensionLibraryRead = component('ExtensionLibraryRead', z.object({
-  contract: z.object({}).loose(), instanceId: z.string(), library: ExtensionLibraryRevisionSchema,
-  bundles: z.array(z.object({}).loose()), catalog: z.array(z.object({}).loose()), usage: z.object({ automations: z.array(z.object({ id: z.string(), name: z.string(), servers: z.array(z.string()), skills: z.array(z.string()) })), importedFrom: z.object({ servers: z.record(z.string(), z.array(z.string())), skills: z.record(z.string(), z.array(z.string())) }) }).describe('Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from.'),
-}));
 export const AutomationExtensions = component('AutomationExtensions', automationExtensionsSchema as unknown as z.ZodType, 'Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.');
 export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType, 'Legacy profile selection; no longer accepted for new submissions.');
 

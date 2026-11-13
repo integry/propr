@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ExtensionOAuthConnectionState } from './extensionOAuth.js';
 import {
   EXTENSION_LIMITS, EXTENSION_PROFILE_VERSION, catalogMcpSchema, extensionAgentAliasSchema, extensionRepositorySchema,
   extensionServerNameSchema, remoteMcpSchema, type ExtensionSecretStatus, type ExtensionSkillBundle,
@@ -37,6 +38,7 @@ export const extensionLibraryInputSchema = z.strictObject({
 }).superRefine((v, ctx) => {
   if (new Set(v.servers.map(s => s.name)).size !== v.servers.length) ctx.addIssue({ code: 'custom', message: 'Duplicate server names' });
   if (new Set(v.skills.map(s => s.bundleId)).size !== v.skills.length) ctx.addIssue({ code: 'custom', message: 'Duplicate bundles' });
+  if (v.servers.some(s => s.kind === 'https' && s.authentication !== 'oauth' && (s.scopes !== undefined || s.clientId !== undefined))) ctx.addIssue({ code: 'custom', message: 'Scopes and client id apply to OAuth servers only' });
 });
 export type ExtensionLibraryInput = z.input<typeof extensionLibraryInputSchema>;
 export type ExtensionLibraryItems = z.infer<typeof extensionLibraryInputSchema>;
@@ -85,7 +87,9 @@ export function serializeAutomationExtensions(value: AutomationExtensions | null
   return JSON.stringify({ servers: value?.servers ?? [], skills: value?.skills ?? [] });
 }
 
-export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'run_limit';
+export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'oauth_not_connected' | 'oauth_needs_sign_in' | 'run_limit';
+/** Skip reasons of an item whose credential is missing: reported for auto-applied items too. */
+const CREDENTIAL_SKIP_REASONS: readonly ExtensionSkipReason[] = ['secret_not_configured', 'oauth_not_connected', 'oauth_needs_sign_in'];
 export interface ExtensionSkippedItem {
   kind: 'server' | 'skill';
   /** Server name or skill bundle id. */
@@ -117,7 +121,13 @@ export interface ResolvedExtensionSet {
   /** Applicable items left out by the per-run limits. */
   omitted: ExtensionSkippedItem[];
 }
-type LibraryView = Pick<ExtensionLibraryRevision, 'servers' | 'skills'> & Partial<Pick<ExtensionLibraryRevision, 'secrets' | 'skillBundles'>>;
+type LibraryView = Pick<ExtensionLibraryRevision, 'servers' | 'skills'> & Partial<Pick<ExtensionLibraryRevision, 'secrets' | 'skillBundles'>> & {
+  /**
+   * Connection state of OAuth servers, credential state that is not part of a
+   * revision. When present, an OAuth server without a usable connection is skipped.
+   */
+  oauth?: Record<string, ExtensionOAuthConnectionState>;
+};
 
 const runRepositories = (repository: ExtensionResolutionContext['repository']) => (repository === undefined ? [] : typeof repository === 'string' ? [repository] : [...repository]);
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -135,6 +145,10 @@ export function extensionItemSkipReason(library: LibraryView, item: ExtensionLib
   if ('kind' in item) {
     if (context.allowWrite === false && item.capability === 'write') return 'write_not_authorized';
     if (item.kind === 'https' && item.authentication === 'bearer' && library.secrets && !library.secrets[item.name]?.configured) return 'secret_not_configured';
+    if (item.kind === 'https' && item.authentication === 'oauth' && library.oauth) {
+      const state = Object.hasOwn(library.oauth, item.name) ? library.oauth[item.name] : 'not_connected';
+      if (state !== 'connected') return state === 'needs_sign_in' ? 'oauth_needs_sign_in' : 'oauth_not_connected';
+    }
     // Catalog credentials come from the operator environment: callers report their current
     // availability. Without a status the item is not skipped, so identity problems still refuse.
     if (item.kind === 'catalog' && library.secrets?.[item.name]?.configured === false) return 'secret_not_configured';
@@ -169,7 +183,7 @@ export function resolveExtensionSet(library: LibraryView, context: ExtensionReso
       for (const item of [...items].sort((a, b) => compare(sortKey(a), sortKey(b)) || compare(key(a), key(b)))) {
         if (!item.autoApply || explicit.includes(item)) continue;
         const reason = extensionItemSkipReason(library, item, context);
-        if (reason === 'secret_not_configured') skipped.push({ kind, name: key(item), reason, source: 'auto' });
+        if (reason && CREDENTIAL_SKIP_REASONS.includes(reason)) skipped.push({ kind, name: key(item), reason, source: 'auto' });
         else if (!reason) automatic.push(item);
       }
     }
@@ -231,7 +245,7 @@ export function taskRunExtensionRequest(input: { kind: 'issue' | 'pull_request';
 /** Machine-readable library contract. */
 export const EXTENSION_LIBRARY_CONTRACT = {
   version: EXTENSION_LIBRARY_VERSION, limits: EXTENSION_LIMITS, libraryLimits: EXTENSION_LIBRARY_LIMITS, runtimes: EXTENSION_RUNTIMES,
-  transports: ['https', 'catalog'], localStdio: 'operator-installed-catalog-only',
+  transports: ['https', 'catalog'], authentication: ['none', 'bearer', 'oauth'], localStdio: 'operator-installed-catalog-only',
   skills: ['tar', 'tar.gz', 'github-exact-commit'], permission: 'instance.manage_settings',
   itemFields: ['enabled', 'repositories', 'agents', 'autoApply'],
   optOutLabels: EXTENSION_OPT_OUT_LABELS,

@@ -28,14 +28,17 @@ then two flat lists, **MCP servers** and **Skills**. Each row shows:
   for servers, a **Read** or **Write** badge;
 - where it applies (**All repositories** or the repository list, plus any agent
   limit) and whether it applies automatically;
+- for an OAuth server, its connection state (**Not connected**, **Connected** or
+  **Needs sign-in**), who connected it and when, the granted scopes, and
+  **Connect**, **Reconnect** and **Disconnect** (see [OAuth servers](#oauth-servers));
 - notes and warnings: the Codex configuration limitation (below) on items that
   can reach a Codex agent, a missing Bearer token, *Imported from profile X; not
   applied automatically* on migrated items, and the automations that add the item
   explicitly (on a switched-off item: that those automations currently run
   without it).
 
-**Add server** opens one form: an HTTPS endpoint (with tool discovery and a
-write-only Bearer token) or an operator catalog entry, the allowed tools and
+**Add server** opens one form: an HTTPS endpoint (with tool discovery and
+authentication by a write-only Bearer token or OAuth sign-in) or an operator catalog entry, the allowed tools and
 capability, then the item limits: **Limit to repositories** (empty means every
 repository), **Apply automatically** (on by default) and, under **Advanced**,
 **Limit to agents**. **Add skill** picks a skill already imported, or imports one
@@ -143,7 +146,9 @@ the library revision, `runKind`, `provenance` (`source: auto`, `additional` or
 `mixed`, and the revision's audit actor), the applied server names and skill
 names, which were auto-applied (`autoApplied`) and which were added explicitly
 (`added`), items left out by the per-run limit (`omitted`), skipped additional
-items with their reasons (`skipped`), and, when they applied, `labelOptOut` (the
+items with their reasons (`skipped`; auto-applied items appear there too when their
+credential is missing: `secret_not_configured`, `oauth_not_connected` or
+`oauth_needs_sign_in`), and, when they applied, `labelOptOut` (the
 labels and the items they removed) and `autoApplySkipped` (the Codex reason
 below). The event never contains secrets, URLs, credentials or tool output. The
 existing `network.extensions` telemetry event is unchanged. The run grant records
@@ -165,7 +170,7 @@ temporary skill directory, including when execution fails.
 
 V1 supports stateless HTTPS MCP endpoints with JSON responses. Each server has a
 stable name, an explicit list of allowed tool names, a read/write capability and
-optional write-only bearer authentication. A write server also requires the run's
+optional write-only bearer authentication or [OAuth sign-in](#oauth-servers). A write server also requires the run's
 explicit write authorization. Runs without that authorization, including automation report phases, launch with write servers excluded. Automation action phases expose them under their explicit phase policy, and so does the initial task of a New Task submission with the write opt-in. Label-started tasks, retries, replacement attempts and pull request follow-ups never receive write servers. Omission is false. `initialize`, `ping`, the initialized
 notification, `tools/list` and explicitly listed `tools/call` are the only gateway
 methods. Resource APIs, prompts, server-initiated requests, response cookies,
@@ -218,6 +223,138 @@ auto-applied items of automation runs. Items an automation adds explicitly keep
 the strict behaviour: such a run still ignores the operator configuration and
 refuses a workspace `.codex/config.toml`.
 
+## OAuth servers
+
+Many hosted MCP servers accept only OAuth: a person signs in in a browser and the
+client receives short-lived access tokens and a refresh token. Agent containers
+are headless and one-shot, so ProPR signs in **as its own OAuth client** instead.
+An administrator connects the server once from Settings, in their own browser.
+Core stores the tokens encrypted, refreshes them, and the MCP gateway adds a
+current access token to each upstream call, exactly as it adds a Bearer token.
+Agent containers never see a token and never take part in a login flow, for
+Claude and Codex alike. ProPR always identifies itself as ProPR: it never presents
+another product's client id, client metadata, redirect URI or user agent.
+
+### Adding and connecting a server
+
+1. **Add server** with an HTTPS endpoint and **Authentication: OAuth sign-in**.
+   Optionally enter **Scopes** to request (empty uses what the server asks for),
+   and, for a client registered in the provider's developer console, its
+   **Client id** and write-only **Client secret**. **Check** runs discovery and
+   shows the authorization server, the scopes and which registration method a
+   sign-in will use, without storing anything.
+2. Save the server. Its row shows **Not connected**; runs skip it until it is connected.
+3. **Connect** opens the provider's sign-in page in a new tab. Sign in and
+   approve; the tab shows a short result page you can close. The Settings tab
+   refreshes the row when you return to it, and it shows **Connected**, the
+   administrator who connected it, when, and the granted scopes.
+
+Only a durable administrator with `instance.manage_settings` can start a sign-in,
+and the provider's redirect completes only in the browser session that started it.
+
+:::warning[Shared identity]
+Every run the server applies to acts with the access of the account that signed
+in. A connection belongs to the library item, not to a person, and is shared by
+every issue task, follow-up and automation run it applies to. Sign in with a
+dedicated service account and request the narrowest scopes the tools need.
+:::
+
+### Discovery and registration
+
+ProPR follows the MCP authorization specification. An unauthenticated request to
+the server must return `401` with a `WWW-Authenticate` challenge naming its
+protected resource metadata (RFC 9728); without it ProPR tries the well-known
+location (`/.well-known/oauth-protected-resource`, path-specific first). That
+document names the authorization server, whose metadata is read from
+`/.well-known/oauth-authorization-server` (RFC 8414), falling back to OpenID
+Connect discovery. The authorization server must support PKCE with `S256`.
+
+ProPR identifies itself in this order:
+
+| Method | When | What is stored |
+| --- | --- | --- |
+| Pre-registered client | You entered a client id. Explicit configuration always wins. | The client id in the library item; the client secret, if any, sealed like a Bearer token. |
+| Client ID Metadata Document | The authorization server advertises `client_id_metadata_document_supported` and the instance has a public base URL. ProPR serves its own metadata at `<public API base URL>/api/instance/extensions/v1/oauth/client-metadata.json` and uses that URL as the client id. | Nothing beyond the connection. |
+| Dynamic Client Registration (RFC 7591) | The authorization server advertises a `registration_endpoint`. | The issued client id with the connection; an issued secret sealed with the tokens. Reconnecting a Connected server reuses the registration; reconnecting from Needs sign-in registers again, because the provider may have rejected the client. |
+
+When none is possible, Check and Connect say so: register a client in the
+provider's developer console and enter its id, or use a static Bearer token if
+the provider offers one.
+
+The redirect URI is always
+`<public API base URL>/api/instance/extensions/v1/oauth/callback`; register it
+exactly for a pre-registered client (the form shows it). The public base URL is
+the HTTPS origin of `MCP_PUBLIC_ORIGIN`, `API_PUBLIC_URL` or
+`GH_OAUTH_CALLBACK_URL`, as for ProPR's own MCP server. Without one, **Connect**
+is disabled with an explanation.
+
+### The sign-in
+
+Sign-in uses the authorization code flow with PKCE (`S256`). The request carries
+the `resource` parameter (RFC 8707) set to the resource identifier the protected
+resource metadata declares (the MCP server URL, or a parent path of it on the
+same origin), and a `state` that
+is random, single-use, expires after 10 minutes and is bound to the
+administrator's session, the library item and its endpoint. The callback refuses
+an unknown, reused or expired `state`, a `state` from another session or
+administrator, and an `iss` parameter (RFC 9207) that does not name the
+authorization server (or is missing when the server promises it), then exchanges
+the code. A refused exchange, such as a PKCE verifier mismatch, stores nothing.
+
+Every discovery, registration, token and revocation request goes through the
+extension endpoint policy: HTTPS on port 443 without credentials, query or
+fragment, every DNS answer public (private, loopback, link-local and metadata
+addresses are refused), the checked address pinned for the connection, no
+redirects, responses bounded to 256 KiB and ten seconds.
+
+### Token custody and refresh
+
+The access token, refresh token, expiry, granted scopes and a dynamically
+registered client secret are encrypted with the extension private-credential
+root, bound to the instance, the library item, its endpoint and client. They are
+write-only: no API, MCP tool, CLI command, log line, task event, telemetry field
+or native export contains them. Connecting, refreshing and disconnecting create
+no library revision (they are credential state, not configuration); connect,
+disconnect, discarded connections and moves to Needs sign-in are recorded with
+the actor and time in the OAuth audit trail
+(`GET /api/instance/extensions/v1/oauth/audit`).
+
+For each upstream call the gateway asks Core for the current access token rather
+than using one captured at launch, because a run can outlive a token. Core
+refreshes a token shortly (one minute) before it expires and after the upstream
+answers `401`; the gateway then retries the call once. Refresh is single-flight
+per item: a second caller waits for the first result, across API processes too,
+and a rotated refresh token is stored atomically with the new access token, so
+concurrent runs never invalidate each other's token. A refresh carries the same
+`resource` as the sign-in. Access tokens are on the gateway's redaction list.
+
+When the authorization server refuses a refresh (`invalid_grant` and similar),
+the item moves to **Needs sign-in** and administrators receive one Inbox
+notification (category *system*, component `extensions.oauth`), not one per run.
+Network failures and server errors are retried and leave the state unchanged.
+**Reconnect** signs in again.
+
+### Runs, edits and disconnecting
+
+A server that is not connected, or needs sign-in, is left out of the run. The run
+proceeds, and the `extensions.resolved` event records the server as skipped with
+reason `oauth_not_connected` or `oauth_needs_sign_in`, for auto-applied items and
+for items an automation adds explicitly. Changing the server's URL, switching its
+authentication type or changing its client id discards the stored tokens and
+requires a new sign-in; renaming or removing it does too. Disabling and
+re-enabling the item keeps the connection. **Disconnect** calls the provider's
+revocation endpoint (RFC 7009) when one is advertised, then deletes the stored
+tokens.
+
+### Out of scope
+
+- Login flows inside agent containers, and reuse of the Claude or Codex
+  runtimes' own MCP connectors or stored credentials.
+- Presenting any other product's OAuth client identity.
+- Per-user connections: a connection belongs to the library item and is shared
+  by every run the item applies to.
+- OAuth for operator catalog servers and for skills.
+
 ## Operator-installed catalog
 
 An operator supplies a bounded JSON array through `PROPR_EXTENSION_CATALOG_FILE` on Core and workers. Install it outside task/repository mounts, owned by the operator with no group/other write permissions. The file contains configuration and secret **references**, never secret values. No API accepts catalog installation or command configuration. Restart/update the operator service configuration through its existing secret-management mechanism; never put credentials in library/UI input.
@@ -263,7 +400,7 @@ credential trust root (`PROPR_CREDENTIAL_ENCRYPTION_KEY`, then
 instance/library-revision authenticated binding. Configure the same root on API
 and workers. Never store the root in library input.
 
-Normal read/history/config projections contain only authentication field names and presence markers. Native database exports retain the public library revisions and bundle contents, erase encrypted extension credentials and sealed submission authority, and remove run grants. After a native export restore, Bearer servers show their secret as not configured and are skipped at launch until you replace the token. Operator catalog files and secret references/values are never stored in the database or included in exports. Raw operator backups require the matching private encryption root; a different root fails decryption closed. Under a different root you can still enable and disable items, because that never decrypts credentials; restoring the matching root recovers them. Saving the library, replacing a secret, validation and Bearer server calls need the matching root. Revisions and the dedicated `extension_instance_identity` database row
+Normal read/history/config projections contain only authentication field names and presence markers. Native database exports retain the public library revisions and bundle contents, erase encrypted extension credentials, OAuth connections and pending sign-ins, and sealed submission authority, and remove run grants. After a restore, OAuth servers show **Not connected** until an administrator connects them again. After a native export restore, Bearer servers show their secret as not configured and are skipped at launch until you replace the token. Operator catalog files and secret references/values are never stored in the database or included in exports. Raw operator backups require the matching private encryption root; a different root fails decryption closed. Under a different root you can still enable and disable items, because that never decrypts credentials; restoring the matching root recovers them. Saving the library, replacing a secret, validation and Bearer server calls need the matching root. Revisions and the dedicated `extension_instance_identity` database row
 must be restored together; IDs from another installation cannot be substituted.
 The native database export removes ephemeral run grants, so an old execution
 token cannot regain access after restore. Normal execution revokes grants on
@@ -332,6 +469,13 @@ call the approved tool, a grant without that server cannot, redirects are refuse
 oversized responses fail. Qualified pinned Claude/Codex CLI tests check exclusive
 MCP catalogs and environment authentication. The browser test renders the actual
 settings lists and forms and checks the enabled checkbox round trip, limits, provenance, history and write-only controls.
+A synthetic authorization server and OAuth-protected MCP server fixture
+(`test/fixtures/extensionOAuthFixture.ts`) covers OAuth discovery from the `401`
+challenge and the well-known fallback, all three registration methods, PKCE,
+`state` and `iss` refusals, single-flight refresh with rotation, the
+one-refresh-one-retry path, Needs sign-in with its single notification, endpoint
+policy refusals and token sentinels; a browser test drives **Connect** through
+the provider's page and the callback.
 
 Skill-bearing runs require a Linux worker with `/proc/self/fd` available for secure directory-handle staging. Non-Linux workers reject skill staging with an explicit error; Runs with only MCP servers do not require these staging primitives.
 

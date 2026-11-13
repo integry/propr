@@ -14,12 +14,12 @@ import {
   DesktopPairingTicket,
   Health,
   ExtensionItemEnabledRequest,
-  ExtensionLibraryRead,
   ExtensionLibraryRevisionResponse,
   ExtensionLibrarySave,
   ExtensionSecretReplaceRequest,
   JsonObject,
 } from './schemas.js';
+import { ExtensionLibraryRead } from './schemasExtensionOAuth.js';
 import type { RouteDoc } from './types.js';
 
 const PAIRING_ID = 'Pairing identifier returned when the pairing started.';

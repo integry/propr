@@ -1,6 +1,7 @@
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash } from './extensionProfileStore.js';
-import { requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint } from './endpointPolicy.js';
+import { ExtensionUpstreamUnauthorizedError, requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint } from './endpointPolicy.js';
+import { extensionOAuth } from './extensionOAuthStore.js';
 import { redactExtensionOutput } from './extensionOutput.js';
 export { redactExtensionOutput } from './extensionOutput.js';
 
@@ -13,6 +14,8 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   let responseBytes: number = EXTENSION_LIMITS.responseBytes;
   let recordedDecision = false;
   let decision: { host: string; allowed: boolean } | undefined;
+  /** OAuth access tokens used by this call, redacted from its output. */
+  const oauthTokens: string[] = [];
   try {
   const server = snapshot.servers.find(s => s.enabled && s.name === serverName);
   if (!server || !body || typeof body !== 'object' || Array.isArray(body)) throw new ExtensionError(403, 'MCP capability unavailable');
@@ -48,8 +51,27 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     // precheck never reaches that transport and must be retained here.
     if (!allowed) await recordDecision();
   } });
-  await store.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).increment('request_bytes', Buffer.byteLength(JSON.stringify(forwarded)));
-  try { upstream = await send(endpoint, forwarded, secrets[serverName], policy); } catch { throw new ExtensionError(502, 'MCP connection failed'); }
+  const requestBytes = Buffer.byteLength(JSON.stringify(forwarded));
+  await store.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).increment('request_bytes', requestBytes);
+  // OAuth servers: ask Core for the current access token on every call (a run
+  // can outlive a token). Never the library secret, which is a client secret.
+  const oauth = server.kind === 'https' && server.authentication === 'oauth';
+  const credential = async (): Promise<string | undefined> => {
+    if (!oauth) return secrets[serverName];
+    try { const current = await extensionOAuth(store).accessToken(snapshot.instanceId, server); oauthTokens.push(current); return current; }
+    catch { throw new ExtensionError(502, 'MCP connection failed'); }
+  };
+  const used = await credential();
+  try { upstream = await send(endpoint, forwarded, used, policy); }
+  catch (error) {
+    if (!oauth || !(error instanceof ExtensionUpstreamUnauthorizedError) || !used) throw new ExtensionError(502, 'MCP connection failed');
+    // One refresh and one retry after the upstream refused the token.
+    let retried: string;
+    try { retried = await extensionOAuth(store).refreshAfterRejection(snapshot.instanceId, server, used); oauthTokens.push(retried); }
+    catch { throw new ExtensionError(502, 'MCP connection failed'); }
+    await store.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).increment('request_bytes', requestBytes);
+    try { upstream = await send(endpoint, forwarded, retried, policy); } catch { throw new ExtensionError(502, 'MCP connection failed'); }
+  }
   if (upstream === null && rpc.id === undefined) { responseBytes = 0; return null; }
   if (!upstream || typeof upstream !== 'object' || Array.isArray(upstream)) throw new ExtensionError(502, 'MCP protocol unavailable');
   responseBytes = extensionResponseWireBytes(upstream) ?? EXTENSION_LIMITS.responseBytes;
@@ -71,7 +93,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     if (!Array.isArray(tools) || tools.length > 64) throw new ExtensionError(502, 'MCP tool catalog unavailable');
     projection = { tools: tools.filter(t => t && typeof t === 'object' && server.tools.includes(String((t as { name?: unknown }).name))) };
   }
-  const redacted = redactExtensionOutput({ jsonrpc: '2.0', id: rpc.id, result: projection }, [...Object.values(secrets), token]);
+  const redacted = redactExtensionOutput({ jsonrpc: '2.0', id: rpc.id, result: projection }, [...Object.values(secrets), ...oauthTokens, token]);
   if (Buffer.byteLength(JSON.stringify(redacted)) > EXTENSION_LIMITS.responseBytes) throw new ExtensionError(502, 'MCP response too large');
   return redacted;
   } finally {

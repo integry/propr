@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryServer, ExtensionSecretStatus } from '@propr/shared';
 import { discoverExtensionTools } from '../../../api/extensionProfilesApi';
 import { ExtensionItemPicker } from './ExtensionItemPicker';
+import { ServerOAuthFields } from './ExtensionOAuthFields';
 import { buttonClass, inputClass, ownEntry } from './extensionUi';
 
 type Patch = (patch: Partial<ExtensionLibraryServer>) => void;
@@ -81,14 +82,16 @@ export function ServerToolsField({ server, catalog, knownTools, onChange }: { se
   );
 }
 
-/** Capability, authentication and the write-only Bearer token. */
-export function ServerAccessFields({ server, configured, token, tokenDropped, onChange, onToken }: {
+/** Capability, authentication, the write-only Bearer token and the OAuth sign-in settings. */
+export function ServerAccessFields({ server, configured, token, tokenDropped, redirectUri, onChange, onToken }: {
   server: ExtensionLibraryServer;
-  /** A token is stored for the saved server. */
+  /** A token (or, for OAuth, a client secret) is stored for the saved server. */
   configured: boolean;
   token: string;
-  /** The name or endpoint changed, so the stored token will not carry over. */
+  /** The name, endpoint or client changed, so the stored credential will not carry over. */
   tokenDropped: boolean;
+  /** The OAuth redirect URI of this instance; null without a public base URL. */
+  redirectUri: string | null;
   onChange: Patch;
   onToken: (token: string) => void;
 }) {
@@ -107,9 +110,10 @@ export function ServerAccessFields({ server, configured, token, tokenDropped, on
         {server.kind === 'https' && (
           <label className="text-sm">
             Authentication
-            <select className={inputClass} value={server.authentication} onChange={event => onChange({ authentication: event.target.value as 'none' | 'bearer' })}>
+            <select className={inputClass} value={server.authentication} onChange={event => onChange({ authentication: event.target.value as 'none' | 'bearer' | 'oauth' })}>
               <option value="none">None</option>
               <option value="bearer">Bearer token</option>
+              <option value="oauth">OAuth sign-in</option>
             </select>
           </label>
         )}
@@ -123,6 +127,9 @@ export function ServerAccessFields({ server, configured, token, tokenDropped, on
             onChange={event => onToken(event.target.value)} />
           {configured && tokenDropped && !token && <span className="mt-1 block text-xs text-amber-800">Changing the name or endpoint clears the stored token. Enter it again.</span>}
         </label>
+      )}
+      {server.kind === 'https' && server.authentication === 'oauth' && (
+        <ServerOAuthFields server={server} redirectUri={redirectUri} secretConfigured={configured} secret={token} secretDropped={tokenDropped} onChange={onChange} onSecret={onToken} />
       )}
     </>
   );

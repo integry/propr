@@ -1,5 +1,6 @@
 import { ADMIN_ROUTE_DOCS } from './routeDocsAdmin.js';
 import { SYSTEM_ROUTE_DOCS } from './routeDocsSystem.js';
+import { EXTENSION_OAUTH_ROUTE_DOCS } from './routeDocsExtensionOAuth.js';
 import { TASK_ROUTE_DOCS } from './routeDocsTasks.js';
 import type { RouteDoc } from './types.js';
 
@@ -11,5 +12,6 @@ import type { RouteDoc } from './types.js';
 export const ROUTE_DOCS: Readonly<Record<string, RouteDoc>> = {
   ...ADMIN_ROUTE_DOCS,
   ...SYSTEM_ROUTE_DOCS,
+  ...EXTENSION_OAUTH_ROUTE_DOCS,
   ...TASK_ROUTE_DOCS,
 };
