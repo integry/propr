@@ -169,6 +169,86 @@ describe('automation definition routes', () => {
     assert.equal(cleared.status, 200); assert.deepEqual(cleared.body.definition.extensions, { servers: [], skills: [] });
   });
 
+  async function extensionLibrary() {
+    const { ExtensionLibraryStore } = await import('../../core/src/extensions/extensionProfileStore.js');
+    await database('instance_members').insert({ github_user_id: '1', github_username: '1', role: 'admin', source: 'local', created_at: NOW, updated_at: NOW });
+    const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-library-test-key' });
+    const server = (name: string) => ({ kind: 'https' as const, name, url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read' as const, authentication: 'none' as const, autoApply: false });
+    await store.saveLibrary('1', { version: 1, skills: [], servers: ['docs', 'search'].map(server) }, {}, 0);
+    const saveServers = async (names: string[]) => store.saveLibrary('1', { version: 1, skills: [], servers: names.map(server) }, {}, (await store.readLibrary('1')).revision);
+    // Removes `docs` from the library, keeping `search`; restoring puts it back.
+    return { removeDocs: () => saveServers(['search']), restoreDocs: () => saveServers(['docs', 'search']) };
+  }
+  const extensionAdmin = { headers: { 'X-ProPR-Extensions': '1' }, authorization: { role: 'admin', permissions: ['instance.manage_settings'] } };
+
+  test('a library removal landing after the extension check refuses the pending automation save instead of leaving a dangling item', async () => {
+    const { removeDocs, restoreDocs } = await extensionLibrary();
+    const existing = await call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Search', prompt: 'Search', repositories: ['acme/app'], extensions: { servers: ['search'], skills: [] } } }));
+    assert.equal(existing.status, 201, JSON.stringify(existing.body));
+    // Pause each save at the awaited runtime validation that follows the extension check.
+    let paused = deferred(); let resume = deferred();
+    routes = createAutomationDefinitionRoutes({ db: database, services: { ...services(), validateRuntime: async () => { paused.release(); await resume.promise; return null; } } });
+    const saves = [
+      () => call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['docs'], skills: [] } } })),
+      () => call(routes.update, request('1', { ...extensionAdmin, params: { id: existing.body.definition.id }, body: { extensions: { servers: ['search', 'docs'], skills: [] } } })),
+    ];
+    for (const [index, save] of saves.entries()) {
+      if (index) { await restoreDocs(); paused = deferred(); resume = deferred(); }
+      const pending = save();
+      await paused.promise;
+      // Nothing references `docs` yet, so the removal itself succeeds.
+      await removeDocs();
+      resume.release();
+      const result = await pending;
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.match(JSON.stringify(result.body), /not found: docs/);
+    }
+    const rows = await database('agent_definitions').select('name', 'extensions');
+    assert.deepEqual(rows.map(row => [row.name, JSON.parse(row.extensions)]), [['Search', { servers: ['search'], skills: [] }]]);
+  });
+
+  test('a library removal arriving while an automation save holds the library lock sees the new reference and is refused', async () => {
+    const { removeDocs } = await extensionLibrary();
+    const existing = await call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Search', prompt: 'Search', repositories: ['acme/app'], extensions: { servers: ['search'], skills: [] } } }));
+    assert.equal(existing.status, 201, JSON.stringify(existing.body));
+    const saves = [
+      { save: () => call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['docs'], skills: [] } } })), status: 201 },
+      { save: () => call(routes.update, request('1', { ...extensionAdmin, params: { id: existing.body.definition.id }, body: { extensions: { servers: ['search', 'docs'], skills: [] } } })), status: 200 },
+    ];
+    for (const { save, status } of saves) {
+      // Start the removal once the save's transaction has taken the library lock.
+      let removal: Promise<unknown> | undefined;
+      void afterQuery(sql => /^update [`"]extension_library[`"] set/i.test(sql), async () => { removal = removeDocs().then(() => 'removed', error => error); });
+      const result = await save();
+      assert.equal(result.status, status, JSON.stringify(result.body));
+      assert.ok(removal, 'the save took the library lock before writing the definition');
+      const outcome = await removal;
+      assert.equal((outcome as { status?: number }).status, 409, String(outcome));
+      assert.match((outcome as Error).message, /Automations add these extensions explicitly/);
+      // Leave only the `search` automation for the update case.
+      await database('agent_definitions').where({ name: 'Docs' }).delete();
+    }
+    assert.deepEqual(JSON.parse((await database('agent_definitions').first('extensions')).extensions), { servers: ['search', 'docs'], skills: [] });
+  });
+
+  test('an addition the request was not authorized for, because the definition changed after it was read, is refused at the write', async () => {
+    await extensionLibrary();
+    const created = await call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['docs'], skills: [] } } }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.body.definition.id as string;
+    // A non-administrator sends back the items they read; the extension check is skipped as nothing is added.
+    const paused = deferred(); const resume = deferred();
+    routes = createAutomationDefinitionRoutes({ db: database, services: { ...services(), validateRuntime: async () => { paused.release(); await resume.promise; return null; } } });
+    const pending = call(routes.update, request('1', { params: { id }, body: { extensions: { servers: ['docs'], skills: [] } } }));
+    await paused.promise;
+    // Meanwhile `docs` is removed from the automation, so the stale save would add it back.
+    await database('agent_definitions').where({ id }).update({ extensions: JSON.stringify({ servers: [], skills: [] }), revision: 5 });
+    resume.release();
+    const result = await pending;
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.deepEqual(JSON.parse((await database('agent_definitions').where({ id }).first('extensions')).extensions), { servers: [], skills: [] });
+  });
+
   /** Run `action` as soon as a matching query has answered, before the waiting caller resumes. */
   function afterQuery(matches: (sql: string) => boolean, action: () => Promise<unknown>): Promise<void> {
     return new Promise((resolve, reject) => {

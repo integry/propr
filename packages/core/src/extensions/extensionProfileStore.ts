@@ -117,12 +117,24 @@ export class ExtensionLibraryStore {
       return servers.length || skills.length ? [{ id: row.id as string, name: (row.name as string) ?? row.id, servers, skills }] : [];
     });
   }
-  /** Confirm that every named item exists in the current library. */
-  async assertItemsExist(extensions: AutomationExtensions): Promise<void> {
-    const { snapshot } = await this.head();
+  /** Confirm that every named item exists in the current library, read through `database`. */
+  async assertItemsExist(extensions: AutomationExtensions, database: Knex = this.database): Promise<void> {
+    const { snapshot } = await this.head(database);
     const missingServers = extensions.servers.filter(name => !snapshot.servers.some(s => s.name === name));
     const missingSkills = extensions.skills.filter(id => !snapshot.skills.some(s => s.bundleId === id));
     if (missingServers.length || missingSkills.length) throw new ExtensionError(400, `Extension library items not found: ${[...missingServers, ...missingSkills].join(', ')}`);
+  }
+  /**
+   * Inside the transaction that persists an automation adding `extensions`:
+   * take the library's write lock first, then recheck the actor and that every
+   * added item exists. A library save checks automation references under the
+   * same lock, so either it sees this automation's reference and refuses the
+   * removal, or the removal commits first and this check refuses the addition.
+   */
+  async assertAdditionInTransaction(trx: Knex.Transaction, actor: string, extensions: AutomationExtensions): Promise<void> {
+    await trx('extension_library').update({ revision: trx.ref('revision') });
+    await this.authorize(actor, trx);
+    await this.assertItemsExist(extensions, trx);
   }
   /**
    * Migrated item names of a removed profile, for queued submissions that

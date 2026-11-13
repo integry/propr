@@ -116,6 +116,14 @@ export interface AgentDefinitionStoreDependencies {
   now?: () => number;
 }
 
+/**
+ * Runs inside the transaction that writes the definition, before the write,
+ * with the stored definition it will change (null on create). Throwing aborts
+ * the write. Used to recheck state the write depends on under the same lock.
+ */
+export type AgentDefinitionWriteGuard = (trx: Knex.Transaction, current: StoredAgentDefinition | null) => Promise<void>;
+export interface AgentDefinitionWriteOptions extends AgentDefinitionStoreDependencies { guard?: AgentDefinitionWriteGuard }
+
 function statusError(message: string, status: number): Error & { status: number } {
   return Object.assign(new Error(message), { status });
 }
@@ -181,8 +189,10 @@ export function computeAgentDefinitionNextRunAt(
 
 export async function createAgentDefinition(
   input: CreateAgentDefinitionInput,
-  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
+  { database = db, now = Date.now, guard }: AgentDefinitionWriteOptions = {},
 ): Promise<StoredAgentDefinition> {
+  // With a guard, the guard and the insert share one transaction.
+  if (guard && !database.isTransaction) return database.transaction(trx => createAgentDefinition(input, { database: trx, now, guard }));
   const timestamp = now();
   const scheduleCron = input.scheduleCron ?? null;
   const scheduleEnabled = input.scheduleEnabled ?? false;
@@ -212,6 +222,7 @@ export async function createAgentDefinition(
     created_at: timestamp,
     updated_at: timestamp,
   };
+  if (guard) await guard(database as Knex.Transaction, null);
   await database(TABLE).insert(row);
   return rowToAgentDefinition(row);
 }
@@ -240,7 +251,7 @@ export async function listAgentDefinitions(
   return { definitions: rows.map(rowToAgentDefinition), total: Number(countRow?.count ?? 0), limit, offset };
 }
 
-export interface UpdateAgentDefinitionOptions extends AgentDefinitionStoreDependencies {
+export interface UpdateAgentDefinitionOptions extends AgentDefinitionWriteOptions {
   /** When set, the update fails with a 409 unless the stored revision matches. */
   expectedRevision?: number;
 }
@@ -292,20 +303,23 @@ function patchToScheduleChanges(
  * 409; the write itself is also conditional on the revision read, so two
  * concurrent updates cannot both succeed. `next_run_at` is recomputed whenever
  * the schedule or enablement changes. Returns undefined when the definition
- * does not exist for this owner.
+ * does not exist for this owner. With a `guard`, the read, the guard and the
+ * write share one transaction, and the guard sees the definition read there.
  */
 export async function updateAgentDefinition(
   id: string,
   ownerId: string,
   patch: AgentDefinitionPatch,
-  { expectedRevision, database = db, now = Date.now }: UpdateAgentDefinitionOptions = {},
+  { expectedRevision, database = db, now = Date.now, guard }: UpdateAgentDefinitionOptions = {},
 ): Promise<StoredAgentDefinition | undefined> {
+  if (guard && !database.isTransaction) return database.transaction(trx => updateAgentDefinition(id, ownerId, patch, { expectedRevision, database: trx, now, guard }));
   const row = await database(TABLE).where({ id, owner_id: ownerId }).first<AgentDefinitionRow | undefined>();
   if (!row) return undefined;
   const current = rowToAgentDefinition(row);
   if (expectedRevision !== undefined && expectedRevision !== current.revision) {
     throw statusError(`Automation definition was changed (revision ${current.revision}, expected ${expectedRevision}); reload and retry`, 409);
   }
+  if (guard) await guard(database as Knex.Transaction, current);
 
   const timestamp = now();
   const changes = { ...patchToRowChanges(patch), ...patchToScheduleChanges(patch, current, timestamp) };

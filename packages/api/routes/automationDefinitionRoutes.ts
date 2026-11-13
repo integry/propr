@@ -27,6 +27,7 @@ import {
   updateAgentDefinition,
   validateAgentDefinitionRuntime,
   type AgentDefinitionPatch,
+  type AgentDefinitionWriteGuard,
   type AgentRunGate,
   type Attachment,
   type MulterFile,
@@ -141,8 +142,16 @@ const sameExtensions = (left: AutomationExtensions | undefined, right: Automatio
   return normalize(left) === normalize(right);
 };
 
-const addsExtensions = (next: AutomationExtensions, current: AutomationExtensions | undefined) =>
-  next.servers.some(name => !current?.servers.includes(name)) || next.skills.some(id => !current?.skills.includes(id));
+const addedExtensions = (next: AutomationExtensions, current: AutomationExtensions | undefined): AutomationExtensions => ({
+  servers: next.servers.filter(name => !current?.servers.includes(name)),
+  skills: next.skills.filter(id => !current?.skills.includes(id)),
+});
+const addsExtensions = (next: AutomationExtensions, current: AutomationExtensions | undefined) => hasAutomationExtensions(addedExtensions(next, current));
+
+const extensionRouteError = (error: unknown): RouteError => {
+  const status = (error as { status?: number }).status;
+  return new RouteError(typeof status === 'number' && status < 500 ? status : 400, (error as Error).message);
+};
 
 /**
  * Adding library items to an automation is instance extension administration:
@@ -157,9 +166,29 @@ async function authorizeAutomationExtensions(req: Request, database: Knex, exten
     await store.authorize(requireOwner(req));
     await store.assertItemsExist(extensions);
   } catch (error) {
-    const status = (error as { status?: number }).status;
-    throw new RouteError(typeof status === 'number' && status < 500 ? status : 400, (error as Error).message);
+    throw extensionRouteError(error);
   }
+}
+
+/**
+ * The check above runs before the definition is written, with awaited
+ * validation in between, so a library removal could land in that window.
+ * This guard repeats it in the transaction that writes the definition, under
+ * the library's write lock, for the items added relative to the definition
+ * read there. Additions the request was not authorized for, because the stored
+ * definition changed since it was read, are refused.
+ */
+function automationExtensionsGuard(database: Knex, actor: string, extensions: AutomationExtensions, authorized: boolean): AgentDefinitionWriteGuard {
+  return async (trx, current) => {
+    const added = addedExtensions(extensions, current?.extensions);
+    if (!hasAutomationExtensions(added)) return;
+    if (!authorized) throw new RouteError(409, 'Automation definition was changed concurrently; reload and retry');
+    try {
+      await new ExtensionLibraryStore(database).assertAdditionInTransaction(trx, actor, added);
+    } catch (error) {
+      throw extensionRouteError(error);
+    }
+  };
 }
 
 function sendError(res: Response, error: unknown, fallback: string): void {
@@ -418,11 +447,15 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       extensions: input.extensions ?? { servers: [], skills: [] }, pauseWhenUnproductive: input.pauseWhenUnproductive ?? false,
       enabled: input.enabled ?? true, revision: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    if (hasAutomationExtensions(input.extensions)) await authorizeAutomationExtensions(req, database, input.extensions!);
+    const adding = hasAutomationExtensions(input.extensions);
+    if (adding) await authorizeAutomationExtensions(req, database, input.extensions!);
     await requireRuntimeValid(candidate);
     if (!await verifyRepositories(req, res, candidate.repositories)) return;
 
-    const definition = await createAgentDefinition(input, storeDeps);
+    const definition = await createAgentDefinition(input, {
+      ...storeDeps,
+      ...(adding ? { guard: automationExtensionsGuard(database, owner, input.extensions!, true) } : {}),
+    });
     // Warm the profile cache so the new automation's creator renders with an avatar.
     await rememberCreator(req.user);
     res.status(201).json({ definition: await attributedAgentDefinition(definition) });
@@ -444,7 +477,8 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     const current = await requireDefinition(req, owner);
     const patch = automationDefinitionInputToPatch(body as Partial<AutomationDefinitionInput>);
     // Adding items needs the extension administrator; removing some or all of them grants nothing new.
-    if (patch.extensions != null && !sameExtensions(patch.extensions, current.extensions) && addsExtensions(patch.extensions, current.extensions)) await authorizeAutomationExtensions(req, database, patch.extensions);
+    const adding = patch.extensions != null && !sameExtensions(patch.extensions, current.extensions) && addsExtensions(patch.extensions, current.extensions);
+    if (adding) await authorizeAutomationExtensions(req, database, patch.extensions!);
 
     if (RUNTIME_FIELDS.some(field => patch[field] !== undefined)) {
       await requireRuntimeValid({ ...current, ...patch } as StoredAgentDefinition);
@@ -456,6 +490,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     const definition = await updateAgentDefinition(current.id, owner, patch, {
       ...storeDeps,
       expectedRevision: expectedRevision as number | undefined,
+      ...(patch.extensions != null ? { guard: automationExtensionsGuard(database, owner, patch.extensions, adding) } : {}),
     });
     if (!definition) throw new RouteError(404, 'Automation definition not found');
     res.json({ definition: await attributedAgentDefinition(definition) });
