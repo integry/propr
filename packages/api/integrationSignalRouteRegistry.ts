@@ -1,7 +1,7 @@
 import type { createPullRequestReadinessRoutes, createRepositoryEventRoutes } from './routes/index.js';
 import type { RequestHandler } from 'express';
 
-interface IntegrationSignalRouteDeps {
+export interface IntegrationSignalRouteDeps {
   pullRequestReadinessRoutes: Pick<ReturnType<typeof createPullRequestReadinessRoutes>, 'getReadiness'>;
   repositoryEventRoutes: Pick<ReturnType<typeof createRepositoryEventRoutes>, 'listEvents' | 'waitEvents'>;
 }

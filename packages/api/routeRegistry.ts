@@ -6,7 +6,7 @@ import type { createTaskSubmissionRoutes } from './routes/taskSubmissionRoutes.j
 import type { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summaryPathUtils.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
-import { createIntegrationSignalRouteEntries } from './integrationSignalRouteRegistry.js';
+import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
 import {
   requireAgentTankUsageAccess,
   requireManageAgents,
@@ -35,7 +35,8 @@ interface ManagementRouteDeps {
   visualPreviewAuthRoutes: ReturnType<typeof routes.createVisualPreviewAuthRoutes>;
 }
 
-interface OperationalRouteDeps {
+/** Integration signal routes (readiness, repository events) are typed in their own registry. */
+interface OperationalRouteDeps extends IntegrationSignalRouteDeps {
   activeWorkRoutes: ReturnType<typeof routes.createActiveWorkRoutes>;
   automationDefinitionRoutes: ReturnType<typeof routes.createAutomationDefinitionRoutes>;
   dashboardRoutes: ReturnType<typeof routes.createDashboardRoutes>;
@@ -50,8 +51,6 @@ interface OperationalRouteDeps {
   notificationRoutes: ReturnType<typeof routes.createNotificationRoutes>;
   plannerRoutes: ReturnType<typeof routes.createPlannerRoutes>;
   previewMediaRoutes: ReturnType<typeof createPreviewMediaRoutes>;
-  pullRequestReadinessRoutes: ReturnType<typeof routes.createPullRequestReadinessRoutes>;
-  repositoryEventRoutes: ReturnType<typeof routes.createRepositoryEventRoutes>;
   queueRoutes: ReturnType<typeof routes.createQueueRoutes>;
   relevanceRoutes: ReturnType<typeof routes.createRelevanceRoutes>;
   repoChatRoutes: ReturnType<typeof routes.createRepoChatRoutes>;
