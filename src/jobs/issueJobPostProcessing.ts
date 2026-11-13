@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
-import type { ClaudeCodeResponse, WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings } from '@propr/core';
+import type { ClaudeCodeResponse, WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings, ReviewConfig } from '@propr/core';
 import {
     cleanupWorktree, cleanupPreparedVisualPreviewEvidence, commitChanges,
     prepareVisualPreviewEvidence, TaskStates,
@@ -127,7 +127,7 @@ export interface PostProcessOptions {
     octokit: Octokit & Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'auth'>;
     issueRef: IssueJobData;
     worktreeInfo: WorktreeInfo;
-    currentIssueData: { data: { title: string; labels: Array<{ name: string }>; user?: { login?: string } | null } };
+    currentIssueData: { data: { title: string; body?: string | null; labels: Array<{ name: string }>; user?: { login?: string } | null } };
     claudeResult: ClaudeCodeResponse;
     modelName: string;
     repoValidation: RepoValidation;
@@ -143,6 +143,10 @@ export interface PostProcessOptions {
     visualPreviewSettings: VisualPreviewSettings; // Already restricted by the run's workflow snapshot.
     /** `on_blocker: report` in the run's workflow snapshot: a reported blocker ends the run without publishing. */
     reportsBlockers?: boolean;
+    /** The task's starting commit, for the review digest. */
+    diffBase?: string;
+    /** `review` from the run's workflow snapshot. */
+    review?: ReviewConfig;
 }
 
 export interface PostProcessResult {
@@ -284,7 +288,10 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueTitle: currentIssueData.data.title,
                 visualPreview: { evidence: preparedVisualPreview.evidence, worktreePath: worktreeInfo.worktreePath },
                 taskId,
-                stateManager
+                stateManager,
+                diffBase: options.diffBase,
+                review: options.review,
+                issueBody: currentIssueData.data.body,
             }
         );
 

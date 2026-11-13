@@ -3,6 +3,8 @@
  * dependencies so prompt budgeting can be exercised without @propr/core.
  */
 
+import { isBinaryFile, isDocumentationFile, isGeneratedOrVendorFile, isLockfile } from '@propr/shared';
+
 export interface PRFile {
     filename: string;
     status: string;
@@ -50,8 +52,16 @@ export interface PreparedPRDiffFile {
  * review priority order; per-reviewer budgeting later selects which of them
  * fit. Only the bounded I/O guard and GitHub itself can drop files here.
  */
+export interface PRDiffStats {
+    filesChanged: number;
+    additions: number;
+    deletions: number;
+}
+
 export interface PreparedPRDiff {
     summary: string;
+    /** Size of every changed file, including files later omitted from the diff text. */
+    stats?: PRDiffStats;
     files: PreparedPRDiffFile[];
     /** Text changes GitHub returned without patch content. */
     missingPatchFiles: string[];
@@ -75,6 +85,7 @@ export function preparePRDiff(files: PRFile[], ioGuardMaxChars: number): Prepare
     const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
     const prepared: PreparedPRDiff = {
         summary: files.length > 0 ? `**${files.length} files changed** (+${totalAdditions}/-${totalDeletions})` : '',
+        stats: { filesChanged: files.length, additions: totalAdditions, deletions: totalDeletions },
         files: [],
         missingPatchFiles: [],
         ioGuardOmittedFiles: [],
@@ -174,34 +185,4 @@ function patchSize(file: PRFile): number {
 
 function changedLineCount(file: PRFile): number {
     return file.additions + file.deletions;
-}
-
-function isLockfile(filename: string): boolean {
-    const basename = filename.split('/').pop()?.toLowerCase() || filename.toLowerCase();
-    return basename === 'package-lock.json'
-        || basename === 'npm-shrinkwrap.json'
-        || basename === 'yarn.lock'
-        || basename === 'pnpm-lock.yaml'
-        || basename === 'bun.lock'
-        || basename === 'bun.lockb'
-        || basename === 'composer.lock'
-        || basename === 'poetry.lock'
-        || basename === 'cargo.lock'
-        || basename === 'gemfile.lock';
-}
-
-function isBinaryFile(filename: string): boolean {
-    return /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|pdf|zip|tar|gz|tgz|bz2|xz|7z|rar|woff2?|ttf|eot|otf|mp4|mov|avi|webm|mp3|wav|flac|exe|dll|so|dylib|class|jar)$/i.test(filename);
-}
-
-function isGeneratedOrVendorFile(filename: string): boolean {
-    return /(^|\/)(dist|build|coverage|vendor|third_party|node_modules)\//.test(filename)
-        || /\.min\.(js|css)$/i.test(filename)
-        || /\.(generated|gen)\.[cm]?[jt]sx?$/i.test(filename)
-        || /\.snap$/i.test(filename);
-}
-
-function isDocumentationFile(filename: string): boolean {
-    return /\.(md|mdx|rst|txt|adoc)$/i.test(filename)
-        || /(^|\/)docs\//i.test(filename);
 }

@@ -6,6 +6,7 @@ import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } fro
  * for running Claude in a container with proper configuration.
  */
 
+import { currentClaudeModel } from '@propr/shared';
 import logger from '../../../utils/logger.js';
 import type { AgentConfig, AgentToolPolicy } from '../../types.js';
 import { claudeToolPolicyArgs } from '../../agentToolPolicy.js';
@@ -19,6 +20,7 @@ import {
     REPOSITORY_SCOUT_CONTAINER_ROOT,
     REPOSITORY_SCOUT_MCP_TOOLS,
 } from './repositoryScoutMcpServer.js';
+import { buildOperatorQuestionMcpConfig, type OperatorQuestionLaunch } from './operatorQuestionMcpServer.js';
 
 const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -80,6 +82,16 @@ export interface DockerArgsParams {
     resumeSessionId?: string;
     /** Identity to assign a fresh goal session so it is durable before any work starts. */
     sessionId?: string;
+    /**
+     * Inject the `ask_operator` MCP tool. Goal sessions only: ordinary task
+     * runs are one-shot and never receive it, whatever the caller passes.
+     */
+    operatorQuestions?: OperatorQuestionLaunch;
+}
+
+function operatorQuestionArgs(executionMode: 'task' | 'goal', launch: OperatorQuestionLaunch | undefined): string[] {
+    if (executionMode !== 'goal' || !launch) return [];
+    return ['--mcp-config', buildOperatorQuestionMcpConfig(launch)];
 }
 
 function repositoryInspectionArgs(enabled: boolean): string[] {
@@ -247,13 +259,16 @@ export function buildDockerArgs(
     // Add model parameter if specified
     if (modelName) {
         // Strip agent prefix if present (e.g., "claude:claude-opus-4-6" -> "claude-opus-4-6")
-        const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+        const savedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+        // A saved selection of a model Anthropic has retired runs on its successor.
+        const cleanModelName = currentClaudeModel(savedModelName);
         const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
         const modelIndex = maxTurnsIndex >= 0 ? maxTurnsIndex : dockerArgs.indexOf('--output-format');
         dockerArgs.splice(modelIndex, 0, '--model', cleanModelName);
         logger.info({
             issueNumber,
             requestedModel: cleanModelName,
+            ...(cleanModelName !== savedModelName ? { retiredModel: savedModelName } : {}),
             agentAlias: config.alias
         }, 'Using specific model for Claude agent execution');
     } else {
@@ -284,6 +299,7 @@ export function buildDockerArgs(
     }
 
     dockerArgs.push(...policyArgs.cliArgs);
+    dockerArgs.push(...operatorQuestionArgs(executionMode, params.operatorQuestions));
 
     logger.info({
         issueNumber,

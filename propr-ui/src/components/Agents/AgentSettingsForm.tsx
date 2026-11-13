@@ -10,6 +10,7 @@ import { AgentCapabilitiesSection } from './AgentCapabilitiesSection';
 import { AgentScheduleSection } from './AgentScheduleSection';
 import { AgentEventTriggerSection } from './AgentEventTriggerSection';
 import { AgentAutonomySection } from './AgentAutonomySection';
+import { AgentTemplatePicker, AgentTemplateReview } from './AgentTemplates';
 import { BUTTON_CLASSES } from './AgentEditorHeader';
 import { agentDisplayName, defaultRunner } from './agentPresentation';
 import type { useAgentEditor } from './useAgentEditor';
@@ -52,6 +53,8 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
     className={`min-h-0 flex-1 flex-col ${hidden ? '' : 'flex'}`}
   >
     <div className="min-h-0 flex-1 overflow-y-auto">
+      {isNew && editor.template && <AgentTemplateReview template={editor.template} />}
+      {isNew && <AgentTemplatePicker selectedId={editor.template?.id ?? null} onSelect={editor.applyTemplate} disabled={readOnly} />}
       <fieldset disabled={readOnly} className="min-w-0">
         <AgentFormRow label="Name" htmlFor="agent-name" hint="Shown in the list and in run notifications.">
           <input
@@ -113,6 +116,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
         <AgentScheduleSection
           enabled={form.scheduleEnabled}
           expression={form.schedule}
+          pauseWhenUnproductive={form.pauseWhenUnproductive}
           onChange={update}
           disabled={readOnly}
         />

@@ -1,7 +1,9 @@
 import {
   DEFAULT_AUTOMATION_AUTONOMY_MODE,
   DEFAULT_AUTOMATION_CAPABILITIES,
+  automationTemplateInput,
   type AutomationAutonomyMode,
+  type AutomationTemplate,
   type AutomationCapability,
   type AutomationDefinitionInput,
   type PlanIssueBlockedReasonKind,
@@ -22,6 +24,8 @@ export interface AgentEditorForm {
   /** Kept while the schedule is off, so turning it back on restores the expression. */
   schedule: string;
   scheduleEnabled: boolean;
+  /** Turn the schedule off when the owner is told about repeated runs that produced nothing. */
+  pauseWhenUnproductive: boolean;
   autonomy: AutomationAutonomyMode;
   /** The `plan.issue_blocked` event trigger and its filters (empty: no filter). */
   blockedTrigger: boolean;
@@ -42,6 +46,7 @@ export const emptyAgentForm = (): AgentEditorForm => ({
   capabilities: [...DEFAULT_AUTOMATION_CAPABILITIES],
   schedule: '',
   scheduleEnabled: false,
+  pauseWhenUnproductive: false,
   autonomy: DEFAULT_AUTOMATION_AUTONOMY_MODE,
   blockedTrigger: false,
   blockedTriggerRepositories: [],
@@ -50,6 +55,26 @@ export const emptyAgentForm = (): AgentEditorForm => ({
 
 const blockedTriggerOf = (definition: AutomationDefinitionRecord) =>
   (definition.eventTriggers ?? []).find(trigger => trigger.event === 'plan.issue_blocked');
+
+/**
+ * A template's fields laid over a form. Repositories, the coding agent and the
+ * extension profile the user already chose are kept; everything the template
+ * suggests replaces what was there. Autonomy is always the template's dry run.
+ */
+export const formFromTemplate = (template: AutomationTemplate, current: AgentEditorForm = emptyAgentForm()): AgentEditorForm => {
+  const input = automationTemplateInput(template);
+  return {
+    ...current,
+    name: input.name,
+    description: input.description ?? '',
+    prompt: input.prompt,
+    capabilities: [...(input.capabilities ?? DEFAULT_AUTOMATION_CAPABILITIES)],
+    schedule: input.schedule ?? '',
+    scheduleEnabled: Boolean(input.schedule),
+    autonomy: input.autonomy ?? DEFAULT_AUTOMATION_AUTONOMY_MODE,
+    previousReportCount: input.previousReportCount ?? 0,
+  };
+};
 
 export const formFromDefinition = (definition: AutomationDefinitionRecord): AgentEditorForm => ({
   extensionProfile: definition.extensionProfile,
@@ -63,6 +88,7 @@ export const formFromDefinition = (definition: AutomationDefinitionRecord): Agen
   capabilities: [...definition.capabilities],
   schedule: definition.scheduleCron ?? '',
   scheduleEnabled: definition.scheduleEnabled && Boolean(definition.scheduleCron),
+  pauseWhenUnproductive: definition.pauseWhenUnproductive ?? false,
   autonomy: definition.autonomyMode,
   blockedTrigger: Boolean(blockedTriggerOf(definition)),
   blockedTriggerRepositories: [...(blockedTriggerOf(definition)?.repositories ?? [])],
@@ -103,4 +129,5 @@ export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput =>
     repositories: eventTriggerFilterLost(form) ? form.blockedTriggerRepositories : withinAutomation(form),
     reasonKinds: form.blockedTriggerReasonKinds,
   }] : [],
+  pauseWhenUnproductive: form.pauseWhenUnproductive,
 });

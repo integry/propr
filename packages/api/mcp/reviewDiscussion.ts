@@ -127,3 +127,46 @@ export async function readDiscussionComment(principal: McpPrincipal, target: { r
 function decodeTaskId(value: string): string | null {
   try { return decodeURIComponent(value); } catch { return null; }
 }
+
+/** GitHub review records that the issue-comment endpoint never returns. */
+export type ReviewRecordSource = 'reviews' | 'review_comments';
+
+const DISCUSSION_BODY_CHUNK = 4096;
+
+interface GitHubReview { id: number; body?: string | null; html_url: string; state: string; submitted_at?: string | null; commit_id?: string | null; user?: { login: string } | null }
+interface GitHubReviewComment {
+  id: number; body?: string | null; html_url: string; created_at: string; user?: { login: string } | null; path: string;
+  line?: number | null; original_line?: number | null; side?: string | null; in_reply_to_id?: number; pull_request_review_id?: number | null; commit_id?: string | null;
+}
+
+function bodyChunk(body: string | null | undefined, bodyOffset: number) {
+  const text = body || '';
+  return { body: text.slice(bodyOffset, bodyOffset + DISCUSSION_BODY_CHUNK), nextBodyOffset: bodyOffset + DISCUSSION_BODY_CHUNK < text.length ? bodyOffset + DISCUSSION_BODY_CHUNK : null };
+}
+
+/**
+ * One oldest-first page of a pull request's submitted reviews (state and summary
+ * body) or of its inline review comments (file, line, reply thread). Both live
+ * outside `/issues/{n}/comments`, so a conversation read never contains them.
+ */
+export async function readReviewRecords(
+  principal: McpPrincipal,
+  target: { repository: string; pullRequest: number; source: ReviewRecordSource; page: number; limit: number; bodyOffset: number },
+): Promise<{ records: Array<Record<string, unknown>>; fullPage: boolean }> {
+  const [owner, repo] = target.repository.split('/');
+  const paging = { owner, repo, pull_number: target.pullRequest, page: target.page, per_page: target.limit };
+  if (target.source === 'reviews') {
+    const { data } = await principal.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', paging) as { data: GitHubReview[] };
+    return { fullPage: data.length === target.limit, records: data.map(review => ({
+      id: review.id, kind: 'review', url: review.html_url, author: review.user?.login, createdAt: review.submitted_at ?? null,
+      state: review.state, commitId: review.commit_id ?? null, ...bodyChunk(review.body, target.bodyOffset),
+    })) };
+  }
+  const { data } = await principal.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', { ...paging, sort: 'created', direction: 'asc' }) as { data: GitHubReviewComment[] };
+  return { fullPage: data.length === target.limit, records: data.map(comment => ({
+    id: comment.id, kind: 'review_comment', url: comment.html_url, author: comment.user?.login, createdAt: comment.created_at,
+    path: comment.path, line: comment.line ?? comment.original_line ?? null, side: comment.side ?? null,
+    reviewId: comment.pull_request_review_id ?? null, inReplyToId: comment.in_reply_to_id ?? null, commitId: comment.commit_id ?? null,
+    ...bodyChunk(comment.body, target.bodyOffset),
+  })) };
+}

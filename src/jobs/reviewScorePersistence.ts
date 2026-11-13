@@ -84,6 +84,7 @@ export function buildReviewScoreInputs(
             reviewerModel: result.analysisResult.modelUsed || result.assignment.physicalModel || result.assignment.model || null,
             score: review.score,
             blockerCount: review.blockerCount,
+            blockerCategoryCounts: review.blockerCategoryCounts,
             suggestionCount: review.suggestionCount,
             source: context.ultrafix ? 'ultrafix' as const : 'review' as const,
             cycleNumber: context.ultrafix ? positiveInteger(context.ultrafix.ultrafixCycle) : null,

@@ -14,6 +14,8 @@ import { up as addTokenUsage } from '../../core/src/db/migrations/20260204000000
 import { up as nullableTaskId } from '../../core/src/db/migrations/20260415000000_make_llm_executions_task_id_nullable.js';
 import { up as cacheReported } from '../../core/src/db/migrations/20261008000000_add_llm_execution_cache_usage_reported.js';
 import { up as reasoningLevels } from '../../core/src/db/migrations/20261111000000_add_reasoning_level_columns.js';
+import { up as tokenSamples } from '../../core/src/db/migrations/20261112000000_create_llm_execution_token_samples.js';
+import { up as executionUuid } from '../../core/src/db/migrations/20261113000100_add_llm_execution_uuid.js';
 
 // Imported after NODE_ENV, so core's modules do not decide this process is a
 // misconfigured server.
@@ -47,6 +49,8 @@ before(async () => {
   await nullableTaskId(database);
   await cacheReported(database);
   await reasoningLevels(database);
+  await tokenSamples(database);
+  await executionUuid(database);
   await database('tasks').insert({ task_id: 'task-1', repository: 'acme/repo', issue_number: 1, task_type: 'issue' });
 });
 after(async () => database.destroy());

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { agentTypeSupportsProprMcp, validateAutomationDefinitionInput, type AutomationCapability, type InstanceCatalogAgent } from '@propr/shared';
+import { agentTypeSupportsProprMcp, getAutomationTemplate, validateAutomationDefinitionInput, type AutomationCapability, type AutomationTemplate, type InstanceCatalogAgent } from '@propr/shared';
 import { getInstanceCatalog } from '../../api/proprApi';
 import {
   createAutomationDefinition,
@@ -15,7 +15,7 @@ import {
   type AutomationRunRecord,
 } from '../../api/automationDefinitionsApi';
 import {
-  EVENT_TRIGGER_FILTER_LOST_MESSAGE, emptyAgentForm, eventTriggerFilterLost, formFromDefinition, formToInput, type AgentEditorForm, type AgentEditorFormPatch,
+  EVENT_TRIGGER_FILTER_LOST_MESSAGE, emptyAgentForm, eventTriggerFilterLost, formFromDefinition, formFromTemplate, formToInput, type AgentEditorForm, type AgentEditorFormPatch,
 } from './agentEditorForm';
 import type { ProprMcpSupport } from './AgentCapabilitiesSection';
 import { capacityWarning } from './agentRunPresentation';
@@ -38,6 +38,8 @@ interface AgentEditorOptions {
   /** Opens a run Run now started (or the one already in progress), while this editor is still open. */
   openRun?: (run: AutomationRunRecord) => void;
   notify?: AgentEditorNotify;
+  /** A shipped template that prefills a new automation's form; ignored when editing a saved one. */
+  templateId?: string | null;
 }
 
 export const CONFLICT_MESSAGE = 'Changed elsewhere — reload';
@@ -87,10 +89,12 @@ export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alia
 export function useAgentEditor(
   definitionId: string | null,
   { onSaved, onDeleted, onRunStarted }: AgentEditorCallbacks,
-  { openRun, notify }: AgentEditorOptions = {},
+  { openRun, notify, templateId = null }: AgentEditorOptions = {},
 ) {
   const [definition, setDefinition] = useState<AutomationDefinitionRecord | null>(null);
-  const [form, setForm] = useState<AgentEditorForm>(emptyAgentForm);
+  /** The template the new automation's form was last filled from; nothing is created until it is saved. */
+  const [template, setTemplate] = useState<AutomationTemplate | null>(() => (definitionId ? null : getAutomationTemplate(templateId) ?? null));
+  const [form, setForm] = useState<AgentEditorForm>(() => (template ? formFromTemplate(template) : emptyAgentForm()));
   const [loading, setLoading] = useState(definitionId !== null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
@@ -182,6 +186,14 @@ export function useAgentEditor(
   const update = useCallback((patch: AgentEditorFormPatch) => {
     setForm(current => ({ ...current, ...patch }));
   }, []);
+
+  /** Fills an unsaved form from a template, keeping the repositories and coding agent already chosen. */
+  const applyTemplate = useCallback((next: AutomationTemplate) => {
+    if (definition) return;
+    setTemplate(next);
+    setError(null);
+    setForm(current => formFromTemplate(next, current));
+  }, [definition]);
 
   /** Picking an agent that cannot use ProPR tools drops the options that need them. */
   const changeAgent = useCallback((agentId: string | null) => {
@@ -339,7 +351,7 @@ export function useAgentEditor(
   }, [definition, load]);
 
   return {
-    definition, form, agents, defaultAgentAlias, loading, loadError, saving, deleting, running, error, conflict, dirty,
+    definition, form, template, applyTemplate, agents, defaultAgentAlias, loading, loadError, saving, deleting, running, error, conflict, dirty,
     attachmentsPending: attachmentsPending > 0,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
     capacityQuestion, confirmRun, dismissRun,

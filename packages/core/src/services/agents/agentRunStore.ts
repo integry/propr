@@ -2,17 +2,19 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
   AUTOMATION_REPORT_MAX_CHARS,
-  DEFAULT_AUTOMATION_AUTONOMY_MODE,
-  isAutomationAutonomyMode,
-  isAutomationRunState,
   isTerminalAutomationRunState,
   type AutomationAutonomyMode,
+  type AutomationReportNovelty,
   type AutomationRunState,
   type AutomationRunTrigger,
   type AutomationTriggerEvent,
 } from '@propr/shared';
 import { db } from '../../db/connection.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
+import { inTransactionIfFinal } from './agentRunFinalTransaction.js';
+import { rowToAgentRun, type AgentRunRow } from './agentRunRow.js';
+
+export { rowToAgentRun, type AgentRunRow } from './agentRunRow.js';
 
 /**
  * Agent run receipts. This is the only module that writes `agent_runs`.
@@ -92,6 +94,14 @@ export interface StoredAgentRun {
   operatorNote: string | null;
   deferredUntil: number | null;
   deferrals: number;
+  /** Normalised SHA-256 of the stored report (`agentRunNovelty`); null before a report and for older runs. */
+  reportHash: string | null;
+  /** new, unchanged (same hash as the previous reported run) or empty; null before a report and for older runs. */
+  reportNovelty: AutomationReportNovelty | null;
+  /** Mutating MCP operations the acting step's grant performed; 0 is a no-op acting step, null when unknown or not acted. */
+  actingMutations: number | null;
+  /** From the acting step's claim until its worker settles the count, even on a run another writer ended. */
+  actingMutationsPending: boolean;
   createdAt: number;
   startedAt: number | null;
   reportedAt: number | null;
@@ -99,69 +109,9 @@ export interface StoredAgentRun {
   updatedAt: number;
 }
 
-export interface AgentRunRow {
-  id: string; definition_id: string; owner_id: string; trigger: string; trigger_source: string | null;
-  idempotency_key: string | null; state: string; autonomy_mode: string; definition_snapshot: string;
-  trigger_event?: string | null; trigger_subject?: string | null;
-  report_task_id: string | null; action_task_id: string | null; report: string | null;
-  report_truncated: boolean | number; action_summary: string | null; skip_reason: string | null;
-  failure_reason: string | null; approved_by: string | null; operator_note: string | null; deferred_until: number | null; deferrals: number;
-  created_at: number; started_at: number | null; reported_at: number | null; finished_at: number | null;
-  updated_at: number;
-}
-
 export interface AgentRunStoreDependencies {
   database?: Knex;
   now?: () => number;
-}
-
-function toNumberOrNull(value: number | string | null | undefined): number | null {
-  return value == null ? null : Number(value);
-}
-
-/** A stored JSON object column; null when absent or unreadable. */
-function parseSnapshot<T = StoredAgentDefinition>(value: string | null | undefined): T | null {
-  if (!value) return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return parsed != null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as T : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Pure row mapper. */
-export function rowToAgentRun(row: AgentRunRow): StoredAgentRun {
-  return {
-    id: row.id,
-    definitionId: row.definition_id,
-    ownerId: row.owner_id,
-    trigger: row.trigger as AutomationRunTrigger,
-    triggerSource: row.trigger_source ?? null,
-    triggerEvent: parseSnapshot<AutomationTriggerEvent>(row.trigger_event),
-    triggerSubject: row.trigger_subject ?? null,
-    idempotencyKey: row.idempotency_key ?? null,
-    // An unknown stored state is treated as failed so it is never picked up again.
-    state: isAutomationRunState(row.state) ? row.state : 'failed',
-    autonomyMode: isAutomationAutonomyMode(row.autonomy_mode) ? row.autonomy_mode : DEFAULT_AUTOMATION_AUTONOMY_MODE,
-    definitionSnapshot: parseSnapshot(row.definition_snapshot),
-    reportTaskId: row.report_task_id ?? null,
-    actionTaskId: row.action_task_id ?? null,
-    report: row.report ?? null,
-    reportTruncated: Boolean(row.report_truncated),
-    actionSummary: row.action_summary ?? null,
-    skipReason: row.skip_reason ?? null,
-    failureReason: row.failure_reason ?? null,
-    approvedBy: row.approved_by ?? null,
-    operatorNote: row.operator_note ?? null,
-    deferredUntil: toNumberOrNull(row.deferred_until),
-    deferrals: Number(row.deferrals ?? 0),
-    createdAt: Number(row.created_at),
-    startedAt: toNumberOrNull(row.started_at),
-    reportedAt: toNumberOrNull(row.reported_at),
-    finishedAt: toNumberOrNull(row.finished_at),
-    updatedAt: Number(row.updated_at),
-  };
 }
 
 /** Truncate a report to the stored maximum; the full output stays in the task logs. */
@@ -243,6 +193,8 @@ export async function createAgentRun(
     operator_note: null,
     deferred_until: state === 'deferred' ? input.deferredUntil ?? null : null,
     deferrals: state === 'deferred' ? 1 : 0,
+    // Unproductive-run flags, set once the report is stored and the acting step ends.
+    report_hash: null, report_novelty: null, acting_mutations: null, acting_mutations_pending: false,
     created_at: timestamp,
     started_at: null,
     reported_at: null,
@@ -290,6 +242,10 @@ export interface AgentRunTransitionPatch {
   operatorNote?: string | null;
   /** Required when moving to `deferred`. */
   deferredUntil?: number | null;
+  reportHash?: string | null;
+  reportNovelty?: AutomationReportNovelty | null;
+  actingMutations?: number | null;
+  actingMutationsPending?: boolean;
 }
 
 function patchToRowChanges(patch: AgentRunTransitionPatch): Record<string, unknown> {
@@ -307,6 +263,10 @@ function patchToRowChanges(patch: AgentRunTransitionPatch): Record<string, unkno
   if (patch.approvedBy !== undefined) changes.approved_by = patch.approvedBy;
   if (patch.operatorNote !== undefined) changes.operator_note = patch.operatorNote;
   if (patch.deferredUntil !== undefined) changes.deferred_until = patch.deferredUntil;
+  if (patch.reportHash !== undefined) changes.report_hash = patch.reportHash;
+  if (patch.reportNovelty !== undefined) changes.report_novelty = patch.reportNovelty;
+  if (patch.actingMutations !== undefined) changes.acting_mutations = patch.actingMutations;
+  if (patch.actingMutationsPending !== undefined) changes.acting_mutations_pending = patch.actingMutationsPending;
   return changes;
 }
 
@@ -373,9 +333,12 @@ async function applyAgentRunTransition(
   if (isTerminalAutomationRunState(to)) changes.finished_at = timestamp;
 
   // RETURNING yields the row this update produced; a separate read could see a
-  // competing transition that landed after it.
-  const [updated] = await database(TABLE).where({ ...guard, id }).whereIn('state', [...from]).update(changes)
-    .returning('*') as AgentRunRow[];
+  // competing transition that landed after it. A transition that can make the
+  // run's verdict final is written in its own transaction, which takes SQLite's
+  // write lock up front (`BEGIN IMMEDIATE`), so a streak evaluation under way
+  // either sees it or commits its pause before it lands.
+  const [updated] = await inTransactionIfFinal(database, { to, patch },
+    trx => trx(TABLE).where({ ...guard, id }).whereIn('state', [...from]).update(changes).returning('*') as Promise<AgentRunRow[]>);
   return updated ? rowToAgentRun(updated) : null;
 }
 
@@ -383,7 +346,7 @@ async function applyAgentRunTransition(
  * Claims an `acting` run for one action-phase execution by recording its task.
  * The acting state has no separate "started" state, so `action_task_id` is
  * the claim: only the first delivery for a run gets the row back, a later one
- * gets null.
+ * gets null. It also marks the step's mutation count outstanding.
  */
 export async function claimAgentRunAction(
   id: string,
@@ -391,7 +354,7 @@ export async function claimAgentRunAction(
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<StoredAgentRun | null> {
   const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id')
-    .update({ action_task_id: actionTaskId, updated_at: now() })
+    .update({ action_task_id: actionTaskId, acting_mutations_pending: true, updated_at: now() })
     .returning('*') as AgentRunRow[];
   return updated ? rowToAgentRun(updated) : null;
 }

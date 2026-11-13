@@ -24,6 +24,11 @@ export type GoalProviderBlockerCategory = Exclude<GoalBlockerCategory, 'paused'>
 export const GOAL_BLOCKER_ACTIONS = ['send_input', 'resume', 'pause', 'cancel'] as const;
 export type GoalBlockerAction = typeof GOAL_BLOCKER_ACTIONS[number];
 
+/** Whether a provider's goal sessions can ask the operator a question that goal input answers. */
+export function goalProviderAnswersQuestions(provider: string | null | undefined): boolean {
+  return goalBlockerSupport(provider).question === 'supported';
+}
+
 /** How a category is detected for a provider. */
 export type GoalBlockerSupport =
   /** Detected from a structured event and answerable through a supported control. */
@@ -56,11 +61,13 @@ export const GOAL_BLOCKER_PROVIDER_SUPPORT: Readonly<Record<string, GoalBlockerP
       + '`serverRequest/resolved` or the end of the turn resolves them.',
   },
   claude: {
-    question: 'unavailable',
+    question: 'supported',
     approval: 'unavailable',
     paused: 'supported',
-    notes: 'Claude goal sessions run headless with permissions bypassed and no permission-prompt tool, '
-      + 'so the stream carries no structured question or approval request.',
+    notes: 'Claude goal sessions get an injected `ask_operator` MCP tool (goal mode only): one question, optionally with 2-10 options, '
+      + 'answered with the next goal input while no other question waits, and closed when answered, when it times out '
+      + '(instance setting `goal_question_max_wait_ms`, default 24 hours), or when its turn or attempt ends. '
+      + 'Sessions run headless with permissions bypassed and no permission-prompt tool, so there are no approval requests.',
   },
   antigravity: {
     question: 'unavailable',
@@ -176,11 +183,26 @@ export interface GoalBlockerRow {
 }
 
 export const GOAL_BLOCKER_SUMMARY_LIMIT = 1000;
+
+/**
+ * `metadata.event` of the Inbox card a newly opened goal blocker creates
+ * (`kind: 'task'`, with `metadata.goalId` and `metadata.blockerId`).
+ */
+export const GOAL_BLOCKER_NOTIFICATION_EVENT = 'goal.blocker_opened';
 export const GOAL_BLOCKER_QUESTION_LIMIT = 1000;
 export const GOAL_BLOCKER_HEADER_LIMIT = 200;
 export const GOAL_BLOCKER_OPTION_LIMIT = 200;
 export const GOAL_BLOCKER_MAX_QUESTIONS = 10;
 export const GOAL_BLOCKER_MAX_OPTIONS = 10;
+
+/**
+ * Instance setting `goal_question_max_wait_ms`: how long a Claude goal's
+ * `ask_operator` question waits for an answer before the agent is told nobody
+ * answered. Always bounded by the agent's own deadline.
+ */
+export const GOAL_QUESTION_MAX_WAIT_SETTING = 'goal_question_max_wait_ms';
+export const DEFAULT_GOAL_QUESTION_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
+export const MIN_GOAL_QUESTION_MAX_WAIT_MS = 60_000;
 
 /** Collapse whitespace and bound provider text by characters. */
 export function boundGoalBlockerText(value: unknown, limit: number): string {

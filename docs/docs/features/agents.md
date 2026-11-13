@@ -28,7 +28,7 @@ Automations are personal: every definition and run belongs to the user who creat
 
 ## Create an automation
 
-Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/automation-definitions`) accepts the same fields; `GET /api/automation-definitions/contract` and the MCP tool `get_automation_definition_contract` return the authoritative limits.
+Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form, or [start from a template](#templates), and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/automation-definitions`) accepts the same fields; `GET /api/automation-definitions/contract` and the MCP tool `get_automation_definition_contract` return the authoritative limits.
 
 ### Scope
 
@@ -122,6 +122,42 @@ The autonomy mode decides what happens after the report is stored:
 | `auto` | The acting step starts straight away, subject to the [cost gate](#cost-control). |
 
 The mode is captured when a run is queued. Editing the definition later does not change a run that already exists.
+
+## Templates
+
+ProPR ships a small catalog of automation templates for common recurring jobs. A template fills in the new-automation form. It creates nothing: the automation exists only once you choose **Create automation**.
+
+- On the **Automations** page, open **New Automation** and choose a card under **Start from a template**. When you have no automations yet, the empty list shows the same templates; choosing one opens the form already filled in.
+- The template sets the name, description, prompt, capabilities, a suggested schedule and the number of previous reports. Repositories you already picked and the coding agent stay as they are.
+- Every template starts in `dry_run` (**Dry run**), so its runs only write a report. To have an agent act on the report, raise the [autonomy](#autonomy) mode yourself before saving.
+- A **Review before saving** note lists what the template cannot choose for you, at least the repositories, the schedule and the autonomy mode.
+
+| Template | What the report contains | Suggested schedule |
+| --- | --- | --- |
+| **Daily issue triage** (`daily-issue-triage`) | Issues that need a human today, likely duplicates (including repeats of recently closed issues), proposed severity labels, proposed security labels and stale issues with a suggested next step. It only reads issues and never comments on, labels or closes them. | `0 7 * * 1-5` (weekdays at 07:00 UTC), with the previous report included so each run focuses on what changed |
+| **Instruction learning loop** (`instruction-learning-loop`) | Candidate rules from review corrections that repeat across pull requests, each with proposed wording, a target instruction file and links to at least two pull requests; existing instructions that look stale or contradicted, as removal candidates; and the size of the instruction files, with a warning when they grow too long. | `0 8 * * 1` (Mondays at 08:00 UTC), with the previous report included so candidates are not proposed twice |
+| **Weekly codebase drift report** (`weekly-codebase-drift-report`) | The last 7 days of merged changes: what changed and why, grouped by area; newly added functions or modules that appear to duplicate existing ones, each with both locations, listed only after both were read; lines and files added and removed per top-level area and the largest new files; and a short list of suggested consolidations. With autonomy raised, the acting step saves the consolidations as repository To-Dos. See [Repository Knowledge](./repository-knowledge.md#weekly-codebase-drift-report). | `0 9 * * 1` (Mondays at 09:00 UTC), with the previous report included so pairs are not listed twice |
+
+The triage template needs `repository_read`, which gives the run a read-only GitHub token for the repositories in scope. With `preview` or `auto`, the acting step can turn the report into TODOs, tasks or plans through ProPR's MCP tools (see [Acting on a report](#acting-on-a-report)).
+
+### Instruction learning loop
+
+The same correction often gets made in review after review: "use the shared helper", "add a migration test", "do not log the token". The **Instruction learning loop** template turns those repeats into proposed instructions, so the next run gets them right the first time.
+
+Each week the run reads the repository's agent instructions (`AGENTS.md`, `.propr/instructions.md` and the file named by `instructions` in [`.propr/workflow.yml`](./repository-workflow.md#instructions-and-validation)) and the last 30 days of pull request discussions through ProPR's MCP tools (`list_pull_requests`, `get_pull_request_discussion`, `list_tasks` and `get_task_events`). For each pull request it pages through the conversation, the submitted reviews and the inline review comments, because most human review corrections are made on specific lines rather than in the conversation. It needs `repository_read` and `propr_mcp`, so it runs on Claude Code or Codex. Its report lists:
+
+- **Candidate rules**: the proposed wording in one or two sentences, the target file, and links to at least two distinct pull requests where the same correction was made. A correction seen in a single pull request, or a one-off preference, is never proposed.
+- **Removal candidates**: existing instructions that look stale or that recent merged work contradicts.
+- **Instruction file size**: each file and the total, with a warning above 300 lines or 20,000 characters, because long instructions crowd out the task.
+- **Proposed task**: a ready-to-use task body with the changes and their citations.
+
+Pull request text is treated as untrusted data: the run never follows instructions found in it, and never proposes a rule whose only source is text asking for that rule.
+
+Instruction changes always go through a reviewed pull request. Instructions steer every later run in the repository, so a bad rule learned from a misread review, or one planted in a pull request comment, would repeat its mistake on every task. The template starts in `dry_run`, so a run only writes the report. With `preview` (recommended) or `auto`, the acting step creates one ProPR task per repository whose body carries the proposed changes and their citations. The acting step cannot edit files itself; the task opens a pull request, and a maintainer reviews and merges it like any other change.
+
+The catalog is also available outside the UI: `GET /api/automation-definitions/templates`, the MCP read tool `list_automation_templates` and `propr automation templates` (add `--json` for the versioned document). Each entry has an `id`, `name`, `description`, `category`, `prompt`, `capabilities`, `schedule`, `autonomy`, `previousReportCount` and `reviewBeforeSaving`, and the document carries a catalog `version`. To start an automation from a template through the API, send its fields to `POST /api/automation-definitions` together with your own `repositories`.
+
+Templates live in `packages/shared/automation-templates/<id>/` (`template.json` plus `prompt.md`). `npm run automation-templates:generate` builds `packages/shared/src/automationTemplates.catalog.json`, and CI checks that the committed catalog is current and that every template satisfies the automation definition contract and defaults to `dry_run`.
 
 ## Triggers
 
@@ -268,6 +304,19 @@ An automation without repositories can only create TODOs.
 
 Only one autonomy mode applies to every action. Per-action-kind autonomy (for example "create TODOs automatically, but ask before starting tasks") is deferred beyond v1.
 
+## Runs that change nothing
+
+A scheduled automation can finish every night with an empty report, the same report as last time, or an acting step that did nothing. Such runs still end as `completed`, but ProPR flags them:
+
+- **Report novelty.** When a report is stored, ProPR saves a SHA-256 hash of its normalised text (`reportHash`: whitespace collapsed; dates, times, weekdays, relative times like "3 hours ago" and the ids of this automation's runs replaced; other ids, such as an incident or task id the report names, are kept, so a report about a different one is `new`) and compares it with the previous reported run of the same automation: the report stored most recently, even when that run was created later than this one or its acting step failed afterwards. `reportNovelty` is `new`, `unchanged` (same hash) or `empty` (fewer than 40 characters after normalisation).
+- **Acting-step changes.** When the acting step ends, ProPR counts the mutating MCP operations its grant performed before revoking the grant, and stores the count as `actingMutations`. Calls that definitely failed are not counted. `0` marks a no-op acting step. If the count cannot be read, it stays `null`, which is not treated as a no-op.
+
+A run is shown as **No change** in the run history and run detail when its report is `empty` or `unchanged`, or its acting step changed nothing. An acting step that changed something counts as productive whatever its report said. The REST run payload, MCP `get_automation_run` and `list_automation_runs`, and the CLI (`propr automation runs`, `propr automation report`) also carry the flags, plus a derived `noChangeReason` (`empty_report`, `unchanged_report`, `no_op_action` or `null`). Runs recorded before this version have `null` flags.
+
+**Streak notification.** After 3 consecutive unproductive **scheduled** runs, the owner gets one Inbox notification naming the automation. It is not repeated while the streak continues; the next productive scheduled run resets it. If the notification cannot be saved, the next unproductive scheduled run tries again. A run waiting for approval is not counted until its acting step finishes, or it is rejected or cancelled; cancelling a run counts it at once, unless its acting step is still running, in which case it counts once that step has stopped. Manual and other non-scheduled runs are flagged but neither count toward the streak nor reset it. Change the number with the instance setting `automation_unproductive_run_threshold` (1–50, default 3), for example `propr setting update automation_unproductive_run_threshold 5` or MCP `update_execution_settings`. It is not in the Settings UI.
+
+**Pausing the schedule.** Turn on **Pause the schedule when scheduled runs keep producing no change** under the automation's schedule (`pauseWhenUnproductive: true` over the API) to have ProPR turn the schedule off when the notification fires. Like other automatic schedule disables, this counts as an edit and drops any pending scheduled slot, and ProPR logs the reason. The notification itself says the automation is set to pause, not that it was paused, because it is saved before the schedule is changed and stays as it was saved. Once the schedule has actually been turned off, a second Inbox item (without a push) says it was paused; you get none if pausing was turned off, or the streak ended, first. If the schedule could not be turned off after the notification was saved, the next unproductive scheduled run of the streak turns it off. Once it is off, turning it back on is respected: later runs of the same streak do not pause it again. Turning the option off before the schedule is changed is respected too, even while the notification is being sent, and so is a newer scheduled run that finishes with a change in that time: it ends the streak, and the schedule stays on. It is off by default. Turn the schedule back on once the prompt is fixed.
+
 ## Cost control
 
 Unattended runs (`schedule`, `event`, `api`, `cli`, `mcp`) start while nobody is watching. Before one is queued, before a deferred run is retried and before an `auto` acting step starts, ProPR compares the provider's subscription usage from [Agent Tank](../operations/agent-tank.md) with the instance's **pause threshold**.
@@ -287,6 +336,8 @@ The threshold is the instance setting `agent_run_usage_pause_percent` (50–100,
 Every deferral and skip reason is a full sentence in the run history, for example "Weekly subscription usage for claude is at 93% (pause threshold 90%), so this run was skipped; …".
 
 For a synthetic pool, a run is held back only when every enabled member is over the threshold. The gate only reads the snapshot Agent Tank already has and never starts a refresh. It is a brake, not an accounting system. Each run also stays subject to the ordinary [per-run spend cap](./execution-safety.md#spend-caps), and v1 never escalates an automation run to another model.
+
+Scheduled runs can also be paused by [token-outlier alerts](../operations/metrics.md#token-outlier-alerts): with `token_outlier_pause_alerts` set (off by default), a `schedule` run of an agent whose repository raised that many alerts within `token_outlier_pause_window_hours` is **skipped** with the reason. Other triggers are not paused.
 
 ## Run states
 
@@ -315,6 +366,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 - **`MCP_DISABLED`.** The grant request failed because ProPR's MCP server is not enabled on this instance. An administrator enables it under **Settings → Integrations & MCP → MCP Server** (see [MCP](./mcp.md)). Until then, use `dry_run` automations without `propr_mcp`.
 - **`SYSTEM_TASK_SECRET_MISSING` or "ProPR API unreachable".** The worker could not request the grant. `SYSTEM_TASK_SECRET` must be set, and identical, on the API and worker. The worker must reach the API at `PROPR_INTERNAL_API_URL` (default `http://api:4000`). Agent containers must reach the MCP endpoint at `PROPR_AGENT_MCP_URL`. See [execution safety](./execution-safety.md#agent-runs).
 - **The report says the `propr` MCP tools were unavailable.** The grant was issued but the agent container never reached the MCP endpoint; the worker log carries "Agent run MCP grant ended without a single recorded call" with the URL and Docker network it used. A container with a grant joins the worker's Compose network so the default `http://api:4000/api/mcp` resolves. If the worker runs outside Compose, set `PROPR_AGENT_DOCKER_NETWORK` to the API's network, or point `PROPR_AGENT_MCP_URL` at an address the default bridge can reach.
+- **The schedule turned itself off after an Inbox item about runs with no change.** The automation has **Pause the schedule when scheduled runs keep producing no change** turned on, and its last scheduled runs produced nothing new (see [Runs that change nothing](#runs-that-change-nothing)). Review the prompt, then turn the schedule back on.
 - **The schedule turned itself off.** When the owner is no longer an instance member, the daemon skips the slot and disables the automation's schedule. The definition and its history stay. A new owner has to recreate the automation: definitions cannot be transferred in v1.
 - **The schedule cannot be evaluated.** A stored expression that no longer parses disables the schedule with that reason. Edit and save a valid one.
 - **`REPOSITORY_FORBIDDEN` or a repository access error on trigger.** Your GitHub account, or the MCP grant you are using, lost access to one of the automation's repositories. MCP hides such automations from `list_automation_definitions`.
@@ -335,7 +387,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 ## Naming and compatibility
 
 Use `list_automation_definitions`, `get_automation_definition`,
-`get_automation_definition_contract`, `list_automation_runs`, `get_automation_run`,
+`get_automation_definition_contract`, `list_automation_templates`, `list_automation_runs`, `get_automation_run`,
 `trigger_automation_run`, `approve_automation_run` and `reject_automation_run`.
 Their former `*_agent_*` names remain callable as deprecated aliases with the
 same scopes, repository authorization, recursion guard and input schemas.

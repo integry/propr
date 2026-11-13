@@ -26,9 +26,10 @@ export {
     type UsageLimitError,
     type GenericErrorOptions
 } from './errorHandlers.js';
-import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts, PushFailureRecord } from '@propr/core';
-import { PR_BODY_MAX_LENGTH, type PrBodyPiece } from '@propr/shared';
+import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts, PushFailureRecord, ReviewConfig } from '@propr/core';
+import { PR_BODY_MAX_LENGTH, extractAcceptanceCriteria, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
+import { readReviewDigestChanges, recordReviewDigest } from './reviewDigestLazy.js';
 import {
     isVisualPreviewUploadAuthenticationError,
     publishPullRequestVisualPreviews,
@@ -76,6 +77,12 @@ interface CreatePROptions {
     /** Timeline that records a pull request template that could not be applied. */
     taskId?: string;
     stateManager?: WorkerStateManager;
+    /** The task's starting commit; the review digest covers the diff from it. */
+    diffBase?: string;
+    /** `review` from the run's workflow snapshot. */
+    review?: ReviewConfig;
+    /** The issue body; its acceptance criteria become the digest checklist. */
+    issueBody?: string | null;
 }
 
 export function buildIssueReference(
@@ -206,6 +213,7 @@ export function buildIssuePullRequestBodyPieces(options: {
         { section: null, text: '\n\n---\n\n' },
         { section: 'run', text: completion.run },
         { section: 'summary', text: completion.summary },
+        { section: 'digest', text: completion.digest ?? '' },
         { section: 'run', text: completion.validation + completion.logs },
         { section: null, text: '---\n' },
         { section: 'trailer', text: completion.trailer },
@@ -231,7 +239,10 @@ export async function createPullRequest(
     const modelShortName = getModelShortName(modelName);
     const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
-    const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+    const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+        { review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger),
+            config: options.review, acceptanceCriteria: extractAcceptanceCriteria(options.issueBody) } });
+    await recordReviewDigest(options.taskId, completion.reviewDigest, correlatedLogger, options.stateManager);
     const visualPreviewSection = visualPreview && commitResult
         ? renderVisualPreviewSection({
             assets: [],
@@ -248,6 +259,7 @@ export async function createPullRequest(
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             commits: commitResult ? [{ sha: commitResult.commitHash, message: commitResult.commitMessage }] : [],
             filesChanged: commitResult?.filesChanged ?? claudeResult?.modifiedFiles,
+            digest: completion.digest,
         }),
         loadTemplate: () => loadPullRequestTemplate({ octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch, correlationId: issueRef.correlationId }),
         maxBodyLength: templateBodyLengthBudget(visualPreviewSection),

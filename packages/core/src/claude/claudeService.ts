@@ -72,6 +72,12 @@ export interface ClaudeCodeResponse {
     conversationLog?: ConversationLogEntry[];
     sessionId?: string | null;
     conversationId?: string;
+    /**
+     * Identifies this one agent execution for metrics: `recordLLMMetrics` records
+     * an execution id at most once, so a failure path that records the same
+     * result again does not count it twice.
+     */
+    executionId?: string;
     model?: string;
     /** Effective reasoning level passed to the agent runtime, when configured. */
     reasoningLevel?: ReasoningLevel;

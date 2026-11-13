@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import type { Knex } from 'knex';
-import { loadCacheUsage, loadRunVolume, loadTaskSummary } from '../routes/analyticsAggregates.js';
+import { loadCacheUsage, loadRecordedSpend, loadRunVolume, loadTaskSummary } from '../routes/analyticsAggregates.js';
+import { loadModelUsage } from '../routes/analyticsModelUsage.js';
+import { forgetSchemaProbes } from '../routes/analyticsSchema.js';
 import { loadAutonomy } from '../routes/analyticsDelivery.js';
 import {
   NOW,
@@ -21,6 +23,14 @@ before(async () => {
     table.integer('cache_read_input_tokens');
     table.integer('cache_creation_input_tokens');
     table.boolean('cache_usage_reported');
+    table.integer('output_tokens');
+  });
+  // The models table falls back to per-step token counts.
+  await database.schema.createTable('llm_execution_details', table => {
+    table.increments('detail_id').primary();
+    table.integer('execution_id');
+    table.integer('token_count_input');
+    table.integer('token_count_output');
   });
 });
 after(async () => database.destroy());
@@ -146,6 +156,52 @@ test('historical linkage excludes goals and does not cross the upper period boun
   assert.deepEqual(summary.dailyCounts.filter(day => day.count), [
     { date: daysAgo(3).slice(0, 10), count: 1 }, { date: daysAgo(1).slice(0, 10), count: 1 },
   ]);
+});
+
+test('recorded spend splits into successful and failed executions, and the total keeps its meaning', async () => {
+  await seedTask(database, { taskId: 'a', issueNumber: 1, states: [{ state: 'failed', timestamp: daysAgo(1) }] });
+  await database('llm_executions').insert([
+    { task_id: 'a', start_time: daysAgo(1), model_name: 'opus', cost_usd: 2, success: true },
+    // A usage-limited attempt and a thrown attempt: both spent, neither delivered.
+    { task_id: 'a', start_time: daysAgo(1), model_name: 'opus', cost_usd: 0.75, success: false },
+    { task_id: 'a', start_time: daysAgo(2), model_name: 'sonnet', cost_usd: 0.25, success: false },
+    // An attempt that failed before any token: a run with no spend.
+    { task_id: 'a', start_time: daysAgo(2), model_name: 'sonnet', cost_usd: 0, success: false },
+    // Outside the week.
+    { task_id: 'a', start_time: daysAgo(30), model_name: 'opus', cost_usd: 5, success: false },
+  ]);
+
+  assert.deepEqual(await loadRecordedSpend(database, WEEK), { total: 3, successful: 2, failed: 1 });
+  assert.deepEqual(await loadRecordedSpend(database, null), { total: 8, successful: 2, failed: 6 });
+  assert.deepEqual(await loadRecordedSpend(database, WEEK, 'integry/propr'), { total: 3, successful: 2, failed: 1 });
+  assert.equal(await loadRecordedSpend(database, WEEK, 'integry/other'), null);
+
+  const models = await loadModelUsage(database, WEEK);
+  assert.deepEqual(models.map(({ model, runs, cost_usd, successful_cost_usd, failed_cost_usd, failed_runs }) =>
+    ({ model, runs, cost_usd, successful_cost_usd, failed_cost_usd, failed_runs })), [
+    { model: 'opus', runs: 2, cost_usd: 2.75, successful_cost_usd: 2, failed_cost_usd: 0.75, failed_runs: 1 },
+    { model: 'sonnet', runs: 2, cost_usd: 0.25, successful_cost_usd: 0, failed_cost_usd: 0.25, failed_runs: 2 },
+  ]);
+});
+
+test('an execution with no recorded outcome is not counted as failed spend', async () => {
+  await database('llm_executions').insert([
+    { task_id: null, start_time: daysAgo(1), model_name: 'opus', cost_usd: 1, success: null },
+    { task_id: null, start_time: daysAgo(1), model_name: 'opus', cost_usd: 0.5, success: false },
+  ]);
+  assert.deepEqual(await loadRecordedSpend(database, WEEK), { total: 1.5, successful: 1, failed: 0.5 });
+});
+
+test('a schema without the outcome column reports all spend as successful', async () => {
+  const legacy = await createDashboardTestDatabase();
+  try {
+    await legacy.schema.alterTable('llm_executions', table => table.dropColumn('success'));
+    forgetSchemaProbes(legacy);
+    await legacy('llm_executions').insert({ task_id: null, start_time: daysAgo(1), model_name: 'opus', cost_usd: 1.5 });
+    assert.deepEqual(await loadRecordedSpend(legacy, WEEK), { total: 1.5, successful: 1.5, failed: 0 });
+  } finally {
+    await legacy.destroy();
+  }
 });
 
 test('cache usage reports the hit rate over the whole prompt and what cached reads saved at known prices', async () => {

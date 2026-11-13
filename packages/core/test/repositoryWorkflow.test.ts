@@ -131,6 +131,10 @@ test('published editor schema agrees with runtime on supported fields and reject
         { auto_merge: { require_up_to_date: 'yes' } }, { auto_merge: { max_branch_updates_per_hour: 0 } }, { auto_merge: { max_branch_updates_per_hour: 31 } },
         { auto_merge: { max_branch_updates_per_hour: 2.5 } },
         { on_blocker: 'report' }, { on_blocker: 'continue' }, { on_blocker: 'stop' }, { on_blocker: true }, { on_blocker: null },
+        { review: {} }, { review: { risk_paths: [] } }, { review: { risk_paths: ['src/billing/**', 'infra', '**/*.sql'] } },
+        { review: null }, { review: { risk_paths: 'infra/**' } }, { review: { risk_paths: [''] } }, { review: { risk_paths: ['  '] } },
+        { review: { risk_paths: ['../outside'] } }, { review: { risk_paths: ['a/../b'] } }, { review: { risk_paths: ['a\u0000b'] } },
+        { review: { risk_paths: [7] } }, { review: { risk_paths: Array.from({ length: 201 }, (_, index) => `p${index}`) } }, { review: { paths: [] } },
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.
@@ -141,6 +145,21 @@ test('published editor schema agrees with runtime on supported fields and reject
         try { parseRepositoryWorkflow(JSON.stringify(candidate)); } catch { accepted = false; }
         assert.equal(validate(candidate), accepted, JSON.stringify(candidate));
     }
+});
+
+test('review.risk_paths accepts protected_paths-style globs and rejects what that key rejects', () => {
+    assert.deepEqual(parseRepositoryWorkflow('review:\n  risk_paths:\n    - "src/billing/**"\n    - infra'), { review: { risk_paths: ['src/billing/**', 'infra'] } });
+    assert.deepEqual(parseRepositoryWorkflow('review: {}'), { review: {} });
+    for (const [source, message] of [
+        ['review: true', /review must be a mapping/],
+        ['review: { risk: [] }', /unknown field review\.risk/],
+        ['review: { risk_paths: infra }', /review\.risk_paths must be an array of at most 200 globs/],
+        ['review: { risk_paths: ["../x"] }', /review\.risk_paths\[0\] must not contain '\.\.' segments/],
+        ['review: { risk_paths: ["ok", ""] }', /review\.risk_paths\[1\] must be a nonempty string/],
+        ['review: { risk_paths: ["[z-a]"] }', /review\.risk_paths\[0\] is not a valid glob/],
+    ] as const) assert.throws(() => parseRepositoryWorkflow(source), message, source);
+    // auto_merge keeps its own messages after the shared glob-list validation.
+    assert.throws(() => parseRepositoryWorkflow('auto_merge: { protected_paths: ["../x"] }'), /auto_merge\.protected_paths\[0\] must not contain/);
 });
 
 test('on_blocker accepts continue or report and only report adds the blocker instructions', () => {

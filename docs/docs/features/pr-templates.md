@@ -19,6 +19,7 @@ The file is a list of sections. Each section starts with a level-2 heading that 
 | --- | --- |
 | `title` | `[<issue> by <Model>] <issue title>` |
 | `summary` | Heading, `Closes #N` (or `Addresses #N`), branch, and the agent's summary of the change |
+| `digest` | The [review digest](#review-digest): changed files ranked by risk, validation evidence and diff size. Omitted when the run has no diff |
 | `run` | Status, repository, execution time, tokens, API cost, repository validation results and log locations |
 | `commits` | The published commit |
 | `files_changed` | Nothing |
@@ -52,12 +53,13 @@ Section bodies, including `title`, are Markdown with `{{placeholder}}` substitut
 | `{{commits}}` | Markdown list of commits published by the run |
 | `{{files_changed}}` | Markdown list of changed files (at most 50, then `…and N more`) |
 | `{{summary}}` | The agent's summary of the change |
+| `{{digest}}` | The [review digest](#review-digest) Markdown, or nothing when the run has no diff |
 | `{{session_id}}` | Agent session identifier |
 | `{{repository}}` | `owner/repository` |
 
 Substitution is the only logic. Conditionals, loops and helpers (`{{#if}}`, `{{#each}}`, `{{> partial}}`) are not supported; validation reports them as unknown placeholders. Substituted values are never scanned again for placeholders.
 
-Values that come from people or agents are treated as untrusted. `{{summary}}` is sanitized the same way as in ProPR's default description, and secrets are redacted from all values. In descriptions, HTML tags in `{{issue_title}}`, `{{summary}}` and `{{commits}}` are escaped (outside code spans and code blocks), so they display as text instead of being rendered. In the title, line breaks are collapsed into spaces. Titles are limited to 256 characters, and a title that renders empty keeps the default title.
+Values that come from people or agents are treated as untrusted. `{{summary}}` is sanitized the same way as in ProPR's default description, and secrets are redacted from all values. In descriptions, HTML tags in `{{issue_title}}`, `{{summary}}`, `{{commits}}` and `{{digest}}` are escaped (outside code spans and code blocks), so they display as text instead of being rendered. In the title, line breaks are collapsed into spaces. Titles are limited to 256 characters, and a title that renders empty keeps the default title.
 
 ## Examples
 
@@ -116,6 +118,38 @@ Closes #{{issue_number}}
 - [ ] No secrets or credentials in the diff
 ```
 
+## Review digest
+
+The digest tells a reviewer where to look first. It is written after the agent's summary, under a **Review digest** heading, and contains, in this order:
+
+1. **Acceptance criteria**, when the issue has them (see [Acceptance criteria](#acceptance-criteria)): each criterion with its id and the agent's statement — met, not met or not applicable, with the file or test that shows it. A criterion the agent did not report on is shown as **not addressed**.
+2. **Risk-tiered paths**: the changed files grouped as high, normal and low risk, each with its lines added and removed, and, for high-risk files, why they are high risk. Dependencies that the diff adds to a dependency manifest (`package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Gemfile`, Gradle, Maven and .NET project files, among others) are listed by name. A version bump of an existing dependency is not listed.
+3. **Validation evidence**: the status of each [repository validation command](./repository-workflow.md#instructions-and-validation) as observed in the agent container, such as `Passed` or `Failed (exit 1)`.
+4. **Diff size**: the number of changed files and the lines added and removed.
+
+The default risk tiers and the `review.risk_paths` setting that marks more paths as high risk are described in [Repository workflow](./repository-workflow.md#review-digest-risk-paths).
+
+The digest lists at most 50 files across all tiers, then `…and N more` for each tier, and never contains diff content. File paths, dependency names and commands are shown as code. When the run has no diff, there is no digest and the description is unchanged. ProPR also records the digest as a **Review digest** entry on the task timeline (`metadata.event` set to `review.digest`).
+
+### Acceptance criteria
+
+When the issue body has a heading named **Acceptance criteria** (any level, any letter case), the list items under it become a checklist. Each top-level item is one criterion with a stable id by position: `AC1`, `AC2` and so on. Nested items are folded into their parent, checkboxes are ignored, and at most 20 criteria of up to 300 characters each are kept. Without that heading nothing changes.
+
+The implementation prompt lists the criteria with their ids and asks the agent to end its summary with one line per criterion, such as `- AC1: met — src/feature.ts`. The digest shows those statements, and the task timeline entry stores the criteria with their status (`metadata.reviewDigest.acceptanceCriteria`). [`/review`](./pr-commands.md#review) receives the same ids from the linked issue and verifies each one.
+
+Follow-up and `/fix` completion comments include the digest of the commit they publish, after the summary of changes. Templates do not change completion comments.
+
+To move or reword the digest, use the `digest` section with the `{{digest}}` placeholder; an empty `## digest` section removes it:
+
+```markdown
+## digest
+<details>
+<summary>Where to look</summary>
+
+{{digest}}
+</details>
+```
+
 ## GitHub template fallback
 
 When a repository has no `.propr/pr-template.md` but has a GitHub pull request template, ProPR writes its default summary and run block, followed by the repository template, so your team's checklist still appears. ProPR looks for the template where GitHub does:
@@ -129,7 +163,7 @@ The fallback is a per-repository option and is enabled by default. Turn it off w
 
 `propr repo validate` (or `propr repo validate --cwd path/to/checkout`) checks `.propr/pr-template.md` and reports:
 
-- unknown section names,
+- unknown section names (the supported ones are listed in [Sections](#sections), including `digest`),
 - sections that appear more than once,
 - unknown placeholders, including Handlebars logic,
 - files over 64 KiB.

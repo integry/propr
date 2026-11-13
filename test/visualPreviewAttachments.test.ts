@@ -639,7 +639,7 @@ test('hybrid publication isolates mixed asset outcomes and rejects untrusted vie
   });
   assert.equal(uploads, 3, 'later assets survive earlier upload failure');
   assert.equal(result.body, published);
-  assert.match(published, /Connect sign-in required/);
+  assert.match(published, /\[Full-size original\]\([^)]+\)$/m);
   assert.match(published, /quota exceeded/);
   assert.match(published, /assets\/asset-2/);
   assert.match(published, /assets\/asset-3/);

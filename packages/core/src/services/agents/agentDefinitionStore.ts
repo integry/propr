@@ -52,6 +52,8 @@ export interface StoredAgentDefinition {
   autonomyMode: AutomationAutonomyMode;
   /** Event subscriptions; empty means the definition reacts to no event. */
   eventTriggers: AutomationEventTrigger[];
+  /** Turn the schedule off when the unproductive-run notification fires (`agentRunProductivity`). */
+  pauseWhenUnproductive: boolean;
   enabled: boolean;
   /** Optimistic concurrency token, incremented on every field update. */
   revision: number;
@@ -66,6 +68,7 @@ export interface AgentDefinitionRow {
   capabilities: string | null; include_previous_reports: boolean | number; previous_reports_limit: number;
   schedule_cron: string | null; schedule_timezone: string | null; schedule_enabled: boolean | number;
   next_run_at: number | null; autonomy_mode: string; event_triggers?: string | null; enabled: boolean | number; revision: number;
+  pause_when_unproductive?: boolean | number | null;
   created_at: number; updated_at: number;
   /** Claimed schedule slot without a run receipt yet; only the scheduler reads it. */
   pending_schedule_slot?: number | string | null;
@@ -90,6 +93,7 @@ export interface CreateAgentDefinitionInput {
   scheduleEnabled?: boolean;
   autonomyMode?: AutomationAutonomyMode;
   eventTriggers?: AutomationEventTrigger[];
+  pauseWhenUnproductive?: boolean;
   enabled?: boolean;
 }
 
@@ -152,6 +156,7 @@ export function rowToAgentDefinition(row: AgentDefinitionRow): StoredAgentDefini
     nextRunAt: row.next_run_at == null ? null : Number(row.next_run_at),
     autonomyMode: isAutomationAutonomyMode(row.autonomy_mode) ? row.autonomy_mode : DEFAULT_AUTOMATION_AUTONOMY_MODE,
     eventTriggers: normalizeAutomationEventTriggers(parseJsonArray(row.event_triggers)),
+    pauseWhenUnproductive: Boolean(row.pause_when_unproductive),
     enabled: Boolean(row.enabled),
     revision: Number(row.revision),
     createdAt: Number(row.created_at),
@@ -203,10 +208,8 @@ export async function createAgentDefinition(
     next_run_at: computeAgentDefinitionNextRunAt({ scheduleCron, scheduleEnabled, enabled }, timestamp),
     autonomy_mode: input.autonomyMode ?? DEFAULT_AUTOMATION_AUTONOMY_MODE,
     event_triggers: JSON.stringify(normalizeAutomationEventTriggers(input.eventTriggers ?? [])),
-    enabled,
-    revision: 0,
-    created_at: timestamp,
-    updated_at: timestamp,
+    pause_when_unproductive: input.pauseWhenUnproductive ?? false,
+    enabled, revision: 0, created_at: timestamp, updated_at: timestamp,
   };
   const definition = rowToAgentDefinition(row);
   if (definition.eventTriggers.length === 0) await database(TABLE).insert(row);
@@ -259,6 +262,7 @@ function patchToRowChanges(patch: AgentDefinitionPatch): Partial<AgentDefinition
   if (patch.previousReportsLimit !== undefined) changes.previous_reports_limit = patch.previousReportsLimit;
   if (patch.autonomyMode !== undefined) changes.autonomy_mode = patch.autonomyMode;
   if (patch.eventTriggers !== undefined) changes.event_triggers = JSON.stringify(normalizeAutomationEventTriggers(patch.eventTriggers));
+  if (patch.pauseWhenUnproductive !== undefined) changes.pause_when_unproductive = patch.pauseWhenUnproductive;
   return changes;
 }
 

@@ -20,7 +20,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across restarts; events from while an automation was disabled are not run.
   Event runs are unattended `event` runs under the usual autonomy, capabilities,
   grants and cost gate, and at most 3 run for the same issue of a plan.
-
+- **Review quality by effort**: `GET /api/stats/review-scores` adds `by_effort`,
+  the same figures per implementer model and reasoning level, with PRs whose
+  level was never recorded grouped under `unknown`; `models` keeps the
+  per-model totals. The review-scores CSV now has one row per model and effort
+  (new `implementer_reasoning_level` column), `propr stats review-scores` prints
+  model, effort, merged PRs, runs to merge and cost per merged PR, and the
+  Analytics "Agent efficacy by model" pane shows effort under each model.
+- **LLM cost export**: `GET /api/stats/cost` (JSON) and `GET /api/stats/cost.csv`
+  group recorded agent executions by any of day, repository, agent, model,
+  reasoning level, execution type and outcome, with executions, tasks,
+  input/output/cache tokens and cost in USD per row. They take the Analytics
+  `period` and `repository` filters and are in the OpenAPI spec and
+  `@propr/client` types. `propr stats cost [--period] [--repository]
+  [--group-by] [--json|--csv]` and the MCP read tool `get_cost_breakdown`
+  return the same data. See the Cost export section of the metrics docs.
+- **Claude goals can ask you a question**: Claude goal sessions now get an
+  `ask_operator` tool. It takes one question (up to 1,000 characters,
+  optionally with 2-10 suggested answers) and waits for your reply. The
+  question shows under "Needs you", and the next goal input you send is
+  returned to Claude as the answer. Pause and cancel still work while it
+  waits. After the new `goal_question_max_wait_ms` instance setting (default
+  24 hours), or shortly before the attempt's agent timeout if that comes
+  first, Claude is told nobody answered. The tool runs inside the container and needs no network access or
+  new credentials. Ordinary task runs never get it.
+  `get_goal_capabilities` reports question support as
+  `controls.operatorQuestions`.
+- **Automation templates**: a versioned catalog of automation templates ships
+  in `@propr/shared`, generated from `packages/shared/automation-templates/`
+  and checked in CI against the automation definition contract
+  (`npm run automation-templates:check`). The new-automation form offers
+  **Start from a template**, and the empty Automations list shows the
+  templates; choosing one only fills the form, always in `dry_run`, with a
+  note on what to review (repositories, schedule, autonomy) before saving.
+  The first template is **Daily issue triage**: a report of issues that need
+  a human, likely duplicates, proposed severity and security labels and stale
+  issues. The catalog is also served by
+  `GET /api/automation-definitions/templates`, the MCP read tool
+  `list_automation_templates` and `propr automation templates`.
+- **Instruction learning loop template**: a weekly automation template that
+  reads recent pull request discussions through ProPR's MCP tools and
+  proposes short additions to, or removals from, the repository's agent
+  instructions (`AGENTS.md`, `.propr/instructions.md` or the workflow
+  `instructions` file). Each candidate cites at least two pull requests where
+  the same correction was made; the report also lists stale instructions and
+  warns when the instruction files grow too long. With autonomy raised, the
+  acting step creates one ProPR task that opens a pull request with the cited
+  changes for review.
+- **MCP `get_pull_request_discussion` review sources**: `source: "reviews"`
+  pages a pull request's submitted GitHub reviews and
+  `source: "review_comments"` its inline review comments (file, line, reply
+  thread). The default conversation read never included either, so the
+  Instruction learning loop now reads all three.
+- **Weekly codebase drift report template**: a weekly automation template
+  that reports the last 7 days of merged changes (what changed and why, by
+  area), newly added code that duplicates existing helpers (both locations,
+  only for pairs the run has read after searching by name and by behaviour),
+  growth per top-level area with the largest new files, and suggested
+  consolidations. With autonomy raised, the acting step saves the
+  consolidations as repository To-Dos. The default review guidance now also
+  asks reviewers to check new helpers for duplicates and flag them under the
+  `complexity` category when the review uses it.
+- **Claude Fable 5.2 and GPT-6.1 Terra**: Claude Fable 5.2 (`claude-fable-5-2`,
+  label `llm-claude-fable52`, 1M context, $8 / $40 per million tokens with
+  cache reads at 2.5% of input) is the new target of the plain `fable` and
+  `claude-fable` aliases and of the recommended plan-generation and PR-review
+  models. It needs Claude Code 2.1.321 or later. Claude Fable 5.1 stays
+  available as a legacy model through `fable51`, `claude-fable-5-1` and
+  `llm-claude-fable51`. GPT-6.1 Terra (`gpt-6.1-terra`, label
+  `llm-codex-gpt61-terra`, $1 / $5) is added to the Codex catalog; it needs
+  Codex 0.165.0 or later, and reviews use its 500K Codex runtime window.
 - **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
   option in `.propr/workflow.yml` (default `false`) makes ProPR's own
   auto-merge behave like a merge queue. A labelled PR that passes every other
@@ -37,8 +106,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own earlier request). Every decision is recorded with the auto-merge
   timeline event.
 
+### Changed
+
+- **Shorter link to a preview's original**: a visual preview whose full-size
+  original is kept in ProPR Connect now shows a short `Full-size original`
+  link under the image, instead of a sign-in and retention sentence followed
+  by a separate link.
+- **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
+  moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
+  tool-policy checks pass against both binaries. Codex 0.167 rewords the
+  Daybreak provider refusal that ProPR's `daybreak=false` override already
+  avoids.
+- **Bundled Antigravity CLI 1.5.6**: the `propr/agent` image moves from
+  Antigravity CLI 1.4.0 to 1.5.6 (release `6212266538958848`, SHA-512 checked
+  against Google's install manifest). The model catalog is unchanged: Gemini 3.8
+  Flash, Gemini 4 Argon, Claude Opus/Sonnet 5.5 and GPT-OSS 120B. Gemini 4
+  Carbon is not added because the CLI offers it only to ADC sign-ins.
+  - From 1.5.0, a run cut short by `--print-timeout` exits with code `3`,
+    prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to
+    stderr. ProPR always passes `--print-timeout`, and now records such a
+    task as timed out with the CLI's explanation, instead of a generic
+    failure. Analysis runs no longer accept the partial answer, and native
+    goal attempts report the same message.
+  - From 1.5.2, `-p --dangerously-skip-permissions` denies actions outside the
+    workspace when a Gemini Enterprise admin requires review. The Agents and
+    Models page documents this.
+  - 1.5.5 fixes `agy -p` sometimes never exiting after printing its result.
+
+### Deprecated
+
+- **Claude Sonnet 4.5**: Anthropic retires `claude-sonnet-4-5-20250929` on
+  2026-11-30. It stays selectable until then; from that date, Claude runs
+  launched with a saved Sonnet 4.5 selection, alias or `llm-claude-sonnet45`
+  label use Claude Sonnet 5.5.
+  Opus 4.5 and Haiku 4.5 are unaffected.
+
 ### Fixed
 
+- **MCP-created plans open in Studio at Review**: `create_plan` called with
+  plan items stored the draft as `draft`, so Studio opened it at Define and
+  showed no issues until it was published. A draft created or updated with
+  plan items is now stored as `review`; prompt-only drafts stay `draft`. A
+  migration moves existing drafts that already hold plan items to `review`.
 - **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
   runners `scripts/ci-install-chromium.sh` bounds apt with
   `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each

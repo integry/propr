@@ -154,7 +154,9 @@ describe('agent config migration', () => {
         assert.ok(agent.supportedModels.includes('claude-opus-5'));
         assert.ok(agent.supportedModels.includes('claude-sonnet-5-5'));
         assert.ok(agent.supportedModels.includes('claude-sonnet-5'));
+        assert.ok(agent.supportedModels.includes('claude-fable-5-2'));
         assert.ok(agent.supportedModels.includes('claude-fable-5-1'));
+        assert.ok(agent.supportedModels.includes('claude-sonnet-4-5-20250929'));
         assert.ok(agent.supportedModels.includes('claude-opus-4-6'));
         assert.ok(agent.supportedModels.includes('claude-sonnet-4-6'));
     });
@@ -181,6 +183,8 @@ describe('agent config migration', () => {
         migrateAgentConfig(agent);
 
         assert.ok(agent.supportedModels.includes('claude-opus-5-5'));
+        assert.ok(agent.supportedModels.includes('claude-fable-5-2'));
+        // A saved legacy Fable 5.1 default is not moved to Fable 5.2
         assert.strictEqual(agent.defaultModel, 'claude-fable-5-1');
     });
 
@@ -208,6 +212,7 @@ describe('agent config migration', () => {
         assert.ok(codex.supportedModels.includes('gpt-5.5'));
         assert.ok(codex.supportedModels.includes('gpt-6-astra'));
         assert.ok(codex.supportedModels.includes('gpt-6.1-sol'));
+        assert.ok(codex.supportedModels.includes('gpt-6.1-terra'));
         assert.ok(codex.supportedModels.includes('gpt-6-sol'));
         assert.ok(codex.supportedModels.includes('gpt-6-luna'));
         assert.strictEqual(codex.defaultModel, 'gpt-6-astra');
@@ -243,6 +248,7 @@ describe('agent config migration', () => {
         assert.ok(agent.supportedModels.includes('gpt-5.6-luna'));
         assert.ok(agent.supportedModels.includes('gpt-6-astra'));
         assert.ok(agent.supportedModels.includes('gpt-6.1-sol'));
+        assert.ok(agent.supportedModels.includes('gpt-6.1-terra'));
         assert.ok(agent.supportedModels.includes('gpt-6-sol'));
         assert.ok(agent.supportedModels.includes('gpt-6-luna'));
         assert.strictEqual(agent.defaultModel, 'gpt-6-astra');

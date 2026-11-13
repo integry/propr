@@ -41,6 +41,7 @@ import { addManagementTools } from './toolsManagement.js';
 import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
 import { addWorkOverviewTools } from './toolsWorkOverview.js';
+import { addStatsTools } from './toolsStats.js';
 import { addDocsTools } from './toolsDocs.js';
 import { addGoalWaitTools } from './toolsGoalWait.js';
 import { getDocsMetadata } from './docsIndex.js';
@@ -191,6 +192,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addNotificationTools(tools, deps, notifications);
   addActivityTools(tools, deps);
   addWorkOverviewTools(tools, deps, listScope);
+  addStatsTools(tools, deps, listScope);
   addDocsTools(tools, deps);
   addVisualPreviewTools(tools, deps);
   addImprovementTools(tools, deps);

@@ -56,6 +56,7 @@ interface OperationalRouteDeps {
   repoTodoRoutes: ReturnType<typeof routes.createRepoTodoRoutes>;
   repositoryMediaRoutes: ReturnType<typeof createRepositoryMediaRoutes>;
   reviewScoreRoutes: ReturnType<typeof routes.createReviewScoreRoutes>;
+  costExportRoutes: ReturnType<typeof routes.createCostExportRoutes>;
   statsRoutes: ReturnType<typeof routes.createStatsRoutes>;
   statusRoutes: ReturnType<typeof routes.createStatusRoutes>;
   summaryBrowserRoutes: ReturnType<typeof routes.createSummaryBrowserRoutes>;
@@ -198,7 +199,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     repoTodoRoutes,
     repositoryMediaRoutes,
     reviewScoreRoutes,
-    statsRoutes,
+    costExportRoutes, statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,
     taskAssignmentRoutes,
@@ -241,6 +242,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/automation-definitions/contract', automationDefinitionRoutes.contract],
     // Deprecated compatibility alias.
     ['get', '/api/agent-definitions/contract', automationDefinitionRoutes.contract],
+    ['get', '/api/automation-definitions/templates', automationDefinitionRoutes.templates],
     ['post', '/api/automation-definitions', automationDefinitionRoutes.create],
     // Deprecated compatibility alias.
     ['post', '/api/agent-definitions', automationDefinitionRoutes.create],
@@ -354,6 +356,8 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
     ['get', '/api/stats/review-scores', reviewScoreRoutes.getSummary],
     ['get', '/api/stats/review-scores.csv', reviewScoreRoutes.getCsv],
+    ['get', '/api/stats/cost', costExportRoutes.getCost],
+    ['get', '/api/stats/cost.csv', costExportRoutes.getCostCsv],
     ['get', '/api/pull-requests/:number/scores', reviewScoreRoutes.getPullRequestScores],
     ['get', '/api/usage-tips', usageTipsRoutes.get],
     ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],

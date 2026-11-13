@@ -325,9 +325,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         state.claudeResult = claudeResult;
         await markExecutionHandoffAgentExited(state, claudeResult.success === true, claudeResult.success === true ? noChangeAnalysisSummary(claudeResult) : null);
 
-        checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
-
+        // The run's spend is recorded whatever happens next; the failure handler's
+        // record of the same result is a no-op (one execution id, one row).
         await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId, reasoningLevel: state.claudeResult.reasoningLevel });
+        checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
         await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
         await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
             reason: `${agentType} agent execution completed`,
@@ -342,7 +343,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
         const postResult = await handlePostExecution(
             { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken, visualPreviewSettings, linkedIssue: linkedIssueResult.linkedIssue,
-                reportsBlockers: workflowReportsBlockers(repositoryWorkflow) },
+                reportsBlockers: workflowReportsBlockers(repositoryWorkflow), review: repositoryWorkflow?.config.review },
             taskUrl,
         );
 

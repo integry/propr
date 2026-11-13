@@ -3,6 +3,8 @@ import type {
   AutomationCapability,
   AutomationDefinitionInput,
   AutomationEventTrigger,
+  AutomationReportNovelty,
+  AutomationRunNoChangeReason,
   AutomationRunState,
   AutomationTriggerEvent,
   AutomationRunTrigger,
@@ -47,6 +49,8 @@ export interface AutomationDefinitionRecord {
   autonomyMode: AutomationAutonomyMode;
   /** Event subscriptions; empty means the automation reacts to no event. */
   eventTriggers?: AutomationEventTrigger[];
+  /** Turn the schedule off when the unproductive-run notification fires. */
+  pauseWhenUnproductive?: boolean;
   enabled: boolean;
   /** Optimistic concurrency token; send it back as `expectedRevision`. */
   revision: number;
@@ -81,6 +85,13 @@ export interface AutomationRunRecord {
   operatorNote: string | null;
   deferredUntil: number | null;
   deferrals: number;
+  /** Unproductive-run flags; null before a report and for runs recorded before the flags existed. */
+  reportHash?: string | null;
+  reportNovelty?: AutomationReportNovelty | null;
+  /** Mutating MCP operations the acting step performed; 0 is a no-op acting step. */
+  actingMutations?: number | null;
+  /** Derived by the server from the flags: why the run produced nothing, or null. */
+  noChangeReason?: AutomationRunNoChangeReason | null;
   createdAt: number;
   startedAt: number | null;
   reportedAt: number | null;

@@ -214,7 +214,7 @@ While the run executes, ProPR adds the recorded cost of the task's LLM calls (`l
 
 Retries share the budget. When ProPR re-queues a task (a provider usage-limit re-queue or a BullMQ retry), the retry may spend only what earlier attempts left. Task details, `propr task get --json` (`budget`) and the task history API show the cap, the spend and the percentage used.
 
-Spend is an estimate from token counts and model pricing (see [Cost Tracking](../operations/metrics.md#cost-tracking)), so a run can overshoot the cap by the usage reported between two checks. `LLM_COST_THRESHOLD_USD` is separate: it only records a high-cost alert and never stops a run.
+Spend is an estimate from token counts and model pricing (see [Cost Tracking](../operations/metrics.md#cost-tracking)), so a run can overshoot the cap by the usage reported between two checks. [Token-outlier alerts](../operations/metrics.md#token-outlier-alerts) are separate: they notify when a run uses far more tokens than usual and never stop a run.
 
 ## Agent runs
 

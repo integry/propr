@@ -81,12 +81,12 @@ Mutations accept an idempotency key, so retrying a create or input never starts 
 
 ## When a goal needs you
 
-A goal that is waiting on you shows a **Needs you** panel in the goal console, a badge in the goal list, an item in the dashboard's *Needs attention* list, and an entry in `propr goal attention` and MCP `list_goal_attention`. All of them read one shared projection, so they agree on what is needed, why, and which action resolves it.
+A goal that is waiting on you shows a **Needs you** panel in the goal console, a badge in the goal list, an item in the dashboard's *Needs attention* list, and an entry in `propr goal attention` and MCP `list_goal_attention`. All of them read one shared projection, so they agree on what is needed, why, and which action resolves it. A question or approval the agent raises also creates one Inbox notification (and a push, a Voice Briefing item and an activity-digest blocker) that opens the goal; the Inbox shows a bounded, redacted summary of the question, push text stays generic, and your per-kind Inbox and push preferences and quiet hours for *Task* notifications apply. The notification is dismissed once the question is answered, times out or its attempt ends. `propr goal wait --until blocked` and MCP `wait_goal` with `until: "blocked"` return as soon as a question opens.
 
 Only explicit signals count:
 
 - **Paused** — the goal confirmed a pause and no resume is queued. Resume it, or send input.
-- **Question** — the provider sent a structured question. Send goal input to answer; ProPR delivers it as the reply. While several questions wait, a goal input cannot name the one it answers, so none is offered a direct answer until only one remains. The question clears when the provider confirms it, not when you send.
+- **Question** — the provider sent a structured question. Send goal input to answer; ProPR delivers it as the reply. While several questions wait, a goal input cannot name the one it answers, so none is offered a direct answer until only one remains. A Codex question clears when the provider confirms it, not when you send; a Claude question clears once your answer is delivered.
 - **Approval** — the provider sent a structured approval request. ProPR never approves for you; pause or cancel the goal to hand it off.
 
 Silence, slow work, rate limits, infrastructure failures, the agent's narration and corrections you have queued never raise one. Blockers are tied to the execution attempt that raised them: if the worker recovers the goal onto a new session, or the goal finishes, they are closed and cannot reappear.
@@ -94,10 +94,22 @@ Silence, slow work, rate limits, infrastructure failures, the agent's narration 
 | Provider | Questions | Approvals |
 | --- | --- | --- |
 | Codex | Supported | Reported; pause or cancel to hand off |
-| Claude | Not available (headless, permissions bypassed) | Not available |
+| Claude | Supported through the `ask_operator` tool | Not available (headless, permissions bypassed) |
 | Antigravity | Not available (print mode, permissions bypassed) | Not available |
 
 Confirmed pauses are reported for every provider.
+
+### Claude questions
+
+Claude goal sessions are started with one extra tool, `ask_operator`. It takes a single question of up to 1,000 characters, optionally with 2 to 10 suggested answers, and waits until you reply. Claude is told to use it only for a decision it cannot settle from the goal, the repository or a sensible default, and never to ask for credentials. Answers are stored as goal input like any other, so do not send secrets.
+
+- **Answering.** The question appears under **Needs you**. The next goal input you send after it appeared is returned to Claude as the tool's answer. Input you had already queued before the question appeared is delivered as an ordinary correction.
+- **Waiting.** While Claude waits, the goal keeps its heartbeat and is not treated as stalled or nudged to continue.
+- **Pause and cancel.** These still work while a question is open. The question is closed and Claude's tool call fails.
+- **No answer.** After the `goal_question_max_wait_ms` instance setting (default 24 hours), Claude is told nobody answered, so it can continue with a stated assumption or stop. A question also stops waiting shortly before the attempt's agent timeout (5 minutes, or a tenth of a shorter timeout), so Claude gets that result before the attempt ends; with less than a minute left, a new question gets the no-answer result straight away and is not shown. Change it with `update_execution_settings` or `propr setting update goal_question_max_wait_ms <ms>`.
+- **Attempt end.** If the attempt ends or is replaced, the question is closed and the tool call fails.
+
+The tool runs inside the agent container and passes questions and answers through the log directory ProPR already mounts there. It works in restricted network mode, does not need to reach the ProPR API, and puts no new credentials in the container. Ordinary task runs (issue implementations, PR follow-ups, `/fix`, reviews, merge-conflict resolution, automations) never get the tool. They run once without stopping, and a task that cannot proceed reports a blocked outcome instead.
 
 ## Antigravity goals
 

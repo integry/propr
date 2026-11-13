@@ -1,7 +1,7 @@
-import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
+import { AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN, MAX_RUN_COST_CAP_USD, MIN_GOAL_QUESTION_MAX_WAIT_MS, TOKEN_OUTLIER_SETTING_NAMES, describeTokenOutlierSettingRange, parseTokenOutlierSetting, type TokenOutlierSettingName } from '@propr/shared';
 import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
-interface SettingFields {
+interface SettingFields extends Partial<Record<TokenOutlierSettingName, unknown>> {
   usage_tips_enabled?: unknown;
   auto_followup_score_threshold?: unknown;
   auto_resolve_merge_conflicts?: unknown;
@@ -18,7 +18,9 @@ interface SettingFields {
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
   agent_run_usage_pause_percent?: unknown;
+  automation_unproductive_run_threshold?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
+  goal_question_max_wait_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
   agent_degenerate_output_limit?: unknown;
@@ -45,9 +47,12 @@ export type SettingSaveName =
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
   | 'agent_run_usage_pause_percent'
+  | 'automation_unproductive_run_threshold'
   | 'ultrafix_ci_wait_timeout_ms'
+  | 'goal_question_max_wait_ms'
   | AgentWatchdogSettingName
-  | AgentNetworkSettingName;
+  | AgentNetworkSettingName
+  | TokenOutlierSettingName;
 
 export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
 export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
@@ -177,11 +182,23 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     normalized.agent_run_usage_pause_percent = v;
     saves.push({ name: 'agent_run_usage_pause_percent' });
   }
+  if (fields.automation_unproductive_run_threshold !== undefined) {
+    const v = validateStrictInt(fields.automation_unproductive_run_threshold, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX);
+    if (v === null) return { error: `automation_unproductive_run_threshold must be an integer from ${AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN} to ${AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX}`, saves: [], normalized };
+    normalized.automation_unproductive_run_threshold = v;
+    saves.push({ name: 'automation_unproductive_run_threshold' });
+  }
   if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
     const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
+  }
+  if (fields.goal_question_max_wait_ms !== undefined) {
+    const v = validateStrictInt(fields.goal_question_max_wait_ms, MIN_GOAL_QUESTION_MAX_WAIT_MS, Infinity);
+    if (v === null) return { error: `goal_question_max_wait_ms must be an integer of at least ${MIN_GOAL_QUESTION_MAX_WAIT_MS}`, saves: [], normalized };
+    normalized.goal_question_max_wait_ms = v;
+    saves.push({ name: 'goal_question_max_wait_ms' });
   }
   return result;
 }
@@ -191,6 +208,8 @@ async function extractTrailingSettingSaves(fields: SettingFields, result: Settin
   if (watchdog.error) return watchdog;
   const network = extractAgentNetworkSettingSaves(fields, result);
   if (network.error) return network;
+  const tokenOutlier = extractTokenOutlierSettingSaves(fields, result);
+  if (tokenOutlier.error) return tokenOutlier;
   return extractEscalationSettingSaves(fields, result);
 }
 
@@ -206,6 +225,20 @@ function extractAgentNetworkSettingSaves(fields: SettingFields, result: SettingS
       : name === 'agent_network_mode' ? String(raw).trim().toLowerCase()
       : name === 'agent_network_allow' ? [...new Set((raw as string[]).map(entry => entry.trim().toLowerCase()))]
       : raw;
+    saves.push({ name });
+  }
+  return result;
+}
+
+/** Token-outlier alert thresholds and the optional automation pause, each within its documented range. */
+function extractTokenOutlierSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  for (const name of TOKEN_OUTLIER_SETTING_NAMES) {
+    const raw = fields[name];
+    if (raw === undefined) continue;
+    const value = parseTokenOutlierSetting(name, raw);
+    if (value === null) return { error: describeTokenOutlierSettingRange(name), saves: [], normalized };
+    normalized[name] = value;
     saves.push({ name });
   }
   return result;

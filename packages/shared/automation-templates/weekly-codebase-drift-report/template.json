@@ -1,0 +1,16 @@
+{
+  "id": "weekly-codebase-drift-report",
+  "name": "Weekly codebase drift report",
+  "description": "Each week, summarise what merged and why, flag new helpers that duplicate existing code, measure growth per area and suggest consolidations.",
+  "category": "maintenance",
+  "capabilities": ["repository_read", "propr_mcp"],
+  "schedule": "0 9 * * 1",
+  "autonomy": "dry_run",
+  "previousReportCount": 1,
+  "reviewBeforeSaving": [
+    { "field": "repositories", "note": "Choose the repositories to report on. The run reads their default branch history and code, so without one there is nothing to measure." },
+    { "field": "schedule", "note": "Runs at 09:00 UTC every Monday and covers the previous 7 days. Change the day or time, or turn the schedule off to run it only on demand." },
+    { "field": "autonomy", "note": "Starts as Dry run, so a run only writes the report. Raise it to Preview & approve to let the acting step save the suggested consolidations as repository To-Dos." },
+    { "field": "agent", "note": "Needs Claude Code or Codex (or a synthetic pool of them), because the run reads pull request context and searches the repository through ProPR's MCP tools." }
+  ]
+}

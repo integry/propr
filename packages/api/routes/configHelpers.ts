@@ -1,6 +1,7 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import type { Knex } from 'knex';
+import { TOKEN_OUTLIER_SETTING_NAMES } from '@propr/shared';
 export { validateAgentsConfig, normalizeAgentsConfig } from './configAgentValidation.js';
 export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName } from './configSettings.js';
 
@@ -22,14 +23,17 @@ export const SPECIALIZED_SETTING_NAMES = [
   'ultrafix_pause_seconds',
   'default_max_cost_usd',
   'agent_run_usage_pause_percent',
+  'automation_unproductive_run_threshold',
   'ultrafix_ci_wait_timeout_ms',
+  'goal_question_max_wait_ms',
   'agent_stall_timeout_ms',
   'agent_tool_stall_timeout_ms',
   'agent_degenerate_output_limit',
   'agent_network_mode',
   'agent_network_mode_enforced',
   'agent_network_allow',
-  'agent_network_ignore_repository_allow'
+  'agent_network_ignore_repository_allow',
+  ...TOKEN_OUTLIER_SETTING_NAMES
 ] as const;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;

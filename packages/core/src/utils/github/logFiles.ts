@@ -12,6 +12,10 @@ import { describeAgentTermination, resolveAgentTerminationReason } from '../../a
 import { sanitizeAgentReport } from '../../agents/agentReportSanitizer.js';
 import { redactVisualPreviewPaths } from '../../services/visualPreviewPaths.js';
 import { redactSecrets } from '../secretRedaction.js';
+import type { RepositoryValidationResult } from '../../workflow/repositoryValidationResult.js';
+import { buildReviewDigest, type ReviewConfig, type ReviewDigest, type ReviewDigestChange } from '../../workflow/reviewDigest.js';
+import { renderReviewDigest } from '../../workflow/reviewDigestMarkdown.js';
+import type { AcceptanceCriterion } from '@propr/shared';
 
 export { redactSecrets };
 
@@ -28,6 +32,8 @@ interface IssueRef {
 
 interface CompletionCommentOptions {
     publishedAs?: 'pull_request' | 'issue_comment';
+    /** The run's diff; with changes, the parts include a review digest. */
+    review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig; acceptanceCriteria?: readonly AcceptanceCriterion[] };
 }
 
 interface ConversationMessage {
@@ -46,6 +52,7 @@ interface FinalResult {
 interface ClaudeResult {
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
+    repositoryValidationResult?: RepositoryValidationResult;
     success?: boolean;
     sessionId?: string | null;
     conversationId?: string | null;
@@ -372,6 +379,10 @@ export interface CompletionCommentParts {
     run: string;
     /** Agent summary, or the incomplete-execution warning. */
     summary: string;
+    /** Review digest markdown; empty when there is no diff. */
+    digest: string;
+    /** The structured digest `digest` is rendered from; null when there is no diff. */
+    reviewDigest: ReviewDigest | null;
     /** Container-observed repository validation report. */
     validation: string;
     /** Log file locations and the latest conversation messages. */
@@ -398,9 +409,15 @@ export async function generateCompletionCommentParts(
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
     }
+    const reviewDigest = options.review
+        ? buildReviewDigest(options.review.changes, result.repositoryValidationResult, options.review.config,
+            options.review.acceptanceCriteria && { criteria: options.review.acceptanceCriteria, agentReport: result.summary })
+        : null;
     return {
         run: execution.text,
         summary: buildSummarySection(result),
+        digest: renderReviewDigest(reviewDigest),
+        reviewDigest,
         validation: result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : '',
         logs,
         trailer: options.publishedAs === 'issue_comment'
@@ -416,5 +433,5 @@ export async function generateCompletionComment(
     options: CompletionCommentOptions = {},
 ): Promise<string> {
     const parts = await generateCompletionCommentParts(claudeResultInput, issueRef, options);
-    return `${parts.run}${parts.summary}${parts.validation}${parts.logs}---\n${parts.trailer}`;
+    return `${parts.run}${parts.summary}${parts.digest}${parts.validation}${parts.logs}---\n${parts.trailer}`;
 }

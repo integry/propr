@@ -35,7 +35,7 @@ export async function fetchOriginalContributionDiscussion(
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
-        model: response.model,
+        executionId: response.executionId, model: response.model,
         success: response.success,
         executionTime: response.executionTime,
         sessionId: response.sessionId,

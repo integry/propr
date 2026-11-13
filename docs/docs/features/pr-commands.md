@@ -89,14 +89,16 @@ Reviews are read-only — the agent is instructed to leave files untouched.
 
 A review judges the PR against its *effective objective*: the original objective (the linked issue, or the PR description) as amended by follow-up requests ProPR accepted and completed on the PR — GitHub follow-up comments, `/fix` instructions (after the selectors on the command line, or on the lines below), prose written below a `/use` or `/switch` command, and follow-ups sent from the Web UI or Desktop. A request counts only while its comment still reads exactly as it did when ProPR accepted it: editing a comment after it was completed removes it from the effective objective, and requests completed before ProPR recorded that binding are not included. A completed request that explicitly changes an original requirement supersedes it, so the review does not ask to undo it; every original requirement the request leaves untouched is still enforced. Earlier reviews and their suggestions, bot summaries, `/fix` selections and comments ProPR did not act on are shown as context only and never become requirements.
 
+When the linked issue has an **Acceptance criteria** list, the review prompt lists each criterion with the id the implementation run reported against (`AC1`, `AC2`, ...; see [Acceptance criteria](./pr-templates.md#acceptance-criteria)). The reviewer verifies every criterion against the diff, and each unmet criterion is a merge blocker with category `requirement` whose title names its id.
+
 ### Review Context Budget
 
 **Settings → AI Models & Reasoning → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
 
 | Runtime | Context window used | Source |
 |---|---|---|
-| Claude Code | 1M for models the runtime marks native-1M (Opus 4.7+, Opus 5.x, Sonnet 5.x, Haiku 5.5, Fable, Mythos); 200K otherwise, including Opus/Sonnet 4.6 without the `[1m]` suffix or with `CLAUDE_CODE_DISABLE_1M_CONTEXT` | Model catalog bundled with Claude Code 2.1.316 |
-| Codex | 272K for every listed model, including the GPT-6 family | `context_window` in the models catalog bundled with Codex CLI 0.166.0; larger windows are opt-in through `model_context_window`, which ProPR does not set |
+| Claude Code | 1M for models the runtime marks native-1M (Opus 4.7+, Opus 5.x, Sonnet 5.x, Haiku 5.5, Fable, Mythos); 200K otherwise, including Opus/Sonnet 4.6 without the `[1m]` suffix or with `CLAUDE_CODE_DISABLE_1M_CONTEXT` | Model catalog bundled with Claude Code 2.1.322 |
+| Codex | 272K for every listed model except GPT-6.1 Terra (500K), including the rest of the GPT-6 family | `context_window` in the models catalog bundled with Codex CLI 0.167.2; larger windows are opt-in through `model_context_window`, which ProPR does not set |
 | Other runtimes | ProPR model catalog window, with a runtime reserve of 10% of the window (minimum 16K) | Catalog only; the runtime limit is not verified |
 | Unknown model | 200K (Codex: its historical 272K) | Conservative fallback |
 
@@ -124,6 +126,7 @@ Every `/review` comment follows a fixed structure:
 
 ## Merge blockers
 ### F1: 🔴 <problem this PR introduced>
+- **Category:** <correctness | requirement | security | tests | complexity | style>
 - **Required behavior:** <what the code has to do>
 - **Evidence:** <changed file and line that breaks it>
 - **Minimum fix:** <smallest correction that resolves it>
@@ -137,7 +140,7 @@ Every `/review` comment follows a fixed structure:
 Score: N/10
 ```
 
-The four sections always appear in this order. **Merge blockers** holds the problems the PR introduced that have to be resolved before merging, each published as a numbered `F#` record carrying those three fields; **Suggestions** holds the non-blocking follow-ups, each published as a numbered `S#` record with its explanation. A review that found nothing prints `No merge blockers.` or `No suggestions.` in place of the records.
+The four sections always appear in this order. **Merge blockers** holds the problems the PR introduced that have to be resolved before merging, each published as a numbered `F#` record carrying those four fields. **Category** says what kind of problem the blocker is, from a closed vocabulary: `correctness`, `requirement`, `security`, `tests`, `complexity` (unrequested complexity the issue did not call for) or `style`. A review comment written before categories existed has no **Category** line; its blockers are read as `correctness`; **Suggestions** holds the non-blocking follow-ups, each published as a numbered `S#` record with its explanation. A review that found nothing prints `No merge blockers.` or `No suggestions.` in place of the records.
 
 Both identifier sequences are PR-wide and never reused, so `F20` or `S5` names one record for the life of the pull request — that is what makes them selectable by [`/fix F20 S3 S5`](#fix). The comment ends with a `Score: N/10` line, which [`/ultrafix`](#ultrafix) reads to decide whether its goal is reached. ProPR also stores every parsed score, with the reviewer, the implementing model, the reviewed head and (for Ultrafix) the cycle number, so the Analytics page can compare review quality per model; see [Review scores](../operations/metrics.md#review-scores).
 
@@ -365,7 +368,7 @@ The first model is the model already implementing the PR, including its normal r
 
 After patience expires, the implementation model climbs one of its own available effort tiers. After the configured number of increases, or when no higher tier exists, ProPR tries the next handoff model at that model's own configured base effort. Each step receives a fresh patience window, while the best score remains shared across the run. Antigravity uses the matching effort variant of its model ID (Pro has low/high; GPT-OSS has only medium). Models without an effort dial hand off directly.
 
-Select escalation models from the ordered dropdowns in General settings. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
+Select escalation models from the ordered dropdowns in **Settings → Ultrafix & Escalation**. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
 
 The policy is captured when the first automatic fix starts and persisted with the run, including its current model, effort, best score, and patience counter. Webhook and polling intake use the same continuation; deferred CI resumes retain this state. Disabling the master toggle also bypasses escalation in existing runs. The existing overall maximum cycle limit and goal/coverage rules still apply across all models. With escalation disabled, model and reasoning selection and stopping behavior remain unchanged.
 
@@ -417,7 +420,8 @@ The loop is controlled by the visible `ultrafix` PR label, which acts as a circu
 #### Completion
 
 - **Goal reached**: the `ultrafix` label is removed. If the PR belongs to a planned issue labeled `auto-merge`, ProPR re-enables GitHub auto-merge on the PR.
-- **Stopped before the goal** (max cycles exhausted, a review that cannot advance the loop, or CI that did not settle within the CI wait timeout): ProPR posts a warning comment with the requested goal and the last score, and manual review takes over. The `ultrafix` label is left on the PR; remove it once you take over.
+- **Stopped before the goal** (max cycles exhausted, a review that cannot advance the loop, a review whose only remaining blockers are category `style`, or CI that did not settle within the CI wait timeout): ProPR posts a warning comment with the requested goal and the last score, and manual review takes over. The `ultrafix` label is left on the PR; remove it once you take over.
+- **Style-only findings**: when every merge blocker in the latest review has category `style`, Ultrafix schedules no further fix and stops with the "stopped before reaching its goal" comment, which says only stylistic findings remain. The goal is not counted as reached, because the review still has blockers. Review the remaining findings yourself, or run [`/fix`](#fix) for the ones worth applying. A review that mixes `style` blockers with any other category continues the loop as usual.
 
 Reserve `/ultrafix` for stronger cleanup passes. For small edits and direct changes, a normal PR comment is usually better.
 

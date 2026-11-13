@@ -14,6 +14,12 @@ import {
   MIN_AUTOMATION_SCHEDULE_INTERVAL_MINUTES,
   validateAutomationSchedule,
 } from './cronSchedule.js';
+import {
+  AUTOMATION_REPORT_MIN_NOVEL_CHARS,
+  AUTOMATION_REPORT_NOVELTIES,
+  DEFAULT_AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD,
+  type AutomationReportNovelty,
+} from './automationRunProductivity.js';
 
 /**
  * Each capability is separately togglable on a definition. `merge` concerns the
@@ -148,6 +154,8 @@ export interface AutomationDefinitionInput {
   previousReportCount?: number;
   /** Event subscriptions; empty or absent means the definition reacts to no event. */
   eventTriggers?: AutomationEventTrigger[];
+  /** Turn the schedule off when the unproductive-run notification fires; default false. */
+  pauseWhenUnproductive?: boolean;
 }
 
 export interface AutomationDefinition {
@@ -164,6 +172,7 @@ export interface AutomationDefinition {
   model: string | null;
   previousReportCount: number;
   eventTriggers: AutomationEventTrigger[];
+  pauseWhenUnproductive: boolean;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -202,6 +211,11 @@ export interface AutomationRun {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** Normalised SHA-256 of the stored report; null before a report or for runs older than the flag. */
+  reportHash: string | null;
+  reportNovelty: AutomationReportNovelty | null;
+  /** Mutating MCP operations the acting step performed; 0 is a no-op acting step. */
+  actingMutations: number | null;
 }
 
 /** Machine-readable description of definition options for capability discovery. */
@@ -234,6 +248,12 @@ export const AUTOMATION_DEFINITION_CONTRACT = {
     requiresRepositories: true,
     maxRunsPerIssue: MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE,
     delivery: 'at-most-once per event and definition; events while the definition is disabled are not run later',
+  },
+  unproductiveRuns: {
+    reportNovelties: AUTOMATION_REPORT_NOVELTIES,
+    minReportCharacters: AUTOMATION_REPORT_MIN_NOVEL_CHARS,
+    defaultStreakThreshold: DEFAULT_AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD,
+    countedTriggers: ['schedule'],
   },
   schedule: {
     format: 'cron-5-field',
@@ -346,6 +366,7 @@ export function validateAutomationDefinitionInput(input: unknown, options: { par
   }
 
   if (has(body, 'enabled') && typeof body.enabled !== 'boolean') return 'enabled must be a boolean';
+  if (has(body, 'pauseWhenUnproductive') && typeof body.pauseWhenUnproductive !== 'boolean') return 'pauseWhenUnproductive must be a boolean';
   if (body.agentId != null && (typeof body.agentId !== 'string' || !body.agentId)) return 'agentId must be a non-empty string';
   if (body.model != null && (typeof body.model !== 'string' || !body.model)) return 'model must be a non-empty string';
 

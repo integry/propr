@@ -1,3 +1,4 @@
+import { extractAcceptanceCriteria, formatAcceptanceCriteriaList } from '@propr/shared';
 import { buildVisualPreviewPrompt } from '../../services/visualPreviewService.js';
 import type { VisualPreviewSettings } from '../../config/configManager.js';
 
@@ -80,6 +81,21 @@ function buildCommentsSection(comments: IssueComment[] | undefined): string {
     return `\n\n**Comments:** No comments on this issue yet.`;
 }
 
+/**
+ * The issue's acceptance criteria with stable ids, and the per-criterion
+ * statement the agent ends with; empty when the body has no criteria.
+ */
+export function buildAcceptanceCriteriaPromptSection(body: string | null | undefined): string {
+    const criteria = extractAcceptanceCriteria(body);
+    if (!criteria.length) return '';
+    return `
+
+**ACCEPTANCE CRITERIA (account for each one):**
+${formatAcceptanceCriteriaList(criteria)}
+
+End your final summary with an \`Acceptance criteria\` list that has exactly one line per criterion above, each in the form \`- <id>: <status> — <evidence>\`. The status is \`met\`, \`not met\` or \`not applicable\`. For \`met\`, the evidence names the file or test that demonstrates it; otherwise it says what is missing or why the criterion does not apply. For example: \`- AC1: met — src/feature.ts, test/feature.test.ts\`. Do not report a criterion as met unless the change demonstrates it.`;
+}
+
 export function generateClaudePrompt(options: GenerateClaudePromptOptions): string {
     const { issueRef, branchName = null, modelName = null, issueDetails = null, baseBranch = null, visualPreviewSettings } = options;
 
@@ -87,6 +103,7 @@ export function generateClaudePrompt(options: GenerateClaudePromptOptions): stri
     const baseBranchInfo = baseBranch ? `\n- **BASE BRANCH**: \`${baseBranch}\` (PRs must target this branch, not main)` : '';
     const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
     const issueDetailsSection = issueDetails ? buildIssueDetailsSection(issueRef, issueDetails) : '';
+    const acceptanceCriteriaSection = issueDetails ? buildAcceptanceCriteriaPromptSection(issueDetails.body) : '';
     const visualPreviewInstructions = visualPreviewSettings ? buildVisualPreviewPrompt(visualPreviewSettings) : '';
 
     return `Please analyze and implement a solution for GitHub issue #${issueRef.number}.
@@ -94,7 +111,7 @@ export function generateClaudePrompt(options: GenerateClaudePromptOptions): stri
 **REPOSITORY INFORMATION:**
 - Repository Owner: ${issueRef.repoOwner}
 - Repository Name: ${issueRef.repoName}
-- Full Repository: ${issueRef.repoOwner}/${issueRef.repoName}${branchInfo}${baseBranchInfo}${modelInfo}${issueDetailsSection}
+- Full Repository: ${issueRef.repoOwner}/${issueRef.repoName}${branchInfo}${baseBranchInfo}${modelInfo}${issueDetailsSection}${acceptanceCriteriaSection}
 
 **YOUR FOCUS: IMPLEMENTATION ONLY**
 

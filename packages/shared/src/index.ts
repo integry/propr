@@ -560,6 +560,7 @@ export * from './goalCreation.js';
 
 export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility, antigravitySupportedModel, agentSupportsSavedModel, currentAntigravityModel } from './antigravityCompatibility.js';
 export { OPENCODE_RETIRED_MODEL_ROUTES, OPENCODE_RETIRED_MODEL_ALIASES, currentOpenCodeModel, retiredOpenCodeModelLabel } from './openCodeCompatibility.js';
+export { claudeModelRetirement, currentClaudeModel, isClaudeModelRetired } from './claudeCompatibility.js';
 export * from './goalBlockers.js';
 export * from './goalWait.js';
 
@@ -568,10 +569,13 @@ export * from './text.js';
 
 // Repository pull request templates (.propr/pr-template.md), parsed identically by workers and the CLI.
 export * from './prTemplate.js';
+export * from './changedFileKinds.js';
 
 // Agents: definition/run contract and the UTC cron evaluator shared by the
 // API, MCP, CLI, UI, worker and scheduler.
 export * from './automationDefinitions.js';
+export * from './automationTemplates.js';
+export * from './automationRunProductivity.js';
 // Deprecated names remain available to existing clients.
 export * from './agentDefinitions.js';
 export * from './cronSchedule.js';
@@ -588,3 +592,16 @@ export * from './extensionProfiles.js';
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
 export * from './planItemGraph.js';
+export {
+  TOKEN_OUTLIER_MIN_HISTORY,
+  TOKEN_OUTLIER_SETTING_DEFINITIONS,
+  TOKEN_OUTLIER_SETTING_NAMES,
+  DEFAULT_TOKEN_OUTLIER_SETTINGS,
+  isTokenOutlierSettingName,
+  describeTokenOutlierSettingRange,
+  parseTokenOutlierSetting,
+  type TokenOutlierSettingDefinition,
+  type TokenOutlierSettingName,
+  type TokenOutlierSettings,
+} from './tokenOutlierSettings.js';
+export * from './acceptanceCriteria.js';

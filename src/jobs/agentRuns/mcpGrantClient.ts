@@ -36,11 +36,20 @@ export interface McpGrantClientOptions {
     resolveNetwork?: () => Promise<string | null>;
 }
 
-/** Outcome of ending a phase's grant: `calls` is what the MCP access log recorded for it, or null when that is unknown. */
+/**
+ * Outcome of ending a phase's grant: `calls` is what the MCP access log
+ * recorded for it, `mutatingOperations` the mutating tool calls it performed;
+ * each is null when unknown.
+ */
 export interface RevokedAgentRunMcpGrant {
     revoked: boolean;
     grantId: string | null;
     calls: number | null;
+    mutatingOperations: number | null;
+}
+
+function countOrNull(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : null;
 }
 
 export function internalApiUrl(environment: NodeJS.ProcessEnv = process.env): string {
@@ -115,6 +124,7 @@ export async function revokeAgentRunMcpGrant(
         revoked: payload.revoked === true,
         grantId: typeof payload.grantId === 'string' ? payload.grantId : null,
         calls: typeof payload.calls === 'number' && Number.isFinite(payload.calls) ? payload.calls : null,
+        mutatingOperations: countOrNull(payload.mutatingOperations),
     };
 }
 
@@ -123,15 +133,16 @@ export async function revokeAgentRunMcpGrant(
  * revoke that fails is logged and left to the terminal-run sweep. A grant that
  * ends without one recorded call is reported too: the agent most likely never
  * reached the MCP endpoint, which otherwise only shows up as the agent saying
- * the `propr` tools were unavailable.
+ * the `propr` tools were unavailable. Returns what the API reported, or null
+ * when there was no grant or the revoke failed.
  */
 export async function revokeGrantQuietly(
     revoke: typeof revokeAgentRunMcpGrant,
     runId: string,
     grant: IssuedAgentRunMcpGrant | null,
     log: Pick<Logger, 'warn'>,
-): Promise<void> {
-    if (!grant) return;
+): Promise<RevokedAgentRunMcpGrant | null> {
+    if (!grant) return null;
     try {
         const result = await revoke(runId, grant) as RevokedAgentRunMcpGrant | undefined;
         if (result?.revoked && result.calls === 0) {
@@ -140,7 +151,9 @@ export async function revokeGrantQuietly(
                 'Agent run MCP grant ended without a single recorded call: the agent container most likely could not reach the ProPR MCP endpoint (check PROPR_AGENT_MCP_URL and PROPR_AGENT_DOCKER_NETWORK)',
             );
         }
+        return result ?? null;
     } catch (error) {
         log.warn({ runId, grantId: grant.grantId, err: error instanceof Error ? error.message : String(error) }, 'Could not revoke agent run MCP grant');
+        return null;
     }
 }

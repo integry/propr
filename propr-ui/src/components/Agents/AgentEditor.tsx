@@ -20,6 +20,8 @@ interface AgentEditorProps extends AgentEditorCallbacks {
   section?: AgentDetailSection;
   /** The run shown when `section` is `run`. */
   runId?: string | null;
+  /** A shipped template that prefills a new automation's form. */
+  templateId?: string | null;
 }
 
 /** A new agent has only its settings; a run section without a run shows the history. */
@@ -65,7 +67,7 @@ const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, s
  * history and run detail; the settings form stays mounted (hidden) while
  * another tab shows, so unsaved edits survive a look at the runs.
  */
-export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerControls, section: requestedSection = 'settings', runId = null, ...callbacks }) => {
+export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerControls, section: requestedSection = 'settings', runId = null, templateId = null, ...callbacks }) => {
   const { isDemoMode } = useDemoMode();
   const navigate = useNavigate();
   const openRun = useCallback((run: AutomationRunRecord) => {
@@ -74,7 +76,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
   const toast = useOptionalToast();
   const addToast = toast?.addToast;
   const notify = useCallback<AgentEditorNotify>((message, type) => { addToast?.({ type, message, duration: 3_000 }); }, [addToast]);
-  const editor = useAgentEditor(definitionId, callbacks, { openRun, notify });
+  const editor = useAgentEditor(definitionId, callbacks, { openRun, notify, templateId });
   const section = resolveSection(definitionId, requestedSection, runId);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const { definition } = editor;

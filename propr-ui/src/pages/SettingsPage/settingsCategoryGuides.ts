@@ -16,17 +16,6 @@ const DOCS = 'https://docs.propr.dev/docs';
  * settingsCategoryGuides.test.ts checks each link against the docs tree.
  */
 export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCategoryGuide> = {
-  general: {
-    summary: 'Preferences for how ProPR presents work to you. Nothing here changes how agents run.',
-    notes: [
-      'Usage tips are ranked about once a day from activity in this instance. Dismissing a tip hides it for 45 days.',
-      'Experimental features are off by default. Voice briefings do not start audio or ask for the microphone when turned on; dashboard AI summaries cost LLM calls on the summarization model.',
-    ],
-    links: [
-      { label: 'Usage tips', href: `${DOCS}/features/usage-tips` },
-      { label: 'Voice briefings', href: `${DOCS}/features/voice-briefings` },
-    ],
-  },
   models: {
     summary: 'ProPR addresses models by stable model IDs, so the same ID works in issue labels, the CLI and PR commands such as /switch.',
     notes: [
@@ -109,6 +98,29 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
     links: [
       { label: 'Inbox and notifications', href: `${DOCS}/features/inbox` },
       { label: 'Web push setup', href: `${DOCS}/operations/pwa-web-push` },
+    ],
+  },
+  maintenance: {
+    summary: 'Operator upkeep for this instance. Only instance administrators see this category.',
+    notes: [
+      'Database exports and repository cache cleanup recheck your administrator authority on every request. A cleanup confirmation expires after five minutes.',
+      'Cache cleanup only removes eligible repository caches, which are refetched on next use. Worktrees are always protected.',
+      'A follow-up held for an operator blocks every later command on its pull request. Release frees the branch without deleting files or commits; Resume re-arms recovery.',
+    ],
+    links: [
+      { label: 'Instance data', href: `${DOCS}/architecture/instance-storage-v1#native-instance-data-management-3013` },
+      { label: 'Stuck follow-ups', href: `${DOCS}/operations/maintenance#stuck-follow-ups-settle-themselves` },
+    ],
+  },
+  experimental: {
+    summary: 'Opt-in features and preferences for how ProPR presents work to you. Nothing here changes how agents run.',
+    notes: [
+      'Usage tips are ranked about once a day from activity in this instance. Dismissing a tip hides it for 45 days.',
+      'Opt-in features are off by default. Voice briefings do not start audio or ask for the microphone when turned on; dashboard AI summaries cost LLM calls on the summarization model.',
+    ],
+    links: [
+      { label: 'Usage tips', href: `${DOCS}/features/usage-tips` },
+      { label: 'Voice briefings', href: `${DOCS}/features/voice-briefings` },
     ],
   },
 };
