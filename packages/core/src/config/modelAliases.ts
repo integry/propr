@@ -61,10 +61,16 @@ export interface LlmLabelResolution {
  */
 const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     // Fable aliases (top tier, above Opus)
-    'fable': 'claude-fable-5-1',
+    'fable': 'claude-fable-5-2',
+    'claude-fable': 'claude-fable-5-2',
+
+    'fable52': 'claude-fable-5-2',
+    'fable-5-2': 'claude-fable-5-2',
+    'claude-fable-5-2': 'claude-fable-5-2',
+
+    // Explicit Fable 5.1 aliases (legacy)
     'fable51': 'claude-fable-5-1',
     'fable-5-1': 'claude-fable-5-1',
-    'claude-fable': 'claude-fable-5-1',
     'claude-fable-5-1': 'claude-fable-5-1',
 
     // Explicit Fable 5 aliases
@@ -116,7 +122,8 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     'sonnet-4-6': 'claude-sonnet-4-6',
     'claude-sonnet-4-6': 'claude-sonnet-4-6',
 
-    // Explicit 4.5 aliases (for older Claude Code versions)
+    // Explicit 4.5 aliases (for older Claude Code versions). Sonnet 4.5 is
+    // deprecated; from its 2026-11-30 retirement it runs on Sonnet 5.5.
     'opus45': 'claude-opus-4-5-20251101',
     'opus-4-5': 'claude-opus-4-5-20251101',
     'claude-opus-4-5': 'claude-opus-4-5-20251101',
@@ -373,7 +380,7 @@ function findMatchingModel(shortName: string, config: AgentConfig): string | nul
         }
     }
 
-    // Prefer the canonical model behind a bare tier alias (e.g. "fable" -> Fable 5.1)
+    // Prefer the canonical model behind a bare tier alias (e.g. "fable" -> Fable 5.2)
     // over older releases whose IDs also contain the alias.
     const canonical = MODEL_ALIASES[lowerShort];
     if (canonical) {

@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automation templates**: a versioned catalog of automation templates ships
+  in `@propr/shared`, generated from `packages/shared/automation-templates/`
+  and checked in CI against the automation definition contract
+  (`npm run automation-templates:check`). The new-automation form offers
+  **Start from a template**, and the empty Automations list shows the
+  templates; choosing one only fills the form, always in `dry_run`, with a
+  note on what to review (repositories, schedule, autonomy) before saving.
+  The first template is **Daily issue triage**: a report of issues that need
+  a human, likely duplicates, proposed severity and security labels and stale
+  issues. The catalog is also served by
+  `GET /api/automation-definitions/templates`, the MCP read tool
+  `list_automation_templates` and `propr automation templates`.
+- **Instruction learning loop template**: a weekly automation template that
+  reads recent pull request discussions through ProPR's MCP tools and
+  proposes short additions to, or removals from, the repository's agent
+  instructions (`AGENTS.md`, `.propr/instructions.md` or the workflow
+  `instructions` file). Each candidate cites at least two pull requests where
+  the same correction was made; the report also lists stale instructions and
+  warns when the instruction files grow too long. With autonomy raised, the
+  acting step creates one ProPR task that opens a pull request with the cited
+  changes for review.
+- **MCP `get_pull_request_discussion` review sources**: `source: "reviews"`
+  pages a pull request's submitted GitHub reviews and
+  `source: "review_comments"` its inline review comments (file, line, reply
+  thread). The default conversation read never included either, so the
+  Instruction learning loop now reads all three.
+- **Weekly codebase drift report template**: a weekly automation template
+  that reports the last 7 days of merged changes (what changed and why, by
+  area), newly added code that duplicates existing helpers (both locations,
+  only for pairs the run has read after searching by name and by behaviour),
+  growth per top-level area with the largest new files, and suggested
+  consolidations. With autonomy raised, the acting step saves the
+  consolidations as repository To-Dos. The default review guidance now also
+  asks reviewers to check new helpers for duplicates and flag them under the
+  `complexity` category when the review uses it.
+- **Claude Fable 5.2 and GPT-6.1 Terra**: Claude Fable 5.2 (`claude-fable-5-2`,
+  label `llm-claude-fable52`, 1M context, $8 / $40 per million tokens with
+  cache reads at 2.5% of input) is the new target of the plain `fable` and
+  `claude-fable` aliases and of the recommended plan-generation and PR-review
+  models. It needs Claude Code 2.1.321 or later. Claude Fable 5.1 stays
+  available as a legacy model through `fable51`, `claude-fable-5-1` and
+  `llm-claude-fable51`. GPT-6.1 Terra (`gpt-6.1-terra`, label
+  `llm-codex-gpt61-terra`, $1 / $5) is added to the Codex catalog; it needs
+  Codex 0.165.0 or later, and reviews use its 500K Codex runtime window.
 - **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
   option in `.propr/workflow.yml` (default `false`) makes ProPR's own
   auto-merge behave like a merge queue. A labelled PR that passes every other
@@ -27,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
+  moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
+  tool-policy checks pass against both binaries. Codex 0.167 rewords the
+  Daybreak provider refusal that ProPR's `daybreak=false` override already
+  avoids.
 - **Bundled Antigravity CLI 1.5.6**: the `propr/agent` image moves from
   Antigravity CLI 1.4.0 to 1.5.6 (release `6212266538958848`, SHA-512 checked
   against Google's install manifest). The model catalog is unchanged: Gemini 3.8
@@ -43,8 +92,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Models page documents this.
   - 1.5.5 fixes `agy -p` sometimes never exiting after printing its result.
 
+### Deprecated
+
+- **Claude Sonnet 4.5**: Anthropic retires `claude-sonnet-4-5-20250929` on
+  2026-11-30. It stays selectable until then; from that date, Claude runs
+  launched with a saved Sonnet 4.5 selection, alias or `llm-claude-sonnet45`
+  label use Claude Sonnet 5.5.
+  Opus 4.5 and Haiku 4.5 are unaffected.
+
 ### Fixed
 
+- **MCP-created plans open in Studio at Review**: `create_plan` called with
+  plan items stored the draft as `draft`, so Studio opened it at Define and
+  showed no issues until it was published. A draft created or updated with
+  plan items is now stored as `review`; prompt-only drafts stay `draft`. A
+  migration moves existing drafts that already hold plan items to `review`.
 - **CI: Chromium install no longer hangs for an hour**: on GitHub-hosted
   runners `scripts/ci-install-chromium.sh` bounds apt with
   `Acquire::Retries=3` and 30-second HTTP/HTTPS timeouts, limits each

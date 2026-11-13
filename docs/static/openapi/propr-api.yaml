@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 307
+    total: 308
     documented: 69
-    undocumented: 238
+    undocumented: 239
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -1768,6 +1768,26 @@ paths:
     get:
       operationId: getApiAutomationDefinitionsContract
       summary: GET /api/automation-definitions/contract
+      description: This route is registered but not documented yet.
+      tags:
+        - Automations
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/automation-definitions/templates:
+    get:
+      operationId: getApiAutomationDefinitionsTemplates
+      summary: GET /api/automation-definitions/templates
       description: This route is registered but not documented yet.
       tags:
         - Automations

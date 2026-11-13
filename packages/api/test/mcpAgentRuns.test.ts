@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import knex from 'knex';
 import { z } from 'zod';
 import { closeConnection, createAgentDefinition, transitionAgentRun, triggerAgentRun, updateAgentDefinition, type AgentRunGate, type StoredAgentRun } from '@propr/core';
-import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_ACTION_SUMMARY_MAX_CHARS, AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_REPORT_MAX_CHARS } from '@propr/shared';
+import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_ACTION_SUMMARY_MAX_CHARS, AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_REPORT_MAX_CHARS, AUTOMATION_TEMPLATE_CATALOG } from '@propr/shared';
 import { createToolCatalog, executeTool, type ToolDeps } from '../mcp/tools.js';
 import { McpPolicy, type McpPrincipal } from '../mcp/policy.js';
 import { McpError } from '../mcp/config.js';
@@ -19,7 +19,7 @@ import { MAX_TOOL_RESULT_BYTES } from '../mcp/config.js';
 after(closeConnection);
 
 const migrations = fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url));
-const AUTOMATION_TOOLS = ['list_automation_definitions', 'get_automation_definition', 'get_automation_definition_contract', 'list_automation_runs',
+const AUTOMATION_TOOLS = ['list_automation_definitions', 'get_automation_definition', 'get_automation_definition_contract', 'list_automation_templates', 'list_automation_runs',
   'get_automation_run', 'trigger_automation_run', 'approve_automation_run', 'reject_automation_run'];
 
 interface Receipt {
@@ -86,7 +86,7 @@ testWithFixture('automation tools are listed with valid schemas and only for the
   for (const name of AUTOMATION_TOOLS) assert.ok(z.toJSONSchema(f.catalog.find(tool => tool.name === name)!.schema), name);
   const visible = (scopes: string[]) => f.catalog.filter(tool => scopes.includes(tool.scope)).map(tool => tool.name)
     .filter(name => AUTOMATION_TOOLS.includes(name)).sort();
-  assert.deepEqual(visible(['read']), ['get_automation_definition', 'get_automation_definition_contract', 'get_automation_run', 'list_automation_definitions', 'list_automation_runs']);
+  assert.deepEqual(visible(['read']), ['get_automation_definition', 'get_automation_definition_contract', 'get_automation_run', 'list_automation_definitions', 'list_automation_runs', 'list_automation_templates']);
   assert.deepEqual(visible(['read', 'execute']), [...AUTOMATION_TOOLS].sort());
   const trigger = f.catalog.find(tool => tool.name === 'trigger_automation_run')!;
   assert.match(trigger.description, /free-form report/);
@@ -184,6 +184,10 @@ testWithFixture('a grant without one of the definition repositories can neither 
   const detail = (await f.call('get_automation_definition', { definitionId: visible.id })).data as { definition: { prompt: string; repositories: string[] } };
   assert.equal(detail.definition.prompt, 'Scan competitors.');
   assert.deepEqual((await f.call('get_automation_definition_contract', {})).data, JSON.parse(JSON.stringify(AUTOMATION_DEFINITION_CONTRACT)));
+  const templates = (await f.call('list_automation_templates', {})).data as typeof AUTOMATION_TEMPLATE_CATALOG;
+  assert.deepEqual(templates, JSON.parse(JSON.stringify(AUTOMATION_TEMPLATE_CATALOG)));
+  assert.equal(templates.templates[0].id, 'daily-issue-triage');
+  assert.ok(templates.templates.every(template => template.autonomy === 'dry_run'));
 });
 
 testWithFixture('runs that captured a repository the grant lacks stay hidden after the definition drops it', async f => {
@@ -457,4 +461,26 @@ testWithFixture('MCP automation tools cannot write extension selections into def
     }
   }
   assert.equal((await f.db('agent_definitions').where({ id: definition.id }).first()).extension_profile, null);
+});
+
+testWithFixture('get_automation_run and list_automation_runs expose the unproductive-run flags', async f => {
+  const definition = await f.define(['acme/app'], { autonomyMode: 'auto', pauseWhenUnproductive: true });
+  const receipt = (await f.call('trigger_automation_run', { definitionId: definition.id, idempotencyKey: 'no-change-run-1' })).data as Receipt;
+  const id = receipt.result.runId;
+  await transitionAgentRun(id, ['queued'], 'running', {}, { database: f.db });
+  await transitionAgentRun(id, ['running'], 'report_ready', { report: 'Open two issues.', reportHash: 'b'.repeat(64), reportNovelty: 'new' }, { database: f.db });
+  await transitionAgentRun(id, ['report_ready'], 'acting', {}, { database: f.db });
+  await transitionAgentRun(id, ['acting'], 'completed', { actionSummary: 'Nothing to do.', actingMutations: 0 }, { database: f.db });
+
+  const detail = (await f.call('get_automation_run', { runId: id })).data as { run: Record<string, unknown> };
+  assert.equal(detail.run.state, 'completed');
+  assert.equal(detail.run.reportHash, 'b'.repeat(64));
+  assert.equal(detail.run.reportNovelty, 'new');
+  assert.equal(detail.run.actingMutations, 0);
+  assert.equal(detail.run.noChangeReason, 'no_op_action');
+  const listed = (await f.call('list_automation_runs', { definitionId: definition.id })).data as { runs: Array<Record<string, unknown>> };
+  assert.equal(listed.runs[0].actingMutations, 0);
+  assert.equal(listed.runs[0].noChangeReason, 'no_op_action');
+  const summary = (await f.call('list_automation_definitions', {})).data as { definitions: Array<Record<string, unknown>> };
+  assert.equal(summary.definitions[0].pauseWhenUnproductive, true);
 });

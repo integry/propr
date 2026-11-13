@@ -367,6 +367,7 @@ Automations, the saved prompts on the **Automations** page of the Web UI, are dr
 
 ```bash
 propr automation list                          # Your automations (--limit, --offset)
+propr automation templates                     # Shipped templates to start a new automation from
 propr automation show <automation-id>               # Prompt, schedule, autonomy, repositories
 propr automation run <automation-id>                # Trigger a run (--idempotency-key, --source, --wait, --timeout)
 propr automation runs <automation-id> --limit 5     # Run history, newest first
@@ -387,7 +388,7 @@ The trigger works from your own cron or a GitHub Actions step:
   run: npx propr-cli automation run "$AUTOMATION_ID" --idempotency-key "$GITHUB_RUN_ID" --source github-actions --wait > report.md
 ```
 
-With `--json`, every command prints a `{ "version": 1, "kind": ... }` document with one of the kinds `automation-list`, `automation`, `automation-runs` or `automation-run`. Failures print `automation-error`. A missing or another user's automation prints `Automation not found`.
+With `--json`, every command prints a `{ "version": 1, "kind": ... }` document with one of the kinds `automation-list`, `automation-templates`, `automation`, `automation-runs` or `automation-run`. Failures print `automation-error`. A missing or another user's automation prints `Automation not found`.
 
 ## Tasks
 

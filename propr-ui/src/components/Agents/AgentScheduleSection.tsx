@@ -6,7 +6,9 @@ import { SCHEDULE_PRESETS, formatUtc, nextScheduledRun } from './agentPresentati
 interface AgentScheduleSectionProps {
   enabled: boolean;
   expression: string;
-  onChange: (change: { scheduleEnabled?: boolean; schedule?: string }) => void;
+  /** Turn the schedule off when the unproductive-run notification fires. */
+  pauseWhenUnproductive?: boolean;
+  onChange: (change: { scheduleEnabled?: boolean; schedule?: string; pauseWhenUnproductive?: boolean }) => void;
   disabled: boolean;
 }
 
@@ -23,7 +25,7 @@ function useMinuteClock(): Date {
 }
 
 /** Off, or a UTC cron expression with presets, a live next-run preview and inline validation. */
-export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enabled, expression, onChange, disabled }) => {
+export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enabled, expression, pauseWhenUnproductive = false, onChange, disabled }) => {
   const now = useMinuteClock();
   const error = enabled && expression.trim() ? validateAutomationSchedule(expression.trim()) : null;
   const next = enabled && !error && expression.trim() ? nextScheduledRun(expression.trim(), now) : null;
@@ -83,6 +85,20 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enab
                 ? <span className="text-slate-600">Next run: <span className="font-mono text-slate-800">{formatUtc(next)}</span></span>
                 : <span className="text-slate-500">Enter a 5-field cron expression or pick a preset.</span>}
           </p>
+          <label className="flex items-start gap-2 text-xs text-slate-700">
+            <input
+              type="checkbox"
+              data-testid="agent-pause-when-unproductive"
+              checked={pauseWhenUnproductive}
+              disabled={disabled}
+              onChange={event => onChange({ pauseWhenUnproductive: event.target.checked })}
+              className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-teal-600 focus-visible:ring-2 focus-visible:ring-teal-500"
+            />
+            <span>
+              Pause the schedule when scheduled runs keep producing no change
+              <span className="block text-slate-500">You are told in the Inbox either way; with this on, the schedule is also turned off then.</span>
+            </span>
+          </label>
         </div>
       )}
     </AgentFormRow>

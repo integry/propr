@@ -22,6 +22,7 @@ import {
   getAutomationRun,
   listAutomationRuns,
   listAutomations,
+  listAutomationTemplates,
   rejectAutomationRun,
   triggerAutomationRun,
   type Automation,
@@ -133,11 +134,29 @@ function printAutomation(automation: Automation): void {
   console.log(`Schedule:     ${automation.scheduleCron ? `${automation.scheduleCron} ${automation.scheduleTimezone}${automation.scheduleEnabled ? "" : " (disabled)"}` : "-"}`);
   if (automation.nextRunAt) console.log(`Next run:     ${formatTimestamp(automation.nextRunAt)}`);
   console.log(`Previous reports: ${automation.includePreviousReports ? automation.previousReportsLimit : 0}`);
+  if (automation.pauseWhenUnproductive) console.log("Pause when unproductive: yes");
   if (automation.attachments.length > 0) console.log(`Input files:  ${automation.attachments.length}`);
   console.log(`Updated:      ${formatTimestamp(automation.updatedAt)}`);
   console.log("");
   console.log("Prompt:");
   console.log(automation.prompt);
+}
+
+const NO_CHANGE_TEXT: Record<string, string> = {
+  empty_report: "no change (empty report)",
+  unchanged_report: "no change (same report as the previous run)",
+  no_op_action: "no change (the acting step changed nothing)",
+};
+
+/** Whether the run produced anything; empty while the server has no flags for it. */
+export function runChangeLabel(run: AutomationRun): string {
+  if (run.noChangeReason) return NO_CHANGE_TEXT[run.noChangeReason] ?? "no change";
+  const parts: string[] = [];
+  if (run.reportNovelty === "new") parts.push("new report");
+  if (typeof run.actingMutations === "number" && run.actingMutations > 0) {
+    parts.push(`${run.actingMutations} change${run.actingMutations === 1 ? "" : "s"}`);
+  }
+  return parts.join(", ");
 }
 
 /** Run metadata as `key: value` lines, written to `write` (stdout or stderr). */
@@ -149,6 +168,8 @@ function printRunMetadata(run: AutomationRun, write: (line: string) => void): vo
   write(`created at: ${formatTimestamp(run.createdAt)}`);
   if (run.reportedAt) write(`reported at: ${formatTimestamp(run.reportedAt)}`);
   if (run.finishedAt) write(`finished at: ${formatTimestamp(run.finishedAt)}`);
+  const change = runChangeLabel(run);
+  if (change) write(`change: ${change}`);
 }
 
 /** Why a run did not complete, always on stderr so stdout stays pipe-friendly. */
@@ -373,6 +394,7 @@ document with a machine-readable error.code.
 
 Examples:
   $ propr automation list
+  $ propr automation templates
   $ propr automation show <automation-id>
   $ propr automation run <automation-id> --wait
   $ propr automation runs <automation-id> --limit 5
@@ -413,6 +435,36 @@ Examples:
         }
       } catch (error) {
         return fail(error, { command: "list", json: options.json });
+      }
+    });
+
+  automation
+    .command("templates")
+    .description("List the shipped automation templates you can start a new automation from in the Web UI")
+    .option("-j, --json", "Output the version 1 automation-templates JSON document")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const catalog = await listAutomationTemplates();
+        if (options.json) {
+          printJson({ kind: "automation-templates", catalogVersion: catalog.version, templates: catalog.templates });
+          return;
+        }
+        if (catalog.templates.length === 0) {
+          console.log("No automation templates are available.");
+          return;
+        }
+        printTable([
+          { heading: "ID", values: catalog.templates.map((item) => item.id) },
+          { heading: "Name", values: catalog.templates.map((item) => truncate(item.name, 32)) },
+          { heading: "Category", values: catalog.templates.map((item) => item.category) },
+          { heading: "Schedule", values: catalog.templates.map((item) => item.schedule) },
+          { heading: "Autonomy", values: catalog.templates.map((item) => item.autonomy) },
+          { heading: "Description", values: catalog.templates.map((item) => truncate(item.description, 60)) },
+        ]);
+        console.log("");
+        console.log("Start from a template on the Automations page of the Web UI (New automation). Nothing is created until you save.");
+      } catch (error) {
+        return fail(error, { command: "templates", json: options.json });
       }
     });
 
@@ -556,6 +608,7 @@ GitHub Actions example:
           { heading: "State", values: runs.map((item) => item.state) },
           { heading: "Trigger", values: runs.map((item) => truncate(`${item.trigger}${item.triggerSource ? ` (${item.triggerSource})` : ""}`, 32)) },
           { heading: "Created", values: runs.map((item) => formatTimestamp(item.createdAt)) },
+          { heading: "Change", values: runs.map((item) => truncate(runChangeLabel(item), 48)) },
           { heading: "Note", values: runs.map((item) => truncate(item.failureReason ?? item.skipReason ?? "", 48)) },
         ]);
         const next = page.offset + runs.length;

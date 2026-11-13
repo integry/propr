@@ -129,18 +129,20 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         epicQueue: summarizeEpicQueue(await getEpicExecutionQueue(args.planId, { database: db })),
         issues: await db('plan_issues').where({ draft_id: args.planId }).limit(100) });
     } });
-  tools.push({ name: 'create_plan', description: 'Create a draft plan only. This does not publish issues or start execution.', scope: 'plan',
+  // A plan created with items is ready to review: 'draft' means "no plan yet"
+  // everywhere else (Studio shows only the prompt for it).
+  tools.push({ name: 'create_plan', description: 'Create a draft plan only. This does not publish issues or start execution. With plan items the draft opens in Studio at Review.', scope: 'plan',
     schema: z.object({ ...mutationShape, repository: repositorySchema, name: z.string().min(1).max(256), prompt: textSchema, plan: plan.optional(), todoIds: z.array(z.uuid()).max(20).optional() }).strict(),
     run: async ({ principal, args }) => {
-      const id = randomUUID();
+      const id = randomUUID(), status = args.plan?.length ? 'review' : 'draft';
       await db.transaction(async tx => {
         const todoIds = [...new Set<string>(args.todoIds || [])];
         if (todoIds.length && (await tx('repo_todos').where({ user_id: principal.user.id, repository: args.repository }).whereIn('todo_id', todoIds)).length !== todoIds.length) throw new McpError('NOT_FOUND', 'Selected TODOs must belong to you in this repository.', 404);
         await tx('task_drafts').insert({ draft_id: id, user_id: principal.user.id, repository: args.repository, name: args.name, initial_prompt: args.prompt,
-          plan_json: args.plan ? JSON.stringify(args.plan) : null, plan_cause: args.plan ? 'manual_edit' : null, status: 'draft' });
+          plan_json: args.plan ? JSON.stringify(args.plan) : null, plan_cause: args.plan ? 'manual_edit' : null, status });
         if (todoIds.length) await tx('repo_todos').whereIn('todo_id', todoIds).update({ linked_draft_id: id, updated_at: tx.fn.now() });
       });
-      return ok({ planId: id, revision: 0, status: 'draft' });
+      return ok({ planId: id, revision: 0, status });
     } });
   tools.push({ name: 'update_plan', description: 'Update a draft using its exact revision. Read the plan again on a conflict.', scope: 'plan', target,
     schema: z.object({ ...mutationShape, ...planShape, expectedRevision: z.number().int().min(0), name: z.string().min(1).max(256).optional(), prompt: textSchema.optional(), plan: plan.optional() }).strict(),
@@ -150,7 +152,8 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         .whereIn('status', ['draft', 'review', 'approved', 'failed']).update({
           ...(args.name !== undefined ? { name: args.name } : {}), ...(args.prompt !== undefined ? { initial_prompt: args.prompt } : {}),
           ...(serializedPlan !== undefined ? { plan_json: serializedPlan,
-            plan_cause: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']) } : {}),
+            plan_cause: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']),
+            ...(args.plan?.length ? { status: db.raw('CASE WHEN ?? = ? THEN ? ELSE ?? END', ['status', 'draft', 'review', 'status']) } : {}) } : {}),
           updated_at: db.fn.now(), mcp_revision: args.expectedRevision + 1,
         });
       if (!changed) throw new McpError('STALE_REVISION', 'Plan changed or an operation is active. Read it again before updating.', 409);

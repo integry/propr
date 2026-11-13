@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { AUTOMATION_RUN_EXIT_CODES, createAutomationCommand } from "./automationCommands.js";
+import { AUTOMATION_RUN_EXIT_CODES, createAutomationCommand, runChangeLabel } from "./automationCommands.js";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleLog = console.log;
@@ -322,6 +322,33 @@ test("approve sends the note; reject and cancel post to their endpoints", async 
   assert.match(conflict.stderr, /not awaiting approval/);
 });
 
+test("templates lists the shipped catalog as a table and as a versioned JSON document", async () => {
+  const triage = {
+    id: "daily-issue-triage", name: "Daily issue triage", description: "Report duplicates, labels and stale issues.", category: "triage",
+    prompt: "Triage the issues.", capabilities: ["repository_read"], schedule: "0 7 * * 1-5", autonomy: "dry_run", previousReportCount: 1,
+    reviewBeforeSaving: [{ field: "repositories", note: "Pick them." }],
+  };
+  const listed = await run(["templates"], () => ({ body: { version: 1, templates: [triage] } }));
+  assert.equal(listed.exitCode, 0);
+  assert.equal(listed.requests.length, 1);
+  assert.equal(listed.requests[0].method, "GET");
+  assert.equal(listed.requests[0].url.pathname, "/api/automation-definitions/templates");
+  assert.match(listed.stdout, /daily-issue-triage/);
+  assert.match(listed.stdout, /Daily issue triage/);
+  assert.match(listed.stdout, /0 7 \* \* 1-5/);
+  assert.match(listed.stdout, /dry_run/);
+  assert.match(listed.stdout, /Nothing is created until you save/);
+
+  const json = await run(["templates", "--json"], () => ({ body: { version: 1, templates: [triage] } }));
+  assert.deepEqual(JSON.parse(json.stdout), { version: 1, kind: "automation-templates", catalogVersion: 1, templates: [triage] });
+
+  const empty = await run(["templates"], () => ({ body: { version: 1, templates: [] } }));
+  assert.match(empty.stdout, /No automation templates/);
+  const failed = await run(["templates", "--json"], () => ({ status: 500, body: { error: "boom" } }));
+  assert.equal(failed.exitCode, 1);
+  assert.equal(JSON.parse(failed.stdout).kind, "automation-error");
+});
+
 test("list and runs print tables, and the group answers to its alias", async () => {
   const command = createAutomationCommand();
   assert.deepEqual(command.aliases(), ["automations"]);
@@ -336,4 +363,29 @@ test("list and runs print tables, and the group answers to its alias", async () 
   assert.equal(runs.requests[0].url.searchParams.get("limit"), "5");
   assert.match(runs.stdout, /skipped/);
   assert.match(runs.stdout, /No capacity/);
+});
+
+test("runs and report show whether a run produced anything", async () => {
+  const runs = await run(["runs", "agent-1"], () => ({ body: { runs: [
+    runFixture({ id: "run-3", state: "completed", reportNovelty: "unchanged", actingMutations: null, noChangeReason: "unchanged_report" }),
+    runFixture({ id: "run-2", state: "completed", reportNovelty: "new", actingMutations: 2, noChangeReason: null }),
+    runFixture({ id: "run-1", state: "completed" }),
+  ], total: 3, limit: 20, offset: 0 } }));
+  assert.match(runs.stdout, /Change/);
+  assert.match(runs.stdout, /run-3 .*no change \(same report as the previous run\)/);
+  assert.match(runs.stdout, /run-2 .*new report, 2 changes/);
+
+  const report = await run(["report", "run-1"], () => ({ body: { run: runFixture({ state: "completed", report: "## Summary", reportedAt: 1_790_000_000_000, reportNovelty: "new", actingMutations: 0, noChangeReason: "no_op_action" }) } }));
+  assert.match(report.stderr, /change: no change \(the acting step changed nothing\)/);
+  assert.equal(report.stdout, "## Summary");
+
+  const json = await run(["runs", "agent-1", "--json"], () => ({ body: { runs: [runFixture({ reportNovelty: "empty", reportHash: "a".repeat(64), noChangeReason: "empty_report" })], total: 1, limit: 20, offset: 0 } }));
+  const document = JSON.parse(json.stdout) as { runs: Array<Record<string, unknown>> };
+  assert.equal(document.runs[0].reportNovelty, "empty");
+  assert.equal(document.runs[0].noChangeReason, "empty_report");
+});
+
+test("runChangeLabel is empty for runs without flags", () => {
+  assert.equal(runChangeLabel(runFixture() as never), "");
+  assert.equal(runChangeLabel(runFixture({ actingMutations: 1, reportNovelty: "unchanged", noChangeReason: null }) as never), "1 change");
 });

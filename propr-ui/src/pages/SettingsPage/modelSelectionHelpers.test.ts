@@ -17,6 +17,20 @@ describe('Claude model recommendations', () => {
     }
   });
 
+  it('recommends Fable 5.2 instead of the legacy Fable 5.1 for planning and review', () => {
+    const agents = [{
+      alias: 'claude',
+      enabled: true,
+      supportedModels: ['claude-fable-5-1', 'claude-fable-5-2'],
+    }];
+
+    for (const options of [buildPlanGenerationOptions(agents), buildPrReviewOptions(agents)]) {
+      expect(options.find(option => option.value === 'claude:claude-fable-5-2')?.isRecommended).toBe(true);
+      expect(options.find(option => option.value === 'claude:claude-fable-5-1')?.isRecommended).toBe(false);
+      expect(options[0]?.value).toBe('claude:claude-fable-5-2');
+    }
+  });
+
   it('recommends Haiku 5.5 instead of Haiku 4.5 for lightweight work', () => {
     const agents = [{
       alias: 'claude',
