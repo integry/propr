@@ -5,6 +5,7 @@ import { up as createNotificationSchema } from '../src/db/migrations/20260802000
 import { up as createPullRequestState } from '../src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../src/db/migrations/20261006000000_create_review_scores.js';
 import { up as addReasoningLevels } from '../src/db/migrations/20261111000000_add_reasoning_level_columns.js';
+import { up as addBlockerCategories } from '../src/db/migrations/20261112000000_add_review_score_blocker_categories.js';
 import { up as createJournal, down as dropJournal } from '../src/db/migrations/20261112160000_create_repository_events.js';
 
 /**
@@ -30,7 +31,7 @@ await database.schema.createTable('tasks', table => {
 await database.schema.createTable('llm_executions', table => {
   table.increments('id'); table.string('task_id'); table.string('model_name'); table.string('start_time');
 });
-for (const migration of [createNotificationSchema, createPullRequestState, createReviewScores, addReasoningLevels, createJournal]) await migration(database);
+for (const migration of [createNotificationSchema, createPullRequestState, createReviewScores, addReasoningLevels, addBlockerCategories, createJournal]) await migration(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   for (const table of ['review_scores', 'notification_pull_request_state', 'repository_events']) await database(table).delete();
