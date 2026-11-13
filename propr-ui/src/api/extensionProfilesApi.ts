@@ -1,4 +1,4 @@
-import type { ExtensionCatalogEntry, ExtensionLibraryInput, ExtensionLibraryRevision, ExtensionSkillBundle } from '@propr/shared';
+import type { ExtensionCatalogEntry, ExtensionLibraryInput, ExtensionLibraryRevision, ExtensionLibraryUsage, ExtensionSkillBundle } from '@propr/shared';
 import { API_BASE_URL, apiFetch } from './apiClient';
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await apiFetch(`${API_BASE_URL}/api/instance/extensions/v1${path}`, {
@@ -21,11 +21,14 @@ export interface ExtensionLibraryResponse {
   library: ExtensionLibraryRevision;
   bundles?: ExtensionSkillBundle[];
   catalog?: ExtensionCatalogEntry[];
+  /** Automations that add items explicitly, and profiles migrated items came from. */
+  usage?: ExtensionLibraryUsage;
 }
 export type ExtensionValidationResult = { name: string; reachable: boolean | null; status?: 'reachable' | 'unavailable' | 'not_validated' };
 export const getExtensionLibrary = () => request<ExtensionLibraryResponse>('');
 export const saveExtensionLibrary = (input: ExtensionLibraryInput, expectedRevision: number, secrets: Record<string, string | null> = {}) =>
   request<{ library: ExtensionLibraryRevision }>('/library', { input, expectedRevision, secrets });
+/** Switch one saved item on or off in its own revision, keeping its settings and stored secret. */
 export const setExtensionItemEnabled = (item: ExtensionItemRef, enabled: boolean) =>
   request<{ library: ExtensionLibraryRevision }>('/items/enabled', { item, enabled });
 export const replaceExtensionSecret = (name: string, secret: string | null, expectedRevision?: number) =>

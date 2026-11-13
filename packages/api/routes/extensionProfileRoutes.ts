@@ -3,6 +3,7 @@ import { Octokit } from '@octokit/core';
 import { db } from '@propr/core';
 import { EXTENSION_LIBRARY_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle } from '@propr/shared';
 import { ExtensionError, ExtensionLibraryStore, type ExtensionLibraryItemRef } from '../../core/src/extensions/extensionProfileStore.js';
+import { extensionLibraryUsage } from '../../core/src/extensions/extensionLibraryUsage.js';
 import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
 import { requestExtensionMcp } from '../../core/src/extensions/endpointPolicy.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
@@ -33,7 +34,11 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
   };
   return {
     // The library, the skill bundles it can reference and the operator catalog in one read.
-    list: handle(async (_req, actor) => ({ contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library: await store.readLibrary(actor), bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries() })),
+    // Usage names the automations that add items and the profiles migrated items came from.
+    list: handle(async (_req, actor) => {
+      const library = await store.readLibrary(actor);
+      return { contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library, bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries(), usage: await extensionLibraryUsage(store, library) };
+    }),
     save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expectedRevision']); return { library: await store.saveLibrary(actor, req.body.input, req.body.secrets, req.body.expectedRevision) }; }),
     setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
     replaceSecret: handle(async (req, actor) => { exact(req, ['name', 'secret', 'expectedRevision']); return { library: await store.replaceSecret(actor, req.body.name, req.body.secret, req.body.expectedRevision) }; }),

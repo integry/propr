@@ -236,3 +236,13 @@ export const EXTENSION_LIBRARY_CONTRACT = {
   itemFields: ['enabled', 'repositories', 'agents', 'autoApply'],
   optOutLabels: EXTENSION_OPT_OUT_LABELS,
 } as const;
+
+/**
+ * Where library items are used, for the settings screen: the automations that
+ * add items explicitly, and the profiles that migrated items came from.
+ */
+export interface ExtensionLibraryUsage {
+  automations: { id: string; name: string; servers: string[]; skills: string[] }[];
+  /** Profile names keyed by server name and by skill bundle id. */
+  importedFrom: { servers: Record<string, string[]>; skills: Record<string, string[]> };
+}

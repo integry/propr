@@ -69,6 +69,8 @@ If web access must be blocked, choose Claude Code or Codex. For the other runtim
 
 Runs of Claude Code and Codex automations receive the [instance extension library](./agent-extensions.md) items that apply to them: every enabled item with **Apply automatically** whose repository and agent limits match the automation's repositories and agent. An automation can also add library items explicitly with `extensions: { "servers": [...], "skills": [...] }` (library server names and skill bundle ids). Added items are used even when they do not apply automatically, as long as they are enabled and their limits match.
 
+In the automation editor, **Additional extensions** shows two lists, MCP servers and skills, of the library items whose limits allow the automation's repositories and agent. Nothing is selected by default. Items marked *already applies automatically* reach the automation's runs without being added. A selected item that no longer exists, is switched off or no longer matches is still listed, marked *skipped* with the reason, and can be removed. Members see the added items read-only.
+
 - Adding items requires an instance administrator with `instance.manage_settings` and a request with the `X-ProPR-Extensions: 1` header. Every named item must exist in the library when you save. Removing items needs no extra permission.
 - An added item that was disabled, or whose limits no longer match the run, is skipped: the run starts without it and its task timeline records an `extensions.resolved` event listing the items used and the skipped ones with a reason. Skipping is never an error.
 - A library item that an automation adds cannot be removed or renamed from the library until it is removed from the automation; disabling it is always allowed.
