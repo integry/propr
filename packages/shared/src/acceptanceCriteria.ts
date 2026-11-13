@@ -34,15 +34,23 @@ export const MAX_ACCEPTANCE_EVIDENCE_LENGTH = 300;
  * on one line (`- - - …`, `> > …`), whose cost grows with the depth of every
  * such line and which overflow the stack when deep enough. Only the text
  * before the first line past the length or line bound is parsed. A line nested
- * too deep is read as blank instead, so the lines after it still are: it may be
- * literal fenced-code content, which GitHub renders as text, and then hides
- * nothing; outside code it is nested far below any criterion.
+ * too deep is read with its containers capped at MAX_LINE_CONTAINERS instead,
+ * never as blank: a blank line would end the block it is in, so a quote's lazy
+ * continuation, or the rest of an HTML block, would read as the report's own
+ * text. Capped, the line still continues the containers around it (so literal
+ * fenced-code content stays code and hides nothing after it), and its text,
+ * with the lines continuing it, stays quoted when any dropped marker was a
+ * block quote.
  * 65,536 characters is GitHub's limit for an issue body.
  */
 const MAX_PARSED_LENGTH = 65_536;
 const MAX_PARSED_LINES = 2_000;
-/** A line opening more block quotes and list items than this, as in `- > - > …`. */
+/** The most block quotes and list items one line may open, as in `- > - > …`. */
+const MAX_LINE_CONTAINERS = 8;
+/** A line opening more containers than MAX_LINE_CONTAINERS. */
 const TOO_DEEP = /^[ \t]*(?:(?:>[ \t]*|(?:[-*+]|\d{1,9}[.)])[ \t]+)){9}/;
+/** One block quote or list marker with the spaces after it; `y` so markers are read in sequence. */
+const CONTAINER_MARKER = /(?:>[ \t]*|(?:[-*+]|\d{1,9}[.)])[ \t]+)/y;
 /** `- - - -` and the like are a thematic break, not nested lists. */
 const THEMATIC_BREAK = /^[ \t]*([-*_])(?:[ \t]*\1)*[ \t]*$/;
 
@@ -59,7 +67,30 @@ const HIDDEN = new Set<string>(['code', 'html', 'blockquote']);
 /** A parsed document with its source, which node positions index into. */
 interface Document { source: string; tree: Root }
 
-/** `markdown` up to the first line past the parse bounds, with each line nested too deep blanked. */
+/**
+ * `line` with the containers it opens beyond MAX_LINE_CONTAINERS dropped, so its
+ * text is the content of the last kept container. That container is a block
+ * quote when any dropped marker was one: the text, and the lines lazily
+ * continuing it, are quoted in the source, so they stay quoted. The leading
+ * markers are kept as written, so the line still continues the containers of
+ * the lines before it, such as a fenced code block in a quote or a list item.
+ */
+function capContainers(line: string): string {
+    if (!TOO_DEEP.test(line) || THEMATIC_BREAK.test(line)) return line;
+    const indent = /^[ \t]*/.exec(line)![0].length;
+    const markers: string[] = [];
+    let end = indent;
+    CONTAINER_MARKER.lastIndex = indent;
+    for (let match = CONTAINER_MARKER.exec(line); match; match = CONTAINER_MARKER.exec(line)) {
+        markers.push(match[0]);
+        end = CONTAINER_MARKER.lastIndex;
+    }
+    const dropped = markers.slice(MAX_LINE_CONTAINERS - 1);
+    const last = dropped.some(marker => marker.startsWith('>')) ? '> ' : dropped[0];
+    return `${line.slice(0, indent)}${markers.slice(0, MAX_LINE_CONTAINERS - 1).join('')}${last}${line.slice(end)}`;
+}
+
+/** `markdown` up to the first line past the parse bounds, with each line nested too deep capped. */
 function parsedSource(markdown: string): string {
     const source = markdown.slice(0, MAX_PARSED_LENGTH);
     let parsed = '';
@@ -67,9 +98,8 @@ function parsedSource(markdown: string): string {
     for (let line = 0; start < source.length; line++) {
         const newline = source.indexOf('\n', start);
         const end = newline < 0 ? source.length : newline;
-        const text = source.slice(start, end);
         if (line >= MAX_PARSED_LINES) break;
-        parsed += TOO_DEEP.test(text) && !THEMATIC_BREAK.test(text) ? '' : text;
+        parsed += capContainers(source.slice(start, end));
         parsed += newline < 0 ? '' : '\n';
         start = end + 1;
     }

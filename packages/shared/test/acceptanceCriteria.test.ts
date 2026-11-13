@@ -332,8 +332,9 @@ test('ignores statements in fenced examples inside block quotes', () => {
     ['> - ```md', '>   - AC1: met — example', '>   ```'],
     ['- Notes:', '  > ```md', '  > - AC1: met — example', '  > ```'],
     ['- > ```md', '  > - AC1: met — example', '  > ```'],
-    // A line nested too deep to parse reads as blank.
+    // A line nested too deep to parse is read with its containers capped, still inside a block quote.
     [`${'> '.repeat(9)}- AC1: met — example`],
+    ['> ```md', `${'> '.repeat(10)}- AC1: met — example`, '> ```'],
   ]) {
     assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), [real, 'Report each criterion like this:', ...example].join('\n')), [notMet], example.join('\n'));
   }
@@ -353,6 +354,41 @@ test('ignores statements in fenced examples inside block quotes', () => {
   ]) {
     assert.deepEqual(evaluateAcceptanceCriteria(criteria, [real, ...quoted].join('\n')).map(result => result.status), ['not_met', 'not_addressed'], quoted.join('\n'));
   }
+});
+
+test('a line nested too deep keeps the lines continuing it quoted', () => {
+  // The quote-opening line is not blanked: in Markdown an unprefixed line after a quoted paragraph continues
+  // that paragraph lazily, so it is quoted text too and must not overwrite the real statement.
+  const criteria = [{ id: 'AC1', text: 'A' }, { id: 'AC2', text: 'B' }];
+  const real = '- AC1: not met — implementation missing';
+  const notMet = { id: 'AC1', text: 'A', status: 'not_met', evidence: 'implementation missing' };
+  for (const quoted of [
+    [`${'> '.repeat(9)}Example:`, 'AC1: met — illustrative example'],
+    [`${'> '.repeat(9)}Example:`, 'AC1: met — illustrative example', 'AC1: met — still the example'],
+    [`${'- > '.repeat(9)}Example:`, 'AC1: met — illustrative example'],
+    // The quote is beyond the cap: the capped line still ends in one.
+    [`${'- '.repeat(9)}> Example:`, 'AC1: met — illustrative example'],
+    [`${'1. '.repeat(12)}> Example:`, '  AC1: met — illustrative example'],
+    // An HTML block runs to the next blank line, so blanking the deep line would end it early.
+    ['<div>', `${'> '.repeat(9)}Example:`, 'AC1: met — illustrative example', '</div>'],
+  ]) {
+    assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), [real, '', ...quoted].join('\n')), [notMet], quoted.join('\n'));
+  }
+  // A blank line or a list item ends the quote, as in Markdown, so a statement there counts; the text after
+  // the deep line is otherwise parsed as before.
+  const met = { id: 'AC2', text: 'B', status: 'met', evidence: '`src/b.ts`' };
+  for (const after of [
+    [`${'> '.repeat(9)}Example:`, '', '- AC2: met — `src/b.ts`'],
+    [`${'> '.repeat(9)}Example:`, '- AC2: met — `src/b.ts`'],
+    [`${'> '.repeat(9)}Example:`, 'AC1: met — illustrative example', '', 'AC2: met — `src/b.ts`'],
+  ]) {
+    assert.deepEqual(evaluateAcceptanceCriteria(criteria, [real, '', ...after].join('\n')), [notMet, met], after.join('\n'));
+  }
+  // Without a quote, the capped line's text is the agent's own, nested, and so are the lines continuing it.
+  assert.deepEqual(evaluateAcceptanceCriteria(criteria.slice(0, 1), [real, '', `${'- '.repeat(9)}Restated:`, 'AC1: met — `src/a.ts`'].join('\n')), [
+    { id: 'AC1', text: 'A', status: 'met', evidence: '`src/a.ts`' },
+  ]);
+  assert.deepEqual(texts('## Acceptance criteria\n- Kept\n- - - - - - - - - deep\nlazily continued\n- Also kept\n'), ['Kept', 'deep lazily continued', 'Also kept']);
 });
 
 test('reads criteria and statements from the Markdown syntax tree', () => {
@@ -379,7 +415,7 @@ test('bounds the input that slow Markdown constructs can make expensive', () => 
   assert.equal(lazy.length, 1);
   assert.ok(lazy[0].startsWith('First lazy lazy'));
   evaluateAcceptanceCriteria([{ id: 'AC1', text: 'x' }], `| a | b |\n| - | - |\n${'| x | y |\n'.repeat(20_000)}`);
-  // A line nested too deep reads as blank: its own text is dropped, the lines after it are parsed as before.
+  // A line nested too deep is read with its containers capped: its text stays quoted here, the lines after it are parsed as before.
   assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(9)}deep\n- Also kept\n`), ['Kept', 'Also kept']);
   assert.deepEqual(texts(`## Acceptance criteria\n- Kept:\n  ${'- > '.repeat(9)}deep\n  - nested\n- Also kept\n`), ['Kept: nested', 'Also kept']);
   assert.deepEqual(texts(`## Acceptance criteria\n- Kept\n${'- > '.repeat(4)}nested\n- Also kept\n`).length, 2);
