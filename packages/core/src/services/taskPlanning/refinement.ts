@@ -300,8 +300,11 @@ async function parseRefinementWithRepair(response: string, context: RefinementRe
 }
 
 function incompletePlanRepairPrompt(currentPlan: PlanItem[], instruction: string, response: string, details: RefinementOutputDetails): string {
+  const duplicates = details.duplicates?.length
+    ? `\nEvery task needs its own id: ${details.duplicates.map(entry => `task ${entry.index + 1}${entry.title ? ` "${entry.title}"` : ''} reused "${entry.id}"`).join('; ')}. Keep each existing task's own id and give a new task none.\n`
+    : '';
   return `Your previous response was not a safe complete refined plan (${details.reason}).
-
+${duplicates}
 Apply the requested changes to the current plan below and return ONLY this JSON object:
 {"action": "modified", "summary": "<what changed>", "plan": [ ... ]}
 

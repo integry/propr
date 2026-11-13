@@ -1,3 +1,4 @@
+import { duplicatePlanItemIdErrors } from '@propr/shared';
 import type { Plan, PlanItem } from './types.js';
 
 export const REFINEMENT_OUTPUT_INVALID = 'REFINEMENT_OUTPUT_INVALID' as const;
@@ -7,16 +8,25 @@ export type RefinementOutputFailureReason =
   | 'unknown_operation'
   | 'unknown_target'
   | 'mixed_shape'
-  | 'empty_plan';
+  | 'empty_plan'
+  | 'duplicate_id';
 
 export interface IncompleteRefinedTask {
   index: number;
   missing: string[];
 }
 
+/** A refined task whose id an earlier task of the refined plan already carries. */
+export interface DuplicateRefinedTaskId {
+  index: number;
+  id: string;
+  title?: string;
+}
+
 export interface RefinementOutputDetails {
   reason: RefinementOutputFailureReason;
   incomplete?: IncompleteRefinedTask[];
+  duplicates?: DuplicateRefinedTaskId[];
   operations?: number;
 }
 
@@ -62,6 +72,18 @@ function incompleteTasks(plan: unknown[]): IncompleteRefinedTask[] {
 
 function failure(reason: RefinementOutputFailureReason, message: string, extra: Omit<RefinementOutputDetails, 'reason'> = {}): NormalizedRefinedPlan {
   return { ok: false, code: REFINEMENT_OUTPUT_INVALID, message, details: { reason, ...extra } };
+}
+
+/**
+ * Rejects a refined plan in which two tasks carry the same id. Which task the
+ * id belongs to is ambiguous, so neither identity recovery nor storage-time
+ * repair may guess: renaming one copy would detach its dependents.
+ */
+function duplicateIdFailure(plan: unknown[], extra: Omit<RefinementOutputDetails, 'reason'> = {}): NormalizedRefinedPlan | undefined {
+  const errors = duplicatePlanItemIdErrors(plan);
+  if (!errors.length) return undefined;
+  const duplicates = errors.map(error => ({ index: error.index, id: error.itemId!, ...(error.title !== undefined ? { title: error.title } : {}) }));
+  return failure('duplicate_id', `The refinement returned duplicate task ids. ${errors[0].message}`, { ...extra, duplicates });
 }
 
 function operationName(item: TaskRecord): unknown {
@@ -180,9 +202,9 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
   const operationCount = hasDiscriminator.filter(Boolean).length;
   if (operationCount === 0) {
     const incomplete = incompleteTasks(refined);
-    return incomplete.length
-      ? failure('incomplete_tasks', 'The refinement returned incomplete plan tasks.', { incomplete })
-      : { ok: true, plan: restoreOmittedIdentity(currentPlan, refined as TaskRecord[]) as unknown as Plan, merged: false };
+    if (incomplete.length) return failure('incomplete_tasks', 'The refinement returned incomplete plan tasks.', { incomplete });
+    return duplicateIdFailure(refined)
+      ?? { ok: true, plan: restoreOmittedIdentity(currentPlan, refined as TaskRecord[]) as unknown as Plan, merged: false };
   }
   if (operationCount !== refined.length || records.some(item => !item)) {
     return failure('mixed_shape', 'The refinement mixed complete tasks with edit operations.', { operations: operationCount });
@@ -265,5 +287,7 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
       incomplete,
     });
   }
+  const duplicate = duplicateIdFailure(merged, { operations: edits.length });
+  if (duplicate) return duplicate;
   return { ok: true, plan: merged as unknown as PlanItem[], merged: true, operations: edits.length };
 }

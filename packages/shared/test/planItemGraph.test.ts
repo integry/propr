@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   assignPlanItemIds, normalizePlanItems, parseDependsOnIssues, preparePlanItemsFromModel,
   reducePlanItemDependencies, resolvePlanItemIssueDependencies, validatePlanItemGraph, withPlanIssueDependencies,
-  parseUnresolvedDependsOn, serializeDependsOnIssues,
+  parseUnresolvedDependsOn, serializeDependsOnIssues, duplicatePlanItemIdErrors, PlanItemIdConflictError,
 } from '../src/planItemGraph.js';
 
 const item = (id: string | undefined, dependsOn?: unknown, title = id ? id.toUpperCase() : 'Untitled') =>
@@ -49,18 +49,33 @@ test('id assignment fills only missing ids and never changes an existing one', (
   assert.deepEqual(taken, [['existing']], 'a generated id avoids every existing id');
 });
 
-test('model-written plans are repaired: repeated ids replaced, dangling, self and cyclic references dropped', () => {
+test('model-written plans are repaired: malformed ids replaced, dangling, self and cyclic references dropped', () => {
   const repaired = preparePlanItemsFromModel([
     item('a', ['a', 'missing']),
     item('b', ['a', 'a']),
-    item('b', ['a'], 'Copy'),
+    { ...item('x', ['a'], 'Blank id'), id: '  ' },
     item('c', ['d']),
     item('d', ['c']),
   ]) as Array<{ id: string; dependsOn?: string[] }>;
   assert.deepEqual(repaired.map(entry => entry.dependsOn ?? []).slice(0, 2), [[], ['a']]);
-  assert.match(repaired[2].id, /^item-/, 'the repeated id gets a fresh one');
+  assert.match(repaired[2].id, /^item-/, 'the malformed id gets a fresh one');
   assert.equal(validatePlanItemGraph(repaired).valid, true);
   assert.deepEqual(repaired.slice(3).map(entry => entry.dependsOn ?? []), [['d'], []]);
+});
+
+test('model-written plans with a repeated valid id are rejected, naming the item, instead of renamed', () => {
+  const plan = [item('schema', [], 'Schema'), item('schema', [], 'API'), item('ui', ['api'], 'UI')];
+  assert.throws(() => preparePlanItemsFromModel(plan), (error: unknown) => {
+    assert.ok(error instanceof PlanItemIdConflictError);
+    assert.equal(error.errors.length, 1);
+    assert.equal(error.errors[0].code, 'duplicate_id');
+    assert.equal(error.errors[0].index, 1);
+    assert.equal(error.errors[0].title, 'API');
+    assert.match(error.message, /Task 2 "API" \(id "schema"\) reuses the id "schema" of task 1/);
+    return true;
+  });
+  assert.deepEqual(duplicatePlanItemIdErrors([item('a'), item('b'), { title: 'No id' }, { id: '  ' }, { id: '  ' }]), [],
+    'missing and malformed ids are not duplicates');
 });
 
 const edgesOf = (plan: unknown[]) => (plan as Array<{ id: string; dependsOn?: string[] }>).map(entry => [entry.id, entry.dependsOn]);

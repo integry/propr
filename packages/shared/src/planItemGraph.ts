@@ -361,33 +361,58 @@ export function parseUnresolvedDependsOn(value: unknown): string[] {
 }
 
 /**
+ * The `duplicate_id` errors of a plan: one per item whose valid id an earlier
+ * item already carries. Malformed ids are not reported here.
+ */
+export function duplicatePlanItemIdErrors(items: readonly unknown[]): PlanItemGraphError[] {
+  const positions = new Map<string, number>();
+  const errors: PlanItemGraphError[] = [];
+  items.map(asRecord).forEach((item, index) => {
+    if (!hasId(item) || (item!.id as string).length > PLAN_ITEM_ID_MAX_LENGTH) return;
+    const id = item!.id as string;
+    const first = positions.get(id);
+    if (first === undefined) positions.set(id, index);
+    else errors.push(errorFor('duplicate_id', index, item, `${describe(index, item)} reuses the id "${id}" of task ${first + 1}. Item ids must be unique.`));
+  });
+  return errors;
+}
+
+/** A model-written plan gave the same id to more than one item, so which item keeps it is ambiguous. */
+export class PlanItemIdConflictError extends Error {
+  readonly code = 'duplicate_id' as const;
+
+  constructor(readonly errors: PlanItemGraphError[]) {
+    super(errors[0]?.message ?? 'Item ids must be unique.');
+    this.name = 'PlanItemIdConflictError';
+  }
+}
+
+/**
  * Ids and dependencies for a plan a model just wrote (generation or
- * refinement), which is repaired instead of rejected: a malformed or repeated
- * id is replaced by a fresh one so it cannot capture another item's
- * dependents, items without an id get one, and references that name no item,
- * the item itself, or close a cycle are dropped. Entries reachable through
- * another entry of the same item are dropped too, so each item lists only its
- * direct prerequisites. Valid ids are kept as given. Plans a user saves are not
- * reduced; they are validated and stored as written.
+ * refinement), which is repaired instead of rejected: a malformed id is
+ * replaced by a fresh one, items without an id get one, and references that
+ * name no item, the item itself, or close a cycle are dropped. Entries
+ * reachable through another entry of the same item are dropped too, so each
+ * item lists only its direct prerequisites. Valid ids are kept as given. A
+ * valid id that more than one item carries is not repaired: renaming either
+ * copy could hand another item's identity and dependents to the wrong task,
+ * so it throws a `PlanItemIdConflictError` naming the item. Plans a user
+ * saves are not reduced; they are validated and stored as written.
  */
 export function preparePlanItemsFromModel<T>(items: readonly T[]): T[] {
-  const seen = new Set<string>();
+  const duplicates = duplicatePlanItemIdErrors(items);
+  if (duplicates.length) throw new PlanItemIdConflictError(duplicates);
   const taken = new Set(items.map(asRecord).filter(hasId).map(item => item!.id as string));
-  const withUniqueIds = items.map(item => {
+  const withValidIds = items.map(item => {
     const record = asRecord(item);
     if (!record) return item;
     const id = record.id;
-    if (typeof id === 'string' && id.trim() && id.length <= PLAN_ITEM_ID_MAX_LENGTH && !seen.has(id)) {
-      seen.add(id);
-      return item;
-    }
-    if (id === undefined) return item;
+    if (id === undefined || (typeof id === 'string' && id.trim() && id.length <= PLAN_ITEM_ID_MAX_LENGTH)) return item;
     const fresh = generatePlanItemId(taken);
     taken.add(fresh);
-    seen.add(fresh);
     return { ...record, id: fresh } as T;
   });
-  return reducePlanItemDependencies(prunePlanItemDependencies(assignPlanItemIds(withUniqueIds)));
+  return reducePlanItemDependencies(prunePlanItemDependencies(assignPlanItemIds(withValidIds)));
 }
 
 /** A plan issue row as returned by the API: its plan item id and prerequisite issue numbers parsed. */

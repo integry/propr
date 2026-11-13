@@ -225,4 +225,39 @@ describe('normalizeRefinedPlan', () => {
     assert.deepEqual(result.plan[0].dependsOn, ['schema']);
     assert.deepEqual(preparePlanItemsFromModel(result.plan).map(item => [item.id, item.dependsOn]), [['api', undefined]]);
   });
+  test('a complete refinement that gives two tasks the same existing id is rejected, naming the task', () => {
+    const withIds = [
+      { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+      { id: 'ui', title: 'UI', body: 'UI body', implementation: 'UI steps', dependsOn: ['api'] },
+    ];
+    const result = normalizeRefinedPlan(withIds, [
+      { id: 'schema', title: 'Schema', body: 'Schema body v2', implementation: 'Schema steps' },
+      { id: 'schema', title: 'API', body: 'API body v2', implementation: 'API steps', dependsOn: ['schema'] },
+      { id: 'ui', title: 'UI', body: 'UI body', implementation: 'UI steps', dependsOn: ['api'] },
+    ]);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.code, 'REFINEMENT_OUTPUT_INVALID');
+    assert.equal(result.details.reason, 'duplicate_id');
+    assert.deepEqual(result.details.duplicates, [{ index: 1, id: 'schema', title: 'API' }]);
+    assert.match(result.message, /Task 2 "API" \(id "schema"\) reuses the id "schema" of task 1/);
+  });
+
+  test('an add edit that reuses an existing task id is rejected', () => {
+    const withIds = [
+      { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+    ];
+    const result = normalizeRefinedPlan(withIds, [
+      { action: 'retain', index: 0 },
+      { action: 'retain', index: 1 },
+      { action: 'add', id: 'api', title: 'Docs', body: 'Docs body', implementation: 'Docs steps' },
+    ]);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.details.reason, 'duplicate_id');
+    assert.equal(result.details.operations, 3);
+    assert.deepEqual(result.details.duplicates, [{ index: 2, id: 'api', title: 'Docs' }]);
+  });
 });
