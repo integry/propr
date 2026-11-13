@@ -15,6 +15,10 @@
  * Acquire replies: -1 configuration missing, 0 a holder is recovering,
  * 1 admitted, 2 global limit, 3 alias ceiling, 4 admitted as nested,
  * 5 nesting depth exceeded, 6 nested count exceeded.
+ *
+ * Fence replies: 0 unknown holder, 2 finished normally while nested executions
+ * run (now draining), otherwise {1, nested token, nested container ID, ...}
+ * listing every nested execution fenced with it.
  */
 export const ADMISSION_SCRIPT = `
 local t = redis.call('TIME')
@@ -177,12 +181,21 @@ if op == 'fence' then
     return 2
   end
   r.state = 'recovering'
+  -- Reply {1, nested token, nested container ID, ...}: the caller removes and
+  -- releases those nested executions before its own container.
+  local fenced = {1}
   for _,e in ipairs(list) do
-    if e[2].parent == token and e[2].state ~= 'recovering' then
-      e[2].state = 'recovering'
-      redis.call('HSET', KEYS[1], e[1], cjson.encode(e[2]))
+    if e[2].parent == token then
+      if e[2].state ~= 'recovering' then
+        e[2].state = 'recovering'
+        redis.call('HSET', KEYS[1], e[1], cjson.encode(e[2]))
+      end
+      table.insert(fenced, e[1]); table.insert(fenced, e[2].id or '')
     end
   end
+  r.deadline = now + tonumber(ARGV[3])
+  redis.call('HSET', KEYS[1], token, cjson.encode(r))
+  return fenced
 elseif r.state == 'recovering' or r.state == 'draining' or r.deadline <= now then
   return 0
 elseif op == 'attach' then

@@ -335,6 +335,21 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
             await release(expired[i]);
         }
     };
+    // Fence this owner, and with it every nested execution charged under it
+    // (unless it finished normally while they run: then it is `draining`).
+    // Containers are removed child first: physical nested work never outlives
+    // its fenced parent, on local cleanup as on external recovery.
+    const fenceAndStop = async () => {
+        let coordinationError: unknown;
+        let fenced: unknown;
+        try { fenced = await call('fence'); } catch (error) { coordinationError = error; }
+        const nestedHolders = Array.isArray(fenced) ? (fenced as string[]).slice(1) : [];
+        for (let i = 0; i < nestedHolders.length; i += 2) {
+            if (nestedHolders[i + 1]) await runtime.remove(nestedHolders[i + 1]);
+        }
+        if (id) await runtime.remove(id);
+        return { draining: fenced === 2, nestedHolders, coordinationError };
+    };
     const finish = async () => {
         if (closed) return;
         closed = true;
@@ -342,19 +357,18 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await renewal;
         try {
             // Fence before removal: no future attach/renew can resurrect this owner.
-            // Fencing a parent fences its nested executions too, unless it finished
-            // normally while they run: then it is `draining` and keeps its slot.
-            let coordinationError: unknown;
-            let fenced: unknown;
-            if (acquired) {
-                try { fenced = await call('fence'); } catch (error) { coordinationError = error; }
-            }
             // Stop physical work even while Redis is unavailable. Retain the
             // reservation if either coordination or Docker removal failed.
-            if (id) await runtime.remove(id);
+            const { draining, nestedHolders, coordinationError } = acquired
+                ? await fenceAndStop()
+                : { draining: false, nestedHolders: [], coordinationError: undefined };
+            if (!acquired && id) await runtime.remove(id);
             if (coordinationError) throw coordinationError;
-            const draining = fenced === 2;
-            if (acquired && !draining) await release(token);
+            // Fenced nested executions are released before the parent they are charged under.
+            if (acquired && !draining) {
+                for (let i = 0; i < nestedHolders.length; i += 2) await release(nestedHolders[i]);
+                await release(token);
+            }
             await client.zrem(waiting, token);
             if (draining) logger.info({ instance: config.instance, containerId: id, ...log }, 'Physical agent finished; its reservation stays charged until its nested executions end');
             // Released capacity goes to the oldest job deferred for this alias.
@@ -365,7 +379,14 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         timer = setTimeout(() => {
             renewal = (async () => {
                 try {
-                    if (await call('renew') !== 1) throw new Error('Agent admission ownership lost');
+                    if (await call('renew') !== 1) {
+                        const error = new Error('Agent admission ownership lost');
+                        controller.abort(error);
+                        // A lost lease fences this owner's nested executions too: stop
+                        // them before this container even if the caller is suspended.
+                        await fenceAndStop().catch(failure => logger.error({ error: String(failure) }, 'Agent admission stop failed'));
+                        return;
+                    }
                     if (!closed) renew();
                 } catch (error) {
                     controller.abort(error);

@@ -392,3 +392,60 @@ test('fencing a parent (lease loss) fences its nested executions; a stale parent
     await second!.finish(); await replacement!.finish();
     assert.equal(await client().hlen(holders), 0);
 });
+
+/** A lifecycle that records the order of container removals. */
+function orderedLifecycle() {
+    const { runtime, alive } = lifecycle();
+    const removed: string[] = [];
+    const remove = runtime.remove;
+    runtime.remove = async id => { if (alive.has(id)) removed.push(id); await remove(id); };
+    return { runtime, alive, removed };
+}
+
+test('local cleanup of a lease-lost parent removes and releases its nested execution first, without a replacement admission', integration(), async () => {
+    const { runtime, alive, removed } = orderedLifecycle();
+    const name = instance('local-fence');
+    const config: AdmissionConfig = { instance: name, limit: 1 };
+    const options = { client: client(), docker: runtime, config, agentAlias: 'local' };
+    const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { register: 'goal:local-fence' } });
+    // The nested execution keeps renewing its own (long) lease in its process.
+    const nested = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'cloud', nesting: { parent: 'goal:local-fence' }, leaseMs: 3_000 });
+    const [holders] = agentAdmissionKeys(name);
+    const owner = (await holderRecords(name)).find(r => !r.parent)!;
+    const child = (await holderRecords(name)).find(r => r.parent)!;
+    const { token, ...value } = owner;
+    await client().hset(holders, token, JSON.stringify({ ...value, deadline: 0 }));
+    // The parent's Docker caller unwinds into finish() before anything else recovers it.
+    await parent!.finish();
+    assert.deepEqual(removed, [child.id, owner.id], 'the nested container is removed before its parent');
+    assert.equal(alive.size, 0);
+    assert.equal(await client().hlen(holders), 0, 'both reservations are released, nested first');
+    await until(() => nested!.signal.aborted, 10_000, 'nested renewal observes the fence');
+    await nested!.finish();
+    assert.equal(await client().hlen(holders), 0);
+    // The global slot is reusable at once.
+    const next = await prepareAdmittedAgent(['run', 'agent'], { ...options });
+    await next!.finish();
+});
+
+test('a parent whose renewal finds its lease lost stops its nested execution before its own container', integration(), async () => {
+    const { runtime, alive, removed } = orderedLifecycle();
+    const name = instance('renew-fence');
+    const config: AdmissionConfig = { instance: name, limit: 1 };
+    const options = { client: client(), docker: runtime, config, agentAlias: 'local' };
+    const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { register: 'goal:renew-fence' }, leaseMs: 600 });
+    const nested = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { parent: 'goal:renew-fence' } });
+    const [holders] = agentAdmissionKeys(name);
+    const owner = (await holderRecords(name)).find(r => !r.parent)!;
+    const child = (await holderRecords(name)).find(r => r.parent)!;
+    const { token, ...value } = owner;
+    await client().hset(holders, token, JSON.stringify({ ...value, deadline: 0 }));
+    await until(() => parent!.signal.aborted, 5_000, 'parent renewal observes the lost lease');
+    await until(() => alive.size === 0, 5_000, 'containers removed');
+    assert.deepEqual(removed, [child.id, owner.id], 'the nested container is removed before its parent');
+    assert.equal((await holderRecords(name)).every(r => r.state === 'recovering'), true, 'capacity stays charged until release');
+    await parent!.finish();
+    assert.equal(await client().hlen(holders), 0);
+    await nested!.finish();
+    assert.equal(await client().hlen(holders), 0);
+});
