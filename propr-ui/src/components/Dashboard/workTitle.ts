@@ -25,6 +25,8 @@ const TITLE_PREFIXES: ReadonlyArray<[RegExp, string]> = [
   [/^Follow-?up:\s*/i, 'Follow-up'],
   [/^Auto-followup for PR #\d+\s*:?\s*/i, 'Follow-up'],
   [/^Continue\s+#\d+\s*:\s*/i, 'Continue'],
+  // Automation runs recorded before the prefix was dropped: `Agent: Weekly report`.
+  [/^Agent:\s*/i, 'Automation'],
 ];
 
 /**

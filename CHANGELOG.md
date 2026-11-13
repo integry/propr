@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Automation runs in the task list**: a run's row is labelled `Automation`
+  instead of `#agent-ru` (the start of its task id), and its title is the
+  automation's name without the `Agent:` prefix.
 - **Shorter link to a preview's original**: a visual preview whose full-size
   original is kept in ProPR Connect now shows a short `Full-size original`
   link under the image, instead of a sign-in and retention sentence followed
