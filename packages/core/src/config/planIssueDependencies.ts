@@ -9,7 +9,9 @@ type PlanItemReference = { id?: unknown; dependsOn?: unknown; issue_number?: unk
  * issue numbers of the items it depends on. Runs once every issue of the plan
  * exists, because `dependsOn` may name a later item. The values depend only on
  * the plan and its issue numbers, so re-publication and resume write the same
- * rows. Items that were not published are left out of the prerequisites.
+ * rows. A prerequisite whose issue creation failed is recorded as unresolved
+ * rather than dropped, so its dependant never looks independent to a graph
+ * execution.
  */
 export async function recordPlanIssueDependencies(
   draftId: string,
@@ -21,6 +23,6 @@ export async function recordPlanIssueDependencies(
   for (const entry of resolved) {
     if (entry.issueNumber === null) continue;
     await database('plan_issues').where({ draft_id: draftId, issue_number: entry.issueNumber })
-      .update({ plan_item_id: entry.itemId, depends_on_issues: serializeDependsOnIssues(entry.dependsOnIssues) });
+      .update({ plan_item_id: entry.itemId, depends_on_issues: serializeDependsOnIssues(entry.dependsOnIssues, entry.unresolvedDependsOn) });
   }
 }

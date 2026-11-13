@@ -71,7 +71,7 @@ export async function recordPublishedDependencies(db: Knex, claim: PublicationCl
     const updated = await db('plan_issues').where({ draft_id: claim.planId, issue_number: entry.issueNumber })
       .whereExists(db('task_drafts').select(db.raw('1')).where({ draft_id: claim.planId, status: 'executing',
         mcp_revision: claim.revision, context_config: claim.contextConfig }))
-      .update({ plan_item_id: entry.itemId, depends_on_issues: serializeDependsOnIssues(entry.dependsOnIssues) });
+      .update({ plan_item_id: entry.itemId, depends_on_issues: serializeDependsOnIssues(entry.dependsOnIssues, entry.unresolvedDependsOn) });
     if (!updated) complete = false;
   }
   return complete;

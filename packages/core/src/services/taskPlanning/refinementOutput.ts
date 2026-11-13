@@ -106,27 +106,50 @@ function omitsDependencies(item: TaskRecord): boolean {
 }
 
 /**
+ * The current task a refined item stands for when the model dropped or
+ * changed its id: the one current task with the same title, provided no
+ * refined item already carries its id. A changed id is reconciled only when
+ * no other refined item has the same title either, so an ambiguous match keeps
+ * the returned id (a new task) instead of guessing.
+ */
+function matchedCurrentId(item: TaskRecord, current: TaskRecord[], refined: TaskRecord[], used: ReadonlySet<string>): string | undefined {
+  if (typeof item.title !== 'string') return undefined;
+  if (itemId(item) !== undefined && refined.filter(other => other.title === item.title).length !== 1) return undefined;
+  const matches = current.filter(task => task.title === item.title);
+  const id = matches.length === 1 ? itemId(matches[0]) : undefined;
+  return id !== undefined && !used.has(id) ? id : undefined;
+}
+
+/**
  * A complete refined plan should copy every item id and dependsOn, but a model
- * may drop them. An item without an id takes the id of the one current item
- * with the same title, when no other refined item already carries that id, so
- * a task the model rewrote in full keeps its identity and its dependents. An
- * item matched to a current task that omits dependsOn keeps that task's
- * prerequisites; only an explicit list (empty to remove them all) changes
- * them. References to tasks the refinement removed are pruned when the plan
- * is stored.
+ * may drop or rewrite them. An item without an id, or with an id no current
+ * task has, takes the id of the one current task with the same title when no
+ * other refined item carries that id, so a task the model rewrote in full
+ * keeps its identity and its dependents; references to a replaced id follow
+ * it back. An item matched to a current task that omits dependsOn keeps that
+ * task's prerequisites; only an explicit list (empty to remove them all)
+ * changes them. References to tasks the refinement removed are pruned when
+ * the plan is stored.
  */
 function restoreOmittedIdentity(currentPlan: Plan, refined: TaskRecord[]): TaskRecord[] {
-  const used = new Set(refined.map(itemId).filter((id): id is string => id !== undefined));
   const current = currentPlan as unknown as TaskRecord[];
-  return refined.map(item => {
+  const currentIds = new Set(current.map(itemId).filter((id): id is string => id !== undefined));
+  const used = new Set(refined.map(itemId).filter((id): id is string => id !== undefined));
+  const replaced = new Map<string, string>();
+  const identified = refined.map(item => {
+    const returned = itemId(item);
+    if (returned !== undefined && currentIds.has(returned)) return item;
+    const id = matchedCurrentId(item, current, refined, used);
+    if (id === undefined) return item;
+    used.add(id);
+    // A replacement id that more than one refined item uses is not renamed for references.
+    if (returned !== undefined) replaced.set(returned, refined.filter(other => itemId(other) === returned).length === 1 ? id : returned);
+    return returned === undefined ? { id, ...item } : { ...item, id };
+  });
+  return identified.map(item => {
     let restored = item;
-    if (itemId(item) === undefined && typeof item.title === 'string') {
-      const matches = current.filter(task => task.title === item.title);
-      const id = matches.length === 1 ? itemId(matches[0]) : undefined;
-      if (id !== undefined && !used.has(id)) {
-        used.add(id);
-        restored = { id, ...item };
-      }
+    if (!omitsDependencies(item) && Array.isArray(item.dependsOn) && replaced.size > 0) {
+      restored = { ...item, dependsOn: item.dependsOn.map(entry => typeof entry === 'string' ? replaced.get(entry) ?? entry : entry) };
     }
     const id = itemId(restored);
     if (id === undefined || !omitsDependencies(restored)) return restored;

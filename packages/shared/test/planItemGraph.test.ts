@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   assignPlanItemIds, normalizePlanItems, parseDependsOnIssues, preparePlanItemsFromModel,
   reducePlanItemDependencies, resolvePlanItemIssueDependencies, validatePlanItemGraph, withPlanIssueDependencies,
+  parseUnresolvedDependsOn, serializeDependsOnIssues,
 } from '../src/planItemGraph.js';
 
 const item = (id: string | undefined, dependsOn?: unknown, title = id ? id.toUpperCase() : 'Untitled') =>
@@ -101,11 +102,26 @@ test('model-written plans are reduced to direct prerequisites, user-saved plans 
 test('dependencies resolve to issue numbers by position, including forward references', () => {
   const plan = [item('ui', ['api', 'schema']), item('schema'), item('api', ['schema']), item('docs', ['missing-issue'])];
   assert.deepEqual(resolvePlanItemIssueDependencies(plan, [11, 12, 13, undefined]), [
-    { index: 0, itemId: 'ui', issueNumber: 11, dependsOnIssues: [13, 12] },
-    { index: 1, itemId: 'schema', issueNumber: 12, dependsOnIssues: [] },
-    { index: 2, itemId: 'api', issueNumber: 13, dependsOnIssues: [12] },
-    { index: 3, itemId: 'docs', issueNumber: null, dependsOnIssues: [] },
+    { index: 0, itemId: 'ui', issueNumber: 11, dependsOnIssues: [13, 12], unresolvedDependsOn: [] },
+    { index: 1, itemId: 'schema', issueNumber: 12, dependsOnIssues: [], unresolvedDependsOn: [] },
+    { index: 2, itemId: 'api', issueNumber: 13, dependsOnIssues: [12], unresolvedDependsOn: [] },
+    { index: 3, itemId: 'docs', issueNumber: null, dependsOnIssues: [], unresolvedDependsOn: ['missing-issue'] },
   ]);
+});
+
+test('a prerequisite whose publication failed stays recorded as unresolved', () => {
+  const plan = [item('a'), item('b', ['a']), item('c', ['b', 'a'])];
+  const resolved = resolvePlanItemIssueDependencies(plan, [undefined, 12, 13]);
+  assert.deepEqual(resolved.map(entry => [entry.itemId, entry.dependsOnIssues, entry.unresolvedDependsOn]),
+    [['a', [], []], ['b', [], ['a']], ['c', [12], ['a']]]);
+  const stored = serializeDependsOnIssues(resolved[2].dependsOnIssues, resolved[2].unresolvedDependsOn);
+  assert.equal(stored, '[12,{"unresolved":"a"}]');
+  // Issue-number readers see only the published prerequisite; the unresolved one stays visible.
+  assert.deepEqual(parseDependsOnIssues(stored), [12]);
+  assert.deepEqual(parseUnresolvedDependsOn(stored), ['a']);
+  assert.deepEqual(parseUnresolvedDependsOn('[12]'), []);
+  assert.deepEqual(parseUnresolvedDependsOn(null), []);
+  assert.deepEqual(withPlanIssueDependencies({ issue_number: 13, depends_on_issues: stored }).depends_on_issues, [12]);
 });
 
 test('stored prerequisites parse leniently; rows from before the column read as none', () => {

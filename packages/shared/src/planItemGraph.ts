@@ -288,6 +288,12 @@ export interface PlanItemIssueDependencies {
   issueNumber: number | null;
   /** Prerequisite issue numbers, in `dependsOn` order, for prerequisites that have an issue. */
   dependsOnIssues: number[];
+  /**
+   * `dependsOn` ids whose item has no issue (its publication failed). The
+   * prerequisite still holds, so these are stored with the row and keep the
+   * issue from ever counting as ready in a graph execution.
+   */
+  unresolvedDependsOn: string[];
 }
 
 /**
@@ -305,32 +311,53 @@ export function resolvePlanItemIssueDependencies(items: readonly unknown[], issu
   return items.map((item, index) => {
     const record = asRecord(item);
     const number = issueNumbers[index];
+    const ownId = hasId(record) ? record!.id as string : undefined;
     const dependsOnIssues: number[] = [];
+    const unresolvedDependsOn: string[] = [];
     for (const dependency of planItemDependencies(record)) {
       const prerequisite = issueById.get(dependency);
-      if (prerequisite !== undefined && prerequisite !== number && !dependsOnIssues.includes(prerequisite)) dependsOnIssues.push(prerequisite);
+      if (prerequisite === undefined) {
+        if (dependency !== ownId && !unresolvedDependsOn.includes(dependency)) unresolvedDependsOn.push(dependency);
+      } else if (prerequisite !== number && !dependsOnIssues.includes(prerequisite)) dependsOnIssues.push(prerequisite);
     }
     return {
       index,
-      itemId: hasId(record) ? record!.id as string : null,
+      itemId: ownId ?? null,
       issueNumber: typeof number === 'number' ? number : null,
       dependsOnIssues,
+      unresolvedDependsOn,
     };
   });
 }
 
-/** Serialized form of a `plan_issues.depends_on_issues` value. */
-export function serializeDependsOnIssues(numbers: readonly number[]): string {
-  return JSON.stringify([...numbers]);
+/**
+ * Serialized form of a `plan_issues.depends_on_issues` value: the prerequisite
+ * issue numbers, followed by one `{"unresolved": "<item id>"}` marker per
+ * prerequisite that has no issue. Readers of issue numbers skip the markers.
+ */
+export function serializeDependsOnIssues(numbers: readonly number[], unresolved: readonly string[] = []): string {
+  return JSON.stringify([...numbers, ...unresolved.map(id => ({ unresolved: id }))]);
 }
 
-/** Reads a stored `plan_issues.depends_on_issues` value; rows from before the column read as no prerequisites. */
-export function parseDependsOnIssues(value: unknown): number[] {
+function storedDependsOn(value: unknown): unknown[] {
   let parsed = value;
   if (typeof value === 'string') {
     try { parsed = JSON.parse(value); } catch { return []; }
   }
-  return Array.isArray(parsed) ? parsed.filter((entry): entry is number => Number.isSafeInteger(entry) && entry > 0) : [];
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/** Reads a stored `plan_issues.depends_on_issues` value; rows from before the column read as no prerequisites. */
+export function parseDependsOnIssues(value: unknown): number[] {
+  return storedDependsOn(value).filter((entry): entry is number => Number.isSafeInteger(entry) && (entry as number) > 0);
+}
+
+/** Plan item ids of the prerequisites a stored `plan_issues.depends_on_issues` value records as never published. */
+export function parseUnresolvedDependsOn(value: unknown): string[] {
+  return storedDependsOn(value).flatMap(entry => {
+    const unresolved = asRecord(entry)?.unresolved;
+    return typeof unresolved === 'string' && unresolved ? [unresolved] : [];
+  });
 }
 
 /**

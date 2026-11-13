@@ -1116,6 +1116,34 @@ test('REST implement accepts graph mode with maxParallel and rejects invalid com
   assert.deepEqual(startedByQueue(), [10, 30], 'issues start in publication order once ready');
 });
 
+// 20's prerequisite (plan item "a") failed to publish, so it has no issue to wait for.
+async function recordUnpublishedPrerequisite() {
+  await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).update({ depends_on_issues: '[{"unresolved":"a"}]' });
+}
+
+test('pure policy refuses a graph whose selected issue has an unpublished prerequisite', () => {
+  const input = { issues: [10, 20], planOrder: [10, 20, 30, 40], useEpic: true, modelCount: 1, epicExecution: 'graph' as const };
+  const unpublishedPrerequisites = new Map([[20, ['a']]]);
+  assert.throws(() => planEpicDispatch({ ...input, unpublishedPrerequisites }),
+    error => error instanceof McpError && error.code === 'PRECONDITION_FAILED' && /#20 depends on "a"/.test(error.message));
+  // Leaving the dependant out, or a sequential chain, is still allowed.
+  assert.deepEqual(planEpicDispatch({ ...input, issues: [10], unpublishedPrerequisites }).dispatchNow, [10]);
+  assert.equal(planEpicDispatch({ ...input, epicExecution: 'sequential', unpublishedPrerequisites }).mode, 'sequential');
+});
+
+test('graph MCP and REST refuse a dependant whose prerequisite was never published, before claiming anything', async () => {
+  await recordUnpublishedPrerequisite();
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  await assert.rejects(run({ issues: [10, 20], epicExecution: 'graph' }),
+    error => error instanceof McpError && error.code === 'PRECONDITION_FAILED' && /#20 depends on "a"/.test(error.message));
+  assert.deepEqual(dispatches, []);
+  assert.equal((await database('mcp_records').where({ kind: 'issue_execution' })).length, 0);
+  const rest = await startFromUI(10, false, true, { epicExecution: 'graph' });
+  assert.equal(rest.status, 409);
+  assert.match(String((rest.body as { error?: string }).error), /#20 depends on "a"/);
+  assert.equal(await core.getEpicExecutionQueue(planId), null);
+});
+
 test('retry_plan_issue dispatches an implement_plan head again despite its receipt; skip_plan_issue moves the chain on', async () => {
   const catalog = tools;
   const tool = (name: string) => catalog.find(candidate => candidate.name === name)!;

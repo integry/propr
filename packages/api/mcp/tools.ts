@@ -5,7 +5,7 @@ import packageInfo from '../package.json' with { type: 'json' };
 import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
-import { agentSupportsSavedModel, parseDependsOnIssues, parseTaskAssignmentFilter, type InstancePermission } from '@propr/shared';
+import { agentSupportsSavedModel, parseDependsOnIssues, parseTaskAssignmentFilter, parseUnresolvedDependsOn, type InstancePermission } from '@propr/shared';
 import {
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
@@ -621,6 +621,7 @@ async function planGraphInput(db: ToolDeps['db'], args: Args) {
   if (args.epicExecution !== 'graph') return {};
   const rows = await db('plan_issues').where({ draft_id: args.planId }).select('issue_number', 'status', 'depends_on_issues');
   return { dependencies: new Map<number, number[]>(rows.map(row => [row.issue_number, parseDependsOnIssues(row.depends_on_issues)])),
+    unpublishedPrerequisites: new Map<number, string[]>(rows.map(row => [row.issue_number, parseUnresolvedDependsOn(row.depends_on_issues)])),
     mergedIssues: new Set<number>(rows.filter(row => row.status === 'merged').map(row => row.issue_number)) };
 }
 

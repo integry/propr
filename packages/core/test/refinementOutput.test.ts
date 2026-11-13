@@ -140,6 +140,61 @@ describe('normalizeRefinedPlan', () => {
     assert.equal(omitted.plan[1].body, 'Clearer API body');
   });
 
+  test('a complete refinement that changes an existing task id keeps its identity and its dependants', () => {
+    const withIds = [
+      { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+    ];
+    const result = normalizeRefinedPlan(withIds, [
+      { id: 'schema-v2', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps' },
+    ]);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.plan.map(item => [item.id, item.dependsOn]), [['schema', undefined], ['api', ['schema']]]);
+    assert.deepEqual(preparePlanItemsFromModel(result.plan).map(item => [item.id, item.dependsOn]),
+      [['schema', undefined], ['api', ['schema']]]);
+
+    // References the model wrote to the replacement id follow it back.
+    const referenced = normalizeRefinedPlan(withIds, [
+      { id: 'schema-v2', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema-v2'] },
+      { id: 'docs', title: 'Docs', body: 'Docs body', implementation: 'Docs steps', dependsOn: ['schema-v2', 'api'] },
+    ]);
+    assert.equal(referenced.ok, true);
+    if (!referenced.ok) return;
+    assert.deepEqual(preparePlanItemsFromModel(referenced.plan).map(item => [item.id, item.dependsOn]),
+      [['schema', undefined], ['api', ['schema']], ['docs', ['api']]]);
+  });
+
+  test('a changed id stays a new task when its match is ambiguous', () => {
+    const withIds = [
+      { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+    ];
+    // The current id is still carried by another refined item: nothing to reconcile.
+    const kept = normalizeRefinedPlan(withIds, [
+      { id: 'schema', title: 'Schema core', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'schema-extra', title: 'Schema', body: 'More schema', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps' },
+    ]);
+    assert.equal(kept.ok, true);
+    if (!kept.ok) return;
+    assert.deepEqual(kept.plan.map(item => [item.id, item.dependsOn]),
+      [['schema', undefined], ['schema-extra', undefined], ['api', ['schema']]]);
+
+    // Two refined items share the matched title: neither takes the existing id.
+    const split = normalizeRefinedPlan(withIds, [
+      { id: 'schema-a', title: 'Schema', body: 'Part one', implementation: 'Schema steps' },
+      { id: 'schema-b', title: 'Schema', body: 'Part two', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema-a'] },
+    ]);
+    assert.equal(split.ok, true);
+    if (!split.ok) return;
+    assert.deepEqual(split.plan.map(item => [item.id, item.dependsOn]),
+      [['schema-a', undefined], ['schema-b', undefined], ['api', ['schema-a']]]);
+  });
+
   test('restored dependencies on a task the refinement removed are pruned when stored', () => {
     const withIds = [
       { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },

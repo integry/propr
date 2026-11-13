@@ -14,9 +14,14 @@ const posted: string[] = [];
 // GitHub "blocked by" links as "dependant<-blocker"; issue ids are number * 1000.
 const blockedBy: string[] = [];
 let dependencyFailure: Error | undefined;
+// Issue creation for this title fails, as an external GitHub failure would.
+let failingTitle: string | undefined;
 const octokit = {
   request: async (route: string, args: Record<string, unknown>) => {
     posted.push(route);
+    if (route === 'POST /repos/{owner}/{repo}/issues' && args.title === failingTitle) {
+      throw Object.assign(new Error('Validation Failed'), { status: 422 });
+    }
     if (route === 'POST /repos/{owner}/{repo}/issues') {
       nextIssue += 1;
       return { data: { id: nextIssue * 1000, number: nextIssue, html_url: `https://github.com/acme/repo/issues/${nextIssue}`, title: args.title } };
@@ -123,4 +128,23 @@ test('REST publication gives an older draft item ids and refuses invalid depende
   const before = posted.length;
   await assert.rejects(executeDraft(cyclic, 'user-1'), /dependency cycle/);
   assert.equal(posted.length, before, 'no issue is created for an invalid plan');
+});
+
+test('REST publication keeps a failed prerequisite as unresolved on its dependant', async () => {
+  const draftId = '20000000-0000-4000-8000-000000000005';
+  await insertDraft(draftId, [
+    task('Prerequisite', { id: 'a' }),
+    task('Dependant', { id: 'b', dependsOn: ['a'] }),
+    task('Independent', { id: 'c' }),
+  ]);
+  failingTitle = 'Prerequisite';
+  try {
+    const result = await executeDraft(draftId, 'user-1');
+    assert.equal(result.success, true);
+  } finally { failingTitle = undefined; }
+  const [dependant, independent] = await rows(draftId);
+  assert.equal(dependant.plan_item_id, 'b');
+  // The dependant does not read as independent: its prerequisite is recorded as never published.
+  assert.equal(dependant.depends_on_issues, '[{"unresolved":"a"}]');
+  assert.equal(independent.depends_on_issues, '[]');
 });

@@ -465,6 +465,9 @@ execution completes, and finalizes the epic PR once, when every issue is done.
 Graph mode requires `useEpic: true` and one model, and advances only on merge;
 `maxParallel` is accepted only with `"graph"`. Other combinations, and a
 selection in which no issue is ready, are rejected before anything is claimed.
+So is a selection containing an issue whose prerequisite never got an issue
+because its creation failed at publication: that prerequisite can never merge,
+so leave the dependant out or run a sequential epic.
 Sequential and parallel are the two edge cases of the same scheduler: a chain
 with a limit of one, and a graph without edges and without a limit; their
 behaviour is unchanged. The repository-level `limits.max_parallel_tasks`

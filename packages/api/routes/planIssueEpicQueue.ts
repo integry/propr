@@ -1,5 +1,5 @@
 import * as core from '@propr/core';
-import { parseDependsOnIssues } from '@propr/shared';
+import { parseDependsOnIssues, parseUnresolvedDependsOn } from '@propr/shared';
 import { getLlmLabel } from './planIssueHelpers.js';
 import { persistEffectiveUltrafixSettings } from './planIssueConfigSync.js';
 
@@ -40,6 +40,14 @@ export function parseEpicScheduling(body: { epicExecution?: unknown; maxParallel
  * keep publication order and start as their prerequisites merge, within the limit.
  */
 function graphExecutionOrder(issues: core.PlanIssue[], pending: core.PlanIssue[], issueNumber: number) {
+  // A prerequisite whose publication failed can never merge, so its dependant is not independent.
+  const unpublished = pending.flatMap(issue => {
+    const ids = parseUnresolvedDependsOn((issue as core.PlanIssue & { depends_on_issues?: unknown }).depends_on_issues);
+    return ids.length ? [`#${issue.issue_number} depends on ${ids.map(id => `"${id}"`).join(', ')}`] : [];
+  });
+  if (unpublished.length) {
+    throw new EpicQueueRequestError(`A graph epic needs every prerequisite published, but ${unpublished.join('; ')}, which has no issue because its publication failed. Run the remaining issues as a sequential epic.`);
+  }
   const dependsOn = new Map(issues.map(issue => [issue.issue_number,
     parseDependsOnIssues((issue as core.PlanIssue & { depends_on_issues?: unknown }).depends_on_issues)]));
   const merged = new Set(issues.filter(issue => issue.status === core.PlanIssueStatus.MERGED).map(issue => issue.issue_number));

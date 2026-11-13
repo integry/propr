@@ -21,7 +21,7 @@ export interface EpicDispatch {
  * graph starts the first ready issue (it establishes the epic branch) and lets the queue
  * start the rest as their `dependsOn` prerequisites merge, at most `maxParallel` at once.
  */
-export function planEpicDispatch({ issues, planOrder, useEpic, epicExecution, epicAdvanceOn, modelCount, maxParallel, dependencies, mergedIssues }: {
+export function planEpicDispatch({ issues, planOrder, useEpic, epicExecution, epicAdvanceOn, modelCount, maxParallel, dependencies, mergedIssues, unpublishedPrerequisites }: {
   issues: number[]; planOrder: number[]; useEpic: boolean;
   epicExecution?: EpicExecutionRequest; epicAdvanceOn?: EpicAdvancePolicy; modelCount: number;
   maxParallel?: number;
@@ -29,6 +29,8 @@ export function planEpicDispatch({ issues, planOrder, useEpic, epicExecution, ep
   dependencies?: ReadonlyMap<number, readonly number[]>;
   /** Plan issues that are already merged; they satisfy prerequisites outside the selection. */
   mergedIssues?: ReadonlySet<number>;
+  /** Plan item ids each plan issue depends on that never got an issue (their publication failed). */
+  unpublishedPrerequisites?: ReadonlyMap<number, readonly string[]>;
 }): EpicDispatch {
   if (epicExecution === 'graph' && !useEpic) throw new McpError('INVALID_INPUT', 'epicExecution: "graph" requires useEpic: true; downstream issues branch from the epic branch that holds their prerequisites\' merged work.');
   if (maxParallel !== undefined && epicExecution !== 'graph') throw new McpError('INVALID_INPUT', 'maxParallel applies only to epicExecution: "graph". A sequential epic always runs one issue at a time, and a parallel one starts every issue.');
@@ -41,6 +43,10 @@ export function planEpicDispatch({ issues, planOrder, useEpic, epicExecution, ep
   if (ordered.length !== issues.length) throw new McpError('INVALID_INPUT', 'Selected issues must appear once in plan publication order.');
   if (mode === 'sequential') return { mode, advanceOn, dispatchNow: ordered.slice(0, 1), queued: ordered.slice(1) };
   if (advanceOn !== 'merged') throw new McpError('INVALID_INPUT', 'epicExecution: "graph" advances only on merge (an issue is ready once its prerequisites are merged into the epic branch); omit epicAdvanceOn or use "merged".');
+  // A prerequisite that was never published can never merge: the dependant is not independent.
+  const unpublished = ordered.flatMap(number => (unpublishedPrerequisites?.get(number) ?? []).length
+    ? [`#${number} depends on ${unpublishedPrerequisites!.get(number)!.map(id => `"${id}"`).join(', ')}`] : []);
+  if (unpublished.length) throw new McpError('PRECONDITION_FAILED', `A graph epic needs every prerequisite published, but ${unpublished.join('; ')}, which has no issue because its publication failed. Leave the dependant out of the selection or run the issues as a sequential epic.`, 409);
   const dependsOn = new Map(ordered.map(number => [number, [...(dependencies?.get(number) ?? [])]]));
   const graph = orderGraphExecution({ issues: ordered, dependsOn, mergedOutside: mergedIssues ?? new Set() });
   if (graph.order === null) {
