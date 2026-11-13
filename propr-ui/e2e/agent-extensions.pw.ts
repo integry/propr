@@ -269,10 +269,22 @@ test('the agent limit offers eligible agents and a rename or endpoint change nev
   await expect(agents.getByRole('checkbox')).toHaveCount(2);
   await expect(agents.getByLabel('codex-main', { exact: true })).toBeVisible();
   await agents.getByLabel('claude-main', { exact: true }).check();
+  const token = form.getByLabel(/^Bearer token/);
+  // A replacement token typed for one endpoint never follows the server to another one.
+  await token.fill('token-for-original');
   await form.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tools.example.com/changed');
+  await expect(token).toHaveValue('');
   await expect(form.getByText('Changing the name or endpoint clears the stored token. Enter it again.')).toBeVisible();
-  await form.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tools.example.com/mcp');
+  await token.fill('token-for-changed');
+  await form.getByLabel('Use a saved HTTPS endpoint').selectOption('https://tools.example.com/mcp');
+  await expect(form.getByLabel('HTTPS endpoint', { exact: true })).toHaveValue('https://tools.example.com/mcp');
+  await expect(token).toHaveValue('');
   await expect(form.getByText(/clears the stored token/)).toHaveCount(0);
+  // Switching authentication off drops the pending token too.
+  await token.fill('pending-token');
+  await form.getByLabel('Authentication').selectOption('none');
+  await form.getByLabel('Authentication').selectOption('bearer');
+  await expect(token).toHaveValue('');
   await form.getByRole('button', { name: 'Save server' }).click();
   await expect(section.getByRole('status')).toHaveText('Server docs saved.');
   expect(api.saves[0]).toEqual({ expectedRevision: 1, secrets: {}, input: { version: 1, skills: [], servers: [{ ...docs, agents: ['claude-main'] }] } });

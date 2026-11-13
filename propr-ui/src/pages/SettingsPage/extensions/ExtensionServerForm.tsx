@@ -30,7 +30,11 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, choice
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const change = (patch: Partial<ExtensionLibraryServer>) => setDraft(value => ({ ...value, ...patch } as ExtensionLibraryServer));
+  /** A pending token is meant for the endpoint it was typed for: drop it when the endpoint changes or authentication is removed. */
+  const change = (patch: Partial<ExtensionLibraryServer>) => {
+    if (('authentication' in patch && patch.authentication === 'none') || ('url' in patch && draft.kind === 'https' && patch.url !== draft.url)) setToken('');
+    setDraft(value => ({ ...value, ...patch } as ExtensionLibraryServer));
+  };
   const httpsSaved = initial?.kind === 'https' ? initial : undefined;
   const tokenDropped = Boolean(httpsSaved && (draft.name !== httpsSaved.name || (draft.kind === 'https' && draft.url !== httpsSaved.url)));
   const others = servers.filter(server => server.name !== initial?.name);
@@ -53,6 +57,7 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, choice
             Server type
             <select className={inputClass} value={draft.kind === 'catalog' ? draft.catalogId : ''} onChange={event => {
               const entry = catalog.find(item => item.id === event.target.value);
+              setToken('');
               setDraft(value => (entry ? fromCatalog(entry, value) : { ...newHttpsServer(servers, value), name: value.name }));
             }}>
               <option value="">HTTPS endpoint</option>

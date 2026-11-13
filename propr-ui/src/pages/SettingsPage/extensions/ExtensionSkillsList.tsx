@@ -9,7 +9,8 @@ import type { ExtensionLibraryState } from './useExtensionLibrary';
 
 /** The library's skills: one row each with its enabled switch, and the add/edit form. */
 export function ExtensionSkillsList({ state }: { state: ExtensionLibraryState }) {
-  const [editing, setEditing] = useState<{ bundleId?: string } | null>(null);
+  /** The open form and, when editing, the saved skill it was opened on. */
+  const [editing, setEditing] = useState<{ opened?: ExtensionLibrarySkill } | null>(null);
   const library = state.library!;
   const skills = library.skills;
   const bundles = [...new Map([...state.bundles, ...library.skillBundles].map(bundle => [bundle.id, bundle])).values()];
@@ -19,8 +20,9 @@ export function ExtensionSkillsList({ state }: { state: ExtensionLibraryState })
   const full = skills.length >= EXTENSION_LIBRARY_LIMITS.bundles;
   const excess = runLimitExcess(skills, state.choices, RUN_LIMITS.skills);
   const save = async (skill: ExtensionLibrarySkill) => {
-    const added = editing?.bundleId === undefined;
-    await state.save(items => ({ ...items, skills: withSkill(items.skills, skill) }));
+    const opened = editing?.opened;
+    const added = opened === undefined;
+    await state.save(items => ({ ...items, skills: withSkill(items.skills, skill, opened) }));
     setEditing(null);
     state.setNotice(added ? `Skill ${nameOf(skill.bundleId)} added.` : `Skill ${nameOf(skill.bundleId)} saved.`);
   };
@@ -40,16 +42,16 @@ export function ExtensionSkillsList({ state }: { state: ExtensionLibraryState })
           {excess.count} skills can apply to {excess.repository} with {excess.agent}; only {RUN_LIMITS.skills} are used per run.
         </p>
       )}
-      {editing && editing.bundleId === undefined && form()}
+      {editing && editing.opened === undefined && form()}
       {skills.length === 0 && !editing && <p className="text-sm text-slate-500">No skills yet.</p>}
       <ul className="space-y-2">
-        {skills.map(skill => (editing?.bundleId === skill.bundleId ? <li key={skill.bundleId}>{form(skill)}</li> : (
+        {skills.map(skill => (editing?.opened?.bundleId === skill.bundleId ? <li key={skill.bundleId}>{form(editing.opened)}</li> : (
           <ExtensionItemRow key={skill.bundleId} testId="extension-skill" name={nameOf(skill.bundleId)}
             kind={bundleOf(skill.bundleId)?.source.kind === 'github' ? 'Skill from GitHub' : 'Skill archive'}
             item={skill} enabled={state.shownEnabled(skillRef(skill), skill.enabled)} pending={state.isPending(skillRef(skill))}
             busy={editing !== null} notes={itemNotes(skill, { usage: state.usage, choices: state.choices })}
             onToggle={enabled => void state.toggle(skillRef(skill), nameOf(skill.bundleId), enabled)}
-            onEdit={() => setEditing({ bundleId: skill.bundleId })}
+            onEdit={() => setEditing({ opened: skill })}
             onRemove={() => void state.remove(skillRef(skill), nameOf(skill.bundleId))} />
         )))}
       </ul>

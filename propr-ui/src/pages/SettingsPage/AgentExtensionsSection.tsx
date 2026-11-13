@@ -65,8 +65,9 @@ export default function AgentExtensionsSection() {
                 {' '}Changes apply to new runs at once; running tasks keep the items they started with.
               </p>
             </div>
-            <ExtensionServersList state={state} />
-            <ExtensionSkillsList state={state} />
+            {/* Reloading remounts the lists, closing forms opened on the earlier settings. */}
+            <ExtensionServersList key={`servers-${state.loads}`} state={state} />
+            <ExtensionSkillsList key={`skills-${state.loads}`} state={state} />
             <LibraryTools state={state} library={library} />
           </div>
         )}

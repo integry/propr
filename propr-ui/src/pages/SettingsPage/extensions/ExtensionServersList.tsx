@@ -9,16 +9,17 @@ import type { ExtensionLibraryState } from './useExtensionLibrary';
 
 /** The library's MCP servers: one row each with its enabled switch, and the add/edit form. */
 export function ExtensionServersList({ state }: { state: ExtensionLibraryState }) {
-  const [editing, setEditing] = useState<{ name?: string } | null>(null);
+  /** The open form and, when editing, the saved server it was opened on. */
+  const [editing, setEditing] = useState<{ opened?: ExtensionLibraryServer } | null>(null);
   const library = state.library!;
   const servers = library.servers;
   const full = servers.length >= EXTENSION_LIBRARY_LIMITS.servers;
   const excess = runLimitExcess(servers, state.choices, RUN_LIMITS.servers);
   const save = async (server: ExtensionLibraryServer, token: string) => {
-    const original = editing?.name;
-    await state.save(items => ({ ...items, servers: withServer(items.servers, server, original) }), token ? { [server.name]: token } : {});
+    const opened = editing?.opened;
+    await state.save(items => ({ ...items, servers: withServer(items.servers, server, opened) }), token ? { [server.name]: token } : {});
     setEditing(null);
-    state.setNotice(original === undefined ? `Server ${server.name} added.` : `Server ${server.name} saved.`);
+    state.setNotice(opened === undefined ? `Server ${server.name} added.` : `Server ${server.name} saved.`);
   };
   return (
     <section aria-labelledby="extension-servers-heading" className="space-y-3">
@@ -32,14 +33,14 @@ export function ExtensionServersList({ state }: { state: ExtensionLibraryState }
           {excess.count} MCP servers can apply to {excess.repository} with {excess.agent}; only {RUN_LIMITS.servers} are used per run (counting ProPR’s own server).
         </p>
       )}
-      {editing && editing.name === undefined && (
+      {editing && editing.opened === undefined && (
         <ExtensionServerForm servers={servers} catalog={state.catalog} secrets={library.secrets} choices={state.choices} onSave={save} onCancel={() => setEditing(null)} />
       )}
       {servers.length === 0 && !editing && <p className="text-sm text-slate-500">No MCP servers yet.</p>}
       <ul className="space-y-2">
-        {servers.map(server => (editing?.name === server.name ? (
+        {servers.map(server => (editing?.opened?.name === server.name ? (
           <li key={server.name}>
-            <ExtensionServerForm initial={server} servers={servers} catalog={state.catalog} secrets={library.secrets} choices={state.choices} onSave={save} onCancel={() => setEditing(null)} />
+            <ExtensionServerForm initial={editing.opened} servers={servers} catalog={state.catalog} secrets={library.secrets} choices={state.choices} onSave={save} onCancel={() => setEditing(null)} />
           </li>
         ) : (
           <ExtensionItemRow key={server.name} testId="extension-server" name={server.name}
@@ -47,7 +48,7 @@ export function ExtensionServersList({ state }: { state: ExtensionLibraryState }
             item={server} enabled={state.shownEnabled(serverRef(server), server.enabled)} pending={state.isPending(serverRef(server))}
             busy={editing !== null} notes={itemNotes(server, { usage: state.usage, choices: state.choices, secrets: library.secrets })}
             onToggle={enabled => void state.toggle(serverRef(server), server.name, enabled)}
-            onEdit={() => setEditing({ name: server.name })}
+            onEdit={() => setEditing({ opened: server })}
             onRemove={() => void state.remove(serverRef(server), server.name)} />
         )))}
       </ul>

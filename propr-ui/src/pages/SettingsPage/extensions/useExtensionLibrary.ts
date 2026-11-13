@@ -10,7 +10,9 @@ export type LibraryItems = { servers: ExtensionLibraryServer[]; skills: Extensio
  * The saved extension library and its operations. Every change is saved at
  * once against the revision last seen: an item form, a removal, or the
  * single-item enable switch, which shows the requested state while in flight
- * and falls back to the saved state when it fails.
+ * and falls back to the saved state when it fails. Responses can arrive out
+ * of order (two switches in flight), so a snapshot older than the one already
+ * shown is dropped. Each reload bumps `loads`, which closes open forms.
  */
 export function useExtensionLibrary() {
   const [library, setLibrary] = useState<ExtensionLibraryRevision>();
@@ -21,11 +23,16 @@ export function useExtensionLibrary() {
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [loads, setLoads] = useState(0);
   const current = useRef<ExtensionLibraryRevision | undefined>(undefined);
-  const adopt = useCallback((next: ExtensionLibraryRevision) => { current.current = next; setLibrary(next); }, []);
+  const adopt = useCallback((next: ExtensionLibraryRevision) => {
+    if (current.current && next.revision < current.current.revision) return;
+    current.current = next; setLibrary(next);
+  }, []);
   const reload = useCallback(async () => {
     const result = await getExtensionLibrary();
     adopt(result.library);
+    setLoads(count => count + 1);
     setCatalog(result.catalog ?? []);
     setBundles(result.bundles ?? []);
     setUsage(result.usage ?? EMPTY_USAGE);
@@ -84,6 +91,6 @@ export function useExtensionLibrary() {
   /** The checkbox state of an item: the requested state while its toggle is in flight. */
   const shownEnabled = (ref: ExtensionItemRef, saved: boolean) => pending[itemRefKey(ref)] ?? saved;
   const isPending = (ref: ExtensionItemRef) => itemRefKey(ref) in pending;
-  return { library, catalog, bundles, usage, choices, error, notice, setError, setNotice, reload, save, toggle, remove, addBundle, shownEnabled, isPending };
+  return { library, loads, catalog, bundles, usage, choices, error, notice, setError, setNotice, reload, save, toggle, remove, addBundle, shownEnabled, isPending };
 }
 export type ExtensionLibraryState = ReturnType<typeof useExtensionLibrary>;
