@@ -17,7 +17,7 @@ import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AdmissionRedis } from './agentRunAdmission.js';
 import { agentRunAliasCeiling } from './agentRunAliasLimits.js';
-import { currentAgentAdmissionNesting } from './agentRunNesting.js';
+import { AgentAdmissionNestingError, currentAgentAdmissionNesting } from './agentRunNesting.js';
 
 /** The direct agent (alias) is at its ceiling; the caller should wait or defer. */
 export class AgentCapacityError extends Error {
@@ -139,6 +139,18 @@ for i=1,#all,2 do
   end
 end
 local result = {reconcile}
+-- Resolve the parent in the same snapshot as occupancy. A separate awaited
+-- lookup could use a parent that has finished before the capacity decision.
+if ARGV[2] and ARGV[2] ~= '' then
+  local token = redis.call('HGET', KEYS[3], ARGV[2])
+  local value = token and redis.call('HGET', KEYS[1], token)
+  local parentAlias = false
+  if value then
+    local r = cjson.decode(value)
+    if r.state ~= 'recovering' and r.state ~= 'draining' and r.deadline > now then parentAlias = r.alias or '' end
+  end
+  table.insert(result, parentAlias)
+end
 for alias, count in pairs(live) do table.insert(result, alias); table.insert(result, count); table.insert(result, 0) end
 for alias, count in pairs(recoverable) do table.insert(result, alias); table.insert(result, 0); table.insert(result, count) end
 return result
@@ -151,6 +163,8 @@ export interface AgentAdmissionOccupancy {
     aliases: Map<string, AgentAliasOccupancy>;
     /** The stored admission configuration has an older generation than the caller's. */
     reconciliationPending: boolean;
+    /** Live parent alias, when a scope was supplied; empty string means unattributed. */
+    parentAlias?: string;
 }
 
 /** Holders per direct agent alias, split into `live` ones (deadline not yet
@@ -159,9 +173,11 @@ export interface AgentAdmissionOccupancy {
  * but the recovery in an admission attempt will ever release it: a capacity
  * pre-check must let such a job reach the acquire rather than defer it.
  * `generation` is the caller's admission generation (absent = 0). */
-export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 'eval'>, instance: string, generation = 0): Promise<AgentAdmissionOccupancy> {
-    const [holders, configKey] = agentAdmissionKeys(instance);
-    const [reconcile, ...rows] = await client.eval(OCCUPANCY_SCRIPT, 2, holders, configKey, String(generation)) as Array<string | number>;
+export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 'eval'>, instance: string, generation = 0, parentScope?: string): Promise<AgentAdmissionOccupancy> {
+    const [holders, configKey, , parents] = agentAdmissionKeys(instance);
+    const [reconcile, ...rows] = await client.eval(OCCUPANCY_SCRIPT, parentScope ? 3 : 2,
+        holders, configKey, ...(parentScope ? [parents] : []), String(generation), ...(parentScope ? [parentScope] : [])) as Array<string | number | null>;
+    const parentAlias = parentScope ? rows.shift() : undefined;
     const aliases = new Map<string, AgentAliasOccupancy>();
     for (let i = 0; i < rows.length; i += 3) {
         const alias = String(rows[i]);
@@ -170,7 +186,7 @@ export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 
         entry.live += Number(rows[i + 1]);
         entry.recoverable += Number(rows[i + 2]);
     }
-    return { aliases, reconciliationPending: Number(reconcile) === 1 };
+    return { aliases, reconciliationPending: Number(reconcile) === 1, ...(typeof parentAlias === 'string' ? { parentAlias } : {}) };
 }
 
 /**
@@ -184,24 +200,6 @@ export async function agentAdmissionAliasOccupancy(client: Pick<AdmissionRedis, 
 async function blockingAliasHolders(client: Redis, config: AdmissionConfig, alias: string): Promise<number> {
     const { aliases, reconciliationPending } = await agentAdmissionAliasOccupancy(client, config.instance, config.generation ?? 0);
     return reconciliationPending ? 0 : aliases.get(alias)?.live ?? 0;
-}
-
-// The alias of the live holder registered under a parent scope ('' = none or
-// unattributed). Same liveness rule as the admission script's nested acquire.
-const PARENT_ALIAS_SCRIPT = `
-local t = redis.call('TIME')
-local now = t[1] * 1000 + math.floor(t[2] / 1000)
-local token = redis.call('HGET', KEYS[2], ARGV[1])
-local value = token and redis.call('HGET', KEYS[1], token)
-if not value then return '' end
-local r = cjson.decode(value)
-if r.state == 'recovering' or r.state == 'draining' or r.deadline <= now then return '' end
-return r.alias or ''
-`;
-
-async function liveParentAlias(client: Redis, config: AdmissionConfig, scope: string): Promise<string> {
-    const [holders, , , parents] = agentAdmissionKeys(config.instance);
-    return String(await client.eval(PARENT_ALIAS_SCRIPT, 2, holders, parents, scope) ?? '');
 }
 
 /**
@@ -228,10 +226,14 @@ export async function agentAliasHasCapacity(alias: string, options: CapacityOpti
         return await withCapacityClient(options.client, async client => {
             // Work on behalf of a live parent on this alias is charged under the
             // parent's slot: deferring it would wait for the parent, which waits for it.
-            if (parentScope && await liveParentAlias(client, config, parentScope) === alias) return true;
-            return await blockingAliasHolders(client, config, alias) < ceiling;
+            const { aliases, reconciliationPending, parentAlias } = await agentAdmissionAliasOccupancy(client, config.instance, config.generation ?? 0, parentScope);
+            if (parentAlias === alias) return true;
+            const available = reconciliationPending || (aliases.get(alias)?.live ?? 0) < ceiling;
+            if (!available && parentAlias !== undefined) throw new AgentAdmissionNestingError('alias');
+            return available;
         });
     } catch (error) {
+        if ((error as Error).name === 'AgentAdmissionNestingError') throw error;
         logger.debug({ alias, error: (error as Error).message }, 'Agent capacity pre-check unavailable; the admission boundary decides');
         return true;
     }

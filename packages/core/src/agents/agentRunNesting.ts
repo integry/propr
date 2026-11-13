@@ -14,7 +14,7 @@
  *   scope that names no live holder makes it an ordinary top-level launch.
  *
  * Scopes: an orchestrating goal session uses `goal:<nonce>` (the nonce reaches
- * the issues it creates as a body marker and from there the issue job data);
+ * the issues and PR comments it creates as a body marker and from there the job data);
  * an automation run phase uses `agent-run-grant:<grantId>` (its MCP grant
  * identifies the calling run on the API side). See
  * docs/docs/architecture/agent-run-admission.md#nested-executions.
@@ -72,13 +72,15 @@ export function parseAgentRunNestedLimit(raw: string | undefined): number | unde
     return value;
 }
 
-export type AgentAdmissionNestingRefusal = 'depth' | 'count';
+export type AgentAdmissionNestingRefusal = 'depth' | 'count' | 'alias';
 
-/** A nested launch beyond the depth or count bound. Refused at once, never waited for. */
+/** A nested launch that cannot safely proceed. Refused at once, never waited for. */
 export class AgentAdmissionNestingError extends Error {
     readonly reason: AgentAdmissionNestingRefusal;
-    constructor(reason: AgentAdmissionNestingRefusal, limit: number) {
-        super(reason === 'depth'
+    constructor(reason: AgentAdmissionNestingRefusal, limit: number = 0) {
+        super(reason === 'alias'
+            ? `Nested agent execution refused: another agent alias is at its ceiling; change the parent plan instead of waiting`
+            : reason === 'depth'
             ? `Nested agent execution refused: its parent is itself nested, and nesting is limited to depth ${limit}`
             : `Nested agent execution refused: its parent already carries ${limit} running nested executions (${AGENT_RUN_NESTED_LIMIT_ENV}=${limit})`);
         this.name = 'AgentAdmissionNestingError';
@@ -152,4 +154,20 @@ export function nestedLaunchGate(env: NodeJS.ProcessEnv = process.env): <T>(task
             if (next) next(); else active--;
         }
     };
+}
+
+/** Select the explicit link of the command being executed, never the PR's issue or an older comment. */
+export function parentScopeFromCommentJob(data: {
+    commandCommentId?: number; commentBody?: string; agentAdmissionParent?: string;
+    ultrafixMeta?: { instructions?: string };
+}, comments: Array<{ id: number; body: string; createdAt?: string; commandMode?: string; agentAdmissionParent?: string }> = []): string | undefined {
+    const ordered = [...comments].sort((a, b) => (a.createdAt && b.createdAt ? a.createdAt.localeCompare(b.createdAt) : 0) || a.id - b.id);
+    const selected = data.commandCommentId !== undefined
+        ? ordered.find(comment => comment.id === data.commandCommentId)
+        : ordered.filter(comment => comment.commandMode && comment.commandMode !== 'default').at(-1) ?? ordered.at(-1);
+    if (selected) {
+        return selected.agentAdmissionParent ?? parentScopeFromIssueBody(selected.body)
+            ?? (selected.id === 0 ? parentScopeFromIssueBody(data.ultrafixMeta?.instructions) : undefined);
+    }
+    return parentScopeFromIssueBody(data.commentBody) ?? data.agentAdmissionParent;
 }

@@ -23,9 +23,10 @@ import {
 } from '../packages/core/src/agents/agentRunAdmission.js';
 import {
     AgentAdmissionNestingError, agentRunGrantParentScope, createGoalParentNonce, goalParentScope, nestedLaunchGate, parentExecutionMarker,
-    parentScopeFromIssueBody, runAsAgentAdmissionParent, runWithAgentAdmissionParent, currentAgentAdmissionNesting,
+    parentScopeFromIssueBody, parentScopeFromCommentJob, runAsAgentAdmissionParent, runWithAgentAdmissionParent, currentAgentAdmissionNesting,
 } from '../packages/core/src/agents/agentRunNesting.js';
 import { agentAliasHasCapacity } from '../packages/core/src/agents/agentCapacity.js';
+import { isNonRetryableSyntheticFailure } from '../packages/core/src/services/syntheticRoutingTypes.js';
 import { buildGoalPolicyEnvironment, buildNativeGoalContext } from '../packages/core/src/goals.js';
 
 const required = process.env.PROPR_REQUIRE_REDIS_INTEGRATION === '1';
@@ -314,25 +315,81 @@ test('parent crash stops and removes its nested executions before the capacity i
     await until(async () => await client().hlen(agentAdmissionKeys(name)[0]) === 0);
 });
 
-test('a nested execution on a different alias respects that alias\'s ceiling', integration(), async () => {
-    const { runtime } = lifecycle();
+test('advisory nesting refuses a saturated other alias without deferring, including an unattributed parent', async () => {
+    const config: AdmissionConfig = { instance: 'advisory-nesting', limit: 2, aliasLimits: { beta: 1 } };
+    let parent: string[] = ['alpha'];
+    const client = { eval: async (_script: string, keys: number) => keys === 3 ? [0, parent[0] ?? null, 'beta', 1, 0] : [0, 'beta', 1, 0] } as unknown as Redis;
+    const options = { config, client };
+    assert.equal(await agentAliasHasCapacity('beta', options), false, 'top-level saturation still defers');
+    for (const alias of ['alpha', '']) {
+        parent = [alias];
+        await assert.rejects(runWithAgentAdmissionParent('goal:parent', () => agentAliasHasCapacity('beta', options)),
+            (error: unknown) => error instanceof AgentAdmissionNestingError && error.reason === 'alias' && isNonRetryableSyntheticFailure(error));
+    }
+    parent = ['beta'];
+    assert.equal(await runWithAgentAdmissionParent('goal:parent', () => agentAliasHasCapacity('beta', options)), true);
+    parent = [];
+    assert.equal(await runWithAgentAdmissionParent('goal:stale', () => agentAliasHasCapacity('beta', options)), false, 'a stale scope has ordinary accounting');
+});
+
+test('mutually waiting parents refuse cross-alias children at the pre-check and acquire', integration(), async () => {
+    const { runtime, alive } = lifecycle();
     const name = instance('other-alias');
-    const config: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { local: 1, cloud: 1 } };
+    const config: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { alpha: 1, beta: 1 } };
     const options = { client: client(), docker: runtime, config };
-    const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'local', nesting: { register: 'goal:other' } });
-    const cloud = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'cloud' });
-    const nested = waiting({ ...options, agentAlias: 'cloud', nesting: { parent: 'goal:other' } });
-    assert.equal(await nested.reason, 'alias_limit', 'waits for the other alias, never for the global slot');
-    await cloud!.finish();
-    const admitted = await nested.admission;
-    assert.deepEqual(await agentAdmissionAliasHolders(client(), name), { local: 1, cloud: 1 }, 'charged to its own alias');
-    // It occupies that alias but no global slot: a top-level launch of a third agent still fits.
-    const third = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'other' });
-    const blocked = waiting({ ...options, agentAlias: 'cloud' });
-    assert.equal(await blocked.reason, 'global_limit');
-    blocked.cancel(); await assert.rejects(blocked.admission);
-    for (const holder of [admitted, third, parent]) await holder!.finish();
-    assert.equal(await client().hlen(agentAdmissionKeys(name)[0]), 0);
+    const alpha = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'alpha', nesting: { register: 'goal:alpha' } });
+    // The pre-check passes before beta takes its slot; acquire must still refuse.
+    assert.equal(await runWithAgentAdmissionParent('goal:alpha', () => agentAliasHasCapacity('beta', options)), true);
+    const beta = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'beta', nesting: { register: 'goal:beta' } });
+    const refusal = (error: unknown) => error instanceof AgentAdmissionNestingError && error.reason === 'alias' && isNonRetryableSyntheticFailure(error) && isNonRetryableSyntheticFailure({ error: error.message });
+    for (const [parent, alias] of [['goal:alpha', 'beta'], ['goal:beta', 'alpha']]) {
+        await assert.rejects(runWithAgentAdmissionParent(parent, () => agentAliasHasCapacity(alias, options)), refusal);
+        await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: alias, nesting: { parent } }), refusal);
+    }
+    assert.equal(alive.size, 2, 'no child container was created');
+    assert.equal((await agentAdmissionMetrics(client(), name)).waiting, 0, 'refusals leave no waiters');
+    await beta!.finish();
+    const admitted = await prepareAdmittedAgent(['run', 'agent'], { ...options, agentAlias: 'beta', nesting: { parent: 'goal:alpha' } });
+    assert.deepEqual(await agentAdmissionAliasHolders(client(), name), { alpha: 1, beta: 1 });
+    await admitted!.finish(); await alpha!.finish();
+});
+
+test('goal PR reviews, fixes and Ultrafix continuations use the live parent at global and alias limit one', integration(), async () => {
+    const { runtime } = lifecycle();
+    const name = instance('goal-followups');
+    const nonce = createGoalParentNonce(randomUUID());
+    const config: AdmissionConfig = { instance: name, limit: 1, aliasLimits: { local: 1 } };
+    const options = { client: client(), docker: runtime, config, agentAlias: 'local' };
+    const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { register: goalParentScope(nonce) } });
+    for (const mode of ['review', 'fix', 'ultrafix']) {
+        const body = `/${mode}\n${parentExecutionMarker(nonce)}`;
+        const queued = JSON.parse(JSON.stringify({ agentAdmissionParent: parentScopeFromCommentJob({}, [{ id: 1, body }]), comments: [{ id: 1, body }], ultrafixMeta: { instructions: parentExecutionMarker(nonce) } }));
+        const comments = mode === 'ultrafix' ? [{ id: 0, body: '/review', commandMode: 'review' }] : queued.comments;
+        await runWithAgentAdmissionParent(parentScopeFromCommentJob(queued, comments), async () => {
+            assert.equal(await agentAliasHasCapacity('local', options), true);
+            const child = await prepareAdmittedAgent(['run', 'agent'], options);
+            assert.deepEqual(await agentAdmissionAliasHolders(client(), name), { local: 1 });
+            await child!.finish();
+        });
+    }
+    assert.equal(await agentAliasHasCapacity('local', options), false, 'unrelated comments still need their own slot');
+    await parent!.finish();
+    const stale = await runWithAgentAdmissionParent(goalParentScope(nonce), () => prepareAdmittedAgent(['run', 'agent'], options));
+    assert.equal((await holderRecords(name)).every(r => !r.parent), true, 'a stale goal link is top-level');
+    await stale!.finish();
+});
+
+test('comment parent selection follows the current command across batching and redelivery', () => {
+    const scope = goalParentScope(createGoalParentNonce('parent'));
+    const marked = { id: 1, body: `/review\n${parentExecutionMarker(createGoalParentNonce('parent'))}`, commandMode: 'review' };
+    const unrelated = { id: 2, body: '/fix all', commandMode: 'fix' };
+    assert.equal(parentScopeFromCommentJob({}, [marked]), scope);
+    assert.equal(parentScopeFromCommentJob({ agentAdmissionParent: scope }, [marked, unrelated]), undefined);
+    assert.equal(parentScopeFromCommentJob({ commandCommentId: 1 }, [marked, { id: 3, body: 'thanks' }]), scope);
+    assert.equal(parentScopeFromCommentJob({}, [unrelated, { ...marked, id: 3 }]), scope);
+    assert.equal(parentScopeFromCommentJob({ agentAdmissionParent: scope }, []), scope, 'durable retry data retains its explicit link');
+    assert.equal(parentScopeFromCommentJob({ ultrafixMeta: { instructions: marked.body } }, [{ id: 0, body: '/fix' }]), scope);
+    assert.equal(parentScopeFromCommentJob({ ultrafixMeta: { instructions: marked.body } }, [unrelated]), undefined, 'a real unrelated comment overrides loop provenance');
 });
 
 test('nesting depth and count bounds refuse with a clear error instead of waiting', integration(), async () => {

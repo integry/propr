@@ -343,6 +343,16 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.userId, String(event.sender.id));
     });
 
+    test('goal-originated Ultrafix retains the explicit parent in job data and durable loop instructions', async () => {
+        const nonce = 'a'.repeat(40);
+        const marker = `<!-- propr-parent-execution: ${nonce} -->`;
+        await processCommentEvent(createPRCommentEvent(`/ultrafix\n${marker}`), 'issue_comment', 'corr-uf-parent', createTestConfig());
+        const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(loopOptions.instructions, marker);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.agentAdmissionParent, `goal:${nonce}`);
+    });
+
     test('bare /ultrafix initializes loop and enqueues review job', async () => {
         const event = createPRCommentEvent('/ultrafix');
         const config = createTestConfig();

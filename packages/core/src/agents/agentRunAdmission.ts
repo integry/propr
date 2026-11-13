@@ -267,6 +267,7 @@ function admissionNesting(options: AdmissionOptions, config: AdmissionConfig) {
 /** 'top' or 'nested' for an admitting acquire reply; throws beyond the nesting bounds (refused at once, never waited for). */
 function admittedReply(result: unknown, nestedLimit: number): 'top' | 'nested' | null {
     if (result === 5) throw new AgentAdmissionNestingError('depth', AGENT_ADMISSION_MAX_NESTING_DEPTH);
+    if (result === 7) throw new AgentAdmissionNestingError('alias');
     if (result === 6) throw new AgentAdmissionNestingError('count', nestedLimit);
     return result === 1 ? 'top' : result === 4 ? 'nested' : null;
 }

@@ -1,3 +1,4 @@
+import { parentScopeFromCommentJob, parentScopeFromIssueBody } from '../agents/agentRunNesting.js';
 import { antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
 /* eslint-disable max-lines */
 import logger, { generateCorrelationId } from '../utils/logger.js';
@@ -982,6 +983,7 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         id: comment.id,
         createdAt: comment.created_at,
         body: pendingCommentBody,
+        agentAdmissionParent: parentScopeFromIssueBody(comment.body),
         author: commentAuthor,
         type: reviewComment ? 'review' : 'issue',
         hasCodeContext: reviewComment && !!comment.diff_hunk,
@@ -1027,7 +1029,7 @@ function prepareComment(comment: { id: number; created_at: string; body: string;
     }
 
     const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
-    const unprocessedComment: UnprocessedComment = { id: comment.id, createdAt: comment.created_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
+    const unprocessedComment: UnprocessedComment = { agentAdmissionParent: parentScopeFromIssueBody(comment.body), id: comment.id, createdAt: comment.created_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
     return { enhancedBody, unprocessedComment, llmFromKeywords };
 }
 
@@ -1104,6 +1106,7 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
         } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
+    jobData.agentAdmissionParent = parentScopeFromCommentJob(jobData, jobData.comments);
     const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
     const commentRevisionSlug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
     const jobId = options.jobId ?? (manualCommand

@@ -107,6 +107,8 @@ export interface AutoResolveContext {
 }
 
 export interface CommentJobData extends RepositoryWorkflowDeferralData, AgentCapacityDeferralData {
+    /** Explicit goal parent from the triggering comment; absent for unrelated comments. */
+    agentAdmissionParent?: string;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
     /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
@@ -158,6 +160,8 @@ export interface CommentJobData extends RepositoryWorkflowDeferralData, AgentCap
 }
 
 export interface UnprocessedComment {
+    /** Parent extracted before trigger keywords are stripped from the body. */
+    agentAdmissionParent?: string;
     id: number;
     /** GitHub creation time used to order issue and review comments together. */
     createdAt?: string;

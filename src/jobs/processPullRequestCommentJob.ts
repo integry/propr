@@ -5,7 +5,7 @@ import { prepareRepositoryWorkflow, resolveAttemptRepositoryWorkflow, persistRep
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
-    preventWithdrawnJob, getAuthenticatedOctokit, hashTaskAttemptToken, logger, retryConfigs, runWithExecutionAbortSignal, withRetry,
+    parentScopeFromCommentJob, runWithAgentAdmissionParent, preventWithdrawnJob, getAuthenticatedOctokit, hashTaskAttemptToken, logger, retryConfigs, runWithExecutionAbortSignal, withRetry,
     getStateManager, TaskStates, ensureGitRepository, createLogFiles, UsageLimitError, recordLLMMetrics,
     loadPrimaryProcessingLabels, loadRepositoryVisualPreviewSettings,
     refineWorkflowPreviews, repositoryWorkflowPrompt,
@@ -397,9 +397,16 @@ async function runReviewCommandMode(
     return runWithExecutionAbortSignal(executionSignal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken));
 }
 
-// eslint-disable-next-line complexity -- admission, execution, failure settlement and handoff ownership share one lease lifecycle
 async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
+    // Pending comments may replace the queued command. Resolve after that awaited
+    // pickup, before any review/fix capacity check or physical execution.
+    job.data.agentAdmissionParent = parentScopeFromCommentJob(job.data, context.commentsToProcess);
+    return runWithAgentAdmissionParent(job.data.agentAdmissionParent, () => processInitializedPRCommentJob(job, context));
+}
+
+// eslint-disable-next-line complexity -- admission, execution, failure settlement and handoff ownership share one lease lifecycle
+async function processInitializedPRCommentJob(job: Job<CommentJobData>, context: Awaited<ReturnType<typeof initializePRJobContext>>): Promise<JobResult> {
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
     if (await restorePendingCommentsIfUltrafixJobSuperseded(job, { repoOwner, repoName, pullRequestNumber, redisClient }, context.pickedUpComments, context.originalUltrafixMeta)) return { status: 'cancelled', reason: 'ultrafix_superseded' };

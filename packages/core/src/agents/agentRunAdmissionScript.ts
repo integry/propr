@@ -14,7 +14,7 @@
  *
  * Acquire replies: -1 configuration missing, 0 a holder is recovering,
  * 1 admitted, 2 global limit, 3 alias ceiling, 4 admitted as nested,
- * 5 nesting depth exceeded, 6 nested count exceeded.
+ * 5 nesting depth exceeded, 6 nested count exceeded, 7 nested cross-alias ceiling refusal.
  *
  * Fence replies: 0 unknown holder, 2 finished normally while nested executions
  * run (now draining), otherwise {1, nested token, nested container ID, ...}
@@ -80,7 +80,7 @@ if op == 'acquire' then
     record.depth = depth
     -- Same alias: charged under the parent's slot. Another alias: that alias's ceiling applies.
     if alias ~= '' and parent.alias == alias then record.shared = true
-    elseif ceiling and same >= ceiling then return 3 end
+    elseif ceiling and same >= ceiling then return 7 end
     result = 4
   else
     if top >= tonumber(ARGV[5]) then return 2 end

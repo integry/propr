@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
     generateCorrelationId,
+    parentScopeFromIssueBody,
     getIssueQueue,
     getPendingPrCommentsKey,
     withUltrafixLabelTransition,
@@ -193,6 +194,7 @@ export async function enqueueNextStep(
         await issueQueue.add('processPullRequestComment', {
             ...(params.userId ? { userId: params.userId } : {}),
             pullRequestNumber,
+            agentAdmissionParent: parentScopeFromIssueBody(ultrafixMeta?.instructions),
             repoOwner: owner,
             repoName: repo,
             correlationId: nextCorrelationId,

@@ -1,3 +1,4 @@
+import { parentScopeFromCommentJob, runWithAgentAdmissionParent, currentAgentAdmissionNesting } from '../packages/core/src/agents/agentRunNesting.js';
 import assert from 'node:assert/strict';
 import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
@@ -10,6 +11,7 @@ import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js
 
 let events: string[] = [];
 let refuseCapacity = false;
+let observedParents: Array<string | undefined> = [];
 let refuseAgentCapacity = false;
 // Other runs holding repository slots; admission and reconciliation compare caps against them.
 let otherRuns = 0;
@@ -97,6 +99,7 @@ await mock.module('../src/jobs/runCostCap.js', { namedExports: {
     pullRequestRunCostCapTarget: () => ({}),
 } });
 await mock.module('@propr/core', { namedExports: {
+    parentScopeFromCommentJob, runWithAgentAdmissionParent,
     preventWithdrawnJob: async () => null,
     getAuthenticatedOctokit: async () => octokit,
     hashTaskAttemptToken: () => 'hash', logger: { ...log, withCorrelation: () => log },
@@ -133,6 +136,7 @@ const modules: Record<string, Record<string, unknown>> = {
     // The real agent-capacity helpers are covered by agentCapacityDeferral.test.ts; here only the follow-up's path.
     agentCapacityDeferral: {
         checkJobAgentCapacity: async (_job: unknown, requests: () => Promise<unknown>) => {
+            observedParents.push(currentAgentAdmissionNesting()?.parent);
             assert.equal(typeof requests, 'function', 'the agent is resolved only when a policy needs it');
             if (refuseAgentCapacity) throw Object.assign(new Error('Waiting for agent capacity'), { name: 'AgentCapacityError', aliases: ['claude'] });
             return undefined;
@@ -189,8 +193,8 @@ const modules: Record<string, Record<string, unknown>> = {
             ? realPending.pickUpPendingCommentsWithClaim(...args) : { commentsToProcess: args[0], pickedUpComments: [] },
         applyPendingCommentCommandContext: (...args: Parameters<typeof realPending.applyPendingCommentCommandContext>) => { if (realReentryHelpers) realPending.applyPendingCommentCommandContext(...args); },
     },
-    prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
-    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
+    prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { observedParents.push(currentAgentAdmissionNesting()?.parent); events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
+    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { observedParents.push(currentAgentAdmissionNesting()?.parent); events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
     reviewFindingSelector: {
         hasAuthorizedFixFeedback: () => !nothingSelected, selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }),
@@ -294,6 +298,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
+    observedParents = [];
     refuseCapacity = false; refuseAgentCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined; onAgentExitedCheckpoint = undefined; onUsageLimitCheckpoint = undefined; onHandleJobError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0; deferralHistory.length = 0;
@@ -682,3 +687,32 @@ test('ownership loss observed while confirming the usage-limit retry stops publi
     assert.ok(events.includes('cleanup'), 'the lease is still released');
     assert.ok(!events.includes('cleanup-worktree'), "the successor's retained worktree is not detached");
 });
+
+for (const mode of ['review', 'fix']) {
+    test(`goal ${mode} executes and checks capacity under its explicit parent`, async () => {
+        const request = job(mode);
+        request.data.commentBody = `/${mode}\n<!-- propr-parent-execution: ${'a'.repeat(40)} -->`;
+        if (mode === 'fix') {
+            agentResult = { claudeResult: { success: true }, agentType: 'agent' };
+            await assert.rejects(processPullRequestCommentJob(request as never), /post-execution stopped by test/);
+        } else await processPullRequestCommentJob(request as never);
+        assert.ok(observedParents.length > 0);
+        assert.ok(observedParents.every(parent => parent === `goal:${'a'.repeat(40)}`));
+        assert.equal(currentAgentAdmissionNesting(), undefined, 'context does not leak to unrelated jobs');
+    });
+}
+
+for (const marked of [true, false]) {
+    test(`pending review command resolves its own parent after pickup (marked: ${marked})`, async () => {
+        realReentryHelpers = true;
+        const request = job('review');
+        request.data.commentBody = `/review\n<!-- propr-parent-execution: ${'a'.repeat(40)} -->`;
+        const pendingKey = getPendingPrCommentsKey('upstream', 'project', 42);
+        pendingCommentLists.set(pendingKey, [JSON.stringify({
+            id: 7, body: marked ? `/review\n<!-- propr-parent-execution: ${'b'.repeat(40)} -->` : '/review',
+            author: 'reviewer', type: 'issue', commandMode: 'review',
+        })]);
+        await processPullRequestCommentJob(request as never);
+        assert.deepEqual(observedParents, [marked ? `goal:${'b'.repeat(40)}` : undefined]);
+    });
+}

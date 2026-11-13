@@ -701,6 +701,6 @@ export {
 export { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, agentRunAliasLimitProblems } from './agents/agentRunAliasLimits.js';
 export {
     AGENT_ADMISSION_MAX_NESTING_DEPTH, AGENT_ADMISSION_PARENT_ENV, AGENT_RUN_NESTED_LIMIT_ENV, DEFAULT_AGENT_RUN_NESTED_LIMIT, AgentAdmissionNestingError,
-    agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody,
+    agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody, parentScopeFromCommentJob,
     runAsAgentAdmissionParent, runWithAgentAdmissionParent, type AgentAdmissionNesting,
 } from './agents/agentRunNesting.js';

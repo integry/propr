@@ -1,4 +1,4 @@
-import { logger } from '@propr/core';
+import { parentScopeFromCommentJob, parentScopeFromIssueBody, logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { handleError } from '@propr/core';
 import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
@@ -328,6 +328,7 @@ async function collectUnprocessedComments(
         unprocessedComments.push({
             id: comment.id,
             body: enhancedCommentBody,
+            agentAdmissionParent: parentScopeFromIssueBody(comment.body),
             author: commentAuthor,
             type: comment.pull_request_review_id ? 'review' : 'issue',
             hasCodeContext: !!(comment.pull_request_review_id && comment.diff_hunk)
@@ -419,6 +420,7 @@ async function enqueuePRCommentJob(
         correlationId: generateCorrelationId(),
     };
 
+    jobData.agentAdmissionParent = parentScopeFromCommentJob(jobData, jobData.comments);
     const timestamp = Date.now();
     const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
 

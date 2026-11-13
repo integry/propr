@@ -1,3 +1,4 @@
+import { parentScopeFromIssueBody } from '../packages/core/src/agents/agentRunNesting.js';
 /**
  * End-to-end recovery of an Ultrafix loop stranded by a CI failure.
  *
@@ -71,6 +72,7 @@ const mockGetCurrentPRHead = mock.fn(async () => prHead);
 
 await mock.module('@propr/core', {
     namedExports: {
+        parentScopeFromIssueBody,
         reevaluatePRAutoMerge: async () => undefined,
         AgentRegistry: {},
         logger: { info: () => {} },
@@ -508,7 +510,7 @@ describe('Ultrafix recovery after a CI failure', () => {
     });
 
     test('a recovered loop keeps the instructions and user that started it', async () => {
-        const instructions = 'Keep the public API stable.';
+        const instructions = `Keep the public API stable.\n<!-- propr-parent-execution: ${'b'.repeat(40)} -->`;
         const redis = await strandLoopAfterCiFailure(111, {}, { instructions, userId: '4242' });
         assert.equal((await loadState(redis as never, OWNER, REPO, 111))?.instructions, instructions);
 
@@ -518,6 +520,7 @@ describe('Ultrafix recovery after a CI failure', () => {
         const [review] = reviewJobs(111);
         assert.equal(review.data.commandInstructions, instructions);
         assert.equal(review.data.ultrafixMeta.instructions, instructions);
+        assert.equal(review.data.agentAdmissionParent, `goal:${'b'.repeat(40)}`);
         assert.equal(review.data.userId, '4242');
 
         // Later steps inherit the restored metadata from the recovered review.
@@ -532,6 +535,7 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(next.nextAction, 'fix');
         const fix = [...queuedJobs.values()].find(job => job.data.pullRequestNumber === 111 && job.data.commandMode === 'fix');
         assert.equal(fix?.data.commandInstructions, instructions);
+        assert.equal(fix?.data.agentAdmissionParent, `goal:${'b'.repeat(40)}`);
         assert.equal(fix?.data.userId, '4242');
     });
 
