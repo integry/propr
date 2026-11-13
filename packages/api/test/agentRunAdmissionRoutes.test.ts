@@ -8,7 +8,7 @@ import { presentResult } from '../mcp/presentation.js';
 import { addAdmissionTools, AGENT_RUN_ADMISSION_TOOL } from '../mcp/toolsAdmission.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
-import { AgentRunAdmissionReport } from '../openapi/schemasAdmission.js';
+import { AgentRunAdmissionConfiguration, AgentRunAdmissionReport } from '../openapi/schemasAdmission.js';
 import { createAgentRunAdmissionRoutes } from '../routes/agentRunAdmissionRoutes.js';
 
 after(() => closeConnection());
@@ -188,4 +188,15 @@ test('a stored configuration admission refuses is reported as refusing, in REST 
   const pendingTool = tools.at(-1)!;
   const pendingSummary = presentResult(pendingTool, {}, (await pendingTool.run({ principal, args: {} } as never)).data as never, config).summary;
   assert.match(pendingSummary, /^Agent runs 2\/2 in use, .*generation 1 pending: the next admission fences every older reservation first/);
+});
+
+test('admission contract qualifies generation recovery by protocol compatibility', () => {
+  const guidance = AgentRunAdmissionConfiguration.shape.status.description!;
+  assert.match(guidance, /pending_generation: compatible protocol/);
+  assert.match(guidance, /mismatch: incompatible protocol/);
+  assert.match(guidance, /A higher generation resolves limit\/generation mismatches only within a compatible protocol/);
+  assert.match(guidance, /For incompatible protocols, draining and raising the generation are insufficient/);
+  assert.match(guidance, /Rolling restarts with mixed versions/);
+  assert.match(guidance, /stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key/);
+  assert.match(guidance, /never clear holder records/);
 });

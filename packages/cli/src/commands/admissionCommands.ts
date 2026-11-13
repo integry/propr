@@ -59,7 +59,8 @@ export function formatConfigurationLines(global: { limit: number; generation: nu
     case "mismatch":
       return [
         `Admission refuses every launch: the stored configuration (${storedText(stored)}) does not match this one (${configured}).`,
-        `Draining does not clear this. Configure a generation higher than ${stored ? stored.generation : "the stored one"} on every process; see "Changing the global limit" in the operations docs.`,
+        `For a compatible protocol with a limit/generation mismatch, configure a generation higher than ${stored ? stored.generation : "the stored one"} on every process; see "Changing the global limit" in the operations docs.`,
+        'For an incompatible admission protocol, draining and raising the generation are insufficient. Follow "Rolling restarts with mixed versions" in the operations docs: drain with the existing version, stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key. Never clear holder records to force an upgrade.',
       ];
     case "missing":
       return ["Admission refuses every launch: no configuration is stored while holder records remain (configuration missing; drain before recovery)."];

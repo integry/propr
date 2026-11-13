@@ -71,7 +71,7 @@ test("a changed limit at an unchanged generation is printed as refused, not as f
   assert.equal(formatAdmissionRows(refused)[0][1], "refused");
   const text = formatAdmissionReport(refused).join("\n");
   assert.match(text, /^Admission refuses every launch: the stored configuration \(limit 3, generation 0\) does not match this one \(limit 5, generation 0\)\.$/m);
-  assert.match(text, /Configure a generation higher than 0 on every process/);
+  assert.match(text, /For a compatible protocol with a limit\/generation mismatch, configure a generation higher than 0 on every process/);
   assert.doesNotMatch(text, /^\(global\) +5 /m);
 
   const pending: AgentRunAdmissionReport = {
@@ -82,6 +82,26 @@ test("a changed limit at an unchanged generation is printed as refused, not as f
   assert.match(formatAdmissionReport(pending).join("\n"), /^Generation change pending: the stored configuration is limit 3, generation 0\. The next admission attempt fences and removes every older reservation, then switches to limit 5, generation 1\.$/m);
   assert.doesNotMatch(formatAdmissionReport(base).join("\n"), /refuses|pending|No configuration stored/, "a current configuration adds no line");
 });
+
+for (const generation of [0, 1]) {
+  test(`incompatible protocol recovery guidance does not promise that generation ${generation} will admit`, () => {
+    const base = report();
+    const configured = { limit: 3, generation };
+    // Legacy protocol records remain mismatched even after draining and raising the generation.
+    const configuration = { status: "mismatch", admitting: false, stored: { limit: 3, generation: 0 } } as const;
+    const refused: AgentRunAdmissionReport = {
+      ...base, agents: [],
+      admission: { ...base.admission, global: { ...base.admission.global!, ...configured, inUse: 0, configuration } },
+    };
+    assert.equal(formatAdmissionRows(refused)[0][1], "refused");
+    const text = formatAdmissionReport(refused).join("\n");
+    assert.match(text, /For a compatible protocol with a limit\/generation mismatch, configure a generation higher/);
+    assert.match(text, /For an incompatible admission protocol, draining and raising the generation are insufficient/);
+    assert.match(text, /Rolling restarts with mixed versions/);
+    assert.match(text, /drain with the existing version, stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key/);
+    assert.match(text, /Never clear holder records to force an upgrade/);
+  });
+}
 
 test("with admission off the report says so and still prints the other limits", () => {
   const off: AgentRunAdmissionReport = { ...report(), admission: { enabled: false, agentCeilingsConfigured: false, global: null }, agents: [] };

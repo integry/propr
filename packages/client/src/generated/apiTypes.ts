@@ -27,9 +27,9 @@ export interface AgentRunAdmissionAgent {
   tasks: AgentRunAdmissionTask[];
 }
 
-/** The stored admission configuration compared with the configured global limit and generation. The Docker daemon identity is neither shown nor compared. */
+/** The stored admission configuration compared with the configured global limit and generation. The admission protocol prefix is checked; the Docker daemon identity is neither shown nor compared. */
 export interface AgentRunAdmissionConfiguration {
-  /** current: the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. pending_generation: the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. mismatch: same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused until a higher generation is configured. missing: nothing stored while holder records remain; every launch is refused. */
+  /** current: compatible protocol; the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. pending_generation: compatible protocol and the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. mismatch: incompatible protocol, same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused. A higher generation resolves limit/generation mismatches only within a compatible protocol. For incompatible protocols, draining and raising the generation are insufficient: follow "Rolling restarts with mixed versions" in the agent-run capacity operations docs. Drain with the existing version, stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key; never clear holder records to force an upgrade. missing: nothing stored while holder records remain; every launch is refused. */
   status: "current" | "uninitialized" | "pending_generation" | "mismatch" | "missing";
   /** False when admission refuses every launch with the configured limit and generation: `limit` minus `inUse` is then not usable capacity. */
   admitting: boolean;
