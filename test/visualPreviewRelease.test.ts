@@ -117,7 +117,7 @@ for (const plan of ['pro', 'free', 'unknown'] as const) {
         assert.equal(uploads, githubInlineEligible ? 1 : 0);
         assert.equal(publishedTargets.has(attachmentUrl), githubInlineEligible && scenario !== 'github-failed');
         assert.equal(publishedTargets.has(viewerUrl), ['plus', 'github-failed'].includes(scenario));
-        if (scenario === 'plus') assert.match(published, /Connect sign-in required/);
+        if (scenario === 'plus') assert.match(published, /\(Connect sign-in, until 2099-01-01\)/);
         if (scenario === 'quota') assert.match(published, /quota exceeded/);
         if (!legacy && plan !== 'pro') assert.match(published, /Inline preview unavailable/);
         for (const forbidden of [root, relativePath, inlineRelativePath, secret, 'private-object', 'objects.example.test']) assert.ok(!published.includes(forbidden), forbidden);

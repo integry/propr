@@ -37,6 +37,8 @@ interface PublishedVisualPreviewAsset {
   relativePath: string;
   githubAttachmentUrl?: string;
   managedViewerUrl?: string;
+  /** When the managed original stops being retained; shown beside its link. */
+  managedRetentionExpiresAt?: string;
   unavailableReason?: PublishedVisualPreviewAssetInput['unavailableReason'];
 }
 
@@ -81,7 +83,9 @@ export function createPublishedVisualPreviewMetadata(
       assetIndex: input.assetIndex,
       relativePath: input.relativePath,
       ...(githubAttachmentUrl ? { githubAttachmentUrl } : {}),
-      ...(trustedManagedOriginal ? { managedViewerUrl: trustedManagedOriginal.viewerUrl } : {}),
+      ...(trustedManagedOriginal
+        ? { managedViewerUrl: trustedManagedOriginal.viewerUrl, managedRetentionExpiresAt: trustedManagedOriginal.retentionExpiresAt }
+        : {}),
       ...(input.unavailableReason ? { unavailableReason: input.unavailableReason } : {}),
     }];
   });
@@ -100,6 +104,16 @@ function appendLocalAsset(parts: string[], asset: VisualPreviewAsset): void {
   parts.push(`### ${markdownText(asset.title)}`);
   parts.push(`![${asset.type === 'image' ? markdownText(asset.title) : ''}](${markdownTarget(asset.absolutePath)})`);
   if (asset.description) parts.push(markdownText(asset.description));
+}
+
+/** Start of the one-line link to a managed original; the published-preview reader skips lines that begin with it. */
+export const MANAGED_ORIGINAL_LINK_PREFIX = '[Full-size original](';
+
+/** " (Connect sign-in, until 2027-02-11)": who can open the original and the day it stops being retained. */
+function managedOriginalTerms(retentionExpiresAt: string | undefined): string {
+  const expires = retentionExpiresAt ? new Date(retentionExpiresAt) : undefined;
+  const until = expires && !Number.isNaN(expires.getTime()) ? `, until ${expires.toISOString().slice(0, 10)}` : '';
+  return ` (Connect sign-in${until})`;
 }
 
 function unavailableMessage(item: PublishedVisualPreviewAsset): string | undefined {
@@ -132,7 +146,7 @@ function appendPublishedAsset(
   }
   if (asset.description) parts.push(markdownText(asset.description));
   if (item.managedViewerUrl) {
-    parts.push(`[View the full-resolution original in ProPR Connect](${item.managedViewerUrl})`);
+    parts.push(`${MANAGED_ORIGINAL_LINK_PREFIX}${item.managedViewerUrl})${managedOriginalTerms(item.managedRetentionExpiresAt)}`);
   }
   const message = unavailableMessage(item);
   if (message) parts.push(message);
