@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import type { ExtensionLibraryServer } from '@propr/shared';
+import { EXTENSION_LIBRARY_LIMITS, type ExtensionLibraryServer } from '@propr/shared';
 import { itemNotes } from './extensionNotes';
 import { CatalogServerDetails } from './ExtensionServerFields';
 import { EMPTY_USAGE, appliesToCodex, extensionChoices, runLimitExcess } from './extensionUi';
@@ -27,6 +27,58 @@ describe('extension warnings', () => {
     // Limits that never overlap stay within the per-run limit.
     const split = [...Array.from({ length: 5 }, (_, i) => server(`d${i}`, { repositories: ['example/docs'] })), ...Array.from({ length: 5 }, (_, i) => server(`a${i}`, { repositories: ['example/app'] }))];
     expect(runLimitExcess(split, choices, 8)).toBeNull();
+  });
+
+  it('reports the first overlapping combination the way a scan of every combination does', () => {
+    // Reference: evaluate every repository and agent combination directly.
+    const OTHER = Symbol('other');
+    const reference = (items: ExtensionLibraryServer[], limit: number) => {
+      const enabled = items.filter(item => item.enabled);
+      if (enabled.length <= limit) return null;
+      const allows = (entries: string[], value: string | symbol, fold: boolean) => !entries.length
+        || (typeof value === 'string' && entries.some(entry => (fold ? entry.toLowerCase() === value.toLowerCase() : entry === value)));
+      const repositories = [...new Set([...choices.repositories, ...enabled.flatMap(item => item.repositories)]), OTHER];
+      const agents = [...new Set([...choices.agents, ...enabled.flatMap(item => item.agents)]), OTHER];
+      let best: { count: number; repository: string; agent: string } | null = null;
+      for (const repository of repositories) for (const agent of agents) {
+        const count = enabled.filter(item => allows(item.repositories, repository, true) && allows(item.agents, agent, false)).length;
+        if (count > (best?.count ?? limit)) {
+          best = { count, repository: repository === OTHER ? 'one repository' : repository as string, agent: agent === OTHER ? 'one agent' : agent as string };
+        }
+      }
+      return best;
+    };
+    let seed = 7;
+    const random = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+    const pick = (pool: string[]) => Array.from({ length: random(4) }, () => pool[random(pool.length)]);
+    const repositoryPool = ['example/docs', 'Example/Docs', 'example/app', 'example/api', 'other/lib'];
+    const agentPool = ['claude-main', 'codex-main', 'claude-review', 'Claude-Main'];
+    for (let round = 0; round < 200; round++) {
+      const items = Array.from({ length: 6 + random(30) }, (_, i) => server(`s${i}`, {
+        enabled: random(5) > 0, repositories: [...new Set(pick(repositoryPool))], agents: [...new Set(pick(agentPool))],
+      }));
+      expect(runLimitExcess(items, choices, 8)).toEqual(reference(items, 8));
+    }
+    // Repository limits fold case: both spellings count toward one repository.
+    const folded = [...Array.from({ length: 5 }, (_, i) => server(`u${i}`, { repositories: ['Example/Docs'] })), ...Array.from({ length: 4 }, (_, i) => server(`l${i}`, { repositories: ['example/docs'] }))];
+    expect(runLimitExcess(folded, choices, 8)).toMatchObject({ count: 9, repository: 'example/docs' });
+    // Agent aliases match exactly.
+    const agentsSplit = [...Array.from({ length: 5 }, (_, i) => server(`a${i}`, { agents: ['claude-main'] })), ...Array.from({ length: 4 }, (_, i) => server(`b${i}`, { agents: ['Claude-Main'] }))];
+    expect(runLimitExcess(agentsSplit, choices, 8)).toBeNull();
+  });
+
+  it('stays fast for the largest library with disjoint repository and agent limits', () => {
+    const { servers, repositories, agents } = EXTENSION_LIBRARY_LIMITS;
+    const items = Array.from({ length: servers }, (_, i) => server(`s${i}`, {
+      repositories: Array.from({ length: repositories }, (_, r) => `org${i}/repo${r}`),
+      agents: Array.from({ length: agents }, (_, a) => `agent-${i}-${a}`),
+    }));
+    const started = performance.now();
+    expect(runLimitExcess(items, choices, 8)).toBeNull();
+    // Every limit overlapping: all items apply to one listed combination.
+    const shared = items.map(item => ({ ...item, repositories: [...item.repositories.slice(1), 'shared/repo'], agents: [...item.agents.slice(1), 'shared-agent'] }));
+    expect(runLimitExcess(shared, choices, 8)).toEqual({ count: servers, repository: 'shared/repo', agent: 'shared-agent' });
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it('flags items that reach a Codex agent', () => {

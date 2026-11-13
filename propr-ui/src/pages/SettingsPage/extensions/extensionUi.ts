@@ -60,22 +60,64 @@ export function formatSkillSize(bytes: number): string {
 
 const OTHER = Symbol('other');
 type Candidate = string | typeof OTHER;
-const allows = (limit: string[], value: Candidate, fold = false) => !limit.length
-  || (value !== OTHER && limit.some(entry => (fold ? entry.toLowerCase() === value.toLowerCase() : entry === value)));
+/** Candidates that allow exactly the same items, held as a bit set over the enabled items. */
+interface CandidateGroup { candidate: Candidate; bits: Uint32Array; size: number }
+const popcount = (word: number) => {
+  let v = word - ((word >>> 1) & 0x55555555);
+  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+  return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+};
+/**
+ * Groups the candidates by the set of items whose limit allows them, in
+ * first-occurrence order. An empty limit allows every candidate; `OTHER`
+ * (a value no limit lists) is allowed only by empty limits. Each item's limit
+ * is read once, so the cost is linear in the limit entries.
+ */
+function candidateGroups(limits: readonly string[][], candidates: readonly Candidate[], normalize: (value: string) => string): CandidateGroup[] {
+  const words = Math.ceil(limits.length / 32);
+  const unlimited = new Uint32Array(words);
+  const listing = new Map<string, Uint32Array>();
+  limits.forEach((limit, index) => {
+    const bit = 1 << (index % 32);
+    const word = index >>> 5;
+    if (!limit.length) { unlimited[word] |= bit; return; }
+    for (const entry of limit) {
+      const key = normalize(entry);
+      let bits = listing.get(key);
+      if (!bits) listing.set(key, bits = new Uint32Array(words));
+      bits[word] |= bit;
+    }
+  });
+  const groups = new Map<string, CandidateGroup>();
+  for (const candidate of candidates) {
+    const listed = candidate === OTHER ? undefined : listing.get(normalize(candidate));
+    const bits = unlimited.map((word, i) => word | (listed?.[i] ?? 0));
+    const key = bits.join(',');
+    if (!groups.has(key)) groups.set(key, { candidate, bits, size: bits.reduce((sum, word) => sum + popcount(word), 0) });
+  }
+  return [...groups.values()];
+}
 /**
  * The largest number of enabled items whose limits allow one repository and
  * agent combination, with that combination, when it exceeds what one run uses.
+ * Repository names match case-insensitively; agent aliases match exactly.
  */
 export function runLimitExcess(items: readonly (ItemLimitFields & { enabled: boolean })[], choices: Pick<ExtensionChoices, 'agents' | 'repositories'>, limit: number) {
   const enabled = items.filter(item => item.enabled);
   if (enabled.length <= limit) return null;
-  const repositories: Candidate[] = [...new Set([...choices.repositories, ...enabled.flatMap(item => item.repositories)]), OTHER];
-  const agents: Candidate[] = [...new Set([...choices.agents, ...enabled.flatMap(item => item.agents)]), OTHER];
+  const repositories = candidateGroups(enabled.map(item => item.repositories),
+    [...new Set([...choices.repositories, ...enabled.flatMap(item => item.repositories)]), OTHER], value => value.toLowerCase());
+  const agents = candidateGroups(enabled.map(item => item.agents),
+    [...new Set([...choices.agents, ...enabled.flatMap(item => item.agents)]), OTHER], value => value);
   let best: { count: number; repository: Candidate; agent: Candidate } | null = null;
+  // Groups keep first-occurrence order, so the reported combination is the first one reaching the largest count.
   for (const repository of repositories) {
+    if (repository.size <= (best?.count ?? limit)) continue;
     for (const agent of agents) {
-      const count = enabled.filter(item => allows(item.repositories, repository, true) && allows(item.agents, agent)).length;
-      if (count > (best?.count ?? limit)) best = { count, repository, agent };
+      if (agent.size <= (best?.count ?? limit)) continue;
+      let count = 0;
+      for (let i = 0; i < repository.bits.length; i++) count += popcount(repository.bits[i] & agent.bits[i]);
+      if (count > (best?.count ?? limit)) best = { count, repository: repository.candidate, agent: agent.candidate };
     }
   }
   if (!best) return null;
