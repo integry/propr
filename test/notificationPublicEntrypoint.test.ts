@@ -23,11 +23,18 @@ test('builds and exposes the notification contract from @propr/shared', async (c
   );
   const packageDist = path.join(packageDirectory, 'dist');
   fs.mkdirSync(packageDirectory, { recursive: true });
-  fs.symlinkSync(
-    path.join(workspace, 'node_modules', 'zod'),
-    path.join(temporaryDirectory, 'node_modules', 'zod'),
-    'junction',
-  );
+  // Link the package's runtime dependencies (e.g. zod, mdast-util-from-markdown)
+  // so the built entrypoint resolves them like an installed @propr/shared would.
+  const sharedManifest = JSON.parse(
+    fs.readFileSync(path.join(workspace, 'packages/shared/package.json'), 'utf8'),
+  ) as { dependencies?: Record<string, string> };
+  for (const dependency of Object.keys(sharedManifest.dependencies ?? {})) {
+    const target = path.join(workspace, 'node_modules', dependency);
+    if (!fs.existsSync(target)) continue;
+    const link = path.join(temporaryDirectory, 'node_modules', dependency);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(target, link, 'junction');
+  }
   fs.copyFileSync(
     path.join(workspace, 'packages/shared/package.json'),
     path.join(packageDirectory, 'package.json'),
