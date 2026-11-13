@@ -37,7 +37,9 @@ With a per-agent policy configured, an admitted launch that names no direct agen
 
 ### Upgrade and rolling restarts
 
-Holder records written before this change carry no alias. They count toward the global limit only and never cause an error; they leave the hash through the normal release or recovery path. Records written by new processes add only the `alias` field, which the previous script ignores and preserves. During a rolling restart old and new processes share the keys safely for the global limit, but old processes neither send an alias nor check ceilings: their launches count toward the global limit only, and they may admit work on an alias that is already at its ceiling. Per-agent ceilings are enforced once every launching process (API and workers) runs the new version. With `PROPR_AGENT_RUN_ALIAS_LIMITS` unset, the script's decisions are unchanged.
+Nested admission uses the `nested-v1` protocol. Its configuration identity prefixes the Docker daemon identity with `propr-agent-admission/nested-v1/`. This deliberately changes a field that older recovery scripts already compare, including during generation changes. A separate protocol field would be ignored by those scripts: an old process could otherwise recover an expired draining parent and release its slot while a child still runs. Incompatible processes now refuse acquisition and recovery before touching holders, even with a higher generation. Holder keys stay shared so incompatible processes cannot create independent pools of capacity.
+
+Upgrading from a pre-nesting version, or rolling back to it, requires the [coordinated drain and upgrade procedure](../operations/agent-run-capacity.md#rolling-restarts-with-mixed-versions). A generation bump alone cannot cross this protocol boundary. Rolling restarts are supported only between versions using the same admission protocol. Within that protocol, alias-less holders count toward the global limit only, and every process must carry the same per-agent policy to enforce the same ceilings.
 
 ## Deferring jobs on a saturated agent
 
@@ -125,7 +127,7 @@ Unsigned legacy markers, forged markers, copied markers on other resources, miss
 
 ### Upgrade
 
-Holder records gain `parent`, `depth`, `shared` and `scope` only for nested executions, and the script takes a third key. During a rolling restart an old process counts nested records toward the global limit (more conservative, never less), but does not fence nested executions with their parent; enforce the lifecycle above once every launching process runs this version.
+Holder records gain `parent`, `depth`, `shared` and `scope` only for nested executions, and the script takes a third key. Pre-nesting recovery cannot preserve the draining parent's reservation, so the protocol identity fences it before nested records can be admitted. Follow the [coordinated drain procedure](../operations/agent-run-capacity.md#rolling-restarts-with-mixed-versions); a mixed-protocol rolling upgrade is refused.
 
 ## Lifecycle and supported scope
 

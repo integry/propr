@@ -81,11 +81,15 @@ The first admission with the new generation fences every older reservation, remo
 
 ## Rolling restarts with mixed versions
 
-During a rolling restart old and new processes share the Redis records safely for the global limit. Expect:
+Nested admission introduces an incompatible `nested-v1` protocol. **Do not roll between pre-nesting and nested-admission versions.** Both versions use the same holder keys, but their configuration identities differ in the daemon field that legacy recovery already checks. Both directions fail closed, even after a generation bump or when the holders hash is empty. This prevents a legacy recovery process from releasing a draining parent while a nested execution still runs.
 
-- **Ceilings per process.** Each process admits by its own `PROPR_AGENT_RUN_ALIAS_LIMITS`. While values differ, the stricter process defers or waits and the other may admit up to its own value; the report shows the ceilings of the API process that answered.
-- **Older processes in the report.** Processes from before this report existed record no wait details: their waiting launches count as `starting` and are not attributed to an agent, and their holders show no task ID. Processes from before per-agent ceilings send no alias: their holders count under `unattributedHolders`, and they neither check ceilings nor defer jobs.
-- **Fleet.** An older API's queue status has no `deferred` field; treat its absence as unknown, not zero.
-- **Logs.** Older processes log waits without `agentAlias` or `waitReason`.
+For an upgrade across this boundary (and for rollback):
 
-Everything is exact once every API and worker process runs the same version and configuration.
+1. Stop new intake and all sources of new executions, including scheduled work, API analysis and indexing. Let the existing version finish or cancel its work and complete recovery. Confirm no holders, nested executions, waiting launches or deferred jobs remain; an older queue response without `deferred` means unknown, so inspect delayed capacity jobs too.
+2. Stop **every** API, worker, indexing worker and other execution process for the instance. Ensure no suspended process or in-flight create/removal can resume. Confirm on the configured Docker daemon that no containers labelled `propr.agent-admission.instance=sha256(PROPR_INSTANCE_ID)` remain. A zero holder count alone is insufficient. Resolve surviving work with the existing version before proceeding.
+3. With all execution processes stopped, verify the instance's holders hash is empty and delete **only** its admission configuration key (`propr:agent-admission:{sha256(PROPR_INSTANCE_ID)}:config`) in the correct Redis database. Keep the instance ID, Redis endpoint and Docker daemon unchanged; never clear holder records to force an upgrade.
+4. Deploy the target version to every execution process with matching limits, generation and per-agent policy, then restart and resume intake. The first admission checks Docker emptiness and initializes the new identity. Confirm capacity reports show `current`. Keep incompatible old processes stopped: their acquire and recovery calls will be refused after initialization.
+
+The stopped interval is required because legacy release has no configuration check, and a process already holding a recovery result could resume after a reset. Checking Redis and Docker emptiness while processes can still mutate either system does not close that avoidable window. Redis and Docker do not offer a shared atomic operation; the procedure relies on quiescing all execution processes before resetting the configuration.
+
+Rolling restarts **within the same protocol** remain supported. Each process admits by its own `PROPR_AGENT_RUN_ALIAS_LIMITS`; while values differ, the report shows the policy of the API that answered. Use the same policy on every process for consistent ceilings.

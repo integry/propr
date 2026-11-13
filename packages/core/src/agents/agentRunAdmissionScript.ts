@@ -104,6 +104,9 @@ if op == 'expired' then
   local config = redis.call('GET', KEYS[2])
   if config and config ~= ARGV[4] then
     local old, next = cjson.decode(config), cjson.decode(ARGV[4])
+    -- The daemon identity includes the admission protocol. Legacy recovery
+    -- performs this same comparison, so it cannot recover nested-v1 holders,
+    -- even with a higher generation. Protocol changes require a stopped drain.
     if old.daemon ~= next.daemon or (next.generation or 0) <= (old.generation or 0) then
       return redis.error_reply('Agent admission configuration/daemon mismatch; stale generation or unsupported daemon change')
     end

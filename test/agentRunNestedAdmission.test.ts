@@ -493,6 +493,49 @@ test('nesting depth and count bounds refuse with a clear error instead of waitin
     assert.equal(await client().hlen(agentAdmissionKeys(name)[3]), 0, 'no registered scope left behind');
 });
 
+test('legacy recovery cannot reclaim a draining parent with a live nested execution', integration(), async () => {
+    const legacyScript = await readFile(new URL('./fixtures/agent-admission/legacy-admission.lua', import.meta.url), 'utf8');
+    const { runtime, alive } = lifecycle();
+    const name = instance('legacy-recovery');
+    const options = { client: client(), docker: runtime, config: { instance: name, limit: 1 }, agentAlias: 'local', leaseMs: 600 };
+    const [holders, configKey] = agentAdmissionKeys(name);
+    const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { register: 'goal:legacy-recovery' } });
+    const child = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { parent: 'goal:legacy-recovery' } });
+    let replacement: Awaited<ReturnType<typeof prepareAdmittedAgent>>;
+    let waiter: ReturnType<typeof waiting> | undefined;
+    try {
+        await parent!.finish();
+        const owner = (await holderRecords(name)).find(r => !r.parent)!;
+        const { token, ...record } = owner;
+        await client().hset(holders, token, JSON.stringify({ ...record, deadline: 0 }));
+        const stored = await client().get(configKey);
+        // Same daemon, limit and generation as the new process; also try a
+        // higher legacy generation, which would bypass a protocol-only field.
+        for (const generation of [undefined, 1]) {
+            const identity = JSON.stringify({ limit: 1, daemon: 'test', ...(generation ? { generation } : {}) });
+            await assert.rejects(client().eval(legacyScript, 2, holders, configKey, 'expired', 'old-process', 600, identity), /mismatch/);
+            await assert.rejects(client().eval(legacyScript, 2, holders, configKey, 'acquire', 'old-process', 600, identity, 1), /mismatch/);
+        }
+        assert.equal(await client().get(configKey), stored, 'old recovery cannot switch the configuration');
+        assert.equal(JSON.parse((await client().hget(holders, token))!).state, 'draining');
+        assert.equal(await client().eval(legacyScript, 2, holders, configKey, 'release', token, 600, ''), 0, 'without a recovery claim the legacy release cannot delete the parent');
+        waiter = waiting(options);
+        assert.equal(await waiter.reason, 'global_limit');
+        await delay(800); // Child renews across the expired parent's deadline.
+        assert.equal(alive.has(child!.id), true);
+        assert.equal(await client().hlen(holders), 2, 'the parent remains charged alongside its child');
+        await child!.finish();
+        replacement = await waiter.admission;
+        assert.equal(await client().hlen(holders), 1, 'replacement starts only after the last child and parent release');
+    } finally {
+        waiter?.cancel();
+        await waiter?.admission.catch(() => {});
+        await child!.finish();
+        await parent!.finish();
+        await replacement?.finish();
+    }
+});
+
 test('fencing a parent (lease loss) fences its nested executions; a stale parent scope is an ordinary launch', integration(), async () => {
     const { runtime, alive } = lifecycle();
     const name = instance('fence');

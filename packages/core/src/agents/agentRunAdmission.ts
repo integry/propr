@@ -9,6 +9,7 @@ import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
 import { AGENT_RUN_ALIAS_LIMITS_ENV, agentRunAliasCeiling, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
 import { aliasCapacityWait, isAgentCapacityError, wakeAgentCapacityWaiters } from './agentCapacity.js';
 import { ADMISSION_SCRIPT as SCRIPT } from './agentRunAdmissionScript.js';
+import { ADMISSION_DAEMON_PREFIX } from './agentRunAdmissionConfigState.js';
 import { admissionDetailWriter, admissionWaitTracker, type AgentAdmissionWaitReason } from './agentRunAdmissionWait.js';
 import {
     AGENT_ADMISSION_MAX_NESTING_DEPTH, AGENT_RUN_NESTED_LIMIT_ENV, AgentAdmissionNestingError, DEFAULT_AGENT_RUN_NESTED_LIMIT,
@@ -411,7 +412,7 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     };
     try {
         await checkCancelled();
-        const identity = JSON.stringify({ limit: config.limit, daemon: await runtime.daemon(), ...(config.generation ? { generation: config.generation } : {}) });
+        const identity = JSON.stringify({ limit: config.limit, daemon: `${ADMISSION_DAEMON_PREFIX}${await runtime.daemon()}`, ...(config.generation ? { generation: config.generation } : {}) });
         await checkCancelled();
         logger.info({ instance: config.instance, limit: config.limit, ...log, ...nestingLog }, 'Waiting for physical agent admission');
         const wait = admissionWaitTracker({ token, alias, taskId: options.taskId, fields: { instance: config.instance, limit: config.limit, ...log }, write: writeDetail, onWaiting: options.onWaiting });

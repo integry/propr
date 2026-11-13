@@ -8,6 +8,7 @@
  * unavailable Redis fails the suite instead of skipping it.
  */
 import assert from 'node:assert/strict';
+import { ADMISSION_DAEMON_PREFIX } from '../packages/core/src/agents/agentRunAdmissionConfigState.js';
 import { after, before, test } from 'node:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -370,12 +371,18 @@ test('stored configuration: a changed limit at the same generation is reported a
     await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, config: original }), /configuration\/daemon mismatch/);
     assert.deepEqual(await configuration(original), { status: 'mismatch', admitting: false, stored: { limit: 5, generation: 1 } });
 
+    // A legacy protocol is incompatible even when drained and even if this
+    // process has a higher generation. The report must not promise admission.
+    await client().set(configKey, JSON.stringify({ limit: 5, daemon: DAEMON }));
+    assert.deepEqual(await configuration(raised), { status: 'mismatch', admitting: false, stored: { limit: 5, generation: 0 } });
+    await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, config: raised }), /mismatch/);
+
     // An unreadable stored record is refused by the identity comparison as well.
     await client().set(configKey, 'not json');
     assert.deepEqual(await configuration(raised), { status: 'mismatch', admitting: false, stored: null });
 
     // No stored configuration while a holder record remains: recovery, and with it every launch, is refused.
-    await client().set(configKey, JSON.stringify({ limit: 5, daemon: DAEMON, generation: 1 }));
+    await client().set(configKey, JSON.stringify({ limit: 5, daemon: `${ADMISSION_DAEMON_PREFIX}${DAEMON}`, generation: 1 }));
     const holder = await prepareAdmittedAgent(['run', 'agent'], { ...options, config: raised });
     try {
         await client().del(configKey);
@@ -384,7 +391,7 @@ test('stored configuration: a changed limit at the same generation is reported a
         assert.deepEqual(missing.global!.configuration, { status: 'missing', admitting: false, stored: null });
         assert.equal(missing.global!.inUse, 1);
     } finally {
-        await client().set(configKey, JSON.stringify({ limit: 5, daemon: DAEMON, generation: 1 }));
+        await client().set(configKey, JSON.stringify({ limit: 5, daemon: `${ADMISSION_DAEMON_PREFIX}${DAEMON}`, generation: 1 }));
         await holder!.finish();
     }
 });

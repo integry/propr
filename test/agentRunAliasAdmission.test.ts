@@ -7,6 +7,7 @@
  * sets, an unavailable Redis fails the suite instead of skipping it.
  */
 import assert from 'node:assert/strict';
+import { ADMISSION_DAEMON_PREFIX } from '../packages/core/src/agents/agentRunAdmissionConfigState.js';
 import { after, before, test } from 'node:test';
 import { spawn, spawnSync, fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -215,7 +216,7 @@ test('unset policy: same decisions and holder data, plus only the alias field', 
     const [aliased] = await holderRecords(name);
     assert.deepEqual(Object.keys(aliased).sort(), ['alias', 'deadline', 'id', 'state', 'token']);
     assert.equal(aliased.alias, 'local');
-    assert.equal(await client().get(agentAdmissionKeys(name)[1]), JSON.stringify({ limit: 1, daemon: 'test' }), 'fenced identity carries no alias data');
+    assert.equal(await client().get(agentAdmissionKeys(name)[1]), JSON.stringify({ limit: 1, daemon: `${ADMISSION_DAEMON_PREFIX}test` }), 'fenced identity carries no alias data');
     await named!.finish();
 });
 
@@ -280,7 +281,7 @@ test('crashed or lease-lost alias holders keep counting until removal is confirm
     const [holders, configKey] = agentAdmissionKeys(name);
     const config: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { local: 1 } };
     // A holder process crashed: its record outlives it with the alias it was charged to.
-    await client().set(configKey, JSON.stringify({ limit: 2, daemon: 'test' }));
+    await client().set(configKey, JSON.stringify({ limit: 2, daemon: `${ADMISSION_DAEMON_PREFIX}test` }));
     alive.add('crashed');
     await client().hset(holders, 'dead-owner', JSON.stringify({ state: 'running', deadline: 0, id: 'crashed', alias: 'local' }));
     const failing = { ...runtime, remove: async () => { throw new Error('Docker unavailable'); } };
@@ -320,12 +321,12 @@ test('crashed or lease-lost alias holders keep counting until removal is confirm
     await recovered!.finish();
 });
 
-test('holder records written before the upgrade count toward the global limit only', integration(), async () => {
+test('alias-less holder records under the current protocol count toward the global limit only', integration(), async () => {
     const { runtime } = lifecycle();
     const name = instance('legacy');
     const [holders, configKey] = agentAdmissionKeys(name);
-    await client().set(configKey, JSON.stringify({ limit: 2, daemon: 'test' }));
-    // Pre-upgrade record shape: no alias field.
+    await client().set(configKey, JSON.stringify({ limit: 2, daemon: `${ADMISSION_DAEMON_PREFIX}test` }));
+    // Alias-less record shape (for example an exempt launch).
     await client().hset(holders, 'old-owner', JSON.stringify({ state: 'running', deadline: Date.now() + 60_000, id: 'old-container' }));
     const config: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { local: 1 } };
     const local = await prepareAdmittedAgent(['run', 'agent'], { client: client(), docker: runtime, config, agentAlias: 'local' });
