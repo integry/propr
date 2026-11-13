@@ -25,7 +25,11 @@ export class OAuthNetworkError extends Error {}
 /** The policy-enforcing transport used in production. `lookup` is injectable for tests. */
 export function createOAuthHttpsTransport(options: { lookup?: ExtensionLookup } = {}): OAuthTransport {
   return async request => {
+    // One deadline for the whole request, name resolution included: a request is never sent once it has passed,
+    // so a refresh never outlives the lease it was started under.
+    const deadline = Date.now() + EXTENSION_LIMITS.timeoutMs;
     const { url, address, family } = await resolveExtensionEndpoint(request.url, options.lookup);
+    if (Date.now() >= deadline) throw new OAuthNetworkError('OAuth request failed');
     const host = url.hostname.replace(/^\[|\]$/g, '');
     const destination = new URL(`https://${family === 6 ? `[${address}]` : address}`);
     destination.pathname = url.pathname;
@@ -44,7 +48,7 @@ export function createOAuthHttpsTransport(options: { lookup?: ExtensionLookup } 
           resolve({ status: response.statusCode ?? 0, headers: { 'www-authenticate': header('www-authenticate'), 'content-type': header('content-type') }, body: Buffer.concat(chunks).toString('utf8') });
         });
       });
-      const timer = setTimeout(() => { outgoing.destroy(); unavailable(); }, EXTENSION_LIMITS.timeoutMs);
+      const timer = setTimeout(() => { outgoing.destroy(); unavailable(); }, Math.max(deadline - Date.now(), 0));
       outgoing.on('close', () => clearTimeout(timer)); outgoing.on('error', unavailable);
       outgoing.end(request.body);
     });

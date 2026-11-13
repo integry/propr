@@ -15,7 +15,7 @@ export interface OAuthConnectionRow {
   instance_id: string; server_name: string; endpoint: string; state: 'connected' | 'needs_sign_in';
   registration: 'metadata_document' | 'dynamic' | 'preregistered'; client_id: string;
   issuer: string; metadata: string; redirect_uri: string; sealed: string;
-  version: number; refresh_lease_until: number | null;
+  generation: string; version: number; refresh_lease_until: number | null; refresh_lease_owner: string | null;
   connected_by: string; connected_at: number; updated_at: number;
 }
 
@@ -26,6 +26,14 @@ export function connectionBelongsTo(row: Pick<OAuthConnectionRow, 'endpoint' | '
   if (!server || server.kind !== 'https' || server.authentication !== 'oauth' || server.url !== row.endpoint) return false;
   return server.clientId ? row.registration === 'preregistered' && row.client_id === server.clientId : row.registration !== 'preregistered';
 }
+
+/** Whether a sign-in started for `endpoint` and pre-registered `clientId` (or none) may still complete for this library server. */
+export function signInBelongsTo(server: ExtensionLibraryServer | undefined, endpoint: string, clientId: string | undefined): boolean {
+  return !!server && server.kind === 'https' && server.authentication === 'oauth' && server.url === endpoint && (server.clientId ?? undefined) === clientId;
+}
+const pendingClientId = (details: unknown): string | undefined => {
+  try { const value = (JSON.parse(String(details)) as { clientId?: unknown }).clientId; return typeof value === 'string' ? value : undefined; } catch { return undefined; }
+};
 
 /** Connection state of every OAuth server in `servers`; servers without a usable connection are not connected. */
 export async function oauthConnectionStates(database: Knex, instanceId: string, servers: readonly ExtensionLibraryServer[]): Promise<Record<string, ExtensionOAuthConnectionState>> {
@@ -56,11 +64,9 @@ export async function discardStaleOAuthConnections(trx: Knex.Transaction, instan
     await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId }).whereIn('server_name', stale).delete();
     await trx(OAUTH_AUDIT).insert(stale.map(name => ({ instance_id: instanceId, server_name: name, action: 'discarded', actor, at: now })));
   }
-  const pending = await trx(OAUTH_PENDING).where({ instance_id: instanceId }).select('state_hash', 'server_name', 'endpoint');
-  const stalePending = pending.filter(row => {
-    const server = servers.find(s => s.name === row.server_name);
-    return !server || server.kind !== 'https' || server.authentication !== 'oauth' || server.url !== row.endpoint;
-  }).map(row => row.state_hash as string);
+  // Deleting a pending row also cancels a callback that consumed it and is still exchanging its code.
+  const pending = await trx(OAUTH_PENDING).where({ instance_id: instanceId }).select('state_hash', 'server_name', 'endpoint', 'details');
+  const stalePending = pending.filter(row => !signInBelongsTo(servers.find(s => s.name === row.server_name), row.endpoint, pendingClientId(row.details))).map(row => row.state_hash as string);
   if (stalePending.length) await trx(OAUTH_PENDING).whereIn('state_hash', stalePending).delete();
   return stale;
 }

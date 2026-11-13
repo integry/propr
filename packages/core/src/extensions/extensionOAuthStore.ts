@@ -1,6 +1,6 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Knex } from 'knex';
-import type { ExtensionLibraryServer, ExtensionOAuthCheckResult, ExtensionOAuthConnectionStatus } from '@propr/shared';
+import { EXTENSION_LIMITS, type ExtensionLibraryServer, type ExtensionOAuthCheckResult, type ExtensionOAuthConnectionStatus } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { ExtensionError, unsealLibrarySecrets, type ExtensionLibraryStore } from './extensionProfileStore.js';
 import { credentialServers } from './extensionCredentials.js';
@@ -10,7 +10,7 @@ import {
   OAuthProtocolError, authorizationUrl, chooseRegistration, createPkce, discoverOAuth, exchangeAuthorizationCode, preregisteredClient,
   refreshTokens, registerDynamicClient, revokeToken, type AuthorizationServerMetadata, type OAuthClient, type OAuthTokens,
 } from './extensionOAuth.js';
-import { OAUTH_AUDIT, OAUTH_CONNECTIONS, OAUTH_PENDING, connectionBelongsTo, hasOAuthTables, type OAuthConnectionRow } from './extensionOAuthState.js';
+import { OAUTH_AUDIT, OAUTH_CONNECTIONS, OAUTH_PENDING, connectionBelongsTo, hasOAuthTables, signInBelongsTo, type OAuthConnectionRow } from './extensionOAuthState.js';
 
 /** The instance URLs a sign-in needs; both null without a public base URL. */
 export interface ExtensionOAuthUrls { redirectUri: string | null; clientMetadataUrl: string | null }
@@ -21,8 +21,17 @@ export interface ExtensionOAuthOptions { transport?: OAuthTransport; now?: () =>
 const STATE_TTL_MS = 10 * 60 * 1000;
 /** Refresh this long before the access token expires. */
 const REFRESH_MARGIN_MS = 60 * 1000;
-const LEASE_MS = 30 * 1000;
+/**
+ * The refresh lease. It is renewed before every token request, and the HTTPS
+ * transport bounds a whole request (DNS included) to the extension timeout, so
+ * no request outlives the lease another process could take over.
+ */
+const LEASE_MS = 3 * EXTENSION_LIMITS.timeoutMs;
 const LEASE_WAIT_MS = 15 * 1000;
+/** A consumed state stays until its callback finishes; expiry cleanup leaves it this long past its expiry. */
+const CLAIM_GRACE_MS = 60 * 1000;
+/** The connection a refresh started for was disconnected, replaced or its lease lost: its result is discarded. */
+export class OAuthConnectionReplacedError extends Error {}
 interface SealedTokens extends OAuthTokens { clientSecret?: string }
 interface PendingDetails { issuer: string; metadata: AuthorizationServerMetadata; client: Omit<OAuthClient, 'clientSecret'>; scopes: string[]; redirectUri: string; resource: string; clientId?: string }
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -132,7 +141,7 @@ export class ExtensionOAuthStore {
     const { clientSecret, ...publicClient } = client;
     const details: PendingDetails = { issuer: discovery.issuer, metadata: discovery.metadata, client: publicClient, scopes: discovery.scopes, redirectUri: urls.redirectUri, resource: server.url, ...(server.clientId ? { clientId: server.clientId } : {}) };
     await this.library.authorize(actor);
-    await this.database(OAUTH_PENDING).where('expires_at', '<=', this.now()).delete();
+    await this.database(OAUTH_PENDING).where('expires_at', '<=', this.now()).where(q => q.whereNull('claim').orWhere('expires_at', '<=', this.now() - CLAIM_GRACE_MS)).delete();
     await this.database(OAUTH_PENDING).insert({
       state_hash: stateHash, instance_id: instanceId, server_name: server.name, endpoint: server.url, actor, session_hash: sessionHash(sessionId),
       // A dynamically registered secret is sealed with the verifier; a pre-registered one is read from the library at the callback.
@@ -160,17 +169,21 @@ export class ExtensionOAuthStore {
    * the same item and endpoint; `iss` must name the issuer when supplied (and
    * when the server promises it). Nothing is stored unless the code exchange succeeds.
    */
-  // eslint-disable-next-line complexity -- every callback check refuses before the exchange
   async completeSignIn(actor: string, sessionId: string, query: { state?: unknown; code?: unknown; error?: unknown; iss?: unknown }): Promise<{ name: string }> {
     await this.tables();
     if (typeof query.state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(query.state)) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
     const stateHash = sha256(query.state);
-    const row = await this.database.transaction(async trx => {
-      const found = await trx(OAUTH_PENDING).where({ state_hash: stateHash }).first();
-      // Single use: the first callback deletes the state, whatever its outcome.
-      if (!found || await trx(OAUTH_PENDING).where({ state_hash: stateHash }).delete() !== 1) return undefined;
-      return found as { instance_id: string; server_name: string; endpoint: string; actor: string; session_hash: string; sealed: string; details: string; expires_at: number };
-    });
+    // Single use: the first callback claims the state, and it is deleted whatever the outcome. The claimed
+    // row is this attempt: Disconnect and binding changes delete it, which cancels the attempt.
+    const claim = randomUUID();
+    if (await this.database(OAUTH_PENDING).where({ state_hash: stateHash }).whereNull('claim').update({ claim }) !== 1) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
+    try { return await this.completeClaimed(actor, sessionId, query, { state_hash: stateHash, claim }); }
+    finally { await this.database(OAUTH_PENDING).where({ state_hash: stateHash, claim }).delete(); }
+  }
+  // eslint-disable-next-line complexity -- every callback check refuses before the exchange
+  private async completeClaimed(actor: string, sessionId: string, query: { code?: unknown; error?: unknown; iss?: unknown }, attempt: { state_hash: string; claim: string }): Promise<{ name: string }> {
+    const stateHash = attempt.state_hash;
+    const row = await this.database(OAUTH_PENDING).where(attempt).first() as { instance_id: string; server_name: string; endpoint: string; actor: string; session_hash: string; sealed: string; details: string; expires_at: number } | undefined;
     if (!row || Number(row.expires_at) <= this.now()) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
     if (typeof sessionId !== 'string' || !sessionId || row.actor !== actor || !sameHash(row.session_hash, sessionHash(sessionId))) throw new ExtensionError(403, 'This sign-in was started in another session');
     await this.library.authorize(actor);
@@ -180,7 +193,7 @@ export class ExtensionOAuthStore {
     // RFC 9207: a mismatched issuer is a mix-up attack; a promised but missing one is refused too.
     if (query.iss !== undefined ? query.iss !== details.issuer : details.metadata.authorization_response_iss_parameter_supported) throw new ExtensionError(400, 'The authorization response came from another issuer');
     const { server, secret } = await currentServerCredential(this.library, row.server_name);
-    if (!isOAuthServer(server) || server.url !== row.endpoint || (server.clientId ?? undefined) !== details.clientId) throw new ExtensionError(409, 'The server changed during sign-in; connect again');
+    if (!signInBelongsTo(server, row.endpoint, details.clientId)) throw new ExtensionError(409, 'The server changed during sign-in; connect again');
     const sealed = unsealExtensionSecrets(row.sealed, pendingIdentity(row.instance_id, row.server_name, stateHash), this.environment);
     const client: OAuthClient = { ...details.client, ...(details.client.registration === 'preregistered' ? (secret ? { clientSecret: secret } : {}) : sealed.clientSecret ? { clientSecret: sealed.clientSecret } : {}) };
     let tokens: OAuthTokens;
@@ -190,13 +203,17 @@ export class ExtensionOAuthStore {
     const now = this.now();
     const identity = { instance_id: row.instance_id, server_name: row.server_name, endpoint: row.endpoint, client_id: client.clientId };
     const values = {
-      ...identity, state: 'connected', registration: client.registration, issuer: details.issuer,
+      ...identity, generation: randomUUID(), refresh_lease_owner: null, state: 'connected', registration: client.registration, issuer: details.issuer,
       metadata: JSON.stringify({ ...details.metadata, authMethod: client.authMethod }), redirect_uri: details.redirectUri,
       sealed: sealExtensionSecrets(this.tokenFields({ ...tokens, ...(client.registration === 'dynamic' && client.clientSecret ? { clientSecret: client.clientSecret } : {}) }), connectionIdentity(identity), this.environment),
       refresh_lease_until: null, connected_by: actor, connected_at: now, updated_at: now,
     };
     await this.database.transaction(async trx => {
+      // Writing first takes the write lock, so the checks below see every committed Disconnect and library save.
+      if (await trx(OAUTH_PENDING).where(attempt).delete() !== 1) throw new ExtensionError(409, 'The sign-in was cancelled; connect again');
       await this.library.authorize(actor, trx);
+      const current = (await this.library.head(trx)).snapshot;
+      if (current.instanceId !== row.instance_id || !signInBelongsTo(current.servers.find(s => s.name === row.server_name), row.endpoint, details.clientId)) throw new ExtensionError(409, 'The server changed during sign-in; connect again');
       const existing = await trx(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).first('version');
       if (existing) await trx(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).update({ ...values, version: Number(existing.version) + 1 });
       else await trx(OAUTH_CONNECTIONS).insert({ ...values, version: 1 });
@@ -223,8 +240,9 @@ export class ExtensionOAuthStore {
     }
     await this.database.transaction(async trx => {
       await this.library.authorize(actor, trx);
-      await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId, server_name: name }).delete();
+      // Pending rows first: this also cancels a callback that is still exchanging its code.
       await trx(OAUTH_PENDING).where({ instance_id: instanceId, server_name: name }).delete();
+      await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId, server_name: name }).delete();
       if (row) await trx(OAUTH_AUDIT).insert({ instance_id: instanceId, server_name: name, action: 'disconnect', actor, at: this.now() });
     });
     return { revoked };
@@ -248,8 +266,8 @@ export class ExtensionOAuthStore {
     if (tokens.expiresAt === null || tokens.expiresAt - REFRESH_MARGIN_MS > this.now()) return tokens.accessToken;
     try { return await this.refresh(instanceId, server, tokens.accessToken); }
     catch (error) {
-      // A transient failure keeps a token that has not yet expired.
-      if (error instanceof OAuthNetworkError && tokens.expiresAt > this.now()) return tokens.accessToken;
+      // A transient failure keeps a token that has not yet expired, while its connection is still the current one.
+      if (error instanceof OAuthNetworkError && tokens.expiresAt > this.now() && (await this.connectedRow(instanceId, server)).generation === row.generation) return tokens.accessToken;
       throw error;
     }
   }
@@ -264,70 +282,85 @@ export class ExtensionOAuthStore {
     if (!row || row.state !== 'connected' || !connectionBelongsTo(row, server)) throw new ExtensionError(502, 'OAuth connection unavailable');
     return row;
   }
-  /** Single-flight per item, in this process and across processes through the refresh lease. */
-  private refresh(instanceId: string, server: ExtensionLibraryServer, replacing: string): Promise<string> {
-    const key = `${instanceId}/${server.name}`;
+  /** Single-flight per connection, in this process and across processes through the refresh lease. */
+  private async refresh(instanceId: string, server: ExtensionLibraryServer, replacing: string): Promise<string> {
+    const row = await this.connectedRow(instanceId, server);
+    // Keyed on the connection, not the item: callers of a new connection never join the refresh of the one it replaced.
+    const key = `${instanceId}/${server.name}/${row.generation}`;
     const running = inFlight.get(key);
     if (running) return running;
-    const work = this.refreshOnce(instanceId, server, replacing).finally(() => inFlight.delete(key));
+    const work = this.refreshOnce(row, server, replacing).finally(() => inFlight.delete(key));
     inFlight.set(key, work);
     return work;
   }
-  private async refreshOnce(instanceId: string, server: ExtensionLibraryServer, replacing: string): Promise<string> {
-    const key = { instance_id: instanceId, server_name: server.name };
-    let row = await this.connectedRow(instanceId, server);
+  private async refreshOnce(row: OAuthConnectionRow, server: ExtensionLibraryServer, replacing: string): Promise<string> {
     let tokens = this.unsealTokens(row);
     // Another caller already rotated the token this caller saw.
     if (tokens.accessToken !== replacing) return tokens.accessToken;
     const version = Number(row.version);
-    const leased = await this.database(OAUTH_CONNECTIONS).where({ ...key, version, state: 'connected' })
-      .where(q => q.whereNull('refresh_lease_until').orWhere('refresh_lease_until', '<', this.now())).update({ refresh_lease_until: this.now() + LEASE_MS });
+    const connection = { instance_id: row.instance_id, server_name: row.server_name, generation: row.generation };
+    const owner = randomUUID();
+    const leased = await this.database(OAUTH_CONNECTIONS).where({ ...connection, version, state: 'connected' })
+      .where(q => q.whereNull('refresh_lease_until').orWhere('refresh_lease_until', '<', this.now())).update({ refresh_lease_until: this.now() + LEASE_MS, refresh_lease_owner: owner });
     if (!leased) {
       // Another process holds the lease: wait for its result.
       const deadline = this.now() + LEASE_WAIT_MS;
       while (this.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100));
-        row = await this.connectedRow(instanceId, server);
-        if (Number(row.version) !== version) return this.unsealTokens(row).accessToken;
+        const current = await this.connectedRow(row.instance_id, server);
+        if (current.generation !== row.generation || Number(current.version) !== version) return this.unsealTokens(current).accessToken;
       }
       throw new OAuthNetworkError('OAuth refresh did not complete');
     }
-    const release = () => this.database(OAUTH_CONNECTIONS).where({ ...key, version }).update({ refresh_lease_until: null });
-    if (!tokens.refreshToken) { await this.needsSignIn(row); throw new OAuthProtocolError('The connection has no refresh token', true); }
+    // Completion, failure and release apply only to this connection, at the version read, under this lease.
+    const fence = { ...connection, version, refresh_lease_owner: owner };
+    const release = () => this.database(OAUTH_CONNECTIONS).where(fence).update({ refresh_lease_until: null, refresh_lease_owner: null });
+    if (!tokens.refreshToken) { await this.needsSignIn(row, owner); throw new OAuthProtocolError('The connection has no refresh token', true); }
     const metadata = JSON.parse(row.metadata) as AuthorizationServerMetadata;
     let refreshed: OAuthTokens | undefined;
     const attempts = this.options.refreshAttempts ?? 3;
     for (let attempt = 1; !refreshed; attempt++) {
-      try { refreshed = await refreshTokens(this.transport, metadata, await this.clientFor(row, tokens), { refreshToken: tokens.refreshToken, resource: row.endpoint }, this.now()); }
+      // Before every request: the connection is still this one and the lease is ours for longer than the request can take.
+      if (!await this.database(OAUTH_CONNECTIONS).where(fence).update({ refresh_lease_until: this.now() + LEASE_MS })) throw new OAuthConnectionReplacedError('OAuth connection changed during refresh');
+      let client: OAuthClient;
+      try { client = await this.clientFor(row, tokens); } catch (error) { await release(); throw error; }
+      try { refreshed = await refreshTokens(this.transport, metadata, client, { refreshToken: tokens.refreshToken, resource: row.endpoint }, this.now()); }
       catch (error) {
-        if (error instanceof OAuthProtocolError && error.authorization) { await this.needsSignIn(row); throw error; }
+        if (error instanceof OAuthProtocolError && error.authorization) { await this.needsSignIn(row, owner); throw error; }
         if (attempt >= attempts) { await release(); logger.warn({ server: server.name }, 'Extension OAuth refresh failed; the connection is unchanged'); throw error instanceof OAuthNetworkError ? error : new OAuthNetworkError('OAuth refresh failed'); }
         await new Promise(resolve => setTimeout(resolve, (this.options.retryDelayMs ?? 250) * attempt));
       }
     }
     // A server that does not rotate keeps the old refresh token (RFC 6749 section 6).
     tokens = { ...tokens, ...refreshed, refreshToken: refreshed.refreshToken ?? tokens.refreshToken, scopes: refreshed.scopes.length ? refreshed.scopes : tokens.scopes };
-    // The new access token and the rotated refresh token are written together, fenced on the version read.
-    const written = await this.database(OAUTH_CONNECTIONS).where({ ...key, version }).update({
-      sealed: sealExtensionSecrets(this.tokenFields(tokens), connectionIdentity(row), this.environment), version: version + 1, refresh_lease_until: null, updated_at: this.now(),
+    // The new access token and the rotated refresh token are written together, fenced on the connection, version and lease.
+    const written = await this.database(OAUTH_CONNECTIONS).where(fence).update({
+      sealed: sealExtensionSecrets(this.tokenFields(tokens), connectionIdentity(row), this.environment), version: version + 1, refresh_lease_until: null, refresh_lease_owner: null, updated_at: this.now(),
     });
-    if (!written) throw new OAuthNetworkError('OAuth connection changed during refresh');
+    if (!written) throw new OAuthConnectionReplacedError('OAuth connection changed during refresh');
     return tokens.accessToken;
   }
-  /** Move to Needs sign-in once; only the caller that makes the transition notifies. */
-  private async needsSignIn(row: OAuthConnectionRow): Promise<void> {
+  /** Move to Needs sign-in once, under the caller's lease; only the caller that makes the transition notifies. */
+  private async needsSignIn(row: OAuthConnectionRow, owner: string): Promise<void> {
     const key = { instance_id: row.instance_id, server_name: row.server_name };
-    const changed = await this.database(OAUTH_CONNECTIONS).where({ ...key, state: 'connected', version: row.version }).update({ state: 'needs_sign_in', refresh_lease_until: null, version: Number(row.version) + 1, updated_at: this.now() });
+    const changed = await this.database(OAUTH_CONNECTIONS).where({ ...key, generation: row.generation, state: 'connected', version: row.version, refresh_lease_owner: owner })
+      .update({ state: 'needs_sign_in', refresh_lease_until: null, refresh_lease_owner: null, version: Number(row.version) + 1, updated_at: this.now() });
     if (!changed) return;
     await this.database(OAUTH_AUDIT).insert({ ...key, action: 'needs_sign_in', actor: 'system', at: this.now() });
     logger.warn({ server: row.server_name }, 'Extension OAuth server needs a new sign-in');
     try { await (this.options.notify ?? notifyAdministrators(this.database))({ instanceId: row.instance_id, serverName: row.server_name, connectedBy: row.connected_by, connectedAt: Number(row.connected_at) }); }
     catch { logger.warn({ server: row.server_name }, 'Could not notify administrators that an extension OAuth server needs sign-in'); }
   }
+  /**
+   * The client of `row` for refresh and revocation. Only while the current
+   * library server still has the row's endpoint, authentication and client
+   * id: a secret entered for a changed server never goes to the old one.
+   */
   private async clientFor(row: OAuthConnectionRow, tokens: SealedTokens): Promise<OAuthClient> {
     const authMethod = (JSON.parse(row.metadata) as { authMethod?: OAuthClient['authMethod'] }).authMethod ?? 'none';
+    const { instanceId, server, secret } = await currentServerCredential(this.library, row.server_name);
+    if (instanceId !== row.instance_id || !connectionBelongsTo(row, server)) throw new OAuthConnectionReplacedError('The server changed; its connection is discarded');
     if (row.registration === 'preregistered') {
-      const { secret } = await currentServerCredential(this.library, row.server_name);
       return { registration: 'preregistered', clientId: row.client_id, ...(secret ? { clientSecret: secret, authMethod: authMethod === 'none' ? 'client_secret_basic' : authMethod } : { authMethod: 'none' }) };
     }
     return { registration: row.registration, clientId: row.client_id, ...(tokens.clientSecret ? { clientSecret: tokens.clientSecret } : {}), authMethod };

@@ -5,7 +5,7 @@ import type { ExtensionLibraryServerInput } from '@propr/shared';
 import { ExtensionLibraryStore, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
 import { ExtensionOAuthStore, setExtensionOAuth, type ExtensionOAuthOptions } from '../src/extensions/extensionOAuthStore.js';
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
-import { createOAuthHttpsTransport, oauthRequest } from '../src/extensions/extensionOAuthHttp.js';
+import { createOAuthHttpsTransport, oauthRequest, type OAuthHttpRequest, type OAuthHttpResponse, type OAuthTransport } from '../src/extensions/extensionOAuthHttp.js';
 import { discoverOAuth, parseBearerChallenge, requestTokens } from '../src/extensions/extensionOAuth.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -45,7 +45,7 @@ async function fixture(t: TestContext, provider: SyntheticOAuthOptions = { adver
   };
   const call = (token: string, id = 1) => extensionGatewayCall(store, token, 'docs', { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'lookup', arguments: {} } }, synthetic.send);
   const connectionRows = () => database('extension_oauth_connections').select();
-  return { database, store, oauth, synthetic, notifications, save, consent, connect, launch, call, connectionRows, tick: (ms: number) => { clock += ms; } };
+  return { database, store, oauth, synthetic, notifications, save, consent, connect, launch, call, connectionRows, tick: (ms: number) => { clock += ms; }, now: () => clock };
 }
 
 test('discovery follows the 401 challenge and falls back to the well-known location, and Check stores nothing', async t => {
@@ -318,4 +318,144 @@ test('tokens and client secrets never appear in projections, revisions, logs, ta
     assert.ok(!surfaces.includes(value), 'no token or registration secret in any projection or log');
     assert.ok(!sealed.includes(value), 'stored only in sealed form');
   }
+});
+
+/** The synthetic provider behind a hook that sees every request and may act or wait around the provider's answer. */
+type TransportHook = (request: OAuthHttpRequest, forward: () => Promise<OAuthHttpResponse>) => Promise<OAuthHttpResponse>;
+async function hooked(t: TestContext, provider: SyntheticOAuthOptions, hook: TransportHook, options: Partial<ExtensionOAuthOptions> = {}) {
+  let forward!: OAuthTransport;
+  const f = await fixture(t, provider, { ...options, transport: request => hook(request, () => forward(request)) });
+  forward = f.synthetic.transport;
+  return f;
+}
+const grantType = (request: OAuthHttpRequest) => new URLSearchParams(request.body ?? '').get('grant_type');
+const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
+const REPLACEMENT_SECRET = 'REPLACEMENT_CLIENT_SECRET_SENTINEL_0002';
+
+test('Disconnect or a binding change while the code exchange is outstanding cancels the sign-in', async t => {
+  const changes = [
+    { name: 'disconnect', provider: { advertise: { dynamic: true } }, server: oauthServer(), secrets: {}, change: (f: Awaited<ReturnType<typeof hooked>>) => f.oauth.disconnect('1', 'docs') },
+    { name: 'new URL', provider: { advertise: { dynamic: true } }, server: oauthServer(), secrets: {}, change: (f: Awaited<ReturnType<typeof hooked>>) => f.save([oauthServer({ url: 'https://8.8.8.8/v2/mcp' })]) },
+    { name: 'removed', provider: { advertise: { dynamic: true } }, server: oauthServer(), secrets: {}, change: (f: Awaited<ReturnType<typeof hooked>>) => f.save([]) },
+    { name: 'new client id', provider: { advertise: {} }, server: oauthServer({ clientId: PREREGISTERED_CLIENT.id }), secrets: { docs: PREREGISTERED_CLIENT.secret }, change: (f: Awaited<ReturnType<typeof hooked>>) => f.save([oauthServer({ clientId: 'replacement-client' })], { docs: REPLACEMENT_SECRET }) },
+  ];
+  for (const item of changes) {
+    const exchanging = deferred(); const answer = deferred();
+    // The provider has issued the tokens; their delivery is outstanding while the administrator acts.
+    const f = await hooked(t, item.provider, async (request, forward) => {
+      const response = await forward();
+      if (grantType(request) === 'authorization_code') { exchanging.resolve(); await answer.promise; }
+      return response;
+    });
+    await f.save([item.server], { ...item.secrets });
+    const { params } = await f.consent();
+    const callback = f.oauth.completeSignIn('1', 'session-a', params);
+    await exchanging.promise;
+    await item.change(f);
+    answer.resolve();
+    await assert.rejects(callback, /cancelled|changed during sign-in/, item.name);
+    assert.deepEqual(await f.connectionRows(), [], `${item.name}: no connection is restored`);
+    assert.deepEqual(await f.database('extension_oauth_pending').select(), [], `${item.name}: the attempt is gone`);
+    assert.ok(!(await f.oauth.audit('1')).some(e => e.action === 'connect'), item.name);
+  }
+});
+
+test('a refresh of a replaced connection neither overwrites its successor nor is joined by it', async t => {
+  for (const phase of ['write', 'single-flight'] as const) {
+    const delivering = deferred(); const answer = deferred(); let refreshes = 0;
+    const f = await hooked(t, { advertise: { dynamic: true }, accessTtl: 120 }, async (request, forward) => {
+      const response = await forward();
+      // Only the first refresh: the provider rotated, its answer is outstanding.
+      if (grantType(request) === 'refresh_token' && ++refreshes === 1) { delivering.resolve(); await answer.promise; }
+      return response;
+    });
+    await f.save([oauthServer()]);
+    await f.connect();
+    const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+    f.tick(90 * 1000);
+    const old = f.oauth.accessToken(instanceId, server);
+    const oldSettled = old.then(() => 'resolved', () => 'rejected');
+    await delivering.promise;
+    await f.oauth.disconnect('1', 'docs');
+    await f.connect();
+    const [replacement] = await f.connectionRows();
+    assert.equal(Number(replacement.version), 1, 'the successor starts again at version 1');
+    const current = await f.oauth.accessToken(instanceId, server);
+    if (phase === 'single-flight') {
+      // A rejected token of the new connection refreshes on its own instead of waiting for the old refresh.
+      const own = await Promise.race([f.oauth.refreshAfterRejection(instanceId, server, current), new Promise<string>((_, reject) => setTimeout(() => reject(new Error('joined the refresh of the replaced connection')), 2000))]);
+      assert.notEqual(own, current);
+      assert.equal(refreshes, 2);
+    }
+    const [before] = await f.connectionRows();
+    answer.resolve();
+    assert.equal(await oldSettled, 'rejected');
+    await assert.rejects(old, /changed during refresh/);
+    const [after] = await f.connectionRows();
+    assert.deepEqual(after, before, 'the old result is discarded');
+    // The successor's tokens still open under its own identity and work upstream.
+    const { token } = await f.launch();
+    assert.match(JSON.stringify(await f.call(token)), /Found the document/);
+  }
+});
+
+test('a refresh retry never sends a replacement client secret to the previous authorization server', async t => {
+  const changes = [
+    { name: 'new client id', server: oauthServer({ clientId: 'replacement-client' }) },
+    { name: 'new URL', server: oauthServer({ clientId: PREREGISTERED_CLIENT.id, url: 'https://8.8.8.8/v2/mcp' }) },
+  ];
+  for (const item of changes) {
+    const sent: OAuthHttpRequest[] = []; let refreshes = 0;
+    const f = await hooked(t, { advertise: {}, accessTtl: 120 }, async (request, forward) => {
+      sent.push(request);
+      if (grantType(request) === 'refresh_token' && ++refreshes === 1) {
+        // During the transient failure the administrator changes the server and enters its new secret.
+        await f.save([item.server], { docs: REPLACEMENT_SECRET });
+        return { status: 503, headers: { 'content-type': 'application/json' }, body: '{"error":"temporarily_unavailable"}' };
+      }
+      return forward();
+    });
+    await f.save([oauthServer({ clientId: PREREGISTERED_CLIENT.id })], { docs: PREREGISTERED_CLIENT.secret });
+    await f.connect();
+    const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+    f.tick(90 * 1000);
+    await assert.rejects(f.oauth.accessToken(instanceId, server));
+    assert.equal(refreshes, 1, `${item.name}: no retry for a discarded connection`);
+    const wire = JSON.stringify(sent.map(r => ({ ...r, decoded: Buffer.from((/^Basic (.+)$/.exec(r.headers?.Authorization ?? '') ?? ['', ''])[1], 'base64').toString() })));
+    assert.ok(!wire.includes(REPLACEMENT_SECRET), `${item.name}: the replacement secret never left`);
+  }
+});
+
+test('the refresh lease covers every retry, so another process neither refreshes again nor marks the connection Needs sign-in', async t => {
+  const third = deferred(); const answer = deferred(); let refreshes = 0;
+  const f = await hooked(t, { advertise: { dynamic: true }, accessTtl: 120 }, async (request, forward) => {
+    if (grantType(request) !== 'refresh_token') return forward();
+    refreshes++;
+    // Two transient failures that each take almost the whole request timeout.
+    if (refreshes <= 2) { f.tick(9900); return { status: 503, headers: { 'content-type': 'application/json' }, body: '{"error":"temporarily_unavailable"}' }; }
+    // The third request rotates at once, but its answer arrives after the original 30 s lease would have ended.
+    const response = await forward();
+    if (refreshes === 3) { f.tick(10_600); third.resolve(); await answer.promise; }
+    return response;
+  });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+  f.tick(90 * 1000);
+  const processA = f.oauth.accessToken(instanceId, server);
+  await third.promise;
+  // A second process: its own module instance, so it shares no in-memory single-flight state.
+  const other = await import('../src/extensions/extensionOAuthStore.js?second-process') as typeof import('../src/extensions/extensionOAuthStore.js');
+  const processB = new other.ExtensionOAuthStore(f.store, { transport: request => f.synthetic.transport(request), now: f.now, notify: async event => { f.notifications.push(event); }, retryDelayMs: 1 })
+    .accessToken(instanceId, server);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  answer.resolve();
+  const [a, b] = await Promise.all([processA, processB]);
+  assert.equal(b, a, 'the second process uses the result of the first');
+  assert.equal(refreshes, 3);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 1, 'only the rotating request reached the provider: no second exchange of the old refresh token');
+  const [row] = await f.connectionRows();
+  assert.equal(row.state, 'connected');
+  assert.equal(row.refresh_lease_owner, null);
+  assert.equal(f.notifications.length, 0);
 });

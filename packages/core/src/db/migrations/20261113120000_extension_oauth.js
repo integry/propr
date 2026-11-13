@@ -17,8 +17,10 @@ export async function up(knex) {
       // Public authorization server metadata used for refresh and revocation.
       t.text('issuer').notNullable(); t.text('metadata').notNullable(); t.text('redirect_uri').notNullable();
       t.text('sealed').notNullable();
-      // Optimistic concurrency of token rotation and the cross-process refresh lease.
-      t.integer('version').notNullable().defaultTo(1); t.bigInteger('refresh_lease_until');
+      // A fresh id per sign-in: refreshes, failures and leases of a replaced connection never touch its successor.
+      t.string('generation').notNullable();
+      // Optimistic concurrency of token rotation and the cross-process refresh lease, fenced on its owner.
+      t.integer('version').notNullable().defaultTo(1); t.bigInteger('refresh_lease_until'); t.string('refresh_lease_owner');
       t.string('connected_by').notNullable(); t.bigInteger('connected_at').notNullable(); t.bigInteger('updated_at').notNullable();
       t.primary(['instance_id', 'server_name']);
     });
@@ -29,6 +31,8 @@ export async function up(knex) {
       t.text('endpoint').notNullable(); t.string('actor').notNullable(); t.string('session_hash').notNullable();
       t.text('sealed').notNullable(); t.text('details').notNullable();
       t.bigInteger('expires_at').notNullable();
+      // Set by the callback that consumed the state; Disconnect and binding changes delete the row to cancel it.
+      t.string('claim');
     });
   }
   if (!await knex.schema.hasTable('extension_oauth_audit')) {
