@@ -1,7 +1,8 @@
 import { isRescueRef } from '../git/rescueRefPrefix.js';
 import { isStatusBlockOnlyEdit } from '../services/pullRequestStatus/pullRequestStatusBlock.js';
+import { isRecordedPullRequestStatusWrite } from '../services/pullRequestStatus/pullRequestStatusProvenance.js';
 import {
-    requestPullRequestStatusSync, requestPullRequestStatusSyncForBase, requestPullRequestStatusSyncForCommit,
+    pullRequestStatusRedis, requestPullRequestStatusSync, requestPullRequestStatusSyncForBase, requestPullRequestStatusSyncForCommit,
 } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 import { isBranchUpdatePush, PUSH_BRANCH_REF_PREFIX } from './webhookEventGates.js';
 
@@ -23,11 +24,26 @@ type Payload = Record<string, unknown> & {
 const STATUS_PULL_REQUEST_ACTIONS = new Set(['opened', 'reopened', 'synchronize', 'closed', 'edited', 'ready_for_review', 'converted_to_draft']);
 
 /**
- * ProPR's own status block edit comes back as a `pull_request` `edited`
- * event. It must not trigger another status update or any agent work.
+ * What a `pull_request` `edited` event that changed nothing outside the status
+ * block is. `own`: ProPR's status update coming back, which must trigger no
+ * further work. `foreign`: someone else deleted or rewrote the block, so the
+ * status must be reconciled; it is still no work for the other handlers.
+ * Null for every other event.
  */
-export function isOwnPullRequestStatusEdit(payload: unknown, eventType: string): boolean {
-    return eventType === 'pull_request' && isStatusBlockOnlyEdit(payload as Payload);
+export type PullRequestStatusEdit = 'own' | 'foreign' | null;
+
+/**
+ * Only a block ProPR recorded writing (pullRequestStatusProvenance) proves the
+ * edit is ProPR's own; the body lock cannot keep a person from editing the
+ * block in GitHub, and the event names no author ProPR could trust.
+ */
+export async function classifyPullRequestStatusEdit(payload: unknown, eventType: string): Promise<PullRequestStatusEdit> {
+    const event = payload as Payload;
+    if (eventType !== 'pull_request' || !isStatusBlockOnlyEdit(event)) return null;
+    const repository = event.repository?.full_name;
+    const prNumber = event.pull_request?.number;
+    if (typeof repository !== 'string' || typeof prNumber !== 'number') return 'foreign';
+    return await isRecordedPullRequestStatusWrite(pullRequestStatusRedis(), repository, prNumber, event.pull_request?.body) ? 'own' : 'foreign';
 }
 
 /**

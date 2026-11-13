@@ -4,6 +4,8 @@
  * sync module registers the runner when a process enables status maintenance.
  * Kept dependency-free so any module can import it without an import cycle.
  */
+import type { PullRequestStatusProvenanceRedis } from './pullRequestStatusProvenance.js';
+
 export type PullRequestStatusSyncRunner = (repository: string, prNumber: number) => void;
 
 let runner: PullRequestStatusSyncRunner | null = null;
@@ -75,6 +77,20 @@ export function requestPullRequestStatusSyncForBase(
     } catch {
         // A status update must never fail the event that signalled it.
     }
+}
+
+/** The Redis the status writes are recorded in (pullRequestStatusProvenance); registered with the sync runner. */
+export type PullRequestStatusRedisProvider = () => PullRequestStatusProvenanceRedis | null;
+
+let redisProvider: PullRequestStatusRedisProvider | null = null;
+
+export function setPullRequestStatusRedisProvider(next: PullRequestStatusRedisProvider | null): void {
+    redisProvider = next;
+}
+
+/** Null while this process does not maintain the status: then no write was recorded here to consult. */
+export function pullRequestStatusRedis(): PullRequestStatusProvenanceRedis | null {
+    return redisProvider?.() ?? null;
 }
 
 const PULL_REQUEST_TASK_TYPES = new Set(['pr-comment', 'review', 'merge_conflict']);

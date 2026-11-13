@@ -383,7 +383,7 @@ test('bodies that differ only in the update time are the same status', () => {
     assert.equal(sameRenderedStatus(a, applyPullRequestStatusBlock(HUMAN_BODY, blockFor({ latestReviewScore: 6 }))), false);
 });
 
-test('an edited event that only changed the status block is recognised as ProPR\'s own edit', () => {
+test('an edited event that only changed the status block (text, insertion or removal) is told from other edits', () => {
     const before = applyPullRequestStatusBlock(HUMAN_BODY, blockFor({ queuedJobs: 1 }));
     const after = applyPullRequestStatusBlock(HUMAN_BODY, blockFor({}));
     assert.equal(isStatusBlockOnlyEdit({ action: 'edited', changes: { body: { from: before } }, pull_request: { body: after } }), true);

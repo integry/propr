@@ -12,7 +12,7 @@ import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRH
 import { getClosedPullRequestCiRedis, recordClosedPullRequestForCiCancellation } from './closedPullRequestCi.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import { handleAutoMergePolicyPullRequestEvent } from '../services/autoMergeGate.js';
-import { isOwnPullRequestStatusEdit, signalPullRequestStatusFromWebhook } from './pullRequestStatusWebhook.js';
+import { classifyPullRequestStatusEdit, signalPullRequestStatusFromWebhook } from './pullRequestStatusWebhook.js';
 import type { IssuesEvent, IssueCommentEvent, PullRequestReviewCommentEvent, PullRequestEvent, CheckRunEvent } from '@octokit/webhooks-types';
 import {
     getRepositoryFullName, isIssuesEvent, isIssuesLabeledEvent, isIssueCommentEvent, isIssueCommentCreatedEvent,
@@ -420,12 +420,19 @@ export async function processWebhookEvent(
         }
     }
 
-    // ProPR's own status block edit: nothing else changed, so no handler runs.
-    if (isOwnPullRequestStatusEdit(payload, eventType)) {
+    // An edit confined to the status block is no work for any handler. ProPR's
+    // own update needs nothing more; someone else's (the block deleted or
+    // rewritten in GitHub) is put right by a status update.
+    const statusEdit = await classifyPullRequestStatusEdit(payload, eventType);
+    if (statusEdit === 'own') {
         correlatedLogger.debug({ repository, event: eventType }, 'Ignoring the pull request edit made by a status update');
         return { status: 'ignored', reason: 'pull_request_status_edit' };
     }
     signalPullRequestStatusFromWebhook(payload, eventType);
+    if (statusEdit === 'foreign') {
+        correlatedLogger.info({ repository, event: eventType }, 'The pull request status block was edited by someone else; updating it');
+        return { status: 'accepted', reason: 'pull_request_status_block_edited', billing: { seatConsumed: false } };
+    }
 
     const cancellation = handleIntentWithdrawal(payload, eventType).catch(error => {
         correlatedLogger.warn({ error }, 'Intent withdrawal failed; continuing webhook handlers, polling will retry cancellation');

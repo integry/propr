@@ -10,7 +10,10 @@ import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
-import { setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
+import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
+import {
+    setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusRedisProvider, setPullRequestStatusSyncRunner,
+} from './pullRequestStatusSignal.js';
 import {
     schedulePullRequestStatusBackfill,
     schedulePullRequestStatusForBasePush,
@@ -80,6 +83,7 @@ export function enablePullRequestStatusSync(deps: Partial<PullRequestStatusSyncD
     setPullRequestStatusSyncRunner(schedulePullRequestStatusSync);
     setPullRequestStatusCommitSyncRunner(schedulePullRequestStatusSyncForCommit);
     setPullRequestStatusBaseSyncRunner(schedulePullRequestStatusSyncForBase);
+    setPullRequestStatusRedisProvider(() => resolveDeps({}).redis);
     if (options.backfill && !backfillStarted) {
         backfillStarted = true;
         startPullRequestStatusBackfillRun(reconcileRunner);
@@ -94,6 +98,7 @@ export function disablePullRequestStatusSync(): void {
     setPullRequestStatusSyncRunner(null);
     setPullRequestStatusCommitSyncRunner(null);
     setPullRequestStatusBaseSyncRunner(null);
+    setPullRequestStatusRedisProvider(null);
     for (const entry of scheduled.values()) if (entry.timer) clearTimeout(entry.timer);
     scheduled.clear();
     for (const timer of commitLookups.values()) clearTimeout(timer);
@@ -252,6 +257,8 @@ async function syncPullRequestStatusOnce(
         // The facts read can outlast the lease; a writer that took the lock
         // since may have changed the body, so this read must not be written.
         await lease.assertHeld();
+        // Recorded before the PATCH, so the edited webhook it causes is recognised as ProPR's own however fast it arrives.
+        await recordPullRequestStatusWrite(deps.redis, repository, prNumber, extractPullRequestStatusBlock(next));
         const [owner, repo] = repository.split('/');
         await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
         logger.debug({ repository, prNumber, removed: !written }, 'Updated the pull request status block');

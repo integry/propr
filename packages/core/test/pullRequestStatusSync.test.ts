@@ -18,8 +18,9 @@ const { loadPullRequestStatus, loadPullRequestStatusChecks, loadPullRequestStatu
 const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = await import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 // A second instance of the lock module stands in for another process (daemon vs worker): it has its own in-process chains.
 const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
-const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
-const { signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
+const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
+const { isRecordedPullRequestStatusWrite, resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
+const { classifyPullRequestStatusEdit, signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 const { resolveRepositoryPrTitleStatus } = await import('../src/config/repositoryPrTitleStatusSetting.js');
 
@@ -152,6 +153,7 @@ beforeEach(async () => {
     github = new FakeGitHub();
     redis = new FakeRedis();
     clock = new Date('2026-11-13T09:00:00Z');
+    resetPullRequestStatusProvenanceForTests();
 });
 
 function deps(): Partial<PullRequestStatusSyncDeps> {
@@ -333,18 +335,130 @@ test('other body writers keep the status block and skip unchanged bodies', async
     assert.equal(github.patches.length, patches, 'unchanged body is not sent');
 });
 
+/** The `edited` webhook GitHub sends for a body change from `from` to the pull request's current body. */
+function editedWebhook(from: string, sender = 'octocat'): Record<string, unknown> {
+    return {
+        action: 'edited',
+        changes: { body: { from } },
+        repository: { full_name: REPOSITORY },
+        pull_request: { number: PR, body: github.pull.body, title: 'x', head: { ref: '12-feature' }, base: { ref: 'main' } },
+        sender: { login: sender },
+    };
+}
+
+/** Runs `work` as the webhook process: status maintenance on, every status signal recorded instead of run. */
+async function asWebhookProcess<T>(work: (signalled: Array<[string, number]>) => Promise<T>): Promise<T> {
+    const signalled: Array<[string, number]> = [];
+    enablePullRequestStatusSync(deps());
+    setPullRequestStatusSyncRunner((repository, prNumber) => { signalled.push([repository, prNumber]); });
+    try {
+        return await work(signalled);
+    } finally {
+        disablePullRequestStatusSync();
+    }
+}
+
 test('an edited webhook caused by a status update triggers no further work', async () => {
     const before = HUMAN_BODY;
     await addTask('issue', 'completed');
     await sync();
-    const disposition = await processWebhookEvent({
-        action: 'edited',
-        changes: { body: { from: before } },
-        repository: { full_name: REPOSITORY },
-        pull_request: { number: PR, body: github.pull.body, title: 'x', head: { ref: '12-feature' }, base: { ref: 'main' } },
-        sender: { login: 'propr[bot]' },
-    }, 'pull_request', 'corr-1');
-    assert.deepEqual(disposition, { status: 'ignored', reason: 'pull_request_status_edit' });
+    await asWebhookProcess(async signalled => {
+        const disposition = await processWebhookEvent(editedWebhook(before, 'propr[bot]'), 'pull_request', 'corr-1');
+        assert.deepEqual(disposition, { status: 'ignored', reason: 'pull_request_status_edit' });
+        assert.deepEqual(signalled, [], 'the status is not read again for ProPR\'s own write');
+
+        // The webhook process has no memory of the write; the record it finds is the one shared through Redis.
+        resetPullRequestStatusProvenanceForTests();
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(before, 'propr[bot]'), 'pull_request'), 'own');
+        assert.deepEqual(await processWebhookEvent(editedWebhook(before, 'propr[bot]'), 'pull_request', 'corr-2'), { status: 'ignored', reason: 'pull_request_status_edit' });
+        assert.deepEqual(signalled, []);
+    });
+});
+
+test('a person deleting the status block gets it reconciled, without other work', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    const written = github.pull.body;
+    github.pull.body = HUMAN_BODY;
+    await asWebhookProcess(async signalled => {
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(written), 'pull_request'), 'foreign');
+        const disposition = await processWebhookEvent(editedWebhook(written), 'pull_request', 'corr-1');
+        assert.deepEqual(disposition, { status: 'accepted', reason: 'pull_request_status_block_edited', billing: { seatConsumed: false } });
+        assert.deepEqual(signalled, [[REPOSITORY, PR]], 'the status update is scheduled; no handler ran');
+    });
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /✅ Ready/);
+    assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+});
+
+test('a person replacing the status block\'s text gets it reconciled', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    const written = github.pull.body;
+    github.pull.body = written.replace(statusLine(), '**ProPR** ⚠️ Needs you · typed by a person · updated 09:01 UTC');
+    assert.notEqual(github.pull.body, written);
+    await asWebhookProcess(async signalled => {
+        assert.deepEqual(await processWebhookEvent(editedWebhook(written), 'pull_request', 'corr-1'),
+            { status: 'accepted', reason: 'pull_request_status_block_edited', billing: { seatConsumed: false } });
+        assert.deepEqual(signalled, [[REPOSITORY, PR]]);
+    });
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /✅ Ready/);
+    assert.doesNotMatch(github.pull.body, /typed by a person/);
+});
+
+test('a person deleting the block a pull request was created with gets it reconciled', async () => {
+    // The creation block is written with the pull request (an opened event), never as an edit ProPR recorded.
+    const initial = await initialBlock();
+    const created = `${initial}\n\n${HUMAN_BODY}`;
+    await addTask('issue', 'completed');
+    github.pull.body = HUMAN_BODY;
+    await asWebhookProcess(async signalled => {
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(created), 'pull_request'), 'foreign');
+        await processWebhookEvent(editedWebhook(created), 'pull_request', 'corr-1');
+        assert.deepEqual(signalled, [[REPOSITORY, PR]]);
+    });
+});
+
+test('a block the status update removed is ProPR\'s own edit; one a person removed on a closed pull request is not', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    const withBlock = github.pull.body;
+    github.pull.state = 'closed';
+    assert.equal(await sync(), 'removed');
+    await asWebhookProcess(async signalled => {
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(withBlock, 'propr[bot]'), 'pull_request'), 'own');
+        assert.deepEqual(await processWebhookEvent(editedWebhook(withBlock, 'propr[bot]'), 'pull_request', 'corr-1'), { status: 'ignored', reason: 'pull_request_status_edit' });
+        assert.deepEqual(signalled, []);
+    });
+});
+
+test('the write is recorded before the PATCH, and a browser edit of the same block still matches', async () => {
+    await addTask('issue', 'completed');
+    const request = github.request.bind(github);
+    let recordedAtPatch: boolean | null = null;
+    github.request = (async (route: string, params: Record<string, unknown>) => {
+        if (route.startsWith('PATCH ')) {
+            // Seen from another process: only the record shared through Redis counts.
+            resetPullRequestStatusProvenanceForTests();
+            recordedAtPatch = await isRecordedPullRequestStatusWrite(redis as never, REPOSITORY, PR, params.body as string);
+        }
+        return await request(route, params);
+    }) as typeof github.request;
+    try {
+        assert.equal(await sync(), 'updated');
+    } finally {
+        github.request = request;
+    }
+    assert.equal(recordedAtPatch, true, 'the webhook of the write can never arrive before its record');
+    assert.equal(await isRecordedPullRequestStatusWrite(redis as never, REPOSITORY, PR, github.pull.body.replace(/\n/g, '\r\n')), true);
+    assert.equal(await isRecordedPullRequestStatusWrite(redis as never, REPOSITORY, PR, github.pull.body.replace('updated', 'edited')), false);
+    assert.equal(await isRecordedPullRequestStatusWrite(redis as never, REPOSITORY, PR, HUMAN_BODY), false, 'a removal ProPR never made');
+
+    // Without status maintenance in this process there is no record to consult: the edit is not ProPR's own.
+    resetPullRequestStatusProvenanceForTests();
+    assert.equal(await classifyPullRequestStatusEdit(editedWebhook(HUMAN_BODY, 'propr[bot]'), 'pull_request'), 'foreign');
+    assert.equal(await classifyPullRequestStatusEdit({ ...editedWebhook(HUMAN_BODY), pull_request: { number: PR, body: `${github.pull.body}\nmore` } }, 'pull_request'), null, 'not a block-only edit');
 });
 
 test('check runs past the page budget are not complete, so the pull request is never ready', async () => {

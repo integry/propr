@@ -187,7 +187,10 @@ interface EditedPullRequestPayload {
 
 /**
  * A `pull_request` `edited` event whose only change is inside the status
- * block: ProPR's own status update. It must not trigger any further work.
+ * block (its text, or the block added or removed). ProPR's own status updates
+ * look like this, but so does a person deleting or rewriting the block, so this
+ * alone proves no authorship: see pullRequestStatusProvenance for that. Such an
+ * edit is never work for the other handlers.
  */
 export function isStatusBlockOnlyEdit(payload: EditedPullRequestPayload): boolean {
     if (payload.action !== 'edited' || !payload.changes) return false;

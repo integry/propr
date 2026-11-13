@@ -5,3 +5,4 @@ export * from './pullRequestStatusSync.js';
 export * from './pullRequestStatusSignal.js';
 export * from '../../config/repositoryPrTitleStatusSetting.js';
 export * from './pullRequestBodyLock.js';
+export * from './pullRequestStatusProvenance.js';
