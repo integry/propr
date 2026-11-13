@@ -41,7 +41,9 @@ const httpsUrl = (value: unknown): value is string => {
   if (typeof value !== 'string' || value.length > 2048) return false;
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && !url.hash; } catch { return false; }
 };
-const sameResource = (a: string, b: string) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+/** Drops trailing slashes in linear time (a `/\/+$/` replace backtracks on long slash runs). */
+const trimSlashes = (value: string) => { let end = value.length; while (end > 0 && value.charCodeAt(end - 1) === 47) end--; return value.slice(0, end); };
+const sameResource = (a: string, b: string) => trimSlashes(a) === trimSlashes(b);
 
 /** `resource_metadata` and `scope` of a Bearer challenge. */
 export function parseBearerChallenge(header: string | undefined): { resourceMetadata?: string; scope?: string } {
@@ -57,12 +59,12 @@ async function getJson(transport: OAuthTransport, url: string): Promise<Record<s
 }
 /** The well-known locations of a resource's metadata, path-specific first. */
 export function protectedResourceMetadataUrls(serverUrl: string): string[] {
-  const url = new URL(serverUrl); const path = url.pathname.replace(/\/+$/, '');
+  const url = new URL(serverUrl); const path = trimSlashes(url.pathname);
   return [...new Set([...(path ? [`${url.origin}/.well-known/oauth-protected-resource${path}`] : []), `${url.origin}/.well-known/oauth-protected-resource`])];
 }
 /** RFC 8414 and OpenID Connect discovery locations for an issuer, in the MCP specification's order. */
 export function authorizationServerMetadataUrls(issuer: string): string[] {
-  const url = new URL(issuer); const path = url.pathname.replace(/\/+$/, '');
+  const url = new URL(issuer); const path = trimSlashes(url.pathname);
   return path
     ? [`${url.origin}/.well-known/oauth-authorization-server${path}`, `${url.origin}/.well-known/openid-configuration${path}`, `${url.origin}${path}/.well-known/openid-configuration`]
     : [`${url.origin}/.well-known/oauth-authorization-server`, `${url.origin}/.well-known/openid-configuration`];
@@ -112,7 +114,7 @@ export async function discoverOAuth(transport: OAuthTransport, serverUrl: string
   if (!resourceDocument) throw new OAuthProtocolError('The MCP server published no protected resource metadata');
   const resource = resourceDocument.resource; const servers = strings(resourceDocument.authorization_servers);
   // RFC 9728: the metadata must name this resource (the server URL or a path prefix of it on the same origin).
-  if (typeof resource !== 'string' || !httpsUrl(resource) || !(sameResource(resource, serverUrl) || (new URL(resource).origin === new URL(serverUrl).origin && serverUrl.startsWith(resource.replace(/\/+$/, '') + '/')))) throw new OAuthProtocolError('The protected resource metadata names another resource');
+  if (typeof resource !== 'string' || !httpsUrl(resource) || !(sameResource(resource, serverUrl) || (new URL(resource).origin === new URL(serverUrl).origin && serverUrl.startsWith(trimSlashes(resource) + '/')))) throw new OAuthProtocolError('The protected resource metadata names another resource');
   const issuer = servers?.find(httpsUrl);
   if (!issuer || new URL(issuer).search) throw new OAuthProtocolError('The protected resource metadata names no authorization server');
   let metadata: AuthorizationServerMetadata | null = null;
