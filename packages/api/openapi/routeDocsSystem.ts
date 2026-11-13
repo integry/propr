@@ -64,6 +64,9 @@ export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
   'POST /api/instance/extensions/v1/tools/discover': {
     operationId: 'discoverAgentExtensionTools', summary: 'Probe a public HTTPS MCP endpoint without credentials; return valid tool names only.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'url only. Requires the extension preflight JSON header.' }, responses: { 200: { description: 'Tool names only.', schema: JsonObject } },
   },
+  'POST /api/instance/extensions/v1/packages/resolve': {
+    operationId: 'resolveAgentExtensionPackage', summary: 'Check a local package server: look up an exact npm package version in the registry and report its integrity value and executable. Nothing is downloaded, installed or executed.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'ecosystem (npm), package, exact version and optional executable name. Ranges and tags are rejected.' }, responses: { 200: { description: 'Resolved version, SHA-512 integrity value, the executable that will run and every executable the package declares.', schema: JsonObject } },
+  },
   'POST /api/instance/extensions/v1/skills/github-source': {
     operationId: 'resolveAgentExtensionGitSource', summary: 'List branches and tags or resolve a selected ref to an immutable commit.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'Authorized repository and optional ref. Lists at most 100 branches and 100 tags.' }, responses: { 200: { description: 'Ref choices or exact commit for confirmation.', schema: JsonObject } },
   },

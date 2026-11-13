@@ -11,6 +11,7 @@ import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../git
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
 import { extensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
+import { resolveNpmPackage } from '../../core/src/extensions/packageRegistry.js';
 import { createExtensionOAuthRoutes, extensionOAuthInstanceInfo } from './extensionOAuthRoutes.js';
 
 export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(db)) {
@@ -43,7 +44,8 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       // OAuth connection state is credential state outside the revision: state, who connected and when, granted scopes. Never tokens.
       return { contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library, bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries(), usage: await extensionLibraryUsage(store, library), oauth: await extensionOAuthInstanceInfo(store, library, store.environment) };
     }),
-    save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expectedRevision']); return { library: await store.saveLibrary(actor, req.body.input, req.body.secrets, req.body.expectedRevision) }; }),
+    // `acknowledgements` names the package servers whose secret variables the administrator confirmed are readable in the task container.
+    save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expectedRevision', 'acknowledgements']); return { library: await store.saveLibrary(actor, req.body.input, req.body.secrets, req.body.expectedRevision, req.body.acknowledgements) }; }),
     setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
     replaceSecret: handle(async (req, actor) => { exact(req, ['name', 'secret', 'expectedRevision']); return { library: await store.replaceSecret(actor, req.body.name, req.body.secret, req.body.expectedRevision) }; }),
     history: handle(async (_req, actor) => ({ revisions: await store.history(actor) })),
@@ -54,7 +56,8 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       const results = [];
       for (const server of servers) {
         let reachable = false;
-        if (server.kind === 'catalog') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
+        // Catalog and package servers run inside the task container; nothing is started here.
+        if (server.kind !== 'https') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
         try {
           // An OAuth server is validated with its current access token; its library secret is a client secret, never sent upstream.
           const credential = server.authentication === 'oauth' ? await extensionOAuth(store).accessToken(library.instanceId, server) : secrets[server.name];
@@ -78,6 +81,14 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       const names = tools.flatMap(tool => tool && typeof tool === 'object' && typeof tool.name === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(tool.name) ? [tool.name] : []);
       await store.authorize(actor);
       return { tools: [...new Set(names)] };
+    }),
+    /** "Check" for a package server: registry lookup only. Nothing is downloaded, installed or executed. */
+    resolvePackage: handle(async (req, actor) => {
+      exact(req, ['ecosystem', 'package', 'version', 'bin']);
+      if (req.body.ecosystem !== 'npm') throw new ExtensionError(400, 'Only npm packages are supported');
+      const resolved = await resolveNpmPackage({ package: req.body.package, version: req.body.version, bin: req.body.bin }, store.environment);
+      await store.authorize(actor);
+      return { package: { ecosystem: resolved.ecosystem, package: resolved.package, version: resolved.version, integrity: resolved.integrity, bin: resolved.bin, bins: resolved.bins } };
     }),
     githubSource: handle(async (req, actor) => {
       exact(req, ['repository', 'ref']);

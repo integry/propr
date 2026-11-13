@@ -2,13 +2,15 @@ import { useState } from 'react';
 import { buttonClass, inputClass } from './extensionUi';
 
 /** A checkbox multi-select, with an optional advanced field for values the list does not offer. */
-export function ExtensionItemPicker({ label, options, selected, onChange, hint, allowManual = false, manualLabel }: {
+export function ExtensionItemPicker({ label, options, selected, onChange, hint, allowManual = false, manualLabel, manualOpen }: {
   label: string;
   options: string[];
   selected: string[];
   onChange: (items: string[]) => void;
   hint?: string;
   allowManual?: boolean;
+  /** Show the manual entry open, for items whose values are only ever typed in. */
+  manualOpen?: boolean;
   /** Label of the unlisted-value field; defaults to "Unlisted <label>". */
   manualLabel?: string;
 }) {
@@ -36,7 +38,7 @@ export function ExtensionItemPicker({ label, options, selected, onChange, hint, 
         ))}
       </div>
       {allowManual && (
-        <details>
+        <details open={manualOpen}>
           <summary className="cursor-pointer text-slate-600">Add an unlisted value</summary>
           <div className="mt-2 flex flex-wrap items-end gap-2">
             <label className="min-w-0 flex-1">{manualLabel ?? `Unlisted ${label.toLowerCase()}`}

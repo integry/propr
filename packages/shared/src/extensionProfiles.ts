@@ -41,7 +41,11 @@ export interface ExtensionSkillBundle {
   source: { kind: 'archive'; filename: string } | { kind: 'github'; repository: string; commit: string; directory: string };
   requirements: string[]; createdAt: number; auditActor: string;
 }
-export type ExtensionSecretStatus = { fields: ['bearerToken'] | ['clientSecret']; count?: never; configured: boolean } | { count: number; fields?: never; configured: boolean };
+/**
+ * Configured state of a server's write-only credentials. Package servers list
+ * the secret variables that hold a value in `configuredEnv`.
+ */
+export type ExtensionSecretStatus = { fields: ['bearerToken'] | ['clientSecret']; count?: never; configured: boolean } | { count: number; fields?: never; configured: boolean; configuredEnv?: string[] };
 
 /** Legacy profile input, read only by the startup migration to the extension library. */
 export interface LegacyExtensionProfileInput {
@@ -56,7 +60,7 @@ export interface LegacyExtensionProfileRevision extends ExtensionSelection, Lega
 }
 
 /** Remove implementation field names from catalog snapshots written by older versions. */
-export function publicExtensionProfile<T extends { mcpServers?: ExtensionMcpDescriptor[]; servers?: ExtensionMcpDescriptor[]; secrets: Record<string, ExtensionSecretStatus> }>(snapshot: T): T {
+export function publicExtensionProfile<T extends { mcpServers?: { kind: string; name: string }[]; servers?: { kind: string; name: string }[]; secrets: Record<string, ExtensionSecretStatus> }>(snapshot: T): T {
   const secrets = { ...snapshot.secrets };
   for (const server of [...(snapshot.mcpServers ?? []), ...(snapshot.servers ?? [])]) {
     if (server.kind !== 'catalog' || !secrets[server.name]) continue;

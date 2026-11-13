@@ -37,7 +37,8 @@ async function libraryApi(page: Page, initial: Library, extra: { bundles?: unkno
         state.saves.push(body);
         expect(body.expectedRevision).toBe(state.library.revision);
         const secrets = { ...state.library.secrets };
-        for (const name of Object.keys(body.secrets)) secrets[name] = { fields: ['bearerToken'], configured: true };
+        // Package secret variables are keyed server/VARIABLE; their status belongs to the server.
+        for (const [server, variable] of Object.keys(body.secrets).map(name => name.split('/'))) secrets[server] = variable ? { count: 1, configured: true, configuredEnv: [variable] } : { fields: ['bearerToken'], configured: true };
         const skillBundles = body.input.skills.map((skill: { bundleId: string }) => [reviewBundle, ...(extra.bundles ?? [])].find(b => (b as { id: string }).id === skill.bundleId));
         state.library = { ...state.library, ...body.input, secrets, skillBundles, revision: state.library.revision + 1, updatedAt: 1791907200000, auditActor: '1' };
         return route.fulfill({ json: { library: state.library } });
@@ -242,6 +243,54 @@ test('a server and a skill are added in one flow each, switched off and on with 
       { path: '.propr/previews/extension-server-form.png', title: 'Add server form', description: 'One form for an HTTPS or catalog server with tools, capability, write-only token, repository limit, Apply automatically and the agent limit under Advanced.' },
       { path: '.propr/previews/extension-library-phone.png', title: 'Phone width', description: 'The lists at 390 px width.' },
     ], toolSuggestions: [] }));
+  }
+});
+
+test('a local package server is checked, acknowledged and saved with an exact version, and listed as Local with its version', async ({ page }) => {
+  await installSettingsFixture(page);
+  await page.route('**/api/instance/catalog', route => route.fulfill({ json: catalogAgents }));
+  const api = await libraryApi(page, { ...emptyLibrary, servers: [], skills: [], skillBundles: [] });
+  const integrity = `sha512-${'Lq3'.repeat(28)}Aw==`; const checks: Record<string, unknown>[] = [];
+  await page.route('**/api/instance/extensions/v1/packages/resolve', route => {
+    const body = route.request().postDataJSON(); checks.push(body);
+    return route.fulfill({ json: { package: { ecosystem: 'npm', package: body.package, version: body.version, integrity, bin: 'browser-mcp', bins: ['browser-mcp'] } } });
+  });
+  await page.setViewportSize({ width: 1280, height: 1600 }); await page.goto('/settings?tab=agent-extensions');
+  const section = sectionOf(page); const previews = process.env.PROPR_CAPTURE_PREVIEWS ? path.resolve('../.propr/previews') : null;
+  await section.getByRole('button', { name: 'Add server' }).click(); const form = section.getByTestId('extension-server-form');
+  await form.getByLabel('Server type').selectOption({ label: 'Local package (npm)' });
+  await expect(form.getByLabel('HTTPS endpoint', { exact: true })).toHaveCount(0);
+  await form.getByLabel(/^Server name/).fill('browser'); await form.getByLabel('Package', { exact: true }).fill('@example/browser-mcp');
+  await form.getByLabel(/^Exact version/).fill('latest'); // A tag or range is refused before anything is sent.
+  await expect(form.getByRole('button', { name: 'Check' })).toBeDisabled();
+  await expect(form.getByText(/Ranges and tags \(latest, \^1.2\) are not accepted/)).toBeVisible();
+  await form.getByLabel(/^Exact version/).fill('1.4.2');
+  await form.getByRole('button', { name: 'Check' }).click();
+  for (const text of ['@example/browser-mcp@1.4.2', 'browser-mcp', integrity]) await expect(form.getByTestId('extension-package-check')).toContainText(text);
+  expect(checks).toEqual([{ ecosystem: 'npm', package: '@example/browser-mcp', version: '1.4.2' }]);
+  for (const [label, value] of [[/^Arguments/, '--headless'], [/^Variables/, 'LOG_LEVEL=info'], ['Tool name', 'navigate']] as const) await form.getByLabel(label).fill(value);
+  await form.getByRole('group', { name: 'Allowed tools', exact: true }).getByRole('button', { name: 'Add' }).click();
+  await form.getByLabel('New secret variable name').fill('BROWSER_TOKEN'); await form.getByRole('button', { name: 'Add secret variable' }).click();
+  await form.getByLabel(/^BROWSER_TOKEN/).fill('synthetic-browser-token');
+  await expect(form.getByText(/same container as the agent/)).toContainText('narrowly scoped credential');
+  await form.getByRole('button', { name: 'Add server' }).click(); expect(api.saves).toHaveLength(0);
+  await expect(form.getByRole('alert')).toContainText('Confirm that the secret values are readable inside the task container');
+  if (previews) {
+    await mkdir(previews, { recursive: true }); await page.setViewportSize({ width: 1280, height: 2600 }); await page.evaluate(() => window.scrollTo(0, 0));
+    await form.screenshot({ path: path.join(previews, 'local-package-server-form.png'), animations: 'disabled' });
+  }
+  await form.getByRole('checkbox', { name: /readable inside the task container/ }).check(); await form.getByRole('button', { name: 'Add server' }).click();
+  await expect(section.getByRole('status')).toHaveText('Server browser added.');
+  expect(api.saves[0]).toEqual({ expectedRevision: 0, secrets: { 'browser/BROWSER_TOKEN': 'synthetic-browser-token' }, acknowledgements: ['browser'], input: { version: 1, skills: [], servers: [{
+    kind: 'package', name: 'browser', ecosystem: 'npm', package: '@example/browser-mcp', version: '1.4.2', enabled: true, tools: ['navigate'], capability: 'read',
+    args: ['--headless'], env: [{ name: 'LOG_LEVEL', value: 'info' }], secretEnv: ['BROWSER_TOKEN'], ...allowAll,
+  }] } });
+  const row = section.getByTestId('extension-server'); await expect(row).toContainText('Local · @example/browser-mcp@1.4.2');
+  await expect(row).not.toContainText('Secret variables not configured');
+  expect(await section.textContent()).not.toContain('synthetic-browser-token');
+  if (previews) {
+    await row.screenshot({ path: path.join(previews, 'local-package-server-row.png'), animations: 'disabled' });
+    await writeFile(path.join(previews, 'manifest.json'), JSON.stringify({ toolSuggestions: [], previews: [{ path: '.propr/previews/local-package-server-form.png', title: 'Add a local package server', description: 'The Local package (npm) form after Check: resolved version, executable and integrity value, arguments, variables, a secret variable with the task-container warning and its acknowledgement, which is required before saving.' }, { path: '.propr/previews/local-package-server-row.png', title: 'Local server row', description: 'The saved server listed as Local with its package and pinned version.' }] }));
   }
 });
 

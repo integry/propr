@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local MCP servers from npm packages**: administrators can add a third kind
+  of library MCP server, **Local package**, from Settings: an npm package at an
+  exact version (ranges and tags are rejected), an optional executable, fixed
+  arguments, plain variables and write-only secret variables. Saving and
+  **Check** look the version up in the registry and pin its SHA-512 integrity
+  value; nothing runs in Settings. The worker installs each pinned package once
+  into its own cache with `--ignore-scripts`, outside every task workspace,
+  through a proxy that reaches only the registry's host and port (dependency
+  tarball URLs, redirects, git and `file:` sources are refused); a
+  run mounts it read-only, checks the files against the integrity value
+  (a changed install is skipped and recorded as `package_integrity_mismatch`)
+  and starts it through the stdio bridge for Claude and Codex. Secret variables
+  are readable inside the task container, so saving a server that has them
+  needs an explicit acknowledgement, recorded with the library revision. The
+  run's `extensions.resolved` event lists package servers with their versions.
+  PyPI packages are not supported yet. New route
+  `POST /api/instance/extensions/v1/packages/resolve`.
+
 - **Gemini 4 Hydrogen (Antigravity)**: Google's fast Gemini 4 model, released
   2026-11-12, is in the Antigravity catalog as `antigravity-gemini-4-hydrogen`
   (label `llm-antigravity-hydrogen`, alias `hydrogen`, 1M context). It is the

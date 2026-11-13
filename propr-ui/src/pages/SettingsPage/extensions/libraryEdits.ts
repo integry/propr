@@ -7,6 +7,12 @@ export const newHttpsServer = (servers: { name: string }[], limits: ItemLimitFie
   repositories: limits.repositories, agents: limits.agents, autoApply: limits.autoApply,
 });
 
+/** A new local npm package server with the next free default name; only the limit fields are taken from `limits`. */
+export const newPackageServer = (servers: { name: string }[], limits: ItemLimitFields = NEW_ITEM_LIMITS): ExtensionLibraryServer => ({
+  kind: 'package', name: nextServerName(servers), ecosystem: 'npm', package: '', version: '', enabled: true, tools: [], capability: 'read',
+  args: [], env: [], secretEnv: [], repositories: limits.repositories, agents: limits.agents, autoApply: limits.autoApply,
+});
+
 const canonical = (value: unknown): unknown => (Array.isArray(value) ? value.map(canonical)
   : value && typeof value === 'object'
     ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'enabled').sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]))

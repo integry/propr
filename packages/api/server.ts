@@ -537,6 +537,7 @@ export function setupRoutes(): void {
   app.post('/api/instance/extensions/v1/skills/github', extensionRoutes.importGithub);
   app.post('/api/instance/extensions/v1/skills/github-source', extensionRoutes.githubSource);
   app.post('/api/instance/extensions/v1/tools/discover', extensionRoutes.discoverTools);
+  app.post('/api/instance/extensions/v1/packages/resolve', extensionRoutes.resolvePackage);
   app.post('/api/instance/extensions/v1/oauth/check', extensionRoutes.oauthCheck);
   app.post('/api/instance/extensions/v1/oauth/start', extensionRoutes.oauthStart);
   app.post('/api/instance/extensions/v1/oauth/disconnect', extensionRoutes.oauthDisconnect);

@@ -28,6 +28,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   // headers/cookies or reverse requests can extend a run's capabilities.
   let upstream: unknown;
   const forwarded = rpc.method === 'tools/call' ? { ...rpc, params: { name: params!.name, ...(params!.arguments === undefined ? {} : { arguments: params!.arguments }) } } : rpc;
+  if (server.kind === 'package') throw new ExtensionError(403, 'Local package tools require the selected task container');
   const entry = server.kind === 'catalog' ? await store.catalog.resolve(server.catalogId, server.digest, server.tools, server.capability) : undefined;
   if (entry?.kind === 'stdio') throw new ExtensionError(403, 'Local catalog tools require the selected task container');
   const endpoint = server.kind === 'https' ? server.url : entry!.kind === 'https' ? entry!.url : '';
