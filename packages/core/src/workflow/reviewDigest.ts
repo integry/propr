@@ -4,7 +4,8 @@
  * Pure: callers collect the changes and validation result.
  */
 import {
-    isDependencyLockfile, isDependencyManifest, isDocumentationFile, isTestFile,
+    evaluateAcceptanceCriteria, isDependencyLockfile, isDependencyManifest, isDocumentationFile, isTestFile,
+    type AcceptanceCriterion, type AcceptanceCriterionResult,
 } from '@propr/shared';
 import { ALWAYS_PROTECTED_PATHS, compileProtectedPathGlob, type ProtectedPathMatcher } from './autoMergePolicy.js';
 import { findAddedDependencies } from './reviewDependencies.js';
@@ -62,6 +63,17 @@ export interface ReviewDigest {
     /** The run's structured validation result; null when no validation commands ran. */
     validation: RepositoryValidationResult | null;
     size: { files: number; linesAdded: number; linesRemoved: number };
+    /**
+     * The issue's acceptance criteria with the agent's per-criterion statement;
+     * absent when the issue has no criteria (and in digests recorded before them).
+     */
+    acceptanceCriteria?: AcceptanceCriterionResult[];
+}
+
+/** The issue's criteria and the agent's report that states whether each is met. */
+export interface ReviewDigestAcceptanceInput {
+    criteria: readonly AcceptanceCriterion[];
+    agentReport?: string | null;
 }
 
 /** Bounds what the timeline event keeps; the markdown lists fewer. */
@@ -146,6 +158,13 @@ function count(value: number): number {
     return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+/** Criteria and statements are issue- and agent-controlled: redacted here, code-spanned when rendered. */
+function acceptanceCriteriaResults(acceptance: ReviewDigestAcceptanceInput): AcceptanceCriterionResult[] {
+    return evaluateAcceptanceCriteria(acceptance.criteria, acceptance.agentReport).map(result => ({
+        ...result, text: redactSecrets(result.text), ...(result.evidence && { evidence: redactSecrets(result.evidence) }),
+    }));
+}
+
 /**
  * Build the digest. Returns null when there is no diff, so callers omit the
  * section entirely. Paths and dependency names are redacted and bounded; no
@@ -155,6 +174,7 @@ export function buildReviewDigest(
     changes: readonly ReviewDigestChange[] | null | undefined,
     validationResult: RepositoryValidationResult | null | undefined,
     riskConfig: ReviewConfig = {},
+    acceptance?: ReviewDigestAcceptanceInput,
 ): ReviewDigest | null {
     const unique = new Map<string, ReviewDigestChange>();
     for (const change of changes ?? []) if (change?.path) unique.set(change.path, change);
@@ -181,5 +201,6 @@ export function buildReviewDigest(
         newDependencies: { count: dependencies.length, entries: dependencies.slice(0, REVIEW_DIGEST_MAX_RECORDED_DEPENDENCIES) },
         validation: validationResult?.commands.length ? validationResult : null,
         size: { files: unique.size, linesAdded, linesRemoved },
+        ...(acceptance?.criteria.length && { acceptanceCriteria: acceptanceCriteriaResults(acceptance) }),
     };
 }

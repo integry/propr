@@ -221,11 +221,17 @@ test('renders hybrid previews only from validated structured publication metadat
   });
   const section = renderVisualPreviewSection(previewEvidence, { published });
   assert.match(section, /!\[Desktop\]\(https:\/\/github\.com\/user-attachments\/assets\/github-asset\)/);
-  assert.match(section, /\[View the full-resolution original in ProPR Connect\]\(https:\/\/connect\.example\.test\/previews\/artifact-1\)/);
-  assert.deepEqual(parsePublishedVisualPreviews(section), [{
+  assert.match(section, /^\[Full-size original\]\(https:\/\/connect\.example\.test\/previews\/artifact-1\)$/m);
+  assert.equal(/sign-in|retained until/i.test(section), false, 'the link line is the only note about the original');
+  const expected = [{
     type: 'image', title: 'Desktop', description: 'Changed controls.',
     url: 'https://github.com/user-attachments/assets/github-asset',
-  }]);
+  }];
+  assert.deepEqual(parsePublishedVisualPreviews(section), expected);
+  // Bodies published before the link was shortened still parse to the same preview.
+  const legacy = section.replace(/^\[Full-size original\]\((.*?)\).*$/m, '[View the full-resolution original in ProPR Connect]($1)');
+  assert.notEqual(legacy, section);
+  assert.deepEqual(parsePublishedVisualPreviews(legacy), expected);
 
   const untrusted = createPublishedVisualPreviewMetadata(previewEvidence, {
     taskId: 'task-2282', repository: 'integry/propr', pullRequestNumber: 42,
@@ -261,7 +267,7 @@ test('hybrid rendering preserves a managed original and complete recovery guidan
     unavailableReason: 'github-authentication-failed',
   }]);
 
-  assert.match(section, /\[View the full-resolution original in ProPR Connect\]\(https:\/\/connect\.example\.test\/previews\/artifact-0\)/);
+  assert.match(section, /\[Full-size original\]\(https:\/\/connect\.example\.test\/previews\/artifact-0\)$/m);
   assert.match(section, /the authenticated original remains available above/);
   assert.ok(section.includes(RESTORE_PREVIEW_UPLOADS_GUIDANCE));
 });

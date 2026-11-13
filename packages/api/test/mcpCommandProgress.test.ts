@@ -207,7 +207,8 @@ test('ultrafixProgress rejects null, boolean, and empty numeric metadata', async
 });
 
 for (const [outcome, expectedState] of [
-  ['goal_reached', 'completed'], ['cycles_exhausted', 'completed'], ['stopped', 'cancelled'], ['failed', 'failed'],
+  ['goal_reached', 'completed'], ['cycles_exhausted', 'completed'], ['style_findings_only', 'completed'],
+  ['stopped', 'cancelled'], ['failed', 'failed'],
 ] as const) {
   test(`durable ultrafix ${outcome} metadata maps to ${expectedState}`, async t => {
     const db = await fixture(t);
@@ -233,6 +234,10 @@ for (const [outcome, expectedState] of [
     assert.equal((final.lifecycle as { state: string }).state, expectedState);
     assert.equal(((final.lifecycle as { progress: Record<string, unknown> }).progress).outcome, outcome);
     if (outcome === 'cycles_exhausted') assert.match(String((final.lifecycle as { summary: string }).summary), /did not reach goal 9/);
+    if (outcome === 'style_findings_only') {
+      assert.equal(String((final.lifecycle as { summary: string }).summary),
+        'Ultrafix stopped after 3 cycles because only stylistic findings remain; last score 7/10.');
+    }
     if (outcome === 'failed') {
       assert.deepEqual((final.lifecycle as { failure: unknown }).failure, {
         code: 'ULTRAFIX_CYCLE_FAILED', message: 'An ultrafix cycle failed.', stage: 'workflow', retryable: false, status: 500,

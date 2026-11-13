@@ -354,6 +354,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             originalTaskSpec,
             // Unlike comment history, these amend the objective in Ultrafix reviews too.
             authorizedFollowups: formatAuthorizedFollowupRequests(followupRequests),
+            acceptanceCriteria: linkedIssueResult.acceptanceCriteria,
             commandInstructions: job.data.commandInstructions,
             preparedDiff,
             tokenStats: new ReviewTokenStatsCache(),

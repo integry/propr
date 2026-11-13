@@ -381,6 +381,7 @@ function formatActionableRecord(finding: ActionableFinding, commentId: number): 
         `### ${finding.id}: ${finding.title}`,
         formatRecordFields([
             ['Source review comment', String(commentId)],
+            ['Category', finding.category],
             ['Violated requirement', finding.violatedRequirement],
             ['Changed-code evidence', finding.evidence],
             ['Why introduced by this PR', finding.introducedByPRExplanation],

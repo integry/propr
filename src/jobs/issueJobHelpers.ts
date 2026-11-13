@@ -27,7 +27,7 @@ export {
     type GenericErrorOptions
 } from './errorHandlers.js';
 import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts, PushFailureRecord, ReviewConfig } from '@propr/core';
-import { PR_BODY_MAX_LENGTH, type PrBodyPiece } from '@propr/shared';
+import { PR_BODY_MAX_LENGTH, extractAcceptanceCriteria, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import { readReviewDigestChanges, recordReviewDigest } from './reviewDigestLazy.js';
 import {
@@ -81,6 +81,8 @@ interface CreatePROptions {
     diffBase?: string;
     /** `review` from the run's workflow snapshot. */
     review?: ReviewConfig;
+    /** The issue body; its acceptance criteria become the digest checklist. */
+    issueBody?: string | null;
 }
 
 export function buildIssueReference(
@@ -238,7 +240,8 @@ export async function createPullRequest(
     const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
     const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        { review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger), config: options.review } });
+        { review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger),
+            config: options.review, acceptanceCriteria: extractAcceptanceCriteria(options.issueBody) } });
     await recordReviewDigest(options.taskId, completion.reviewDigest, correlatedLogger, options.stateManager);
     const visualPreviewSection = visualPreview && commitResult
         ? renderVisualPreviewSection({

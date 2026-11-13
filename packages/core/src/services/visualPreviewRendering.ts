@@ -102,6 +102,9 @@ function appendLocalAsset(parts: string[], asset: VisualPreviewAsset): void {
   if (asset.description) parts.push(markdownText(asset.description));
 }
 
+/** Start of the one-line link to a managed original; the published-preview reader skips lines that begin with it. */
+export const MANAGED_ORIGINAL_LINK_PREFIX = '[Full-size original](';
+
 function unavailableMessage(item: PublishedVisualPreviewAsset): string | undefined {
   if (item.unavailableReason === 'github-authentication-failed') {
     return item.managedViewerUrl
@@ -132,7 +135,7 @@ function appendPublishedAsset(
   }
   if (asset.description) parts.push(markdownText(asset.description));
   if (item.managedViewerUrl) {
-    parts.push(`[View the full-resolution original in ProPR Connect](${item.managedViewerUrl})`);
+    parts.push(`${MANAGED_ORIGINAL_LINK_PREFIX}${item.managedViewerUrl})`);
   }
   const message = unavailableMessage(item);
   if (message) parts.push(message);

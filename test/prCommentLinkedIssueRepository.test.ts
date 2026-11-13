@@ -53,3 +53,28 @@ describe('the linked issue keeps its repository', () => {
         assert.equal(result.linkedIssue, null);
     });
 });
+
+describe('the linked issue acceptance criteria', () => {
+    function issueOctokit(bodies: Record<number, string>, numbers: number[]) {
+        return {
+            graphql: async () => ({ repository: { pullRequest: { closingIssuesReferences: { nodes: numbers.map(number => ({ number })) } } } }),
+            request: async (endpoint: string, options: { issue_number: number }) => endpoint.endsWith('/comments')
+                ? { data: [] }
+                : { data: { title: `Issue ${options.issue_number}`, body: bodies[options.issue_number] ?? '', labels: [], user: { login: 'someone' } } },
+        } as never;
+    }
+
+    test('come from the first linked issue\'s full body, beyond the truncated objective', async () => {
+        const body = `${'Context. '.repeat(200)}\n\n## Acceptance criteria\n\n- [ ] Parses the list\n- [ ] Shows the checklist\n`;
+        const result = await fetchLinkedIssueContext(issueOctokit({ 12: body, 13: '## Acceptance criteria\n- other issue' }, [12, 13]),
+            { data: { body: '', user: { login: 'bot' } } }, repoContext, { correlationId: 'c', correlatedLogger: logger });
+        assert.ok(!result.context.includes('Parses the list'), 'the objective copy of the body is truncated');
+        assert.deepEqual(result.acceptanceCriteria, [{ id: 'AC1', text: 'Parses the list' }, { id: 'AC2', text: 'Shows the checklist' }]);
+    });
+
+    test('are empty when the issue has no Acceptance criteria heading', async () => {
+        const result = await fetchLinkedIssueContext(issueOctokit({ 12: 'Just fix it.' }, [12]),
+            { data: { body: '', user: { login: 'bot' } } }, repoContext, { correlationId: 'c', correlatedLogger: logger });
+        assert.deepEqual(result.acceptanceCriteria, []);
+    });
+});

@@ -9,6 +9,7 @@
 import type { Redis } from 'ioredis';
 import type { UltrafixEscalationState } from './ultrafixEscalationPolicy.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
+import { hasOnlyStyleFindings, type ReviewFindingCategory } from './reviewFindingCategory.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
 import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
 export {
@@ -126,6 +127,18 @@ export interface NextActionDecision {
     action: UltrafixAction | null;
     /** Reason for the decision */
     reason: string;
+    /** The loop stops because every remaining blocker is stylistic. */
+    styleFindingsOnly?: boolean;
+}
+
+/** Stop reason of a loop whose review left only `style` blockers. */
+export const ULTRAFIX_STYLE_FINDINGS_ONLY_REASON = 'Only stylistic findings remain; no further fix was scheduled';
+
+/** Review facts beyond its status that the next-action decision reads. */
+export interface ReviewDecisionInput {
+    isPartial?: boolean;
+    /** Categories of the review's remaining blockers, one entry per blocker. */
+    findingCategories?: readonly ReviewFindingCategory[];
 }
 
 export interface StartLoopOptions {
@@ -255,9 +268,10 @@ export function determineNextAction(
     state: UltrafixLoopState,
     currentScore: number | null,
     reviewStatus: ReviewOutputStatus = 'invalid',
-    isPartial: boolean = false,
+    review: boolean | ReviewDecisionInput = false,
 ): NextActionDecision {
     const { reviewCount, fixCount } = getActionCounts(state);
+    const { isPartial = false, findingCategories = [] } = typeof review === 'boolean' ? { isPartial: review } : review;
 
     if (!state.active) {
         return { action: null, reason: 'Loop is inactive' };
@@ -295,6 +309,11 @@ export function determineNextAction(
                 return { action: null, reason: `Invalid review output and max review attempts reached (${state.maxCycles})` };
             }
             return { action: 'review', reason: 'Review output is invalid, retrying review' };
+        }
+        // Stylistic blockers alone never owe another fix: the review counts as
+        // clean for continuation, while score and goal rules stay unchanged.
+        if (hasOnlyStyleFindings(findingCategories.map(category => ({ category })))) {
+            return { action: null, reason: ULTRAFIX_STYLE_FINDINGS_ONLY_REASON, styleFindingsOnly: true };
         }
         if (fixCount >= state.maxCycles) {
             return { action: null, reason: `Max cycles reached: ${fixCount} ${fixCount === 1 ? 'fix step has' : 'fix steps have'} completed (limit ${state.maxCycles})` };
