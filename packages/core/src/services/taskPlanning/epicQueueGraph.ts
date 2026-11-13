@@ -5,8 +5,8 @@ import type { EpicAdvancePolicy, EpicExecutionMode } from './epicQueueState.js';
 import { isTerminalStatus } from '../../webhook/statusMachine.js';
 import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
 import {
-  blockQueueIssue, clearedBlock, completeSettledExecution, epicQueueSchedule, getEpicExecutionQueue, isSettled,
-  markQueueIssueDone, ownedIssue, planIssueWithStatus, SETTLED_STATES, type EpicExecutionQueue, type EpicQueueIssue,
+  blockQueueIssue, clearQueueIssueBlock, clearedBlock, completeSettledExecution, epicQueueSchedule, getEpicExecutionQueue, isSettled,
+  markQueueIssueDone, ownedIssue, planIssueWithStatus, SETTLED_STATES, writeQueueIssue, type EpicExecutionQueue, type EpicQueueIssue,
 } from './epicQueueState.js';
 
 /**
@@ -85,10 +85,11 @@ async function settleGraphIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
  */
 async function reopenUnclaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: ClaimHooks): Promise<void> {
   if (item.state !== 'blocked' || item.blockedKind !== 'closed_unmerged') return;
-  const { database } = hooks;
-  await ownedIssue(database, queue, item).where({ state: 'blocked', blocked_kind: 'closed_unmerged' }).whereNull('dispatched_at')
-    .whereExists(planIssueWithStatus(database, queue.draftId, [item.issueNumber], false))
-    .update({ ...clearedBlock(database), updated_at: hooks.now() });
+  const timestamp = hooks.now();
+  await writeQueueIssue(hooks.database, { owner: queue, item, resolution: 'cleared', timestamp }, trx => ownedIssue(trx, queue, item)
+    .where({ state: 'blocked', blocked_kind: 'closed_unmerged' }).whereNull('dispatched_at')
+    .whereExists(planIssueWithStatus(trx, queue.draftId, [item.issueNumber], false))
+    .update({ ...clearedBlock(trx), updated_at: timestamp }));
 }
 
 /** The plan status of an issue someone started: neither waiting for dispatch nor terminal. */
@@ -133,8 +134,7 @@ async function driveClaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIssue
   // A run stopped on a reported blocker, or a PR waiting for a person, keeps its explanation.
   if (item.blockedKind === 'agent_blocked') return;
   if (item.state === 'blocked' && status !== PlanIssueStatus.PENDING) {
-    await ownedIssue(hooks.database, queue, item).where({ state: 'blocked' })
-      .whereNotIn('blocked_kind', ['agent_blocked', 'awaiting_human_merge']).update(clearedBlock(hooks.database));
+    await clearQueueIssueBlock(hooks.database, queue, item, { timestamp: hooks.now(), keepKinds: ['agent_blocked', 'awaiting_human_merge'] });
     return;
   }
   if (status === PlanIssueStatus.PENDING) await hooks.retryDispatch(queue, item, contextConfig);

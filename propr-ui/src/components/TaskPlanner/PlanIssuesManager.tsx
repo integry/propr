@@ -146,6 +146,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const {
     issues, agents, loading, error, clearError, implementingIssue,
     queuedIssueNumbers, queueingRemaining, handleQueueRemaining, chainExecution,
+    queueRowProps,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
@@ -363,6 +364,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
               task={issueTaskMap[issue.issue_number]}
               draftId={draftId}
+              {...queueRowProps(issue.issue_number, isReadOnly)}
             />
           ))}
         </div>
@@ -414,6 +416,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     disableImplementation={isSavingExecutionSettings || isReadOnly}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}
+                    {...queueRowProps(issue.issue_number, isReadOnly)}
                   />
                 ))}
               </motion.div>

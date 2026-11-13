@@ -1,3 +1,4 @@
+import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
 import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
@@ -62,7 +63,7 @@ await database.schema.createTable('tasks', table => {
 await database.schema.createTable('task_history', table => {
   table.increments('history_id'); table.string('task_id'); table.string('state');
 });
-for (const migrate of [up, finalization, useEpic, parallel, recovery, epicQueueIssueStates]) await migrate(database);
+for (const migrate of [up, finalization, useEpic, parallel, recovery, epicQueueIssueStates, blockedEvents]) await migrate(database);
 /** Records the issue's worker task in `state`, as the worker state manager would. */
 async function workerTask(state: string, taskId = 'task-10') {
   await database('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 10, task_type: 'issue' }).onConflict('task_id').ignore();

@@ -1,4 +1,5 @@
 import { ADMIN_ROUTE_DOCS } from './routeDocsAdmin.js';
+import { PLAN_QUEUE_ROUTE_DOCS } from './routeDocsPlanQueue.js';
 import { SYSTEM_ROUTE_DOCS } from './routeDocsSystem.js';
 import { TASK_ROUTE_DOCS } from './routeDocsTasks.js';
 import type { RouteDoc } from './types.js';
@@ -12,4 +13,5 @@ export const ROUTE_DOCS: Readonly<Record<string, RouteDoc>> = {
   ...ADMIN_ROUTE_DOCS,
   ...SYSTEM_ROUTE_DOCS,
   ...TASK_ROUTE_DOCS,
+  ...PLAN_QUEUE_ROUTE_DOCS,
 };

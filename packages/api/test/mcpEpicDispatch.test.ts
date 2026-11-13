@@ -1115,3 +1115,62 @@ test('REST implement accepts graph mode with maxParallel and rejects invalid com
   await completePlanIssue(10);
   assert.deepEqual(startedByQueue(), [10, 30], 'issues start in publication order once ready');
 });
+
+test('retry_plan_issue dispatches an implement_plan head again despite its receipt; skip_plan_issue moves the chain on', async () => {
+  const catalog = tools;
+  const tool = (name: string) => catalog.find(candidate => candidate.name === name)!;
+  const call = (name: string, input: Record<string, unknown>) => tool(name).run({ principal,
+    args: tool(name).schema.parse({ repository, planId, ...input }), operationId: `operation-${name}` } as never);
+  await run();
+  const executionId = (await core.getEpicExecutionQueue(planId))!.executionId;
+  assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).first()).status, 'processing');
+  await assert.rejects(call('skip_plan_issue', { idempotencyKey: 'skip-head-1', executionId, issue: 10 }),
+    error => error instanceof McpError && error.code === 'IN_FLIGHT');
+  // The run stops on a reported blocker: the head holds the epic.
+  assert.equal(await core.markEpicQueueHeadBlocked({ draftId: planId, issueNumber: 10 }), true);
+  const planned = await getPlan.run({ principal, args: { repository, planId } } as never);
+  const epicQueue = (planned.data as { epicQueue: { executionId: string; issueStates: Array<{ issue: number; blockedKind: string | null }> } }).epicQueue;
+  assert.equal(epicQueue.executionId, executionId);
+  assert.equal(epicQueue.issueStates[0].blockedKind, 'agent_blocked');
+  await assert.rejects(call('retry_plan_issue', { idempotencyKey: 'retry-head-0', executionId: 'stale', issue: 10 }),
+    error => error instanceof McpError && error.code === 'STALE_EXECUTION');
+  labelCalls.length = 0;
+  const retried = await call('retry_plan_issue', { idempotencyKey: 'retry-head-1', executionId, issue: 10, expectedState: 'blocked' });
+  assert.equal((retried.data as { outcome: string }).outcome, 'retried');
+  assert.ok(labelCalls.some(entry => entry.number === 10 && entry.labels.includes('AI')), 'the queue labels the head for processing again');
+  assert.equal((await database('mcp_records').where({ kind: 'issue_execution', id: `${planId}:10` })).length, 1, 'the receipt is kept');
+  const repeated = await call('retry_plan_issue', { idempotencyKey: 'retry-head-2', executionId, issue: 10 });
+  assert.equal((repeated.data as { outcome: string }).outcome, 'already_retried');
+  const listed = await call('list_plan_blocked_events', {});
+  assert.deepEqual((listed.data as { events: Array<{ type: string; blockedKind: string; resolution: string | null }> }).events
+    .map(event => [event.type, event.blockedKind, event.resolution]), [['blocked', 'agent_blocked', null], ['resolved', 'agent_blocked', 'retried']]);
+  // An agent-reported blocker keeps its task notification only: no plan card.
+  assert.equal((await database('notification_events').where({ kind: 'plan' }).whereLike('deduplication_key', 'epic-queue-blocked:%')).length, 0);
+  // Skipping the next queued issue moves the chain past it once the head merges.
+  const skipped = await call('skip_plan_issue', { idempotencyKey: 'skip-next-1', executionId, issue: 30, expectedState: 'pending' });
+  assert.equal((skipped.data as { outcome: string }).outcome, 'skipped');
+  labelCalls.length = 0;
+  await completePlanIssue(10);
+  assert.ok(labelCalls.some(entry => entry.number === 40 && entry.labels.includes('AI')));
+  assert.equal(labelCalls.some(entry => entry.number === 30 && entry.labels.includes('AI')), false);
+  assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 30 }).first()).status, 'pending', 'skip never edits the issue');
+  await assert.rejects(call('skip_plan_issue', { idempotencyKey: 'skip-done-1', executionId, issue: 10 }),
+    error => error instanceof McpError && error.code === 'ALREADY_DONE');
+});
+
+test('a dispatch failure of a queued issue raises one deduplicated plan notification', async () => {
+  await run();
+  const queue = (await core.getEpicExecutionQueue(planId))!;
+  const head = queue.items[0];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await core.blockQueueIssue(database, queue, head, { kind: 'dispatch_failed', reason: 'Could not start issue #10: GitHub unavailable', timestamp: Date.now() });
+  }
+  // Delivery runs after commit.
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const cards = await database('notification_events').where({ kind: 'plan' }).whereLike('deduplication_key', `epic-queue-blocked:${queue.executionId}:%`);
+  assert.equal(cards.length, 1);
+  assert.match(cards[0].title, /Issue #10 is blocked/);
+  const recipients = await database('notification_user_states').where({ event_id: cards[0].event_id }).pluck('user_id');
+  assert.deepEqual(recipients, ['user'], 'the plan owner');
+  assert.equal((await core.listEpicQueueBlockedEvents(planId)).events.length, 1);
+});

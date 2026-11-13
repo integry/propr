@@ -1,3 +1,4 @@
+import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
@@ -50,7 +51,7 @@ await database.schema.createTable('plan_issues', table => {
   table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.integer('pr_number'); table.string('status');
   table.string('task_id');
 });
-for (const migrate of [up, finalization, useEpic, parallel, recovery, issueStates, graph]) await migrate(database);
+for (const migrate of [up, finalization, useEpic, parallel, recovery, issueStates, graph, blockedEvents]) await migrate(database);
 after(async () => database.destroy());
 
 const ISSUES = [1, 2, 3, 4, 5, 6];

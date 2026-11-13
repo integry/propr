@@ -125,6 +125,15 @@ whether it is waiting on prerequisites (and which), ready, in flight, done or bl
 queued; a sequential receipt remains accepted until the queue completes.
 Unselected pending issues never start through the queue.
 
+When an issue of the queue becomes blocked, ProPR records one event for that
+blocked state, raises one Inbox notification for the plan and updates open
+Planner Studio views, which show the blocker and its reason on the issue's row.
+`list_plan_blocked_events` reads those events with a cursor. `skip_plan_issue`
+moves the queue past a pending or blocked issue without touching the GitHub
+issue (in a graph, its dependents wait unless `satisfiesDependents` is true), and
+`retry_plan_issue` clears a blocker and dispatches the issue again. Planner
+Studio offers the same **Retry** and **Skip** controls on the issue row.
+
 Mutations require their corresponding scopes and repository access, and return durable receipts. Queue acceptance is not completion. Keep idempotency keys stable when retrying the same request, and repeat its arguments exactly. Failures return a structured error with a stable `code`, the `stage` where it failed and whether it is `retryable`. See the [full operator/setup reference](https://github.com/integry/propr/blob/main/docs/mcp.md) and [tool coverage](https://github.com/integry/propr/blob/main/docs/mcp-coverage.md) for schemas, Connect registration and deployment requirements.
 
 ## Next steps

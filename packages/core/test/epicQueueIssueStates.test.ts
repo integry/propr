@@ -1,3 +1,4 @@
+import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex, { type Knex } from 'knex';
@@ -40,7 +41,7 @@ const { createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, adv
   reconcileEpicExecutionQueues, appendEpicQueueIssues } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
 const { agentBlockedHeadReason, clearEpicQueueHeadBlocked } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 
-async function createSchema(target: Knex, migrations = [up, finalization, useEpic, parallel, recovery, issueStates]) {
+async function createSchema(target: Knex, migrations = [up, finalization, useEpic, parallel, recovery, issueStates, blockedEvents]) {
   await target.schema.createTable('task_drafts', table => {
     table.string('draft_id').primary(); table.boolean('paused').defaultTo(false); table.text('context_config');
   });
@@ -73,6 +74,7 @@ async function migrateLegacy(rows: Array<Record<string, unknown>>, seed?: (legac
     await legacy('epic_execution_queues').insert({ repository: 'acme/repo', created_at: 100, updated_at: 200, ...row });
   }
   await issueStates(legacy);
+  await blockedEvents(legacy);
   return legacy;
 }
 const states = (queue: Awaited<ReturnType<typeof getEpicExecutionQueue>>) =>
@@ -87,7 +89,7 @@ test('an active sequential queue migrates in place: done before the cursor, the 
     assert.deepEqual(states(queue), [[10, 'done', null, null], [20, 'blocked', 500, 'dispatch_failed'], [30, 'pending', null, null]]);
     assert.equal(queue?.headStartedAt, 500);
     const { issueStates: perIssue, ...summary } = summarizeEpicQueue(queue)!;
-    assert.deepEqual(summary, { issues: [10, 20, 30], cursor: 1, head: 20, status: 'active', advanceOn: 'merged', blockedReason: reason,
+    assert.deepEqual(summary, { executionId: 'seq-1', issues: [10, 20, 30], cursor: 1, head: 20, status: 'active', advanceOn: 'merged', blockedReason: reason,
       executionMode: 'sequential', maxParallel: 1 });
     assert.deepEqual(perIssue[1], { issue: 20, state: 'blocked', blockedKind: 'dispatch_failed', blockedReason: reason,
       schedule: 'blocked', dependsOn: [10], waitingOn: [] });
@@ -135,7 +137,7 @@ test('an active parallel queue migrates with every child dispatched and its bloc
     const queue = await getEpicExecutionQueue('par', { database: legacy });
     assert.deepEqual(states(queue), [[10, 'dispatched', 100, null], [20, 'blocked', 100, 'agent_blocked'], [30, 'dispatched', 100, null]]);
     const { issueStates: _perIssue, ...summary } = summarizeEpicQueue(queue)!;
-    assert.deepEqual(summary, { issues: [10, 20, 30], cursor: 0, head: null, status: 'active', advanceOn: 'merged',
+    assert.deepEqual(summary, { executionId: 'par-1', issues: [10, 20, 30], cursor: 0, head: null, status: 'active', advanceOn: 'merged',
       blockedReason: agentBlockedHeadReason(20), executionMode: 'parallel', maxParallel: null });
   } finally { await legacy.destroy(); }
 });
@@ -204,6 +206,7 @@ test('a completed queue migrates with every issue done and its finalization unto
     assert.equal(summarizeEpicQueue(queue)?.head, null);
     // Rerunning the migration does not duplicate rows.
     await issueStates(legacy);
+    await blockedEvents(legacy);
     assert.equal((await legacy('epic_execution_queue_issues').where({ execution_id: 'done-1' })).length, 2);
   } finally { await legacy.destroy(); }
 });
@@ -213,6 +216,7 @@ test('a restart mid-execution loses nothing: the migrated head is retried, or he
     await database('epic_execution_queues').insert({ draft_id: 'draft', repository: 'acme/repo', issues: '[10,20,30]',
       status: 'active', created_at: 100, updated_at: 100, ...row });
     await issueStates(database);
+    await blockedEvents(database);
   };
   await database('plan_issues').where({ issue_number: 10 }).update({ status: 'merged' });
   await insertLegacy({ execution_id: 'legacy', cursor: 1, head_started_at: 1_000, blocked_reason: 'Could not start issue #20: offline' });

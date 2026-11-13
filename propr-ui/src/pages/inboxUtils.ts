@@ -151,7 +151,7 @@ export function notificationStatus(notification: Notification): NotificationStat
 
 export function notificationKindLabel(notification: Notification): string {
   switch (notification.kind) {
-    case 'plan': return 'Plan ready';
+    case 'plan': return notification.metadata?.event === 'plan.issue_blocked' ? 'Epic issue blocked' : 'Plan ready';
     case 'review': return 'Review completed';
     case 'pull_request': {
       const completionType = notification.metadata?.completionType;

@@ -1,3 +1,4 @@
+import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
 import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import { up as epicQueueRecovery, down as removeEpicQueueRecovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
 import assert from 'node:assert/strict';
@@ -54,6 +55,7 @@ await epicQueueUseEpic(database);
 await epicQueueParallel(database);
 await epicQueueRecovery(database);
 await epicQueueIssueStates(database);
+await blockedEvents(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('epic_execution_queues').delete();
@@ -70,8 +72,8 @@ async function finish(issueNumber: number, status: 'merged' | 'closed') {
 }
 
 test('parallel epics finalize once after their last child finishes in any order, without dispatching', async () => {
-  await createEpicExecutionQueue(parallel);
-  assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), { issues: [10, 20, 30], cursor: 0, head: null,
+  const created = await createEpicExecutionQueue(parallel);
+  assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), { executionId: created.executionId, issues: [10, 20, 30], cursor: 0, head: null,
     status: 'active', advanceOn: 'merged', blockedReason: null, executionMode: 'parallel', maxParallel: null,
     issueStates: [10, 20, 30].map(issue => ({ issue, state: 'dispatched', blockedKind: null, blockedReason: null,
       schedule: 'in_flight', dependsOn: [], waitingOn: [] })) });
@@ -132,6 +134,7 @@ test('parallel migration keeps existing queues sequential and rolls back', async
       repository: 'acme/repo', issues: '[10]', cursor: 0, status: 'active', created_at: 100, updated_at: 100 });
     await epicQueueParallel(oldDatabase);
     await epicQueueIssueStates(oldDatabase);
+    await blockedEvents(oldDatabase);
     assert.equal((await getEpicExecutionQueue('old', { database: oldDatabase }))?.parallel, false);
     await removeEpicQueueParallel(oldDatabase);
     assert.equal(Object.hasOwn(await oldDatabase('epic_execution_queues').where({ draft_id: 'old' }).first(), 'parallel'), false);
@@ -171,6 +174,7 @@ test('recovery migration backfills unresolved epic obligations and rolls back', 
     }
     await epicQueueRecovery(oldDatabase);
     await epicQueueIssueStates(oldDatabase);
+    await blockedEvents(oldDatabase);
     assert.equal((await getEpicExecutionQueue('owed', { database: oldDatabase }))?.owesEpicFinalization, true);
     assert.equal((await getEpicExecutionQueue('historical', { database: oldDatabase }))?.owesEpicFinalization, false);
     assert.equal((await getEpicExecutionQueue('non-epic', { database: oldDatabase }))?.owesEpicFinalization, false);
