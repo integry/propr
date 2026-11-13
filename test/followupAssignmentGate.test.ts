@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createWebhookIssueCommentCreatedEvent } from './testHelpers.js';
+import { parentScopeFromCommentJob, parentScopeFromIssueBody } from '../packages/core/src/agents/agentRunNesting.js';
 
 const root = await mkdtemp(path.join(tmpdir(), 'followup-gate-'));
 process.env.DATA_DIR = root;
@@ -194,6 +195,8 @@ const { buildCiFailureFollowupMarker } = await import('../packages/core/src/webh
 await mock.module('../src/jobs/ultrafixResumeClaim.js', { namedExports: { hasUltrafixResumeCandidate: async () => false } });
 await mock.module('@propr/core', {
     namedExports: {
+        parentScopeFromCommentJob,
+        parentScopeFromIssueBody,
         logger: mockLogger,
         generateCorrelationId: () => 'poll-correlation-id',
         handleError: (error: unknown) => { throw error; },
