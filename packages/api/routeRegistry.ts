@@ -6,6 +6,7 @@ import type { createTaskSubmissionRoutes } from './routes/taskSubmissionRoutes.j
 import type { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summaryPathUtils.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { createIntegrationSignalRouteEntries } from './integrationSignalRouteRegistry.js';
 import {
   requireAgentTankUsageAccess,
   requireManageAgents,
@@ -193,8 +194,6 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     notificationRoutes,
     plannerRoutes,
     previewMediaRoutes,
-    pullRequestReadinessRoutes,
-    repositoryEventRoutes,
     queueRoutes,
     relevanceRoutes,
     repoChatRoutes,
@@ -357,9 +356,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/stats/review-scores', reviewScoreRoutes.getSummary],
     ['get', '/api/stats/review-scores.csv', reviewScoreRoutes.getCsv],
     ['get', '/api/pull-requests/:number/scores', reviewScoreRoutes.getPullRequestScores],
-    ['get', '/api/pull-requests/:number/readiness', pullRequestReadinessRoutes.getReadiness],
-    ['get', '/api/repository-events', repositoryEventRoutes.listEvents],
-    ['get', '/api/repository-events/wait', repositoryEventRoutes.waitEvents],
+    ...createIntegrationSignalRouteEntries(deps),
     ['get', '/api/usage-tips', usageTipsRoutes.get],
     ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
     ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative],
