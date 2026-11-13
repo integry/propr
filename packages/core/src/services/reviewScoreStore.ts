@@ -25,6 +25,8 @@ export interface ReviewScoreInput {
     reviewerModel: string | null;
     score: number;
     blockerCount: number;
+    /** Blocker counts keyed by finding category; null when not recorded. */
+    blockerCategoryCounts?: Readonly<Record<string, number>> | null;
     suggestionCount: number;
     source: ReviewScoreSource;
     /** Ultrafix cycle number; null for a plain `/review`. */
@@ -54,6 +56,8 @@ export interface ReviewScoreRow {
     reviewer_model: string | null;
     score: number;
     blocker_count: number;
+    /** JSON object of blocker counts by category; null for rows written before categories. */
+    blocker_categories: string | null;
     suggestion_count: number;
     cycle_number: number | null;
     goal: number | null;
@@ -128,6 +132,10 @@ function assertScoreInput(input: ReviewScoreInput): void {
     if (!REVIEW_SCORE_SOURCES.includes(input.source)) {
         throw new RangeError(`review score source must be one of: ${REVIEW_SCORE_SOURCES.join(', ')}`);
     }
+    const counts = Object.values(input.blockerCategoryCounts ?? {});
+    if (counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
+        throw new RangeError('review score blocker category counts must be non-negative integers');
+    }
 }
 
 /**
@@ -157,6 +165,7 @@ export async function recordReviewScores(database: Knex, inputs: readonly Review
             reviewer_model: input.reviewerModel,
             score: input.score,
             blocker_count: input.blockerCount,
+            blocker_categories: input.blockerCategoryCounts ? JSON.stringify(input.blockerCategoryCounts) : null,
             suggestion_count: input.suggestionCount,
             cycle_number: input.cycleNumber,
             goal: input.goal,

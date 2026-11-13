@@ -108,7 +108,7 @@ function toRow(event: RepositoryEventInput): Record<string, unknown> {
 }
 
 const ULTRAFIX_END_CHANGES: Record<string, ActivityChange> = {
-    goal_reached: 'completed', cycles_exhausted: 'failed', failed: 'failed', stopped: 'cancelled',
+    goal_reached: 'completed', cycles_exhausted: 'failed', style_findings_only: 'completed', failed: 'failed', stopped: 'cancelled',
 };
 const PULL_REQUEST_CHANGES: Record<string, ActivityChange> = {
     opened: 'created', ultrafix_started: 'started', merged: 'completed', closed: 'cancelled',

@@ -266,6 +266,7 @@ export function summarizeLifecycle(tool: string, lifecycle: Record<string, unkno
     if (state === 'cancelled') return `Ultrafix was stopped after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'goal_reached') return `Ultrafix reached goal ${goal} after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'cycles_exhausted') return `Ultrafix stopped after exhausting ${cycle || maxCycles} cycles; ${scoreText} did not reach goal ${goal}.`;
+    if (progress.outcome === 'style_findings_only') return `Ultrafix stopped after ${cycle} cycle${cycle === 1 ? '' : 's'} because only stylistic findings remain; ${scoreText}.`;
     if (progress.outcome === 'stopped') return `Ultrafix was stopped after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'failed') return `Ultrafix failed during cycle ${cycle || 1}; ${scoreText}.`;
     if (state === 'completed') return `Ultrafix completed after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;

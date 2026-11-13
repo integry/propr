@@ -671,8 +671,10 @@ plus stable `artifacts` such as submission, task, comment and pull-request
 identities. Its `progress` is tool-specific. For `run_ultrafix` and `start_ultrafix`, progress names
 the goal, maximum cycles, current `cycle`, phase, last score, per-cycle review
 and fix task IDs, and terminal outcome (`goal_reached`, `cycles_exhausted`,
-`stopped` or `failed`). The lifecycle summary distinguishes reaching the goal
-from merely exhausting the allowed cycles.
+`style_findings_only`, `stopped` or `failed`). `style_findings_only` means the
+latest review's remaining blockers were all stylistic, so no further fix
+was scheduled. The lifecycle summary distinguishes reaching the goal from merely
+exhausting the allowed cycles.
 
 If the handle is no longer in the conversation, use `list_operations`. It is a
 bounded, newest-first receipt index and does not itself refresh backend

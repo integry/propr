@@ -166,6 +166,7 @@ describe('/fix intake preserves the command-line boundary', () => {
             actionableFindings: ['F1', 'F2'].map(id => ({
                 id,
                 title: `Blocker ${id}`,
+                category: 'correctness' as const,
                 violatedRequirement: '',
                 evidence: '',
                 introducedByPR: true as const,

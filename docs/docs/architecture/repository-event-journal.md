@@ -56,7 +56,7 @@ Payloads carry identifiers and small scalars only. They never include PR bodies,
 | `head_changed` | `pull_request` webhook, `synchronize` | `previousHeadSha` (`head_sha` holds the new head) | `pr:{n}:head_changed:delivery:{X-GitHub-Delivery}` (none without a delivery id) |
 | `review_scored` | `recordReviewScores` | `score`, `goal`, `goalReached`, `source`, `cycle`, `reviewerModel` | `pr:{n}:review_scored:{review_scores.id}` |
 | `ultrafix_started` | `startLoop` | `goal`, `maxCycles`, `workEpoch` | `pr:{n}:ultrafix_started:{epoch}:{command comment}` |
-| `ultrafix_ended` | `completeLoop`, `stopLoop` | `outcome` (`goal_reached`, `cycles_exhausted`, `stopped` or `failed`), `finalScore`, `reason`, `workEpoch` | `pr:{n}:ultrafix_ended:{epoch}:{command comment}` |
+| `ultrafix_ended` | `completeLoop`, `stopLoop` | `outcome` (`goal_reached`, `cycles_exhausted`, `style_findings_only`, `stopped` or `failed`), `finalScore`, `reason`, `workEpoch` | `pr:{n}:ultrafix_ended:{epoch}:{command comment}` |
 | `auto_merge_decision` | `recordAutoMergeDecisionEvent` | The `autoMergeDecision` metadata of the task timeline event | `pr:{n}:auto_merge:{head}:{opportunity}:{action}:{reason}` (only when the head is known) |
 | `merged` | `recordPullRequestOutcome`, and the Inbox merge marker in `notificationService` | none | `pr:{n}:merged` |
 | `closed` | `recordPullRequestOutcome` | none | `pr:{n}:closed:{closedAt}` |

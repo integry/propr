@@ -351,6 +351,72 @@ describe('Ultrafix continuation entry point', () => {
         assert.match(result.reason, /partial diff coverage/i);
         assert.equal(mockEnableAutoMerge.mock.callCount(), 0);
     });
+    const reviewWithBlockers = (commentId: number, categories: string[]) => ({
+        latestScore: 6,
+        reviewStatus: 'valid_with_blockers' as const,
+        hasPendingReview: true,
+        isPartial: false,
+        unprocessedComments: [{
+            id: commentId, body: '', author: 'propr-bot', created_at: new Date().toISOString(), suggestions: [],
+            score: 6, reviewStatus: 'valid_with_blockers' as const, isPartial: false,
+            actionableFindings: categories.map((category, index) => ({
+                id: `F${index + 1}`, title: `Blocker ${index + 1}`, category, violatedRequirement: 'Rule', evidence: 'src/a.ts:1',
+                introducedByPR: true as const, introducedByPRExplanation: 'Added here', requiredForMerge: true as const,
+                minimumCorrection: 'Fix it',
+            })),
+        }],
+    });
+
+    const completeReview = (redis: ReturnType<typeof createMockRedis>, pullRequestNumber: number, commentId: number) =>
+        continueUltrafixLoop({
+            owner: 'acme',
+            repo: 'web',
+            pullRequestNumber,
+            completedAction: 'review',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' },
+            redisClient: redis as never,
+            correlatedLogger: logger as never,
+            correlationId: `style-review-${pullRequestNumber}`,
+            currentJobId: `completed-style-review-${pullRequestNumber}`,
+            currentReviewCommentIds: [commentId],
+            currentReviewResultCount: 1,
+        });
+
+    test('a review whose remaining blockers are all stylistic stops without scheduling a fix', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 46, goal: 8 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => reviewWithBlockers(301, ['style', 'style']));
+
+        const result = await completeReview(redis, 46, 301);
+
+        assert.equal(result.continued, false);
+        assert.equal(result.reason, 'Only stylistic findings remain; no further fix was scheduled');
+        assert.equal(result.outcome, 'style_findings_only');
+        // Score rules are unchanged: blockers keep the score below the goal, so this is not a success.
+        assert.equal(result.score, 6);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        assert.equal(mockEnableAutoMerge.mock.callCount(), 0);
+        const state = await loadState(redis as never, 'acme', 'web', 46);
+        assert.equal(state?.active, false);
+        assert.equal(state?.completionStatus, 'failed');
+        const stopComment = mockOctokitRequest.mock.calls
+            .map(call => (call.arguments as unknown[])[1] as { body?: string } | undefined)
+            .find(request => request?.body?.includes('Ultrafix stopped before reaching its goal'));
+        assert.match(stopComment?.body ?? '', /Only stylistic findings remain, so no further fix was scheduled/);
+    });
+
+    test('a stylistic blocker beside any other category still schedules a fix', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 47, goal: 8 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => reviewWithBlockers(302, ['style', 'complexity']));
+
+        const result = await completeReview(redis, 47, 302);
+
+        assert.equal(result.continued, true);
+        assert.equal(result.nextAction, 'fix');
+        assert.equal(mockQueueAdd.mock.callCount(), 1);
+    });
+
     test('state lost after record decides reason and outcome from one epoch read', async () => {
         const { getUltrafixStateKey } = await import('../src/jobs/ultrafixOrchestrationService.js');
         const { getUltrafixAutomaticWorkEpochKey } = await import('../src/jobs/ultrafixAutomaticWorkEpoch.js');

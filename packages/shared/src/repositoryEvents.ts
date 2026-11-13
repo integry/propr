@@ -46,7 +46,7 @@ export function isRepositoryEventType(domain: unknown, type: unknown): boolean {
  * How an Ultrafix loop ended. Shared by the MCP command progress view, which
  * reconstructs it from task history, and the journal's `ultrafix_ended` event.
  */
-export const ULTRAFIX_OUTCOMES = ['goal_reached', 'cycles_exhausted', 'stopped', 'failed'] as const;
+export const ULTRAFIX_OUTCOMES = ['goal_reached', 'cycles_exhausted', 'style_findings_only', 'stopped', 'failed'] as const;
 export type UltrafixOutcome = (typeof ULTRAFIX_OUTCOMES)[number];
 
 export function isUltrafixOutcome(value: unknown): value is UltrafixOutcome {
