@@ -39,11 +39,12 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, choice
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   /**
-   * A pending token or client secret is meant for the endpoint and authentication it was typed for: drop it when either
-   * changes. Scopes and a client id exist only on OAuth servers; an unset optional field is removed.
+   * A pending token or client secret is meant for the endpoint, authentication and client it was typed for: drop it when
+   * any of them changes, including from one client id to another. Scopes and a client id exist only on OAuth servers; an
+   * unset optional field is removed.
    */
   const change = (patch: Partial<ExtensionLibraryServer>) => {
-    if (('authentication' in patch && draft.kind === 'https' && patch.authentication !== draft.authentication) || ('url' in patch && draft.kind === 'https' && patch.url !== draft.url)) setToken('');
+    if (draft.kind === 'https' && (['authentication', 'url', 'clientId'] as const).some(key => key in patch && (patch as Record<string, unknown>)[key] !== draft[key])) setToken('');
     setDraft(value => {
       const next = { ...value, ...patch } as Record<string, unknown>;
       if (next.kind === 'https' && next.authentication !== 'oauth') { delete next.scopes; delete next.clientId; }

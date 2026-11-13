@@ -76,6 +76,30 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     expect(within(rowOf(view, 'linear')).getByTestId('extension-oauth-connection')).toHaveTextContent('Granted scopes: issues:read');
   });
 
+  it('Reconnect keeps refreshing after a return to Settings before consent, until the new connection is shown', async () => {
+    const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    vi.mocked(startExtensionOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize?state=r' });
+    const view = await section();
+    fireEvent.click(within(rowOf(view, 'notion')).getByRole('button', { name: 'Reconnect' }));
+    expect(await screen.findByText(/Finish signing in to notion in the new tab/)).toBeInTheDocument();
+    // Back in Settings before finishing consent: the original connection is still the one shown.
+    const reads = vi.mocked(getExtensionLibrary).mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(vi.mocked(getExtensionLibrary).mock.calls.length).toBe(reads + 1));
+    expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('Granted scopes: read:docs, search');
+    // Consent finished with other scopes and another account: the next return shows the new connection.
+    const reconnected = { state: 'connected' as const, connectedBy: '7', connectedAt: Date.UTC(2026, 10, 13, 10), scopes: ['write:docs'], registration: 'dynamic' as const };
+    vi.mocked(getExtensionLibrary).mockResolvedValue({ instanceId: 'instance', library, bundles: [], catalog: [], oauth: oauth({ ...threeStates.connections, notion: reconnected }) });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('Granted scopes: write:docs'));
+    expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('by administrator 7');
+    // Finished: the listeners are gone.
+    const settled = vi.mocked(getExtensionLibrary).mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(vi.mocked(getExtensionLibrary).mock.calls.length).toBe(settled);
+  });
+
   it('a failed start closes the opened tab and explains why', async () => {
     const tab = { opener: {}, location: { href: '' }, close: vi.fn() };
     vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
@@ -131,6 +155,26 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     const [input, , secrets] = vi.mocked(saveExtensionLibrary).mock.calls[0];
     expect(input.servers.at(-1)).toMatchObject({ name: 'docs', authentication: 'oauth', scopes: ['docs.read', 'docs.search'], clientId: 'console-client' });
     expect(secrets).toEqual({ docs: 'console-secret' });
+  });
+
+  it('changing the client id to another client drops the secret typed for the first one', async () => {
+    vi.mocked(saveExtensionLibrary).mockImplementation(async input => ({ library: { ...library, ...input, revision: 6 } as ExtensionLibraryRevision }));
+    const view = await section();
+    fireEvent.click(within(view).getByRole('button', { name: 'Add server' }));
+    const form = screen.getByTestId('extension-server-form');
+    fireEvent.change(within(form).getByLabelText(/^Server name/), { target: { value: 'docs' } });
+    fireEvent.change(within(form).getByLabelText('HTTPS endpoint'), { target: { value: 'https://tools.example.com/mcp' } });
+    fireEvent.change(within(form).getByLabelText('Authentication'), { target: { value: 'oauth' } });
+    const fields = within(form).getByTestId('extension-oauth-fields');
+    fireEvent.change(within(fields).getByLabelText(/^Client id/), { target: { value: 'client-a' } });
+    fireEvent.change(within(fields).getByLabelText(/^Client secret/), { target: { value: 'secret-for-a' } });
+    fireEvent.change(within(fields).getByLabelText(/^Client id/), { target: { value: 'client-b' } });
+    expect(within(fields).getByLabelText(/^Client secret/)).toHaveValue('');
+    fireEvent.click(within(form).getByRole('button', { name: 'Add server' }));
+    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalled());
+    const [input, , secrets] = vi.mocked(saveExtensionLibrary).mock.calls[0];
+    expect(input.servers.at(-1)).toMatchObject({ name: 'docs', clientId: 'client-b' });
+    expect(Object.values(secrets ?? {})).not.toContain('secret-for-a');
   });
 
   it('switching away from OAuth drops the scopes and client id', async () => {

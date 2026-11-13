@@ -85,9 +85,8 @@ export function ServerOAuthFields({ server, redirectUri, secretConfigured, secre
         <label className="block">
           Client id <span className="text-xs text-slate-500">(only for a client registered in the provider’s developer console)</span>
           <input className={inputClass} value={server.clientId ?? ''} autoComplete="off" onChange={event => {
-            const clientId = event.target.value.trim();
-            onChange({ clientId: clientId || undefined });
-            if (!clientId) onSecret('');
+            // The form drops a typed client secret whenever the client id changes.
+            onChange({ clientId: event.target.value.trim() || undefined });
           }} />
         </label>
         {server.clientId !== undefined && <ClientSecretField configured={secretConfigured} secret={secret} dropped={secretDropped} onSecret={onSecret} />}

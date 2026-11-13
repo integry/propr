@@ -23,8 +23,15 @@ export function useExtensionLibrary() {
   const [bundles, setBundles] = useState<ExtensionSkillBundle[]>([]);
   const [usage, setUsage] = useState<ExtensionLibraryUsage>(EMPTY_USAGE);
   const [oauth, setOAuth] = useState<ExtensionOAuthInstanceInfo>(NO_OAUTH);
-  /** Servers whose sign-in tab is open: their state is refreshed when this tab regains focus. */
-  const [signingIn, setSigningIn] = useState<string[]>([]);
+  const oauthShown = useRef(oauth);
+  oauthShown.current = oauth;
+  /**
+   * Servers whose sign-in tab is open, each with the `connectedAt` of the connection it had when the sign-in started
+   * (null without one): their state is refreshed when this tab regains focus. A Reconnect starts from a connection that
+   * is already `connected`, so a sign-in is finished only once a connection made after it started is shown.
+   */
+  const [signingIn, setSigningIn] = useState<Record<string, number | null>>({});
+  const signingInCount = Object.keys(signingIn).length;
   const [oauthBusy, setOAuthBusy] = useState<Record<string, boolean>>({});
   const [choices, setChoices] = useState<ExtensionChoices>(() => extensionChoices({ agents: [], repositories: [] }));
   const [pending, setPending] = useState<Record<string, boolean>>({});
@@ -105,17 +112,23 @@ export function useExtensionLibrary() {
     adopt(result.library);
     const next = result.oauth ?? NO_OAUTH;
     setOAuth(next);
-    setSigningIn(names => names.filter(name => ownEntry(next.connections, name)?.state !== 'connected'));
+    setSigningIn(names => {
+      const open = Object.entries(names).filter(([name, before]) => {
+        const connection = ownEntry(next.connections, name);
+        return connection?.state !== 'connected' || connection.connectedAt === before;
+      });
+      return open.length === Object.keys(names).length ? names : Object.fromEntries(open);
+    });
   }, [adopt]);
   useEffect(() => {
-    if (!signingIn.length) return;
+    if (!signingInCount) return;
     const refresh = () => { if (document.visibilityState !== 'hidden') void refreshConnections().catch(() => {}); };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(OAUTH_CHANNEL);
     if (channel) channel.onmessage = refresh;
     return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); channel?.close(); };
-  }, [signingIn.length, refreshConnections]);
+  }, [signingInCount, refreshConnections]);
 
   /**
    * Open the provider's sign-in page in a new tab. The tab is opened at once,
@@ -125,12 +138,13 @@ export function useExtensionLibrary() {
   const connectOAuth = useCallback(async (name: string) => {
     const tab = window.open('', '_blank');
     if (tab) tab.opener = null;
+    const before = ownEntry(oauthShown.current.connections, name)?.connectedAt ?? null;
     setError(''); setNotice('');
     setOAuthBusy(values => ({ ...values, [name]: true }));
     try {
       const { authorizationUrl } = await startExtensionOAuth(name);
       if (tab) tab.location.href = authorizationUrl; else window.open(authorizationUrl, '_blank', 'noopener,noreferrer');
-      setSigningIn(names => [...new Set([...names, name])]);
+      setSigningIn(names => ({ ...names, [name]: before }));
       setNotice(`Finish signing in to ${name} in the new tab. This list refreshes when you come back.`);
     } catch (e) {
       tab?.close();
