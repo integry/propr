@@ -301,11 +301,13 @@ describe('Codex extension configuration on the pinned CLI', { skip: skipUnlessPi
                 ...provider, ...daybreak, '-'];
             const stderr = await runCli('codex', args(['-c', 'daybreak=false']), env, 'Reply OK.');
             assert.ok(requests.some(url => url.startsWith('/propr/')), stderr);
-            // Without the override the pinned CLI refuses before the first request.
+            // Without the override the pinned CLI refuses before the first request
+            // (0.163-0.166 said "requires the OpenAI model provider"; 0.167 names
+            // providers with Cyber access program support).
             requests.length = 0;
             const refused = await runCli('codex', args([]), env, 'Reply OK.');
             assert.equal(requests.length, 0);
-            assert.match(refused, /Daybreak requires the OpenAI model provider/);
+            assert.match(refused, /Daybreak requires a model provider with Cyber access program support/);
         } finally { server.close(); rmSync(home, { recursive: true, force: true }); }
     });
 });

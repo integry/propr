@@ -172,7 +172,10 @@ async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvoc
     // The operation wrapper turns a failed callback into a durable receipt
     // instead of throwing, so the classification is captured here, before that
     // projection consumes it.
-    : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository },
+    // The receipt is admitted under the grant as it is now, not as authentication
+    // read it: a grant revoked meanwhile (its phase ended, and its mutations were
+    // counted) admits nothing more.
+    : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository, admit: tx => deps.policy.admit(principal, tx) },
       operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
   const data = redactToolResult(tool, result);
   const content = redactToolContent(readContent);

@@ -133,16 +133,26 @@ export class McpOperations {
     return this.project(previous);
   }
 
-  async run(principal: McpPrincipal, { tool, args, repository }: { tool: string; args: Record<string, unknown>; repository?: string }, invoke: (operationId: string) => Promise<OperationResult>): Promise<Record<string, unknown>> {
+  /**
+   * `admit` runs in the transaction that inserts the receipt, before the insert:
+   * it fences the receipt on the grant's current state (see `McpPolicy.admit`),
+   * so a grant revoked after authentication admits nothing, and a count of the
+   * grant's receipts taken after its revocation is complete. Its rejection
+   * leaves no receipt and never invokes.
+   */
+  async run(principal: McpPrincipal, { tool, args, repository, admit }: { tool: string; args: Record<string, unknown>; repository?: string; admit?: (tx: Knex.Transaction) => Promise<void> }, invoke: (operationId: string) => Promise<OperationResult>): Promise<Record<string, unknown>> {
     const key = String(args.idempotencyKey || '');
     if (!/^[\w.-]{8,128}$/.test(key)) throw new McpError('IDEMPOTENCY_KEY_REQUIRED', 'Provide a stable 8–128 character idempotencyKey for this action.');
     const identity = { owner_id: principal.user.id, grant_id: principal.grant.id, idempotency_key: key };
     const payloadHash = digest(canonical({ tool, args }));
     const id = randomUUID();
     const acceptedAt = Date.now();
-    const inserted = await this.db('mcp_operations').insert({ ...identity, id, tool, repository: repository || null,
+    const insertReceipt = (database: Knex) => database('mcp_operations').insert({ ...identity, id, tool, repository: repository || null,
       payload_hash: payloadHash, state: 'accepted', lifecycle: 'accepted', accepted_at: acceptedAt, artifacts: JSON.stringify({}),
       created_at: acceptedAt, updated_at: acceptedAt }).onConflict(['owner_id', 'grant_id', 'idempotency_key']).ignore().returning('id');
+    const inserted = admit
+      ? await this.db.transaction(async tx => { await admit(tx); return insertReceipt(tx); })
+      : await insertReceipt(this.db);
     if (!inserted.length) {
       let previous = await this.db<Operation>('mcp_operations').where(identity).first();
       if (!previous || !matchesPayload(previous.payload_hash, tool, args)) throw new McpError('IDEMPOTENCY_CONFLICT', 'This key was already used with different arguments.', 409);

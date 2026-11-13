@@ -1,4 +1,10 @@
-import { TERMINAL_AUTOMATION_RUN_STATES, type AutomationRunState, type AutomationRunTrigger } from '@propr/shared';
+import {
+  TERMINAL_AUTOMATION_RUN_STATES,
+  automationRunNoChangeReason,
+  type AutomationRunNoChangeReason,
+  type AutomationRunState,
+  type AutomationRunTrigger,
+} from '@propr/shared';
 import type { AutomationCapacity, AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { agentTypeLabel, formatDuration } from './agentPresentation';
 
@@ -19,6 +25,14 @@ export const isTerminalRunState = (state: AutomationRunState): boolean =>
   (TERMINAL_AUTOMATION_RUN_STATES as readonly AutomationRunState[]).includes(state);
 
 /** When the run began working, or when it was created if it never started. */
+/** Why a run produced nothing; the server's derivation, or the same rule applied to its flags. */
+export const runNoChangeReason = (
+  run: Pick<AutomationRunRecord, 'noChangeReason' | 'reportNovelty' | 'actingMutations'>,
+): AutomationRunNoChangeReason | null =>
+  run.noChangeReason !== undefined
+    ? run.noChangeReason
+    : automationRunNoChangeReason({ reportNovelty: run.reportNovelty ?? null, actingMutations: run.actingMutations ?? null });
+
 export const runStartedAt = (run: Pick<AutomationRunRecord, 'startedAt' | 'createdAt'>): number => run.startedAt ?? run.createdAt;
 
 /** `just now`, `5m ago`, `3h ago`, `2d ago`. */

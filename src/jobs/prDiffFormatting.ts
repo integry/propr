@@ -3,6 +3,8 @@
  * dependencies so prompt budgeting can be exercised without @propr/core.
  */
 
+import { isBinaryFile, isDocumentationFile, isGeneratedOrVendorFile, isLockfile } from '@propr/shared';
+
 export interface PRFile {
     filename: string;
     status: string;
@@ -174,34 +176,4 @@ function patchSize(file: PRFile): number {
 
 function changedLineCount(file: PRFile): number {
     return file.additions + file.deletions;
-}
-
-function isLockfile(filename: string): boolean {
-    const basename = filename.split('/').pop()?.toLowerCase() || filename.toLowerCase();
-    return basename === 'package-lock.json'
-        || basename === 'npm-shrinkwrap.json'
-        || basename === 'yarn.lock'
-        || basename === 'pnpm-lock.yaml'
-        || basename === 'bun.lock'
-        || basename === 'bun.lockb'
-        || basename === 'composer.lock'
-        || basename === 'poetry.lock'
-        || basename === 'cargo.lock'
-        || basename === 'gemfile.lock';
-}
-
-function isBinaryFile(filename: string): boolean {
-    return /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|pdf|zip|tar|gz|tgz|bz2|xz|7z|rar|woff2?|ttf|eot|otf|mp4|mov|avi|webm|mp3|wav|flac|exe|dll|so|dylib|class|jar)$/i.test(filename);
-}
-
-function isGeneratedOrVendorFile(filename: string): boolean {
-    return /(^|\/)(dist|build|coverage|vendor|third_party|node_modules)\//.test(filename)
-        || /\.min\.(js|css)$/i.test(filename)
-        || /\.(generated|gen)\.[cm]?[jt]sx?$/i.test(filename)
-        || /\.snap$/i.test(filename);
-}
-
-function isDocumentationFile(filename: string): boolean {
-    return /\.(md|mdx|rst|txt|adoc)$/i.test(filename)
-        || /(^|\/)docs\//i.test(filename);
 }

@@ -25,7 +25,7 @@ const {
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
         // Default aliases point to the latest tier models
-        assert.strictEqual(resolveModelAlias('fable'), 'claude-fable-5-1');
+        assert.strictEqual(resolveModelAlias('fable'), 'claude-fable-5-2');
         assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-5-5');
         assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-5-5');
         // Explicit 4.5 aliases
@@ -33,7 +33,7 @@ test('Model Aliases Configuration', async (t) => {
         assert.strictEqual(resolveModelAlias('sonnet45'), 'claude-sonnet-4-5-20250929');
         assert.strictEqual(resolveModelAlias('haiku'), 'claude-haiku-5-5');
         assert.strictEqual(resolveModelAlias('claude-haiku'), 'claude-haiku-5-5');
-        assert.strictEqual(resolveModelAlias('claude-fable'), 'claude-fable-5-1');
+        assert.strictEqual(resolveModelAlias('claude-fable'), 'claude-fable-5-2');
     });
 
     await t.test('should handle case-insensitive aliases', () => {
@@ -66,7 +66,12 @@ test('Model Aliases Configuration', async (t) => {
 
     await t.test('should handle explicit version aliases', () => {
         // Fable aliases
+        assert.strictEqual(resolveModelAlias('fable52'), 'claude-fable-5-2');
+        assert.strictEqual(resolveModelAlias('fable-5-2'), 'claude-fable-5-2');
+        assert.strictEqual(resolveModelAlias('claude-fable-5-2'), 'claude-fable-5-2');
+        // Legacy Fable 5.1 aliases keep working
         assert.strictEqual(resolveModelAlias('fable51'), 'claude-fable-5-1');
+        assert.strictEqual(resolveModelAlias('claude-fable-5-1'), 'claude-fable-5-1');
         assert.strictEqual(resolveModelAlias('fable-5-1'), 'claude-fable-5-1');
         assert.strictEqual(resolveModelAlias('fable5'), 'claude-fable-5');
         assert.strictEqual(resolveModelAlias('fable-5'), 'claude-fable-5');
@@ -105,7 +110,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -125,7 +130,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
+                supportedModels: ['gpt-6.1-terra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
                 defaultModel: 'gpt-5.6-sol'
             }
         },
@@ -225,7 +230,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         try {
             const result = await resolveLlmLabel('fable');
             assert.strictEqual(result.agentAlias, 'claude', 'Should route Claude alias to Claude agent');
-            assert.strictEqual(result.model, 'claude-fable-5-1', 'Should resolve fable alias to latest Claude Fable');
+            assert.strictEqual(result.model, 'claude-fable-5-2', 'Should resolve fable alias to latest Claude Fable');
         } finally {
             registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
         }
@@ -377,8 +382,9 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
 
     await t.test('bare Claude tier labels resolve to the canonical Fable and Haiku models', async () => {
         for (const [label, model] of [
-            ['claude-fable', 'claude-fable-5-1'],
+            ['claude-fable', 'claude-fable-5-2'],
             ['claude-haiku', 'claude-haiku-5-5'],
+            ['claude-fable52', 'claude-fable-5-2'],
             ['claude-fable51', 'claude-fable-5-1'],
             ['claude-haiku55', 'claude-haiku-5-5'],
             ['claude-fable5', 'claude-fable-5'],
@@ -388,6 +394,12 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
             assert.strictEqual(result.agentAlias, 'claude', label);
             assert.strictEqual(result.model, model, label);
         }
+    });
+
+    await t.test('GPT-6.1 Terra label resolves to the Codex agent, not GPT-5.6 Terra', async () => {
+        const result = await resolveLlmLabel('codex-gpt61-terra');
+        assert.strictEqual(result.agentAlias, 'codex');
+        assert.strictEqual(result.model, 'gpt-6.1-terra');
     });
 
     await t.test('Gemini 4 Argon label resolves to the Antigravity agent', async () => {
@@ -476,8 +488,9 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
     });
 
     await t.test('prefers the canonical model for bare tier names regardless of list order', () => {
-        const config = createMockConfig(['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1', 'claude-haiku-5-5']);
-        assert.strictEqual(findMatchingModel('fable', config), 'claude-fable-5-1');
+        const config = createMockConfig(['claude-fable-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-fable-5-2', 'claude-haiku-5-5']);
+        assert.strictEqual(findMatchingModel('fable', config), 'claude-fable-5-2');
+        assert.strictEqual(findMatchingModel('fable51', config), 'claude-fable-5-1');
         assert.strictEqual(findMatchingModel('haiku', config), 'claude-haiku-5-5');
         assert.strictEqual(findMatchingModel('fable5', config), 'claude-fable-5');
         assert.strictEqual(findMatchingModel('haiku45', config), 'claude-haiku-4-5-20251001');
@@ -634,6 +647,8 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
         assert.strictEqual(getModelShortName('claude-sonnet-4-5-20250929'), 'Claude Sonnet 4.5');
         assert.strictEqual(getModelShortName('claude-haiku-4-5-20251001'), 'Claude Haiku 4.5');
         assert.strictEqual(getModelShortName('claude-haiku-5-5'), 'Claude Haiku 5.5');
+        assert.strictEqual(getModelShortName('claude-fable-5-2'), 'Claude Fable 5.2');
+        assert.strictEqual(getModelShortName('claude-fable-5-1'), 'Claude Fable 5.1');
     });
 
     await t.test('returns correct short name for Codex (OpenAI) models', () => {
@@ -734,7 +749,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -814,7 +829,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
             const results = await resolveReviewModels(['fable']);
             assert.strictEqual(results.length, 1, 'Should resolve to exactly one assignment');
             assert.strictEqual(results[0].agentAlias, 'claude');
-            assert.strictEqual(results[0].model, 'claude-fable-5-1');
+            assert.strictEqual(results[0].model, 'claude-fable-5-2');
         } finally {
             registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
         }

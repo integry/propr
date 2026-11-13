@@ -13,6 +13,19 @@ after(async () => {
 });
 
 describe('provider API pricing', () => {
+  test('uses the published Claude Fable 5.2 rates, with cache reads at 2.5% of input', async () => {
+    const pricing = getOfficialModelPricing('anthropic/claude-fable-5.2');
+
+    assert.deepStrictEqual(pricing, {
+      prompt: 8 / 1_000_000,
+      completion: 40 / 1_000_000,
+      cacheCreation: 10 / 1_000_000,
+      cacheRead: 0.2 / 1_000_000,
+    });
+    assert.ok(Math.abs(pricing!.cacheRead! / pricing!.prompt - 0.025) < 1e-12);
+    assert.strictEqual(await getModelPricing('anthropic/claude-fable-5.2'), pricing);
+  });
+
   test('uses the published Claude Fable 5.1 rates, including prompt cache prices', async () => {
     const pricing = getOfficialModelPricing('anthropic/claude-fable-5.1');
 
@@ -40,9 +53,11 @@ describe('provider API pricing', () => {
 
   test('prices alias-configured Fable agents at the Fable rates', () => {
     const expected = {
-      fable: 'anthropic/claude-fable-5.1',
+      fable: 'anthropic/claude-fable-5.2',
+      fable52: 'anthropic/claude-fable-5.2',
+      'claude-fable': 'anthropic/claude-fable-5.2',
       fable51: 'anthropic/claude-fable-5.1',
-      'claude-fable': 'anthropic/claude-fable-5.1',
+      'claude-fable-5-1': 'anthropic/claude-fable-5.1',
       fable5: 'anthropic/claude-fable-5',
       'fable-5': 'anthropic/claude-fable-5',
     };
@@ -160,6 +175,12 @@ describe('provider API pricing', () => {
       cacheCreation: 2.5 / 1_000_000,
       cacheRead: 0.1 / 1_000_000,
     });
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6.1-terra'), {
+      prompt: 1 / 1_000_000,
+      completion: 5 / 1_000_000,
+      cacheCreation: 1.25 / 1_000_000,
+      cacheRead: 0.05 / 1_000_000,
+    });
     assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6-sol'), {
       prompt: 2 / 1_000_000,
       completion: 10 / 1_000_000,
@@ -178,6 +199,7 @@ describe('provider API pricing', () => {
     // Standard short-context pricing: https://developers.openai.com/api/docs/pricing
     for (const [model, expectedCost] of [
       ['gpt-6.1-sol', 0.023],
+      ['gpt-6.1-terra', 0.0115],
       ['gpt-6-sol', 0.028],
     ] as const) {
       const modelId = getOpenRouterId(model);

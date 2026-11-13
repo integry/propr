@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  PR_TEMPLATE_MAX_BYTES, PR_TEMPLATE_PLACEHOLDERS, PR_TEMPLATE_SCAFFOLD, PrTemplateError,
+  PR_TEMPLATE_MAX_BYTES, PR_TEMPLATE_PLACEHOLDERS, PR_TEMPLATE_SCAFFOLD, PR_TEMPLATE_SECTIONS, PrTemplateError,
   composePrBody, composePrTitle, composeWithRepositoryTemplate, defaultPrBody, neutralizeHtml, parsePrTemplate, renderPrTemplateSection,
   type PrBodyPiece, type PrTemplatePlaceholder, type PrTemplateValues,
 } from '../src/prTemplate.js';
@@ -10,6 +10,7 @@ const values: PrTemplateValues = {
   issue_number: '42', issue_title: 'Fix login', model: 'Claude Opus', agent: 'claude', cost: '$0.42',
   tokens: '12,345', execution_time: '4m 12s', branch: '42-fix-login', commits: '- `abc1234` Fix login',
   files_changed: '- `src/login.ts`', summary: 'Fixed the login form.', session_id: 'session-1', repository: 'acme/app',
+  digest: '### Review digest\n\n- **High risk**: none',
 };
 
 const pieces: PrBodyPiece[] = [
@@ -165,6 +166,25 @@ test('composePrBody replaces present sections, removes empty ones and keeps defa
     '- `/review`',
     '*By ProPR*',
   ].join('\n\n'));
+});
+
+test('the digest section sits after summary; its default is the digest piece, and without one nothing is added', () => {
+  assert.deepEqual(PR_TEMPLATE_SECTIONS.slice(0, 3), ['title', 'summary', 'digest']);
+  const withDigest: PrBodyPiece[] = [...pieces.slice(0, 5), { section: 'digest', text: '### Review digest\n\n- `a.ts`\n\n' }, ...pieces.slice(5)];
+  // Absent from the template: the default digest follows the summary pieces, before the run section.
+  assert.equal(composePrBody(withDigest, parsePrTemplate('## trailer\n'), values), [
+    '## Summary\n\nCloses #42\n\n**Summary:** done', '### Review digest\n\n- `a.ts`', '**Run:** 4m', '**Commits:** abc1234', '### Need changes?\n\nComment.',
+  ].join('\n\n'));
+  // An empty digest piece (a run without a diff) changes neither composed nor default output.
+  const emptyDigest: PrBodyPiece[] = [...pieces.slice(0, 5), { section: 'digest', text: '' }, ...pieces.slice(5)];
+  assert.equal(defaultPrBody(emptyDigest), defaultPrBody(pieces));
+  assert.equal(composePrBody(emptyDigest, parsePrTemplate('## trailer\n'), values), composePrBody(pieces, parsePrTemplate('## trailer\n'), values));
+  // Present: the placeholder moves it, and HTML in it is escaped outside code; empty removes it.
+  const moved = composePrBody(withDigest, parsePrTemplate('## digest\n<details>\n\n{{digest}}\n\n</details>\n'), { ...values, digest: '- `<b>` <b>x</b>' });
+  assert.ok(moved.includes('<details>\n\n- `<b>` &lt;b>x&lt;/b>\n\n</details>'), moved);
+  assert.ok(!composePrBody(withDigest, parsePrTemplate('## digest\n'), values).includes('Review digest'));
+  assert.deepEqual(parsePrTemplate('## digest\n{{digest}}').problems, []);
+  assert.match(PR_TEMPLATE_SCAFFOLD, /^## digest\n\{\{digest\}\}$/m);
 });
 
 test('composeWithRepositoryTemplate prepends the summary and run block to the repository template', () => {
