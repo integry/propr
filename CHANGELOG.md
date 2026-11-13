@@ -20,7 +20,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API process. Synthetic agents skip a saturated member for another member of
   the same priority tier and remember the chosen member across the wait.
   Without a per-agent policy nothing changes.
-
+- **Automation templates**: a versioned catalog of automation templates ships
+  in `@propr/shared`, generated from `packages/shared/automation-templates/`
+  and checked in CI against the automation definition contract
+  (`npm run automation-templates:check`). The new-automation form offers
+  **Start from a template**, and the empty Automations list shows the
+  templates; choosing one only fills the form, always in `dry_run`, with a
+  note on what to review (repositories, schedule, autonomy) before saving.
+  The first template is **Daily issue triage**: a report of issues that need
+  a human, likely duplicates, proposed severity and security labels and stale
+  issues. The catalog is also served by
+  `GET /api/automation-definitions/templates`, the MCP read tool
+  `list_automation_templates` and `propr automation templates`.
+- **Instruction learning loop template**: a weekly automation template that
+  reads recent pull request discussions through ProPR's MCP tools and
+  proposes short additions to, or removals from, the repository's agent
+  instructions (`AGENTS.md`, `.propr/instructions.md` or the workflow
+  `instructions` file). Each candidate cites at least two pull requests where
+  the same correction was made; the report also lists stale instructions and
+  warns when the instruction files grow too long. With autonomy raised, the
+  acting step creates one ProPR task that opens a pull request with the cited
+  changes for review.
+- **MCP `get_pull_request_discussion` review sources**: `source: "reviews"`
+  pages a pull request's submitted GitHub reviews and
+  `source: "review_comments"` its inline review comments (file, line, reply
+  thread). The default conversation read never included either, so the
+  Instruction learning loop now reads all three.
+- **Weekly codebase drift report template**: a weekly automation template
+  that reports the last 7 days of merged changes (what changed and why, by
+  area), newly added code that duplicates existing helpers (both locations,
+  only for pairs the run has read after searching by name and by behaviour),
+  growth per top-level area with the largest new files, and suggested
+  consolidations. With autonomy raised, the acting step saves the
+  consolidations as repository To-Dos. The default review guidance now also
+  asks reviewers to check new helpers for duplicates and flag them under the
+  `complexity` category when the review uses it.
 - **Claude Fable 5.2 and GPT-6.1 Terra**: Claude Fable 5.2 (`claude-fable-5-2`,
   label `llm-claude-fable52`, 1M context, $8 / $40 per million tokens with
   cache reads at 2.5% of input) is the new target of the plain `fable` and
@@ -30,7 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `llm-claude-fable51`. GPT-6.1 Terra (`gpt-6.1-terra`, label
   `llm-codex-gpt61-terra`, $1 / $5) is added to the Codex catalog; it needs
   Codex 0.165.0 or later, and reviews use its 500K Codex runtime window.
-
 - **Auto-merge: up-to-date branches**: the new `auto_merge.require_up_to_date`
   option in `.propr/workflow.yml` (default `false`) makes ProPR's own
   auto-merge behave like a merge queue. A labelled PR that passes every other

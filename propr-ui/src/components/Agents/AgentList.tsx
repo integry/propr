@@ -15,6 +15,7 @@ import {
   scheduleSummary,
 } from './agentPresentation';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
+import { AgentTemplateLinks } from './AgentTemplates';
 
 interface AgentListProps {
   definitions: AutomationDefinitionRecord[] | null;
@@ -117,6 +118,7 @@ export const AgentList: React.FC<AgentListProps> = ({ definitions, lastRunStates
               It can stop there, wait for your approval, or act on the report through ProPR tools.
             </p>
             <div className="mt-5">{newAgent}</div>
+            <AgentTemplateLinks readOnly={readOnly} />
           </div>
         ) : visible.length === 0 ? (
           <p className="px-4 py-6 text-sm text-slate-500">
