@@ -4204,7 +4204,7 @@ paths:
   /api/instance/extensions/v1:
     get:
       operationId: getAgentExtensionLibrary
-      summary: Read the current secret-free extension library revision, the imported skill bundles, the versioned contract and the operator catalog identity/digest, tools/capability and opaque secret count/configuration status in one call.
+      summary: Read the current secret-free extension library revision, the imported skill bundles, the versioned contract and the operator catalog identity/digest, tools/capability and opaque secret count/configuration status, and where items are used (automations that add them, profiles migrated items came from) in one call.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -9411,12 +9411,67 @@ components:
             type: object
             properties: {}
             additionalProperties: {}
+        usage:
+          type: object
+          properties:
+            automations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  servers:
+                    type: array
+                    items:
+                      type: string
+                  skills:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - id
+                  - name
+                  - servers
+                  - skills
+                additionalProperties: false
+            importedFrom:
+              type: object
+              properties:
+                servers:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+                skills:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+              required:
+                - servers
+                - skills
+              additionalProperties: false
+          required:
+            - automations
+            - importedFrom
+          additionalProperties: false
+          description: Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from.
       required:
         - contract
         - instanceId
         - library
         - bundles
         - catalog
+        - usage
       additionalProperties: false
     ExtensionLibraryRevisionResponse:
       type: object

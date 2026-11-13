@@ -13,6 +13,48 @@ requires a current **durable** `instance_members` administrator with
 or repository assignment alone does not establish this authority: persist the
 administrator in Access first.
 
+## The settings screen
+
+**Skills & MCP servers** opens with a short explanation of how items reach runs,
+then two flat lists, **MCP servers** and **Skills**. Each row shows:
+
+- an **enabled checkbox**. Ticking or unticking it saves at once through the
+  single-item endpoint (`POST /api/instance/extensions/v1/items/enabled`), with no
+  form and no separate Save step. While the request runs the checkbox is
+  disabled; if it fails, the checkbox returns to its previous state and the error
+  is shown. A switched-off row stays in the list, dimmed with an **Off** status,
+  and keeps all its settings and its stored secret;
+- the name, kind (HTTPS endpoint, operator catalog entry or skill source) and,
+  for servers, a **Read** or **Write** badge;
+- where it applies (**All repositories** or the repository list, plus any agent
+  limit) and whether it applies automatically;
+- notes and warnings: the Codex configuration limitation (below) on items that
+  can reach a Codex agent, a missing Bearer token, *Imported from profile X; not
+  applied automatically* on migrated items, and the automations that add the item
+  explicitly (on a switched-off item: that those automations currently run
+  without it).
+
+**Add server** opens one form: an HTTPS endpoint (with tool discovery and a
+write-only Bearer token) or an operator catalog entry, the allowed tools and
+capability, then the item limits: **Limit to repositories** (empty means every
+repository), **Apply automatically** (on by default) and, under **Advanced**,
+**Limit to agents**. **Add skill** picks a skill already imported, or imports one
+from a tar/tar.gz archive or a pinned GitHub commit, with the same three limits.
+Saving a form creates a new library revision at once. **Edit** opens the same
+form for a row; renaming a server or changing its endpoint clears its stored
+token, so enter it again. **Remove** asks for confirmation; an item an automation
+adds is refused with the automations named.
+
+A warning above a list appears when more than 8 enabled servers or 8 enabled
+skills could apply to one repository and agent combination: only 8 are used per
+run. **Validate saved MCP connectivity** checks the saved HTTPS servers, and
+**Revision history** lists every library revision with the administrator and
+time. Bearer tokens are never shown; the form only says whether one is
+configured.
+
+Automations pick further items in their editor under
+[Additional extensions](./agents.md#extensions).
+
 ## Library items
 
 An item is an MCP server (`https` or operator `catalog`, see below) or a reference
@@ -273,8 +315,9 @@ bundle are not launched (their trigger returns 409). Remove library items you no
 longer need in Settings, or retire unused bundles (set `deleted` on their
 `extension_profiles` row), then restart.
 
-The previous tables are kept unchanged. Review the migrated items, then enable
-**Apply automatically** where an item should reach every matching automation.
+The previous tables are kept unchanged. Migrated items show *Imported from
+profile X; not applied automatically* in Settings. Review them, then enable
+**Apply automatically** where an item should reach every matching run.
 
 ## Validation
 
@@ -288,7 +331,7 @@ mount cleanup. A synthetic TLS MCP fixture proves a selected gateway grant can
 call the approved tool, a grant without that server cannot, redirects are refused and
 oversized responses fail. Qualified pinned Claude/Codex CLI tests check exclusive
 MCP catalogs and environment authentication. The browser test renders the actual
-settings editor and checks security/provenance/history and write-only controls.
+settings lists and forms and checks the enabled checkbox round trip, limits, provenance, history and write-only controls.
 
 Skill-bearing runs require a Linux worker with `/proc/self/fd` available for secure directory-handle staging. Non-Linux workers reject skill staging with an explicit error; Runs with only MCP servers do not require these staging primitives.
 

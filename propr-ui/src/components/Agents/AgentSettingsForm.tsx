@@ -1,4 +1,4 @@
-import { ExtensionItemsSelector } from '../Extensions/ExtensionItemsSelector';
+import { AdditionalExtensionsSelector } from '../Extensions/AdditionalExtensionsSelector';
 import React from 'react';
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH, EMPTY_AUTOMATION_EXTENSIONS, type AutomationExtensions } from '@propr/shared';
@@ -43,6 +43,12 @@ const sameExtensions = (left: AutomationExtensions, right: AutomationExtensions 
   return key(left) === key(right);
 };
 
+/** The repositories and agent an automation runs with, for the additional-extensions limits. */
+const extensionTarget = (editor: ReturnType<typeof useAgentEditor>) => {
+  const agentAlias = editor.form.agentId ?? editor.defaultAgentAlias;
+  return { repositories: editor.form.repositories, agentAlias, agentType: editor.agents.find(agent => agent.alias === agentAlias)?.type ?? null };
+};
+
 /** The agent's settings: scope, prompt and files, model, capabilities, schedule and autonomy. */
 export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, isNew, readOnly, isDemoMode, hidden, onDelete }) => {
   const { definition, form, update } = editor;
@@ -78,8 +84,9 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
         </AgentFormRow>
 
         <div className="px-4 py-4 empty:hidden">
-          <ExtensionItemsSelector
+          <AdditionalExtensionsSelector
             value={form.extensions ?? definition?.extensions ?? EMPTY_AUTOMATION_EXTENSIONS}
+            target={extensionTarget(editor)}
             onChange={extensions => update({ extensions: sameExtensions(extensions, definition?.extensions) ? undefined : extensions })}
             disabled={readOnly}
           />

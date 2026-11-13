@@ -259,6 +259,23 @@ export interface ExtensionLibraryRead {
   catalog: {
     [key: string]: unknown;
   }[];
+  /** Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from. */
+  usage: {
+    automations: {
+      id: string;
+      name: string;
+      servers: string[];
+      skills: string[];
+    }[];
+    importedFrom: {
+      servers: {
+        [key: string]: string[];
+      };
+      skills: {
+        [key: string]: string[];
+      };
+    };
+  };
 }
 
 export interface ExtensionLibraryRevisionResponse {

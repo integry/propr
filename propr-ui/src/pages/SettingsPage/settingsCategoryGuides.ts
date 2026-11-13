@@ -68,7 +68,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
   'agent-extensions': {
     summary: 'What agents can use inside their containers beyond the repository: MCP tools, skills and extra system packages.',
     notes: [
-      'The extension library holds the instance’s MCP servers and read-only skill bundles. Each item is limited to repositories and agents, and applies automatically unless an automation must add it explicitly. Claude and Codex runs only.',
+      'Skills & MCP servers lists the instance’s MCP servers and read-only skills. Each item can be limited to repositories (and, under Advanced, agents), applies automatically unless you turn that off, and can be switched off with its checkbox without losing its settings. Automations can add further items in their editor. Claude and Codex runs only.',
       'Agents run without sudo, so system tools such as chromium or ffmpeg must be added as runtime packages. ProPR rebuilds every agent image and keeps the previous images until the build succeeds.',
       'Runtime packages use Debian apt names. Repository-specific npm or pip dependencies belong in .propr/setup.sh.',
     ],
