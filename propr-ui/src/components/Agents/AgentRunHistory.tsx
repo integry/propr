@@ -4,6 +4,7 @@ import { History, Loader2, Timer } from 'lucide-react';
 import { getAutomationRun, listAutomationRuns, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
+import { AgentRunNoChangeBadge } from './AgentRunNoChangeBadge';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import {
   RUN_TRIGGER_LABELS,
@@ -29,7 +30,7 @@ interface AgentRunHistoryProps {
  * report) so nothing needs horizontal panning, and a pane of 36rem or more
  * keeps the five columns. Tailwind needs the variant spelled out in full.
  */
-const ROW_GRID = 'grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 [@container(min-width:36rem)]:grid-cols-[minmax(5.5rem,auto)_minmax(5rem,auto)_minmax(7rem,auto)_3.5rem_minmax(0,1fr)] [@container(min-width:36rem)]:gap-y-3';
+const ROW_GRID = 'grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 [@container(min-width:36rem)]:grid-cols-[minmax(5.5rem,auto)_minmax(5rem,auto)_minmax(12.5rem,auto)_3.5rem_minmax(0,1fr)] [@container(min-width:36rem)]:gap-y-3';
 
 const runPath = (definitionId: string, runId: string) =>
   `/automations/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}`;
@@ -84,7 +85,10 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
           {formatRelativeTime(started, now)}
         </time>
         <span title={run.triggerSource ?? undefined} className="truncate text-slate-600">{RUN_TRIGGER_LABELS[run.trigger]}</span>
-        <span className="flex justify-end [@container(min-width:36rem)]:justify-start"><AgentRunStateBadge state={run.state} /></span>
+        <span className="flex flex-wrap justify-end gap-1 [@container(min-width:36rem)]:justify-start">
+          <AgentRunStateBadge state={run.state} />
+          <AgentRunNoChangeBadge run={run} />
+        </span>
         <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs tabular-nums text-slate-500" data-testid="agent-run-duration">
           <Timer className="h-3 w-3 flex-none text-slate-400 [@container(min-width:36rem)]:hidden" aria-hidden="true" />
           {runDuration(run, now)}

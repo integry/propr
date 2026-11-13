@@ -10,7 +10,14 @@
  * {@link GoalMutationUncertainError} with the key needed to retry safely.
  */
 
-import type { AutomationAutonomyMode, AutomationCapability, AutomationRunState, AutomationRunTrigger } from "@propr/shared";
+import type {
+  AutomationAutonomyMode,
+  AutomationCapability,
+  AutomationReportNovelty,
+  AutomationRunNoChangeReason,
+  AutomationRunState,
+  AutomationRunTrigger,
+} from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { mutate } from "./goals.js";
 
@@ -42,6 +49,8 @@ export interface Automation {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Turn the schedule off when the unproductive-run notification fires; absent from older servers. */
+  pauseWhenUnproductive?: boolean;
   enabled: boolean;
   revision: number;
   createdAt: number;
@@ -71,6 +80,13 @@ export interface AutomationRun {
   operatorNote: string | null;
   deferredUntil: number | null;
   deferrals: number;
+  /** Unproductive-run flags; absent from older servers, null before a report or for runs older than the flags. */
+  reportHash?: string | null;
+  reportNovelty?: AutomationReportNovelty | null;
+  /** Mutating MCP operations the acting step performed; 0 is a no-op acting step. */
+  actingMutations?: number | null;
+  /** Derived by the server: why the run produced nothing, or null. */
+  noChangeReason?: AutomationRunNoChangeReason | null;
   createdAt: number;
   startedAt: number | null;
   reportedAt: number | null;

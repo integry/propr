@@ -117,6 +117,33 @@ describe('AgentsListSection web login', () => {
     expect(screen.getByRole('button', { name: 'Select Claude Sonnet 4.6 from claude in Playground' })).toBeInTheDocument();
   });
 
+  it('shows Fable 5.2 as current and folds Fable 5.1 with the legacy models', () => {
+    render(
+      <AgentsListSection
+        agents={[{
+          ...agents[0],
+          type: 'claude',
+          alias: 'claude',
+          supportedModels: ['claude-fable-5-2', 'claude-fable-5-1'],
+        }]}
+        loading={false}
+        saving={false}
+        error={null}
+        success={null}
+        warning={null}
+        onSaveAgents={vi.fn()}
+        onSelectModel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Select Claude Fable 5.2 from claude in Playground' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Select Claude Fable 5.1 from claude in Playground' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 legacy model' }));
+
+    expect(screen.getByRole('button', { name: 'Select Claude Fable 5.1 from claude in Playground' })).toBeInTheDocument();
+  });
+
   it('offers login for supported agents and opens their dialog', () => {
     renderList();
 

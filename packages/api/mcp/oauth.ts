@@ -5,7 +5,7 @@ import { InvalidGrantError, InvalidTokenError, InvalidRequestError, InvalidScope
 import type { Response, RequestHandler } from 'express';
 import type { Knex } from 'knex';
 import type { GitHubUser } from '../authTypes.js';
-import { MCP_SCOPES, type McpConfig, type McpScope } from './config.js';
+import { MCP_SCOPES, McpError, type McpConfig, type McpScope } from './config.js';
 import { McpStore, digest, secret } from './store.js';
 import { createClientsStore } from './clients.js';
 
@@ -183,9 +183,39 @@ export class McpOAuthProvider implements OAuthServerProvider {
     if (record?.clientId === client.client_id) await this.revokeGrant(record.grantId);
   }
 
+  /**
+   * The grant row as read inside `tx`. Revocation and the admission of a
+   * mutation receipt (`admitGrant`) both read it in a transaction that holds
+   * SQLite's write lock from its start (`BEGIN IMMEDIATE`), so each sees the
+   * other complete. Undefined when no row exists, null when the row cannot be
+   * decoded.
+   */
+  private async readGrantRow(id: string, tx: Knex): Promise<McpGrant | null | undefined> {
+    const row = await tx('mcp_records').where({ kind: 'grant', id }).first('value');
+    if (!row) return undefined;
+    try { return this.store.unseal<McpGrant>(row.value); } catch { return null; }
+  }
+
+  /**
+   * Admits one mutating operation under the grant, inside the transaction that
+   * writes its receipt: the grant is re-read under the write lock that
+   * transaction holds, so a revocation either waits for the receipt to commit
+   * (and the count taken after it sees the receipt) or committed first, in which case
+   * the operation is refused here, before it runs. A grant without a stored
+   * row (a Connect delegation) is bounded by its token alone.
+   */
+  async admitGrant(id: string, tx: Knex): Promise<void> {
+    const grant = await this.readGrantRow(id, tx);
+    if (grant === undefined) return;
+    if (!grant || grant.revoked || grant.expiresAt <= Date.now()) {
+      throw new McpError('GRANT_REVOKED', 'This grant was revoked before the action was admitted; nothing was changed.', 403);
+    }
+  }
+
   async revokeGrant(id: string, ownerId?: string, database: Knex = this.store.db): Promise<void> {
     await database.transaction(async tx => {
-      const grant = await this.store.get<McpGrant>('grant', id, tx);
+      // Under the write lock: an admission in flight commits its receipt first or sees the revocation.
+      const grant = await this.readGrantRow(id, tx);
       if (grant && (!ownerId || grant.ownerId === ownerId)) await this.store.put('grant', id, { ...grant, revoked: true }, { database: tx });
     });
   }

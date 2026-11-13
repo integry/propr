@@ -458,3 +458,25 @@ testWithFixture('MCP automation tools cannot write extension selections into def
   }
   assert.equal((await f.db('agent_definitions').where({ id: definition.id }).first()).extension_profile, null);
 });
+
+testWithFixture('get_automation_run and list_automation_runs expose the unproductive-run flags', async f => {
+  const definition = await f.define(['acme/app'], { autonomyMode: 'auto', pauseWhenUnproductive: true });
+  const receipt = (await f.call('trigger_automation_run', { definitionId: definition.id, idempotencyKey: 'no-change-run-1' })).data as Receipt;
+  const id = receipt.result.runId;
+  await transitionAgentRun(id, ['queued'], 'running', {}, { database: f.db });
+  await transitionAgentRun(id, ['running'], 'report_ready', { report: 'Open two issues.', reportHash: 'b'.repeat(64), reportNovelty: 'new' }, { database: f.db });
+  await transitionAgentRun(id, ['report_ready'], 'acting', {}, { database: f.db });
+  await transitionAgentRun(id, ['acting'], 'completed', { actionSummary: 'Nothing to do.', actingMutations: 0 }, { database: f.db });
+
+  const detail = (await f.call('get_automation_run', { runId: id })).data as { run: Record<string, unknown> };
+  assert.equal(detail.run.state, 'completed');
+  assert.equal(detail.run.reportHash, 'b'.repeat(64));
+  assert.equal(detail.run.reportNovelty, 'new');
+  assert.equal(detail.run.actingMutations, 0);
+  assert.equal(detail.run.noChangeReason, 'no_op_action');
+  const listed = (await f.call('list_automation_runs', { definitionId: definition.id })).data as { runs: Array<Record<string, unknown>> };
+  assert.equal(listed.runs[0].actingMutations, 0);
+  assert.equal(listed.runs[0].noChangeReason, 'no_op_action');
+  const summary = (await f.call('list_automation_definitions', {})).data as { definitions: Array<Record<string, unknown>> };
+  assert.equal(summary.definitions[0].pauseWhenUnproductive, true);
+});

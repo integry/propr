@@ -4,6 +4,7 @@ import { AuthProvider } from '../../contexts/AuthContext';
 import type { CurrentUser } from '../../api/proprTypes';
 import InstanceStorageSection from './InstanceStorageSection';
 import * as api from '../../api/instanceStorageApi';
+import { maintenanceSections, settingsDataSections } from './settingsDataSections';
 vi.mock('../../api/instanceStorageApi', async importOriginal => ({ ...await importOriginal<typeof import('../../api/instanceStorageApi')>(), storageCapabilities: vi.fn(), storageInventory: vi.fn(), storagePreview: vi.fn(), storageExecute: vi.fn(), startDatabaseExport: vi.fn(), databaseExportStatus: vi.fn(), downloadDatabaseExport: vi.fn(), cancelDatabaseExport: vi.fn(), verifyStorageActor: vi.fn() }));
 const user = { id: 'admin', username: 'admin', role: 'admin', permissions: ['instance.manage_settings'] } as CurrentUser;
 const capabilities = { version: 1 as const, instanceId: 'instance', generation: 'generation', features: ['repository_inventory', 'repository_cleanup', 'database_export'] as const };
@@ -23,6 +24,13 @@ describe('native instance storage', () => {
     render(view({ ...user, role: 'member' }));
     expect(screen.queryByText('Instance data')).not.toBeInTheDocument();
     expect(api.storageCapabilities).not.toHaveBeenCalled();
+  });
+  it('lives under Maintenance, not Integrations & MCP, and only for administrators who may manage settings', () => {
+    expect(maintenanceSections(user).map(section => [section.id, section.category])).toEqual([['instance-storage', 'maintenance']]);
+    expect(maintenanceSections(user)[0].searchText).toMatch(/cache cleanup/);
+    expect(settingsDataSections().map(section => section.id)).not.toContain('instance-storage');
+    expect(maintenanceSections({ ...user, role: 'member' })).toEqual([]);
+    expect(maintenanceSections({ ...user, permissions: [] })).toEqual([]);
   });
   it('shows self-hosted inventory with unknown sizes and requires explicit cleanup confirmation', async () => {
     render(view());

@@ -30,13 +30,13 @@ const RECOMMENDED_SUMMARIZATION_ALIASES = ['haiku55', 'gpt56-luna', 'flash38', '
 const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku55', 'gpt56-luna', 'flash38', 'big-pickle'];
 
 // Models recommended for plan generation (high capability options)
-const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra', 'argon', 'mistral'];
+const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus55', 'fable52', 'sonnet55', 'astra', 'argon', 'mistral'];
 
 // Models recommended for implementation (high capability options)
 const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
 
 // Models recommended for PR review (high capability options)
-const RECOMMENDED_PR_REVIEW_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra', 'argon', 'mistral'];
+const RECOMMENDED_PR_REVIEW_ALIASES = ['opus55', 'fable52', 'sonnet55', 'astra', 'argon', 'mistral'];
 
 function formatFallbackModelName(modelId: string): string {
   const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);

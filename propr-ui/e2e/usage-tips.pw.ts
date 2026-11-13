@@ -104,13 +104,13 @@ test('dashboard places tips below stats, persists only deliberate dismissal and 
   await capture(page, 'usage-tips-mobile.png', '[aria-label="Usage tips"]');
 });
 
-test('general settings save the tips toggle', async ({ page }) => {
+test('experimental settings save the tips toggle', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const state = await fixture(page);
-  await page.goto('/settings');
-  await expect(page.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
+  await page.goto('/settings?tab=experimental');
+  await expect(page.getByRole('tab', { name: 'Experimental' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('Dismissal cooldown days')).toHaveCount(0);
-  await expect(page.locator('#settings-panel-general [data-settings-section]').first()).toHaveAttribute('data-settings-section', 'usage-tips');
+  await expect(page.locator('#settings-panel-experimental [data-settings-section]').first()).toHaveAttribute('data-settings-section', 'usage-tips');
   await capture(page, 'usage-tips-settings.png', '[data-settings-section="usage-tips"]');
   await page.getByLabel('Show usage tips').uncheck();
   await page.getByLabel('Show usage tips').blur();

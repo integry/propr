@@ -21,6 +21,8 @@ export interface AgentEditorForm {
   /** Kept while the schedule is off, so turning it back on restores the expression. */
   schedule: string;
   scheduleEnabled: boolean;
+  /** Turn the schedule off when the owner is told about repeated runs that produced nothing. */
+  pauseWhenUnproductive: boolean;
   autonomy: AutomationAutonomyMode;
 }
 
@@ -37,6 +39,7 @@ export const emptyAgentForm = (): AgentEditorForm => ({
   capabilities: [...DEFAULT_AUTOMATION_CAPABILITIES],
   schedule: '',
   scheduleEnabled: false,
+  pauseWhenUnproductive: false,
   autonomy: DEFAULT_AUTOMATION_AUTONOMY_MODE,
 });
 
@@ -52,6 +55,7 @@ export const formFromDefinition = (definition: AutomationDefinitionRecord): Agen
   capabilities: [...definition.capabilities],
   schedule: definition.scheduleCron ?? '',
   scheduleEnabled: definition.scheduleEnabled && Boolean(definition.scheduleCron),
+  pauseWhenUnproductive: definition.pauseWhenUnproductive ?? false,
   autonomy: definition.autonomyMode,
 });
 
@@ -68,4 +72,5 @@ export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput =>
   agentId: form.agentId,
   model: form.agentId ? form.model : null,
   previousReportCount: form.previousReportCount,
+  pauseWhenUnproductive: form.pauseWhenUnproductive,
 });

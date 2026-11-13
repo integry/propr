@@ -41,6 +41,10 @@ network:
     - "registry.npmjs.org"
     - "*.internal.example.com"
 on_blocker: report
+review:
+  risk_paths:
+    - "src/billing/**"
+    - "infra/**"
 ```
 
 All fields are optional. Use `{}` for an empty policy; a file that is empty or contains only comments (for example, the scaffold with every section commented out) is also treated as an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors once; the job is not retried, because the same base commit would fail the same way. A malformed instance `worker_concurrency` setting is not a workflow error: ProPR falls back to `WORKER_CONCURRENCY` (default 5). Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
@@ -258,6 +262,27 @@ Each decision is recorded with the same auto-merge timeline event, at most once 
 | `waiting_branch_update_conflict` | The update failed because of conflicts; the event says whether automatic resolution was queued. |
 | `waiting_branch_update_failed` | GitHub refused the update for another reason. |
 | `waiting_base_comparison_unavailable` | GitHub could not compare the head with the base branch; nothing is merged. |
+
+## Review digest risk paths
+
+Every agent pull request description (issue runs) and every follow-up or `/fix` completion comment that publishes a commit includes a **Review digest** that ranks the changed files by risk, shows the validation evidence and gives the diff size. See [Pull request templates](./pr-templates.md#review-digest) for what it contains.
+
+The digest marks these paths **high risk** by default: CI and workflow files (`.github/workflows/**`, `.gitlab-ci.yml`, `.circleci/**`, `Jenkinsfile` and similar), `.propr/**`, agent configuration (`CLAUDE.md`, `AGENTS.md`, `.claude/**`, `.codex/**`, `.github/copilot-instructions.md`, `.mcp.json` and similar), lockfiles, dependency manifests (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml` and others), database migrations (`**/migrations/**`, `**/db/migrate/**` and similar) and auth- or payment-looking paths (`auth`, `login`, `password`, `billing`, `payment`, `stripe` and similar words). Docs and tests are **low risk**, and everything else is **normal**.
+
+`review.risk_paths` lists more globs that mark changed paths as high risk:
+
+```yaml
+review:
+  risk_paths:
+    - "src/billing/**"
+    - "infra/**"
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `risk_paths` | none | At most 200 globs. A changed file that matches one is high risk, even when it is a doc or a test. |
+
+Globs work exactly like `auto_merge.protected_paths`: they are anchored at the repository root, matched case-insensitively, and a pattern that matches a directory covers everything below it. `risk_paths` only changes how the digest ranks files; it does not affect auto-merge, which keeps using `protected_paths`. Like the rest of the policy, it is read from the base branch.
 
 ## Network
 

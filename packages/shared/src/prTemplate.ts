@@ -19,7 +19,7 @@ export const PR_BODY_MAX_LENGTH = 65536;
 
 /** Section names in the order they appear in a rendered pull request description. */
 export const PR_TEMPLATE_SECTIONS = [
-  'title', 'summary', 'run', 'commits', 'files_changed', 'prompt', 'review_guidelines', 'commands', 'trailer',
+  'title', 'summary', 'digest', 'run', 'commits', 'files_changed', 'prompt', 'review_guidelines', 'commands', 'trailer',
 ] as const;
 export type PrTemplateSection = typeof PR_TEMPLATE_SECTIONS[number];
 export type PrTemplateBodySection = Exclude<PrTemplateSection, 'title'>;
@@ -39,6 +39,7 @@ export const PR_TEMPLATE_PLACEHOLDERS = {
   commits: 'Markdown list of commits published by the run',
   files_changed: 'Markdown list of changed files',
   summary: "The agent's summary of the change (untrusted; sanitized)",
+  digest: 'Review digest: changed files ranked by risk, validation evidence and diff size; empty when there is no diff',
   session_id: 'Agent session identifier',
   repository: 'owner/repository',
 } as const;
@@ -46,7 +47,7 @@ export type PrTemplatePlaceholder = keyof typeof PR_TEMPLATE_PLACEHOLDERS;
 export type PrTemplateValues = Record<PrTemplatePlaceholder, string>;
 
 /** Values that come from issue authors or agent output rather than from ProPR. */
-const UNTRUSTED_PLACEHOLDERS: ReadonlySet<PrTemplatePlaceholder> = new Set(['issue_title', 'summary', 'commits']);
+const UNTRUSTED_PLACEHOLDERS: ReadonlySet<PrTemplatePlaceholder> = new Set(['issue_title', 'summary', 'commits', 'digest']);
 
 export type PrTemplateProblemKind = 'unknown_section' | 'duplicate_section' | 'unknown_placeholder' | 'too_large';
 
@@ -421,6 +422,9 @@ Uncomment and edit the examples you want:
 Closes #{{issue_number}}
 
 {{summary}}
+
+## digest
+{{digest}}
 
 ## run
 
