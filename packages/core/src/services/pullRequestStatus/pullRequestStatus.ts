@@ -62,6 +62,12 @@ export interface PullRequestStatusUltrafix {
 export interface PullRequestStatusChecks {
     /** False when GitHub could not be read completely, so a pass cannot be asserted. */
     complete: boolean;
+    /**
+     * A GitHub check read rejected (transport, rate limit): a transient gap the
+     * reconciliation retries. Checks left unread by the page budget are
+     * incomplete without it, a limit no retry lifts.
+     */
+    readFailed?: boolean;
     passed: number;
     failed: number;
     pending: number;

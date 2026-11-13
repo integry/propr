@@ -80,6 +80,8 @@ class FakeGitHub {
     listed: Array<{ number: number; head: FakePull['head']; base: FakePull['base'] }> | null = null;
     /** Failures the next open pull request listings throw. */
     listFailures = 0;
+    /** Failures the next check reads (check runs, legacy statuses) throw. */
+    checkFailures = 0;
     async request(route: string, params: Record<string, unknown>) {
         this.calls.push({ route, params });
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: structuredClone(this.pull) };
@@ -97,14 +99,25 @@ class FakeGitHub {
             return { data: { body: this.pull.body } };
         }
         if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') {
+            if (this.checkFailures > 0) { this.checkFailures--; throw new Error('GitHub unavailable'); }
             const perPage = Number(params.per_page ?? 30);
             const page = Number(params.page ?? 1);
             return { data: { total_count: this.checkRuns.length, check_runs: this.checkRuns.slice((page - 1) * perPage, page * perPage) } };
         }
-        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: this.commitStatus };
+        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') {
+            if (this.checkFailures > 0) { this.checkFailures--; throw new Error('GitHub unavailable'); }
+            return { data: pagedCommitStatus(this.commitStatus, params) };
+        }
         throw new Error(`unexpected route ${route}`);
     }
     writes() { return this.calls.filter(call => !call.route.startsWith('GET ')); }
+}
+
+/** The combined status as GitHub pages it: the state and total with every page, the contexts page by page. */
+function pagedCommitStatus(status: FakeGitHub['commitStatus'], params: Record<string, unknown>) {
+    const perPage = Number(params.per_page ?? 30);
+    const page = Number(params.page ?? 1);
+    return { ...status, statuses: status.statuses.slice((page - 1) * perPage, page * perPage) };
 }
 
 let database: Knex;
@@ -1066,6 +1079,66 @@ test('a backfilled update that fails is retried, since no transition may follow'
     }
 });
 
+// --- Reconciliation retries after a rejected check read (F21) ---
+
+const statusReads = () => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/commits/{ref}/status').length;
+
+test('a backfilled update whose check read rejected is retried, so the block does not stay at "checks could not be read"', async () => {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    github.checkFailures = 1;
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+    enablePullRequestStatusSync({ ...deps(), listRepositories: async () => [REPOSITORY] }, { backfill: true });
+    try {
+        await until(() => /✅ Ready/.test(statusLine()));
+        assert.match(statusLine(), /✅ Ready · checks: 1 passed/);
+        assert.ok(github.patches.some(body => /checks could not be read/.test(body)), 'the rejected read was written, then refreshed');
+        assert.equal(facts(), 2, 'one read rejected, the retry read the checks');
+        const settled = facts();
+        await pause(300);
+        assert.equal(facts(), settled, 'a complete read ends the retries');
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+test('a base-push refresh whose check read rejected is retried', async () => {
+    await readyProprPullRequest();
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+    enablePullRequestStatusSync(deps());
+    try {
+        github.pull.base = { ref: 'main', sha: PUSHED_TIP };
+        github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'failure' }];
+        github.checkFailures = 1;
+        const start = statusReads();
+        push('refs/heads/main', PUSHED_TIP);
+        await until(() => /unit/.test(statusLine()));
+        assert.match(statusLine(), /⚠️ Needs you · failed: unit/);
+        assert.equal(statusReads() - start, 2, 'the rejected read was retried once GitHub had reported the pushed base');
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+test('checks left unread by the page budget are not retried: the limit is not a transient failure', async () => {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    github.checkRuns = Array.from({ length: 301 }, (_, index) => ({ name: `unit-${index}`, status: 'completed', conclusion: 'success' }));
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+    enablePullRequestStatusSync({ ...deps(), listRepositories: async () => [REPOSITORY] }, { backfill: true });
+    try {
+        await until(() => /checks could not be read/.test(statusLine()));
+        assert.match(statusLine(), /⚠️ Needs you · checks could not be read/);
+        await pause(300);
+        assert.equal(facts(), 3, 'the three budgeted pages of the one read, and no refresh');
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
 const openPulls = (numbers: number[]) => numbers.map(number => ({ number, head: { sha: `h${number}`, ref: `b${number}`, repo: { full_name: REPOSITORY } }, base: { ref: 'main', sha: 'base-1' } }));
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
 async function ownPullRequests(numbers: number[], state: string | null = null): Promise<void> {
@@ -1203,9 +1276,9 @@ test('a push to a base with more open pull requests than one batch reaches the P
 function checkSources(commitStatus: FakeGitHub['commitStatus'], checkRuns: Array<{ name: string; status: string; conclusion: string | null }> = [], patterns: string[] = []) {
     return {
         github: {
-            request: async (route: string) => {
+            request: async (route: string, params: Record<string, unknown>) => {
                 if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') return { data: { total_count: checkRuns.length, check_runs: checkRuns } };
-                if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: commitStatus };
+                if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: pagedCommitStatus(commitStatus, params) };
                 throw new Error(`unexpected ${route}`);
             },
         },
@@ -1218,7 +1291,7 @@ test('a failed and a pending legacy context are one failed and one pending, neve
         state: 'failure', total_count: 2,
         statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }],
     }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
 });
 
 test('each listed legacy context counts on its own alongside check runs', async () => {
@@ -1226,7 +1299,7 @@ test('each listed legacy context counts on its own alongside check runs', async 
         { state: 'failure', total_count: 3, statuses: [{ context: 'ci/lint', state: 'error' }, { context: 'ci/build', state: 'pending' }, { context: 'ci/docs', state: 'success' }] },
         [{ name: 'unit', status: 'completed', conclusion: 'success' }, { name: 'e2e', status: 'in_progress', conclusion: null }],
     ), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, passed: 2, failed: 1, pending: 2, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 2, failed: 1, pending: 2, failedNames: ['ci/lint'] });
 });
 
 test('a non-blocking legacy context neither fails nor holds the status, and does not count as passed', async () => {
@@ -1234,23 +1307,66 @@ test('a non-blocking legacy context neither fails nor holds the status, and does
         { state: 'failure', total_count: 3, statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }, { context: 'coverage/optional', state: 'failure' }] },
         [], ['coverage/*'],
     ), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
 });
 
-test('legacy contexts left unlisted fall back to the combined state', async () => {
-    // total_count says 3 contexts exist but only 2 came back: the per-context
-    // states are not the whole picture, so the combined failure stands alone
-    // and the unlisted context is never reported as passed or pending.
+// --- check loader: legacy contexts beyond one page (F20) ---
+
+const legacyContexts = (count: number, state = 'success', prefix = 'ci/ok') => Array.from({ length: count }, (_, index) => ({ context: `${prefix}-${index}`, state }));
+const checkReads = (calls: string[], route: string) => calls.filter(call => call === route).length;
+
+test('legacy contexts beyond the first page are read, so a pending context is never counted as passed', async () => {
+    // 101 blocking contexts: one failed, one pending, 99 successful. One page of 100 leaves one unlisted.
+    const sources = checkSources({
+        state: 'failure', total_count: 101,
+        statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }, ...legacyContexts(99)],
+    });
+    const routes: string[] = [];
+    const request = sources.github.request;
+    sources.github.request = async (route: string, params: Record<string, unknown>) => { routes.push(route); return await request(route, params); };
+    const checks = await loadPullRequestStatusChecks(sources, 'acme', 'widgets', 'abc');
+    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 99, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.equal(checkReads(routes, 'GET /repos/{owner}/{repo}/commits/{ref}/status'), 2, 'two pages list every context');
+});
+
+test('legacy contexts past the page budget keep their known states, and the unread ones are neither passed nor pending', async () => {
+    const listed = [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }, ...legacyContexts(298)];
+    const checks = await loadPullRequestStatusChecks(checkSources({
+        state: 'failure', total_count: 301, statuses: [...listed, { context: 'ci/unread', state: 'pending' }],
+    }), 'acme', 'widgets', 'abc');
+    assert.deepEqual(checks, { complete: false, readFailed: false, passed: 298, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+});
+
+test('a combined state no listed legacy context accounts for is an unlisted context, never a pass', async () => {
+    // total_count says 3 contexts exist but only 2 came back, both successful:
+    // the combined failure is the unlisted one's, and the pass count covers the listed successes only.
     const failed = await loadPullRequestStatusChecks(checkSources({
+        state: 'failure', total_count: 3,
+        statuses: [{ context: 'ci/lint', state: 'success' }, { context: 'ci/build', state: 'success' }],
+    }), 'acme', 'widgets', 'abc');
+    assert.deepEqual(failed, { complete: false, readFailed: false, passed: 2, failed: 1, pending: 0, failedNames: ['commit status'] });
+
+    // A listed failure accounts for the combined failure: the unlisted context is only unread.
+    const accounted = await loadPullRequestStatusChecks(checkSources({
         state: 'failure', total_count: 3,
         statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'success' }],
     }), 'acme', 'widgets', 'abc');
-    assert.equal(failed.complete, true);
-    assert.equal(failed.failed, 1);
-    assert.deepEqual(failed.failedNames, ['ci/lint']);
-    assert.equal(failed.passed + failed.pending, 2);
+    assert.deepEqual(accounted, { complete: false, readFailed: false, passed: 1, failed: 1, pending: 0, failedNames: ['ci/lint'] });
 
     const pending = await loadPullRequestStatusChecks(checkSources({ state: 'pending', total_count: 2, statuses: [] }), 'acme', 'widgets', 'abc');
-    assert.equal(pending.failed, 0);
-    assert.ok(pending.pending >= 1, 'a combined pending state holds the status');
+    assert.deepEqual(pending, { complete: false, readFailed: false, passed: 0, failed: 0, pending: 1, failedNames: [] });
+});
+
+test('a rejected check read is incomplete and marked as a failed read; the page budget is not', async () => {
+    const rejecting = checkSources({ state: 'success', total_count: 0, statuses: [] }, [{ name: 'unit', status: 'completed', conclusion: 'success' }]);
+    const request = rejecting.github.request;
+    rejecting.github.request = async (route: string, params: Record<string, unknown>) => {
+        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') throw new Error('GitHub unavailable');
+        return await request(route, params);
+    };
+    const failed = await loadPullRequestStatusChecks(rejecting, 'acme', 'widgets', 'abc');
+    assert.deepEqual(failed, { complete: false, readFailed: true, passed: 1, failed: 0, pending: 0, failedNames: [] });
+
+    const budget = await loadPullRequestStatusChecks(checkSources({ state: 'success', total_count: 301, statuses: legacyContexts(301) }), 'acme', 'widgets', 'abc');
+    assert.deepEqual(budget, { complete: false, readFailed: false, passed: 300, failed: 0, pending: 0, failedNames: [] });
 });

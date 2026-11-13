@@ -49,8 +49,6 @@ const PULL_REQUEST_TASK_TYPES = ['pr-comment', 'review', 'merge_conflict'];
 const PULL_REQUEST_CREATING_TASK_TYPES = ['issue', 'implementation'];
 /** Newest task records read for the latest outcome; active tasks are read regardless. */
 const TASK_LIMIT = 20;
-const CHECK_RUN_PAGE = 100;
-const MAX_CHECK_RUN_PAGES = 3;
 
 function parseJson(value: unknown): Record<string, unknown> {
     if (value && typeof value === 'object') return value as Record<string, unknown>;
@@ -204,81 +202,126 @@ async function loadUltrafix(redis: Pick<Redis, 'get'> | null | undefined, owner:
     };
 }
 
-interface CheckRunPage { total_count?: number; check_runs?: Array<{ name?: string; status: string; conclusion: string | null }> }
+const CHECK_PAGE = 100;
+/** Pages of check runs, and of legacy contexts, read for one head; more is an unusual commit. */
+const MAX_CHECK_PAGES = 3;
 
 /**
- * The head's check runs, at most MAX_CHECK_RUN_PAGES pages. `complete` is
- * false when the page budget left runs unread: an unread run may be failed or
- * pending, so the read ones cannot establish that every check passed.
+ * Reads pages of one GitHub list until `total` items are listed or the page
+ * budget is spent. `complete` is false when items were left unread: an unread
+ * check may be failed or pending, so the read ones cannot establish a pass.
  */
+async function readCheckPages<T>(read: (page: number) => Promise<{ items: T[]; total: number }>): Promise<{ items: T[]; complete: boolean }> {
+    const items: T[] = [];
+    for (let page = 1; page <= MAX_CHECK_PAGES; page++) {
+        const { items: pageItems, total } = await read(page);
+        items.push(...pageItems);
+        if (items.length >= total) return { items, complete: true };
+        // A short page with items still unlisted is GitHub's count disagreeing with its list; nothing further is readable.
+        if (pageItems.length < CHECK_PAGE) return { items, complete: false };
+    }
+    return { items, complete: false };
+}
+
+interface CheckRun { name?: string; status: string; conclusion: string | null }
+interface CheckRunPage { total_count?: number; check_runs?: CheckRun[] }
+
+/** The head's check runs, at most MAX_CHECK_PAGES pages (readCheckPages). */
 async function loadCheckRuns(
     github: PullRequestStatusGitHub, owner: string, repo: string, ref: string,
-): Promise<{ runs: NonNullable<CheckRunPage['check_runs']>; complete: boolean }> {
-    const runs: NonNullable<CheckRunPage['check_runs']> = [];
-    for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
-        const { data } = await github.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', { owner, repo, ref, per_page: CHECK_RUN_PAGE, page }) as { data: CheckRunPage };
-        const pageRuns = data.check_runs ?? [];
-        runs.push(...pageRuns);
-        if (pageRuns.length < CHECK_RUN_PAGE || runs.length >= (data.total_count ?? 0)) return { runs, complete: true };
-    }
-    return { runs, complete: false };
+): Promise<{ runs: CheckRun[]; complete: boolean }> {
+    const { items, complete } = await readCheckPages<CheckRun>(async page => {
+        const { data } = await github.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', { owner, repo, ref, per_page: CHECK_PAGE, page }) as { data: CheckRunPage };
+        const runs = data.check_runs ?? [];
+        return { items: runs, total: data.total_count ?? runs.length };
+    });
+    return { runs: items, complete };
 }
 
 interface LegacyStatusContext { context?: string; state?: string }
 interface LegacyStatusPage { state?: string; total_count?: number; statuses?: LegacyStatusContext[] }
-interface LegacyStatusInfo { state: string; totalCount: number; statuses: LegacyStatusContext[] }
-/** Legacy contexts classified by this loader; `summary` is what the shared summary still has to interpret. */
-interface LegacyChecks { summary: LegacyStatusInfo; count: number; nonBlocking: number; failed: string[]; pending: string[] }
+/** The head's legacy commit statuses: the combined state and the contexts listed within the page budget. */
+interface LegacyStatuses { state: string; statuses: LegacyStatusContext[]; complete: boolean }
+/** Blocking legacy contexts classified one by one; `count` and `nonBlocking` cover the listed contexts only. */
+interface LegacyChecks { count: number; nonBlocking: number; passed: number; failed: string[]; pending: string[] }
 
 const FAILED_LEGACY_STATES = new Set(['failure', 'error']);
+const LEGACY_PLACEHOLDER = 'commit status';
 
 /**
- * Legacy commit statuses on the head. With every context listed, each
- * blocking context is classified on its own: a mixed head (one context
- * failed, another pending) is one failed and one pending, never a failed and
- * a passed. When contexts went unlisted only the combined state is
- * trustworthy, and it is left to the shared summary's conservative reading.
+ * The head's legacy commit statuses, at most MAX_CHECK_PAGES pages
+ * (readCheckPages). The combined state comes with every page; the first is kept.
  */
-function classifyLegacyStatuses(page: LegacyStatusPage | null, patterns: readonly string[]): LegacyChecks {
-    const statuses = Array.isArray(page?.statuses) ? page.statuses : [];
-    const totalCount = page?.total_count ?? statuses.length;
-    const none: LegacyChecks = { summary: { state: 'success', totalCount: 0, statuses: [] }, count: 0, nonBlocking: 0, failed: [], pending: [] };
-    if (page === null) return none;
-    if (statuses.length < totalCount) return { ...none, summary: { state: page.state ?? 'success', totalCount, statuses } };
+async function loadLegacyStatuses(github: PullRequestStatusGitHub, owner: string, repo: string, ref: string): Promise<LegacyStatuses> {
+    let state = 'pending';
+    const { items, complete } = await readCheckPages<LegacyStatusContext>(async page => {
+        const { data } = await github.request('GET /repos/{owner}/{repo}/commits/{ref}/status', { owner, repo, ref, per_page: CHECK_PAGE, page }) as { data: LegacyStatusPage };
+        if (page === 1 && typeof data.state === 'string') state = data.state;
+        const statuses = Array.isArray(data.statuses) ? data.statuses : [];
+        return { items: statuses, total: data.total_count ?? statuses.length };
+    });
+    return { state, statuses: items, complete };
+}
+
+/**
+ * Legacy commit statuses on the head, each blocking context classified on its
+ * own: a mixed head (one context failed, another pending) is one failed and
+ * one pending, never a failed and a passed. Only listed contexts count, and
+ * only a listed success is a pass: a context left unlisted may be failed or
+ * pending. The combined state covers the unlisted contexts too, so a failure
+ * or a wait it reports that no listed context accounts for is one of them.
+ */
+function classifyLegacyStatuses(read: LegacyStatuses | null, patterns: readonly string[]): LegacyChecks {
+    if (read === null) return { count: 0, nonBlocking: 0, passed: 0, failed: [], pending: [] };
+    const { statuses } = read;
     const blocking = statuses.filter(status => !isNonBlockingCheck(status.context, patterns));
     const names = (keep: (state: string) => boolean): string[] =>
-        blocking.filter(status => keep(status.state ?? '')).map(status => status.context || 'commit status');
+        blocking.filter(status => keep(status.state ?? '')).map(status => status.context || LEGACY_PLACEHOLDER);
+    const failed = names(state => FAILED_LEGACY_STATES.has(state));
+    const pending = names(state => state === 'pending');
+    if (!read.complete) {
+        const listed = (keep: (state: string) => boolean) => statuses.some(status => keep(status.state ?? ''));
+        if (FAILED_LEGACY_STATES.has(read.state) && !listed(state => FAILED_LEGACY_STATES.has(state))) failed.push(LEGACY_PLACEHOLDER);
+        if (read.state === 'pending' && !listed(state => state === 'pending')) pending.push(LEGACY_PLACEHOLDER);
+    }
     return {
-        summary: none.summary,
         count: statuses.length,
         nonBlocking: statuses.length - blocking.length,
-        failed: names(state => FAILED_LEGACY_STATES.has(state)),
-        pending: names(state => state === 'pending'),
+        passed: blocking.filter(status => status.state === 'success').length,
+        failed,
+        pending,
     };
 }
 
-/** Blocking checks on the head; nonBlockingChecks neither fail nor hold the status. */
+/**
+ * Blocking checks on the head; nonBlockingChecks neither fail nor hold the
+ * status. A GitHub read that rejects leaves the checks incomplete and sets
+ * `readFailed`, unlike checks left unread by the page budget: the former is a
+ * transient gap a caller may retry, the latter a limit it must not retry.
+ */
 export async function loadPullRequestStatusChecks(
     sources: Pick<PullRequestStatusSources, 'github' | 'loadNonBlockingChecks'>, owner: string, repo: string, ref: string,
 ): Promise<PullRequestStatusChecks> {
-    const [runs, status, patterns] = await Promise.allSettled([
+    const [runs, statuses, patterns] = await Promise.allSettled([
         loadCheckRuns(sources.github, owner, repo, ref),
-        sources.github.request('GET /repos/{owner}/{repo}/commits/{ref}/status', { owner, repo, ref, per_page: 100 }),
+        loadLegacyStatuses(sources.github, owner, repo, ref),
         sources.loadNonBlockingChecks(owner, repo),
     ]);
     const checkRuns = runs.status === 'fulfilled' ? runs.value.runs : [];
     const patternList = patterns.status === 'fulfilled' ? patterns.value : [];
-    const legacy = classifyLegacyStatuses(status.status === 'fulfilled' ? status.value.data as LegacyStatusPage : null, patternList);
-    const summary = summarizeCheckSignals(checkRuns, legacy.summary, patternList);
-    const failedNames = [...(summary.blockingFailed ?? []), ...legacy.failed];
-    const failed = failedNames.length;
-    const pending = (summary.blockingPending?.length ?? 0) + legacy.pending.length;
-    const nonBlocking = (summary.nonBlockingCount ?? 0) + legacy.nonBlocking;
+    const legacy = classifyLegacyStatuses(statuses.status === 'fulfilled' ? statuses.value : null, patternList);
+    // Legacy contexts are classified above; the shared summary reads the check runs.
+    const summary = summarizeCheckSignals(checkRuns, { state: 'success', totalCount: 0, statuses: [] }, patternList);
+    const runFailed = summary.blockingFailed ?? [];
+    const runPending = summary.blockingPending?.length ?? 0;
+    const failedNames = [...runFailed, ...legacy.failed];
+    const complete = runs.status === 'fulfilled' && runs.value.complete && statuses.status === 'fulfilled' && statuses.value.complete;
     return {
-        complete: runs.status === 'fulfilled' && runs.value.complete && status.status === 'fulfilled',
-        passed: Math.max(0, summary.count + legacy.count - nonBlocking - failed - pending),
-        failed,
-        pending,
+        complete,
+        readFailed: runs.status === 'rejected' || statuses.status === 'rejected',
+        passed: Math.max(0, summary.count - (summary.nonBlockingCount ?? 0) - runFailed.length - runPending) + legacy.passed,
+        failed: failedNames.length,
+        pending: runPending + legacy.pending.length,
         failedNames,
     };
 }

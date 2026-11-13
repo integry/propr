@@ -141,13 +141,16 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
     return (await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber })).data as PullRequestStatusPull;
 }
 
+/** The status to write, and whether a GitHub check read rejected while its facts were read (PullRequestStatusChecks.readFailed). */
+interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean }
+
 async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
-): Promise<PullRequestStatus | null> {
+): Promise<DesiredStatus> {
     const { repository, prNumber, pull } = target;
-    if (pull.state !== 'open' || pull.merged) return null;
+    if (pull.state !== 'open' || pull.merged) return { status: null, checksReadFailed: false };
     const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
-    return computePullRequestStatus(facts);
+    return { status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true };
 }
 
 /**
@@ -176,6 +179,8 @@ interface SyncOutcome {
     open: boolean;
     /** The base tip GitHub last compared the pull request against. */
     baseSha: string | null;
+    /** The written status says the checks could not be read because a GitHub read rejected, not because of the page budget. */
+    checksReadFailed: boolean;
 }
 
 /** Times the facts are read again because the pull request changed (sameStatusSubject) while they were read. */
@@ -221,12 +226,12 @@ function sameStatusSubject(read: PullRequestStatusPull, latest: PullRequestStatu
  */
 async function statusForLatestPull(
     deps: PullRequestStatusSyncDeps, repository: string, prNumber: number,
-): Promise<{ status: PullRequestStatus | null; pull: PullRequestStatusPull }> {
+): Promise<DesiredStatus & { pull: PullRequestStatusPull }> {
     let read = await readPull(deps.github, repository, prNumber);
     for (let attempt = 1; attempt <= MAX_STATUS_READS; attempt++) {
-        const status = await desiredStatus(deps, { repository, prNumber, pull: read });
+        const desired = await desiredStatus(deps, { repository, prNumber, pull: read });
         const latest = await readPull(deps.github, repository, prNumber);
-        if (sameStatusSubject(read, latest)) return { status, pull: latest };
+        if (sameStatusSubject(read, latest)) return { ...desired, pull: latest };
         read = latest;
     }
     throw new PullRequestChangedDuringStatusSyncError();
@@ -238,8 +243,8 @@ async function syncPullRequestStatusOnce(
     const resolved = resolveDeps(overrides);
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
-        const { status, pull } = await statusForLatestPull(deps, repository, prNumber);
-        const read = { awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null };
+        const { status, pull, checksReadFailed } = await statusForLatestPull(deps, repository, prNumber);
+        const read = { awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed };
         const current = pull.body ?? '';
         const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
         const written = extractPullRequestStatusBlock(next) !== null;
@@ -319,6 +324,13 @@ function runScheduled(target: ScheduleTarget): void {
             // A read from before GitHub compared the pull request with the pushed
             // base may still report the old mergeability, so it settles nothing.
             unsettled = outcome.awaitingMergeability || (awaitedBaseSha !== null && outcome.open && outcome.baseSha !== awaitedBaseSha);
+            // A rejected check read wrote "checks could not be read", which no
+            // later transition may come to refresh after a base push or a backfill;
+            // checks left unread by the page budget are no reason to read again.
+            if (outcome.checksReadFailed && (awaitedBaseSha !== null || entry.reconcile)) {
+                unsettled = true;
+                logger.warn({ repository, prNumber, retry: 'scheduled' }, 'The pull request checks could not be read for the status block');
+            }
         })
         .catch(error => {
             // Another writer took the body lock mid-update, or the pull request
