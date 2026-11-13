@@ -411,15 +411,24 @@ test('a queued legacy profile submission keeps its write choice and migrated ite
   } finally { await db.destroy(); }
 });
 
-test('submission API rejects implicit, malformed or unselected write escalation before side effects', async () => {
+test('submission API rejects malformed, unprotected or contradictory write opt-ins before side effects', async () => {
   const db = await fixture();
   const routes = createTaskSubmissionRoutes({ db, services: { authorize: async () => { assert.fail('Invalid write escalation reached repository access'); } } });
   try {
-    for (const extensionAllowWrite of [true, 'true', 1, null, {}]) {
+    for (const extensionAllowWrite of ['true', 1, null, {}]) {
       const res = response();
       await routes.submit(request({ repository: 'owner/repo', instruction: 'Fix it', extensionAllowWrite }), res.res);
       assert.equal(res.state.status, 400);
     }
+    for (const body of [{ disableExtensions: 'yes' }, { extensionAllowWrite: true, disableExtensions: true }]) {
+      const res = response();
+      await routes.submit(request({ repository: 'owner/repo', instruction: 'Fix it', ...body }), res.res);
+      assert.equal(res.state.status, 400, JSON.stringify(body));
+    }
+    // A write opt-in without the preflight header is refused.
+    const unprotected = response();
+    await routes.submit(request({ repository: 'owner/repo', instruction: 'Fix it', extensionAllowWrite: true }), unprotected.res);
+    assert.equal(unprotected.state.status, 403);
     assert.equal((await db('task_submissions')).length, 0);
   } finally { await db.destroy(); }
 });

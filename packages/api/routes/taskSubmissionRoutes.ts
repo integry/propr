@@ -18,7 +18,7 @@ import { isDemoMode } from '../demoMode.js';
 import { getLlmLabel, enqueueIssueImplementationJob } from './planIssueHelpers.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { goalUploadIdentity, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
-import { agentSupportsSavedModel, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
+import { EXTENSION_OPT_OUT_LABELS, agentSupportsSavedModel, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
 import { uploadGitHubAttachment } from '../../../src/github/visualPreviewAttachments.js';
 
 export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
@@ -212,7 +212,8 @@ function submissionServices(octokit: SubmissionOctokit, enqueue = enqueueIssueIm
         // Automation labels precede the trigger so the worker sees every opt-in
         // through the same labelling path a planned issue uses.
         for (const label of [payload.routingLabel, ...(payload.baseBranch ? [`base-${payload.baseBranch}`] : []),
-          ...(payload.autoMerge ? ['auto-merge'] : []), ...(payload.runUltrafix ? ['ultrafix'] : [])]) {
+          ...(payload.autoMerge ? ['auto-merge'] : []), ...(payload.runUltrafix ? ['ultrafix'] : []),
+          ...(payload.disableExtensions ? [EXTENSION_OPT_OUT_LABELS.all] : [])]) {
           if (!await safeAddLabel(context, label)) throw new Error('Could not apply task routing. Retry to start the existing issue.');
         }
         if (!await safeAddLabel(context, payload.trigger)) throw new Error('Could not trigger implementation. Retry to start the existing issue.');
@@ -225,7 +226,10 @@ function submissionServices(octokit: SubmissionOctokit, enqueue = enqueueIssueIm
 interface SubmissionRequest {
   repository: string;
   instruction: string;
+  /** New Task write opt-in for library write servers; the initial task only. */
   extensionAllowWrite?: boolean;
+  /** "Run without extensions": adds the `disable-extensions` label to the issue. */
+  disableExtensions?: boolean;
   extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   agentAlias?: string;
   model?: string;
@@ -252,9 +256,22 @@ function invalidSubmissionOptions(body: SubmissionRequest) {
   return (body.agentAlias !== undefined && typeof body.agentAlias !== 'string')
     || (body.model !== undefined && typeof body.model !== 'string')
     || (body.todoIds !== undefined && (!Array.isArray(body.todoIds) || body.todoIds.some((id: unknown) => typeof id !== 'string')))
-    || invalidFlag(body.extensionAllowWrite) || (body.extensionAllowWrite === true && !body.extensionProfile)
+    || invalidFlag(body.extensionAllowWrite) || invalidFlag(body.disableExtensions)
+    || (body.extensionAllowWrite === true && body.disableExtensions === true)
     || invalidFlag(body.autoMerge) || invalidFlag(body.runUltrafix)
     || invalidBound(body.ultrafixGoal, ULTRAFIX_GOAL_RANGE) || invalidBound(body.ultrafixMaxCycles, ULTRAFIX_MAX_CYCLES_RANGE);
+}
+
+/**
+ * Extension choices of a new submission. Present only when set, so existing
+ * fingerprints are unchanged. A legacy profile selection is handled separately.
+ */
+function submissionExtensions(body: SubmissionRequest) {
+  if (body.extensionProfile) return {};
+  return {
+    ...(body.extensionAllowWrite === true ? { extensionAllowWrite: true as const } : {}),
+    ...(body.disableExtensions === true ? { disableExtensions: true as const } : {}),
+  };
 }
 
 /** A spend cap is part of the submission identity only when one is set, so existing fingerprints are unchanged. */
@@ -374,9 +391,11 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       if (!req.user) { res.status(401).json({ error: 'Authentication required' }); return; }
       if (isDemoMode()) { res.status(403).json({ error: 'Demo mode is read-only' }); return; }
       const { body, key } = parseSubmissionRequest(req);
+      // The write opt-in becomes sealed authority for the initial task: only a preflight-protected request may carry it.
+      if (!body.extensionProfile && body.extensionAllowWrite === true && req.get('X-ProPR-Extensions') !== '1') { res.status(403).json({ error: 'The extension write opt-in requires a preflight-protected request' }); return; }
       const repository = body.repository.toLowerCase();
       const config = await checkAccess(req, repository);
-      const payloadHash = fingerprint({ repository, instruction: body.instruction, ...(body.extensionProfile ? { extensionProfile: body.extensionProfile, extensionAllowWrite: body.extensionAllowWrite === true } : {}), agentAlias: body.agentAlias || '', model: body.model || '', todoIds: body.todoIds || [], files: await goalUploadIdentity(files), ...submissionAutomation(body), ...submissionBudget(body) });
+      const payloadHash = fingerprint({ repository, instruction: body.instruction, ...(body.extensionProfile ? { extensionProfile: body.extensionProfile, extensionAllowWrite: body.extensionAllowWrite === true } : submissionExtensions(body)), agentAlias: body.agentAlias || '', model: body.model || '', todoIds: body.todoIds || [], files: await goalUploadIdentity(files), ...submissionAutomation(body), ...submissionBudget(body) });
       let row = await db<TaskSubmission>('task_submissions').where({ user_id: String(req.user!.id), submission_key: key }).first();
       if (row && row.payload_hash !== payloadHash) { res.status(409).json({ error: 'Submission identity was already used with different content' }); return; }
       if (body.extensionProfile) await legacyExtensionReplay(req, row);
@@ -388,7 +407,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
         await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
         const payload: SubmissionPayload = { instruction: body.instruction, ...selection, baseBranch: config.baseBranch,
           trigger: (await processingLabels())[0] || 'AI', username: req.user!.username, todoIds: body.todoIds,
-          ...submissionAutomation(body), ...submissionBudget(body) };
+          ...submissionAutomation(body), ...submissionBudget(body), ...submissionExtensions(body) };
         let attachments: SubmissionAttachment[];
         try { attachments = await storeUploads(files); }
         catch (error) { res.status(400).json({ error: (error as Error).message }); return; }
@@ -426,5 +445,22 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       res.json(publicSubmission(await resume(row.id)));
     } catch (error) { await sendError(req, res, error); }
   };
-  return { submit, get, retry };
+  /**
+   * Which library items would apply automatically to a task in this repository
+   * for the chosen agent, shown read-only on New Task. Names only.
+   */
+  const extensions = async (req: Request, res: Response) => {
+    try {
+      if (!req.user) { res.status(401).json({ error: 'Authentication required' }); return; }
+      const repository = String(req.query.repository ?? '').toLowerCase();
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) { res.status(400).json({ error: 'A repository is required' }); return; }
+      const agentAlias = typeof req.query.agentAlias === 'string' && req.query.agentAlias ? req.query.agentAlias : undefined;
+      const model = typeof req.query.model === 'string' && req.query.model ? req.query.model : undefined;
+      if (isDemoMode()) { res.json({ qualified: false, revision: 0, servers: [], skills: [] }); return; }
+      await checkAccess(req, repository);
+      const resolved = await resolveRouting({ agentAlias, model });
+      res.json(await new ExtensionLibraryStore(db).taskPreview({ repository, agentAlias: resolved.agentAlias, runtime: resolved.runtime ?? '' }));
+    } catch (error) { await sendError(req, res, error); }
+  };
+  return { submit, get, retry, extensions };
 }

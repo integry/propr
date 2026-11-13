@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- admission, execution, failure settlement and handoff ownership share one PR lease lifecycle */
-import { formatTaskTerminalReason } from '@propr/shared';
+import { formatTaskTerminalReason, taskRunExtensionRequest } from '@propr/shared';
 import { prepareRepositoryWorkflow, resolveAttemptRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata,
     withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, nonRetryableRepositoryWorkflowError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
@@ -321,6 +321,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             // Bind the launched container's immutable identity to the handoff, so
             // recovery never trusts a different container's evidence for this task.
             onContainerInfo: containerId => markExecutionHandoffContainer(state, containerId),
+            // Read library items only (follow-ups never carry write authorization);
+            // the pull request's labels, loaded for this run, can remove them.
+            extensions: taskRunExtensionRequest({ kind: 'pull_request', repository: `${repoOwner}/${repoName}`, labels: prData!.data.labels }),
         });
         state.claudeResult = claudeResult;
         await markExecutionHandoffAgentExited(state, claudeResult.success === true, claudeResult.success === true ? noChangeAnalysisSummary(claudeResult) : null);

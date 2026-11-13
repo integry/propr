@@ -37,7 +37,13 @@ export interface TaskSubmission {
   error: string | null;
 }
 export interface SubmissionPayload {
+  /**
+   * New Task write opt-in: library servers with `capability: write` are exposed
+   * to this submission's initial task only. Sealed by authenticated submission handling.
+   */
   extensionAllowWrite?: boolean;
+  /** "Run without extensions": applies the shared `disable-extensions` label to the issue. */
+  disableExtensions?: boolean;
   /** Legacy profile selection of submissions queued before the extension library; never set by new submissions. */
   extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   instruction: string;
@@ -71,26 +77,40 @@ export async function findIssueSubmission(issue: IssueJobData, database: Knex = 
 /** Persisted only by authenticated submission handling; issue text/labels cannot create authority. */
 export async function sealSubmissionExtensions(database: Knex, row: TaskSubmission, environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   const payload = JSON.parse(row.payload) as SubmissionPayload;
-  if (!payload.extensionProfile) return;
+  if (!payload.extensionProfile && payload.extensionAllowWrite !== true) return;
   const authorization = sealExtensionSecrets({ payloadDigest: createHash('sha256').update(row.payload).digest('hex'), allowWrite: payload.extensionAllowWrite === true ? 'true' : 'false' }, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
   await database('task_submissions').where({ id: row.id }).whereNull('extension_authorization').update({ extension_authorization: authorization });
 }
 /**
- * Extension authority of a queued submission recorded before profiles were
- * replaced by the extension library. Only the submission's initial task uses
- * it: the old profile maps to its migrated library items, added explicitly
- * (no auto-applied items), only when the submission selected the migrated
- * revision; a superseded selection is refused, as it was at launch before.
- * New submissions no longer carry a selection.
+ * Extension authority a submission gives its run. Only the submission's
+ * initial task uses it; retries, replacement tasks and native restores receive
+ * none, so they get the auto-applied read items of every issue task.
+ *
+ * - New submissions carry no selection. A sealed write opt-in authorizes write
+ *   servers for the initial task; a run it does not match exactly gets none.
+ * - A queued submission recorded before profiles were replaced by the
+ *   extension library maps its old profile to the migrated library items,
+ *   added explicitly (no auto-applied items), only when it selected the
+ *   migrated revision; a superseded selection is refused, as it was at launch before.
  */
 export async function submissionExtensionsForRun(row: TaskSubmission | undefined, run: { taskId: string; agentAlias: string; model: string; repository: string; issueNumber: number }, environment: NodeJS.ProcessEnv = process.env, database: Knex = db): Promise<{ extensions?: AgentExtensionRequest }> {
   if (!row) return {};
   const payload = JSON.parse(row.payload) as SubmissionPayload;
-  if (!payload.extensionProfile) return {};
+  if (!payload.extensionProfile && payload.extensionAllowWrite !== true) return {};
   // Retries, replacement tasks and native restores receive no inherited authority.
   if (row.task_id !== run.taskId || row.latest_task_id !== run.taskId || !['queued', 'issue_created'].includes(row.state) || !row.extension_authorization) return {};
-  const authorization = unsealExtensionSecrets(row.extension_authorization, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
-  if (row.issue_number !== run.issueNumber || row.repository !== run.repository.toLowerCase() || payload.agentAlias !== run.agentAlias || payload.model !== run.model || authorization.payloadDigest !== createHash('sha256').update(row.payload).digest('hex')) throw new Error('Extension submission does not authorize this exact run');
+  const identity = `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`;
+  const exact = (authorization: Record<string, string>) => row.issue_number === run.issueNumber && row.repository === run.repository.toLowerCase() && payload.agentAlias === run.agentAlias && payload.model === run.model && authorization.payloadDigest === createHash('sha256').update(row.payload).digest('hex');
+  if (!payload.extensionProfile) {
+    // The write opt-in fails safe: an unreadable or mismatched authorization leaves read items only.
+    let authorization: Record<string, string>;
+    try { authorization = unsealExtensionSecrets(row.extension_authorization, identity, environment); } catch { return {}; }
+    return exact(authorization) && authorization.allowWrite === 'true'
+      ? { extensions: { autoApply: true, servers: [], skills: [], repositories: [row.repository], allowWrite: true } }
+      : {};
+  }
+  const authorization = unsealExtensionSecrets(row.extension_authorization, identity, environment);
+  if (!exact(authorization)) throw new Error('Extension submission does not authorize this exact run');
   const store = new ExtensionLibraryStore(database, environment);
   let items = await store.legacyProfileExtensions(payload.extensionProfile.profileId);
   if (!items) {

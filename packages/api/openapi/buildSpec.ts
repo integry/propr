@@ -27,7 +27,7 @@ const TAGS: { name: string; description: string; prefixes: string[] }[] = [
   { name: 'System', description: 'Health, compatibility and status.', prefixes: ['/health', '/api/compatibility', '/api/status', '/api/internal/hosted'] },
   { name: 'Authentication', description: 'Browser login and the signed-in user.', prefixes: ['/api/auth'] },
   { name: 'Tasks', description: 'Task runs, their events, output and follow-ups.', prefixes: ['/api/tasks', '/api/task/', '/api/execution', '/api/import-tasks', '/api/pull-requests'] },
-  { name: 'Task submissions', description: 'Idempotent creation of new tasks from an instruction.', prefixes: ['/api/task-submissions'] },
+  { name: 'Task submissions', description: 'Idempotent creation of new tasks from an instruction.', prefixes: ['/api/task-submissions', '/api/task-submission-extensions'] },
   { name: 'Goals', description: 'Long-running goals and their inputs.', prefixes: ['/api/goals'] },
   { name: 'Planner', description: 'Plan Studio drafts, revisions and generation.', prefixes: ['/api/planner'] },
   { name: 'Repositories', description: 'Repository context: summaries, chat, to-dos, media and GitHub metadata.', prefixes: ['/api/repos', '/api/summaries', '/api/repositories', '/api/github', '/api/preview-media', '/api/user'] },

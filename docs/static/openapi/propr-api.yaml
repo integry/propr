@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 308
-    documented: 70
+    total: 309
+    documented: 71
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -7168,6 +7168,61 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/task-submission-extensions:
+    get:
+      operationId: getTaskSubmissionExtensions
+      summary: Preview the extensions a task would use
+      description: Names of the extension library MCP servers and skills that would apply automatically to a task in this repository for the chosen agent. Never includes URLs, credentials or item limits. Labels on the issue (`disable-mcps`, `disable-skills`, `disable-extensions`) can remove them at launch.
+      tags:
+        - Task submissions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/name` of an enabled repository you can push to."
+          schema:
+            type: string
+            pattern: ^[\w.-]+\/[\w.-]+$
+        - name: agentAlias
+          in: query
+          required: false
+          description: Agent the task would use. Omit for the instance default.
+          schema:
+            type: string
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The items that would apply.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSubmissionExtensions"
+        "400":
+          description: Missing repository, or the agent or model cannot be used.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: You lack write access to the repository.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: TaskSubmissionExtensionsQuery
+      x-propr-auth: member
+      x-legacy-error: true
   /api/task-submissions:
     post:
       operationId: createTaskSubmission
@@ -10653,6 +10708,49 @@ components:
         - error
       additionalProperties: false
       description: Progress of a task submission. `queued` means the run was enqueued.
+    TaskSubmissionExtensions:
+      type: object
+      properties:
+        qualified:
+          type: boolean
+          description: False when the agent's runtime does not use extensions (only Claude and Codex do).
+        revision:
+          type: integer
+          description: Current library revision; tasks resolve the library again at launch.
+        servers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              capability:
+                type: string
+                enum:
+                  - read
+                  - write
+            required:
+              - name
+              - capability
+            additionalProperties: false
+          description: MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+            required:
+              - name
+            additionalProperties: false
+      required:
+        - qualified
+        - revision
+        - servers
+        - skills
+      additionalProperties: false
+      description: Library items that would apply automatically to a task for this repository and agent.
     TaskSubmissionRequest:
       type: object
       properties:
@@ -10662,7 +10760,10 @@ components:
             - $ref: "#/components/schemas/ExtensionSelection"
             - type: "null"
         extensionAllowWrite:
-          description: Legacy write opt-in that accompanied a profile selection; true without one is refused.
+          description: "Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission's initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`."
+          type: boolean
+        disableExtensions:
+          description: "Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply."
           type: boolean
         repository:
           type: string

@@ -238,11 +238,15 @@ test('automation runs launch with auto-applied plus added items, report skipped 
     return { names, resolution: history.map(h => JSON.parse(h.metadata)).find(m => m.event === 'extensions.resolved') };
   };
   // An automation with neither auto-applied nor added items launches without extensions.
-  assert.deepEqual(await run('neither', { servers: [], skills: [] }), { names: undefined, resolution: { event: 'extensions.resolved', libraryRevision: 0, servers: [], skills: [], skipped: [], omitted: [] } });
+  assert.deepEqual(await run('neither', { servers: [], skills: [] }), { names: undefined, resolution: {
+    event: 'extensions.resolved', libraryRevision: 0, runKind: 'automation', provenance: { source: 'auto', auditActor: null },
+    servers: [], skills: [], autoApplied: { servers: [], skills: [] }, added: { servers: [], skills: [] }, skipped: [], omitted: [],
+  } });
   await save(store, input([server({ name: 'auto', authentication: 'none' }), server({ name: 'added', authentication: 'none', autoApply: false }), server({ name: 'manual-only', authentication: 'none', autoApply: false })]));
   const both = await run('both', { servers: ['added'], skills: [] });
   assert.deepEqual(both.names, ['added', 'auto']);
   assert.deepEqual(both.resolution.servers, ['added', 'auto']);
+  assert.deepEqual([both.resolution.added.servers, both.resolution.autoApplied.servers, both.resolution.provenance], [['added'], ['auto'], { source: 'mixed', auditActor: '1' }]);
   await store.setItemEnabled('1', { kind: 'server', name: 'added' }, false);
   const skipped = await run('skipped', { servers: ['added'], skills: [] });
   assert.deepEqual(skipped.names, ['auto']);

@@ -702,12 +702,30 @@ export interface TaskSubmission {
   error: string | null;
 }
 
+/** Library items that would apply automatically to a task for this repository and agent. */
+export interface TaskSubmissionExtensions {
+  /** False when the agent's runtime does not use extensions (only Claude and Codex do). */
+  qualified: boolean;
+  /** Current library revision; tasks resolve the library again at launch. */
+  revision: number;
+  /** MCP servers that would apply. Write servers apply only with `extensionAllowWrite`. */
+  servers: Array<{
+    name: string;
+    capability: "read" | "write";
+  }>;
+  skills: {
+    name: string;
+  }[];
+}
+
 /** A request to open a GitHub issue and start an implementation run for it. */
 export interface TaskSubmissionRequest {
   /** Removed: extension profiles were replaced by the instance extension library. A non-null value is refused. */
   extensionProfile?: ExtensionSelection | null;
-  /** Legacy write opt-in that accompanied a profile selection; true without one is refused. */
+  /** Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission's initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`. */
   extensionAllowWrite?: boolean;
+  /** Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply. */
+  disableExtensions?: boolean;
   /** `owner/name` of an enabled repository you can push to. */
   repository: string;
   /** What the agent should do; becomes the GitHub issue body. Must not be only whitespace. */
@@ -794,6 +812,15 @@ export interface TaskAssigneesQuery {
 export interface TaskFollowupRunsQuery {
   /** The `commentId` the follow-up's receipt returned. */
   commentId: string;
+}
+
+/** Query parameters of `getTaskSubmissionExtensions`. */
+export interface TaskSubmissionExtensionsQuery {
+  /** `owner/name` of an enabled repository you can push to. */
+  repository: string;
+  /** Agent the task would use. Omit for the instance default. */
+  agentAlias?: string;
+  model?: string;
 }
 
 /** Query parameters of `listTasks`. */

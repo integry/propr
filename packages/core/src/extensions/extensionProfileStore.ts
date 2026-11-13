@@ -12,6 +12,7 @@ import {
 import { extensionEndpoint, resolveExtensionEndpoint } from './endpointPolicy.js';
 import { sealExtensionSecrets, unsealExtensionSecrets } from './privateSecrets.js';
 import { validateSkillFiles, type SkillFile } from './skillBundles.js';
+import { extensionResolutionReason, type ExtensionResolutionEvent } from './extensionRunResolution.js';
 
 export interface ExtensionGrantNetwork { mode: 'open' | 'restricted'; allow: string[]; instanceAllow: string[] }
 export class ExtensionError extends Error { constructor(readonly status: number, message: string) { super(message); } }
@@ -335,6 +336,19 @@ export class ExtensionLibraryStore {
     return { snapshot, set };
   }
   /**
+   * Names of the library items that would apply automatically to an issue task
+   * for this repository and agent, for the New Task form. Read-only and
+   * available to task creators: names and capabilities only, never URLs,
+   * credentials or limits. Write servers are listed; they apply only with the
+   * submission's write opt-in.
+   */
+  async taskPreview(context: { repository: string; agentAlias: string; runtime: string }): Promise<{ qualified: boolean; revision: number; servers: { name: string; capability: 'read' | 'write' }[]; skills: { name: string }[] }> {
+    const { snapshot } = await this.head();
+    if (!['claude', 'codex'].includes(context.runtime)) return { qualified: false, revision: snapshot.revision, servers: [], skills: [] };
+    const set = resolveExtensionSet(await this.withCurrentCatalogSecrets(snapshot), { repository: context.repository, agentAlias: context.agentAlias, runtime: context.runtime });
+    return { qualified: true, revision: snapshot.revision, servers: set.servers.map(s => ({ name: s.name, capability: s.capability })), skills: set.skills.map(s => ({ name: s.bundle.name })) };
+  }
+  /**
    * The library view resolution uses: catalog credential availability is read
    * from the operator environment now, since the saved status may be stale. A
    * catalog server whose entry is unavailable or changed gets no status, so it
@@ -396,14 +410,15 @@ export class ExtensionLibraryStore {
     });
   }
    
-  async createGrant(prepared: PreparedExtensionLaunch, taskId: string, network: ExtensionGrantNetwork = { mode: 'open', allow: [], instanceAllow: [] }, allowWrite = false): Promise<string> {
+  // eslint-disable-next-line max-params -- grant inputs mirror the launch record
+  async createGrant(prepared: PreparedExtensionLaunch, taskId: string, network: ExtensionGrantNetwork = { mode: 'open', allow: [], instanceAllow: [] }, allowWrite = false, source: 'auto' | 'additional' | 'mixed' = 'auto'): Promise<string> {
     const token = randomBytes(32).toString('base64url');
     await this.database('extension_run_grants').where('expires_at', '<=', Date.now()).delete();
     // The revision's audit actor is provenance only.
     await this.database('extension_run_grants').insert({
       token_hash: extensionTokenHash(token), profile_id: null, revision: prepared.snapshot.revision, actor: prepared.snapshot.auditActor || 'library', task_id: taskId,
       network_policy: JSON.stringify(network), allow_write: allowWrite === true, expires_at: Date.now() + 12 * 60 * 60 * 1000,
-      selection: JSON.stringify({ servers: prepared.set.servers.map(s => s.name), skills: prepared.set.skills.map(s => s.bundleId) }),
+      selection: JSON.stringify({ servers: prepared.set.servers.map(s => s.name), skills: prepared.set.skills.map(s => s.bundleId), source }),
     });
     return token;
   }
@@ -434,12 +449,10 @@ export class ExtensionLibraryStore {
     });
   }
   /** Record which library items a run launched with and which it skipped. Never fails the run. */
-  async recordResolution(taskId: string, revision: number, set: ResolvedExtensionSet): Promise<void> {
+  async recordResolution(taskId: string, event: ExtensionResolutionEvent): Promise<void> {
     if (!await this.database.schema.hasTable('task_history') || !await this.database('tasks').where({ task_id: taskId }).first()) return;
     await this.database('task_history').insert({
-      task_id: taskId, state: 'processing', timestamp: new Date().toISOString(),
-      reason: set.skipped.length || set.omitted.length ? 'Extensions resolved; some items were skipped' : 'Extensions resolved',
-      metadata: JSON.stringify({ event: 'extensions.resolved', libraryRevision: revision, servers: set.servers.map(s => s.name), skills: set.skills.map(s => ({ id: s.bundleId, name: s.bundle.name })), skipped: set.skipped, omitted: set.omitted }),
+      task_id: taskId, state: 'processing', timestamp: new Date().toISOString(), reason: extensionResolutionReason(event), metadata: JSON.stringify(event),
     });
   }
   async finishGatewayCall(token: string, bytes: number): Promise<void> {

@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Instance agent extensions"
 title: "Configure agent skills and MCP extensions"
-description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, for Claude and Codex automation runs."
+description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude and Codex issue tasks, pull request follow-ups and automation runs."
 ---
 # Instance agent extensions
 
@@ -24,7 +24,7 @@ library holds up to 32 servers and 32 skill bundles. Each item has:
 | `enabled` | Turns the item off without removing it. A disabled item keeps its configuration, limits and stored secret, applies to no run, and can be re-enabled at any time. Disabling is never refused, even when an automation adds the item; that automation then runs without it and reports it as skipped. |
 | `repositories` | Optional `owner/repo` list. Empty means every repository. A run on several repositories needs all of them in the list. |
 | `agents` | Optional agent aliases (an advanced option in the editor). Empty means every agent. |
-| `autoApply` | Default `true` for new items. When `false`, the item is used only where it is added explicitly, through an [automation's extensions](./agents.md#extensions). |
+| `autoApply` | Default `true` for new items. Items with `autoApply` reach every matching issue task, pull request follow-up and automation run. When `false`, the item is used only where it is added explicitly, through an [automation's extensions](./agents.md#extensions); tasks never receive it. |
 
 Every save, single-item enable/disable and secret replacement creates a new library
 revision with a timestamp and the administrator's actor ID. Saving requires the
@@ -44,15 +44,68 @@ credential, or needs write authorization the run does not have is skipped with a
 reason; it is never an error. Items are ordered by name. A run carries at most 8
 MCP servers (counting its own ProPR server) and 8 skill bundles. When more apply,
 explicit items are kept first, then automatic items by name; the rest are listed
-as omitted. The task timeline records an `extensions.resolved` event with the
-revision, the servers and skills used, and the skipped and omitted items.
+as omitted.
 
-In this release only automation runs use the library. Issue tasks, pull request
-follow-ups and New Task submissions do not yet receive library items; queued New
-Task submissions recorded before the upgrade keep their extensions for their
-initial task (see [Upgrading](#upgrading-from-earlier-versions)). Claude and Codex
-task execution are the qualified targets. Other runtimes start without
-extensions, and goal execution refuses explicitly added items.
+### Which runs use extensions
+
+| Run | Items | Write servers |
+| --- | --- | --- |
+| Issue implementation task, however it was started (label, New Task, MCP, plan or epic), including retries and replacement attempts | Matching `autoApply` items | Only the initial task of a New Task submission with the write opt-in |
+| Pull request follow-up (comments, `/fix`, Ultrafix fix steps), including retries | Matching `autoApply` items | Never |
+| Automation run | Matching `autoApply` items plus the automation's added items | Action phase only |
+
+Resolution happens when the task's container is created, not when it is
+queued. Editing the library never invalidates a queued task: it launches with the
+library as it is at that moment. Claude and Codex task execution are the qualified
+targets. Other runtimes, and goal runs, launch without extensions as before
+(goal execution refuses explicitly added items). Review runs and Ultrafix review
+steps do not use the library.
+If the library cannot be read when an issue task or follow-up resolves it (for
+example after a restore with mismatched revision identity), that run launches
+without extensions and a warning is logged; automation runs and explicitly added
+items still refuse.
+
+### Opt-out labels
+
+Labels on the issue (issue tasks) or on the pull request (follow-ups), read when
+the run starts, remove auto-applied items from that run:
+
+| Label | Effect |
+| --- | --- |
+| `disable-mcps` | No library MCP servers |
+| `disable-skills` | No library skill bundles |
+| `disable-extensions` | Neither |
+
+The labels only remove items; they never add one, and they do not affect
+automation runs. New Task's **Run without extensions** switch adds
+`disable-extensions` to the issue it creates.
+
+### New Task
+
+New Task shows, read-only, which library items will apply for the chosen
+repository and agent (`GET /api/task-submission-extensions`, names only). When a
+write server would apply, the form offers **Allow write servers for this task's
+first run**. The opt-in is sealed into the submission and is valid only for that
+submission's initial task; label-started tasks, retries, replacement attempts and
+pull request follow-ups receive read servers and skills only. The API accepts
+`extensionAllowWrite: true` only with the `X-ProPR-Extensions: 1` preflight
+header, and not together with `disableExtensions`. Extension profiles can no
+longer be selected; queued New Task submissions recorded before the upgrade keep
+their extensions for their initial task (see
+[Upgrading](#upgrading-from-earlier-versions)).
+
+### What a run records
+
+Each run that requests extensions records one `extensions.resolved` task event:
+the library revision, `runKind`, `provenance` (`source: auto`, `additional` or
+`mixed`, and the revision's audit actor), the applied server names and skill
+names, which were auto-applied (`autoApplied`) and which were added explicitly
+(`added`), items left out by the per-run limit (`omitted`), skipped additional
+items with their reasons (`skipped`), and, when they applied, `labelOptOut` (the
+labels and the items they removed) and `autoApplySkipped` (the Codex reason
+below). The event never contains secrets, URLs, credentials or tool output. The
+existing `network.extensions` telemetry event is unchanged. The run grant records
+the same `source` with the revision's audit actor.
 
 The authority for a launch is the library revision itself, which only an
 administrator can save; no selecting administrator is needed at launch, and the
@@ -71,7 +124,7 @@ temporary skill directory, including when execution fails.
 V1 supports stateless HTTPS MCP endpoints with JSON responses. Each server has a
 stable name, an explicit list of allowed tool names, a read/write capability and
 optional write-only bearer authentication. A write server also requires the run's
-explicit write authorization. Runs without that authorization, including automation report phases, launch with write servers excluded. Automation action phases expose them under their explicit phase policy. Omission is false. `initialize`, `ping`, the initialized
+explicit write authorization. Runs without that authorization, including automation report phases, launch with write servers excluded. Automation action phases expose them under their explicit phase policy, and so does the initial task of a New Task submission with the write opt-in. Label-started tasks, retries, replacement attempts and pull request follow-ups never receive write servers. Omission is false. `initialize`, `ping`, the initialized
 notification, `tools/list` and explicitly listed `tools/call` are the only gateway
 methods. Resource APIs, prompts, server-initiated requests, response cookies,
 upstream session headers, SSE and stateful transports are unavailable. Connectivity
@@ -106,12 +159,22 @@ connectivity validation disclose no response content. Claude uses a strict MCP
 catalog. Codex ignores its ambient user configuration while retaining the existing
 `CODEX_HOME` authentication. This also skips operator settings in
 `CODEX_HOME/config.toml`, including custom `model_provider`, provider base URLs
-and named configurations. Runs with extensions use ProPR’s explicit runtime launch settings; custom
-providers configured only in that file are unsupported with extensions. Do not apply
-library items to Codex runs that rely on those operator settings (use the item's agent limit).
-Runs with extensions refuse `.codex/config.toml` in the task
-container workspace or its ancestry after repository setup because the qualified CLI has no project-config ignore
-switch. These limitations are displayed in the editor.
+and named configurations. Runs with extensions use ProPR’s explicit runtime launch
+settings. Runs with extensions refuse `.codex/config.toml` in the task container
+workspace or its ancestry after repository setup because the qualified CLI has no
+project-config ignore switch. These limitations are displayed in the editor.
+
+Auto-apply never breaks a Codex run that works without extensions. Before launch
+the worker checks both conditions: the operator `config.toml` defines a custom
+model provider (`model_provider` other than a built-in one, or a
+`[model_providers.*]` table) or a profile (`profile` or `[profiles.*]`), or the
+workspace contains `.codex/config.toml`. When either holds, the run launches
+**without** its auto-applied items and the `extensions.resolved` event records
+`autoApplySkipped` with the reason (`codex_operator_config` or
+`codex_workspace_config`). This applies to issue tasks, follow-ups and the
+auto-applied items of automation runs. Items an automation adds explicitly keep
+the strict behaviour: such a run still ignores the operator configuration and
+refuses a workspace `.codex/config.toml`.
 
 ## Operator-installed catalog
 

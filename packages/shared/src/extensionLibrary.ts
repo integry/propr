@@ -187,10 +187,52 @@ export function resolveExtensionSet(library: LibraryView, context: ExtensionReso
   return { servers, skills, skipped, omitted };
 }
 
+/**
+ * Labels on an issue (issue tasks) or pull request (follow-ups) that remove
+ * auto-applied library items from that run. They only remove, never add, and
+ * do not affect automation runs.
+ */
+export const EXTENSION_OPT_OUT_LABELS = { mcps: 'disable-mcps', skills: 'disable-skills', all: 'disable-extensions' } as const;
+export interface ExtensionLabelOptOut {
+  /** No MCP servers from the library. */
+  servers: boolean;
+  /** No skill bundles from the library. */
+  skills: boolean;
+  /** The opt-out labels present, in a stable order. */
+  labels: string[];
+}
+/** The opt-out of a run from its issue or pull request labels (names or GitHub label objects). */
+export function extensionLabelOptOut(labels: readonly (string | { name?: string | null } | null | undefined)[] | null | undefined): ExtensionLabelOptOut {
+  const names = new Set((labels ?? []).map(label => (typeof label === 'string' ? label : label?.name ?? '').trim().toLowerCase()).filter(Boolean));
+  const present = Object.values(EXTENSION_OPT_OUT_LABELS).filter(label => names.has(label));
+  const all = names.has(EXTENSION_OPT_OUT_LABELS.all);
+  return { servers: all || names.has(EXTENSION_OPT_OUT_LABELS.mcps), skills: all || names.has(EXTENSION_OPT_OUT_LABELS.skills), labels: present };
+}
+
+/** The extension request of an issue task or pull request follow-up (structurally Core's `AgentExtensionRequest`). */
+export interface TaskRunExtensionRequest {
+  autoApply: boolean; servers: string[]; skills: string[]; repositories?: string[]; allowWrite?: boolean;
+  kind?: 'automation' | 'issue' | 'pull_request'; labels?: string[];
+}
+type LabelInput = string | { name?: string | null } | null | undefined;
+/**
+ * The extension request of an issue task or pull request follow-up: the
+ * library items that apply automatically, resolved at launch, with the run's
+ * labels for opt-outs. Write servers need the explicit `allowWrite` of a New
+ * Task submission's initial task; every other run gets read servers only.
+ * A legacy submission request (`base`) keeps its explicit items.
+ */
+export function taskRunExtensionRequest(input: { kind: 'issue' | 'pull_request'; repository: string; labels?: readonly LabelInput[] | null; allowWrite?: boolean; base?: TaskRunExtensionRequest }): TaskRunExtensionRequest {
+  const labels = (input.labels ?? []).map(label => (typeof label === 'string' ? label : label?.name ?? '')).filter(Boolean);
+  const base = input.base ?? { autoApply: true, servers: [], skills: [] };
+  return { ...base, repositories: base.repositories ?? [input.repository], allowWrite: base.allowWrite === true || input.allowWrite === true, kind: input.kind, labels };
+}
+
 /** Machine-readable library contract. */
 export const EXTENSION_LIBRARY_CONTRACT = {
   version: EXTENSION_LIBRARY_VERSION, limits: EXTENSION_LIMITS, libraryLimits: EXTENSION_LIBRARY_LIMITS, runtimes: EXTENSION_RUNTIMES,
   transports: ['https', 'catalog'], localStdio: 'operator-installed-catalog-only',
   skills: ['tar', 'tar.gz', 'github-exact-commit'], permission: 'instance.manage_settings',
   itemFields: ['enabled', 'repositories', 'agents', 'autoApply'],
+  optOutLabels: EXTENSION_OPT_OUT_LABELS,
 } as const;
