@@ -12,6 +12,7 @@ const tasks = new Map<string, StoredTask>();
 let liveLabels: string[] = [];
 let labelWithdrawalDetected = true;
 const ran: string[] = [];
+const nestings: Array<ReturnType<typeof core.currentAgentAdmissionNesting>> = [];
 
 const stateManager = {
   createTaskStateIfAbsent: async (taskId: string) => {
@@ -67,6 +68,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   // Each model's post-processing swaps the processing label for the done label, as a finished run does.
   executeWorktreeOperations: async ({ job }: { job: Job<IssueJobData> }) => {
     ran.push(job.data.modelName!);
+    nestings.push(core.currentAgentAdmissionNesting());
     liveLabels = [...liveLabels.filter(label => label !== 'AI' && label !== 'AI-processing' && label !== 'AI-done'), 'AI-done'];
     return { worktreeInfo: { worktreePath: '/tmp/worktree' }, claudeResult: { success: true }, postProcessingResult: { success: true, pr: { number: 1, url: 'https://github.com/o/r/pull/1' } }, commitResult: null };
   },
@@ -97,7 +99,7 @@ function childJob(modelName: string, extra: Partial<IssueJobData> = {}, dispatch
 }
 
 beforeEach(() => {
-  tasks.clear(); ran.length = 0; liveLabels = ['AI']; labelWithdrawalDetected = true;
+  tasks.clear(); ran.length = 0; nestings.length = 0; liveLabels = ['AI']; labelWithdrawalDetected = true;
 });
 
 test('with concurrency 1, models of one request still run after the first labels the issue done', async () => {
@@ -200,4 +202,30 @@ test('a retried dispatch whose first child already finished the issue still runs
   await handleDispatchWithDeps(dispatcherAttempt(), deps);
   assert.ok(stored.dispatchIssueLabels?.includes('AI-done'));
   assert.deepEqual(await runChild('issue-o-r-7-claude-model-b-main'), { status: 'skipped', reason: 'Already done', issueNumber: 7 });
+});
+
+test('an issue created by an orchestrating goal carries its parent link from the body marker into the child job and its admission context', async () => {
+  const nonce = core.createGoalParentNonce('goal-under-test');
+  const queued = new Map<string, IssueJobData>();
+  const deps = {
+    findSubmission: async () => undefined,
+    getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { body: `Implement parsing.\n\n${core.parentExecutionMarker(nonce)}`, labels: liveLabels.map(name => ({ name })) } }) }),
+    withRetry: async (fn: () => Promise<unknown>) => fn(),
+    retryConfigs: { githubApi: {} },
+    validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
+    issueQueue: { add: async (_name: string, data: IssueJobData, opts: { jobId: string }) => { queued.set(opts.jobId, data); } },
+    resolveLlmLabel: async (model: string) => ({ agentAlias: 'claude', model }),
+    getAllCustomLabels: async () => [],
+    saveDispatchData: async () => undefined,
+  } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+  liveLabels = ['AI', 'llm-model-a'];
+  const dispatcher = { id: 'dispatch-goal', name: 'processGitHubIssue', data: { repoOwner: 'o', repoName: 'r', number: 7, correlationId: 'submission' }, updateData: async () => undefined } as unknown as Job<IssueJobData>;
+  await handleDispatchWithDeps(dispatcher, deps);
+  const [child] = [...queued.values()];
+  assert.equal(child.agentAdmissionParent, core.goalParentScope(nonce));
+  assert.equal((await processGitHubIssueJob({ id: 'child', data: child, updateData: async () => undefined, updateProgress: async () => undefined } as unknown as Job<IssueJobData>)).status, 'processed');
+  assert.deepEqual(nestings, [{ parent: core.goalParentScope(nonce) }], 'the task runs on behalf of the goal session');
+  // An issue without the marker is ordinary top-level work.
+  await processGitHubIssueJob(childJob('model-b'));
+  assert.equal(nestings[1], undefined);
 });

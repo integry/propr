@@ -758,6 +758,23 @@ describe('processAgentRunJob', () => {
     assert.deepEqual(revokeMcpGrant.mock.calls.map(call => call.arguments), [['run-1', grant]]);
   });
 
+  test('with a grant the report agent is the admission parent of the analyses its MCP calls launch (#3480)', async () => {
+    // The module instance the processor uses, so the async context is shared.
+    const core = await import('@propr/core');
+    const seen: Array<ReturnType<typeof core.currentAgentAdmissionNesting>> = [];
+    const h = harness({
+      run: storedRun({ definitionSnapshot: definition({ capabilities: ['repository_read', 'propr_mcp'] }) }),
+      execute: async () => { seen.push(core.currentAgentAdmissionNesting()); return { success: true, summary: 'Report', modelUsed: 'opus', executionTimeMs: 1, logs: '', modifiedFiles: [] }; },
+    });
+    const grant = { grantId: 'grant-parent', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_fixture', expiresAt: NOW + 7_200_000 };
+    await createAgentRunProcessor({ ...h.deps, mcpGrants: { request: async () => grant, revoke: async () => undefined } })(job);
+    assert.deepEqual(seen, [{ register: core.agentRunGrantParentScope('grant-parent') }]);
+    // Without a grant nothing can call back, so nothing registers.
+    const plain = harness({ execute: async () => { seen.push(core.currentAgentAdmissionNesting()); return { success: true, summary: 'Report', modelUsed: 'opus', executionTimeMs: 1, logs: '', modifiedFiles: [] }; } });
+    await createAgentRunProcessor({ ...plain.deps, mcpGrants: { request: async () => { throw new Error('must not be called'); }, revoke: async () => undefined } })(job);
+    assert.equal(seen[1], undefined);
+  });
+
   test('a failed run still revokes its grant, and a failed revoke does not change the outcome', async () => {
     const h = harness({
       run: storedRun({ definitionSnapshot: definition({ capabilities: ['propr_mcp'] }) }),

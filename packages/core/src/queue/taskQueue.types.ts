@@ -88,6 +88,12 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
     maxCostUsd?: number;
     /** Task IDs of earlier attempts (replaced runs) whose spend counts toward this run's cap. */
     costBudgetTaskIds?: string[];
+    /**
+     * Admission parent scope (`goal:<nonce>`) from the issue body's
+     * `propr-parent-execution` marker: the orchestrating goal that started this
+     * task. While that goal session runs, admission charges the task under it.
+     */
+    agentAdmissionParent?: string;
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';

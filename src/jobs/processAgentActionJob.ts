@@ -19,7 +19,7 @@ import {
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
 import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
-import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
+import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { actionSummaryFromResult, AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError } from './agentRuns/runErrors.js';
 import { definitionReadsRepositories, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
@@ -303,9 +303,9 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => runWithJobAgentCapacity(agentCapacity, () => options.extensionProfile
+                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, () => options.extensionProfile
                     ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
-                    : agent.executeTask(options)),
+                    : agent.executeTask(options))),
             );
 
             // 6. A task stopped during execution cancels the run; otherwise store the summary.

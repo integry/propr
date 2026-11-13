@@ -8,6 +8,7 @@ import {
     TaskStates,
     buildGoalPolicyEnvironment,
     cleanupPreparedVisualPreviewEvidence,
+    createGoalParentNonce,
     createWorktreeForIssue,
     db,
     ensureGitRepository,
@@ -16,6 +17,7 @@ import {
     getRepoUrl,
     getStateManager,
     goalAttemptLabel,
+    goalParentScope,
     goalTitleFallback,
     hasNativeGoalControl,
     logger,
@@ -24,6 +26,7 @@ import {
     publishGoalActivity,
     publishGoalTransition,
     recordLLMMetrics,
+    runAsAgentAdmissionParent,
     runWithExecutionAbortSignal,
     type AgentExecutionResult,
     type Agent,
@@ -437,10 +440,16 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             ?? GOAL_CONTINUE_INPUT;
     const control = createGoalExecutionControl(data);
     const executionController = new AbortController();
+    // An orchestrating goal waits for the tasks it starts: its session is their
+    // admission parent, so they never wait for the slot it holds (#3480).
+    const parentNonce = goal.launch_strategy === 'orchestrate' ? createGoalParentNonce(goal.goal_id) : undefined;
+    const asParent = <T>(operation: () => Promise<T>): Promise<T> => parentNonce
+        ? runAsAgentAdmissionParent(goalParentScope(parentNonce), operation)
+        : operation();
     return runWithExecutionAbortSignal(
         executionController.signal,
         // Goals follow the instance network policy; the repository workflow file is not read for goals.
-        () => runWithNetworkPolicy({ taskId: goal.current_task_id, correlatedLogger: logger }, () => agent.executeTask({
+        () => runWithNetworkPolicy({ taskId: goal.current_task_id, correlatedLogger: logger }, () => asParent(() => agent.executeTask({
             worktreePath: worktree.worktreePath,
             issueRef: { number: 0, repoOwner: data.repoOwner, repoName: data.repoName },
             prompt,
@@ -457,7 +466,7 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             initialGoalFeedback: liveControl ? checkpointFeedback : undefined,
             continueTerminalGoal: Boolean(goal.continue_requested),
             goalControl: control,
-            environment: buildGoalPolicyEnvironment(goal.launch_strategy),
+            environment: buildGoalPolicyEnvironment(goal.launch_strategy, parentNonce),
             onGoalRearmed: async () => {
                 if (goal.continue_requested && !await fencedGoalUpdate(data, { continue_requested: false })) {
                     throw new Error('Continued goal re-arm lost its attempt claim');
@@ -494,7 +503,7 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             onContainerId: createContainerIdCallback(
                 goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
             ),
-        })),
+        }))),
         goalAttemptLabel(data.generation, data.claimId),
     );
 }

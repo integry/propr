@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { signAgentRunGrantRequest } from '@propr/core';
+import { agentRunGrantParentScope, runAsAgentAdmissionParent, signAgentRunGrantRequest } from '@propr/core';
 import { mcpContainerNetwork } from './mcpNetwork.js';
 import type { AgentRunMcpGrant, AgentRunPhase } from './toolPolicy.js';
 
@@ -143,4 +143,14 @@ export async function revokeGrantQuietly(
     } catch (error) {
         log.warn({ runId, grantId: grant.grantId, err: error instanceof Error ? error.message : String(error) }, 'Could not revoke agent run MCP grant');
     }
+}
+
+/**
+ * Runs the phase's agent so that its admission registers as the parent of the
+ * analyses the API launches for its ProPR MCP tool calls (#3480). The grant
+ * identifies the calling run on the API side; without a grant nothing can
+ * call back, so nothing registers.
+ */
+export function asAgentRunAdmissionParent<T>(grant: Pick<IssuedAgentRunMcpGrant, 'grantId'> | null, operation: () => Promise<T>): Promise<T> {
+    return grant ? runAsAgentAdmissionParent(agentRunGrantParentScope(grant.grantId), operation) : operation();
 }

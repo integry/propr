@@ -63,7 +63,7 @@ With per-agent ceilings, one saturated agent must not tie up queue workers that 
 
 A pre-check that passes can still lose the race to another launch. The acquire loop distinguishes an alias-ceiling wait; inside a deferrable job's capacity context (`runWithAgentCapacityContext({ raceWaitMs })`) a wait longer than the bound throws `AgentCapacityError` so the job can defer. Job types that have already done user-visible work keep waiting there, which is the short race window between the pre-check and container create.
 
-Executions without a queue job (agent chat, planner generation and refinement, dashboard summaries, health checks, indexing, MCP semantic search) keep waiting in the acquire loop, bounded by their existing caller timeout. When the execution deadline the launch was started with (`executeDockerCommand`'s timeout) expires during an alias-ceiling wait, the launch fails with `AgentCapacityWaitTimeoutError` (`Timed out waiting for agent capacity: '<alias>' (limit N) stayed at its ceiling`) rather than a provider timeout; provider adapters surface that message in the failed result, and it is not a provider failure either. A caller that enforces its own shorter timeout around the call (for example PR title generation) still reports its own timeout.
+Executions without a queue job (agent chat, planner generation and refinement, dashboard summaries, health checks, indexing, MCP semantic search; an automation run's MCP semantic search is [nested](#nested-executions) under the run) keep waiting in the acquire loop, bounded by their existing caller timeout. When the execution deadline the launch was started with (`executeDockerCommand`'s timeout) expires during an alias-ceiling wait, the launch fails with `AgentCapacityWaitTimeoutError` (`Timed out waiting for agent capacity: '<alias>' (limit N) stayed at its ceiling`) rather than a provider timeout; provider adapters surface that message in the failed result, and it is not a provider failure either. A caller that enforces its own shorter timeout around the call (for example PR title generation) still reports its own timeout.
 
 ## Covered execution paths
 
@@ -77,9 +77,51 @@ Executions without a queue job (agent chat, planner generation and refinement, d
 | Claude, Codex and Antigravity native goal sessions | `spawnWithNetworkPolicy` → admitted Docker start |
 | Synthetic routing, fallback and retries | Each physical attempt independently crosses one of these boundaries |
 
-There is no logical-wrapper lease to acquire twice: nested routing calls consume only the capacity for each physical execution. Sequential retries release their predecessor; parallel physical executions each need a slot. Queue jobs, waiting HTTP/UI requests and publication work are not running agents.
+There is no logical-wrapper lease to acquire twice: nested routing calls consume only the capacity for each physical execution. Sequential retries release their predecessor; parallel physical executions each need a slot. Queue jobs, waiting HTTP/UI requests and publication work are not running agents. Physical executions started *on behalf of* a running parent execution are the exception: see [Nested executions](#nested-executions).
 
 Excluded non-agent work: image pulls/builds/preparation, trusted runtime package metadata/catalog/simulation containers, Agent Tank usage probes, egress proxy containers, login/authentication containers and container inspection/cleanup. The package and usage probes use the existing internal `costCapExempt` classification; request/UI settings cannot supply it. Network restrictions, spend caps, task-generation labels, workflow deadlines and cancellation contexts remain applied to agent containers.
+
+## Nested executions
+
+Some executions start while another execution still holds its slot and waits for them: an orchestrating goal session starts and monitors implementation tasks, and an automation run's container calls ProPR MCP tools that launch an analysis in the API process. If each took its own slot, a parent holding the only slot (a global limit of one, or an agent ceiling of one) would wait for a child that waits for the parent. Admission therefore knows about **nested executions**.
+
+### Rule
+
+| | Charge |
+| --- | --- |
+| Global limit | A nested execution never takes a global slot: it is charged under its parent's slot, whatever agent runs it. A global limit of one with one nested level therefore always admits the nested execution. |
+| Same agent alias as the parent | Charged under the parent's reservation: no second slot of that alias. |
+| Another agent alias | Counts against that alias's ceiling like any launch, and waits for it if it is full. |
+| Depth | 1. A nested execution may not carry nested executions of its own; such a launch is refused with `Nested agent execution refused: its parent is itself nested, and nesting is limited to depth 1`. |
+| Count | At most `PROPR_AGENT_RUN_NESTED_LIMIT` (1–32, default 4) nested executions run under one parent at once. One more is refused with `Nested agent execution refused: its parent already carries N running nested executions`, never queued under the parent's slot. Semantic scoring, which fans out one analysis per chunk, queues its own chunks at this bound when it runs nested. |
+
+The physical container count can therefore exceed the global limit, bounded by `limit × (1 + PROPR_AGENT_RUN_NESTED_LIMIT)`. A nested execution waiting for another alias's ceiling is an ordinary wait, bounded by its caller's timeout or deferral.
+
+### Identifying the parent
+
+The parent link is carried explicitly to the admission boundary through the async context (`runAsAgentAdmissionParent` / `runWithAgentAdmissionParent` in `packages/core/src/agents/agentRunNesting.ts`). It is never guessed from timing or from a shared `propr.task.id` label: sequential auxiliary analyses inside one job share that label but are not nested. A parent launch registers a **scope** for its holder token in the same atomic acquire that admits it (`propr:agent-admission:{…}:parents`). A nested launch names that scope; its acquire resolves it to the parent's holder record, and only a **live** parent (not finished, not expired, not recovering) can carry it. A scope that names no live parent makes the launch an ordinary top-level launch.
+
+| Path | Rule | How the link travels |
+| --- | --- | --- |
+| Tasks started by an orchestrating goal while its session runs | Charged under the goal session. | The goal container receives `PROPR_PARENT_EXECUTION`, a nonce derived from the goal ID (stable across its attempts, revealing nothing about the ID). The orchestrate launch instructions ask the agent to add `<!-- propr-parent-execution: <nonce> -->` to the body of every issue it creates for ProPR. The issue dispatcher copies the scope into the child job data (`IssueJobData.agentAdmissionParent`), and the issue job runs under it. Its agent-capacity pre-check also skips deferral when the live parent is on the same alias. |
+| Analyses launched from the API for an automation run's tool call (`search_repository_files`, semantic mode) | Charged under the run phase's container. | The worker runs the report or action phase as parent `agent-run-grant:<grantId>`. The API recognizes the run-scoped grant (client `propr-agent-runs`) on the MCP principal and runs the retrieval under that scope. |
+| Auxiliary executions inside one job while its main container is alive | None exist. | Every in-job auxiliary analysis (PR titles, summaries, context scouting, relevance mining, plan generation) runs before or after the main container, so it is not nested and takes a normal slot. |
+
+Limitations of the goal path: the link depends on the agent adding the marker. An issue without it is an ordinary top-level task that needs its own slot, as before. The marker is a link, not a credential: anyone who can read the issue sees it, and a copied marker can only charge work under that goal while its session is live, within the count bound. Only issue implementation tasks carry the link; PR follow-ups (`/fix`, reviews) a goal triggers through comments take normal slots.
+
+### Lifecycle
+
+- **Normal parent completion.** When the parent finishes while nested executions still run, its container is removed but its reservation becomes `draining`: it keeps its global and alias slot, accepts no new nested execution, and is released by the last nested execution's release (`release` replies with the parent so that process removes and releases it). No replacement is admitted on that slot while a nested execution charged under it runs.
+- **Fencing and recovery.** When the parent is fenced (lease loss, crash recovery, generation reconciliation), its nested executions are fenced with it in the same script call. Recovery removes the nested executions' containers and releases them **before** the parent's, and the parent's release is refused while any nested record remains, so the capacity is never reused while a nested container can still run. A nested launcher's next renewal fails and it stops its container itself. A crashed nested execution is recovered on its own; its parent is unaffected.
+- **No policy, no nesting.** Without a parent scope the acquire decisions and the holder record fields are unchanged.
+
+### Diagnostics
+
+`agentAdmissionMetrics` adds `draining` (finished parents still holding a slot) and `nested` (executions charged under a parent, also counted in their own state). `agentAdmissionAliasHolders` counts only charged holders: a nested execution on its parent's alias is not counted twice. `agentAdmissionNestedHolders(client, instanceId)` lists each parent (first 8 characters of its token, alias and state) with its nested executions, their alias, state, container ID and whether they are charged under the parent's slot. Admission logs carry `parentScope` / `registersScope` (the scope kind only, never the nonce) and `nestedUnderParent`, and log `Physical agent admitted as nested under its parent` for a nested admission.
+
+### Upgrade
+
+Holder records gain `parent`, `depth`, `shared` and `scope` only for nested executions, and the script takes a third key. During a rolling restart an old process counts nested records toward the global limit (more conservative, never less), but does not fence nested executions with their parent; enforce the lifecycle above once every launching process runs this version.
 
 ## Lifecycle and supported scope
 
@@ -116,6 +158,8 @@ PROPR_TEST_REDIS_SERVER=/path/to/redis-server NODE_ENV=test \
   node --import tsx --test test/agentRunAdmission.test.ts
 ```
 
+Nested executions are covered by `test/agentRunNestedAdmission.test.ts` (same Redis setup; separate processes through both wrappers): a parent holding the only slot of an alias plus a nested execution on that alias, a nested execution on another alias under that alias's ceiling, parent crash removing the nested containers before reuse, a global limit of one with one nested level (including a parent that finishes first), the depth and count bounds, and fencing on lease loss. The parent links are covered by `test/processGoalJob.test.ts`, `test/issueJobMultiModelSiblings.test.ts`, `test/processAgentRunJob.test.ts` and `packages/api/test/mcpRepositoryRetrieval.test.ts`.
+
 Agent-capacity deferral is covered by `test/agentCapacityDeferral.test.ts` (real BullMQ queue and worker over the same Redis setup: deferral with unchanged `attemptsMade`, another agent progressing on the freed worker, wake-up of the oldest waiter on release, the in-place timeline row and the race at the acquire), `packages/core/test/syntheticRoutingCapacity.test.ts` (same-tier skipping, deferral without lower-tier fallback, pinned selection without a second cursor step) and the job-type suites.
 
 The per-agent ceiling suite `test/agentRunAliasAdmission.test.ts` spawns `redis-server` when available and otherwise uses the Redis at `REDIS_HOST` / `REDIS_PORT` (CI starts one with `scripts/ci-redis.sh`), with run-unique instance keys. With `PROPR_REQUIRE_REDIS_INTEGRATION=1`, as CI sets, an unavailable Redis fails the suite instead of skipping it.
@@ -128,7 +172,7 @@ Perform these steps only in the authorized disposable Fleet acceptance environme
 
 1. For each tier (2, 6, 12), verify every execution process has the matching instance ID, Fleet activation, entitled concurrency and Redis endpoint. Verify one Docker daemon and durable/no-eviction Redis. Repeat with two main workers. Persist UI `worker_concurrency` values 1 and 50 and confirm neither expands the physical entitlement. Verify the separately integrated #2989 resolution for job scheduling.
 2. Submit long-running disposable main tasks across repositories until N labelled containers are running. While holding them open, trigger planner generation, planner refinement, API chat, indexing/relevance work and usage-tip analysis, one at a time and together. Record each operation/task ID, admission counters and Docker events. Every extra operation must remain waiting with no extra physical start.
-3. Complete one holder. Exactly one waiting physical execution may start; all others remain waiting. Continue until every entrypoint has actually run. Repeat with native goal sessions and provider fallback/retry. Nested logical wrappers must not deadlock at N=2. Verify a repository limit of 1 still constrains that repository while another repository uses remaining capacity.
+3. Complete one holder. Exactly one waiting physical execution may start; all others remain waiting. Continue until every entrypoint has actually run. Repeat with native goal sessions and provider fallback/retry. Nested logical wrappers must not deadlock at N=2. Repeat with `PROPR_AGENT_RUN_LIMIT=1` and with the goal agent's ceiling at 1: an orchestrating goal's marked tasks and an automation run's semantic search must run while the parent holds the only slot, an unmarked task must wait, and killing the parent's worker must remove the nested containers before the slot is reused. Verify a repository limit of 1 still constrains that repository while another repository uses remaining capacity.
 4. Cancel a waiting planner/task through its normal API, then cancel a running task and native session. Check durable cancellation state, no start for the waiting operation, removal of the running container, and capacity reuse only after its Docker exit/removal. Repeat cancellation during create/start.
 5. Kill one holder's worker process without killing its container. Submit a waiter, observe the 30-second deadline, and verify the original immutable ID is removed before the replacement starts. Pause/resume a launcher around create/register/start to test stale-owner fencing. The resumed launcher must fail rather than start an old container or release a new owner's token.
 6. Interrupt Redis connectivity for an active process. It must lose renewal, abort/remove its physical execution, and retain the reservation until coordination returns and recovery confirms removal. New requests must fail closed. Separately deny Docker removal: the holder stays `recovering` and no replacement starts until Docker is available. Do not simulate Redis failure by flushing its data.

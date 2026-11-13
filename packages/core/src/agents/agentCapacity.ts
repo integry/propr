@@ -17,6 +17,7 @@ import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AdmissionRedis } from './agentRunAdmission.js';
 import { agentRunAliasCeiling } from './agentRunAliasLimits.js';
+import { currentAgentAdmissionNesting } from './agentRunNesting.js';
 
 /** The direct agent (alias) is at its ceiling; the caller should wait or defer. */
 export class AgentCapacityError extends Error {
@@ -107,10 +108,25 @@ if stored then
   if ok and type(config) == 'table' and (tonumber(config.generation) or 0) < tonumber(ARGV[1]) then reconcile = 1 end
 end
 local live, recoverable = {}, {}
-for _,value in ipairs(redis.call('HVALS', KEYS[1])) do
-  local r = cjson.decode(value)
-  if r.alias then
-    if r.state == 'recovering' or r.deadline <= now then
+local all, parents, stranded = redis.call('HGETALL', KEYS[1]), {}, {}
+for i=1,#all,2 do
+  local r = cjson.decode(all[i+1])
+  if r.parent then
+    parents[r.parent] = true
+    -- A nested execution whose process may be gone: only recovery frees it.
+    if r.state == 'recovering' or r.deadline <= now then stranded[r.parent] = true end
+  end
+end
+for i=1,#all,2 do
+  local r = cjson.decode(all[i+1])
+  -- A nested execution on its parent's alias is charged under the parent's
+  -- slot. A finished (draining) parent keeps its slot while nested work runs;
+  -- without any, only recovery frees it. Nor can a nested execution that
+  -- expired or is recovering, whatever its alias, so its draining parent lets
+  -- jobs reach the acquire: its recovery releases that child (and the parent
+  -- after its last one), and it refuses to reuse the slot while live ones remain.
+  if r.alias and not r.shared then
+    if r.state == 'recovering' or (r.state == 'draining' and (not parents[all[i]] or stranded[all[i]])) or (r.state ~= 'draining' and r.deadline <= now) then
       recoverable[r.alias] = (recoverable[r.alias] or 0) + 1
     else
       live[r.alias] = (live[r.alias] or 0) + 1
@@ -165,6 +181,24 @@ async function blockingAliasHolders(client: Redis, config: AdmissionConfig, alia
     return reconciliationPending ? 0 : aliases.get(alias)?.live ?? 0;
 }
 
+// The alias of the live holder registered under a parent scope ('' = none or
+// unattributed). Same liveness rule as the admission script's nested acquire.
+const PARENT_ALIAS_SCRIPT = `
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+local token = redis.call('HGET', KEYS[2], ARGV[1])
+local value = token and redis.call('HGET', KEYS[1], token)
+if not value then return '' end
+local r = cjson.decode(value)
+if r.state == 'recovering' or r.state == 'draining' or r.deadline <= now then return '' end
+return r.alias or ''
+`;
+
+async function liveParentAlias(client: Redis, config: AdmissionConfig, scope: string): Promise<string> {
+    const [holders, , , parents] = agentAdmissionKeys(config.instance);
+    return String(await client.eval(PARENT_ALIAS_SCRIPT, 2, holders, parents, scope) ?? '');
+}
+
 /**
  * Whether `alias` has room under its ceiling right now, or a holder that only
  * recovery can free. Advisory only: an alias without a ceiling always has room
@@ -184,8 +218,14 @@ export async function agentAliasHasCapacity(alias: string, options: CapacityOpti
     const config = resolveConfig(options);
     const ceiling = aliasCeiling(config, alias);
     if (!config || ceiling === undefined) return true;
+    const parentScope = currentAgentAdmissionNesting()?.parent;
     try {
-        return await withCapacityClient(options.client, client => blockingAliasHolders(client, config, alias)) < ceiling;
+        return await withCapacityClient(options.client, async client => {
+            // Work on behalf of a live parent on this alias is charged under the
+            // parent's slot: deferring it would wait for the parent, which waits for it.
+            if (parentScope && await liveParentAlias(client, config, parentScope) === alias) return true;
+            return await blockingAliasHolders(client, config, alias) < ceiling;
+        });
     } catch (error) {
         logger.debug({ alias, error: (error as Error).message }, 'Agent capacity pre-check unavailable; the admission boundary decides');
         return true;
@@ -342,7 +382,14 @@ export function agentCapacityRaceWaitMs(): number | undefined {
 export function aliasCapacityWait(alias: string, ceiling: string, options: { capacityRaceWaitMs?: number; timeoutReason?: unknown }) {
     const raceWaitMs = options.capacityRaceWaitMs ?? agentCapacityRaceWaitMs();
     let since: number | undefined;
+    // The caller's own timeout can land anywhere in the wait loop (a Redis call,
+    // the cancellation check, the pause): while waiting on the ceiling, it is a capacity wait.
+    const failure = (error: unknown, signal: AbortSignal): unknown =>
+        since !== undefined && options.timeoutReason !== undefined && signal.aborted && signal.reason === options.timeoutReason
+            ? new AgentCapacityWaitTimeoutError(alias, Number(ceiling))
+            : error;
     return {
+        failure,
         observe(result: unknown) {
             since = result === 3 ? since ?? Date.now() : undefined;
             if (since !== undefined && raceWaitMs !== undefined && Date.now() - since >= raceWaitMs) {
@@ -351,12 +398,7 @@ export function aliasCapacityWait(alias: string, ceiling: string, options: { cap
         },
         async pause(ms: number, signal: AbortSignal) {
             try { await delay(ms, undefined, { signal }); }
-            catch (error) {
-                if (since !== undefined && options.timeoutReason !== undefined && signal.reason === options.timeoutReason) {
-                    throw new AgentCapacityWaitTimeoutError(alias, Number(ceiling));
-                }
-                throw error;
-            }
+            catch (error) { throw failure(error, signal); }
         },
     };
 }

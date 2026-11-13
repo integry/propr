@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import { loadMonitoredReposRaw, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError, type ReadRepositoryFileResult, type RepositoryRetrievalErrorKind, type SearchRepositoryFilesResult } from '@propr/core';
+import { agentRunGrantParentScope, loadMonitoredReposRaw, runWithAgentAdmissionParent, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError, type ReadRepositoryFileResult, type RepositoryRetrievalErrorKind, type SearchRepositoryFilesResult } from '@propr/core';
 import { type McpTool, type ToolDeps, repositorySchema, pageShape, ok } from './tools.js';
 import { MAX_TOOL_RESULT_BYTES, McpError } from './config.js';
 import { redactText } from './adapter.js';
+import { AGENT_RUN_MCP_CLIENT_ID } from './agentRunGrants.js';
 
 const refShape = { branch: z.string().min(1).max(255).optional(), ref: z.string().min(1).max(255).optional() };
 
@@ -18,6 +19,15 @@ function assertRelativePath(path: string): void {
 async function configuredTarget(repository: string, branch?: string): Promise<{ repository: string; branch: string | undefined }> {
   const configured = (await loadMonitoredReposRaw()).find(repo => repo.name.toLowerCase() === repository.toLowerCase());
   return { repository: configured?.name ?? repository, branch: branch || configured?.baseBranch || undefined };
+}
+
+/**
+ * The admission parent of a call made by an automation run's container: its
+ * run-scoped grant, which the worker registered when it launched the run. Any
+ * other caller (browser, Connect, CLI) has no parent.
+ */
+function agentRunParentScope(principal: { grant: { id: string; clientId: string } }): string | undefined {
+  return principal.grant.clientId === AGENT_RUN_MCP_CLIENT_ID ? agentRunGrantParentScope(principal.grant.id) : undefined;
 }
 
 const ERROR_CODES: Record<RepositoryRetrievalErrorKind, string> = {
@@ -186,8 +196,9 @@ export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): voi
       // The executor has already authorized args.repository for this call.
       if (args.path) assertRelativePath(args.path);
       const { repository, branch } = await configuredTarget(args.repository, args.branch);
-      return ok(fitSearchResult(await retrieval(() => searchRepositoryFiles({ repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
-        caseSensitive: args.caseSensitive, offset: args.offset, limit: args.limit, authToken: principal.user.accessToken || undefined }))));
+      // A semantic search for an automation run's tool call is charged under that run's admission (#3480).
+      return ok(fitSearchResult(await retrieval(() => runWithAgentAdmissionParent(agentRunParentScope(principal), () => searchRepositoryFiles({ repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
+        caseSensitive: args.caseSensitive, offset: args.offset, limit: args.limit, authToken: principal.user.accessToken || undefined })))));
     } });
   tools.push({ name: 'read_repository_file', description: 'Read a text file at a branch, ref or commit straight from git, in bounded line chunks, without cloning locally. Returns content with startLine, endLine, totalLines and a truncated flag; when truncated (by maxLines, maxBytes or the response size limit), continue from nextStartLine. Paths are repository-relative; binary files are rejected.', scope: 'read', readOnly: true,
     schema: z.object({ repository: repositorySchema, path: z.string().min(1).max(1024), ...refShape, startLine: z.number().int().min(1).default(1), endLine: z.number().int().min(1).optional(),
