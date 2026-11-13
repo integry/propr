@@ -107,7 +107,6 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
 }
 
 const DEFERRED_PAGE = 500;
-const DEFERRED_SCAN_LIMIT = 10_000;
 
 /** Whether a delayed job is waiting for capacity (rather than a retry backoff or a scheduled start). */
 export function isCapacityDeferredJob(data: unknown): boolean {
@@ -116,13 +115,19 @@ export function isCapacityDeferredJob(data: unknown): boolean {
     .some(value => typeof value === 'number' && value > 0);
 }
 
-/** Delayed jobs deferred for capacity, scanned page by page (bounded; delayed sets stay small). */
-export async function countCapacityDeferredJobs(queue: Pick<Queue, 'getJobs'>): Promise<number> {
+/**
+ * Delayed jobs deferred for capacity, over the whole delayed set. A drain
+ * reads zero as "nothing pending", so the count is never cut short: the IDs
+ * come from one read of the set (so jobs promoted meanwhile cannot shift later
+ * ones past a page boundary), then the jobs are loaded page by page. A job gone
+ * by the time it is loaded has left the delayed state and is not counted here.
+ */
+export async function countCapacityDeferredJobs(queue: Pick<Queue, 'getRanges' | 'getJob'>): Promise<number> {
+  const ids = await queue.getRanges(['delayed'], 0, -1);
   let deferred = 0;
-  for (let start = 0; start < DEFERRED_SCAN_LIMIT; start += DEFERRED_PAGE) {
-    const jobs = await queue.getJobs(['delayed'], start, start + DEFERRED_PAGE - 1);
+  for (let start = 0; start < ids.length; start += DEFERRED_PAGE) {
+    const jobs = await Promise.all(ids.slice(start, start + DEFERRED_PAGE).map(id => queue.getJob(id)));
     for (const job of jobs) if (job && isCapacityDeferredJob(job.data)) deferred++;
-    if (jobs.length < DEFERRED_PAGE) break;
   }
   return deferred;
 }

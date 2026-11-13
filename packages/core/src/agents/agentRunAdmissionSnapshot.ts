@@ -18,7 +18,7 @@ import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { agentAdmissionDetailsKey, agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AgentAdmissionWaitReason } from './agentRunAdmission.js';
 import { AGENT_RUN_ALIAS_LIMITS_ENV } from './agentRunAliasLimits.js';
-import { agentCapacityWaitersKey } from './agentCapacity.js';
+import { agentCapacityWaitersPrefix, jobWaitsForAgentCapacity } from './agentCapacity.js';
 import { AGENT_RUN_NESTED_LIMIT_ENV, DEFAULT_AGENT_RUN_NESTED_LIMIT } from './agentRunNesting.js';
 import { repositoryWorkflowSlotUsage, type RepositoryWorkflowSlotUsage } from '../workflow/workflowSlotUsage.js';
 
@@ -247,7 +247,29 @@ function waiterJob(waiter: string): [string, string] | undefined {
     return Array.isArray(parsed) && typeof parsed[0] === 'string' && typeof parsed[1] === 'string' ? [parsed[0], parsed[1]] : undefined;
 }
 
-/** Per capped alias, its waiters whose queue job is still delayed (only aliases with a ceiling are ever deferred). */
+/**
+ * Every alias with a waiters list, found by key rather than by the current
+ * ceilings: removing a ceiling (documented as needing no drain) leaves its
+ * jobs delayed until their backoff passes, and they are still pending work.
+ */
+async function waiterAliases(client: Redis, instance: string, configured: Iterable<string>): Promise<Set<string>> {
+    const prefix = agentCapacityWaitersPrefix(instance);
+    const aliases = new Set(configured);
+    // The prefix is a fixed string plus a hex hash, so it holds no glob characters.
+    let cursor = '0';
+    do {
+        const [next, keys] = await client.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 1000);
+        for (const key of keys) aliases.add(key.slice(prefix.length));
+        cursor = next;
+    } while (cursor !== '0');
+    return aliases;
+}
+
+/**
+ * Per alias, its waiters whose queue job is still delayed for it. Aliases with
+ * a ceiling are always listed; an alias whose ceiling was removed is listed
+ * while it still has such waiters.
+ */
 async function deferredWaiters(client: Redis, config: AdmissionConfig, prefix: string | undefined): Promise<Map<string, string[]>> {
     const queues = new Map<string, Queue>();
     const queue = (name: string) => {
@@ -255,23 +277,26 @@ async function deferredWaiters(client: Redis, config: AdmissionConfig, prefix: s
         if (!found) queues.set(name, found = new Queue(name, { connection: client, ...(prefix ? { prefix } : {}) }));
         return found;
     };
-    const isDelayed = async (waiter: string): Promise<boolean> => {
+    const isDelayed = async (waiter: string, alias: string): Promise<boolean> => {
         const target = waiterJob(waiter);
         if (!target) return false;
         try {
             const job = await queue(target[0]).getJob(target[1]);
-            return Boolean(job && !job.finishedOn && await job.isDelayed());
+            // Same rule as the wakeup: a stored refusal naming only other aliases no longer waits for this one.
+            return Boolean(job && !job.finishedOn && jobWaitsForAgentCapacity(job.data, alias) && await job.isDelayed());
         } catch (error) {
             logger.debug({ error: (error as Error).message }, 'Could not read a deferred agent capacity waiter');
             return false;
         }
     };
+    const configured = Object.keys(config.aliasLimits ?? {});
     const result = new Map<string, string[]>();
     try {
-        for (const alias of Object.keys(config.aliasLimits ?? {})) {
+        const keyPrefix = agentCapacityWaitersPrefix(config.instance);
+        for (const alias of await waiterAliases(client, config.instance, configured)) {
             const delayed: string[] = [];
-            for (const waiter of await client.zrange(agentCapacityWaitersKey(config.instance, alias), 0, -1)) if (await isDelayed(waiter)) delayed.push(waiter);
-            result.set(alias, delayed);
+            for (const waiter of await client.zrange(`${keyPrefix}${alias}`, 0, -1)) if (await isDelayed(waiter, alias)) delayed.push(waiter);
+            if (delayed.length || configured.includes(alias)) result.set(alias, delayed);
         }
     } finally {
         await Promise.all([...queues.values()].map(item => item.close().catch(() => undefined)));

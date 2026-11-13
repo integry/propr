@@ -18,7 +18,7 @@ import { Redis } from 'ioredis';
 import {
     agentAdmissionDetailsKey, agentAdmissionKeys, prepareAdmittedAgent, type AdmissionConfig, type AdmissionDocker, type AgentAdmissionWaitReason,
 } from '../packages/core/src/agents/agentRunAdmission.js';
-import { agentCapacityWaitersKey, configureAgentCapacityRedis } from '../packages/core/src/agents/agentCapacity.js';
+import { agentCapacityWaitersKey, configureAgentCapacityRedis, registerAgentCapacityWaiter } from '../packages/core/src/agents/agentCapacity.js';
 import { readAgentRunAdmissionSnapshot } from '../packages/core/src/agents/agentRunAdmissionSnapshot.js';
 import { ACQUIRE_WORKFLOW_SLOT, repositoryWorkflowSlotKeys } from '../packages/core/src/workflow/workflowConcurrency.js';
 
@@ -209,6 +209,42 @@ test('deferred jobs count only waiters whose queue job is still delayed', integr
         const report = await snapshot(config);
         assert.equal(agentOf(report, 'local').deferred, 2, 'a re-entering, missing or malformed waiter is not deferred');
         assert.equal(report.global!.deferred, 2);
+    } finally { await queue.close(); }
+});
+
+test('removing a ceiling keeps its still-delayed jobs in the report until their backoff passes', integration(), async () => {
+    const name = instance('removed-ceiling');
+    const capped: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { local: 1, cloud: 1 } };
+    const queueName = `snapshot-removed-${run}`;
+    queues.push(queueName);
+    const queue = new Queue(queueName, { connection: client() });
+    try {
+        // Deferred while the ceilings were configured, through the real registration path.
+        await queue.add('job', { agentCapacityDeferrals: 1, agentCapacityAliases: ['local'] }, { jobId: 'local-deferred', delay: 60_000 });
+        // Its latest refusal names only `cloud`: it no longer waits for `local`, whose list still holds it.
+        await queue.add('job', { agentCapacityDeferrals: 2, agentCapacityAliases: ['cloud'] }, { jobId: 'moved-on', delay: 60_000 });
+        await registerAgentCapacityWaiter(['local'], JSON.stringify([queueName, 'local-deferred']), 1, { client: client(), config: capped });
+        await registerAgentCapacityWaiter(['local', 'cloud'], JSON.stringify([queueName, 'moved-on']), 2, { client: client(), config: capped });
+
+        // The `local` ceiling removed (restart with global admission kept): its job is still pending.
+        let report = await snapshot({ instance: name, limit: 2, aliasLimits: { cloud: 1 } });
+        assert.equal(agentOf(report, 'local').ceiling, null, 'a removed ceiling is reported as none');
+        assert.equal(agentOf(report, 'local').deferred, 1, 'a job waiting only for another agent is not deferred for this one');
+        assert.equal(agentOf(report, 'cloud').deferred, 1);
+        assert.equal(report.global!.deferred, 2);
+
+        // The last ceiling removed: no ceiling is configured, yet both jobs are still deferred.
+        report = await snapshot({ instance: name, limit: 2 });
+        assert.equal(report.agentCeilingsConfigured, false);
+        assert.deepEqual(report.agents.map(agent => [agent.alias, agent.ceiling, agent.deferred]), [['cloud', null, 1], ['local', null, 1]]);
+        assert.equal(report.global!.deferred, 2);
+
+        // Once the jobs leave the delayed state, the removed aliases leave the report.
+        await (await queue.getJob('local-deferred'))!.promote();
+        await (await queue.getJob('moved-on'))!.promote();
+        report = await snapshot({ instance: name, limit: 2 });
+        assert.deepEqual(report.agents, []);
+        assert.equal(report.global!.deferred, 0);
     } finally { await queue.close(); }
 });
 

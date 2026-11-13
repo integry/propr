@@ -40,7 +40,7 @@ The report contains:
   - `waiting`: launches waiting at the boundary, split into `globalLimit`, `agentCeiling`, `recovering` and `starting` (registered, first reply pending).
   - `deferred`: queue jobs delayed until an agent has capacity.
   - `unattributedHolders`: holders without an agent alias (records written before ceilings existed, or the documented global-only exemption).
-- `agents[]`: one entry per direct agent with a ceiling or with current work: `ceiling` (`null` = global limit only), `inUse` (what the ceiling is compared with), `holders`, `nested`, `waiting`, `deferred`, and `tasks` (task ID, state, wait reason).
+- `agents[]`: one entry per direct agent with a ceiling or with current work (including jobs still deferred for an agent whose ceiling was removed): `ceiling` (`null` = global limit only), `inUse` (what the ceiling is compared with), `holders`, `nested`, `waiting`, `deferred`, and `tasks` (task ID, state, wait reason).
 - `queueWorkers`: worker job slots in use and in total (summed from the concurrency each live worker reports; `null` when a worker has not reported).
 - `repositoryWorkflowSlots`: per repository whose running work carries a limit, slots in use, the limit and jobs waiting for a slot. A repository with a limit but nothing running is not listed.
 
@@ -56,7 +56,7 @@ The admission log lines `Physical agent admission waiting` and `Physical agent a
 
 ### Hosted Fleet queue status
 
-`GET /api/internal/hosted/queue` reports `waiting`, `active` and `deferred`. Jobs deferred for an agent ceiling or a repository limit sit in BullMQ's delayed state and come back by themselves, so they are pending work: a drain is not complete while `deferred` is above zero. Delayed jobs that are only waiting out a retry backoff are not counted.
+`GET /api/internal/hosted/queue` reports `waiting`, `active` and `deferred`. Jobs deferred for an agent ceiling or a repository limit sit in BullMQ's delayed state and come back by themselves, so they are pending work: a drain is not complete while `deferred` is above zero. Delayed jobs that are only waiting out a retry backoff are not counted. The count covers the whole delayed set, however large.
 
 ## Changing per-agent ceilings
 
@@ -65,7 +65,7 @@ Set `PROPR_AGENT_RUN_ALIAS_LIMITS` to comma-separated `alias=N` entries of **dir
 - **No drain.** Ceilings are not part of the fenced admission identity: every acquire passes the current value. Raising or lowering a ceiling needs no generation bump and no drain.
 - **Raising** takes effect for new admissions as soon as a restarted process runs. Jobs already deferred for that agent re-enter when one of its holders is released, and at the latest after their backoff (at most five minutes).
 - **Lowering** never stops running work. Running executions finish normally; the agent admits nothing new until `inUse` falls below the new ceiling, and its queue jobs are deferred meanwhile. The report can briefly show `inUse` above `ceiling`.
-- **Removing** an entry (or unsetting the variable) leaves that agent limited by the global limit only. Jobs already deferred for it re-enter after their backoff and then proceed without a ceiling check.
+- **Removing** an entry (or unsetting the variable) leaves that agent limited by the global limit only. Jobs already deferred for it re-enter after their backoff and then proceed without a ceiling check. Until then the report still lists that agent, with `ceiling: null`, and counts those jobs in `deferred`.
 - **Rollback** is the same operation with the previous value: restore it on every process and restart. Nothing in Redis needs editing.
 
 ## Changing the global limit
