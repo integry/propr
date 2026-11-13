@@ -1,6 +1,7 @@
 import type { Redis } from 'ioredis';
 import { PR_BODY_MAX_LENGTH } from '@propr/shared';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
+import { loadMonitoredRepos } from '../../config/configManager.js';
 import { loadUltrafixRatingGoal } from '../../config/configManagerUltrafix.js';
 import { getNonBlockingChecksForRepository } from '../../daemon/configLoader.js';
 import { db } from '../../db/connection.js';
@@ -9,7 +10,13 @@ import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
-import { setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
+import { setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
+import {
+    schedulePullRequestStatusBackfill,
+    schedulePullRequestStatusForBasePush,
+    type PullRequestStatusReconcileDeps,
+    type PullRequestStatusScheduleOptions,
+} from './pullRequestStatusReconcile.js';
 import {
     applyPullRequestStatusBlock,
     extractPullRequestStatusBlock,
@@ -37,6 +44,8 @@ export interface PullRequestStatusSyncDeps {
     now: () => Date;
     /** Open pull requests a commit belongs to, for checks reported against a commit. */
     findPullRequestsForCommit: (repository: string, sha: string) => Promise<number[]>;
+    /** Repositories the startup backfill reads: the ones ProPR monitors. */
+    listRepositories: () => Promise<string[]>;
 }
 
 export type PullRequestStatusSyncResult = 'updated' | 'removed' | 'unchanged' | 'skipped';
@@ -48,23 +57,61 @@ export type PullRequestStatusSyncResult = 'updated' | 'removed' | 'unchanged' | 
  */
 let runtimeEnabled = false;
 let runtimeDeps: Partial<PullRequestStatusSyncDeps> = {};
+let backfillStarted = false;
+let backfillRetry: NodeJS.Timeout | null = null;
 
-export function enablePullRequestStatusSync(deps: Partial<PullRequestStatusSyncDeps> = {}): void {
+/**
+ * `backfill` also schedules, once per process, the update of every open pull
+ * request ProPR created (backfillPullRequestStatus): those that existed
+ * before this process started get no transition of their own.
+ */
+export function enablePullRequestStatusSync(deps: Partial<PullRequestStatusSyncDeps> = {}, options: { backfill?: boolean } = {}): void {
     runtimeEnabled = true;
     runtimeDeps = deps;
     setPullRequestStatusSyncRunner(schedulePullRequestStatusSync);
     setPullRequestStatusCommitSyncRunner(schedulePullRequestStatusSyncForCommit);
+    setPullRequestStatusBaseSyncRunner(schedulePullRequestStatusSyncForBase);
+    if (options.backfill && !backfillStarted) {
+        backfillStarted = true;
+        runBackfill(0);
+    }
+}
+
+/**
+ * A repository whose open pull requests could not be listed (or every one,
+ * when the monitored repositories could not be read) is listed again on the
+ * bounded settle schedule: a failure proves nothing about its pull requests.
+ */
+function runBackfill(attempt: number, repositories?: string[]): void {
+    backfillRetry = null;
+    void backfillPullRequestStatus(repositories ? { listRepositories: async () => repositories } : {})
+        .then(result => result.failed, error => {
+            logger.warn({ error: (error as Error).message }, 'Failed to read the repositories for the pull request status backfill');
+            return repositories;
+        })
+        .then(failed => {
+            const delay = settleRefreshDelaysMs[attempt];
+            if ((failed && failed.length === 0) || delay === undefined || !runtimeEnabled) return;
+            backfillRetry = setTimeout(() => runBackfill(attempt + 1, failed), delay);
+            backfillRetry.unref?.();
+        });
 }
 
 export function disablePullRequestStatusSync(): void {
     runtimeEnabled = false;
     runtimeDeps = {};
+    backfillStarted = false;
+    if (backfillRetry) clearTimeout(backfillRetry);
+    backfillRetry = null;
     setPullRequestStatusSyncRunner(null);
     setPullRequestStatusCommitSyncRunner(null);
+    setPullRequestStatusBaseSyncRunner(null);
     for (const entry of scheduled.values()) if (entry.timer) clearTimeout(entry.timer);
     scheduled.clear();
     for (const timer of commitLookups.values()) clearTimeout(timer);
     commitLookups.clear();
+    for (const lookup of baseLookups.values()) clearTimeout(lookup.timer);
+    baseLookups.clear();
 }
 
 export function isPullRequestStatusSyncEnabled(): boolean {
@@ -92,6 +139,7 @@ function resolveDeps(overrides: Partial<PullRequestStatusSyncDeps> = {}): Resolv
         },
         now: merged.now ?? (() => new Date()),
         findPullRequestsForCommit: merged.findPullRequestsForCommit ?? findOpenPullRequestsForCommit,
+        listRepositories: merged.listRepositories ?? loadMonitoredRepos,
     };
 }
 
@@ -136,7 +184,13 @@ function awaitsMergeability(status: PullRequestStatus | null): boolean {
     return status?.state === 'working' && status.detail.activity === 'checking_mergeability';
 }
 
-interface SyncOutcome { result: PullRequestStatusSyncResult; awaitingMergeability: boolean }
+interface SyncOutcome {
+    result: PullRequestStatusSyncResult;
+    awaitingMergeability: boolean;
+    open: boolean;
+    /** The base tip GitHub last compared the pull request against. */
+    baseSha: string | null;
+}
 
 /** Times the facts are read again because the pull request changed (sameStatusSubject) while they were read. */
 const MAX_STATUS_READS = 3;
@@ -199,18 +253,18 @@ async function syncPullRequestStatusOnce(
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
         const { status, pull } = await statusForLatestPull(deps, repository, prNumber);
-        const awaitingMergeability = awaitsMergeability(status);
+        const read = { awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null };
         const current = pull.body ?? '';
         const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
         const written = extractPullRequestStatusBlock(next) !== null;
-        if (next === current || sameRenderedStatus(next, current)) return { result: written ? 'unchanged' : 'skipped', awaitingMergeability };
+        if (next === current || sameRenderedStatus(next, current)) return { result: written ? 'unchanged' : 'skipped', ...read };
         // The facts read can outlast the lease; a writer that took the lock
         // since may have changed the body, so this read must not be written.
         await lease.assertHeld();
         const [owner, repo] = repository.split('/');
         await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
         logger.debug({ repository, prNumber, removed: !written }, 'Updated the pull request status block');
-        return { result: written ? 'updated' : 'removed', awaitingMergeability };
+        return { result: written ? 'updated' : 'removed', ...read };
     });
 }
 
@@ -231,86 +285,172 @@ export async function syncPullRequestStatus(
 const DEFAULT_DEBOUNCE_MS = 1_000;
 /**
  * GitHub computes mergeability in the background after a read, and sends no
- * webhook when it finishes. While it is unknown the status is re-read on this
- * schedule, then left to the next transition.
+ * webhook when it finishes; after a push to the base branch it also compares
+ * the pull request with the new tip in the background. Until GitHub has
+ * settled the pull request the status is re-read on this schedule, then left
+ * to the next transition.
  */
-const MERGEABILITY_REFRESH_DELAYS_MS = [3_000, 10_000, 30_000, 60_000];
+const SETTLE_REFRESH_DELAYS_MS = [3_000, 10_000, 30_000, 60_000];
 interface ScheduledSync {
     timer: NodeJS.Timeout | null;
+    /** When the pending timer fires; a request moves it earlier, never later. */
+    dueAt: number;
     running: boolean;
     rerun: boolean;
-    /** Mergeability refreshes already run for this entry. */
-    mergeabilityRefreshes: number;
-    /** The pending timer is a mergeability refresh, which a transition may bring forward. */
-    refreshPending: boolean;
+    /** Refreshes already run for this entry while GitHub had not settled the pull request. */
+    refreshes: number;
+    /** A pushed base tip GitHub has not yet reported comparing the pull request against. */
+    awaitedBaseSha: string | null;
+    /** A reconciliation read (startup backfill), which no later transition may come to retry. */
+    reconcile: boolean;
 }
+interface ScheduleTarget { repository: string; prNumber: number; key: string }
 const scheduled = new Map<string, ScheduledSync>();
-let mergeabilityRefreshDelaysMs: readonly number[] = MERGEABILITY_REFRESH_DELAYS_MS;
+let settleRefreshDelaysMs: readonly number[] = SETTLE_REFRESH_DELAYS_MS;
 
-/** Test hook: shortens the mergeability refresh schedule; null restores it. */
+/** Test hook: shortens the settle refresh schedule (mergeability, pushed base); null restores it. */
 export function setPullRequestStatusMergeabilityRefreshDelaysForTests(delays: readonly number[] | null): void {
-    mergeabilityRefreshDelaysMs = delays ?? MERGEABILITY_REFRESH_DELAYS_MS;
+    settleRefreshDelaysMs = delays ?? SETTLE_REFRESH_DELAYS_MS;
 }
 
-function runScheduled(repository: string, prNumber: number, key: string): void {
+function arm(entry: ScheduledSync, target: ScheduleTarget, delayMs: number): void {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.dueAt = Date.now() + delayMs;
+    entry.timer = setTimeout(() => runScheduled(target), delayMs);
+    entry.timer.unref?.();
+}
+
+function runScheduled(target: ScheduleTarget): void {
+    const { repository, prNumber, key } = target;
     const entry = scheduled.get(key);
     if (!entry) return;
     entry.timer = null;
-    entry.refreshPending = false;
     entry.running = true;
-    let awaitingMergeability = false;
+    const awaitedBaseSha = entry.awaitedBaseSha;
+    let unsettled = false;
     void syncPullRequestStatusOnce(repository, prNumber, {})
-        .then(outcome => { awaitingMergeability = outcome.awaitingMergeability; })
+        .then(outcome => {
+            // A read from before GitHub compared the pull request with the pushed
+            // base may still report the old mergeability, so it settles nothing.
+            unsettled = outcome.awaitingMergeability || (awaitedBaseSha !== null && outcome.open && outcome.baseSha !== awaitedBaseSha);
+        })
         .catch(error => {
             // Another writer took the body lock mid-update, or the pull request
             // kept changing while it was read: re-read and write again.
             if (error instanceof PullRequestBodyLockLostError || error instanceof PullRequestChangedDuringStatusSyncError) entry.rerun = true;
-            logger.warn({ repository, prNumber, error: (error as Error).message },
-                'Failed to update the pull request status block; the next transition retries');
+            // A failed read settles nothing; a base push or a backfill has no later transition to retry it.
+            else unsettled = awaitedBaseSha !== null || entry.reconcile;
+            logger.warn({ repository, prNumber, error: (error as Error).message, retry: entry.rerun || unsettled ? 'scheduled' : 'next_transition' },
+                'Failed to update the pull request status block');
         })
-        .finally(() => {
-            entry.running = false;
-            if (!awaitingMergeability) entry.mergeabilityRefreshes = 0;
-            const refreshDelay = awaitingMergeability ? mergeabilityRefreshDelaysMs[entry.mergeabilityRefreshes] : undefined;
-            if (!runtimeEnabled || (!entry.rerun && refreshDelay === undefined)) {
-                scheduled.delete(key);
-                return;
-            }
-            if (!entry.rerun) {
-                entry.mergeabilityRefreshes++;
-                entry.refreshPending = true;
-            }
-            const delay = entry.rerun ? DEFAULT_DEBOUNCE_MS : refreshDelay as number;
-            entry.rerun = false;
-            entry.timer = setTimeout(() => runScheduled(repository, prNumber, key), delay);
-            entry.timer.unref?.();
-        });
+        .finally(() => finishScheduled(entry, target, { unsettled, awaitedBaseSha }));
+}
+
+function finishScheduled(entry: ScheduledSync, target: ScheduleTarget, run: { unsettled: boolean; awaitedBaseSha: string | null }): void {
+    entry.running = false;
+    if (!run.unsettled) {
+        entry.refreshes = 0;
+        entry.reconcile = false;
+        // A push during the run awaits its own, newer tip.
+        if (entry.awaitedBaseSha === run.awaitedBaseSha) entry.awaitedBaseSha = null;
+    }
+    const refreshDelay = run.unsettled ? settleRefreshDelaysMs[entry.refreshes] : undefined;
+    if (!runtimeEnabled || (!entry.rerun && refreshDelay === undefined)) {
+        scheduled.delete(target.key);
+        return;
+    }
+    if (entry.rerun) {
+        entry.rerun = false;
+        arm(entry, target, DEFAULT_DEBOUNCE_MS);
+        return;
+    }
+    entry.refreshes++;
+    arm(entry, target, refreshDelay as number);
 }
 
 /**
  * Bursts of transitions coalesce into one update; a failure is logged and
- * retried on the next transition. While mergeability is unknown the update is
- * repeated on a bounded schedule (MERGEABILITY_REFRESH_DELAYS_MS).
+ * retried on the next transition. Until GitHub settles the pull request
+ * (mergeability, a pushed base) the update is repeated on a bounded schedule
+ * (SETTLE_REFRESH_DELAYS_MS), which a transition does not wait for.
  */
-function schedulePullRequestStatusSync(repository: string, number: number): void {
+function schedulePullRequestStatusSync(repository: string, number: number, options: PullRequestStatusScheduleOptions = {}): void {
     if (!runtimeEnabled) return;
-    const key = prKey(repository, number);
-    const entry = scheduled.get(key);
-    if (entry) {
-        if (entry.running) entry.rerun = true;
-        else if (entry.refreshPending && entry.timer) {
-            // A transition does not wait for a slow mergeability refresh.
-            clearTimeout(entry.timer);
-            entry.refreshPending = false;
-            entry.timer = setTimeout(() => runScheduled(repository, number, key), DEFAULT_DEBOUNCE_MS);
-            entry.timer.unref?.();
-        }
+    const target = { repository, prNumber: number, key: prKey(repository, number) };
+    let entry = scheduled.get(target.key);
+    if (!entry) {
+        entry = { timer: null, dueAt: 0, running: false, rerun: false, refreshes: 0, awaitedBaseSha: null, reconcile: false };
+        scheduled.set(target.key, entry);
+    }
+    if (options.baseSha) {
+        // A new base tip restarts the bounded wait for GitHub to compare against it.
+        entry.awaitedBaseSha = options.baseSha;
+        entry.refreshes = 0;
+    }
+    if (options.reconcile) entry.reconcile = true;
+    if (entry.running) {
+        // The running read may predate this change; a reconciliation read it covers.
+        if (!options.reconcile) entry.rerun = true;
         return;
     }
-    const created: ScheduledSync = { timer: null, running: false, rerun: false, mergeabilityRefreshes: 0, refreshPending: false };
-    scheduled.set(key, created);
-    created.timer = setTimeout(() => runScheduled(repository, number, key), DEFAULT_DEBOUNCE_MS);
-    created.timer.unref?.();
+    const delayMs = DEFAULT_DEBOUNCE_MS + (options.delayMs ?? 0);
+    if (!entry.timer || Date.now() + delayMs < entry.dueAt) arm(entry, target, delayMs);
+}
+
+// --- Reconciliation: pushes to a base branch, open pull requests at startup ---
+
+async function reconcileDeps(overrides: Partial<PullRequestStatusSyncDeps>): Promise<PullRequestStatusReconcileDeps & { listRepositories: () => Promise<string[]> }> {
+    const resolved = resolveDeps(overrides);
+    return { github: await resolved.github(), db: resolved.sources.db, schedule: schedulePullRequestStatusSync, listRepositories: resolved.listRepositories };
+}
+
+/** Schedules the status update of the open ProPR pull requests into `branch`, which was pushed to `sha`. */
+export async function refreshPullRequestStatusForBasePush(
+    repository: string, branch: string, sha: string, overrides: Partial<PullRequestStatusSyncDeps> = {},
+): Promise<number[]> {
+    return await schedulePullRequestStatusForBasePush(await reconcileDeps(overrides), { repository, branch, sha });
+}
+
+/** Schedules the status update of every open ProPR pull request in the monitored repositories. */
+export async function backfillPullRequestStatus(
+    overrides: Partial<PullRequestStatusSyncDeps> = {},
+): Promise<{ repositories: number; scheduled: number; failed: string[] }> {
+    return await schedulePullRequestStatusBackfill(await reconcileDeps(overrides));
+}
+
+const baseLookups = new Map<string, { timer: NodeJS.Timeout; sha: string; attempts: number }>();
+
+function armBaseLookup(push: { repository: string; branch: string; key: string }, state: { sha: string; attempts: number }, delayMs: number): void {
+    const timer = setTimeout(() => runBaseLookup(push), delayMs);
+    timer.unref?.();
+    baseLookups.set(push.key, { ...state, timer });
+}
+
+function runBaseLookup(push: { repository: string; branch: string; key: string }): void {
+    const lookup = baseLookups.get(push.key);
+    if (!lookup) return;
+    baseLookups.delete(push.key);
+    void refreshPullRequestStatusForBasePush(push.repository, push.branch, lookup.sha).catch(error => {
+        // A failed listing settles nothing; retry it on the bounded schedule unless a newer push did.
+        const delay = settleRefreshDelaysMs[lookup.attempts];
+        logger.warn({ repository: push.repository, branch: push.branch, error: (error as Error).message, retrying: delay !== undefined },
+            'Failed to list the open pull requests into a pushed branch for their status');
+        if (delay !== undefined && runtimeEnabled && !baseLookups.has(push.key)) armBaseLookup(push, { sha: lookup.sha, attempts: lookup.attempts + 1 }, delay);
+    });
+}
+
+/** A burst of pushes to one branch costs one listing, for its latest tip. */
+function schedulePullRequestStatusSyncForBase(repository: string, branch: string, sha: string): void {
+    if (!runtimeEnabled) return;
+    const push = { repository, branch, key: `${repository.toLowerCase()}:${branch}` };
+    const pending = baseLookups.get(push.key);
+    if (pending && pending.attempts === 0) {
+        pending.sha = sha;
+        return;
+    }
+    // A new push does not wait for the retry of a failed listing.
+    if (pending) clearTimeout(pending.timer);
+    armBaseLookup(push, { sha, attempts: 0 }, DEFAULT_DEBOUNCE_MS);
 }
 
 // --- Checks reported against a commit ---

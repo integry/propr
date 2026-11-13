@@ -50,6 +50,33 @@ export function requestPullRequestStatusSyncForCommit(repository: string | null 
     }
 }
 
+/** Finds the open pull requests into a pushed branch, then signals each; registered with the sync runner. */
+export type PullRequestStatusBaseSyncRunner = (repository: string, branch: string, sha: string) => void;
+
+let baseRunner: PullRequestStatusBaseSyncRunner | null = null;
+
+export function setPullRequestStatusBaseSyncRunner(next: PullRequestStatusBaseSyncRunner | null): void {
+    baseRunner = next;
+}
+
+/**
+ * Called when a branch receives a push: every open pull request into it may
+ * now conflict, without an event of its own. `sha` is the branch's new tip.
+ * Never throws and never waits; a no-op unless status maintenance is enabled.
+ */
+export function requestPullRequestStatusSyncForBase(
+    repository: string | null | undefined, branch: string | null | undefined, sha: string | null | undefined,
+): void {
+    if (!baseRunner || typeof repository !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repository)) return;
+    if (typeof branch !== 'string' || !/^\S+$/.test(branch)) return;
+    if (typeof sha !== 'string' || !/^[0-9a-f]{7,64}$/i.test(sha)) return;
+    try {
+        baseRunner(repository, branch, sha);
+    } catch {
+        // A status update must never fail the event that signalled it.
+    }
+}
+
 const PULL_REQUEST_TASK_TYPES = new Set(['pr-comment', 'review', 'merge_conflict']);
 
 /** The pull request a task works on or produced, when known. */

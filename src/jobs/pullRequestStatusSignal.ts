@@ -25,12 +25,15 @@ export function signalPullRequestStatus(repository: string | null | undefined, p
 /**
  * Turns on pull request status maintenance in this process (worker, daemon):
  * transitions then update the status block of ProPR pull requests whose
- * repository shows it. Failures are logged; startup never fails on it.
+ * repository shows it. `backfill` also brings every open ProPR pull request
+ * up to date once; the worker asks for it, since it runs in every deployment
+ * that does ProPR work, and the webhook processes would only repeat it.
+ * Failures are logged; startup never fails on it.
  */
-export async function enablePullRequestStatusMaintenance(): Promise<void> {
+export async function enablePullRequestStatusMaintenance(options: { backfill?: boolean } = {}): Promise<void> {
     try {
-        const core = await import('@propr/core') as { enablePullRequestStatusSync?: () => void };
-        core.enablePullRequestStatusSync?.();
+        const core = await import('@propr/core') as { enablePullRequestStatusSync?: (deps?: object, options?: { backfill?: boolean }) => void };
+        core.enablePullRequestStatusSync?.({}, options);
         maintenanceEnabled = true;
     } catch {
         // Status maintenance is optional; the process keeps running without it.

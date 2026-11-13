@@ -12,6 +12,7 @@ const {
     disablePullRequestStatusSync, enablePullRequestStatusSync, initialPullRequestStatusBlock,
     PullRequestChangedDuringStatusSyncError, resolvePullRequestsForCommitStatus, setPullRequestStatusMergeabilityRefreshDelaysForTests, syncPullRequestStatus, updatePullRequestBody,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
+const { MAX_STATUS_BACKFILL_REPOSITORIES, schedulePullRequestStatusBackfill, schedulePullRequestStatusForBasePush } = await import('../src/services/pullRequestStatus/pullRequestStatusReconcile.js');
 const { loadPullRequestStatus, loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
 const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = await import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 // A second instance of the lock module stands in for another process (daemon vs worker): it has its own in-process chains.
@@ -74,9 +75,21 @@ class FakeGitHub {
     commitStatus: { state: string; total_count: number; statuses: Array<{ context: string; state: string }> } = { state: 'pending', total_count: 0, statuses: [] };
     calls: Array<{ route: string; params: Record<string, unknown> }> = [];
     patches: string[] = [];
+    /** The open pull requests GitHub lists; by default the one pull request while it is open. */
+    listed: Array<{ number: number; head: FakePull['head']; base: FakePull['base'] }> | null = null;
+    /** Failures the next open pull request listings throw. */
+    listFailures = 0;
     async request(route: string, params: Record<string, unknown>) {
         this.calls.push({ route, params });
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: structuredClone(this.pull) };
+        if (route === 'GET /repos/{owner}/{repo}/pulls') {
+            if (this.listFailures > 0) { this.listFailures--; throw new Error('GitHub unavailable'); }
+            const open = this.listed ?? (this.pull.state === 'open' ? [{ number: PR, head: this.pull.head, base: this.pull.base }] : []);
+            const intoBase = params.base ? open.filter(pull => pull.base.ref === params.base) : open;
+            const perPage = Number(params.per_page ?? 30);
+            const page = Number(params.page ?? 1);
+            return { data: structuredClone(intoBase.slice((page - 1) * perPage, page * perPage)) };
+        }
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') {
             this.pull.body = String(params.body);
             this.patches.push(this.pull.body);
@@ -874,4 +887,203 @@ test('a scheduled update whose pull request kept changing runs again and writes'
     } finally {
         disablePullRequestStatusSync();
     }
+});
+
+// --- Base pushes (F14) and existing pull requests at startup (F15) ---
+
+const pullReads = (prNumber = PR) => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}' && call.params.pull_number === prNumber).length;
+const listings = () => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls').length;
+const facts = () => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs').length;
+async function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition() && Date.now() < deadline) await pause(20);
+}
+const PUSHED_TIP = 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2';
+const push = (ref: string, after: string, extra: Record<string, unknown> = {}) =>
+    signalPullRequestStatusFromWebhook({ repository: { full_name: REPOSITORY }, ref, after, before: 'a1a1a1a1', ...extra }, 'push');
+/** A person's open pull request into the same base, which must cost no status read. */
+const humanPull = { number: 43, head: { sha: 'human-head', ref: 'someone-else', repo: { full_name: REPOSITORY } }, base: { ref: 'main', sha: 'base-1' } };
+
+async function readyProprPullRequest(): Promise<void> {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    await sync();
+    assert.match(statusLine(), /✅ Ready/);
+}
+
+test('a push to the base branch refreshes the ProPR pull requests into it, so one that now conflicts is not left ready', async () => {
+    await readyProprPullRequest();
+    github.listed = [{ number: PR, head: github.pull.head, base: github.pull.base }, humanPull];
+    enablePullRequestStatusSync(deps());
+    try {
+        // Another pull request merges into main: GitHub now reports this one as conflicting, and its head is unchanged.
+        github.pull.base = { ref: 'main', sha: PUSHED_TIP };
+        github.pull.mergeable = false;
+        github.listed = [{ number: PR, head: github.pull.head, base: github.pull.base }, { ...humanPull, base: github.pull.base }];
+        push('refs/heads/main', PUSHED_TIP);
+        push('refs/heads/main', PUSHED_TIP);
+        await until(() => /conflicts with base/.test(statusLine()));
+        assert.match(statusLine(), /⚠️ Needs you · conflicts with base/);
+        assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+        assert.equal(listings(), 1, 'a burst of pushes to one branch is one listing');
+        assert.deepEqual(github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.base), ['main']);
+        assert.equal(pullReads(43), 0, 'a pull request ProPR did not create is never read for a status');
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});
+
+test('tags, deleted branches and rescue refs list no pull requests', async () => {
+    await readyProprPullRequest();
+    enablePullRequestStatusSync(deps());
+    try {
+        push('refs/tags/v1.0.0', PUSHED_TIP);
+        push('refs/heads/main', '0000000000000000000000000000000000000000', { deleted: true });
+        push('refs/heads/propr/rescue/task-1', PUSHED_TIP);
+        await pause(1_300);
+        assert.equal(listings(), 0);
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});
+
+test('a read from before GitHub compared the pull request with the pushed base is read again, within a bound', async () => {
+    await readyProprPullRequest();
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20, 20, 20]);
+    enablePullRequestStatusSync(deps());
+    try {
+        // GitHub has not yet compared the pull request with the new tip: the first read still reports the old base, mergeable.
+        const start = facts();
+        push('refs/heads/main', PUSHED_TIP);
+        await until(() => facts() >= start + 1);
+        assert.match(statusLine(), /✅ Ready/, 'the stale read changes nothing');
+        github.pull.base = { ref: 'main', sha: PUSHED_TIP };
+        github.pull.mergeable = false;
+        await until(() => /conflicts with base/.test(statusLine()));
+        assert.match(statusLine(), /⚠️ Needs you · conflicts with base/);
+        // Settled: no further reads.
+        const settled = facts();
+        await pause(300);
+        assert.equal(facts(), settled, 'reads stop once GitHub reports the pushed base');
+
+        // A tip GitHub never reports comparing against stops after the bounded schedule.
+        const bounded = facts();
+        push('refs/heads/main', 'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3');
+        await until(() => facts() >= bounded + 5);
+        await pause(300);
+        assert.equal(facts() - bounded, 5, 'one read and four refreshes');
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+test('a failed listing of the pull requests into a pushed branch is retried', async () => {
+    await readyProprPullRequest();
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+    enablePullRequestStatusSync(deps());
+    try {
+        github.pull.base = { ref: 'main', sha: PUSHED_TIP };
+        github.pull.mergeable = false;
+        github.listFailures = 1;
+        push('refs/heads/main', PUSHED_TIP);
+        await until(() => /conflicts with base/.test(statusLine()));
+        assert.match(statusLine(), /⚠️ Needs you · conflicts with base/);
+        assert.equal(listings(), 2);
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+test('an idle ProPR pull request that existed before startup gets its block from the startup backfill', async () => {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    github.listed = [{ number: PR, head: github.pull.head, base: github.pull.base }, humanPull];
+    assert.equal(extractPullRequestStatusBlock(github.pull.body), null, 'deployed before the block existed');
+    const listRepositories = async () => [REPOSITORY, REPOSITORY.toUpperCase(), ' integry/propr ', 'not a repository'];
+    enablePullRequestStatusSync({ ...deps(), listRepositories }, { backfill: true });
+    try {
+        await until(() => /✅ Ready/.test(statusLine()));
+        assert.match(statusLine(), /✅ Ready · checks: 1 passed/);
+        assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+        assert.equal(listings(), 1, 'each monitored repository is listed once');
+        assert.equal(pullReads(43), 0, 'a pull request ProPR did not create is never read for a status');
+        // Enabling again in the same process does not repeat the backfill.
+        enablePullRequestStatusSync({ ...deps(), listRepositories }, { backfill: true });
+        await pause(1_300);
+        assert.equal(listings(), 1);
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});
+
+test('status maintenance without the backfill option lists no pull requests', async () => {
+    await addTask('issue', 'completed');
+    enablePullRequestStatusSync({ ...deps(), listRepositories: async () => [REPOSITORY] });
+    try {
+        await pause(1_300);
+        assert.equal(listings(), 0);
+        assert.equal(github.patches.length, 0);
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});
+
+test('a repository whose open pull requests cannot be listed at startup is listed again', async () => {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    github.listFailures = 1;
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+    enablePullRequestStatusSync({ ...deps(), listRepositories: async () => [REPOSITORY] }, { backfill: true });
+    try {
+        await until(() => /✅ Ready/.test(statusLine()));
+        assert.match(statusLine(), /✅ Ready/);
+        assert.equal(listings(), 2);
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+test('a backfilled update that fails is retried, since no transition may follow', async () => {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    let failures = 1;
+    const base = deps();
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+    enablePullRequestStatusSync({
+        ...base, listRepositories: async () => [REPOSITORY],
+        sources: { ...base.sources!, loadRatingGoal: async () => { if (failures-- > 0) throw new Error('config unavailable'); return 7; } },
+    }, { backfill: true });
+    try {
+        await until(() => /✅ Ready/.test(statusLine()));
+        assert.match(statusLine(), /✅ Ready/);
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+test('the backfill and the base fan-out read a bounded number of repositories and pages, and schedule only ProPR pull requests', async () => {
+    // 350 open pull requests: only the first 300 (three pages) are read; ProPR created 10, 150 and 320.
+    for (const prNumber of [10, 150, 320]) {
+        await database('tasks').insert({ task_id: `owned-${prNumber}`, repository: REPOSITORY, issue_number: prNumber + 1000, task_type: 'issue', created_at: '2026-11-13T08:00:00Z', initial_job_data: '{}', pr_number: prNumber });
+    }
+    github.listed = Array.from({ length: 350 }, (_, index) => ({ number: index + 1, head: { sha: `h${index}`, ref: `b${index}`, repo: { full_name: REPOSITORY } }, base: { ref: 'main', sha: 'base-1' } }));
+    const scheduled: Array<[string, number, Record<string, unknown>]> = [];
+    // The other repositories have no open pull requests.
+    const listing = { request: async (route: string, params: Record<string, unknown>) => (params.repo === 'propr' ? await github.request(route, params) : (github.calls.push({ route, params }), { data: [] })) };
+    const reconcileDeps = { github: listing, db: database, spacingMs: 100, schedule: (repository: string, prNumber: number, options: Record<string, unknown>) => { scheduled.push([repository, prNumber, options]); } };
+
+    const repositories = [REPOSITORY, ...Array.from({ length: MAX_STATUS_BACKFILL_REPOSITORIES + 5 }, (_, index) => `integry/other-${index}`)];
+    const result = await schedulePullRequestStatusBackfill({ ...reconcileDeps, listRepositories: async () => repositories });
+    assert.equal(result.repositories, MAX_STATUS_BACKFILL_REPOSITORIES);
+    assert.equal(new Set(github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.repo)).size, MAX_STATUS_BACKFILL_REPOSITORIES);
+    assert.deepEqual(github.calls.filter(call => call.params.repo === 'propr' && call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.page), [1, 2, 3]);
+    assert.deepEqual(scheduled, [[REPOSITORY, 10, { reconcile: true, delayMs: 0 }], [REPOSITORY, 150, { reconcile: true, delayMs: 100 }]]);
+
+    scheduled.length = 0;
+    assert.deepEqual(await schedulePullRequestStatusForBasePush(reconcileDeps, { repository: REPOSITORY, branch: 'main', sha: PUSHED_TIP }), [10, 150]);
+    assert.deepEqual(scheduled, [[REPOSITORY, 10, { baseSha: PUSHED_TIP, delayMs: 0 }], [REPOSITORY, 150, { baseSha: PUSHED_TIP, delayMs: 100 }]]);
 });

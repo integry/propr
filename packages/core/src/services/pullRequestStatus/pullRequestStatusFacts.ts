@@ -157,6 +157,17 @@ async function isProprPullRequest(
     return Boolean(implementation || planIssue || goal || epic);
 }
 
+/**
+ * Whether ProPR created a pull request GitHub listed (isProprPullRequest), so
+ * enumerations over a repository's open pull requests apply the same ownership
+ * rule as the status itself.
+ */
+export async function isProprCreatedPullRequest(
+    db: Knex, repository: string, pull: { number: number; head: PullRequestStatusPull['head'] },
+): Promise<boolean> {
+    return await isProprPullRequest(db, { repository, prNumber: pull.number, epicHeadRef: epicHeadRef(repository, pull.head) });
+}
+
 async function loadEpicProgress(db: Knex, repository: string, headRef: string | null): Promise<PullRequestStatusFacts['epic']> {
     const match = headRef?.match(EPIC_BRANCH_PATTERN);
     if (!match) return null;

@@ -21,7 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that status as one live line at the top of the body of every open pull
   request it created, in every repository; there is no setting for it. Only
   the text between its markers is ever rewritten, other ProPR body writers
-  keep it, and it is removed when the pull request is merged or closed. The
+  keep it, and it is removed when the pull request is merged or closed. A
+  push to the base branch refreshes the open ProPR pull requests into it, so
+  one that starts to conflict doesn't keep reading ready, and the worker
+  brings every open ProPR pull request up to date when it starts, including
+  ones opened before this release. The
   line is at most 512 characters, and new descriptions keep that much room
   free for it.
   `get_pull_request`, `list_pull_requests` and `get_work_overview` return the
