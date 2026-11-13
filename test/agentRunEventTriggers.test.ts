@@ -253,6 +253,88 @@ describe('automation event triggers', () => {
     assert.deepEqual(enqueued, [run.id]);
   });
 
+  test('recovery visits receipts past a full page of an offboarded owner\'s', async () => {
+    // A page smaller than the offboarded owner's backlog: the old single page held only theirs.
+    const batchSize = 2;
+    failEnqueue = true;
+    for (let index = 0; index < batchSize + 1; index += 1) {
+      await define({ ownerId: 'bob', name: `Bob ${index}` });
+    }
+    clock += 1_000;
+    await block(7);
+    assert.equal((await sweep({ batchSize })).failed, batchSize + 1);
+    // A newer receipt of a member whose enqueue also failed; the reset moves its cursor past the event.
+    const definition = await define();
+    clock += 1_000;
+    const eventId = await block(8);
+    assert.equal((await sweep({ batchSize, isMember: async owner => owner === 'alice' })).failed, 1);
+    const [run] = await runsOf(definition);
+    assert.equal(run.state, 'queued');
+    await updateAgentDefinition(definition.id, 'alice', { enabled: false }, { database, now });
+    await updateAgentDefinition(definition.id, 'alice', { enabled: true }, { database, now });
+    assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), eventId);
+
+    failEnqueue = false;
+    clock += AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS;
+    const recovered = await sweep({ batchSize, isMember: async owner => owner === 'alice' });
+    assert.equal(recovered.redispatched, 1);
+    assert.deepEqual(enqueued, [run.id]);
+    // The offboarded owner's receipts stay queued and undispatched.
+    assert.equal(await database('agent_runs').where({ owner_id: 'bob', state: 'queued' }).count<{ count: number }[]>({ count: '*' }).first()
+      .then(row => Number(row?.count)), batchSize + 1);
+  });
+
+  for (const [edit, change] of [
+    ['its subscription\'s reason filter is narrowed', { eventTriggers: [{ ...BLOCKED, reasonKinds: ['dispatch_failed'] }] }],
+    ['the event\'s repository is removed from it', { repositories: ['acme/api'] }],
+  ] as const) {
+    test(`an event is not run when ${edit} while its run is being admitted`, async () => {
+      const definition = await define({ repositories: ['acme/app', 'acme/api'] });
+      clock += 1_000;
+      const eventId = await block(3, { kind: 'agent_blocked' });
+      let calls = 0;
+      // The edit lands while the sweep awaits runtime validation and the cost gate.
+      const result = await sweep({ trigger: async input => {
+        calls += 1;
+        await updateAgentDefinition(definition.id, 'alice', change, { database, now });
+        return trigger(input);
+      } });
+      assert.equal(calls, 1);
+      assert.equal(result.created + result.skipped + result.existing, 0);
+      assert.equal(result.unmatched, 1);
+      assert.equal((await runsOf(definition)).length, 0);
+      assert.deepEqual(enqueued, []);
+      // The edit kept the subscription, so the cursor was not reset; the edited definition handled the event.
+      assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), eventId);
+    });
+  }
+
+  test('an edit during admission that keeps the event in scope runs it with the edited definition', async () => {
+    const definition = await define();
+    clock += 1_000;
+    const first = await block(3);
+    let calls = 0;
+    const result = await sweep({ trigger: async input => {
+      calls += 1;
+      if (calls === 1) await updateAgentDefinition(definition.id, 'alice', { prompt: 'Unblock the issue carefully' }, { database, now });
+      return trigger(input);
+    } });
+    assert.equal(calls, 2);
+    assert.equal(result.created, 1);
+    const [run] = await runsOf(definition);
+    assert.equal(run.definitionSnapshot?.revision, definition.revision + 1);
+    assert.equal(run.definitionSnapshot?.prompt, 'Unblock the issue carefully');
+    // A definition edited on every attempt is left for the next sweep, with the event still pending.
+    await block(4);
+    const busy = await sweep({ trigger: async input => {
+      await updateAgentDefinition(definition.id, 'alice', { prompt: `Edit ${clock += 1}` }, { database, now });
+      return trigger(input);
+    } });
+    assert.equal(busy.created, 0);
+    assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), first);
+    assert.equal((await sweep()).created, 1);
+  });
+
   test('events from before the subscription or while disabled are not run later', async () => {
     await block(1);
     const definition = await define();

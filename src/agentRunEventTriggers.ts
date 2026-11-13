@@ -30,8 +30,10 @@ import {
     type AgentRunGate,
     type PlanIssueBlockedEventRecord,
     type StoredAgentDefinition,
+    type StoredAgentRun,
     type TriggerAgentRunInput,
     type TriggerAgentRunResult,
+    type UndispatchedEventAgentRunCursor,
 } from '@propr/core';
 
 /**
@@ -183,7 +185,10 @@ async function fireEvent(
         idempotencyKey: `${EVENT_IDEMPOTENCY_PREFIX}${event.id}`,
         triggerEvent,
         triggerSubject: planIssueTriggerSubject(event),
-        admit: (trx: Knex) => holdAgentDefinitionEventCursor(trx, { definitionId: definition.id, event: subscription.event, cursor }, { now: context.clock }),
+        // Fenced on the revision matched above and snapshotted into the run: an edit since then
+        // (a narrowed filter or repository list, too) refuses the receipt.
+        admit: (trx: Knex) => holdAgentDefinitionEventCursor(trx,
+            { definitionId: definition.id, revision: definition.revision, event: subscription.event, cursor }, { now: context.clock }),
     };
     const storeDeps = { database: context.database };
 
@@ -214,6 +219,9 @@ async function fireEvent(
     }
 }
 
+/** How often one event is retried with the definition read again after an edit fenced its receipt; later edits wait for the next sweep. */
+const EDITED_DEFINITION_ATTEMPTS = 2;
+
 /** Handles the events after one subscription's cursor, moving the cursor past each one. */
 async function sweepSubscription(definitionId: string, subscription: AutomationEventTrigger, context: SweepContext, result: AgentEventTriggerSweepResult): Promise<void> {
     const storeDeps = { database: context.database, now: context.clock };
@@ -223,12 +231,18 @@ async function sweepSubscription(definitionId: string, subscription: AutomationE
     let cursor = stored;
     const events = await listPlanIssueBlockedEventsAfter(cursor, context.batchSize, storeDeps);
     for (const event of events) {
-        // Admitted against the stored definition: one disabled or unsubscribed meanwhile starts nothing.
-        const definition = await readDefinition(definitionId, context.database);
-        const current = definition?.eventTriggers.find(candidate => candidate.event === subscription.event);
-        if (!definition?.enabled || !current) return;
-        const outcome = await fireEvent(definition, current, { event, cursor }, context);
-        // Reset (re-enabled or resubscribed), disabled or unsubscribed since the batch was read.
+        let outcome: EventOutcome | typeof FENCED = FENCED;
+        for (let attempt = 0; attempt < EDITED_DEFINITION_ATTEMPTS && outcome === FENCED; attempt += 1) {
+            // Matched and admitted against the stored definition: one disabled or unsubscribed meanwhile starts nothing.
+            const definition = await readDefinition(definitionId, context.database);
+            const current = definition?.eventTriggers.find(candidate => candidate.event === subscription.event);
+            if (!definition?.enabled || !current) return;
+            outcome = await fireEvent(definition, current, { event, cursor }, context);
+            // Reset (re-enabled or resubscribed) or taken by a concurrent sweep: the event is not ours to handle.
+            if (outcome === FENCED && await getAgentDefinitionEventCursor(definitionId, subscription.event, storeDeps) !== cursor) return;
+            // Otherwise the definition was edited after it was read: match the event again with the edit applied.
+        }
+        // Still being edited: the cursor stays on the event, which the next sweep retries.
         if (outcome === FENCED) return;
         result[outcome] += 1;
         // Lost to a concurrent sweep, or reset because the definition was re-enabled: stop here.
@@ -252,18 +266,29 @@ async function sweepDefinition(definitionId: string, context: SweepContext, resu
  */
 async function redispatchUndispatchedRuns(context: SweepContext, before: number, result: AgentEventTriggerSweepResult): Promise<void> {
     const members = new Map<string, boolean>();
-    for (const run of await listUndispatchedEventAgentRuns(before - AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS, context.batchSize, { database: context.database })) {
-        try {
-            if (context.dispatched.has(run.id)) continue;
-            if (!members.has(run.ownerId)) members.set(run.ownerId, await context.isMember(run.ownerId));
-            if (!members.get(run.ownerId)) continue;
-            await context.dispatch(run);
-            result.redispatched += 1;
-            logger.info({ runId: run.id, definitionId: run.definitionId }, 'Enqueued an accepted event-triggered automation run again');
-        } catch (error) {
-            result.failed += 1;
-            logger.error({ runId: run.id, definitionId: run.definitionId, err: error }, 'Could not enqueue an accepted event-triggered automation run; retrying on the next sweep');
-        }
+    // Every page is visited: runs passed over (an offboarded owner's) stay queued and would
+    // otherwise fill each sweep's first page and hide newer receipts of other owners.
+    let after: UndispatchedEventAgentRunCursor | null = null;
+    for (;;) {
+        const page = await listUndispatchedEventAgentRuns(before - AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS, context.batchSize, { database: context.database, after });
+        for (const run of page) await redispatchRun(run, members, context, result);
+        if (page.length < context.batchSize) return;
+        const last = page[page.length - 1];
+        after = { updatedAt: last.updatedAt, id: last.id };
+    }
+}
+
+async function redispatchRun(run: StoredAgentRun, members: Map<string, boolean>, context: SweepContext, result: AgentEventTriggerSweepResult): Promise<void> {
+    try {
+        if (context.dispatched.has(run.id)) return;
+        if (!members.has(run.ownerId)) members.set(run.ownerId, await context.isMember(run.ownerId));
+        if (!members.get(run.ownerId)) return;
+        await context.dispatch(run);
+        result.redispatched += 1;
+        logger.info({ runId: run.id, definitionId: run.definitionId }, 'Enqueued an accepted event-triggered automation run again');
+    } catch (error) {
+        result.failed += 1;
+        logger.error({ runId: run.id, definitionId: run.definitionId, err: error }, 'Could not enqueue an accepted event-triggered automation run; retrying on the next sweep');
     }
 }
 

@@ -111,27 +111,35 @@ export async function advanceAgentDefinitionEventCursor(
 
 /**
  * The admission fence for one event run, called inside the transaction that records the
- * run's receipt. It holds the definition's cursor row and confirms that the cursor is still
- * the one the caller read the event under and that the definition is still enabled and
- * subscribed. A subscribe or re-enable resets the cursor in its own transaction, so a batch
- * read before that reset is refused here instead of starting an event from while the
- * definition was disabled. False means no receipt may be recorded.
+ * run's receipt. It holds the definition row and the definition's cursor row, and confirms
+ * that the definition is still at the revision the caller matched the event against and
+ * would run it with (so an edit that narrowed its repositories or the subscription's filters
+ * meanwhile refuses the receipt), that it is still enabled and subscribed, and that the cursor
+ * is still the one the caller read the event under. A subscribe or re-enable resets the
+ * cursor in its own transaction, so a batch read before that reset is refused here instead of
+ * starting an event from while the definition was disabled. False means no receipt may be
+ * recorded; the caller retries the event with the definition as stored now.
  */
 export async function holdAgentDefinitionEventCursor(
   trx: Knex,
-  { definitionId, event, cursor }: { definitionId: string; event: AutomationTriggerEventType; cursor: number },
+  { definitionId, revision, event, cursor }: { definitionId: string; revision: number; event: AutomationTriggerEventType; cursor: number },
   { now = Date.now }: { now?: () => number } = {},
 ): Promise<boolean> {
-  // A write, not a read: it locks the row until the receipt commits, so a reset waits for
-  // this admission or this admission sees the reset's cursor.
-  const held = await trx(CURSORS).where({ definition_id: definitionId, event, cursor }).update({ updated_at: now() });
-  if (Number(held) === 0) return false;
-  const row = await trx(DEFINITIONS).where({ id: definitionId })
-    .first<{ enabled: boolean | number; event_triggers: string | null } | undefined>('enabled', 'event_triggers');
-  if (!row?.enabled) return false;
+  // The definition is locked first, as an edit locks it before resetting cursors, so the two
+  // cannot deadlock. A shared lock: an edit waits for this receipt to commit (and then applies
+  // to later events only), while other receipts of the definition are not held up.
+  // better-sqlite3 has no row locks; its transactions are serialized by the database lock.
+  const definition = trx(DEFINITIONS).where({ id: definitionId });
+  const row = await (trx.client.config.client === 'better-sqlite3' ? definition : definition.forShare())
+    .first<{ enabled: boolean | number; event_triggers: string | null; revision: number | string } | undefined>('enabled', 'event_triggers', 'revision');
+  if (!row?.enabled || Number(row.revision) !== revision) return false;
   let triggers: unknown = [];
   try { triggers = JSON.parse(row.event_triggers ?? '[]'); } catch { return false; }
-  return normalizeAutomationEventTriggers(triggers).some(trigger => trigger.event === event);
+  if (!normalizeAutomationEventTriggers(triggers).some(trigger => trigger.event === event)) return false;
+  // A write, not a read: it locks the row until the receipt commits, so a concurrent sweep
+  // moving the cursor waits for this admission or this admission sees its cursor.
+  const held = await trx(CURSORS).where({ definition_id: definitionId, event, cursor }).update({ updated_at: now() });
+  return Number(held) > 0;
 }
 
 /**
@@ -177,21 +185,33 @@ export async function countAgentRunsForTriggerSubject(
   return Number(row?.count ?? 0);
 }
 
+/** Where a page of `listUndispatchedEventAgentRuns` ends; the next page starts after it. */
+export interface UndispatchedEventAgentRunCursor {
+  updatedAt: number;
+  id: string;
+}
+
 /**
  * Accepted `event` runs still `queued` that have not changed since `before`: the dispatch
  * obligation of a receipt whose enqueue failed. It is kept by the run itself, not by the
  * event cursor, so a subscription reset (re-enable, resubscribe) that moves the cursor past
  * the event does not drop it. Runs a deferred retry admitted (`deferred_until` set) are
- * dispatched by that retry's consumer. Oldest first, on the `(state, deferred_until)` index.
+ * dispatched by that retry's consumer. Oldest first by `(updated_at, id)`, on the
+ * `(state, deferred_until)` index; pass the last run of a page as `after` for the next page,
+ * so runs the caller passes over (an offboarded owner's) never hide the ones after them.
  */
 export async function listUndispatchedEventAgentRuns(
   before: number,
   limit: number,
-  { database = db }: { database?: Knex } = {},
+  { database = db, after = null }: { database?: Knex; after?: UndispatchedEventAgentRunCursor | null } = {},
 ): Promise<StoredAgentRun[]> {
-  const rows = await database(RUNS).where({ state: 'queued', trigger: 'event' }).whereNull('deferred_until')
-    .where('updated_at', '<=', before)
-    .orderBy([{ column: 'updated_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+  const query = database(RUNS).where({ state: 'queued', trigger: 'event' }).whereNull('deferred_until')
+    .where('updated_at', '<=', before);
+  if (after) {
+    query.where(next => next.where('updated_at', '>', after.updatedAt)
+      .orWhere(same => same.where('updated_at', after.updatedAt).where('id', '>', after.id)));
+  }
+  const rows = await query.orderBy([{ column: 'updated_at', order: 'asc' }, { column: 'id', order: 'asc' }])
     .limit(Math.max(1, Math.trunc(limit))).select<AgentRunRow[]>();
   return rows.map(rowToAgentRun);
 }
