@@ -283,6 +283,19 @@ test('a selection of a superseded profile revision never takes the current revis
   assert.deepEqual(await legacySnapshotExtensions(pick(2), database), { servers: ['deploy', 'docs'], skills: [] });
 });
 
+test('a retried migration keeps the credentials of a library head whose toggle carried them', async t => {
+  const { database, instanceId, store } = await fixture(t);
+  // While the migration is pending, an administrator saves the library and disables an item.
+  await store.saveLibrary('1', { version: 1, servers: [{ ...docs({ name: 'own' }), repositories: [], agents: [], autoApply: true }], skills: [] }, { own: 'OWN_SENTINEL_TOKEN' }, 0);
+  await store.setItemEnabled('1', { kind: 'server', name: 'own' }, false);
+  await profile(database, instanceId, { name: 'Docs', servers: [docs({ url: 'https://1.1.1.1/mcp' })], secrets: { docs: 'PROFILE_SENTINEL_TOKEN' } });
+  const report = await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  assert.equal(report.migrated, true, report.warnings.join('\n'));
+  const library = await store.readLibrary('1');
+  assert.deepEqual(library.servers.map(s => [s.name, s.enabled]), [['own', false], ['docs', true]]);
+  assert.deepEqual((await store.validationTargets('1')).secrets, { own: 'OWN_SENTINEL_TOKEN', docs: 'PROFILE_SENTINEL_TOKEN' });
+});
+
 test('profiles holding more distinct servers than the library are not migrated lossily and stay retryable', async t => {
   const { database, instanceId } = await fixture(t);
   const server = (profile: number, index: number) => docs({ name: `p${profile}-s${index}`, authentication: 'none', url: `https://8.8.${profile}.${index + 1}/mcp` });

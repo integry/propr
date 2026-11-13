@@ -7,7 +7,7 @@ import {
 } from '@propr/shared';
 import defaultLogger from '../utils/logger.js';
 import { sealExtensionSecrets, unsealExtensionSecrets } from './privateSecrets.js';
-import { libraryIdentity } from './extensionProfileStore.js';
+import { libraryIdentity, unsealLibrarySecrets } from './extensionProfileStore.js';
 
 /**
  * Startup migration of extension profiles into the extension library.
@@ -179,7 +179,7 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
       const pointer = await trx('extension_library').where({ instance_id: instanceId }).first('revision');
       const headRow = pointer ? await trx('extension_library_revisions').where({ instance_id: instanceId, revision: pointer.revision }).first() : undefined;
       const head = headRow ? JSON.parse(headRow.snapshot) as ExtensionLibraryRevision : undefined;
-      const headSecrets = headRow && headRow.secrets_encrypted !== '' ? unsealExtensionSecrets(headRow.secrets_encrypted, libraryIdentity(instanceId, head!.revision), environment) : {};
+      const headSecrets = headRow ? unsealLibrarySecrets(headRow.secrets_encrypted, instanceId, head!.revision, environment) : {};
       const taken = new Set((head?.servers ?? []).map(s => s.name));
       const candidates = new Map<string, Candidate>(); const byIdentity = new Map<string, string>();
       const skills = new Map<string, { enabled: boolean; repositories: string[] | null; agents: string[] | null }>();

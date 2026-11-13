@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { extensionLibraryInputSchema, type ExtensionLibraryInput, type ExtensionLibraryServerInput, type ExtensionLibrarySkillInput } from '@propr/shared';
-import { ExtensionLibraryStore, extensionTokenHash, libraryIdentity, type ExtensionGrantNetwork, type ExtensionLaunchContext, type PreparedExtensionLaunch } from '../src/extensions/extensionProfileStore.js';
+import { ExtensionLibraryStore, extensionTokenHash, libraryIdentity, unsealLibrarySecrets, type ExtensionGrantNetwork, type ExtensionLaunchContext, type PreparedExtensionLaunch } from '../src/extensions/extensionProfileStore.js';
 import { extensionGatewayCall, redactExtensionOutput } from '../src/extensions/mcpGateway.js';
 import { extensionEndpoint, resolveExtensionEndpoint, extensionPublicAddress } from '../src/extensions/endpointPolicy.js';
 import { validateSkillFiles, readSkillArchive } from '../src/extensions/skillBundles.js';
@@ -1061,6 +1061,48 @@ test('disabled servers can be saved without live DNS or removed catalog resource
   assert.deepEqual((await store.resolveLaunch(context)).set.servers, []);
   await assert.rejects(store.setItemEnabled('1', { kind: 'server', name: 'local' }, true));
   await assert.rejects(store.setItemEnabled('1', { kind: 'server', name: 'missing' }, false), /unavailable/);
+});
+
+test('disabling needs no credential decryption: under another encryption root the resolver and pending launches honor it and the sealed credentials survive', async t => {
+  const { database, store } = await fixture(t);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'recovery-catalog-')); extensionTestResources(t).defer(() => fs.rm(root, { recursive: true, force: true }));
+  const { operatorCatalogDigest } = await import('../src/extensions/operatorCatalog.js');
+  const entry = { id: 'docs', kind: 'stdio' as const, executable: '/usr/bin/env', args: ['node', '--version'], tools: ['lookup'], capability: 'read' as const, secretEnv: { API_KEY: 'OPERATOR_DOCS_KEY' } };
+  const filename = path.join(root, 'catalog.json'); await fs.writeFile(filename, JSON.stringify([entry]), { mode: 0o600 });
+  store.environment.PROPR_EXTENSION_CATALOG_FILE = filename; store.environment.OPERATOR_DOCS_KEY = 'OPERATOR_RECOVERY_KEY';
+  const local = { kind: 'catalog' as const, name: 'local', catalogId: entry.id, digest: operatorCatalogDigest(entry), enabled: true, tools: ['lookup'], capability: 'read' as const, repositories: [], agents: [], autoApply: false };
+  const saved = await save(store, input([server({ autoApply: false }), local]), { docs: secret });
+  await database('agent_definitions').insert({ id: 'automation-1', name: 'Nightly docs', extensions: JSON.stringify({ servers: ['local'], skills: [] }) });
+  const adds = (servers: string[]) => ({ ...context, additional: { servers, skills: [] } });
+  const pendingLocal = await grant(store, 'pending-local', undefined, false, adds(['local']));
+  const pendingDocs = await grant(store, 'pending-docs', undefined, false, adds(['docs']));
+  const sealed = (await database('extension_library_revisions').where({ revision: saved.revision }).first()).secrets_encrypted;
+  // The raw database is restored under another root; the operator catalog and its environment stay configured.
+  const restored = new ExtensionLibraryStore(database, { ...store.environment, SYSTEM_TASK_SECRET: 'a-different-private-custody-root' });
+  await assert.rejects(restored.validationTargets('1'), /credentials unavailable/);
+  assert.deepEqual((await restored.resolveLaunch(adds(['local']))).set.servers.map(s => s.name), ['local'], 'the stdio item still launches');
+  const off = await restored.setItemEnabled('1', { kind: 'server', name: 'local' }, false);
+  assert.equal(off.revision, saved.revision + 1);
+  assert.deepEqual(off.servers, saved.servers.map(s => (s.name === 'local' ? { ...s, enabled: false } : s)));
+  assert.deepEqual(off.secrets, saved.secrets);
+  const resolved = await restored.resolveLaunch(adds(['local']));
+  assert.deepEqual(resolved.set.servers, []); assert.deepEqual(resolved.set.skipped.map(s => [s.name, s.reason]), [['local', 'disabled']]);
+  // The pending launch of the disabled item is fenced; one using only an untouched item still activates, without decryption.
+  await assert.rejects(activate(restored, pendingLocal), /changed/);
+  await activate(restored, pendingDocs);
+  // The sealed credentials are carried unchanged, so the original root recovers them.
+  const carried = (await database('extension_library_revisions').where({ revision: off.revision }).first()).secrets_encrypted;
+  assert.ok(carried.endsWith(sealed));
+  assert.deepEqual(unsealLibrarySecrets(carried, saved.instanceId, off.revision, store.environment), { docs: secret });
+  for (const [instanceId, revision] of [[saved.instanceId, saved.revision], [randomUUID(), off.revision]] as const) assert.throws(() => unsealLibrarySecrets(carried, instanceId, revision, store.environment), /unavailable/);
+  assert.equal((await store.validationTargets('1')).secrets.docs, secret);
+  const added = await grant(store, 'carried-revision-docs', undefined, false, adds(['docs'])); await activate(store, added);
+  assert.equal((await store.grantSnapshot(added)).secrets.docs, secret);
+  assert.deepEqual((await store.setItemEnabled('1', { kind: 'server', name: 'local' }, true)).servers, saved.servers);
+  const resaved = await save(store, input([server({ autoApply: false }), local]));
+  assert.equal((await store.validationTargets('1')).secrets.docs, secret);
+  const row = await database('extension_library_revisions').where({ revision: resaved.revision }).first();
+  assert.deepEqual(unsealExtensionSecrets(row.secrets_encrypted, libraryIdentity(saved.instanceId, resaved.revision), store.environment), { docs: secret });
 });
 
 test('gateway records one final DNS decision per call while enforcing the second resolution', async t => {

@@ -30,7 +30,8 @@ Every save, single-item enable/disable and secret replacement creates a new libr
 revision with a timestamp and the administrator's actor ID. Saving requires the
 revision the edit is based on (`expectedRevision`); a concurrent change is refused
 and must be reloaded. A server's credential is stored once, sealed to the library
-revision. Removing or renaming an item that an automation adds explicitly is
+revision. Enabling or disabling an item carries the sealed credentials into the new
+revision unchanged, without decrypting them. Removing or renaming an item that an automation adds explicitly is
 refused with a message naming those automations; remove it from them first.
 
 ## Which runs use extensions
@@ -157,7 +158,7 @@ credential trust root (`PROPR_CREDENTIAL_ENCRYPTION_KEY`, then
 instance/library-revision authenticated binding. Configure the same root on API
 and workers. Never store the root in library input.
 
-Normal read/history/config projections contain only authentication field names and presence markers. Native database exports retain the public library revisions and bundle contents, erase encrypted extension credentials and sealed submission authority, and remove run grants. After a native export restore, Bearer servers show their secret as not configured and are skipped at launch until you replace the token. Operator catalog files and secret references/values are never stored in the database or included in exports. Raw operator backups require the matching private encryption root; a different root fails decryption closed. Revisions and the dedicated `extension_instance_identity` database row
+Normal read/history/config projections contain only authentication field names and presence markers. Native database exports retain the public library revisions and bundle contents, erase encrypted extension credentials and sealed submission authority, and remove run grants. After a native export restore, Bearer servers show their secret as not configured and are skipped at launch until you replace the token. Operator catalog files and secret references/values are never stored in the database or included in exports. Raw operator backups require the matching private encryption root; a different root fails decryption closed. Under a different root you can still enable and disable items, because that never decrypts credentials; restoring the matching root recovers them. Saving the library, replacing a secret, validation and Bearer server calls need the matching root. Revisions and the dedicated `extension_instance_identity` database row
 must be restored together; IDs from another installation cannot be substituted.
 The native database export removes ephemeral run grants, so an old execution
 token cannot regain access after restore. Normal execution revokes grants on

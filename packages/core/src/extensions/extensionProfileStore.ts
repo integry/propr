@@ -16,8 +16,26 @@ import { validateSkillFiles, type SkillFile } from './skillBundles.js';
 export interface ExtensionGrantNetwork { mode: 'open' | 'restricted'; allow: string[]; instanceAllow: string[] }
 export class ExtensionError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export const extensionTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
-/** Authenticated binding of sealed library credentials: a revision's secrets open only for that instance and revision. */
+/** Authenticated binding of sealed library credentials: they open only for that instance and the revision that sealed them. */
 export const libraryIdentity = (instanceId: string, revision: number) => `library/${instanceId}/${revision}`;
+/**
+ * A revision that changes no credential (enabling or disabling an item) carries
+ * its base revision's sealed bytes forward unchanged, as
+ * `<sealing revision>:<sealed>`, so it never needs to decrypt them. Carried
+ * credentials open only under the identity of the earlier revision that sealed them.
+ */
+const carriedSecretsPattern = /^([1-9][0-9]*):([^:]+)$/;
+export function unsealLibrarySecrets(encrypted: string, instanceId: string, revision: number, environment: NodeJS.ProcessEnv): Record<string, string> {
+  if (encrypted === '') return {};
+  const carried = carriedSecretsPattern.exec(encrypted);
+  const sealedAt = carried ? Number(carried[1]) : revision;
+  if (carried && !(sealedAt < revision)) throw new Error('Private extension credentials unavailable');
+  return unsealExtensionSecrets(carried ? carried[2] : encrypted, libraryIdentity(instanceId, sealedAt), environment);
+}
+/** A revision's sealed credentials as a later revision carries them, naming the revision that sealed them. */
+const carriedSecrets = (head: Head) => (head.secretsEncrypted === '' || carriedSecretsPattern.test(head.secretsEncrypted) ? head.secretsEncrypted : `${head.snapshot.revision}:${head.secretsEncrypted}`);
+/** Passed instead of credentials by a change that alters none: the base revision's sealed credentials carry over. */
+const UNCHANGED_CREDENTIALS = Symbol('unchanged library credentials');
 const legacyIdentity = (s: { instanceId: string; profileId: string; revision: number }) => `${s.instanceId}/${s.profileId}/${s.revision}`;
 const tokenPattern = /^[\x21-\x7e]{1,4096}$/;
 
@@ -54,6 +72,7 @@ const withoutBundle = (resolved: ResolvedExtensionSet['skills'][number]): Extens
   const skill: Partial<typeof resolved> = { ...resolved }; delete skill.bundle; return skill as ExtensionLibrarySkill;
 };
 const bearerServers = (servers: ExtensionLibraryServer[]) => servers.filter(s => s.kind === 'https' && s.authentication === 'bearer');
+const bearerEndpoints = (servers: ExtensionLibraryServer[]) => bearerServers(servers).map(s => [s.name, s.kind === 'https' ? s.url : null]);
 
 export class ExtensionLibraryStore {
   constructor(readonly database: Knex, readonly environment: NodeJS.ProcessEnv = process.env) {}
@@ -85,7 +104,7 @@ export class ExtensionLibraryStore {
     return { snapshot: publicExtensionProfile(snapshot), secretsEncrypted: row.secrets_encrypted as string };
   }
   private unseal(head: Head): Record<string, string> {
-    return head.secretsEncrypted === '' ? {} : unsealExtensionSecrets(head.secretsEncrypted, libraryIdentity(head.snapshot.instanceId, head.snapshot.revision), this.environment);
+    return unsealLibrarySecrets(head.secretsEncrypted, head.snapshot.instanceId, head.snapshot.revision, this.environment);
   }
 
   async readLibrary(actor: string): Promise<ExtensionLibraryRevision> {
@@ -164,18 +183,25 @@ export class ExtensionLibraryStore {
     return catalogSecrets;
   }
 
-  /** Persist the next revision on top of `head`; the head pointer write is the concurrency fence. */
+  /**
+   * Persist the next revision on top of `head`; the head pointer write is the
+   * concurrency fence. With `UNCHANGED_CREDENTIALS` the base revision's sealed
+   * credentials and their statuses carry over without decryption; they stay
+   * bound to the same Bearer servers and endpoints.
+   */
   // eslint-disable-next-line max-params -- the transaction, actor, base head, items, credentials and catalog status are explicit revision inputs
-  private async writeRevision(trx: Knex.Transaction, actor: string, head: Head, items: ExtensionLibraryItems, secrets: Record<string, string>, catalogSecrets: Map<string, { count: number; configured: boolean }>): Promise<ExtensionLibraryRevision> {
+  private async writeRevision(trx: Knex.Transaction, actor: string, head: Head, items: ExtensionLibraryItems, secrets: Record<string, string> | typeof UNCHANGED_CREDENTIALS, catalogSecrets: Map<string, { count: number; configured: boolean }>): Promise<ExtensionLibraryRevision> {
     const { instanceId } = head.snapshot; const previous = head.snapshot; const revision = previous.revision + 1; const now = Date.now();
     const bundleIds = items.skills.map(s => s.bundleId);
     const bundleRows = bundleIds.length ? await trx('extension_skill_bundles').where({ instance_id: instanceId }).whereIn('id', bundleIds) : [];
     if (bundleRows.length !== bundleIds.length) throw new ExtensionError(404, 'Skill bundle unavailable');
-    if (Object.values(secrets).some(token => token && JSON.stringify(items).includes(token))) throw new ExtensionError(400, 'Secrets cannot appear in public library fields');
+    const unchanged = secrets === UNCHANGED_CREDENTIALS;
+    if (unchanged && !sameJson(bearerEndpoints(items.servers), bearerEndpoints(previous.servers))) throw new Error('Carried extension credentials must keep their servers');
+    if (!unchanged && Object.values(secrets).some(token => token && JSON.stringify(items).includes(token))) throw new ExtensionError(400, 'Secrets cannot appear in public library fields');
     const statuses: Record<string, ExtensionSecretStatus> = {};
     for (const server of items.servers) {
       if (server.kind === 'https') {
-        if (server.authentication === 'bearer') statuses[server.name] = { fields: ['bearerToken'], configured: Boolean(secrets[server.name]) };
+        if (server.authentication === 'bearer') statuses[server.name] = unchanged ? previous.secrets[server.name] ?? { fields: ['bearerToken'], configured: false } : { fields: ['bearerToken'], configured: Boolean(secrets[server.name]) };
         continue;
       }
       const same = previous.servers.find(s => s.kind === 'catalog' && s.name === server.name && s.catalogId === server.catalogId && s.digest === server.digest);
@@ -186,10 +212,10 @@ export class ExtensionLibraryStore {
       version: EXTENSION_LIBRARY_VERSION, instanceId, revision, createdAt: previous.revision ? previous.createdAt : now, updatedAt: now, auditActor: actor,
       servers: items.servers, skills: items.skills, secrets: statuses, skillBundles: bundleIds.map(id => descriptors.get(id)!),
     };
-    const kept = Object.fromEntries(Object.entries(secrets).filter(([name, token]) => token && statuses[name]));
+    const sealed = unchanged ? carriedSecrets(head) : sealExtensionSecrets(Object.fromEntries(Object.entries(secrets).filter(([name, token]) => token && statuses[name])), libraryIdentity(instanceId, revision), this.environment);
     if (previous.revision === 0 && !await trx('extension_library').where({ instance_id: instanceId }).first()) await trx('extension_library').insert({ instance_id: instanceId, revision });
     else if (!await trx('extension_library').where({ instance_id: instanceId, revision: previous.revision }).update({ revision })) throw new ExtensionError(409, 'Library revision changed; refresh before saving');
-    await trx('extension_library_revisions').insert({ instance_id: instanceId, revision, snapshot: JSON.stringify(snapshot), secrets_encrypted: sealExtensionSecrets(kept, libraryIdentity(instanceId, revision), this.environment) });
+    await trx('extension_library_revisions').insert({ instance_id: instanceId, revision, snapshot: JSON.stringify(snapshot), secrets_encrypted: sealed });
     return snapshot;
   }
 
@@ -243,8 +269,10 @@ export class ExtensionLibraryStore {
   }
   /**
    * Change only `enabled` of one item. Configuration, limits and the stored
-   * credential are untouched. Disabling is never refused, even when an
-   * automation adds the item: that automation then runs without it.
+   * credential are untouched: the sealed credentials carry over without
+   * decryption, so an item can be disabled even when they cannot be decrypted,
+   * as after a raw restore under another encryption root. Disabling is never
+   * refused, even when an automation adds the item: that automation then runs without it.
    */
   async setItemEnabled(actor: string, ref: ExtensionLibraryItemRef, enabled: boolean): Promise<ExtensionLibraryRevision> {
     if (typeof enabled !== 'boolean' || !ref || !['server', 'skill'].includes(ref.kind)) throw new ExtensionError(400, 'Invalid extension item');
@@ -261,7 +289,7 @@ export class ExtensionLibraryStore {
       if (!current || !sameJson({ ...current, enabled: before.enabled }, before)) throw new ExtensionError(409, 'Library revision changed; refresh before saving');
       if (current.enabled === enabled) return head.snapshot;
       const toggle = <T extends ExtensionLibraryServer | ExtensionLibrarySkill>(item: T): T => (itemKey(item) === itemKey(current) ? { ...item, enabled } : item);
-      return this.writeRevision(trx, actor, head, { version: EXTENSION_LIBRARY_VERSION, servers: head.snapshot.servers.map(toggle), skills: head.snapshot.skills.map(toggle) }, this.unseal(head), catalogSecrets);
+      return this.writeRevision(trx, actor, head, { version: EXTENSION_LIBRARY_VERSION, servers: head.snapshot.servers.map(toggle), skills: head.snapshot.skills.map(toggle) }, UNCHANGED_CREDENTIALS, catalogSecrets);
     });
   }
   /** Enabled HTTPS servers and their credentials for connectivity validation; credentials stay in Core callers. */
@@ -344,8 +372,11 @@ export class ExtensionLibraryStore {
     }
     for (const skill of prepared.set.skills) if (!sameJson(head.snapshot.skillBundles.find(b => b.id === skill.bundleId), skill.bundle)) throw changed();
     const bearer = bearerServers(prepared.set.servers);
-    if (bearer.length) {
-      const before = this.unseal(await this.revisionRow(prepared.snapshot.instanceId, prepared.snapshot.revision, database)); const after = this.unseal(head);
+    const preparedRow = bearer.length ? await this.revisionRow(prepared.snapshot.instanceId, prepared.snapshot.revision, database) : undefined;
+    // The same sealed bytes of the same sealing revision hold the same
+    // credentials, as after a toggle; only re-sealed ones are decrypted to compare.
+    if (preparedRow && carriedSecrets(preparedRow) !== carriedSecrets(head)) {
+      const before = this.unseal(preparedRow); const after = this.unseal(head);
       if (bearer.some(s => before[s.name] !== after[s.name])) throw changed();
     }
     return head.snapshot.revision;
@@ -451,7 +482,7 @@ export class ExtensionLibraryStore {
       const selection = JSON.parse(grant.selection) as { servers: string[]; skills: string[] };
       // Only the servers resolved for this run are reachable through its grant.
       const servers = snapshot.servers.filter(s => selection.servers.includes(s.name));
-      return { ...base, snapshot: { instanceId, revision, servers, skillBundles: snapshot.skillBundles.filter(b => selection.skills.includes(b.id)) }, secrets: row.secrets_encrypted === '' ? {} : unsealExtensionSecrets(row.secrets_encrypted, libraryIdentity(instanceId, revision), this.environment) };
+      return { ...base, snapshot: { instanceId, revision, servers, skillBundles: snapshot.skillBundles.filter(b => selection.skills.includes(b.id)) }, secrets: unsealLibrarySecrets(row.secrets_encrypted, instanceId, revision, this.environment) };
     } catch (error) {
       // The reservation belongs to this call even if snapshot loading fails.
       // Keep the failed-call byte charge but release its connection slot.
