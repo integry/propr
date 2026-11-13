@@ -359,3 +359,93 @@ test('a retried parallel child whose start was lost is dispatched again after fi
   // Child 1 is still pending in the plan, but the execution dispatched it itself; only the retry is owed.
   assert.deepEqual(starts, [2]);
 });
+
+test('skip refuses a prerequisite that merged before its queue row settled, pending or blocked', async () => {
+  const queue = await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2, 3, 4], mode: 'graph',
+    dependsOn: new Map([[2, [1]], [3, []], [4, [3]]]), maxParallel: 1 }, deps);
+  const target = { draftId, executionId: queue.executionId };
+  await startEpicQueueHead(draftId, deps);
+  assert.deepEqual(starts, [1]);
+  // 3 is still pending in the queue (no slot) when its plan issue merges; the queue has not recorded it.
+  await setStatus(3, 'merged');
+  await refused(skipEpicQueueIssue({ ...target, issueNumber: 3, satisfiesDependents: false }, deps), 'ALREADY_DONE');
+  assert.equal((await issueState(3))?.state, 'pending');
+  // A blocked issue whose plan issue merged meanwhile is done too.
+  await markEpicQueueAwaitingHumanMerge({ draftId, issueNumber: 1, prNumber: 7, reason: 'checks pending' });
+  assert.equal((await issueState(1))?.state, 'blocked');
+  await setStatus(1, 'merged');
+  await refused(skipEpicQueueIssue({ ...target, issueNumber: 1 }, deps), 'ALREADY_DONE');
+  // The merge is still settled normally, and the dependents start.
+  await advanceEpicQueue({ draftId, issueNumber: 1, status: 'merged' as never }, deps);
+  await advanceEpicQueue({ draftId, issueNumber: 3, status: 'merged' as never }, deps);
+  assert.equal((await issueState(1))?.state, 'done');
+  assert.equal((await issueState(3))?.state, 'done');
+  assert.ok(starts.includes(2) || starts.includes(4), 'a dependent of a merged prerequisite starts');
+});
+
+test('skip refuses a prerequisite that merges between its checks and its guarded write', async () => {
+  const queue = await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2], mode: 'graph',
+    dependsOn: new Map([[2, [1]]]), maxParallel: 1 }, deps);
+  await startEpicQueueHead(draftId, deps);
+  await finish(1, 'closed');
+  await setStatus(1, 'closed');
+  // The merge lands after skip's checks, just before its guarded write (the connection is shared and synchronous).
+  const client = database.client as { acquireConnection(): Promise<{ prepare: (sql: string) => unknown }>; releaseConnection(c: unknown): Promise<void> };
+  const connection = await client.acquireConnection();
+  await client.releaseConnection(connection);
+  const prepare = connection.prepare;
+  let merged = false;
+  connection.prepare = function (this: unknown, sql: string) {
+    if (!merged && /^update `epic_execution_queue_issues` set `state`/.test(sql) && sql.includes('skip_satisfies_dependents')) {
+      merged = true;
+      (prepare.call(this, "update plan_issues set status = 'merged' where draft_id = 'draft' and issue_number = 1") as { run(): void }).run();
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    await refused(skipEpicQueueIssue({ draftId, executionId: queue.executionId, issueNumber: 1 }, deps), 'ALREADY_DONE');
+  } finally { connection.prepare = prepare; }
+  assert.ok(merged);
+  assert.equal((await issueState(1))?.state, 'blocked', 'the merged prerequisite is not turned into an unmet skip');
+});
+
+test('a retry reserves a closed issue before reopening it: a competing skip or retry is refused meanwhile', async () => {
+  const queue = await chain([1, 2]);
+  const target = { draftId, executionId: queue.executionId, issueNumber: 1 };
+  await startEpicQueueHead(draftId, deps);
+  await finish(1, 'closed');
+  const competing: string[] = [];
+  const reopenIssue = async (repository: string, issueNumber: number) => {
+    for (const action of [skipEpicQueueIssue(target, deps), retryEpicQueueIssue(target, deps)]) {
+      await action.then(() => competing.push('ok'), (error: InstanceType<typeof EpicQueueActionError>) => competing.push(error.code));
+    }
+    await deps.reopenIssue(repository, issueNumber);
+  };
+  const retried = await retryEpicQueueIssue(target, { ...deps, reopenIssue });
+  assert.equal(retried.outcome, 'retried');
+  assert.deepEqual(competing, ['IN_FLIGHT', 'IN_FLIGHT']);
+  assert.deepEqual(reopened, [1], 'reopened once, by the retry that took effect');
+  assert.equal((await issueState(1))?.state, 'dispatched');
+  assert.equal((await database('epic_execution_queue_issues').where({ issue_number: 1 }).first()).retry_reserved_at, null);
+  assert.deepEqual((await events()).slice(-1), [[1, 'resolved', 'closed_unmerged', 'retried']]);
+});
+
+test('a failed reopen releases the retry reservation; one left by a stopped process lapses', async () => {
+  const queue = await chain([1, 2]);
+  const target = { draftId, executionId: queue.executionId, issueNumber: 1 };
+  await startEpicQueueHead(draftId, deps);
+  await finish(1, 'closed');
+  const failing = async () => { throw new Error('GitHub unavailable'); };
+  await assert.rejects(retryEpicQueueIssue(target, { ...deps, reopenIssue: failing }), /GitHub unavailable/);
+  assert.equal((await issueState(1))?.state, 'blocked');
+  assert.equal((await database('epic_execution_queue_issues').where({ issue_number: 1 }).first()).retry_reserved_at, null);
+  // A retry that stopped after reserving: competing actions wait, then the reservation lapses.
+  await database('epic_execution_queue_issues').where({ issue_number: 1 }).update({ retry_reserved_at: clock });
+  await refused(skipEpicQueueIssue(target, deps), 'IN_FLIGHT');
+  await refused(retryEpicQueueIssue(target, deps), 'IN_FLIGHT');
+  assert.deepEqual(reopened, []);
+  clock += 5 * 60 * 1000;
+  assert.equal((await skipEpicQueueIssue(target, deps)).outcome, 'skipped');
+  assert.deepEqual(reopened, [], 'skipping never reopens');
+  assert.equal((await issueState(2))?.state, 'dispatched');
+});

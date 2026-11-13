@@ -54,6 +54,28 @@ export interface EpicQueueActionResult {
 }
 
 const RUNNING_PLAN_STATUSES_EXCLUDED = ['pending', 'merged', 'closed'];
+/**
+ * How long a retry's reservation holds the issue while the retry reopens it on GitHub. Competing skips
+ * and retries are refused while it holds; one left by a process that stopped lapses after this.
+ */
+export const RETRY_RESERVATION_MS = 5 * 60 * 1000;
+
+/** Rows no retry currently holds: never reserved, released, or reserved by a retry that stopped. */
+function unreserved(query: Knex.QueryBuilder, timestamp: number): Knex.QueryBuilder {
+  return query.where(free => free.whereNull('retry_reserved_at').orWhere('retry_reserved_at', '<=', timestamp - RETRY_RESERVATION_MS));
+}
+
+async function refuseReserved(database: Knex, queue: EpicExecutionQueue, item: EpicQueueIssue, timestamp: number): Promise<void> {
+  if (!await unreserved(ownedIssue(database, queue, item), timestamp).first('issue_number')
+    && await ownedIssue(database, queue, item).first('issue_number')) {
+    throw new EpicQueueActionError('IN_FLIGHT', `Issue #${item.issueNumber} is being retried; read the execution queue again.`);
+  }
+}
+
+/** The issue already merged: its queue row may not have settled yet, but it is done. */
+function mergedPlanIssue(database: Knex, draftId: string, issueNumber: number): Knex.QueryBuilder {
+  return database('plan_issues').select('id').where({ draft_id: draftId, issue_number: issueNumber, status: 'merged' });
+}
 
 async function locate(database: Knex, input: EpicQueueActionInput): Promise<{ queue: EpicExecutionQueue; item: EpicQueueIssue }> {
   const queue = await getEpicExecutionQueue(input.draftId, { database });
@@ -109,17 +131,24 @@ export async function skipEpicQueueIssue(input: EpicQueueActionInput & { satisfi
     return result(database, input, 'skipped');
   }
   if (item.state !== 'pending' && item.state !== 'blocked') refuseSettledOrInFlight(item);
+  // A merged prerequisite is done even before its queue row settles; skipping it would strand its dependents.
+  if (await mergedPlanIssue(database, queue.draftId, item.issueNumber).first()) refuseSettledOrInFlight({ ...item, state: 'done' });
   if (item.state === 'pending' && await runsWithoutClaim(database, queue.draftId, item.issueNumber)) refuseSettledOrInFlight({ ...item, state: 'dispatched' });
+  await refuseReserved(database, queue, item, timestamp);
   const changed = await writeQueueIssue(database, { owner: queue, item, resolution: 'skipped', timestamp }, trx => {
-    const query = ownedIssue(trx, queue, item).where({ state: item.state });
+    const query = unreserved(ownedIssue(trx, queue, item).where({ state: item.state }), timestamp)
+      .whereNotExists(mergedPlanIssue(trx, queue.draftId, item.issueNumber));
     if (item.state === 'blocked') query.where({ blocked_kind: item.blockedKind });
     // A pending issue a person started meanwhile is in flight.
     else query.whereNull('dispatched_at').whereNotExists(trx('plan_issues').select('id')
       .where({ draft_id: queue.draftId, issue_number: item.issueNumber }).whereNotIn('status', RUNNING_PLAN_STATUSES_EXCLUDED));
     return query.update({ state: 'skipped', skip_satisfies_dependents: satisfies, blocked_kind: null, blocked_reason: null,
-      blocked_at: null, updated_at: timestamp });
+      blocked_at: null, retry_reserved_at: null, updated_at: timestamp });
   });
-  if (!changed) throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being skipped; read the execution queue again.`);
+  if (!changed) {
+    if (await mergedPlanIssue(database, queue.draftId, item.issueNumber).first()) refuseSettledOrInFlight({ ...item, state: 'done' });
+    throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being skipped; read the execution queue again.`);
+  }
   await drive(() => startEpicQueueHead(input.draftId, deps), input);
   return result(database, input, 'skipped');
 }
@@ -128,6 +157,55 @@ export async function skipEpicQueueIssue(input: EpicQueueActionInput & { satisfi
 const RECLAIMED_KINDS: EpicQueueBlockedKind[] = ['dispatch_failed', 'agent_blocked', 'closed_unmerged', 'missing_from_plan'];
 /** Blockers whose plan issue is left in progress (or closed) by the run; a retry puts it back to pending. */
 const PLAN_RESET_KINDS: EpicQueueBlockedKind[] = ['agent_blocked', 'closed_unmerged'];
+
+/** One retry of a blocked occurrence the caller read. */
+interface RetryAttempt { database: Knex; queue: EpicExecutionQueue; item: EpicQueueIssue; kind: EpicQueueBlockedKind; timestamp: number }
+
+/** The blocked occurrence the caller read, as it read it. */
+function retryable(database: Knex, { queue, item, kind }: RetryAttempt): Knex.QueryBuilder {
+  return ownedIssue(database, queue, item, { ready: true }).where({ state: 'blocked', blocked_kind: kind, blocked_reason: item.blockedReason });
+}
+
+/**
+ * Reserves the issue for this retry before its GitHub side effect, so a competing skip or retry that
+ * commits meanwhile cannot have the issue reopened after it. Returns the reservation, or refuses.
+ */
+async function reserveRetry(attempt: RetryAttempt): Promise<number> {
+  const { database, queue, item, timestamp } = attempt;
+  await refuseReserved(database, queue, item, timestamp);
+  const reserved = await unreserved(retryable(database, attempt), timestamp).update({ retry_reserved_at: timestamp });
+  if (!reserved) {
+    await refuseReserved(database, queue, item, timestamp);
+    throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
+  }
+  return timestamp;
+}
+
+/** Drops a reservation this retry still holds (whatever happened to the row meanwhile). */
+async function releaseRetry({ database, queue, item }: RetryAttempt, reservation: number): Promise<void> {
+  try { await ownedIssue(database, queue, item).where({ retry_reserved_at: reservation }).update({ retry_reserved_at: null }); }
+  catch (error) { logger.warn?.({ draftId: queue.draftId, issueNumber: item.issueNumber, error: (error as Error).message }, 'Epic queue retry reservation was not released; it lapses'); }
+}
+
+/**
+ * Clears the blocker for a retry. Only a closure has a side effect outside the queue: it is reserved
+ * first, reopened on GitHub, and the reservation is released if the retry then does not take effect.
+ */
+async function clearBlockerForRetry(attempt: RetryAttempt, reopenIssue: (repository: string, issueNumber: number) => Promise<void>): Promise<boolean> {
+  const { database, queue, item, kind, timestamp } = attempt;
+  const reservation = kind === 'closed_unmerged' ? await reserveRetry(attempt) : null;
+  let changed = false;
+  try {
+    if (reservation !== null) {
+      const plan = await database('plan_issues').where({ draft_id: queue.draftId, issue_number: item.issueNumber }).first<{ status: string } | undefined>('status');
+      if (plan?.status === 'closed') await reopenIssue(queue.repository, item.issueNumber);
+    } else await refuseReserved(database, queue, item, timestamp);
+    changed = await clearForRetry(attempt, reservation);
+  } finally {
+    if (reservation !== null && !changed) await releaseRetry(attempt, reservation);
+  }
+  return changed;
+}
 
 async function reopenGithubIssue(repository: string, issueNumber: number): Promise<void> {
   const [owner, repo] = repository.split('/');
@@ -140,7 +218,9 @@ async function reopenGithubIssue(repository: string, issueNumber: number): Promi
  * (a paused plan holds it until resumed; a graph starts it once it is ready and a slot is free).
  * - dispatch_failed, missing_from_plan: the claim is dropped and the issue is dispatched (or re-checked) now.
  * - agent_blocked: the plan issue the run left in progress is put back to pending and dispatched.
- * - closed_unmerged: the GitHub issue is reopened, then handled as above.
+ * - closed_unmerged: the issue is reserved for this retry, the GitHub issue is reopened, then handled as above.
+ *   A competing skip or retry is refused while the reservation holds; it is released when the retry does not
+ *   take effect (the reopen failed or the issue changed) and lapses after RETRY_RESERVATION_MS if the process stops.
  * - awaiting_human_merge, label_handoff: the claim is kept; the queue re-evaluates the merge or the label release.
  * - setup_not_ready is refused: setup recovery owns it.
  * The queue's own dispatch never consults MCP implementation receipts, so an issue started through
@@ -160,16 +240,27 @@ export async function retryEpicQueueIssue(input: EpicQueueActionInput, deps: Epi
   if (!kind || kind === 'setup_not_ready' || !queue.ready) {
     throw new EpicQueueActionError('NOT_RETRYABLE', `Issue #${item.issueNumber} is waiting for the execution's setup; recovery completes or cancels it.`);
   }
-  const plan = await database('plan_issues').where({ draft_id: queue.draftId, issue_number: item.issueNumber }).first<{ status: string } | undefined>('status');
-  if (kind === 'closed_unmerged' && plan?.status === 'closed') await (deps.reopenIssue ?? reopenGithubIssue)(queue.repository, item.issueNumber);
-  const timestamp = (deps.now ?? Date.now)();
+  const changed = await clearBlockerForRetry({ database, queue, item, kind, timestamp: (deps.now ?? Date.now)() },
+    deps.reopenIssue ?? reopenGithubIssue);
+  if (!changed) throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
+  // Every mode dispatches the retried issue from its own pass, which resume and the recovery sweep repeat:
+  // a paused plan, or a process that stops here, leaves the dispatch owed rather than lost.
+  await drive(() => startEpicQueueHead(input.draftId, deps), input);
+  return result(database, input, 'retried');
+}
+
+/** Clears the blocker for a retry, still held by this retry's reservation (or by none, when it reserved nothing). */
+async function clearForRetry(attempt: RetryAttempt, reservation: number | null): Promise<boolean> {
+  const { database, queue, item, kind, timestamp } = attempt;
   const reclaim = RECLAIMED_KINDS.includes(kind);
-  const changed = await writeQueueIssue(database, { owner: queue, item, resolution: 'retried', timestamp }, async trx => {
-    const cleared = await ownedIssue(trx, queue, item, { ready: true })
-      .where({ state: 'blocked', blocked_kind: kind, blocked_reason: item.blockedReason })
+  return writeQueueIssue(database, { owner: queue, item, resolution: 'retried', timestamp }, async trx => {
+    const query = retryable(trx, attempt);
+    if (reservation !== null) query.where({ retry_reserved_at: reservation });
+    else unreserved(query, timestamp);
+    const cleared = await query
       .update(reclaim
-        ? { state: 'pending', dispatched_at: null, blocked_kind: null, blocked_reason: null, blocked_at: null, updated_at: timestamp }
-        : { ...clearedBlock(trx), updated_at: timestamp });
+        ? { state: 'pending', dispatched_at: null, blocked_kind: null, blocked_reason: null, blocked_at: null, retry_reserved_at: null, updated_at: timestamp }
+        : { ...clearedBlock(trx), retry_reserved_at: null, updated_at: timestamp });
     if (cleared && PLAN_RESET_KINDS.includes(kind)) {
       // A merged issue is never reopened; only the run's own leftover status is reset.
       const reset = trx('plan_issues').where({ draft_id: queue.draftId, issue_number: item.issueNumber }).whereNot('status', 'merged');
@@ -178,9 +269,4 @@ export async function retryEpicQueueIssue(input: EpicQueueActionInput, deps: Epi
     }
     return cleared;
   });
-  if (!changed) throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
-  // Every mode dispatches the retried issue from its own pass, which resume and the recovery sweep repeat:
-  // a paused plan, or a process that stops here, leaves the dispatch owed rather than lost.
-  await drive(() => startEpicQueueHead(input.draftId, deps), input);
-  return result(database, input, 'retried');
 }

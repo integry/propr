@@ -7,7 +7,9 @@
 // the recovery sweep delivers any row a crash left behind.
 //
 // Each issue row also records whether a skip treats the issue as satisfying the
-// prerequisites of the issues that depend on it in a graph execution.
+// prerequisites of the issues that depend on it in a graph execution, and when a
+// retry reserved the issue before reopening it on GitHub: competing skips and
+// retries wait for that reservation, which lapses if the retrying process stops.
 const EVENTS = 'epic_queue_blocked_events';
 const ISSUES = 'epic_execution_queue_issues';
 
@@ -36,9 +38,15 @@ export async function up(knex) {
   if ((await knex.schema.hasTable(ISSUES)) && !(await knex.schema.hasColumn(ISSUES, 'skip_satisfies_dependents'))) {
     await knex.schema.alterTable(ISSUES, table => table.boolean('skip_satisfies_dependents').notNullable().defaultTo(false));
   }
+  if ((await knex.schema.hasTable(ISSUES)) && !(await knex.schema.hasColumn(ISSUES, 'retry_reserved_at'))) {
+    await knex.schema.alterTable(ISSUES, table => table.bigInteger('retry_reserved_at').nullable());
+  }
 }
 
 export async function down(knex) {
+  if ((await knex.schema.hasTable(ISSUES)) && (await knex.schema.hasColumn(ISSUES, 'retry_reserved_at'))) {
+    await knex.schema.alterTable(ISSUES, table => table.dropColumn('retry_reserved_at'));
+  }
   if ((await knex.schema.hasTable(ISSUES)) && (await knex.schema.hasColumn(ISSUES, 'skip_satisfies_dependents'))) {
     await knex.schema.alterTable(ISSUES, table => table.dropColumn('skip_satisfies_dependents'));
   }
