@@ -1,6 +1,8 @@
+import { stripStatusSlot } from '@propr/shared';
 import { getAuthenticatedOctokit, logger, ensureBranchAndPush, handleError } from '@propr/core';
 import { describeIssuePullRequestForRepository, generateClaudeLogsComment } from './prFormatters.js';
 import { waitForBranchPropagation, compareBranches, createPRWithRetry, type PRInfo } from './prHelpers.js';
+import { initialPullRequestTitle } from './pullRequestBodyWriter.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 
@@ -120,7 +122,7 @@ export async function createPullRequestRobust(params: CreatePullRequestRobustPar
         const prData = response.data;
         logger.info({ owner, repoName, issueNumber, prNumber: prData.number, prUrl: prData.html_url, branchName, baseBranch }, 'Pull request created successfully');
 
-        return { success: true, pr: { number: prData.number, url: prData.html_url, title: prData.title, state: prData.state } };
+        return { success: true, pr: { number: prData.number, url: prData.html_url, title: stripStatusSlot(prData.title), state: prData.state } };
 
     } catch (error) {
         logger.error({ owner, repoName, branchName, baseBranch, issueNumber, error: (error as Error).message }, 'Failed to create pull request');
@@ -161,7 +163,7 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
         const response = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
             owner,
             repo: repoName,
-            title: prTitle,
+            title: await initialPullRequestTitle(`${owner}/${repoName}`, prTitle),
             head: branchName,
             base: baseBranch,
             body: prBody,
@@ -182,7 +184,7 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
         return {
             number: prData.number,
             url: prData.html_url,
-            title: prData.title
+            title: stripStatusSlot(prData.title)
         };
 
     } catch (error) {

@@ -1,3 +1,4 @@
+import { stripStatusSlot } from '@propr/shared';
 import { Octokit } from '@octokit/core';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from './logger.js';
@@ -66,7 +67,7 @@ export async function validatePRCreation(options: ValidatePRCreationOptions): Pr
                         pr: {
                             number: pr.number,
                             url: pr.html_url,
-                            title: pr.title,
+                            title: stripStatusSlot(pr.title),
                             state: pr.state
                         }
                     };
@@ -111,7 +112,7 @@ export async function validatePRCreation(options: ValidatePRCreationOptions): Pr
                     pr: {
                         number: pr.number,
                         url: pr.html_url,
-                        title: pr.title,
+                        title: stripStatusSlot(pr.title),
                         state: pr.state
                     }
                 };

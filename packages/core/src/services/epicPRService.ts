@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
+import { initialPullRequestTitle } from './pullRequestStatus/pullRequestStatusTitle.js';
 
 type OctokitLike = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 
@@ -21,6 +22,8 @@ export async function createEpicPRWithDraftFallback(
   octokit: OctokitLike,
   opts: CreatePROptions
 ): Promise<{ data: { number: number; html_url: string } }> {
+  // Created with the 🔨 title slot when prTitleStatus is on, so creation costs no rename.
+  opts = { ...opts, title: await initialPullRequestTitle(`${opts.owner}/${opts.repo}`, opts.title) };
   try {
     return await octokit.request('POST /repos/{owner}/{repo}/pulls', {
       ...opts,

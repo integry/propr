@@ -5,7 +5,7 @@ import { getConfigStrict } from './configStore.js';
  * Whether the pull request title shows the PR state as a leading emoji. It
  * controls the title only: the status block in the body is always written.
  * Repository-wide and on by default: it is off only when an entry of the
- * repository sets it to false. Nothing reads it yet (#3530 adds the title slot).
+ * repository sets it to false. Read by the status sync (pullRequestStatusTitle).
  */
 export function resolveRepositoryPrTitleStatus(repos: readonly RepoToMonitor[], repository: string): boolean {
     const normalizedRepository = repository.trim().toLowerCase();

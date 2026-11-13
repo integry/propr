@@ -1,8 +1,9 @@
 import type { Redis } from 'ioredis';
-import { PR_BODY_MAX_LENGTH } from '@propr/shared';
+import { hasStatusSlot, PR_BODY_MAX_LENGTH, readStatusSlot } from '@propr/shared';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
 import { loadMonitoredRepos } from '../../config/configManager.js';
 import { loadUltrafixRatingGoal } from '../../config/configManagerUltrafix.js';
+import { loadRepositoryPrTitleStatus } from '../../config/repositoryPrTitleStatusSetting.js';
 import { getNonBlockingChecksForRepository } from '../../daemon/configLoader.js';
 import { db } from '../../db/connection.js';
 import { getIssueQueue } from '../../queue/taskQueue.js';
@@ -11,6 +12,7 @@ import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/che
 import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
+import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
 import {
     setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusRedisProvider, setPullRequestStatusSyncRunner,
 } from './pullRequestStatusSignal.js';
@@ -41,6 +43,7 @@ import {
 } from './pullRequestStatusBlock.js';
 import {
     countQueuedPullRequestJobs,
+    isProprCreatedPullRequest,
     loadPullRequestStatusFacts,
     type PullRequestStatusGitHub,
     type PullRequestStatusPull,
@@ -59,6 +62,8 @@ export interface PullRequestStatusSyncDeps {
     findPullRequestsForCommit: (repository: string, sha: string) => Promise<number[]>;
     /** Repositories the startup backfill reads: the ones ProPR monitors. */
     listRepositories: () => Promise<string[]>;
+    /** The prTitleStatus setting of a repository; rejects when it cannot be read, and the title is then left unchanged. */
+    loadTitleStatusSetting: (repository: string) => Promise<boolean>;
 }
 
 export type PullRequestStatusSyncResult = 'updated' | 'removed' | 'unchanged' | 'skipped';
@@ -131,6 +136,7 @@ function resolveDeps(overrides: Partial<PullRequestStatusSyncDeps> = {}): Resolv
         now: merged.now ?? (() => new Date()),
         findPullRequestsForCommit: merged.findPullRequestsForCommit ?? findOpenPullRequestsForCommit,
         listRepositories: merged.listRepositories ?? loadMonitoredRepos,
+        loadTitleStatusSetting: merged.loadTitleStatusSetting ?? loadRepositoryPrTitleStatus,
     };
 }
 
@@ -146,16 +152,24 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
     return (await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber })).data as PullRequestStatusPull;
 }
 
-/** The status to write, and whether a GitHub check read rejected while its facts were read (PullRequestStatusChecks.readFailed). */
-interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean }
+/**
+ * The status to write, whether a GitHub check read rejected while its facts
+ * were read (PullRequestStatusChecks.readFailed), and whether ProPR created the
+ * pull request (only its title is ever changed).
+ */
+interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean }
 
 async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
 ): Promise<DesiredStatus> {
     const { repository, prNumber, pull } = target;
-    if (pull.state !== 'open' || pull.merged) return { status: null, checksReadFailed: false };
+    if (pull.state !== 'open' || pull.merged) {
+        // Ownership decides only whether a slot left in the title is removed; a title without one is never read for it.
+        const isPropr = hasStatusSlot(pull.title) && await isProprCreatedPullRequest(deps.sources.db, repository, { number: prNumber, head: pull.head });
+        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr };
+    }
     const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
-    return { status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true };
+    return { status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest };
 }
 
 /**
@@ -186,6 +200,8 @@ interface SyncOutcome {
     baseSha: string | null;
     /** The written status says the checks could not be read because a GitHub read rejected, not because of the page budget. */
     checksReadFailed: boolean;
+    /** The title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle): update again after this many milliseconds. */
+    titleSettleInMs: number | null;
 }
 
 /** Times the facts are read again because the pull request changed (sameStatusSubject) while they were read. */
@@ -248,20 +264,36 @@ async function syncPullRequestStatusOnce(
     const resolved = resolveDeps(overrides);
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
-        const { status, pull, checksReadFailed } = await statusForLatestPull(deps, repository, prNumber);
-        const read = { awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed };
+        const desired = await statusForLatestPull(deps, repository, prNumber);
+        const { status, pull, checksReadFailed } = desired;
+        const title = await decidePullRequestTitleForSync({
+            repository, prNumber, pull, status, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
+        });
+        const read = {
+            awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
+            titleSettleInMs: title.settleInMs,
+        };
         const current = pull.body ?? '';
         const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
         const written = extractPullRequestStatusBlock(next) !== null;
-        if (next === current || sameRenderedStatus(next, current)) return { result: written ? 'unchanged' : 'skipped', ...read };
+        const bodyChanged = !(next === current || sameRenderedStatus(next, current));
+        if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };
         // The facts read can outlast the lease; a writer that took the lock
         // since may have changed the body, so this read must not be written.
         await lease.assertHeld();
         // Recorded before the PATCH, so the edited webhook it causes is recognised as ProPR's own however fast it arrives.
-        await recordPullRequestStatusWrite(deps.redis, repository, prNumber, extractPullRequestStatusBlock(next));
+        if (bodyChanged) await recordPullRequestStatusWrite(deps.redis, repository, prNumber, extractPullRequestStatusBlock(next));
+        // The title slot stays pending until GitHub accepts the rename: a rejected one is no slot a person removed.
+        const titleSlot = title.title !== null ? readStatusSlot(title.title) : null;
+        if (title.title !== null) await recordPendingPullRequestTitleSlot(deps.redis, repository, prNumber, titleSlot);
         const [owner, repo] = repository.split('/');
-        await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
-        logger.debug({ repository, prNumber, removed: !written }, 'Updated the pull request status block');
+        // Body and title change in one write, so one transition costs one edited event.
+        await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner, repo, pull_number: prNumber, ...(bodyChanged ? { body: next } : {}), ...(title.title !== null ? { title: title.title } : {}),
+        });
+        if (title.title !== null) await recordPullRequestTitleSlot(deps.redis, repository, prNumber, titleSlot);
+        logger.debug({ repository, prNumber, removed: bodyChanged && !written, title: title.title !== null }, 'Updated the pull request status');
+        if (!bodyChanged) return { result: written ? 'unchanged' : 'skipped', ...read };
         return { result: written ? 'updated' : 'removed', ...read };
     });
 }
@@ -269,8 +301,9 @@ async function syncPullRequestStatusOnce(
 /**
  * Brings the status block of one pull request up to date: writes it on every
  * open ProPR PR, in every repository, and removes it once the PR is closed or
- * merged. There is no setting for it. Sends no PATCH when the rendered status
- * is unchanged.
+ * merged. There is no setting for it. The title slot (prTitleStatus) changes
+ * in the same write. Sends no PATCH when the rendered status and the title
+ * are unchanged.
  */
 export async function syncPullRequestStatus(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps> = {},
@@ -326,8 +359,10 @@ function runScheduled(target: ScheduleTarget): void {
     entry.running = true;
     const awaitedBaseSha = entry.awaitedBaseSha;
     let unsettled = false;
+    let titleSettleInMs: number | null = null;
     void syncPullRequestStatusOnce(repository, prNumber, {})
         .then(outcome => {
+            titleSettleInMs = outcome.titleSettleInMs;
             // A read from before GitHub compared the pull request with the pushed
             // base may still report the old mergeability, so it settles nothing.
             unsettled = outcome.awaitingMergeability || (awaitedBaseSha !== null && outcome.open && outcome.baseSha !== awaitedBaseSha);
@@ -348,10 +383,12 @@ function runScheduled(target: ScheduleTarget): void {
             logger.warn({ repository, prNumber, error: (error as Error).message, retry: entry.rerun || unsettled ? 'scheduled' : 'next_transition' },
                 'Failed to update the pull request status block');
         })
-        .finally(() => finishScheduled(entry, target, { unsettled, awaitedBaseSha }));
+        .finally(() => finishScheduled(entry, target, { unsettled, awaitedBaseSha, titleSettleInMs }));
 }
 
-function finishScheduled(entry: ScheduledSync, target: ScheduleTarget, run: { unsettled: boolean; awaitedBaseSha: string | null }): void {
+function finishScheduled(
+    entry: ScheduledSync, target: ScheduleTarget, run: { unsettled: boolean; awaitedBaseSha: string | null; titleSettleInMs: number | null },
+): void {
     entry.running = false;
     if (!run.unsettled) {
         entry.refreshes = 0;
@@ -360,7 +397,7 @@ function finishScheduled(entry: ScheduledSync, target: ScheduleTarget, run: { un
         if (entry.awaitedBaseSha === run.awaitedBaseSha) entry.awaitedBaseSha = null;
     }
     const refreshDelay = run.unsettled ? settleRefreshDelaysMs[entry.refreshes] : undefined;
-    if (!runtimeEnabled || (!entry.rerun && refreshDelay === undefined)) {
+    if (!runtimeEnabled || (!entry.rerun && refreshDelay === undefined && run.titleSettleInMs === null)) {
         scheduled.delete(target.key);
         return;
     }
@@ -369,8 +406,13 @@ function finishScheduled(entry: ScheduledSync, target: ScheduleTarget, run: { un
         arm(entry, target, DEFAULT_DEBOUNCE_MS);
         return;
     }
-    entry.refreshes++;
-    arm(entry, target, refreshDelay as number);
+    if (refreshDelay !== undefined) {
+        entry.refreshes++;
+        arm(entry, target, refreshDelay);
+        return;
+    }
+    // A ⚠️ or ✅ waits to settle; a transition before then reads again sooner.
+    arm(entry, target, run.titleSettleInMs as number);
 }
 
 /**

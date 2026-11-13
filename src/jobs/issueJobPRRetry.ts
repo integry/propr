@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import type { IssueJobData, RepoValidationResult, WorktreeInfo } from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
+import { initialPullRequestTitle } from '../github/pullRequestBodyWriter.js';
 
 export interface RetryPRCreationOptions {
     worktreeInfo: WorktreeInfo;
@@ -33,7 +34,7 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
         const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
-            title: `Fix issue #${issueRef.number}`,
+            title: await initialPullRequestTitle(`${issueRef.repoOwner}/${issueRef.repoName}`, `Fix issue #${issueRef.number}`),
             head: worktreeInfo.branchName,
             base: targetBaseBranch,
             body: `Resolves #${issueRef.number}\n\n_PR created via retry mechanism_`

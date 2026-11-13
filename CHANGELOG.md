@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PR state in the pull request title**: with the repository setting
+  `prTitleStatus` on (the default), each open pull request ProPR created
+  starts its title with one status slot: `🔨` while it is being worked on,
+  `⚠️` when it needs you and `✅` when it is ready, the last two followed by
+  the latest review score as a circled digit (`✅⑧`). New pull requests are
+  created with `🔨`, so creation costs no rename; after that the title changes
+  only when the state or the shown score changes, ⚠️ and ✅ wait about 30
+  seconds so a run that is about to start causes no extra rename, and no
+  update is sent when the title is already right. Only the slot is ever
+  replaced, a slot you remove stays off until the state changes, and the slot
+  is removed when the pull request is merged or closed. ProPR's merges (MCP
+  `merge_pull_request`, its own merge after checks, and native auto-merge)
+  pass a commit title without the slot, task titles and notifications use the
+  title without it, and `[Epic]` detection and the web UI accept titles with
+  or without it. Turning the setting off removes the slot on the next change.
 - **Pull request status**: ProPR now computes one status for each pull
   request it created: `working`, `needs_attention`, `ready` or `none`, with a
   detail of what is happening (activity, Ultrafix cycle, latest review score,

@@ -1,3 +1,4 @@
+import { stripStatusSlot } from '@propr/shared';
 import { getAuthenticatedOctokit, handleError } from '@propr/core';
 import { logger } from '@propr/core';
 import { describeIssuePullRequestForRepository } from './github/prFormatters.js';
@@ -137,7 +138,7 @@ export async function completePostProcessing(options: CompletePostProcessingOpti
             if (existingPRs.data.length > 0) {
                 const existingPR = existingPRs.data[0];
                 logger.info({ owner, repoName, branchName, prNumber: existingPR.number, prUrl: existingPR.html_url }, 'Found existing PR created by Claude, using it instead of creating new one');
-                prInfo = { number: existingPR.number, url: existingPR.html_url, title: existingPR.title, state: existingPR.state };
+                prInfo = { number: existingPR.number, url: existingPR.html_url, title: stripStatusSlot(existingPR.title), state: existingPR.state };
             } else {
                 prInfo = await createNewPRForIssue(prContext, claudeResult);
             }

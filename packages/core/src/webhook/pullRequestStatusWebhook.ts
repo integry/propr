@@ -1,6 +1,8 @@
+import { stripStatusSlot } from '@propr/shared';
 import { isRescueRef } from '../git/rescueRefPrefix.js';
 import { isStatusBlockOnlyEdit } from '../services/pullRequestStatus/pullRequestStatusBlock.js';
 import { isRecordedPullRequestStatusWrite } from '../services/pullRequestStatus/pullRequestStatusProvenance.js';
+import { isRecordedPullRequestTitleSlot } from '../services/pullRequestStatus/pullRequestStatusTitle.js';
 import {
     pullRequestStatusRedis, requestPullRequestStatusSync, requestPullRequestStatusSyncForBase, requestPullRequestStatusSyncForCommit,
 } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
@@ -9,7 +11,8 @@ import { isBranchUpdatePush, PUSH_BRANCH_REF_PREFIX } from './webhookEventGates.
 type Payload = Record<string, unknown> & {
     action?: string;
     repository?: { full_name?: string };
-    pull_request?: { number?: number; body?: string | null };
+    pull_request?: { number?: number; body?: string | null; title?: string | null };
+    changes?: Record<string, unknown> & { body?: { from?: string | null }; title?: { from?: string | null } };
     check_run?: { pull_requests?: Array<{ number?: number }> };
     check_suite?: { pull_requests?: Array<{ number?: number }> };
     /** `status` events name the commit; its pull requests are resolved later. */
@@ -24,8 +27,24 @@ type Payload = Record<string, unknown> & {
 const STATUS_PULL_REQUEST_ACTIONS = new Set(['opened', 'reopened', 'synchronize', 'closed', 'edited', 'ready_for_review', 'converted_to_draft']);
 
 /**
+ * Which status surfaces an `edited` event changed, when it changed nothing
+ * else: the body only inside the status block, the title only in its leading
+ * status slot. Null for any other event.
+ */
+function statusOnlyChanges(event: Payload): { body: boolean; title: boolean } | null {
+    if (event.action !== 'edited' || !event.changes) return null;
+    const keys = Object.keys(event.changes);
+    if (keys.length === 0 || keys.some(key => key !== 'body' && key !== 'title')) return null;
+    const body = keys.includes('body');
+    const title = keys.includes('title');
+    if (body && !isStatusBlockOnlyEdit({ action: event.action, changes: { body: event.changes.body }, pull_request: event.pull_request })) return null;
+    if (title && stripStatusSlot(event.changes.title?.from ?? '') !== stripStatusSlot(event.pull_request?.title ?? '')) return null;
+    return { body, title };
+}
+
+/**
  * What a `pull_request` `edited` event that changed nothing outside the status
- * block is. `own`: ProPR's status update coming back, which must trigger no
+ * block and the title's status slot is. `own`: ProPR's status update coming back, which must trigger no
  * further work. `foreign`: someone else deleted or rewrote the block, so the
  * status must be reconciled; it is still no work for the other handlers.
  * Null for every other event.
@@ -33,17 +52,23 @@ const STATUS_PULL_REQUEST_ACTIONS = new Set(['opened', 'reopened', 'synchronize'
 export type PullRequestStatusEdit = 'own' | 'foreign' | null;
 
 /**
- * Only a block ProPR recorded writing (pullRequestStatusProvenance) proves the
- * edit is ProPR's own; the body lock cannot keep a person from editing the
- * block in GitHub, and the event names no author ProPR could trust.
+ * Only a block and a title slot ProPR recorded writing (pullRequestStatusProvenance,
+ * pullRequestStatusTitle) prove the edit is ProPR's own; the body lock cannot
+ * keep a person from editing the block or the title in GitHub, and the event
+ * names no author ProPR could trust. A person removing the title slot is
+ * `foreign`: the status is read again, which leaves the slot out until it changes.
  */
 export async function classifyPullRequestStatusEdit(payload: unknown, eventType: string): Promise<PullRequestStatusEdit> {
     const event = payload as Payload;
-    if (eventType !== 'pull_request' || !isStatusBlockOnlyEdit(event)) return null;
+    const changed = eventType === 'pull_request' ? statusOnlyChanges(event) : null;
+    if (!changed) return null;
     const repository = event.repository?.full_name;
     const prNumber = event.pull_request?.number;
     if (typeof repository !== 'string' || typeof prNumber !== 'number') return 'foreign';
-    return await isRecordedPullRequestStatusWrite(pullRequestStatusRedis(), repository, prNumber, event.pull_request?.body) ? 'own' : 'foreign';
+    const redis = pullRequestStatusRedis();
+    if (changed.body && !await isRecordedPullRequestStatusWrite(redis, repository, prNumber, event.pull_request?.body)) return 'foreign';
+    if (changed.title && !await isRecordedPullRequestTitleSlot(redis, repository, prNumber, event.pull_request?.title)) return 'foreign';
+    return 'own';
 }
 
 /**

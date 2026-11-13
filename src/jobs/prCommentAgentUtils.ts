@@ -12,7 +12,7 @@ import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
 import { isGenericPrTitleText, selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import type { GitHubToken } from './githubTypes.js';
-import type { ReasoningLevel } from '@propr/shared';
+import { stripStatusSlot, type ReasoningLevel } from '@propr/shared';
 
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
 const DEFAULT_TITLE_GENERATION_TIMEOUT_MS = 30_000;
@@ -160,7 +160,8 @@ function runTitleAnalysis(options: {
 }
 
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
-    const { combinedCommentBody, titleContext, fallbackSubtitle, worktreeInfo, githubToken, pullRequestNumber, prTitle, workflowLabel, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
+    const { combinedCommentBody, titleContext, fallbackSubtitle, worktreeInfo, githubToken, pullRequestNumber, workflowLabel, repoOwner, repoName, correlationId, taskId, correlatedLogger } = options;
+    const prTitle = stripStatusSlot(options.prTitle);
     const contextToSummarize = (titleContext !== undefined ? titleContext : combinedCommentBody || '').trim();
     const deterministicFallback = fallbackSubtitle || `Follow-up: PR #${pullRequestNumber}`;
     if (!contextToSummarize) {

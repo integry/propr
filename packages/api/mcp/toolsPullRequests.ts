@@ -9,6 +9,7 @@ import {
   emptyReviewFeedbackSelection,
   formatReviewFeedbackSelection,
   reviewFeedbackSelectionSize,
+  mergeCommitTitleFields,
 } from '@propr/shared';
 import { hasValidTriggerLabel } from '@propr/core';
 import { McpError } from './config.js';
@@ -450,7 +451,11 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       // No admin bypass or auto-merge mutation is requested.
       let response;
       try {
-        response = await principal.github.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', { owner, repo, pull_number: args.pullRequest, sha: args.expectedHead, merge_method: args.method });
+        // An explicit commit title keeps the title's status slot (prTitleStatus) out of the history.
+        const commitTitle = mergeCommitTitleFields({ number: pr.number, title: pr.title, headLabel: pr.head.label }, args.method);
+        response = await principal.github.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', {
+          owner, repo, pull_number: args.pullRequest, sha: args.expectedHead, merge_method: args.method, ...commitTitle,
+        });
       } catch (error) {
         const message = definitiveMergeRejection(error);
         if (!message) throw error;

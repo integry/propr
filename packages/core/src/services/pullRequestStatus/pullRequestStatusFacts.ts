@@ -27,6 +27,7 @@ export interface PullRequestStatusPull {
     merged?: boolean | null;
     mergeable?: boolean | null;
     body?: string | null;
+    title?: string | null;
     /** `repo` is null when the fork the pull request came from was deleted. */
     head: { sha: string; ref: string; repo?: { full_name?: string | null } | null };
     /** The branch the pull request merges into; `sha` is its tip as GitHub last compared it. */
