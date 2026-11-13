@@ -45,11 +45,12 @@ function PackageCheck({ server }: { server: ExtensionLibraryPackageServer }) {
 }
 
 /** Secret variables: names are saved with the server, values are write-only. */
-function SecretVariables({ server, status, values, onValues, onChange }: {
-  server: ExtensionLibraryPackageServer; status?: ExtensionSecretStatus; values: Record<string, string>; onValues: (values: Record<string, string>) => void; onChange: Patch;
+function SecretVariables({ server, status, dropped, values, onValues, onChange }: {
+  server: ExtensionLibraryPackageServer; status?: ExtensionSecretStatus; dropped: boolean; values: Record<string, string>; onValues: (values: Record<string, string>) => void; onChange: Patch;
 }) {
   const [adding, setAdding] = useState('');
-  const configured = new Set(status && 'configuredEnv' in status ? status.configuredEnv ?? [] : []);
+  const saved = new Set(status && 'configuredEnv' in status ? status.configuredEnv ?? [] : []);
+  const configured = dropped ? new Set<string>() : saved;
   const add = () => {
     const name = adding.trim();
     if (!name || server.secretEnv.includes(name)) return;
@@ -65,6 +66,9 @@ function SecretVariables({ server, status, values, onValues, onChange }: {
             <input type="password" autoComplete="new-password" className={inputClass} value={values[name] ?? ''}
               placeholder={configured.has(name) ? 'Leave blank to keep the configured value' : 'Enter the value'}
               onChange={event => onValues({ ...values, [name]: event.target.value })} />
+            {dropped && saved.has(name) && !values[name] && (
+              <span className="mt-1 block text-xs text-amber-800">Changing the server name or package clears the stored value. Enter it again.</span>
+            )}
           </label>
           <button type="button" className={buttonClass} aria-label={`Remove secret variable ${name}`} onClick={() => {
             const rest = { ...values }; delete rest[name]; onValues(rest);
@@ -89,9 +93,11 @@ function SecretVariables({ server, status, values, onValues, onChange }: {
  * package server, the "Check" registry lookup, and the secret variables with
  * the container trust-boundary warning and its acknowledgement.
  */
-export function PackageServerFields({ server, status, acknowledgement, secretValues, onSecretValues, acknowledged, onAcknowledged, onChange }: {
+export function PackageServerFields({ server, status, secretsDropped = false, acknowledgement, secretValues, onSecretValues, acknowledged, onAcknowledged, onChange }: {
   server: ExtensionLibraryPackageServer;
   status?: ExtensionSecretStatus;
+  /** The name or package changed from the saved server, so its stored secret values will not carry over. */
+  secretsDropped?: boolean;
   /** The saved acknowledgement of this server, if any. */
   acknowledgement?: ExtensionSecretAcknowledgement;
   secretValues: Record<string, string>;
@@ -149,7 +155,7 @@ export function PackageServerFields({ server, status, acknowledgement, secretVal
           <span className="mt-1 block text-xs text-slate-500">One NAME=value per line. Plain values, saved with the server and shown here.</span>
         </label>
       </div>
-      <SecretVariables server={server} status={status} values={secretValues} onValues={onSecretValues} onChange={onChange} />
+      <SecretVariables server={server} status={status} dropped={secretsDropped} values={secretValues} onValues={onSecretValues} onChange={onChange} />
       {server.secretEnv.length > 0 && (
         <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
           <p id={warningId}>

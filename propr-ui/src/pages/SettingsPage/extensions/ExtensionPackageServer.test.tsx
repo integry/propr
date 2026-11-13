@@ -184,6 +184,33 @@ describe('local package servers', () => {
     expect(saveExtensionLibrary).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['package', '^Package$', '@example/other-mcp'],
+    ['server name', '^Server name', 'browser2'],
+  ])('changing the %s shows the stored secret value as not configured and asks for it again', async (_label, field, value) => {
+    const { form } = await openSaved();
+    fireEvent.change(within(form).getByLabelText(new RegExp(field)), { target: { value } });
+    const secret = within(form).getByLabelText(/^BROWSER_TOKEN/);
+    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('not configured; write-only');
+    expect(secret).toHaveAttribute('placeholder', 'Enter the value');
+    expect(within(form).getByText('Changing the server name or package clears the stored value. Enter it again.')).toBeInTheDocument();
+    fireEvent.change(secret, { target: { value: 'new-token' } });
+    expect(within(form).queryByText(/clears the stored value/)).not.toBeInTheDocument();
+    fireEvent.click(acknowledgement(form));
+    fireEvent.click(within(form).getByRole('button', { name: 'Save server' }));
+    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledTimes(1));
+    const name = field === '^Server name' ? value : 'browser';
+    expect(vi.mocked(saveExtensionLibrary).mock.calls[0][2]).toEqual({ [`${name}/BROWSER_TOKEN`]: 'new-token' });
+  });
+
+  it('a version change keeps the stored secret value configured', async () => {
+    const { form } = await openSaved();
+    fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '1.5.0' } });
+    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('(configured; write-only)');
+    expect(within(form).getByLabelText(/^BROWSER_TOKEN/)).toHaveAttribute('placeholder', 'Leave blank to keep the configured value');
+    expect(within(form).queryByText(/clears the stored value/)).not.toBeInTheDocument();
+  });
+
   it('an edit that keeps the package, version and secret variables keeps the saved acknowledgement', async () => {
     const { form } = await openSaved();
     fireEvent.change(within(form).getByLabelText(/^Arguments/), { target: { value: '--headless\n--read-only' } });

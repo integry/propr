@@ -2,7 +2,7 @@ import { useId, useState, type FormEvent } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryServer, ExtensionSecretAcknowledgement, ExtensionSecretStatus } from '@propr/shared';
 import { ExtensionItemLimits } from './ExtensionItemLimits';
 import { PackageServerFields } from './ExtensionPackageFields';
-import { PACKAGE_TYPE, acknowledgedNames, acknowledgementCovers, acknowledgementScope, packageProblem, serverTypeValue, writeOnlyValues } from './packageServerUi';
+import { PACKAGE_TYPE, acknowledgedNames, acknowledgementCovers, acknowledgementScope, packageProblem, packageSecretsDropped, serverTypeValue, writeOnlyValues } from './packageServerUi';
 import { CatalogServerDetails, ServerAccessFields, ServerEndpointField, ServerToolsField } from './ExtensionServerFields';
 import { buttonClass, inputClass, ownEntry, primaryButtonClass, type ExtensionChoices } from './extensionUi';
 import { newHttpsServer, newPackageServer } from './libraryEdits';
@@ -116,7 +116,7 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
           <CatalogServerDetails server={draft} catalog={catalog} secrets={secrets} />
         </div>
         {draft.kind === 'package' && (
-          <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} acknowledgement={draft.name === initial?.name ? savedAcknowledgement : undefined}
+          <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} secretsDropped={packageSecretsDropped(initial, draft)} acknowledgement={draft.name === initial?.name ? savedAcknowledgement : undefined}
             secretValues={secretValues} onSecretValues={setSecretValues} acknowledged={acknowledged} onAcknowledged={setAcknowledged}
             onChange={patch => change(patch as Partial<ExtensionLibraryServer>)} />
         )}

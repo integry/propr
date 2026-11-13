@@ -17,6 +17,13 @@ export const acknowledgementCovers = (acknowledgement: ExtensionSecretAcknowledg
 export const acknowledgementScope = (server: ExtensionLibraryServer) => (server.kind === 'package'
   ? JSON.stringify([server.name, server.ecosystem, server.package, server.version, [...server.secretEnv].sort()]) : '');
 
+/**
+ * The server name, registry or package changed, so the saved server's secret values will not carry over (the stored
+ * credential is bound to them; a version change keeps it). Mirrors the core credential binding of package servers.
+ */
+export const packageSecretsDropped = (saved: ExtensionLibraryServer | undefined, draft: ExtensionLibraryServer) => saved?.kind === 'package' && draft.kind === 'package'
+  && (draft.name !== saved.name || draft.ecosystem !== saved.ecosystem || draft.package !== saved.package);
+
 /** The value of the form's server type select. */
 export const serverTypeValue = (draft: ExtensionLibraryServer) => (draft.kind === 'catalog' ? draft.catalogId : draft.kind === 'package' ? PACKAGE_TYPE : '');
 /** The servers a save acknowledges: this package server when it has secret variables and the box is ticked. */
