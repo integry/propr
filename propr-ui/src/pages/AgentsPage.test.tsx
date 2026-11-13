@@ -18,9 +18,9 @@ const editorCallbacks = new Map<string, EditorCallbacks>();
 
 // The editor has its own suite; here it only has to say which agent it shows and where its controls are.
 vi.mock('../components/Agents/AgentEditor', () => ({
-  AgentEditor: ({ definitionId, headerControls, ...callbacks }: { definitionId: string | null; headerControls?: React.ReactNode } & EditorCallbacks) => {
+  AgentEditor: ({ definitionId, headerControls, templateId, ...callbacks }: { definitionId: string | null; headerControls?: React.ReactNode; templateId?: string | null } & EditorCallbacks) => {
     editorCallbacks.set(definitionId ?? 'new', callbacks);
-    return <div data-testid="agent-editor">editor for {definitionId ?? 'new'}{headerControls}</div>;
+    return <div data-testid="agent-editor">editor for {definitionId ?? 'new'}{templateId ? ` from ${templateId}` : ''}{headerControls}</div>;
   },
 }));
 
@@ -32,7 +32,10 @@ const agent = (id: string, name: string, patch: Partial<AutomationDefinitionReco
   ...patch,
 });
 
-const LocationProbe = () => <output data-testid="location">{useLocation().pathname}</output>;
+const LocationProbe = () => {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+};
 
 const renderAt = (url: string) => render(
   <MemoryRouter initialEntries={[url]}>
@@ -147,6 +150,18 @@ describe('AgentsPage', () => {
     fireEvent.click(await screen.findByRole('link', { name: 'New automation' }));
     expect(screen.getByTestId('location')).toHaveTextContent('/automations/new');
     expect(screen.getByTestId('agent-editor')).toHaveTextContent('editor for new');
+  });
+
+  it('offers the shipped templates in the empty state and opens the editor prefilled from one', async () => {
+    setViewport(true);
+    vi.mocked(listAutomationDefinitions).mockResolvedValue({ definitions: [], total: 0, limit: 200, offset: 0 });
+    renderAt('/automations');
+    const templates = await screen.findByTestId('agent-template-links');
+    const triage = within(templates).getByRole('link', { name: /Daily issue triage/ });
+    expect(triage).toHaveAttribute('href', '/automations/new?template=daily-issue-triage');
+    fireEvent.click(triage);
+    expect(screen.getByTestId('location')).toHaveTextContent('/automations/new?template=daily-issue-triage');
+    expect(screen.getByTestId('agent-editor')).toHaveTextContent('editor for new from daily-issue-triage');
   });
 
   it('reads every page so agents past the first page can be found by search', async () => {
