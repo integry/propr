@@ -165,6 +165,56 @@ test('counts under contention: holders, waits split by global limit and agent ce
     assert.equal(report.global!.waiting.total, 0);
 });
 
+test('a waiter whose waiting entry lapsed during a blocked recovery is reported again with its agent, task, reason and start', integration(), async () => {
+    const name = instance('rejoin');
+    const config: AdmissionConfig = { instance: name, limit: 3, aliasLimits: { local: 1 } };
+    const [holders, , waitingKey] = agentAdmissionKeys(name);
+    const details = agentAdmissionDetailsKey(name);
+    const local = await prepareAdmittedAgent(['run', 'agent'], { client: client(), docker: lifecycle(), config, agentAlias: 'local', taskId: 'task-local-1' });
+    // The waiter's recovery blocks in the Docker removal of a dead holder's container until released.
+    const deadId = 'e'.repeat(64);
+    let entered!: () => void, unblock!: () => void;
+    const removing = new Promise<void>(resolve => { entered = resolve; });
+    const removed = new Promise<void>(resolve => { unblock = resolve; });
+    const docker: AdmissionDocker = { ...lifecycle(), remove: async id => { if (id === deadId) { entered(); await removed; } } };
+    const second = waiter({ client: client(), docker, config, agentAlias: 'local', taskId: 'task-local-2' });
+    const waitingTask = async () => agentOf(await snapshot(config), 'local').tasks.find(task => task.taskId === 'task-local-2');
+    try {
+        await until(() => second.reasons.includes('alias_limit'), 'the alias-ceiling wait');
+        const original = await waitingTask();
+        assert.equal(original?.waitReason, 'alias_limit');
+        assert.ok(original?.since);
+
+        // Another agent's holder dies: the waiter's next recovery awaits removal of its container.
+        await client().hset(holders, 'dead-token', JSON.stringify({ state: 'running', deadline: 1, alias: 'cloud', id: deadId }));
+        await removing;
+        // Removal outlasts the waiting entry's 30 s deadline (lapsed here directly), and a report drops the detail.
+        const [token] = await client().zrange(waitingKey, 0, -1);
+        await client().zadd(waitingKey, 1, token);
+        const lapsed = await snapshot(config);
+        assert.equal(await client().hexists(details, token), 0, 'the report removed the lapsed waiter\'s detail');
+        assert.equal(agentOf(lapsed, 'local').tasks.some(task => task.taskId === 'task-local-2'), false);
+
+        // Removal completes; the live `local` holder still fills the ceiling, so the same reason is refused again.
+        unblock();
+        await until(async () => !await client().hexists(holders, 'dead-token'), 'the dead holder released');
+        await until(async () => (await waitingTask())?.waitReason === 'alias_limit', 'the waiter reported again', 5_000);
+        for (let i = 0; i < 3; i++) {
+            const report = await snapshot(config);
+            assert.deepEqual(report.global!.waiting, { total: 1, globalLimit: 0, agentCeiling: 1, recovering: 0, starting: 0 }, 'not unattributed starting work');
+            assert.deepEqual(agentOf(report, 'local').tasks.find(task => task.taskId === 'task-local-2'), original, 'same agent, task, reason and original start');
+            await delay(30);
+        }
+        assert.deepEqual(second.reasons, ['alias_limit'], 'the refusal reason never changed');
+    } finally {
+        unblock();
+        second.cancel();
+        await Promise.allSettled([second.admission]);
+        await local!.finish();
+    }
+    await until(async () => (await client().hlen(details)) === 0, 'no details left behind');
+});
+
 test('nested executions are shown apart from holders, and an expired lease counts as recovering', integration(), async () => {
     const name = instance('nested');
     const config: AdmissionConfig = { instance: name, limit: 1, aliasLimits: { local: 1 } };

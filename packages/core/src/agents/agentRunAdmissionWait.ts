@@ -40,14 +40,18 @@ export function admissionWaitTracker(options: AdmissionWaitTrackerOptions) {
     const base = { ...(options.alias ? { alias: options.alias } : {}), ...(options.taskId ? { taskId: options.taskId } : {}) };
     const since = Date.now();
     let current: AgentAdmissionWaitReason | undefined;
-    let joined = false;
+    // The current detail: the last reason (none yet: starting) and the original start.
+    const detail = () => ({ ...base, since, ...(current ? { reason: current } : {}) });
     return {
-        /** Call after each join of the waiting set: the first records the token (the report drops details of tokens it finds neither waiting nor holding). */
-        async joined() {
-            if (joined) return;
-            joined = true;
-            await write(token, { ...base, since });
-        },
+        /**
+         * Call after each join or refresh of the waiting set: republishes the
+         * current detail. The report drops details of tokens it finds neither
+         * waiting nor holding, so a token whose waiting entry lapsed during an
+         * awaited step (a recovery's Docker removal can outlast the entry's
+         * deadline) is reported again with its alias, task and reason here,
+         * even when its next refusal has the same reason.
+         */
+        async joined() { await write(token, detail()); },
         /** Maps a non-admitting acquire reply to its reason; logs, reports and records each change. */
         async observe(result: unknown) {
             const reason = WAIT_REASONS[result as number];
@@ -57,7 +61,7 @@ export function admissionWaitTracker(options: AdmissionWaitTrackerOptions) {
             // `reason` is kept for existing log queries; `waitReason` names the same value.
             logger.info({ ...options.fields, reason, waitReason: reason }, 'Physical agent admission waiting');
             options.onWaiting?.(reason);
-            await write(token, { ...base, since, reason });
+            await write(token, detail());
         },
         /** A holder now: recorded before the token leaves the waiting set. */
         async admitted() { await write(token, { ...base, since: Date.now() }); },

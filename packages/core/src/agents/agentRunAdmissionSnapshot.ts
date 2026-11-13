@@ -40,6 +40,8 @@ export interface AgentAdmissionDetail {
 // the reply. Details of tokens that are neither holders nor waiting
 // (a process that died while waiting, or a holder released by another
 // process's recovery) are removed here: garbage only, never state admission reads.
+// A live waiter whose entry lapsed during a long await (a recovery's Docker
+// removal) loses its detail too; it republishes it at its next refresh.
 const SNAPSHOT_SCRIPT = `
 local t = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
