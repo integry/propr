@@ -228,3 +228,54 @@ test('nonterminal automation runs keep the extensions their captured definition 
   assert.equal(runs.done, before.done, 'terminal runs are history and stay unchanged');
   assert.equal(runs.new, before.new);
 });
+
+test('profiles holding more distinct servers than the library are not migrated lossily and stay retryable', async t => {
+  const { database, instanceId } = await fixture(t);
+  const server = (profile: number, index: number) => docs({ name: `p${profile}-s${index}`, authentication: 'none', url: `https://8.8.${profile}.${index + 1}/mcp` });
+  const ids: string[] = [];
+  for (let p = 0; p < 5; p++) ids.push(await profile(database, instanceId, { name: `P${p}`, servers: Array.from({ length: 8 }, (_, i) => server(p, i)) }));
+  await database('agent_definitions').insert({ id: 'last', name: 'Last', extension_profile: selection(instanceId, ids.sort().at(-1)!) });
+  const warnings: unknown[] = [];
+  const report = await migrateExtensionProfilesToLibrary(database, environment, { info() {}, warn: (...args: unknown[]) => warnings.push(args) });
+  assert.equal(report.migrated, false);
+  assert.match(report.warnings.join('\n'), /40 servers are needed but the library holds at most 32/);
+  assert.ok(JSON.stringify(warnings).includes('Remove library items'), 'the diagnostic says how to resolve it');
+  // Nothing is committed: no completion marker, library revision, mapping or translated automation.
+  assert.equal(await database('extension_library_migration').first(), undefined);
+  assert.equal((await database('extension_library_revisions')).length, 0);
+  assert.equal((await database('extension_legacy_profile_items')).length, 0);
+  assert.equal((await database('agent_definitions').where({ id: 'last' }).first()).extensions, null);
+  // Once the administrator retires a profile, the next start migrates everything the others select.
+  await database('extension_profiles').where({ id: ids[0] }).update({ deleted: true });
+  const retried = await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  assert.equal(retried.migrated, true); assert.equal(retried.servers, 32);
+  assert.equal(JSON.parse((await database('agent_definitions').where({ id: 'last' }).first()).extensions).servers.length, 8);
+});
+
+test('more distinct skill bundles than the library holds leave the migration incomplete', async t => {
+  const { database, instanceId } = await fixture(t);
+  const bundleIds = Array.from({ length: 33 }, () => randomUUID());
+  await database('extension_skill_bundles').insert(bundleIds.map(id => ({ id, instance_id: instanceId, descriptor: JSON.stringify({ id, instanceId, digest: 'a'.repeat(64), name: 'skill', files: 1, bytes: 1, source: { kind: 'archive', filename: 'x.tar' }, requirements: [], createdAt: 1, auditActor: '1' }), files_json: '[]' })));
+  for (let p = 0; p < 5; p++) await profile(database, instanceId, { name: `P${p}`, servers: [], skillBundleIds: bundleIds.slice(p * 7, p * 7 + 7) });
+  const report = await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  assert.equal(report.migrated, false);
+  assert.match(report.warnings.join('\n'), /33 skill bundles are needed but the library holds at most 32/);
+  assert.equal(await database('extension_library_migration').first(), undefined);
+  assert.equal((await database('extension_library_revisions')).length, 0);
+});
+
+test('merged limits longer than an item holds are refused instead of truncated', async t => {
+  const { database, instanceId } = await fixture(t);
+  const repositories = (from: number) => Array.from({ length: 40 }, (_, i) => `team/repo-${from + i}`);
+  const bundleId = randomUUID();
+  await database('extension_skill_bundles').insert({ id: bundleId, instance_id: instanceId, descriptor: JSON.stringify({ id: bundleId, instanceId, digest: 'a'.repeat(64), name: 'writing', files: 1, bytes: 1, source: { kind: 'archive', filename: 'x.tar' }, requirements: [], createdAt: 1, auditActor: '1' }), files_json: '[]' });
+  await profile(database, instanceId, { name: 'A', servers: [docs({ authentication: 'none' })], repositoryScope: repositories(0), skillBundleIds: [bundleId] });
+  await profile(database, instanceId, { name: 'B', servers: [docs({ authentication: 'none' })], repositoryScope: repositories(40), skillBundleIds: [bundleId] });
+  const report = await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  assert.equal(report.migrated, false);
+  const diagnostic = report.warnings.join('\n');
+  assert.match(diagnostic, /Extension server docs would need 80 repository limits \(an item holds at most 64\)/);
+  assert.match(diagnostic, new RegExp(`Skill bundle ${bundleId} would need 80 repository limits`));
+  assert.equal(await database('extension_library_migration').first(), undefined);
+  assert.equal((await database('extension_library_revisions')).length, 0);
+});

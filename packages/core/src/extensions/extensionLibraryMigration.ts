@@ -32,7 +32,10 @@ import { libraryIdentity } from './extensionProfileStore.js';
  * - each profile id maps to its item names for queued New Task submissions;
  * - Bearer tokens are re-bound to the library revision; an undecryptable
  *   credential leaves the item without one and logs a warning.
- * Profile tables are left untouched.
+ * Profile tables are left untouched. A migration that would not fit the
+ * library (more items than it holds, or merged limits longer than an item
+ * holds) is never committed lossily: it stays incomplete, logs which items do
+ * not fit, and retries at the next start.
  */
 export const EXTENSION_LIBRARY_MIGRATION_ACTOR = 'system:extension-profile-migration';
 type Log = Pick<typeof defaultLogger, 'info' | 'warn'>;
@@ -43,7 +46,19 @@ export interface ExtensionLibraryMigrationReport {
 interface Candidate { server: ExtensionMcpDescriptor; token?: string; status?: ExtensionSecretStatus; enabled: boolean; repositories: string[] | null; agents: string[] | null }
 
 const union = (a: string[] | null, b: string[]) => (a === null || !b.length ? null : [...new Set([...a, ...b])]);
-const limit = (value: string[] | null, max: number) => (value ?? []).slice(0, max);
+/** The migrated profiles do not fit the library; committing would drop selections, so the migration stays incomplete. */
+export class ExtensionLibraryMigrationCapacityError extends Error {
+  constructor(readonly overflow: string[]) {
+    super(`Extension library migration cannot complete without dropping configured extensions: ${overflow.join('; ')}. `
+      + 'Remove library items you no longer need in Settings, or retire unused extension profiles (set extension_profiles.deleted), then restart; until then automations that selected a profile are not launched');
+    this.name = 'ExtensionLibraryMigrationCapacityError';
+  }
+}
+/** Merged limits longer than an item holds; truncating them would drop repositories or agents an automation relies on. */
+function limitOverflow(label: string, limits: { repositories: string[] | null; agents: string[] | null }): string[] {
+  return (['repositories', 'agents'] as const).filter(field => (limits[field]?.length ?? 0) > EXTENSION_LIBRARY_LIMITS[field])
+    .map(field => `${label} would need ${limits[field]!.length} ${field === 'repositories' ? 'repository' : 'agent'} limits (an item holds at most ${EXTENSION_LIBRARY_LIMITS[field]})`);
+}
 // Enabled state is part of the identity: merging an inactive source into an active item would activate it for that source.
 const identity = (server: ExtensionMcpDescriptor, token: string | undefined, enabled: boolean) => JSON.stringify(server.kind === 'https'
   ? ['https', server.url, [...server.tools].sort(), server.capability, server.authentication, token ?? null, enabled]
@@ -88,10 +103,30 @@ export async function legacyAutomationExtensionsPending(definition: LegacyAutoma
 }
 /** The stored definition names a profile and has no translated `extensions` yet. */
 async function legacyDefinitionRow(id: string, database: Knex): Promise<boolean> {
-  if (!await database.schema.hasTable('agent_definitions') || !await database.schema.hasColumn('agent_definitions', 'extension_profile') || !await database.schema.hasColumn('agent_definitions', 'extensions')) return false;
-  const row = await database('agent_definitions').where({ id }).whereNull('extensions').first('extension_profile');
-  if (!row?.extension_profile) return false;
-  try { return Boolean(JSON.parse(row.extension_profile)?.profileId); } catch { return false; }
+  return (await storedLegacyDefinitionExtensions(id, database))?.extensions === null;
+}
+/**
+ * The persisted `extensions` column of a definition saved with a profile
+ * selection (null while untranslated); undefined when the stored row has no
+ * profile selection, so a definition read from it never needs translation.
+ */
+export async function storedLegacyDefinitionExtensions(id: string, database: Knex): Promise<{ extensions: string | null } | undefined> {
+  if (!await database.schema.hasTable('agent_definitions') || !await database.schema.hasColumn('agent_definitions', 'extension_profile') || !await database.schema.hasColumn('agent_definitions', 'extensions')) return undefined;
+  const row = await database('agent_definitions').where({ id }).first('extension_profile', 'extensions');
+  if (!row?.extension_profile) return undefined;
+  try { if (!JSON.parse(row.extension_profile)?.profileId) return undefined; } catch { return undefined; }
+  return { extensions: row.extensions ?? null };
+}
+/**
+ * The translated selection of a run snapshot captured before the upgrade,
+ * once the migration has settled: the same legacy mapping the migration wrote
+ * into the stored snapshot (an unavailable profile adds nothing).
+ */
+export async function legacySnapshotExtensions(selection: unknown, database: Knex): Promise<{ servers: string[]; skills: string[] }> {
+  const profileId = (selection as { profileId?: unknown } | null)?.profileId;
+  if (typeof profileId !== 'string' || !await database.schema.hasTable('extension_legacy_profile_items')) return { servers: [], skills: [] };
+  const row = await database('extension_legacy_profile_items').where({ profile_id: profileId }).first('servers', 'skills');
+  return row ? { servers: JSON.parse(row.servers), skills: JSON.parse(row.skills) } : { servers: [], skills: [] };
 }
 /** Retry the startup migration now when it has not completed; true once it has settled. */
 export async function ensureExtensionLibraryMigrated(database: Knex, environment: NodeJS.ProcessEnv = process.env, log: Log = defaultLogger): Promise<boolean> {
@@ -176,9 +211,13 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
       const servers: ExtensionLibraryServer[] = [...(head?.servers ?? [])];
       const secrets: Record<string, string> = { ...headSecrets };
       const statuses: Record<string, ExtensionSecretStatus> = { ...(head?.secrets ?? {}) };
+      // Items that do not fit: collected, then the whole migration is refused rather than committed without them.
+      const overflow: string[] = []; const serverOverflow: string[] = [];
       for (const [name, candidate] of candidates) {
-        if (servers.length >= EXTENSION_LIBRARY_LIMITS.servers) { report.warnings.push(`Extension server ${name} was not migrated: the library holds at most ${EXTENSION_LIBRARY_LIMITS.servers} servers`); continue; }
-        const parsed = extensionLibraryServerSchema.safeParse({ ...candidate.server, enabled: candidate.enabled, repositories: limit(candidate.repositories, EXTENSION_LIBRARY_LIMITS.repositories), agents: limit(candidate.agents, EXTENSION_LIBRARY_LIMITS.agents), autoApply: false });
+        const tooLong = limitOverflow(`Extension server ${name}`, candidate);
+        if (tooLong.length) { overflow.push(...tooLong); continue; }
+        if (servers.length >= EXTENSION_LIBRARY_LIMITS.servers) { serverOverflow.push(name); continue; }
+        const parsed = extensionLibraryServerSchema.safeParse({ ...candidate.server, enabled: candidate.enabled, repositories: candidate.repositories ?? [], agents: candidate.agents ?? [], autoApply: false });
         if (!parsed.success) { report.warnings.push(`Extension server ${name} was not migrated: invalid stored descriptor`); continue; }
         servers.push(parsed.data);
         if (parsed.data.kind === 'https' && parsed.data.authentication === 'bearer') {
@@ -193,13 +232,19 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
       const descriptors = new Map(bundleRows.map(row => [row.id as string, JSON.parse(row.descriptor) as ExtensionSkillBundle]));
       const librarySkills: ExtensionLibrarySkill[] = [...(head?.skills ?? [])];
       const skillBundles: ExtensionSkillBundle[] = [...(head?.skillBundles ?? [])];
+      const skillOverflow: string[] = [];
       for (const [bundleId, skill] of skills) {
         if (librarySkills.some(s => s.bundleId === bundleId)) continue;
         if (!descriptors.has(bundleId)) { report.warnings.push(`Skill bundle ${bundleId} was not migrated: bundle unavailable`); continue; }
-        if (librarySkills.length >= EXTENSION_LIBRARY_LIMITS.bundles) { report.warnings.push(`Skill bundle ${bundleId} was not migrated: the library holds at most ${EXTENSION_LIBRARY_LIMITS.bundles} skill bundles`); continue; }
-        librarySkills.push(extensionLibrarySkillSchema.parse({ bundleId, enabled: skill.enabled, repositories: limit(skill.repositories, EXTENSION_LIBRARY_LIMITS.repositories), agents: limit(skill.agents, EXTENSION_LIBRARY_LIMITS.agents), autoApply: false }));
+        const tooLong = limitOverflow(`Skill bundle ${bundleId}`, skill);
+        if (tooLong.length) { overflow.push(...tooLong); continue; }
+        if (librarySkills.length >= EXTENSION_LIBRARY_LIMITS.bundles) { skillOverflow.push(bundleId); continue; }
+        librarySkills.push(extensionLibrarySkillSchema.parse({ bundleId, enabled: skill.enabled, repositories: skill.repositories ?? [], agents: skill.agents ?? [], autoApply: false }));
         skillBundles.push(descriptors.get(bundleId)!);
       }
+      if (serverOverflow.length) overflow.push(`${servers.length + serverOverflow.length} servers are needed but the library holds at most ${EXTENSION_LIBRARY_LIMITS.servers} (${head?.servers.length ?? 0} already in it); not placed: ${serverOverflow.join(', ')}`);
+      if (skillOverflow.length) overflow.push(`${librarySkills.length + skillOverflow.length} skill bundles are needed but the library holds at most ${EXTENSION_LIBRARY_LIMITS.bundles} (${head?.skills.length ?? 0} already in it); not placed: ${skillOverflow.join(', ')}`);
+      if (overflow.length) throw new ExtensionLibraryMigrationCapacityError(overflow);
       const keptServers = new Set(servers.map(s => s.name)); const keptSkills = new Set(librarySkills.map(s => s.bundleId));
       const activeSkills = new Set(librarySkills.filter(s => s.enabled).map(s => s.bundleId));
       report.servers = servers.length - (head?.servers.length ?? 0); report.skills = librarySkills.length - (head?.skills.length ?? 0);
@@ -249,6 +294,10 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
   } catch (error) {
     // Another process completed it, or the migration failed: either way startup continues and old tables stay readable.
     if (await database('extension_library_migration').where({ id: 1 }).first().catch(() => undefined)) return { ...report, migrated: false, warnings: [] };
+    if (error instanceof ExtensionLibraryMigrationCapacityError) {
+      log.warn({ overflow: error.overflow }, error.message);
+      return { ...report, migrated: false, warnings: [error.message] };
+    }
     log.warn({ err: error instanceof Error ? error.message : 'unknown' }, 'Extension library migration did not complete; profile tables are unchanged and it will retry at the next start');
     return { ...report, migrated: false };
   }

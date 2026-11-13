@@ -193,6 +193,15 @@ safe to re-run, and never blocks startup):
   (for example under a different encryption root) leaves the item with its secret
   marked not configured and logs a warning; replace it in Settings.
 
+The library holds at most 32 servers and 32 skill bundles, and an item at most
+64 repositories and 64 agents. If the previous configuration does not fit (for
+example five bundles of eight distinct servers each), nothing is dropped: the
+copy is not committed, the startup log lists the items that do not fit, and
+it retries at the next start. Until it completes, automations that selected a
+bundle are not launched (their trigger returns 409). Remove library items you no
+longer need in Settings, or retire unused bundles (set `deleted` on their
+`extension_profiles` row), then restart.
+
 The previous tables are kept unchanged. Review the migrated items, then enable
 **Apply automatically** where an item should reach every matching automation.
 

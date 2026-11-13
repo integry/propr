@@ -257,10 +257,16 @@ export async function validateAgentDefinitionRuntime(
   deps: AgentRunTriggerDependencies = {},
 ): Promise<string | null> {
   // A run snapshot captured before the upgrade still names its profile; launching it before the
-  // migration translated it would run without the extensions it selected.
+  // migration translated it would run without the extensions it selected. Once the migration has
+  // settled (possibly after the caller read the run), the caller's snapshot takes the translation
+  // the migration wrote into the stored one, so the launch uses it rather than an empty selection.
   const snapshot = definition as StoredAgentDefinition & { extensionProfile?: unknown };
-  if (snapshot.extensionProfile && snapshot.extensions === undefined
-    && await (await import('../../extensions/extensionLibraryMigration.js')).legacyAutomationExtensionsPending(snapshot, await extensionDatabase(deps.database), { snapshotOnly: true })) return EXTENSIONS_MIGRATION_PENDING_REASON;
+  if (snapshot.extensionProfile && snapshot.extensions === undefined) {
+    const migration = await import('../../extensions/extensionLibraryMigration.js');
+    const knex = await extensionDatabase(deps.database);
+    if (await migration.legacyAutomationExtensionsPending(snapshot, knex, { snapshotOnly: true })) return EXTENSIONS_MIGRATION_PENDING_REASON;
+    snapshot.extensions = await migration.legacySnapshotExtensions(snapshot.extensionProfile, knex);
+  }
   const {
     loadRepos = loadMonitoredReposRaw,
     loadAgents: loadDirectAgents = loadAgents,
@@ -314,14 +320,21 @@ const extensionDatabase = async (database?: Knex): Promise<Knex> => database ?? 
  * empty `extensions` in its run snapshot, which a later migration cannot
  * repair. Retry the migration now and use the translated selection; while it
  * still fails, refuse the run with 409 (a schedule slot stays pending and retries).
+ *
+ * The caller's definition may have been read before another process committed
+ * the migration, so for any stored row with a profile selection the run takes
+ * the persisted `extensions`, never the copy the caller holds.
  */
 async function withMigratedLegacyExtensions(definition: StoredAgentDefinition, database?: Knex): Promise<StoredAgentDefinition> {
   const migration = await import('../../extensions/extensionLibraryMigration.js');
   const knex = await extensionDatabase(database);
-  if (!await migration.legacyAutomationExtensionsPending(definition, knex)) return definition;
-  if (!await migration.ensureExtensionLibraryMigrated(knex)) throw new AgentRunTriggerError(EXTENSIONS_MIGRATION_PENDING_REASON, 409, 'EXTENSIONS_MIGRATION_PENDING');
-  const row = await knex('agent_definitions').where({ id: definition.id }).first('extensions');
-  return { ...definition, extensions: parseAutomationExtensions(row?.extensions) };
+  let stored = await migration.storedLegacyDefinitionExtensions(definition.id, knex);
+  if (!stored) return definition;
+  if (stored.extensions === null) {
+    if (!await migration.ensureExtensionLibraryMigrated(knex)) throw new AgentRunTriggerError(EXTENSIONS_MIGRATION_PENDING_REASON, 409, 'EXTENSIONS_MIGRATION_PENDING');
+    stored = await migration.storedLegacyDefinitionExtensions(definition.id, knex);
+  }
+  return { ...definition, extensions: parseAutomationExtensions(stored?.extensions) };
 }
 
 /**

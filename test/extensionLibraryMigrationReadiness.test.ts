@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import type { AgentConfig } from '../packages/core/src/config/configManagerAgents.ts';
 import type { RepoToMonitor } from '../packages/core/src/config/configManager.ts';
-import { createAgentDefinition, getAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
+import { createAgentDefinition, getAgentDefinition, updateAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
 import { listAgentRuns } from '../packages/core/src/services/agents/agentRunStore.ts';
 import { AgentRunTriggerError, triggerAgentRun, validateAgentDefinitionRuntime, type AgentRunTriggerDependencies } from '../packages/core/src/services/agents/agentRunTrigger.ts';
 import { legacyAutomationExtensionsPending } from '../packages/core/src/extensions/extensionLibraryMigration.ts';
@@ -100,7 +100,36 @@ describe('legacy extension selections while the library migration is incomplete'
     failing = false;
     const { ensureExtensionLibraryMigrated } = await import('../packages/core/src/extensions/extensionLibraryMigration.ts');
     assert.equal(await ensureExtensionLibraryMigrated(database), true);
+    // The caller read the run before the migration committed: its copy takes the translated selection.
     assert.equal(await validateAgentDefinitionRuntime(snapshot, deps()), null);
+    assert.deepEqual(snapshot.extensions, { servers: ['docs'], skills: [] });
+  });
+
+  for (const cleared of [null, { servers: [], skills: [] }]) {
+    test(`an owner's saved removal (${cleared === null ? 'null' : 'empty lists'}) is not undone when the migration later succeeds`, async () => {
+      const definition = await legacyDefinition();
+      const updated = await updateAgentDefinition(definition.id, 'alice', { extensions: cleared }, { database, now: () => NOW });
+      assert.deepEqual(updated?.extensions, { servers: [], skills: [] });
+      // The explicit clear is a translated selection, so a still-failing migration no longer holds the automation back.
+      assert.equal(await legacyAutomationExtensionsPending(updated!, database), false);
+      failing = false;
+      const { ensureExtensionLibraryMigrated } = await import('../packages/core/src/extensions/extensionLibraryMigration.ts');
+      assert.equal(await ensureExtensionLibraryMigrated(database), true);
+      assert.deepEqual(JSON.parse((await database('agent_definitions').where({ id: definition.id }).first()).extensions), { servers: [], skills: [] });
+      const { run } = await triggerAgentRun({ definition: (await getAgentDefinition(definition.id, 'alice', { database }))!, trigger: 'manual', triggerSource: 'alice' }, deps());
+      assert.deepEqual(run.definitionSnapshot?.extensions, { servers: [], skills: [] });
+    });
+  }
+
+  test('a definition read before another process completed the migration runs with the translated selection', async () => {
+    const stale = await legacyDefinition();
+    assert.deepEqual(stale.extensions, { servers: [], skills: [] });
+    failing = false;
+    const { ensureExtensionLibraryMigrated } = await import('../packages/core/src/extensions/extensionLibraryMigration.ts');
+    assert.equal(await ensureExtensionLibraryMigrated(database), true, 'another process commits the migration');
+    const { run, created } = await triggerAgentRun({ definition: stale, trigger: 'manual', triggerSource: 'alice' }, deps());
+    assert.equal(created, true);
+    assert.deepEqual(run.definitionSnapshot?.extensions, { servers: ['docs'], skills: [] });
   });
 
   test('a queued legacy submission is refused rather than run without its extensions', async () => {

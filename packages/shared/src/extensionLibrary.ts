@@ -73,9 +73,16 @@ export function parseAutomationExtensions(value: string | null | undefined): Aut
     return { servers: [], skills: [] };
   }
 }
-/** Column value for automation `extensions`; null when nothing is added. */
+/**
+ * Column value for automation `extensions`. Any written selection, including
+ * an explicit clear (`null` or empty lists), is stored as JSON: a null column
+ * marks a row whose pre-library profile selection the startup migration has
+ * not translated yet, so storing a clear as null would let a later migration
+ * restore the removed items. Only an absent value (`undefined`) stays null.
+ */
 export function serializeAutomationExtensions(value: AutomationExtensions | null | undefined): string | null {
-  return value && (value.servers.length || value.skills.length) ? JSON.stringify({ servers: value.servers, skills: value.skills }) : null;
+  if (value === undefined) return null;
+  return JSON.stringify({ servers: value?.servers ?? [], skills: value?.skills ?? [] });
 }
 
 export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'run_limit';
