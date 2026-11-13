@@ -248,6 +248,18 @@ function requirePatchedEventTriggerScope(current: StoredAgentDefinition, patch: 
   requireEventTriggerScope({ eventTriggers: patch.eventTriggers ?? current.eventTriggers, repositories: patch.repositories ?? current.repositories });
 }
 
+/**
+ * The revision an update is written onto: the one its checks read. Pinning it,
+ * with or without the caller's `expectedRevision`, makes an edit committed while
+ * those checks await fail with a 409 instead of being merged unchecked.
+ */
+function updateRevision(current: StoredAgentDefinition, expectedRevision: unknown): number {
+  if (expectedRevision !== undefined && expectedRevision !== current.revision) {
+    throw new RouteError(409, `Automation definition was changed (revision ${current.revision}, expected ${String(expectedRevision)}); reload and retry`);
+  }
+  return current.revision;
+}
+
 function requestedTrigger(req: Request, body: Record<string, unknown>): AutomationRunTrigger {
   if (body.trigger === undefined || body.trigger === null) {
     return req.authenticationMethod === 'session' ? 'manual' : 'api';
@@ -409,6 +421,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     const validationError = validateAutomationDefinitionInput(body, { partial: true });
     if (validationError) throw new RouteError(400, validationError);
     const current = await requireDefinition(req, owner);
+    const revision = updateRevision(current, expectedRevision);
     const patch = automationDefinitionInputToPatch(body as Partial<AutomationDefinitionInput>);
     const selectionChanged = patch.extensionProfile && (patch.extensionProfile.instanceId !== current.extensionProfile?.instanceId || patch.extensionProfile.profileId !== current.extensionProfile?.profileId || patch.extensionProfile.revision !== current.extensionProfile?.revision);
     if (selectionChanged && req.get('X-ProPR-Extensions') !== '1') throw new RouteError(403, 'Extension selection requires a preflight-protected request');
@@ -422,10 +435,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       if (!await verifyRepositories(req, res, patch.repositories)) return;
     }
 
-    const definition = await updateAgentDefinition(current.id, owner, patch, {
-      ...storeDeps,
-      expectedRevision: expectedRevision as number | undefined,
-    });
+    const definition = await updateAgentDefinition(current.id, owner, patch, { ...storeDeps, expectedRevision: revision });
     if (!definition) throw new RouteError(404, 'Automation definition not found');
     res.json({ definition: await attributedAgentDefinition(definition) });
   });
