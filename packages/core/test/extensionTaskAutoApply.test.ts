@@ -197,3 +197,27 @@ test('Codex operator configuration detection reads provider and profile definiti
   for (const toml of ['', 'model_provider = "openai"', '# profile = "work"', 'model = "gpt-5"\n[mcp_servers.docs]\nurl = "https://example.invalid"', '[tui]\nprofile_hint = true'])
     assert.equal(codexConfigDefinesProviderOrProfile(toml), false, toml);
 });
+
+test('Codex operator configuration detection parses literal keys, dotted keys and inline provider tables', async t => {
+  const literal = `'model_provider' = "azure"\n'model_providers' = { azure = { name = "Azure", base_url = "https://azure.example/v1", wire_api = "responses" } }\n`;
+  for (const toml of [
+    literal,
+    `'model_provider' = 'azure'`,
+    `"model_providers" = { azure = { name = "Azure" } }`,
+    `model_providers.azure.name = "Azure"`,
+    `'profiles'.work = { model = "o3" }`,
+    `'profile' = "work"`,
+    `model = "gpt-5"\n[mcp_servers.docs]\nurl = "https://example.invalid"\n['profiles'.'work']\nmodel = "o3"`,
+    'model_provider = ',
+  ]) assert.equal(codexConfigDefinesProviderOrProfile(toml), true, toml);
+  for (const toml of [
+    `'model_provider' = 'openai'`,
+    `[mcp_servers.docs]\n'model_provider' = "azure"\nprofile = "work"`,
+    `[tui]\nnotes = '[profiles.work]'\nother = "model_provider = 'azure'"`,
+    `description = '''\n[model_providers.azure]\nprofile = "work"\n'''`,
+  ]) assert.equal(codexConfigDefinesProviderOrProfile(toml), false, toml);
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'extension-codex-literal-'));
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+  await fs.writeFile(path.join(codexHome, 'config.toml'), literal);
+  assert.equal(await codexAutoApplyConflict(codexHome, ''), 'codex_operator_config');
+});
