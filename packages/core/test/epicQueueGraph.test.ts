@@ -238,6 +238,38 @@ test('an issue started out of band holds a slot, and an unmerged outside prerequ
   assert.deepEqual(started(), [1, 3]);
 });
 
+test('an issue started by hand keeps its slot after it closes without merge, and the slot claim starts nothing', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [1, 2], mode: 'graph', maxParallel: 1,
+    dependsOn: new Map() }, deps);
+  await setStatus(1, 'processing');
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 1, status: 'processing' as never }, deps);
+  assert.deepEqual(started(), [], 'issue 1 runs without a claim and holds the only slot');
+  assert.equal((await getEpicExecutionQueue('draft'))?.items[0].state, 'dispatched', 'the observed run is recorded as its slot');
+  await finish(1, 'closed');
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(started(), [], 'the blocked, unmerged issue still holds its slot');
+  assert.deepEqual((await schedule()).map(([issue, state]) => [issue, state]), [[1, 'blocked'], [2, 'ready']]);
+  // Reopened and started again by hand: its block clears without a second dispatch; its merge frees the slot.
+  await setStatus(1, 'processing');
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 1, status: 'processing' as never }, deps);
+  clock += 16 * 60 * 1000;
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(started(), []);
+  await finish(1);
+  assert.deepEqual(started(), [2]);
+});
+
+test('a delayed running notification for an issue that already closed still reserves its slot', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [1, 2], mode: 'graph', maxParallel: 1,
+    dependsOn: new Map() }, deps);
+  await setStatus(1, 'closed');
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 1, status: 'processing' as never }, deps);
+  await advanceEpicQueue({ draftId: 'draft', issueNumber: 1, status: 'closed' as never }, deps);
+  assert.deepEqual(started(), [], 'issue 1 ran, so its closure without merge keeps the slot');
+  const [first] = (await getEpicExecutionQueue('draft'))!.items;
+  assert.deepEqual([first.state, first.blockedKind, first.dispatchedAt !== null], ['blocked', 'closed_unmerged', true]);
+});
+
 test('a paused graph settles merges but starts nothing until resumed; a human-merge wait marks only that issue', async () => {
   await createGraph({ maxParallel: 3 });
   await startEpicQueueHead('draft', deps);

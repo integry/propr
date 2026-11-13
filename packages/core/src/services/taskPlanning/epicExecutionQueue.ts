@@ -139,7 +139,7 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
   const queue = await getEpicExecutionQueue(draftId, deps);
   if (queue?.parallel) return queue.issues.includes(issueNumber) ? completeParallelEpicQueue(queue, deps) : undefined;
   // Any status change can make graph issues ready, also a merged prerequisite outside the execution.
-  if (queue?.mode === 'graph') return driveGraphExecution(queue, graphHooks(deps));
+  if (queue?.mode === 'graph') return driveGraphExecution(queue, graphHooks(deps), { issueNumber, status });
   const head = epicQueueHead(queue);
   if (!queue || queue.status !== 'active' || !queue.ready || !head || head.issueNumber !== issueNumber) return;
   // Use persisted evidence: a delayed closed event must not block a now-merged head.

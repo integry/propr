@@ -6,7 +6,7 @@ import { isTerminalStatus } from '../../webhook/statusMachine.js';
 import { releaseEpicIssueLabels } from './epicIssueLabelHandoff.js';
 import {
   blockQueueIssue, clearedBlock, completeSettledExecution, epicQueueSchedule, getEpicExecutionQueue, isSettled,
-  markQueueIssueDone, ownedIssue, planIssueWithStatus, type EpicExecutionQueue, type EpicQueueIssue,
+  markQueueIssueDone, ownedIssue, planIssueWithStatus, SETTLED_STATES, type EpicExecutionQueue, type EpicQueueIssue,
 } from './epicQueueState.js';
 
 /**
@@ -90,6 +90,27 @@ async function reopenUnclaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIs
     .update({ ...clearedBlock(database), updated_at: hooks.now() });
 }
 
+/** The plan status of an issue someone started: neither waiting for dispatch nor terminal. */
+const isRunningStatus = (status: PlanIssueStatus | undefined): boolean =>
+  status !== undefined && status !== PlanIssueStatus.PENDING && !isTerminalStatus(status);
+
+/**
+ * An unclaimed issue a person started holds a slot until it merges, as a queue claim does. The slot is
+ * recorded as the issue's own dispatch claim, so a later closure without merge keeps it (a closed plan
+ * status no longer shows that the issue ran). Only the claim is written: nothing is started, and the
+ * queue's retry re-drives it only once its plan status is back to pending. Fenced on the row still being
+ * unclaimed and the plan status not being pending (a reopened issue waits for the scheduler instead).
+ */
+async function adoptManualStart(queue: EpicExecutionQueue, item: EpicQueueIssue, hooks: GraphDriveHooks): Promise<void> {
+  const { database } = hooks;
+  const timestamp = hooks.now();
+  await ownedIssue(database, queue, item).whereNull('dispatched_at').whereNotIn('state', SETTLED_STATES)
+    .whereExists(database('plan_issues').select('id').where({ draft_id: queue.draftId, issue_number: item.issueNumber })
+      .whereNot('status', PlanIssueStatus.PENDING))
+    .update({ state: database.raw('CASE WHEN state = ? THEN ? ELSE state END', ['pending', 'dispatched']),
+      dispatched_at: timestamp, updated_at: timestamp });
+}
+
 /** A claimed issue that is not terminal: clear a stale explanation once it is reopened, retry a lost dispatch. */
 async function driveClaimedIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
   { status, contextConfig }: { status: PlanIssueStatus; contextConfig: unknown }, hooks: GraphDriveHooks): Promise<void> {
@@ -153,8 +174,17 @@ async function startClaimedIssues(queue: EpicExecutionQueue, claimed: EpicQueueI
 }
 
 async function driveIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
-  { status, draft }: { status: PlanIssueStatus | undefined; draft: { paused?: unknown; context_config?: unknown } | undefined },
+  { status, draft, observedRunning }: { status: PlanIssueStatus | undefined; draft: { paused?: unknown; context_config?: unknown } | undefined;
+    observedRunning: boolean },
   hooks: GraphDriveHooks): Promise<void> {
+  // An unclaimed issue seen running, now or by the notification that drives this pass (it may arrive
+  // after the issue already closed), keeps its slot through a closure without merge.
+  if (item.dispatchedAt === null && isRunningStatus(status)) {
+    // A closed issue that was reopened and started again drops its closure explanation first.
+    await reopenUnclaimedIssue(queue, item, hooks);
+    return adoptManualStart(queue, item, hooks);
+  }
+  if (item.dispatchedAt === null && observedRunning && status === PlanIssueStatus.CLOSED) await adoptManualStart(queue, item, hooks);
   if (status === undefined) {
     if (item.blockedKind !== 'missing_from_plan') await blockQueueIssue(hooks.database, queue, item, { kind: 'missing_from_plan',
       timestamp: hooks.now(), reason: `Selected issue #${item.issueNumber} is missing from this plan.` });
@@ -167,8 +197,12 @@ async function driveIssue(queue: EpicExecutionQueue, item: EpicQueueIssue,
   await driveClaimedIssue(queue, item, { status, contextConfig: draft.context_config }, hooks);
 }
 
-/** One pass over a graph execution: settle, re-drive, complete, or start what is ready. */
-export async function driveGraphExecution(queue: EpicExecutionQueue, hooks: GraphDriveHooks): Promise<void> {
+/**
+ * One pass over a graph execution: settle, re-drive, complete, or start what is ready. `observed` is the
+ * status notification that triggered the pass, if any.
+ */
+export async function driveGraphExecution(queue: EpicExecutionQueue, hooks: GraphDriveHooks,
+  observed?: { issueNumber: number; status: PlanIssueStatus }): Promise<void> {
   const { database } = hooks;
   if (queue.status !== 'active' || !queue.ready) return;
   const statuses = await database('plan_issues').where({ draft_id: queue.draftId }).whereIn('issue_number', queue.issues)
@@ -176,7 +210,10 @@ export async function driveGraphExecution(queue: EpicExecutionQueue, hooks: Grap
   const draft = await database('task_drafts').where({ draft_id: queue.draftId }).first('paused', 'context_config');
   for (const item of queue.items.filter(candidate => !isSettled(candidate))) {
     // One branch failing (a label handoff, a lost dispatch) never stops the others; recovery retries it.
-    try { await driveIssue(queue, item, { status: statuses.find(row => row.issue_number === item.issueNumber)?.status, draft }, hooks); }
+    const observedRunning = observed?.issueNumber === item.issueNumber && isRunningStatus(observed.status);
+    try {
+      await driveIssue(queue, item, { status: statuses.find(row => row.issue_number === item.issueNumber)?.status, draft, observedRunning }, hooks);
+    }
     catch (error) {
       logger.warn({ draftId: queue.draftId, issueNumber: item.issueNumber, error: (error as Error).message }, 'Failed to drive epic graph issue');
     }
