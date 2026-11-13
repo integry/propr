@@ -12,7 +12,7 @@ export const OAUTH_PENDING = 'extension_oauth_pending';
 export const OAUTH_AUDIT = 'extension_oauth_audit';
 
 export interface OAuthConnectionRow {
-  instance_id: string; server_name: string; endpoint: string; state: 'connected' | 'needs_sign_in';
+  instance_id: string; server_name: string; endpoint: string; state: 'connected' | 'needs_sign_in' | 'disconnecting';
   registration: 'metadata_document' | 'dynamic' | 'preregistered'; client_id: string;
   issuer: string; metadata: string; redirect_uri: string; sealed: string;
   generation: string; version: number; refresh_lease_until: number | null; refresh_lease_owner: string | null;
@@ -45,6 +45,7 @@ export async function oauthConnectionStates(database: Knex, instanceId: string, 
   const rows = await database(OAUTH_CONNECTIONS).where({ instance_id: instanceId }).whereIn('server_name', oauth.map(s => s.name)) as OAuthConnectionRow[];
   for (const row of rows) {
     const server = oauth.find(s => s.name === row.server_name);
+    // A connection being disconnected (or whose Disconnect stopped midway) is unusable; Disconnect stays available to finish it.
     if (connectionBelongsTo(row, server)) states[row.server_name] = row.state === 'connected' ? 'connected' : 'needs_sign_in';
   }
   return states;

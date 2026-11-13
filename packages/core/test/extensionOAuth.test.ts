@@ -376,7 +376,9 @@ test('a refresh of a replaced connection neither overwrites its successor nor is
     const old = f.oauth.accessToken(instanceId, server);
     const oldSettled = old.then(() => 'resolved', () => 'rejected');
     await delivering.promise;
-    await f.oauth.disconnect('1', 'docs');
+    // A library change discards the connection while its refresh is outstanding (Disconnect would wait for the refresh).
+    await f.save([oauthServer({ url: 'https://8.8.8.8/v2/mcp' })]);
+    await f.save([oauthServer()]);
     await f.connect();
     const [replacement] = await f.connectionRows();
     assert.equal(Number(replacement.version), 1, 'the successor starts again at version 1');
@@ -458,4 +460,91 @@ test('the refresh lease covers every retry, so another process neither refreshes
   assert.equal(row.state, 'connected');
   assert.equal(row.refresh_lease_owner, null);
   assert.equal(f.notifications.length, 0);
+});
+
+/** A provider that issues access tokens without refresh tokens. */
+const withoutRefreshTokens: TransportHook = async (request, forward) => {
+  const response = await forward();
+  if (grantType(request) !== 'authorization_code' || response.status !== 200) return response;
+  const { refresh_token: _dropped, ...body } = JSON.parse(response.body) as Record<string, unknown>;
+  return { ...response, body: JSON.stringify(body) };
+};
+
+test('a connection without a refresh token stays usable until its access token expires or is refused upstream', async t => {
+  for (const ending of ['expiry', 'upstream rejection'] as const) {
+    const f = await hooked(t, { advertise: { dynamic: true }, accessTtl: 30 }, withoutRefreshTokens);
+    await f.save([oauthServer()]);
+    await f.connect();
+    const { token } = await f.launch();
+    // Inside the refresh margin from the start: there is nothing to refresh, so the valid token is used.
+    assert.match(JSON.stringify(await f.call(token)), /Found the document/);
+    f.tick(20 * 1000);
+    assert.match(JSON.stringify(await f.call(token, 2)), /Found the document/);
+    assert.equal(f.synthetic.state.tokenRequests.refresh_token, 0);
+    assert.equal((await f.connectionRows())[0].state, 'connected', ending);
+    assert.equal(f.notifications.length, 0);
+    if (ending === 'expiry') f.tick(11 * 1000);
+    else f.synthetic.expireAccessTokens();
+    await assert.rejects(f.call(token, 3), /connection failed|unavailable/);
+    assert.equal((await f.connectionRows())[0].state, 'needs_sign_in', ending);
+    assert.deepEqual(f.notifications.map(n => n.serverName), ['docs'], ending);
+  }
+});
+
+test('Disconnect waits for a refresh in flight and revokes the rotated tokens', async t => {
+  const delivering = deferred(); const answer = deferred(); let refreshes = 0;
+  const f = await hooked(t, { advertise: { dynamic: true }, accessTtl: 120 }, async (request, forward) => {
+    const response = await forward();
+    // The provider rotated; its answer is outstanding when Disconnect starts.
+    if (grantType(request) === 'refresh_token' && ++refreshes === 1) { delivering.resolve(); await answer.promise; }
+    return response;
+  });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+  f.tick(90 * 1000);
+  const refreshing = f.oauth.accessToken(instanceId, server);
+  await delivering.promise;
+  const rotated = f.synthetic.state.issued.slice(-2);
+  let disconnected = false;
+  const disconnect = f.oauth.disconnect('1', 'docs').finally(() => { disconnected = true; });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(disconnected, false, 'Disconnect waits for the refresh holding the lease');
+  answer.resolve();
+  assert.ok(rotated.includes(await refreshing), 'the refresh completes with the rotated access token');
+  assert.deepEqual(await disconnect, { revoked: true });
+  for (const token of rotated) assert.ok(f.synthetic.state.revoked.includes(token), 'the rotated tokens are revoked');
+  assert.equal((await f.connectionRows()).length, 0);
+});
+
+test('during Disconnect revocation no refresh starts and a sign-in callback cannot replace the connection', async t => {
+  for (const during of ['refresh', 'callback'] as const) {
+    const revoking = deferred(); const answer = deferred(); let held = false;
+    const f = await hooked(t, { advertise: { dynamic: true }, accessTtl: 120 }, async (request, forward) => {
+      if (request.url.endsWith('/revoke') && !held) { held = true; revoking.resolve(); await answer.promise; }
+      return forward();
+    });
+    await f.save([oauthServer()]);
+    await f.connect();
+    const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+    const issued = f.synthetic.state.issued.slice(-2);
+    const disconnect = f.oauth.disconnect('1', 'docs');
+    await revoking.promise;
+    if (during === 'refresh') {
+      f.tick(90 * 1000);
+      await assert.rejects(f.oauth.accessToken(instanceId, server), /unavailable/);
+      assert.equal(f.synthetic.state.tokenRequests.refresh_token, 0, 'no rotation behind the revocation');
+    } else {
+      const exchanges = f.synthetic.state.tokenRequests.authorization_code;
+      const { params } = await f.consent();
+      await assert.rejects(f.oauth.completeSignIn('1', 'session-a', params), /being disconnected/);
+      assert.equal(f.synthetic.state.tokenRequests.authorization_code, exchanges, 'no code is exchanged while disconnecting');
+      assert.equal((await f.oauth.statuses(instanceId, [server])).docs.state, 'needs_sign_in');
+    }
+    answer.resolve();
+    assert.deepEqual(await disconnect, { revoked: true });
+    assert.deepEqual([...f.synthetic.state.revoked].sort(), [...issued].sort(), during);
+    assert.equal((await f.connectionRows()).length, 0, during);
+    assert.equal((await f.oauth.audit('1'))[0].action, 'disconnect');
+  }
 });

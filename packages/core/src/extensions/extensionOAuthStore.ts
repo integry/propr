@@ -30,6 +30,7 @@ const LEASE_MS = 3 * EXTENSION_LIMITS.timeoutMs;
 const LEASE_WAIT_MS = 15 * 1000;
 /** A consumed state stays until its callback finishes; expiry cleanup leaves it this long past its expiry. */
 const CLAIM_GRACE_MS = 60 * 1000;
+const DISCONNECTING = 'The server is being disconnected; connect again when it has finished';
 /** The connection a refresh started for was disconnected, replaced or its lease lost: its result is discarded. */
 export class OAuthConnectionReplacedError extends Error {}
 interface SealedTokens extends OAuthTokens { clientSecret?: string }
@@ -112,7 +113,8 @@ export class ExtensionOAuthStore {
     for (const row of rows) {
       if (!connectionBelongsTo(row, oauth.find(s => s.name === row.server_name))) continue;
       let scopes: string[] = [];
-      let state = row.state;
+      // A connection being disconnected is no longer usable.
+      let state: ExtensionOAuthConnectionStatus['state'] = row.state === 'connected' ? 'connected' : 'needs_sign_in';
       try { scopes = this.unsealTokens(row).scopes; } catch { state = 'needs_sign_in'; }
       result[row.server_name] = { state, connectedBy: row.connected_by, connectedAt: Number(row.connected_at), scopes, registration: row.registration };
     }
@@ -196,6 +198,8 @@ export class ExtensionOAuthStore {
     if (!signInBelongsTo(server, row.endpoint, details.clientId)) throw new ExtensionError(409, 'The server changed during sign-in; connect again');
     const sealed = unsealExtensionSecrets(row.sealed, pendingIdentity(row.instance_id, row.server_name, stateHash), this.environment);
     const client: OAuthClient = { ...details.client, ...(details.client.registration === 'preregistered' ? (secret ? { clientSecret: secret } : {}) : sealed.clientSecret ? { clientSecret: sealed.clientSecret } : {}) };
+    // While a Disconnect is revoking this item, no code is exchanged; the transaction below closes the remaining window.
+    if ((await this.database(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).first('state'))?.state === 'disconnecting') throw new ExtensionError(409, DISCONNECTING);
     let tokens: OAuthTokens;
     try { tokens = await exchangeAuthorizationCode(this.transport, details.metadata, client, { code: query.code, verifier: sealed.verifier, redirectUri: details.redirectUri, resource: details.resource }, this.now()); }
     catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? 'The authorization server refused the sign-in' : 'Sign-in failed'); }
@@ -214,7 +218,9 @@ export class ExtensionOAuthStore {
       await this.library.authorize(actor, trx);
       const current = (await this.library.head(trx)).snapshot;
       if (current.instanceId !== row.instance_id || !signInBelongsTo(current.servers.find(s => s.name === row.server_name), row.endpoint, details.clientId)) throw new ExtensionError(409, 'The server changed during sign-in; connect again');
-      const existing = await trx(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).first('version');
+      const existing = await trx(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).first('version', 'state');
+      // The tokens of a connection being disconnected are revoked by that Disconnect: they are never overwritten untracked.
+      if (existing?.state === 'disconnecting') throw new ExtensionError(409, DISCONNECTING);
       if (existing) await trx(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).update({ ...values, version: Number(existing.version) + 1 });
       else await trx(OAUTH_CONNECTIONS).insert({ ...values, version: 1 });
       await trx(OAUTH_AUDIT).insert({ instance_id: row.instance_id, server_name: row.server_name, action: 'connect', actor, at: now });
@@ -223,11 +229,18 @@ export class ExtensionOAuthStore {
     return { name: row.server_name };
   }
 
-  /** Revoke at the provider when it advertises revocation, then delete the stored tokens. */
+  /**
+   * Revoke at the provider when it advertises revocation, then delete the
+   * stored tokens. Disconnect first takes the connection's refresh lease and
+   * marks it disconnecting: a refresh in flight finishes first, no new one
+   * starts, and a sign-in callback cannot replace it. The tokens revoked are
+   * the ones current under that fence, and only that connection is deleted.
+   */
   async disconnect(actor: string, name: string): Promise<{ revoked: boolean }> {
     await this.library.authorize(actor); await this.tables();
     const instanceId = await this.library.instanceId();
-    const row = await this.database(OAUTH_CONNECTIONS).where({ instance_id: instanceId, server_name: name }).first() as OAuthConnectionRow | undefined;
+    const owner = randomUUID();
+    const row = await this.fenceDisconnect(actor, instanceId, name, owner);
     let revoked = false;
     if (row) {
       try {
@@ -240,12 +253,41 @@ export class ExtensionOAuthStore {
     }
     await this.database.transaction(async trx => {
       await this.library.authorize(actor, trx);
-      // Pending rows first: this also cancels a callback that is still exchanging its code.
+      // Pending rows again: a sign-in started during revocation is cancelled too.
       await trx(OAUTH_PENDING).where({ instance_id: instanceId, server_name: name }).delete();
-      await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId, server_name: name }).delete();
-      if (row) await trx(OAUTH_AUDIT).insert({ instance_id: instanceId, server_name: name, action: 'disconnect', actor, at: this.now() });
+      // Only the fenced connection: a library save may have discarded it, and another Disconnect may have taken over.
+      const deleted = row ? await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId, server_name: name, generation: row.generation, state: 'disconnecting', refresh_lease_owner: owner }).delete() : 0;
+      if (deleted) await trx(OAUTH_AUDIT).insert({ instance_id: instanceId, server_name: name, action: 'disconnect', actor, at: this.now() });
     });
     return { revoked };
+  }
+  /**
+   * Cancel pending sign-ins and take the lease of the connection, waiting for
+   * a refresh that holds it; the connection as fenced, or undefined without one.
+   */
+  private async fenceDisconnect(actor: string, instanceId: string, name: string, owner: string): Promise<OAuthConnectionRow | undefined> {
+    const key = { instance_id: instanceId, server_name: name };
+    // Bounded by a whole refresh lease plus the wait of a lease holder; the clock may be injected, so iterations are counted.
+    for (let wait = 0; wait <= Math.ceil((LEASE_MS + LEASE_WAIT_MS) / 100); wait++) {
+      const row = await this.database.transaction(async trx => {
+        await this.library.authorize(actor, trx);
+        // Pending rows first: this also cancels a callback that is still exchanging its code.
+        await trx(OAUTH_PENDING).where(key).delete();
+        const current = await trx(OAUTH_CONNECTIONS).where(key).first() as OAuthConnectionRow | undefined;
+        if (!current) return null;
+        const fenced = await trx(OAUTH_CONNECTIONS).where({ ...key, generation: current.generation, version: current.version })
+          .where(q => q.whereNull('refresh_lease_until').orWhere('refresh_lease_until', '<', this.now()))
+          .update({ state: 'disconnecting', refresh_lease_until: this.now() + LEASE_MS, refresh_lease_owner: owner, version: Number(current.version) + 1, updated_at: this.now() });
+        return fenced ? { ...current, state: 'disconnecting' as const, version: Number(current.version) + 1, refresh_lease_owner: owner } : undefined;
+      });
+      if (row === null) return undefined;
+      if (row) return row;
+      // A refresh in this process holds the lease: its result is what gets revoked.
+      const running = [...inFlight].find(([k]) => k.startsWith(`${instanceId}/${name}/`))?.[1];
+      if (running) await running.catch(() => undefined);
+      else await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new ExtensionError(409, 'The connection is being refreshed; try Disconnect again');
   }
 
   /** The connect, disconnect and Needs sign-in history of the instance, newest first. */
@@ -264,6 +306,8 @@ export class ExtensionOAuthStore {
     const row = await this.connectedRow(instanceId, server);
     const tokens = this.unsealTokens(row);
     if (tokens.expiresAt === null || tokens.expiresAt - REFRESH_MARGIN_MS > this.now()) return tokens.accessToken;
+    // Without a refresh token there is nothing to refresh early: the token is used until it expires or is refused upstream.
+    if (!tokens.refreshToken && tokens.expiresAt > this.now()) return tokens.accessToken;
     try { return await this.refresh(instanceId, server, tokens.accessToken); }
     catch (error) {
       // A transient failure keeps a token that has not yet expired, while its connection is still the current one.
