@@ -68,6 +68,8 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
     if (!id || !client || (client.secret !== undefined && client.secret !== secret)) return null;
     return id;
   };
+  /** RFC 6749 section 5.2: an unknown or unauthenticated client is refused with 401 invalid_client. */
+  const invalidClient = () => json(401, { error: 'invalid_client' }, { 'www-authenticate': 'Basic realm="token"' });
   const metadata = {
     issuer: OAUTH_ISSUER, authorization_endpoint: `${OAUTH_ISSUER}/authorize`, token_endpoint: `${OAUTH_ISSUER}/token`,
     ...(options.advertise?.dynamic ? { registration_endpoint: `${OAUTH_ISSUER}/register` } : {}),
@@ -107,7 +109,8 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
     if (grant === 'authorization_code') {
       state.tokenRequests.authorization_code++;
       const clientId = authenticate(request, form); const code = codes.get(form.get('code') ?? '');
-      if (!clientId || !code || code.used || code.clientId !== clientId || code.redirectUri !== form.get('redirect_uri') || code.resource !== form.get('resource')) return json(400, { error: 'invalid_grant' });
+      if (!clientId) return invalidClient();
+      if (!code || code.used || code.clientId !== clientId || code.redirectUri !== form.get('redirect_uri') || code.resource !== form.get('resource')) return json(400, { error: 'invalid_grant' });
       code.used = true;
       if (createHash('sha256').update(form.get('code_verifier') ?? '').digest('base64url') !== code.challenge) return json(400, { error: 'invalid_grant', error_description: 'PKCE verification failed' });
       return json(200, issueTokens(clientId, code.scope));
@@ -117,7 +120,8 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
       if (state.holdRefresh) await state.holdRefresh;
       if (state.refreshFailure === 'network') return json(503, { error: 'temporarily_unavailable' });
       const clientId = authenticate(request, form); const refresh = refreshTokens.get(form.get('refresh_token') ?? '');
-      if (state.refreshFailure === 'authorization' || !clientId || !refresh || refresh.clientId !== clientId || form.get('resource') !== OAUTH_MCP_URL) return json(400, { error: 'invalid_grant' });
+      if (!clientId) return invalidClient();
+      if (state.refreshFailure === 'authorization' || !refresh || refresh.clientId !== clientId || form.get('resource') !== OAUTH_MCP_URL) return json(400, { error: 'invalid_grant' });
       const issued = issueTokens(clientId, refresh.scope);
       if (options.rotate !== false) refreshTokens.delete(form.get('refresh_token')!);
       else { refreshTokens.delete(issued.refresh_token); delete (issued as Partial<typeof issued>).refresh_token; }
@@ -157,5 +161,16 @@ export function syntheticOAuthProvider(options: SyntheticOAuthOptions = {}) {
   };
   /** Invalidate every access token, as a provider revoking sessions does, while refresh tokens stay valid. */
   const expireAccessTokens = () => accessTokens.clear();
-  return { transport, authorize, send, state, metadata, expireAccessTokens };
+  /**
+   * The authorization server deleting a registered client, as providers do for
+   * revoked or expired dynamic registrations: its tokens, codes and secret
+   * stop working, and its authorization requests are refused.
+   */
+  const invalidateClient = (clientId: string) => {
+    clients.delete(clientId);
+    for (const [token, issued] of accessTokens) if (issued.clientId === clientId) accessTokens.delete(token);
+    for (const [token, issued] of refreshTokens) if (issued.clientId === clientId) refreshTokens.delete(token);
+    for (const [code, issued] of codes) if (issued.clientId === clientId) codes.delete(code);
+  };
+  return { transport, authorize, send, state, metadata, expireAccessTokens, invalidateClient };
 }

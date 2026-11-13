@@ -231,6 +231,39 @@ test('a rejected refresh moves to Needs sign-in with one notification; later run
   assert.equal((await f.connectionRows())[0].state, 'connected');
 });
 
+test('Reconnect registers again when the authorization server rejected the dynamic client', async t => {
+  for (const ending of ['expiry', 'upstream 401'] as const) {
+    const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 30 });
+    await f.save([oauthServer()]);
+    await f.connect();
+    const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+    const rejected = (await f.connectionRows())[0].client_id as string;
+    assert.equal(f.synthetic.state.registrations, 1);
+    // The provider deletes the registration: its tokens stop working and the refresh is refused with 401 invalid_client.
+    f.synthetic.invalidateClient(rejected);
+    if (ending === 'expiry') { f.tick(31 * 1000); await assert.rejects(f.oauth.accessToken(instanceId, server)); }
+    else { const { token } = await f.launch(); await assert.rejects(f.call(token)); }
+    assert.equal((await f.connectionRows())[0].state, 'needs_sign_in', ending);
+    // Reconnect obtains a new registration instead of the rejected client, and completes.
+    const { authorizationUrl, params } = await f.consent();
+    assert.notEqual(new URL(authorizationUrl).searchParams.get('client_id'), rejected, ending);
+    assert.equal(f.synthetic.state.registrations, 2, ending);
+    assert.deepEqual(await f.oauth.completeSignIn('1', 'session-a', params), { name: 'docs' });
+    const [row] = await f.connectionRows();
+    assert.equal(row.state, 'connected', ending);
+    assert.notEqual(row.client_id, rejected, ending);
+    // The new connection works for runs and refreshes with the new client.
+    const { token } = await f.launch(`task-${ending}`);
+    assert.match(JSON.stringify(await f.call(token)), /Found the document/, ending);
+    f.tick(31 * 1000);
+    assert.match(JSON.stringify(await f.call(token, 2)), /Found the document/, ending);
+    assert.equal((await f.connectionRows())[0].state, 'connected', ending);
+    // A Connected dynamic client is still reused by Reconnect.
+    await f.connect();
+    assert.equal(f.synthetic.state.registrations, 2, ending);
+  }
+});
+
 test('discovery, registration and token requests to private or loopback addresses are refused by the endpoint policy', async t => {
   let dialed = 0;
   const counting = async () => { dialed++; return { status: 200, headers: {}, body: '{}' }; };

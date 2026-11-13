@@ -275,7 +275,7 @@ ProPR identifies itself in this order:
 | --- | --- | --- |
 | Pre-registered client | You entered a client id. Explicit configuration always wins. | The client id in the library item; the client secret, if any, sealed like a Bearer token. |
 | Client ID Metadata Document | The authorization server advertises `client_id_metadata_document_supported` and the instance has a public base URL. ProPR serves its own metadata at `<public API base URL>/api/instance/extensions/v1/oauth/client-metadata.json` and uses that URL as the client id. | Nothing beyond the connection. |
-| Dynamic Client Registration (RFC 7591) | The authorization server advertises a `registration_endpoint`. | The issued client id with the connection; an issued secret sealed with the tokens. Reconnecting reuses the registration. |
+| Dynamic Client Registration (RFC 7591) | The authorization server advertises a `registration_endpoint`. | The issued client id with the connection; an issued secret sealed with the tokens. Reconnecting a Connected server reuses the registration; reconnecting from Needs sign-in registers again, because the provider may have rejected the client. |
 
 When none is possible, Check and Connect say so: register a client in the
 provider's developer console and enter its id, or use a static Bearer token if

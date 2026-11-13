@@ -152,10 +152,16 @@ export class ExtensionOAuthStore {
     });
     return { authorizationUrl: authorizationUrl(discovery.metadata, { clientId: client.clientId, redirectUri: urls.redirectUri, challenge: pkce.challenge, state, resource: server.url, scopes: discovery.scopes }) };
   }
-  /** Reuse this item's dynamic registration with the same issuer and redirect URI; register otherwise. */
+  /**
+   * Reuse this item's dynamic registration with the same issuer and redirect
+   * URI while its connection is Connected; register otherwise. A connection
+   * in Needs sign-in had its grant or its client refused, and the refusal does
+   * not say which, so its client is never reused: a revoked registration would
+   * fail every Reconnect.
+   */
   private async dynamicClient(instanceId: string, server: ExtensionLibraryServer, metadata: AuthorizationServerMetadata, redirectUri: string): Promise<OAuthClient> {
     const row = await this.database(OAUTH_CONNECTIONS).where({ instance_id: instanceId, server_name: server.name }).first() as OAuthConnectionRow | undefined;
-    if (row && row.registration === 'dynamic' && row.issuer === metadata.issuer && row.redirect_uri === redirectUri && connectionBelongsTo(row, server)) {
+    if (row && row.state === 'connected' && row.registration === 'dynamic' && row.issuer === metadata.issuer && row.redirect_uri === redirectUri && connectionBelongsTo(row, server)) {
       try {
         const sealed = this.unsealTokens(row); const stored = JSON.parse(row.metadata) as { authMethod?: OAuthClient['authMethod'] };
         return { registration: 'dynamic', clientId: row.client_id, ...(sealed.clientSecret ? { clientSecret: sealed.clientSecret } : {}), authMethod: stored.authMethod ?? 'none' };
