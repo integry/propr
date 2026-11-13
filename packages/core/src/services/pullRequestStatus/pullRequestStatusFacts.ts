@@ -4,7 +4,7 @@ import { summarizeCheckSignals } from '../../webhook/checkRunHelpers.js';
 import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { loadPullRequestScoreHistory } from '../reviewScoreStore.js';
-import logger from '../../utils/logger.js';
+import { loadEpicStatusFacts } from './pullRequestStatusEpicFacts.js';
 import {
     computePullRequestStatus,
     TERMINAL_TASK_STATES,
@@ -166,15 +166,6 @@ export async function isProprCreatedPullRequest(
     db: Knex, repository: string, pull: { number: number; head: PullRequestStatusPull['head'] },
 ): Promise<boolean> {
     return await isProprPullRequest(db, { repository, prNumber: pull.number, epicHeadRef: epicHeadRef(repository, pull.head) });
-}
-
-async function loadEpicProgress(db: Knex, repository: string, headRef: string | null): Promise<PullRequestStatusFacts['epic']> {
-    const match = headRef?.match(EPIC_BRANCH_PATTERN);
-    if (!match) return null;
-    const first = await db('plan_issues').where({ repository, issue_number: Number(match[1]) }).first('draft_id');
-    if (!first?.draft_id) return null;
-    const issues: Array<{ status: string }> = await db('plan_issues').where({ draft_id: first.draft_id }).select('status');
-    return { merged: issues.filter(issue => issue.status === 'merged').length, total: issues.length };
 }
 
 /** Ultrafix keeps its loop state, and any CI wait, under these Redis keys. */
@@ -347,6 +338,19 @@ async function latestReviewScore(db: Knex, repository: string, prNumber: number)
     return latest ? latest.score : null;
 }
 
+/** An epic pull request's facts (loadEpicStatusFacts); its sub-PRs' status by this same computation. */
+async function loadEpicFacts(
+    repository: string, prNumber: number, sources: PullRequestStatusSources, epic: { epicRef: string | null; pull: PullRequestStatusPull },
+): Promise<PullRequestStatusFacts['epic']> {
+    const match = epic.epicRef?.match(EPIC_BRANCH_PATTERN);
+    if (!epic.epicRef || !match) return null;
+    return await loadEpicStatusFacts({
+        github: sources.github, db: sources.db,
+        // A sub-PR comes from an issue branch, never an epic branch, so this reads no further epic.
+        loadChildStatus: async (child, pull) => await loadPullRequestStatus(repository, child, sources, pull),
+    }, { repository, prNumber, epicBranch: epic.epicRef, firstIssue: Number(match[1]), pull: epic.pull });
+}
+
 /** Reads every fact the status computation needs, from ProPR's records and GitHub. */
 export async function loadPullRequestStatusFacts(
     repository: string, prNumber: number, sources: PullRequestStatusSources, pull?: PullRequestStatusPull,
@@ -363,20 +367,16 @@ export async function loadPullRequestStatusFacts(
     if (closed || !isPropr) {
         return { pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs: 0, ultrafix: null, checks: empty, latestReviewScore: null, ratingGoal: 0, epic: null };
     }
-    // Queued work, the Ultrafix loop and the review score each decide whether
-    // the PR is ready, so a failed read is not the same as "none": it rejects,
-    // and callers keep the previous block (body) or report null (MCP).
+    // Queued work, the Ultrafix loop, the review score and an epic's sub-PRs each
+    // decide whether the PR is ready, so a failed read is not the same as "none":
+    // it rejects, and callers keep the previous block (body) or report null (MCP).
     const [queuedJobs, ultrafix, checks, score, ratingGoal, epic] = await Promise.all([
         sources.countQueuedJobs ? sources.countQueuedJobs(repository, prNumber) : 0,
         loadUltrafix(sources.redis, owner, repo, prNumber),
         loadPullRequestStatusChecks(sources, owner, repo, pullRequest.headSha),
         latestReviewScore(sources.db, repository, prNumber),
         sources.loadRatingGoal(),
-        // Epic progress is display only; it never decides the state.
-        loadEpicProgress(sources.db, repository, epicRef).catch(error => {
-            logger.warn({ repository, prNumber, error: (error as Error).message }, 'Failed to read epic progress for the pull request status');
-            return null;
-        }),
+        loadEpicFacts(repository, prNumber, sources, { epicRef, pull: pr }),
     ]);
     return { pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, latestReviewScore: score, ratingGoal, epic };
 }

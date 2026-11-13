@@ -84,6 +84,44 @@ export function requestPullRequestStatusSyncForBase(
     }
 }
 
+/** Finds the open epic pull request of an epic branch, or of a plan, then signals it; registered with the sync runner. */
+export interface PullRequestStatusEpicSyncRunner {
+    forBranch: (repository: string, epicBranch: string) => void;
+    forPlan: (draftId: string) => void;
+}
+
+let epicRunner: PullRequestStatusEpicSyncRunner | null = null;
+
+export function setPullRequestStatusEpicSyncRunner(next: PullRequestStatusEpicSyncRunner | null): void {
+    epicRunner = next;
+}
+
+/**
+ * Called when something an epic's status depends on changes without an event
+ * on the epic pull request itself: a pull request into the epic branch opened,
+ * closed or changed its status. Never throws and never waits; a no-op unless
+ * status maintenance is enabled.
+ */
+export function requestEpicPullRequestStatusSync(repository: string | null | undefined, epicBranch: string | null | undefined): void {
+    if (!epicRunner || typeof repository !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repository)) return;
+    if (typeof epicBranch !== 'string' || !/^\d+-epic-\S+$/.test(epicBranch)) return;
+    try {
+        epicRunner.forBranch(repository, epicBranch);
+    } catch {
+        // A status update must never fail the event that signalled it.
+    }
+}
+
+/** Called when a plan issue changes status (an issue of the epic started, for example). Same guarantees. */
+export function requestEpicPullRequestStatusSyncForPlan(draftId: string | null | undefined): void {
+    if (!epicRunner || typeof draftId !== 'string' || draftId.length === 0) return;
+    try {
+        epicRunner.forPlan(draftId);
+    } catch {
+        // A status update must never fail the transition that signalled it.
+    }
+}
+
 /** The Redis the status writes are recorded in (pullRequestStatusProvenance); registered with the sync runner. */
 export type PullRequestStatusRedisProvider = () => PullRequestStatusProvenanceRedis | null;
 

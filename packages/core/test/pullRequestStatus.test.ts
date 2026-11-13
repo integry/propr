@@ -276,9 +276,9 @@ test('the block renders the documented one-line examples', () => {
     );
 });
 
-test('epic pull requests show merged and total issue counts', () => {
+test('epic pull requests lead with merged and total issue counts', () => {
     const line = renderPullRequestStatusLine(computePullRequestStatus(facts({ epic: { merged: 2, total: 5 } })), NOW);
-    assert.match(line, /issues: 2 of 5 merged/);
+    assert.equal(line, '**ProPR** ⚠️ 2 of 5 issues merged · nothing in progress · updated 09:41 UTC');
 });
 
 test('failed check names cannot break out of the one-line block', () => {

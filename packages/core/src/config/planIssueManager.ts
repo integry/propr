@@ -2,6 +2,7 @@ import { getEventPublisher } from '../utils/eventPublisher.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { resolvePlanIssueDefaultSelection } from './planIssueDefaults.js';
+import { requestEpicPullRequestStatusSyncForPlan } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 // Load the planning facade lazily: it also exports the epic queue, which depends on this module.
 async function checkAndUpdateDraftStatus(draftId: string): Promise<void> {
     const planning = await import('../services/taskPlanningService.js');
@@ -9,6 +10,8 @@ async function checkAndUpdateDraftStatus(draftId: string): Promise<void> {
 }
 
 async function notifyEpicQueue(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
+    // Every status change (an issue starting, finishing) changes what the epic PR's status and progress comment say.
+    requestEpicPullRequestStatusSyncForPlan(draftId);
     try {
         const { isTerminalStatus } = await import('../webhook/statusMachine.js');
         if (!isTerminalStatus(status)) return;
@@ -389,11 +392,7 @@ export async function updatePlanIssueStatus(
  * Updates the task_id for a plan issue by repository and issue number.
  * Used when a task execution starts for a plan issue.
  */
-export async function updatePlanIssueTaskId(
-    repository: string,
-    issueNumber: number,
-    taskId: string
-): Promise<void> {
+export async function updatePlanIssueTaskId(repository: string, issueNumber: number, taskId: string): Promise<void> {
     try {
         await db('plan_issues')
             .where({ repository, issue_number: issueNumber })

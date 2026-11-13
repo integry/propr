@@ -9,6 +9,8 @@
  * Redis or a database.
  */
 
+import type { EpicMergeProgress } from '../../webhook/epicMergeProgress.js';
+
 export type PullRequestStatusState = 'working' | 'needs_attention' | 'ready' | 'none';
 
 /** What is happening on the pull request right now. */
@@ -31,7 +33,15 @@ export type PullRequestAttentionReason =
     | 'check_failed'
     | 'merge_conflict'
     | 'review_below_goal'
-    | 'checks_unavailable';
+    | 'checks_unavailable'
+    /** Epic: a sub-PR needs a person. */
+    | 'epic_child_needs_attention'
+    /** Epic: a sub-PR is ready and waits to be merged into the epic branch. */
+    | 'epic_child_ready'
+    /** Epic: the plan's execution queue is paused. */
+    | 'epic_queue_paused'
+    /** Epic: issues are left, but nothing runs or is queued to start. */
+    | 'epic_idle';
 
 /** A ProPR task recorded for the pull request. */
 export interface PullRequestStatusTask {
@@ -74,6 +84,59 @@ export interface PullRequestStatusChecks {
     failedNames: string[];
 }
 
+/** An open sub-PR of an epic: a pull request into the epic branch. */
+export interface EpicChildStatus {
+    prNumber: number;
+    /** The plan issue the sub-PR implements, when known. */
+    issueNumber: number | null;
+    title: string | null;
+    /** The sub-PR's own status, from this computation; null when it is not a ProPR pull request. */
+    status: PullRequestStatus | null;
+}
+
+/** A plan issue of an epic, without a sub-PR. */
+export interface EpicIssueRef {
+    issueNumber: number;
+    title: string | null;
+    /** A run is implementing the issue now. */
+    working?: boolean;
+}
+
+/**
+ * What an epic pull request's status is computed from. The counts come from
+ * the epic merge progress computation (computeEpicMergeProgress).
+ */
+export interface EpicStatusFacts {
+    merged: number;
+    total: number;
+    /** Open sub-PRs into the epic branch. */
+    children?: EpicChildStatus[];
+    /** Plan issues that started and have no sub-PR yet. */
+    startedIssues?: EpicIssueRef[];
+    /** Plan issues that have not started, in queue order. */
+    upNext?: EpicIssueRef[];
+    /** The plan's queue is about to start its next issue. */
+    nextIssueQueued?: boolean;
+    queuePaused?: boolean;
+    /** The full merge progress, for the epic progress comment. */
+    progress?: EpicMergeProgress;
+    planName?: string | null;
+}
+
+/** What the status block says an epic is doing or waits on. */
+export interface EpicStatusFocus {
+    prNumber: number | null;
+    issueNumber: number | null;
+    /** The sub-PR's status when the focus is a sub-PR. */
+    status: PullRequestStatus | null;
+}
+
+export interface EpicStatusDetail {
+    merged: number;
+    total: number;
+    focus?: EpicStatusFocus | null;
+}
+
 export interface PullRequestStatusFacts {
     pullRequest: {
         state: string;
@@ -94,7 +157,8 @@ export interface PullRequestStatusFacts {
     latestReviewScore: number | null;
     /** Instance Ultrafix rating goal. */
     ratingGoal: number;
-    epic: { merged: number; total: number } | null;
+    /** Present for an epic pull request ProPR recorded for its plan. */
+    epic: EpicStatusFacts | null;
 }
 
 export interface PullRequestStatusDetail {
@@ -109,7 +173,7 @@ export interface PullRequestStatusDetail {
     reason: PullRequestAttentionReason | null;
     /** Failed blocking check names, for `check_failed`. */
     failedChecks: string[];
-    epic: { merged: number; total: number } | null;
+    epic: EpicStatusDetail | null;
 }
 
 export interface PullRequestStatus {
@@ -173,7 +237,7 @@ function confirmedAttentionReason(facts: PullRequestStatusFacts): PullRequestAtt
 function emptyDetail(facts: PullRequestStatusFacts): PullRequestStatusDetail {
     return {
         activity: null, ultrafix: null, ultrafixStopped: null, reviewScore: facts.latestReviewScore, ratingGoal: facts.ratingGoal,
-        checks: null, reason: null, failedChecks: [], epic: facts.epic,
+        checks: null, reason: null, failedChecks: [], epic: facts.epic ? { merged: facts.epic.merged, total: facts.epic.total, focus: null } : null,
     };
 }
 
@@ -188,6 +252,11 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
     if (facts.pullRequest.state !== 'open' || facts.pullRequest.merged || !facts.isProprPullRequest) {
         return { state: 'none', detail: base };
     }
+    if (facts.epic && facts.epic.total > 0) return computeEpicStatus(facts, facts.epic);
+    return computeSinglePullRequestStatus(facts, base);
+}
+
+function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: PullRequestStatusDetail): PullRequestStatus {
     const { passed, failed, pending } = facts.checks;
     const detail: PullRequestStatusDetail = { ...base, checks: { passed, failed, pending }, failedChecks: [...facts.checks.failedNames] };
     const loop = facts.ultrafix;
@@ -210,4 +279,46 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
     // Unknown mergeability has not established that the PR is free of conflicts.
     if (facts.pullRequest.mergeable === null) return { state: 'working', detail: { ...detail, activity: 'checking_mergeability' } };
     return { state: 'ready', detail };
+}
+
+function childFocus(child: EpicChildStatus): EpicStatusFocus {
+    return { prNumber: child.prNumber, issueNumber: child.issueNumber, status: child.status };
+}
+
+function issueFocus(issue: EpicIssueRef | undefined): EpicStatusFocus | null {
+    return issue ? { prNumber: null, issueNumber: issue.issueNumber, status: null } : null;
+}
+
+/**
+ * The status of an epic pull request, whose own branch only receives merges:
+ * until every issue is merged it follows its sub-PRs and the plan's queue;
+ * once they are, it is ready like any pull request, from its own checks and
+ * mergeability. An epic shows no review score.
+ */
+function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts): PullRequestStatus {
+    const own: PullRequestStatusFacts = { ...facts, latestReviewScore: null };
+    const base: PullRequestStatusDetail = { ...emptyDetail(own), epic: { merged: epic.merged, total: epic.total, focus: null } };
+    if (epic.merged >= epic.total) return computeSinglePullRequestStatus(own, base);
+
+    const { passed, failed, pending } = facts.checks;
+    const detail: PullRequestStatusDetail = { ...base, checks: { passed, failed, pending }, failedChecks: [...facts.checks.failedNames] };
+    const children = (epic.children ?? []).filter(child => child.status !== null && child.status.state !== 'none');
+    const withFocus = (state: PullRequestStatusState, focus: EpicStatusFocus | null, extra: Partial<PullRequestStatusDetail>): PullRequestStatus =>
+        ({ state, detail: { ...detail, ...extra, epic: { merged: epic.merged, total: epic.total, focus } } });
+
+    const workingChild = children.find(child => child.status?.state === 'working');
+    if (workingChild) return withFocus('working', childFocus(workingChild), { activity: workingChild.status!.detail.activity });
+    const workingIssue = (epic.startedIssues ?? []).find(issue => issue.working);
+    if (workingIssue) return withFocus('working', issueFocus(workingIssue), { activity: 'implementing' });
+    const ownWork = activeProprWork(own);
+    if (ownWork) return withFocus('working', null, { activity: ownWork });
+    if (epic.nextIssueQueued && !epic.queuePaused) return withFocus('working', issueFocus(epic.upNext?.[0]), { activity: 'queued' });
+
+    const attention = children.find(child => child.status?.state === 'needs_attention');
+    if (attention) return withFocus('needs_attention', childFocus(attention), { reason: 'epic_child_needs_attention' });
+    const ready = children.find(child => child.status?.state === 'ready');
+    if (ready) return withFocus('needs_attention', childFocus(ready), { reason: 'epic_child_ready' });
+    if (epic.queuePaused) return withFocus('needs_attention', null, { reason: 'epic_queue_paused' });
+    if (facts.pullRequest.mergeable === false) return withFocus('needs_attention', null, { reason: 'merge_conflict' });
+    return withFocus('needs_attention', null, { reason: 'epic_idle' });
 }

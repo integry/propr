@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
+import { initialPullRequestStatusBlock } from './pullRequestStatus/pullRequestStatusInitialBlock.js';
 import { initialPullRequestTitle } from './pullRequestStatus/pullRequestStatusTitle.js';
 
 type OctokitLike = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -12,6 +13,10 @@ interface CreatePROptions {
   head: string;
   base: string;
   body: string;
+  /** Epic progress the title slot starts with (`🔨 merged/total`). */
+  progress?: { merged: number; total: number } | null;
+  /** The plan issue that starts next, named in the initial status block. */
+  nextIssue?: number | null;
 }
 
 /**
@@ -22,8 +27,15 @@ export async function createEpicPRWithDraftFallback(
   octokit: OctokitLike,
   opts: CreatePROptions
 ): Promise<{ data: { number: number; html_url: string } }> {
-  // Created with the 🔨 title slot when prTitleStatus is on, so creation costs no rename.
-  opts = { ...opts, title: await initialPullRequestTitle(`${opts.owner}/${opts.repo}`, opts.title) };
+  // Created with the 🔨 title slot (and the epic's merged/total) when prTitleStatus is on, so creation costs no rename.
+  const { progress, nextIssue, ...fields } = opts;
+  const repository = `${opts.owner}/${opts.repo}`;
+  opts = { ...fields, title: await initialPullRequestTitle(repository, opts.title, progress) };
+  if (progress) {
+    // The status block is in the body from the first moment, as on every ProPR pull request.
+    const block = await initialPullRequestStatusBlock(repository, { epic: { ...progress, nextIssue } });
+    if (block) opts = { ...opts, body: `${block}\n\n${opts.body}` };
+  }
   try {
     return await octokit.request('POST /repos/{owner}/{repo}/pulls', {
       ...opts,
@@ -58,6 +70,8 @@ export interface EnsureEpicPROptions {
   planName: string;
   baseBranch?: string;
   correlationId?: string;
+  /** Issues in the plan; a new epic PR's title then starts with `🔨 0/N`. */
+  issueCount?: number;
 }
 
 interface ResolveEpicBaseBranchOptions {
@@ -273,6 +287,8 @@ export async function ensureEpicPR(options: EnsureEpicPROptions): Promise<EpicPR
         title: `[Epic] ${planName}`,
         head: branchName,
         base: baseBranch,
+        progress: options.issueCount ? { merged: 0, total: options.issueCount } : null,
+        nextIssue: firstIssueId,
         body: `## Epic PR\n\nThis PR aggregates all changes for: **${planName}**\n\nChild PRs should target the \`${branchName}\` branch using the \`${labelName}\` label.\n\n---\n*Created by ProPR AI Planner*`
       });
       prNumber = prResponse.data.number;

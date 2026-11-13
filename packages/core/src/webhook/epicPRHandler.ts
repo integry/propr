@@ -4,7 +4,7 @@ import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
 import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
-import { updateEpicMergeProgress } from './epicMergeProgress.js';
+import { epicProgressAfterMerge, updateEpicMergeProgress } from './epicMergeProgress.js';
 import {
     canCarryChild, findEpicPRNumber, findLatestMergedEpicPRNumber, readChildMergeEvidence,
     type ChildMergeEvidence, type ChildMergeEvidenceSource,
@@ -417,6 +417,8 @@ async function applyEpicMergeProgress(
     // Even an unchanged comment must not release an obligation using a target
     // that became invalid during the awaited progress reads/writes.
     await assertCurrentTarget();
+    // The count changed: the epic's title, status block and progress comment activity follow in one status update.
+    requestPullRequestStatusSync(repository, epicPrNumber);
     return true;
 }
 
@@ -450,14 +452,13 @@ export async function retryPendingEpicMergeProgress(
  */
 async function createEpicPR(
     octokit: Octokit,
-    { owner, repo, repository, baseBranch }: EpicBranchContext,
+    context: EpicBranchContext,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>,
     lease: EpicProgressLease,
 ): Promise<EpicPRResolution> {
+    const { owner, repo, repository, baseBranch } = context;
     // Get the default branch to use as base
-    const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', {
-        owner, repo
-    });
+    const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
     const defaultBranch = repoResponse.data.default_branch;
 
     // Get plan details for the Epic PR
@@ -473,6 +474,7 @@ async function createEpicPR(
 
         title = `[Epic] ${planDetails.planName}`;
         body = buildEpicPRBody(planDetails.planName, issueDetails);
+
     } else {
         // Fallback if plan details not found
         title = `[Epic] ${baseBranch}`;
@@ -484,7 +486,9 @@ async function createEpicPR(
     let prResponse: Awaited<ReturnType<typeof createEpicPRWithDraftFallback>>;
     try {
         prResponse = await createEpicPRWithDraftFallback(octokit, {
-            owner, repo, title, head: baseBranch, base: defaultBranch, body
+            owner, repo, title, head: baseBranch, base: defaultBranch, body,
+            // The title starts with the count this merge reached (`🔨 1/N`); the status sync corrects it if more merged meanwhile.
+            progress: planDetails ? epicProgressAfterMerge(context.mergedChildPrNumber, planDetails.issues) : null,
         });
     } catch (error) {
         const err = error as Error & { status?: number };

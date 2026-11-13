@@ -8,6 +8,8 @@ import {
     EPIC_PROGRESS_MARKER,
     buildEpicProgressComment,
     buildEpicCompleteComment,
+    extractEpicProgressActivityLines,
+    renderEpicProgressActivity,
     buildEpicFinalMergeComment,
     computeEpicMergeProgress,
     isEpicMergeComplete,
@@ -192,6 +194,25 @@ describe('buildEpicProgressComment', () => {
         assert.match(body, /#201, #202/);
         assert.ok(body.includes(EPIC_PROGRESS_MARKER));
     });
+
+    test('lists what is in progress and up next below the merged child PRs, omitting empty lines', () => {
+        const progress = { merged: 5, total: 7, excluded: 0, mergedPullRequests: [3490, 3504, 3507, 3515, 3518] };
+        const activity = renderEpicProgressActivity({
+            inProgress: [{ prNumber: 3523, issueNumber: 3475, title: 'Let an automation run when a plan issue is blocked', state: 'review 6/10, Ultrafix cycle 5 of 10' }],
+            upNext: [],
+        });
+        assert.deepEqual(activity, [
+            'In progress: #3523 (issue #3475, Let an automation run when a plan issue is blocked) - review 6/10, Ultrafix cycle 5 of 10',
+            'Up next: none',
+        ]);
+        const body = buildEpicProgressComment(progress, 'Big Plan', undefined, activity);
+        assert.match(body, /Merged child PRs: #3490, #3504, #3507, #3515, #3518\n\nIn progress: #3523 .*\n\nUp next: none\n/);
+        assert.deepEqual(extractEpicProgressActivityLines(body), activity);
+        assert.deepEqual(renderEpicProgressActivity({ inProgress: [], upNext: [] }), []);
+        assert.deepEqual(renderEpicProgressActivity({ inProgress: [], upNext: [{ issueNumber: 7, title: 'x\n<!-- y -->' }] }), ['Up next: #7 (x y)'],
+            'nothing in progress: no In progress line; titles stay on one line');
+        assert.doesNotMatch(buildEpicProgressComment(progress, 'Big Plan', 'main', activity), /In progress|Up next/, 'a merged epic lists no activity');
+    });
 });
 
 describe('updateEpicMergeProgress', () => {
@@ -233,6 +254,20 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(completion.length, 1);
         assert.match(completion[0].body, /Epic ready for final merge: Big Plan/);
         assert.match(completion[0].body, /All 2 child PRs have been merged/);
+    });
+
+    test('a child merge keeps the activity lines the status sync wrote', async () => {
+        const activity = ['In progress: #202 (issue #12, Second) - ready to merge', 'Up next: #13 (Third)'];
+        const pulls = [
+            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' },
+            { number: 202, state: 'open', merged_at: null },
+        ];
+        const existing = buildEpicProgressComment({ merged: 0, total: 2, excluded: 0, mergedPullRequests: [] }, 'Big Plan', undefined, activity);
+        const octokit = createOctokit(pulls, [{ id: 7, body: existing, user: { login: 'propr-dev[bot]' } }]);
+        const result = await updateEpicMergeProgress(baseRequest, 'test', { getOctokit: async () => octokit });
+        assert.strictEqual(result.trackingComment, 'updated');
+        const tracking = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
+        assert.equal(tracking.body, buildEpicProgressComment({ merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] }, 'Big Plan', undefined, activity));
     });
 
     test('does not repost the confirmation or edit an unchanged tracking comment on redelivery', async () => {

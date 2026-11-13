@@ -1,5 +1,5 @@
 import { PR_STATUS_BLOCK_MAX_LENGTH } from '@propr/shared';
-import type { PullRequestActivity, PullRequestAttentionReason, PullRequestStatus } from './pullRequestStatus.js';
+import type { EpicStatusFocus, PullRequestActivity, PullRequestAttentionReason, PullRequestStatus } from './pullRequestStatus.js';
 
 /**
  * The live status block ProPR keeps as the first thing in a pull request body.
@@ -33,6 +33,10 @@ const REASON_TEXT: Record<PullRequestAttentionReason, string> = {
     merge_conflict: 'conflicts with base',
     review_below_goal: 'review below goal',
     checks_unavailable: 'checks could not be read',
+    epic_child_needs_attention: 'a sub-PR needs you',
+    epic_child_ready: 'a sub-PR waits to be merged',
+    epic_queue_paused: 'queue paused',
+    epic_idle: 'nothing in progress',
 };
 
 const MAX_FAILED_CHECK_NAMES = 3;
@@ -68,7 +72,13 @@ function reasonText(status: PullRequestStatus, maxNames: number): string {
     return detail.reason ? REASON_TEXT[detail.reason] : '';
 }
 
+const STATE_EMOJI = { working: '🔨', needs_attention: '⚠️', ready: '✅' } as const;
+
 function headline(status: PullRequestStatus): string {
+    const { epic } = status.detail;
+    if (epic && epic.total > 0 && status.state !== 'none') {
+        return `${STATE_EMOJI[status.state]} ${epic.merged} of ${epic.total} issues merged`;
+    }
     if (status.state === 'ready') return '✅ Ready';
     if (status.state === 'needs_attention') return '⚠️ Needs you';
     return `🔨 ${ACTIVITY_TEXT[status.detail.activity ?? 'queued']}`;
@@ -78,8 +88,64 @@ function utcTime(now: Date): string {
     return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
 }
 
+/** What a sub-PR's status says, in a few words: "Ultrafix cycle 4 of 10, last review 6/10", "ready to merge". */
+export function describeChildStatus(status: PullRequestStatus | null, order: 'block' | 'comment' = 'block'): string {
+    if (!status || status.state === 'none') return '';
+    const { detail } = status;
+    const lower = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+    const score = detail.reviewScore !== null && detail.reason !== 'ultrafix_stopped'
+        ? `${status.state === 'working' && order === 'block' ? 'last review' : 'review'} ${detail.reviewScore}/10` : null;
+    let what: string | null;
+    if (status.state === 'ready') what = 'ready to merge';
+    else if (status.state === 'needs_attention') what = reasonText(status, 0);
+    else what = detail.ultrafix ? null : lower(ACTIVITY_TEXT[detail.activity ?? 'queued']);
+    const cycle = detail.ultrafix ? `Ultrafix cycle ${detail.ultrafix.cycle} of ${detail.ultrafix.maxCycles}` : null;
+    // The comment leads with the score, the block with what runs.
+    const parts = order === 'comment' ? [score, what, cycle] : [what, cycle, score];
+    return parts.filter(Boolean).join(', ');
+}
+
+/** Work in progress is named by its issue; a sub-PR waiting on a person by the pull request. */
+function epicFocusText(focus: EpicStatusFocus, verb: string, name: 'issue' | 'pull_request'): string {
+    const subject = focus.prNumber === null || (name === 'issue' && focus.issueNumber !== null)
+        ? `#${focus.issueNumber ?? focus.prNumber}`
+        : `#${focus.prNumber}${focus.issueNumber !== null ? ` (issue #${focus.issueNumber})` : ''}`;
+    const state = describeChildStatus(focus.status);
+    return `${subject} ${verb}${state ? ` (${state})` : ''}`;
+}
+
+/** The parts after an epic's headline: what runs, or what waits on a person. */
+function epicParts(status: PullRequestStatus, maxNames: number): string[] {
+    const { detail } = status;
+    const focus = detail.epic?.focus ?? null;
+    if (status.state === 'working') {
+        if (focus && focus.prNumber === null && detail.activity === 'queued') return [`#${focus.issueNumber} starts next`];
+        if (focus) return [epicFocusText(focus, 'in progress', 'issue')];
+        return [ACTIVITY_TEXT[detail.activity ?? 'queued']];
+    }
+    if (detail.reason === 'epic_child_ready' && focus) return [epicFocusText({ ...focus, status: null }, 'waits to be merged into the epic branch', 'pull_request')];
+    if (detail.reason === 'epic_child_needs_attention' && focus) return [epicFocusText(focus, 'needs you', 'pull_request')];
+    return [reasonText(status, maxNames)];
+}
+
+/** An epic that has every issue merged reads like any pull request: its reason and its own checks. */
+function epicStatusLine(status: PullRequestStatus, maxNames: number): string[] {
+    const { detail } = status;
+    const epic = detail.epic!;
+    const parts = [`**ProPR** ${headline(status)}`];
+    if (epic.merged >= epic.total) {
+        if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
+        else if (status.state === 'working') parts.push(ACTIVITY_TEXT[detail.activity ?? 'queued']);
+        const checks = checksText(detail.checks);
+        if (checks) parts.push(checks);
+        return parts;
+    }
+    return [...parts, ...epicParts(status, maxNames)];
+}
+
 function statusLine(status: PullRequestStatus, now: Date, maxNames: number): string {
     const { detail } = status;
+    if (detail.epic && detail.epic.total > 0) return [...epicStatusLine(status, maxNames), `updated ${utcTime(now)}`].filter(Boolean).join(' · ');
     const parts = [`**ProPR** ${headline(status)}`];
     if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
     if (detail.ultrafix) parts.push(`Ultrafix cycle ${detail.ultrafix.cycle} of ${detail.ultrafix.maxCycles}`);
@@ -88,7 +154,6 @@ function statusLine(status: PullRequestStatus, now: Date, maxNames: number): str
     }
     const checks = status.state === 'needs_attention' && detail.reason === 'ultrafix_stopped' ? null : checksText(detail.checks);
     if (checks) parts.push(checks);
-    if (detail.epic) parts.push(`issues: ${detail.epic.merged} of ${detail.epic.total} merged`);
     parts.push(`updated ${utcTime(now)}`);
     return parts.filter(Boolean).join(' · ');
 }

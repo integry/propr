@@ -135,8 +135,15 @@ before(async () => {
     await database.schema.createTable('task_history', table => { table.increments('history_id'); table.string('task_id'); table.string('state'); });
     await database.schema.createTable('plan_issues', table => {
         table.increments('id'); table.string('repository'); table.integer('pr_number'); table.integer('issue_number'); table.string('draft_id'); table.string('status');
+        table.string('created_at');
     });
-    await database.schema.createTable('task_drafts', table => { table.string('draft_id').primary(); table.string('repository'); table.json('context_config'); });
+    await database.schema.createTable('task_drafts', table => {
+        table.string('draft_id').primary(); table.string('repository'); table.json('context_config'); table.string('name'); table.boolean('paused').defaultTo(false);
+    });
+    await database.schema.createTable('epic_execution_queues', table => {
+        table.string('draft_id').primary(); table.text('issues'); table.integer('cursor'); table.string('status'); table.boolean('ready'); table.boolean('parallel');
+        table.string('blocked_reason');
+    });
     await database.schema.createTable('goals', table => { table.string('goal_id'); table.string('repository'); table.integer('final_pr_number'); });
     await database.schema.createTable('review_scores', table => {
         table.increments('id'); table.string('repository_id'); table.integer('pr_number'); table.integer('score'); table.string('created_at');
@@ -1031,7 +1038,7 @@ test('an epic pull request whose branch ProPR recorded for its plan gets the blo
     github.pull.head = { ...github.pull.head, ref: EPIC_BRANCH, repo: { full_name: 'Integry/ProPR' } };
     await recordEpicPlan();
     assert.equal(await sync(), 'updated');
-    assert.match(statusLine(), /issues: 1 of 2 merged/);
+    assert.match(statusLine(), /⚠️ 1 of 2 issues merged · nothing in progress/, 'the counts come from the epic merge progress');
     assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
 });
 
