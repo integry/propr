@@ -725,6 +725,92 @@ and a separate current-focus value when available; raw provider reasoning, raw
 protocol envelopes, tool inputs, and tool results are excluded.
 `includeReasoningSummaries: true` opts in to Codex app-server reasoning summaries.
 
+## Idempotency and retries
+
+Three idempotency key contracts exist. They differ in format and in whether a
+key is required:
+
+| Surface | Key | Format | Required |
+| --- | --- | --- | --- |
+| Every MCP mutation | `idempotencyKey` argument | 8–128 characters matching `[\w.-]` (letters, digits, underscore, dot, hyphen) | Yes; a missing or malformed key is rejected before anything runs |
+| REST `POST /api/task-submissions` and `POST /api/goals` | `Idempotency-Key` header | Any string up to 255 characters | Yes; a missing or longer key is `400` |
+| REST `POST /api/automation-definitions/{id}/runs` | `Idempotency-Key` header | Any string up to 255 characters | No; without a key every call creates a run |
+
+**Same key, same payload, replays. Same key, different payload, conflicts.** An
+MCP key is scoped to your user and grant. Repeating a mutation with the same
+key and exactly the same arguments returns the original durable receipt and
+does not act again; the same key with any other argument (including an omitted
+optional one) is `IDEMPOTENCY_CONFLICT` (409). A REST task submission or goal
+creation repeated with the same key and body returns the existing submission or
+goal (and resumes a submission that stopped part way); a different body is
+`409`. An automation run key is scoped to its definition: repeating it returns
+the existing run with `created: false`.
+
+**Uncertain outcomes are not replayed.** A receipt in state `unknown` with
+`error.code: "OUTCOME_UNKNOWN"` means an external effect may have happened (see
+[Errors](#errors)). Do not repeat the call with a new key until you have
+inspected the receipt's artifacts and the target. For a direct task submission,
+`retry_task_submission` reconciles uncertain issue creation without opening a
+second issue.
+
+**How an MCP key reaches REST.** Goal mutations pass your `idempotencyKey`
+through as the REST `Idempotency-Key`. `create_task` does not: it creates the
+REST submission with the key `mcp-{operationId}`, where `operationId` is the
+receipt's handle, so submission keys of different clients, grants and the web
+UI never collide. Read the submission with `get_task_submission` and its
+`submissionId`, not with your MCP key.
+
+**`implement_plan` claims each issue once.** Starting a plan issue records an
+execution claim for it. A second `implement_plan` with a new key that selects an
+issue an earlier receipt already owns is refused with
+`IMPLEMENTATION_ALREADY_REQUESTED` (409); inspect the plan and the earlier
+operation with `get_plan` and `get_operation` instead of retrying.
+
+### Following a submission through replacement attempts
+
+ProPR replaces an issue task automatically when its run is lost with its worker
+(cause `infra_lost`, one replacement per lineage) or ends with a transient
+provider error (cause `provider_transient`, up to the **Provider failure
+replacements** setting, default 2). Only issue tasks are replaced. Goal tasks
+are never replaced (goals use their own recovery), and neither are pull request
+follow-up, review or automation tasks. A replacement is a new task for the same
+issue, so it has a new task ID.
+
+A task submission therefore has two task pointers. `get_task_submission` and
+`list_task_submissions` return both:
+
+- `firstTaskId`: the submission's first execution. It never changes.
+- `latestTaskId`: the newest execution of the submission's issue, which is a
+  replacement attempt or a label retry.
+- `taskId` is kept for compatibility. Over MCP it is the task `progress.task`
+  follows, which is `latestTaskId`. In the REST response of
+  `GET /api/task-submissions/{key}` it is `firstTaskId`.
+
+A `get_operation` receipt stays bound to the execution it already resolved, so
+its `taskId` can lag behind; its `latestTaskId` still shows where the
+submission moved.
+
+`get_task` returns a `lineage` object for every task: `attemptNumber` (1 for
+the original run), `rootTaskId`, `replacesTaskId`, `replacedByTaskId`,
+`replacementCause` (why this attempt was created: `infra_lost`,
+`provider_transient`, or null for the original run) and `replacementState` (the
+replacement decision about this attempt: `pending`, `dispatched`, `skipped`,
+`exhausted`, or null). `lineage.attempts` lists every attempt oldest first, with
+`taskId`, `attemptNumber`, `replacementCause`, `state` and `createdAt`, only
+when the task was replaced or is a replacement. `list_tasks` rows of a
+replacement lineage add `attemptNumber`, `replacesTaskId` and
+`replacedByTaskId`; a first and only attempt omits them. To follow work to its
+end, read `latestTaskId`, or follow `replacedByTaskId` until it is null.
+
+When no replacement follows a failure, the task's events (`get_task_events`)
+contain an entry whose `metadata.event` is `replacement.skipped` and whose
+`metadata.reason` is one of
+`disabled`, `cap_reached`, `budget_exhausted`, `user_cancelled`,
+`issue_closed`, `watchdog_stop`, `cost_cap_stop`, `blocked_stop`, `goal_task`,
+`unsupported_task` or `replacement_not_started`. `replacement.exhausted`
+follows when `cap_reached` or `budget_exhausted` ends the lineage. A dispatched replacement is
+recorded as `replacement.dispatched`.
+
 ## Operating an instance from a chat client
 
 This is the flow the operator surface is built for: find out what is happening,

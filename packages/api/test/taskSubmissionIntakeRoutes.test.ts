@@ -73,7 +73,7 @@ test('polling a legacy queued submission whose intake exhausted its attempts rep
     const failed = response();
     await routes.get(request(), failed.res);
     assert.deepEqual(failed.state.body, {
-      id: 'cb70c6a3-45ed-4311-803e-84540911fc09', state: 'failed', issueNumber: 34, issueUrl: 'https://github.com/owner/repo/issues/34', taskId: null,
+      id: 'cb70c6a3-45ed-4311-803e-84540911fc09', state: 'failed', issueNumber: 34, issueUrl: 'https://github.com/owner/repo/issues/34', taskId: null, firstTaskId: null, latestTaskId: null,
       error: `Implementation did not start after 3 attempts: ${ADMISSION}. Once the cause is fixed, Retry agent starts this same issue again without creating another.`,
     });
     // Another user cannot read or retry it.

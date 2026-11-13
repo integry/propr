@@ -16,6 +16,45 @@ export function attemptLineageFields(task: Record<string, unknown>): {
   };
 }
 
+const text = (value: unknown): string | null => typeof value === 'string' && value ? value : null;
+
+/** The `tasks` columns `taskLineage` reads. */
+export const TASK_LINEAGE_COLUMNS = [
+  'task_id', 'attempt_number', 'replaces_task_id', 'replaced_by_task_id', 'lineage_root_task_id',
+  'replacement_cause', 'replacement_state',
+] as const;
+
+/**
+ * The MCP `get_task` lineage of one task: its own replacement stamps and, only when the lineage
+ * has more than one attempt, every attempt oldest first. `replacementCause` is why this attempt
+ * was created (null for a first attempt); `replacementState` is the replacement decision about
+ * this attempt (`pending`, `dispatched`, `skipped`, `exhausted`, or null when none was needed).
+ */
+export async function taskLineage(db: Knex, taskId: string): Promise<Record<string, unknown> | null> {
+  const task = await db('tasks').where({ task_id: taskId }).first(...TASK_LINEAGE_COLUMNS) as Record<string, unknown> | undefined;
+  if (!task) return null;
+  const { attemptNumber, replacesTaskId, replacedByTaskId } = attemptLineageFields(task);
+  const attempts = await loadAttemptLineage(db, taskId, task);
+  return {
+    attemptNumber,
+    rootTaskId: text(task.lineage_root_task_id) ?? taskId,
+    replacesTaskId,
+    replacedByTaskId,
+    replacementCause: text(task.replacement_cause),
+    replacementState: text(task.replacement_state),
+    ...(attempts ? { attempts } : {}),
+  };
+}
+
+/**
+ * The compact list-row form: the three stamps only for a task that is part of a replacement
+ * lineage, nothing for a first and only attempt.
+ */
+export function attemptLineageSummary(task: Record<string, unknown>): Partial<ReturnType<typeof attemptLineageFields>> {
+  const fields = attemptLineageFields(task);
+  return fields.attemptNumber > 1 || fields.replacesTaskId || fields.replacedByTaskId ? fields : {};
+}
+
 /** Every attempt of the task's replacement lineage, oldest first; null outside a lineage or on error. */
 export async function loadAttemptLineage(db: Knex, taskId: string, task: Record<string, unknown>): Promise<Array<Record<string, unknown>> | null> {
   try {

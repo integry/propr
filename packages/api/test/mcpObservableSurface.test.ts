@@ -344,6 +344,10 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'pull_request', 'epic_queue', 'plan_issue',
     'opened', 'head_changed', 'review_scored', 'ultrafix_started', 'ultrafix_ended', 'auto_merge_decision',
     'advanced', 'status_changed',
+    // Replacement lineage of get_task: the lineage object, causes, decision states and skip reasons.
+    'lineage', 'infra_lost', 'provider_transient', 'dispatched', 'exhausted',
+    'cap_reached', 'budget_exhausted', 'user_cancelled', 'issue_closed', 'watchdog_stop', 'cost_cap_stop',
+    'blocked_stop', 'goal_task', 'unsupported_task', 'replacement_not_started',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)
