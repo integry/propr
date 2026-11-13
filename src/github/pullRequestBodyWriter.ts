@@ -19,6 +19,7 @@ export interface PullRequestBodyTarget {
 interface StatusCore {
     updatePullRequestBody?: <T>(github: { request: Request }, target: PullRequestBodyTarget) => Promise<T>;
     initialPullRequestStatusBlock?: (repository: string) => Promise<string | null>;
+    initialPullRequestTitle?: (repository: string, title: string) => Promise<string>;
 }
 
 async function loadCore(): Promise<StatusCore | null> {
@@ -52,6 +53,22 @@ export async function initialPullRequestStatusBlock(repository: string): Promise
         return await initial(repository);
     } catch {
         return null;
+    }
+}
+
+/**
+ * The title a new ProPR pull request is created with: the `🔨 ` status slot
+ * first when this process maintains the status and the repository's
+ * prTitleStatus setting is on, so creation costs no rename. Otherwise the
+ * title exactly as given.
+ */
+export async function initialPullRequestTitle(repository: string, title: string): Promise<string> {
+    const initial = (await loadCore())?.initialPullRequestTitle;
+    if (!initial) return title;
+    try {
+        return await initial(repository, title);
+    } catch {
+        return title;
     }
 }
 

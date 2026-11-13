@@ -14,6 +14,11 @@ export function setPullRequestStatusSyncRunner(next: PullRequestStatusSyncRunner
     runner = next;
 }
 
+/** Whether this process maintains the pull request status (enablePullRequestStatusSync). */
+export function isPullRequestStatusMaintained(): boolean {
+    return runner !== null;
+}
+
 /**
  * Called on every transition that may change a pull request's status. Never
  * throws and never waits; a no-op unless status maintenance is enabled.

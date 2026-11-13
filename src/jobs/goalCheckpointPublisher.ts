@@ -1,4 +1,5 @@
 import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
+import { initialPullRequestTitle } from '../github/pullRequestBodyWriter.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
     AI_COMMIT_AUTHOR,
@@ -138,7 +139,7 @@ async function createDraftPr(
         return existing;
     }
     const [owner, repo] = goal.repository.split('/');
-    const title = buildGoalPullRequestTitle(goal);
+    const title = await initialPullRequestTitle(goal.repository, buildGoalPullRequestTitle(goal));
     const body = buildGoalPullRequestBody(goal);
     let lastError: unknown;
     for (let attempt = 0; attempt < 5; attempt += 1) {

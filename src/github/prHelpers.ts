@@ -1,5 +1,7 @@
+import { stripStatusSlot } from '@propr/shared';
 import { Octokit } from '@octokit/core';
 import { logger } from '@propr/core';
+import { initialPullRequestTitle } from './pullRequestBodyWriter.js';
 
 export interface PRInfo {
     number: number;
@@ -71,7 +73,7 @@ export async function findExistingPRForBranch(octokit: InstanceType<typeof Octok
                 pr: {
                     number: existingPR.number,
                     url: existingPR.html_url,
-                    title: existingPR.title,
+                    title: stripStatusSlot(existingPR.title),
                     state: existingPR.state
                 }
             };
@@ -143,7 +145,8 @@ export function isHistorySyncError(error: ErrorLike): boolean {
 }
 
 export async function createPRWithRetry(octokit: InstanceType<typeof Octokit>, prParams: PRParams): Promise<PRCreateResponse> {
-    const { owner, repoName, prTitle, branchName, baseBranch, prBody } = prParams;
+    const { owner, repoName, branchName, baseBranch, prBody } = prParams;
+    const prTitle = await initialPullRequestTitle(`${owner}/${repoName}`, prParams.prTitle);
 
     try {
         return await octokit.request('POST /repos/{owner}/{repo}/pulls', {

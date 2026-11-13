@@ -1,3 +1,4 @@
+import { mergeCommitTitleFields } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { findPlanIssueByRepoAndPR, updatePlanIssueByPR, PlanIssueStatus } from '../config/planIssueManager.js';
 import { isEpicBranch } from '../services/taskExecutionService.js';
@@ -120,6 +121,13 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
             commitMessage = firstCommit.message;
             log.debug({ owner, repoName, prNumber, commitTitle }, 'Using first commit message for epic branch merge');
         }
+    }
+
+    if (!commitTitle && typeof prInfo.title === 'string') {
+        // An explicit title keeps the title's status slot (prTitleStatus) out of the merge commit.
+        const fields = mergeCommitTitleFields({ number: prNumber, title: prInfo.title, headLabel: prInfo.headLabel }, mergeMethod);
+        commitTitle = fields.commit_title;
+        commitMessage = fields.commit_message;
     }
 
     if (stillOwned && !await stillOwned()) {

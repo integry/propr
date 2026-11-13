@@ -2,12 +2,12 @@
 sidebar_position: 7
 sidebar_label: "PR Status"
 title: "See whether a ProPR pull request is working, needs you, or is ready"
-description: "ProPR computes one status for each of its pull requests and keeps it live as the first line of the pull request body."
+description: "ProPR computes one status for each of its pull requests, keeps it live as the first line of the pull request body, and shows the state as one emoji at the start of the title."
 ---
 
 # PR Status
 
-ProPR computes one status for every pull request it created: is it being worked on, does it need a person, or is it ready to merge? The same answer appears at the top of the pull request and in the MCP tools `get_pull_request`, `list_pull_requests` and `get_work_overview`, so you don't have to read the comment thread to find out.
+ProPR computes one status for every pull request it created: is it being worked on, does it need a person, or is it ready to merge? The same answer appears at the top of the pull request, as one emoji at the start of its title, and in the MCP tools `get_pull_request`, `list_pull_requests` and `get_work_overview`, so you don't have to read the comment thread to find out.
 
 ## States
 
@@ -47,9 +47,33 @@ How the line behaves:
 
 The line has no setting and can't be turned off. ProPR already owns that part of the body, and the edits leave no timeline entry, so there is nothing to opt out of. Pull requests ProPR did not create never get the line.
 
-## The title setting
+## The status in the pull request title
 
-The repository setting **Show the PR state as a leading emoji in the pull request title** (`prTitleStatus`) controls the pull request title only. It does not affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. The title emoji itself arrives in a later release; until then, the setting is stored but changes nothing.
+GitHub's pull request list shows only titles, labels and a check icon, so ProPR also puts the state at the very start of the title of each open pull request it created:
+
+| State | Title |
+| --- | --- |
+| `working` | `🔨 [3475 by Claude Opus 5.5] Let an automation run when a plan issue is blocked` |
+| `needs_attention` | `⚠️⑥ [3475 by Claude Opus 5.5] …`, with the latest review score (① to ⑩) when there is one |
+| `ready` | `✅⑧ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
+
+The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. A `none` pull request has no slot.
+
+Every title change adds a "changed the title" entry to the timeline, so the title changes far less often than the body line:
+
+- A new pull request is created with `🔨` already in its title, so creation costs no rename.
+- The title changes only when the state changes, or when the score beside ⚠️ or ✅ changes. Activity inside `working` (a review starting, the next Ultrafix cycle, waiting for CI) never renames the pull request; that detail is in the body line.
+- ProPR writes ⚠️ or ✅ only once the state has held for about 30 seconds and nothing for the pull request is queued or about to start. The short gap between an Ultrafix review and its fix, or between a failed check and its CI follow-up, costs no rename. Going back to `🔨` (for example when you post a follow-up on a `✅⑧` pull request) is immediate.
+- No change is sent when the title is already right. When ProPR changes both the body line and the title, it does so in one update.
+- ProPR only ever replaces the slot it recognises at the start of the title. Your edits to the rest of the title are kept. If you remove the slot, it stays off until the state changes. ProPR also leaves the title alone when adding the slot would take it past GitHub's 256-character limit.
+- When the pull request is merged or closed, ProPR removes the slot: one final rename, so closed pull request lists and release notes stay clean.
+- ProPR ignores the `edited` webhooks its own renames cause, so they start no work and no further update.
+
+The emoji never reaches anything derived from the title. ProPR's merges (the MCP `merge_pull_request` tool, ProPR's own merge after checks pass, and native auto-merge) pass an explicit commit title without the slot: the title plus ` (#N)` for squash merges. Task titles such as `Fix PR #N: …`, notifications, `[Epic]` detection and the web UI read the title without the slot.
+
+### The title setting
+
+The repository setting **Show the PR state as a leading emoji in the pull request title** (`prTitleStatus`) controls the title slot only. It doesn't affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. With it off, titles are created and left exactly as they are. Turning it off removes the slot from open pull requests on their next change.
 
 | Where | How |
 | --- | --- |
