@@ -172,7 +172,7 @@ export function useExtensionLibrary() {
   const isPending = (ref: ExtensionItemRef) => itemRefKey(ref) in pending;
   return {
     library, loads, catalog, bundles, usage, choices, error, notice, setError, setNotice, reload, save, toggle, remove, addBundle, shownEnabled, isPending,
-    oauth, connectOAuth, disconnectOAuth, refreshConnections, isOAuthBusy: (name: string) => Boolean(oauthBusy[name]),
+    oauth, connectOAuth, disconnectOAuth, refreshConnections, isOAuthBusy: (name: string) => Boolean(ownEntry(oauthBusy, name)),
   };
 }
 export type ExtensionLibraryState = ReturnType<typeof useExtensionLibrary>;
