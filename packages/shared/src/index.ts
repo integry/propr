@@ -591,3 +591,4 @@ export * from './extensionProfiles.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+export * from './acceptanceCriteria.js';

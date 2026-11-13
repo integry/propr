@@ -288,7 +288,7 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
   const nonToolTokens = new Set([
     'accepted', 'active', 'activity', 'all', 'approved', 'artifacts', 'auth', 'authorization', 'blockers',
     'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'creation', 'cursor',
-    'cycle', 'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
+    'cycle', 'cycles_exhausted', 'style_findings_only', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
     'executed', 'executing', 'failed', 'false', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
     'instructions', 'internal', 'iss', 'issue_created', 'issues', 'items', 'kind', 'labels', 'limit', 'manage',
     'mcp_access_log', 'mcp_operations', 'mcp_records', 'merge', 'merged', 'message', 'model', 'models',

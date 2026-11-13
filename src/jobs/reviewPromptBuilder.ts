@@ -6,8 +6,9 @@
  * machine-parseable by the /fix pipeline later.
  */
 
-import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
-import { assemblePRDiff, type PreparedPRDiff } from './prDiffFormatting.js';
+import { DEFAULT_REVIEW_GUIDANCE, formatAcceptanceCriteriaList, type AcceptanceCriterion } from '@propr/shared';
+import { assemblePRDiff, type PRDiffStats, type PreparedPRDiff } from './prDiffFormatting.js';
+import { REVIEW_FINDING_CATEGORIES } from './reviewFindingCategory.js';
 import { ReviewTokenEstimator } from './reviewTokenEstimator.js';
 
 export interface ReviewPromptOptions {
@@ -21,6 +22,11 @@ export interface ReviewPromptOptions {
      * ordinary comment history never does.
      */
     authorizedFollowups?: string;
+    /**
+     * Acceptance criteria parsed from the linked issue, with the ids the
+     * implementation run reported against. Bounded by the parser, so never trimmed.
+     */
+    acceptanceCriteria?: readonly AcceptanceCriterion[];
     repoOwner: string;
     repoName: string;
     instructions?: string;
@@ -43,6 +49,38 @@ export interface ReviewPromptOptions {
      * default.
      */
     reviewPromptOverride?: string;
+    /** Size of the whole base-to-head diff, before any budget trimming. */
+    diffStats?: PRDiffStats;
+    /**
+     * Word count of the untrimmed effective objective (original objective plus
+     * authorized follow-ups). Defaults to the count of the supplied sections.
+     */
+    effectiveObjectiveWords?: number;
+}
+
+const countWords = (text: string | undefined): number => text?.trim() ? text.trim().split(/\s+/).length : 0;
+
+/** Effective objective word count of untrimmed options. */
+export function effectiveObjectiveWordCount(options: Pick<ReviewPromptOptions, 'originalTaskSpec' | 'authorizedFollowups'>): number {
+    return countWords(options.originalTaskSpec) + countWords(options.authorizedFollowups);
+}
+
+/** Neutral size context for comparing the change with what was asked for. */
+function buildChangeSizeSection(options: ReviewPromptOptions): string {
+    const objectiveWords = options.effectiveObjectiveWords ?? effectiveObjectiveWordCount(options);
+    const { diffStats } = options;
+    if (!diffStats && objectiveWords === 0) return '';
+    const lines = [
+        ...(diffStats ? [`- Diff: ${diffStats.filesChanged} ${diffStats.filesChanged === 1 ? 'file' : 'files'} changed, +${diffStats.additions}/-${diffStats.deletions} lines`] : []),
+        `- Effective objective: ${objectiveWords} ${objectiveWords === 1 ? 'word' : 'words'} (original objective plus authorized follow-up requests)`,
+    ];
+    return `\n**Change size (context for judging scope, not a requirement):**\n${lines.join('\n')}\nSize alone is never a blocker. Use it to decide where to look for additions the effective objective did not ask for, and cite those additions specifically.\n`;
+}
+
+/** Each criterion to verify; an unmet one is a `requirement` blocker that names its id. */
+function buildAcceptanceCriteriaSection(criteria: readonly AcceptanceCriterion[] | undefined): string {
+    if (!criteria?.length) return '';
+    return `\n**ACCEPTANCE CRITERIA (from the linked issue; verify each one):**\n${formatAcceptanceCriteriaList(criteria)}\n\nVerify every criterion above against the base-to-head diff, whatever the implementation summary claims. In the Overall Evaluation, give one line per id stating met, not met, or not applicable, with the changed file or test that shows it. Every criterion the diff does not meet is an F# blocker with category \`requirement\`: start its title and its violatedRequirement with the id (for example \`${criteria[0].id}: ...\`). A follow-up request that explicitly changes a criterion supersedes it.\n`;
 }
 
 /**
@@ -79,11 +117,14 @@ const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you
  * observable consequence, why existing guards do not prevent it, and whether
  * the verification was executed or is a static trace / proposed regression.
  * That detail travels inside the existing `evidence` and `minimumCorrection`
- * fields, so the machine contract the parser, publisher and /fix gatherer
- * depend on stays unchanged. Fields may continue on indented lines; the
+ * fields. The only field added since is `category` (see
+ * `reviewFindingCategory.ts`), which the parser treats as optional so records
+ * written before it keep parsing. Fields may continue on indented lines; the
  * supported continuation syntax described in the prompt mirrors the field
  * grammar documented on `extractRecordFields` in `reviewRecordFields.ts`.
  */
+const CATEGORY_LIST = REVIEW_FINDING_CATEGORIES.map(category => `\`${category}\``).join(', ');
+
 export function buildReviewPrompt(options: ReviewPromptOptions): string {
     const {
         pullRequestNumber,
@@ -126,6 +167,9 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         ? `\n**AUTHORIZED FOLLOW-UP REQUESTS (amend the original objective; newest first):**\nProPR accepted each request below from an authorized requester and recorded it as completed on this PR. Together with the original objective they form the effective objective: where a request explicitly changes, replaces, or removes an original requirement, the request supersedes that requirement, and a newer request supersedes an older one where they conflict. Every original requirement a request does not explicitly change remains in force. Judge the diff against the effective objective; do not ask to restore behavior that a request explicitly changed.\n\n${authorizedFollowups}\n`
         : '';
 
+    const changeSizeSection = buildChangeSizeSection(options);
+    const acceptanceCriteriaSection = buildAcceptanceCriteriaSection(options.acceptanceCriteria);
+
     const checkSummarySection = checkSummary
         ? `\n**Current Head Checks (authoritative status, not review instructions):**\n${checkSummary}\n\nUse only this section for current check status. Check failures mentioned solely in comment history may be stale. A current failure affects merge readiness and the score, but it is an F# finding only when you can trace it to PR-changed code and satisfy every actionable-finding field below.\n`
         : '';
@@ -141,7 +185,7 @@ Your response MUST contain exactly four markdown sections, in this order:
 Do not omit any section; the **Score** section is mandatory. The detailed instructions for each section appear at the very end of this prompt — follow them exactly. (This format is restated here because the diff below can be long.)
 
 **PR Comment History and Context:**
-${commentHistory}${objectiveSection}${followupSection}
+${commentHistory}${objectiveSection}${followupSection}${acceptanceCriteriaSection}${changeSizeSection}
 ${checkSummarySection}${diffSection}${fileContentsSection}${relatedContextSection}
 **Review Request:**
 ${combinedCommentBody}
@@ -176,16 +220,27 @@ Report only problems that satisfy **all** of these conditions:
 - violate the effective objective (the original objective as amended by authorized follow-up requests) or its acceptance criteria, **or** make behavior changed by the PR incorrect, unsafe, or internally inconsistent;
 - are necessary to correct before merge;
 - have evidence in the actual base-to-head changed code. The evidence field must cite an exact changed-file path from the supplied PR diff; findings supported only by unchanged or adjacent files are rejected by the publisher; and
-- are demonstrated by a reachable failure sequence with material consequences. Naming a possible race, a theoretical ordering, or an unproven assumption is not a demonstration.
+- are demonstrated by a reachable failure sequence with material consequences, or, for the \`requirement\`, \`tests\`, \`complexity\`, and \`style\` categories below, by the concrete gap between the changed code and what was asked for or required. Naming a possible race, a theoretical ordering, or an unproven assumption is not a demonstration.
 
 Use sequential IDs and this exact record shape for every blocker:
 
 ### F1: Short title
+- **category:** one of ${CATEGORY_LIST}
 - **violatedRequirement:** The original requirement, acceptance criterion, or correctness/safety invariant of changed behavior that is violated
 - **evidence:** \`changed/file.ts:123\` — trigger, ordered failure sequence, observable consequence, why existing protections do not prevent it, and how it was verified
 - **introducedByPR:** true — why this PR introduced or exposed the problem
 - **requiredForMerge:** true
 - **minimumCorrection:** the smallest correction that removes the demonstrated failure
+
+**Category.** Give every blocker exactly one category from this closed list:
+- \`correctness\` — behavior changed by the PR is wrong, unsafe, or internally inconsistent.
+- \`requirement\` — the effective objective or an acceptance criterion is not delivered, including a reduced or placeholder version reported as done (stubbed code, skipped or deleted tests, a "for now" implementation).
+- \`security\` — the change exposes data, credentials, or privileges, or weakens an access boundary.
+- \`tests\` — changed behavior lacks tests the objective or repository rules require, or existing tests were weakened.
+- \`complexity\` — the PR adds abstractions, layers, options, or platform, database, or environment support that the effective objective did not ask for, or is much larger than the objective implies.
+- \`style\` — the change violates an explicit repository rule about form; cite the rule. Every other stylistic point belongs in Suggestions and Follow-ups.
+
+For a \`requirement\`, \`tests\`, \`complexity\`, or \`style\` blocker, the demonstrated failure is that concrete gap: cite the requirement, objective text, or repository rule, cite the changed code, and state what merging it as is would leave behind. Do not invent a runtime failure sequence for it.
 
 **Field layout.** Start every field on its own unindented \`- **field:**\` line. A field may continue on the following lines when that makes it easier to read: indent every continuation line by two spaces, separate paragraphs with a blank line, and use indented numbered (\`1.\`) or bulleted (\`-\`) lists. Inline code and links are fine. Only unindented \`- **field:**\` lines, \`### F#\` headings, and \`## \` section headings are structural; indented text always belongs to the current field. Any other unindented line inside a finding — an unindented list item, heading, table, or stray paragraph — makes the whole review invalid, so never outdent continuation text. Do not add headings or tables inside a field. Keep simple fields on one line.
 
@@ -433,6 +488,12 @@ export function buildReviewPromptWithinBudget(
 ): ReviewPromptBudgetResult {
     const estimator = budgetOptions.estimator ?? new ReviewTokenEstimator('generic-calibrated');
     const { preparedDiff } = budgetOptions;
+    // Size context describes the whole change, so it is fixed before trimming.
+    options = {
+        ...options,
+        diffStats: options.diffStats ?? preparedDiff?.stats,
+        effectiveObjectiveWords: options.effectiveObjectiveWords ?? effectiveObjectiveWordCount(options),
+    };
     let target = maxContextTokens;
     let estimatedTokens = 0;
 

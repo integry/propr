@@ -127,7 +127,7 @@ export interface PostProcessOptions {
     octokit: Octokit & Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'auth'>;
     issueRef: IssueJobData;
     worktreeInfo: WorktreeInfo;
-    currentIssueData: { data: { title: string; labels: Array<{ name: string }>; user?: { login?: string } | null } };
+    currentIssueData: { data: { title: string; body?: string | null; labels: Array<{ name: string }>; user?: { login?: string } | null } };
     claudeResult: ClaudeCodeResponse;
     modelName: string;
     repoValidation: RepoValidation;
@@ -291,6 +291,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 stateManager,
                 diffBase: options.diffBase,
                 review: options.review,
+                issueBody: currentIssueData.data.body,
             }
         );
 
