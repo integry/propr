@@ -577,6 +577,18 @@ export interface TaskAssigneesUpdate {
   mode?: "add" | "replace";
 }
 
+/** One attempt of an automatic-replacement lineage. */
+export interface TaskAttempt {
+  taskId: string;
+  /** 1 for the original run, then 2, 3, … for each automatic replacement. */
+  attemptNumber: number;
+  /** Why this attempt was created: `infra_lost` or `provider_transient`. Null for the original run. */
+  replacementCause: string | null;
+  /** Latest lifecycle state of the attempt. */
+  state: string | null;
+  createdAt: string | null;
+}
+
 /** One entry of a task's lifecycle history. */
 export interface TaskEvent {
   /** Lifecycle state entered at this point. */
@@ -637,15 +649,50 @@ export interface TaskHistory {
   taskId: string;
   /** Lifecycle events, oldest first. */
   history: TaskEvent[];
-  /** Repository, issue, pull request and agent details of the task. */
-  taskInfo: {
-    [key: string]: unknown;
-  } | null;
+  taskInfo: TaskInfo | null;
   /** Spend so far against the task's cost cap, when a cap applies. */
   budget?: {
     [key: string]: unknown;
   };
   [key: string]: unknown;
+}
+
+/** Repository, issue, pull request, agent and replacement-lineage details of a task. Live and queued tasks without a stored row omit the lineage fields. */
+export interface TaskInfo {
+  repoOwner?: string;
+  repoName?: string;
+  /** Pull request number for follow-up tasks, otherwise the issue number. */
+  number?: number | null;
+  /** `issue`, `pr-comment`, `goal`, `agent-run` and other task types. */
+  type?: string;
+  /** The issue a pull request follow-up task belongs to. */
+  issueNumber?: number;
+  correlationId?: string | null;
+  title?: string | null;
+  subtitle?: string | null;
+  modelName?: string | null;
+  agentAlias?: string | null;
+  /** Automation task kind, for automation report and action tasks. */
+  taskKind?: string;
+  commandMode?: string;
+  ultrafixCycle?: true;
+  /** Comments a live or queued follow-up task carries. */
+  comments?: unknown[];
+  /** Where `POST /api/task/{taskId}/followup` posts. */
+  followupTarget?: {
+    taskId: string;
+    repository: string;
+    kind: "issue" | "pull_request";
+    number: number;
+  };
+  /** Automatic-replacement attempt number; 1 for an original run. Present for every stored task. */
+  attemptNumber?: number;
+  /** The earlier attempt this task replaced, or null. Present for every stored task. */
+  replacesTaskId?: string | null;
+  /** The newer attempt that replaced this task, or null. Present for every stored task. */
+  replacedByTaskId?: string | null;
+  /** Every attempt of the lineage, oldest first; only when the task was replaced or is a replacement. */
+  attemptLineage?: TaskAttempt[];
 }
 
 /** A page of task runs. */
@@ -697,7 +744,12 @@ export interface TaskSubmission {
   state: "prepared" | "creating" | "issue_created" | "queued" | "failed";
   issueNumber: number | null;
   issueUrl: string | null;
+  /** The first execution, kept for compatibility; equals `firstTaskId`. */
   taskId: string | null;
+  /** The submission's first execution. */
+  firstTaskId: string | null;
+  /** The newest execution of the submission's issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`. */
+  latestTaskId: string | null;
   error: string | null;
 }
 

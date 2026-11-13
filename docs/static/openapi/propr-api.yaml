@@ -30,8 +30,8 @@ info:
     identifier: Apache-2.0
   x-route-coverage:
     total: 310
-    documented: 72
-    undocumented: 238
+    documented: 73
+    undocumented: 237
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -3761,23 +3761,61 @@ paths:
       x-undocumented: true
       x-legacy-error: true
     post:
-      operationId: postApiGoals
-      summary: POST /api/goals
-      description: This route is registered but not documented yet.
+      operationId: createGoal
+      summary: Create a goal
+      description: |-
+        Creates a goal and starts autonomous work on it. The request and response bodies are not described here yet; the MCP tool `create_goal` and `get_goal_capabilities` document the creation contract.
+
+        Creation is idempotent per user and `Idempotency-Key`: repeating a request with the same key and the same body returns the goal it created (`200`) instead of creating another one. Reusing a key with a different body, or a key already used for another goal operation, is rejected with `409`.
+
+        Send JSON, or `multipart/form-data` with the JSON in a `payload` field and up to 10 attachments in `files`.
       tags:
         - Goals
       security:
         - sessionCookie: []
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Client-chosen identity of this creation, for example a UUID. Required; a missing or longer key is rejected with `400`.
+          schema:
+            type: string
+            maxLength: 255
       responses:
         "200":
-          description: Success. The response body is not documented yet.
+          description: "A replay: the goal this key already created, as `{ goal }`."
+        "201":
+          description: The goal was created and its first attempt queued, as `{ goal }`.
+        "400":
+          description: Missing or invalid `Idempotency-Key`, or an invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: The repository is not accessible to this installation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The `Idempotency-Key` was already used with a different body or for a different goal operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: The goal was saved but its first attempt could not be queued; recovery retries it. The body carries `goalId`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
-      x-undocumented: true
       x-legacy-error: true
   /api/goals/attention:
     get:
@@ -10602,6 +10640,37 @@ components:
         - logins
       additionalProperties: false
       description: A change to a task's assignees.
+    TaskAttempt:
+      type: object
+      properties:
+        taskId:
+          type: string
+        attemptNumber:
+          type: integer
+          minimum: 1
+          description: 1 for the original run, then 2, 3, … for each automatic replacement.
+        replacementCause:
+          description: "Why this attempt was created: `infra_lost` or `provider_transient`. Null for the original run."
+          type:
+            - string
+            - "null"
+        state:
+          description: Latest lifecycle state of the attempt.
+          type:
+            - string
+            - "null"
+        createdAt:
+          type:
+            - string
+            - "null"
+      required:
+        - taskId
+        - attemptNumber
+        - replacementCause
+        - state
+        - createdAt
+      additionalProperties: false
+      description: One attempt of an automatic-replacement lineage.
     TaskEvent:
       type: object
       properties:
@@ -10740,11 +10809,8 @@ components:
           description: Lifecycle events, oldest first.
         taskInfo:
           anyOf:
-            - type: object
-              properties: {}
-              additionalProperties: {}
+            - $ref: "#/components/schemas/TaskInfo"
             - type: "null"
-          description: Repository, issue, pull request and agent details of the task.
         budget:
           description: Spend so far against the task's cost cap, when a cap applies.
           type: object
@@ -10756,6 +10822,98 @@ components:
         - taskInfo
       additionalProperties: {}
       description: A task together with its lifecycle events.
+    TaskInfo:
+      type: object
+      properties:
+        repoOwner:
+          type: string
+        repoName:
+          type: string
+        number:
+          description: Pull request number for follow-up tasks, otherwise the issue number.
+          anyOf:
+            - type: integer
+            - type: "null"
+        type:
+          description: "`issue`, `pr-comment`, `goal`, `agent-run` and other task types."
+          type: string
+        issueNumber:
+          description: The issue a pull request follow-up task belongs to.
+          type: integer
+        correlationId:
+          type:
+            - string
+            - "null"
+        title:
+          type:
+            - string
+            - "null"
+        subtitle:
+          type:
+            - string
+            - "null"
+        modelName:
+          type:
+            - string
+            - "null"
+        agentAlias:
+          type:
+            - string
+            - "null"
+        taskKind:
+          description: Automation task kind, for automation report and action tasks.
+          type: string
+        commandMode:
+          type: string
+        ultrafixCycle:
+          type: boolean
+          const: true
+        comments:
+          description: Comments a live or queued follow-up task carries.
+          type: array
+          items: {}
+        followupTarget:
+          description: Where `POST /api/task/{taskId}/followup` posts.
+          type: object
+          properties:
+            taskId:
+              type: string
+            repository:
+              type: string
+            kind:
+              type: string
+              enum:
+                - issue
+                - pull_request
+            number:
+              type: integer
+          required:
+            - taskId
+            - repository
+            - kind
+            - number
+          additionalProperties: false
+        attemptNumber:
+          description: Automatic-replacement attempt number; 1 for an original run. Present for every stored task.
+          type: integer
+          minimum: 1
+        replacesTaskId:
+          description: The earlier attempt this task replaced, or null. Present for every stored task.
+          type:
+            - string
+            - "null"
+        replacedByTaskId:
+          description: The newer attempt that replaced this task, or null. Present for every stored task.
+          type:
+            - string
+            - "null"
+        attemptLineage:
+          description: Every attempt of the lineage, oldest first; only when the task was replaced or is a replacement.
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskAttempt"
+      additionalProperties: false
+      description: Repository, issue, pull request, agent and replacement-lineage details of a task. Live and queued tasks without a stored row omit the lineage fields.
     TaskPage:
       type: object
       properties:
@@ -10883,6 +11041,17 @@ components:
             - string
             - "null"
         taskId:
+          description: The first execution, kept for compatibility; equals `firstTaskId`.
+          type:
+            - string
+            - "null"
+        firstTaskId:
+          description: The submission's first execution.
+          type:
+            - string
+            - "null"
+        latestTaskId:
+          description: "The newest execution of the submission's issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`."
           type:
             - string
             - "null"
@@ -10896,6 +11065,8 @@ components:
         - issueNumber
         - issueUrl
         - taskId
+        - firstTaskId
+        - latestTaskId
         - error
       additionalProperties: false
       description: Progress of a task submission. `queued` means the run was enqueued.

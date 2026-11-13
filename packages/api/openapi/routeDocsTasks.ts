@@ -15,12 +15,12 @@ import {
   TaskFollowupRuns,
   TaskFollowupRunsQuery,
   TaskReviewResult,
-  TaskHistory,
   TaskPage,
   TaskSubmission,
   TaskSubmissionRequest,
 } from './schemas.js';
 import { RepositoryEventList, RepositoryEventWait, RepositoryEventsQuery, RepositoryEventsWaitQuery } from './schemasRepositoryEvents.js';
+import { TaskHistory } from './schemasTaskHistory.js';
 import type { RouteDoc } from './types.js';
 
 const TASK_ID = 'Task (run) identifier, as returned in `TaskSummary.id`.';

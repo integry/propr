@@ -17,7 +17,7 @@
     "@electron/packager": "20.3.0",
     "@electron/rebuild": "4.2.0",
     "braces": "$braces",
-    "hono": "4.13.12",
+    "hono": "4.13.18",
     "postcss-selector-parser": "7.1.6",
     "react": "19.2.7",
     "repomix": {

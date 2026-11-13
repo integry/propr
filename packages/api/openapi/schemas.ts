@@ -185,21 +185,6 @@ export const TaskPage = component('TaskPage', z.object({
   totalRuns: z.number().int().optional().describe('With `groupBy=task`: matching runs across all tasks.'),
 }), 'A page of task runs.');
 
-export const TaskEvent = component('TaskEvent', z.object({
-  state: z.string().describe('Lifecycle state entered at this point.'),
-  timestamp: z.string().describe('When the state was entered (ISO 8601).'),
-  reason: z.string().nullable().optional(),
-  message: z.string().optional(),
-  metadata: z.object({}).loose().nullable().optional(),
-}).loose(), 'One entry of a task\'s lifecycle history.');
-
-export const TaskHistory = component('TaskHistory', z.object({
-  taskId: z.string(),
-  history: z.array(TaskEvent).describe('Lifecycle events, oldest first.'),
-  taskInfo: z.object({}).loose().nullable().describe('Repository, issue, pull request and agent details of the task.'),
-  budget: z.object({}).loose().optional().describe('Spend so far against the task\'s cost cap, when a cap applies.'),
-}).loose(), 'A task together with its lifecycle events.');
-
 export const ExtensionProfileInput = component('ExtensionProfileInput', extensionProfileInputSchema as unknown as z.ZodType, 'Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
 export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType);
 export const ExtensionProfileSave = component('ExtensionProfileSave', z.strictObject({ input: ExtensionProfileInput, expected: ExtensionSelection.optional(), secrets: z.record(z.string(), z.string().nullable()).optional() }));
@@ -232,7 +217,9 @@ export const TaskSubmission = component('TaskSubmission', z.object({
   state: z.enum(['prepared', 'creating', 'issue_created', 'queued', 'failed']),
   issueNumber: z.number().int().nullable(),
   issueUrl: z.string().nullable(),
-  taskId: z.string().nullable(),
+  taskId: z.string().nullable().describe('The first execution, kept for compatibility; equals `firstTaskId`.'),
+  firstTaskId: z.string().nullable().describe('The submission\'s first execution.'),
+  latestTaskId: z.string().nullable().describe('The newest execution of the submission\'s issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`.'),
   error: z.string().nullable(),
 }), 'Progress of a task submission. `queued` means the run was enqueued.');
 
