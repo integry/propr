@@ -15,6 +15,16 @@ export const ReferenceChip: React.FC<{ children: React.ReactNode; title?: string
 );
 
 /**
+ * The chip for a task with no pull request or issue. An automation run's id is
+ * `agent-run-<run id>-<phase>`, whose first characters say nothing, so it is named instead.
+ */
+export const TaskIdChip: React.FC<{ task: Pick<Task, 'id'> }> = ({ task }) => (
+  task.id.startsWith('agent-run-')
+    ? <ReferenceChip title={`Automation run ${task.id}`}>Automation</ReferenceChip>
+    : <ReferenceChip title={`Task ${task.id}`}>#{task.id.substring(0, 8)}</ReferenceChip>
+);
+
+/**
  * PR / Issue chips for a task. Each chip is prefixed with its entity type, and
  * the issue chip is omitted when it would repeat the PR number (a PR task's
  * issueNumber is the PR itself).
@@ -24,7 +34,7 @@ export const TaskReferenceChips: React.FC<{ task: Task; prNumber?: number | null
   const showIssue = Boolean(issueToShow) && issueToShow !== prNumber;
 
   if (!prNumber && !showIssue) {
-    return <ReferenceChip title={`Task ${task.id}`}>#{task.id.substring(0, 8)}</ReferenceChip>;
+    return <TaskIdChip task={task} />;
   }
 
   return (
