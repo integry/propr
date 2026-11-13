@@ -73,10 +73,11 @@ describe('automation event triggers', () => {
 
   let nextPosition = 0;
   /** Records one blocked event for a plan issue, as the queue's writer does. */
-  async function block(issueNumber: number, { draftId = 'plan-app', kind = 'agent_blocked', reason = 'Needs credentials' } = {}): Promise<number> {
+  async function block(issueNumber: number,
+    { draftId = 'plan-app', kind = 'agent_blocked', reason = 'Needs credentials', id }: { draftId?: string; kind?: string; reason?: string; id?: number } = {}): Promise<number> {
     nextPosition += 1;
     const [row] = await database('epic_queue_blocked_events').insert({
-      draft_id: draftId, execution_id: `exec-${draftId}`, issue_number: issueNumber, position: nextPosition, event: 'blocked',
+      ...(id === undefined ? {} : { id }), draft_id: draftId, execution_id: `exec-${draftId}`, issue_number: issueNumber, position: nextPosition, event: 'blocked',
       blocked_kind: kind, blocked_reason: reason, blocked_event_id: null, resolution: null, created_at: clock, notified_at: null,
     }).returning('id');
     return Number(typeof row === 'object' ? (row as { id: number }).id : row);
@@ -335,6 +336,42 @@ describe('automation event triggers', () => {
     assert.equal((await sweep()).created, 1);
   });
 
+  test('an event that commits below an id already read is still run', async () => {
+    // Ids order allocation, not commit: a writer holding id 101 commits after the writer of 102.
+    // The watermark (here a stand-in for the writers' lock) stays below 101 until it commits.
+    const definition = await define();
+    clock += 1_000;
+    const cursor = await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database });
+    const late = Number(cursor) + 1;
+    let watermark = Number(cursor);
+    const early = await block(8, { id: late + 1 });
+    assert.equal((await sweep({ watermark: async () => watermark })).created, 0);
+    assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), cursor);
+
+    await block(7, { id: late });
+    watermark = early;
+    assert.equal((await sweep({ watermark: async () => watermark })).created, 2);
+    assert.deepEqual((await runsOf(definition)).map(run => run.triggerEvent?.eventId).sort(), [late, early].sort());
+    assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), early);
+  });
+
+  test('a watermark that cannot be read leaves every cursor in place, and is read once per sweep', async () => {
+    const first = await define();
+    const second = await define({ name: 'Escalate' });
+    clock += 1_000;
+    const eventId = await block(5);
+    let reads = 0;
+    const failing = await sweep({ watermark: async () => { reads += 1; throw new Error('lock timeout'); } });
+    assert.equal(reads, 1);
+    assert.equal(failing.created, 0);
+    assert.equal(failing.failed, 2);
+    for (const definition of [first, second]) {
+      assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), eventId - 1);
+    }
+    // The next sweep reads the log's own watermark and runs the event for both.
+    assert.equal((await sweep()).created, 2);
+  });
+
   test('events from before the subscription or while disabled are not run later', async () => {
     await block(1);
     const definition = await define();
@@ -384,7 +421,9 @@ describe('automation event triggers', () => {
       },
     });
 
-    const result = await sweep({ database: paused });
+    // The event is recorded while the query runs, so it is above any watermark read before it;
+    // an unbounded watermark lets the batch reach admission, where the reset fence is under test.
+    const result = await sweep({ database: paused, watermark: async () => Number.MAX_SAFE_INTEGER });
     assert.equal(intercepted, true);
     assert.deepEqual({ created: result.created, existing: result.existing, skipped: result.skipped }, { created: 0, existing: 0, skipped: 0 });
     assert.equal((await runsOf(definition)).length, 0);

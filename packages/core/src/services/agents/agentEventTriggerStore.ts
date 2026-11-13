@@ -156,14 +156,20 @@ export async function listEventSubscribedAgentDefinitionIds(
   return query.orderBy('id').limit(Math.max(1, Math.trunc(limit))).pluck('id');
 }
 
-/** `plan.issue_blocked` events after a cursor, oldest first, with their plan's repository and name. */
+/**
+ * `plan.issue_blocked` events after a cursor and up to `through`, oldest first, with their
+ * plan's repository and name. `through` must be a `committedBlockedEventWatermark`: an id
+ * above it may belong to a write that is still in progress, behind which a lower id can
+ * still commit, and a cursor moved past that lower id would never deliver it.
+ */
 export async function listPlanIssueBlockedEventsAfter(
   cursor: number,
   limit: number,
-  { database = db }: { database?: Knex } = {},
+  { database = db, through }: { database?: Knex; through: number },
 ): Promise<PlanIssueBlockedEventRecord[]> {
+  if (through <= cursor) return [];
   const rows = await database(`${BLOCKED_EVENTS} as e`).leftJoin('task_drafts as d', 'd.draft_id', 'e.draft_id')
-    .where('e.event', 'blocked').where('e.id', '>', cursor).orderBy('e.id').limit(Math.max(1, Math.trunc(limit)))
+    .where('e.event', 'blocked').where('e.id', '>', cursor).where('e.id', '<=', through).orderBy('e.id').limit(Math.max(1, Math.trunc(limit)))
     .select<Array<Record<string, unknown>>>('e.id', 'e.draft_id', 'e.execution_id', 'e.issue_number', 'e.blocked_kind', 'e.blocked_reason',
       'e.created_at', 'd.repository', 'd.name');
   return rows.map(row => ({

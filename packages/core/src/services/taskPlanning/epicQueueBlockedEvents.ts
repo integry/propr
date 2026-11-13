@@ -86,7 +86,56 @@ export async function syncBlockedEvents(trx: Knex, occurrence: BlockedOccurrence
   return ids;
 }
 
+/**
+ * Ids order allocation, not commit: on a database with concurrent writers, a transaction
+ * that took id 101 can commit after one that took 102, so a reader that consumed 102 and
+ * moved its cursor past it would never see 101. The committed watermark closes that window.
+ * Every writer holds this advisory lock shared from before it allocates an id until it
+ * commits; `committedBlockedEventWatermark` takes it exclusively, so it waits for every
+ * writer that may still commit an id, and reads the newest id while no writer holds an
+ * unallocated or uncommitted one. Every id at or below that watermark is final (committed or
+ * rolled back), and every later id is above it (`serial` ids increase).
+ *
+ * SQLite needs no lock: it has a single writer, which allocates ids and commits under the
+ * database write lock, so commits are in id order and any read sees a committed prefix.
+ */
+const BLOCKED_EVENT_WRITERS_LOCK = 7_350_420_917_001;
+const DEFAULT_WATERMARK_LOCK_TIMEOUT_MS = 2_000;
+
+function writersSerialized(database: Knex): boolean {
+  return database.client.config.client === 'better-sqlite3';
+}
+
+async function joinBlockedEventWriters(trx: Knex): Promise<void> {
+  // Re-entrant: a transaction recording several events takes it again at no cost.
+  if (!writersSerialized(trx)) await trx.raw('select pg_advisory_xact_lock_shared(?)', [BLOCKED_EVENT_WRITERS_LOCK]);
+}
+
+async function newestBlockedEventId(database: Knex): Promise<number> {
+  const row = await database(EPIC_QUEUE_BLOCKED_EVENTS).max<{ id: number | string | null }>({ id: 'id' }).first();
+  return Number(row?.id ?? 0);
+}
+
+/**
+ * The newest event id no write still in progress can commit below: a reader that only goes
+ * up to it never moves a cursor past an event that commits later. Waits up to
+ * `lockTimeoutMs` for the writers in progress (and holds new writers back meanwhile), then
+ * throws; the caller retries later rather than read past them. Use the connection, not a
+ * transaction: the lock is held until the surrounding transaction ends.
+ */
+export async function committedBlockedEventWatermark(database: Knex = db,
+  { lockTimeoutMs = DEFAULT_WATERMARK_LOCK_TIMEOUT_MS }: { lockTimeoutMs?: number } = {}): Promise<number> {
+  if (writersSerialized(database)) return newestBlockedEventId(database);
+  const timeout = Math.max(1, Math.trunc(lockTimeoutMs));
+  return database.transaction(async trx => {
+    await trx.raw(`set local lock_timeout = '${timeout}ms'`);
+    await trx.raw('select pg_advisory_xact_lock(?)', [BLOCKED_EVENT_WRITERS_LOCK]);
+    return newestBlockedEventId(trx);
+  });
+}
+
 async function insertEvent(trx: Knex, row: Omit<EventRow, 'id'>): Promise<number> {
+  await joinBlockedEventWriters(trx);
   const [inserted] = await trx(EPIC_QUEUE_BLOCKED_EVENTS).insert(row).returning('id');
   return Number(typeof inserted === 'object' ? (inserted as { id: number }).id : inserted);
 }

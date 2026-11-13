@@ -9,6 +9,7 @@ import {
     AgentRunAdmissionRefusedError,
     AgentRunTriggerError,
     advanceAgentDefinitionEventCursor,
+    committedBlockedEventWatermark,
     countAgentRunsForTriggerSubject,
     createAgentRunCostGate,
     db,
@@ -45,6 +46,9 @@ import {
  * - At most one run per event and definition: the run's idempotency key is the event id,
  *   and the cursor only moves past an event once its run (or the reason it did not run) is
  *   recorded. A restart or a repeated delivery replays the same receipt.
+ * - Events are read only up to the committed watermark of the event log, the newest id no
+ *   write still in progress can commit below. Ids order allocation, not commit, so a cursor
+ *   moved past an id above it could skip a lower id that commits later.
  * - Events from before a subscription, or from while the definition was disabled, are not
  *   run: the cursor jumps to the newest event when the definition subscribes or is enabled.
  * - Every run goes through `triggerAgentRun` as an unattended `event` run, so the cost gate,
@@ -80,6 +84,8 @@ export interface AgentEventTriggerSweepDependencies {
     batchSize?: number;
     /** Base URL of the web UI for plan links. */
     frontendUrl?: string;
+    /** The event log's committed watermark (`committedBlockedEventWatermark`); read at most once per sweep. */
+    watermark?: () => Promise<number>;
 }
 
 export interface AgentEventTriggerSweepResult {
@@ -111,6 +117,8 @@ interface SweepContext {
     dispatched: Set<string>;
     batchSize: number;
     frontendUrl: string;
+    /** Events above it are not read; read once per sweep, and only when a subscription has a cursor. */
+    watermark: () => Promise<number>;
 }
 
 function defaultFrontendUrl(): string {
@@ -138,6 +146,12 @@ export function planIssueBlockedTriggerEvent(event: PlanIssueBlockedEventRecord 
 /** The issue an event concerns; runs per definition and subject are bounded. */
 export function planIssueTriggerSubject(event: Pick<PlanIssueBlockedEventRecord, 'draftId' | 'issueNumber'>): string {
     return `plan.issue_blocked:${event.draftId}:${event.issueNumber}`;
+}
+
+/** Calls `read` on first use only; a failure is kept too, so a sweep waits for the writers at most once. */
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+    let value: Promise<T> | null = null;
+    return () => (value ??= read());
 }
 
 async function readDefinition(id: string, database: Knex): Promise<StoredAgentDefinition | null> {
@@ -229,7 +243,9 @@ async function sweepSubscription(definitionId: string, subscription: AutomationE
     // A subscriber without a cursor starts at the newest event and runs nothing older.
     if (stored === null) { await initializeAgentDefinitionEventCursor(definitionId, subscription.event, storeDeps); return; }
     let cursor = stored;
-    const events = await listPlanIssueBlockedEventsAfter(cursor, context.batchSize, storeDeps);
+    // Only ids no write in progress can still commit below: a cursor moved past a later id would skip them for good.
+    const through = await context.watermark();
+    const events = await listPlanIssueBlockedEventsAfter(cursor, context.batchSize, { database: context.database, through });
     for (const event of events) {
         let outcome: EventOutcome | typeof FENCED = FENCED;
         for (let attempt = 0; attempt < EDITED_DEFINITION_ATTEMPTS && outcome === FENCED; attempt += 1) {
@@ -315,6 +331,7 @@ export async function runAgentEventTriggerSweep(
         dispatched: new Set(),
         batchSize: deps.batchSize ?? AGENT_EVENT_TRIGGER_BATCH_SIZE,
         frontendUrl: (deps.frontendUrl ?? defaultFrontendUrl()).replace(/\/+$/, ''),
+        watermark: once(deps.watermark ?? (() => committedBlockedEventWatermark(database))),
     };
     const startedAt = clock();
     const result: AgentEventTriggerSweepResult = { created: 0, existing: 0, skipped: 0, unmatched: 0, redispatched: 0, failed: 0 };
