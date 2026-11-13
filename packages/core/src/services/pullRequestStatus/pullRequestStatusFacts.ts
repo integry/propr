@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import type { Redis } from 'ioredis';
 import { summarizeCheckSignals } from '../../webhook/checkRunHelpers.js';
+import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { loadPullRequestScoreHistory } from '../reviewScoreStore.js';
 import logger from '../../utils/logger.js';
@@ -223,6 +224,39 @@ async function loadCheckRuns(
     return { runs, complete: false };
 }
 
+interface LegacyStatusContext { context?: string; state?: string }
+interface LegacyStatusPage { state?: string; total_count?: number; statuses?: LegacyStatusContext[] }
+interface LegacyStatusInfo { state: string; totalCount: number; statuses: LegacyStatusContext[] }
+/** Legacy contexts classified by this loader; `summary` is what the shared summary still has to interpret. */
+interface LegacyChecks { summary: LegacyStatusInfo; count: number; nonBlocking: number; failed: string[]; pending: string[] }
+
+const FAILED_LEGACY_STATES = new Set(['failure', 'error']);
+
+/**
+ * Legacy commit statuses on the head. With every context listed, each
+ * blocking context is classified on its own: a mixed head (one context
+ * failed, another pending) is one failed and one pending, never a failed and
+ * a passed. When contexts went unlisted only the combined state is
+ * trustworthy, and it is left to the shared summary's conservative reading.
+ */
+function classifyLegacyStatuses(page: LegacyStatusPage | null, patterns: readonly string[]): LegacyChecks {
+    const statuses = Array.isArray(page?.statuses) ? page.statuses : [];
+    const totalCount = page?.total_count ?? statuses.length;
+    const none: LegacyChecks = { summary: { state: 'success', totalCount: 0, statuses: [] }, count: 0, nonBlocking: 0, failed: [], pending: [] };
+    if (page === null) return none;
+    if (statuses.length < totalCount) return { ...none, summary: { state: page.state ?? 'success', totalCount, statuses } };
+    const blocking = statuses.filter(status => !isNonBlockingCheck(status.context, patterns));
+    const names = (keep: (state: string) => boolean): string[] =>
+        blocking.filter(status => keep(status.state ?? '')).map(status => status.context || 'commit status');
+    return {
+        summary: none.summary,
+        count: statuses.length,
+        nonBlocking: statuses.length - blocking.length,
+        failed: names(state => FAILED_LEGACY_STATES.has(state)),
+        pending: names(state => state === 'pending'),
+    };
+}
+
 /** Blocking checks on the head; nonBlockingChecks neither fail nor hold the status. */
 export async function loadPullRequestStatusChecks(
     sources: Pick<PullRequestStatusSources, 'github' | 'loadNonBlockingChecks'>, owner: string, repo: string, ref: string,
@@ -233,18 +267,19 @@ export async function loadPullRequestStatusChecks(
         sources.loadNonBlockingChecks(owner, repo),
     ]);
     const checkRuns = runs.status === 'fulfilled' ? runs.value.runs : [];
-    const statusData = status.status === 'fulfilled' ? status.value.data as { state?: string; total_count?: number; statuses?: Array<{ context?: string; state?: string }> } : null;
-    const statuses = Array.isArray(statusData?.statuses) ? statusData.statuses : [];
-    const commitStatus = { state: statusData?.state ?? 'success', totalCount: statusData?.total_count ?? statuses.length, statuses };
-    const summary = summarizeCheckSignals(checkRuns, commitStatus, patterns.status === 'fulfilled' ? patterns.value : []);
-    const failed = summary.blockingFailed?.length ?? 0;
-    const pending = summary.blockingPending?.length ?? 0;
+    const patternList = patterns.status === 'fulfilled' ? patterns.value : [];
+    const legacy = classifyLegacyStatuses(status.status === 'fulfilled' ? status.value.data as LegacyStatusPage : null, patternList);
+    const summary = summarizeCheckSignals(checkRuns, legacy.summary, patternList);
+    const failedNames = [...(summary.blockingFailed ?? []), ...legacy.failed];
+    const failed = failedNames.length;
+    const pending = (summary.blockingPending?.length ?? 0) + legacy.pending.length;
+    const nonBlocking = (summary.nonBlockingCount ?? 0) + legacy.nonBlocking;
     return {
         complete: runs.status === 'fulfilled' && runs.value.complete && status.status === 'fulfilled',
-        passed: Math.max(0, summary.count - (summary.nonBlockingCount ?? 0) - failed - pending),
+        passed: Math.max(0, summary.count + legacy.count - nonBlocking - failed - pending),
         failed,
         pending,
-        failedNames: summary.blockingFailed ?? [],
+        failedNames,
     };
 }
 

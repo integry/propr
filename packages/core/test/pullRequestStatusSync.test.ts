@@ -14,7 +14,7 @@ const {
     PullRequestChangedDuringStatusSyncError, resolvePullRequestsForCommitStatus, setPullRequestStatusMergeabilityRefreshDelaysForTests, syncPullRequestStatus, updatePullRequestBody,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { MAX_STATUS_BACKFILL_REPOSITORIES, schedulePullRequestStatusBackfill, schedulePullRequestStatusForBasePush } = await import('../src/services/pullRequestStatus/pullRequestStatusReconcile.js');
-const { loadPullRequestStatus, loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
+const { loadPullRequestStatus, loadPullRequestStatusChecks, loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
 const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = await import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 // A second instance of the lock module stands in for another process (daemon vs worker): it has its own in-process chains.
 const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
@@ -1196,4 +1196,61 @@ test('a push to a base with more open pull requests than one batch reaches the P
     } finally {
         disablePullRequestStatusSync();
     }
+});
+
+// --- check loader: legacy commit statuses (F19) ---
+
+function checkSources(commitStatus: FakeGitHub['commitStatus'], checkRuns: Array<{ name: string; status: string; conclusion: string | null }> = [], patterns: string[] = []) {
+    return {
+        github: {
+            request: async (route: string) => {
+                if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') return { data: { total_count: checkRuns.length, check_runs: checkRuns } };
+                if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: commitStatus };
+                throw new Error(`unexpected ${route}`);
+            },
+        },
+        loadNonBlockingChecks: async () => patterns,
+    };
+}
+
+test('a failed and a pending legacy context are one failed and one pending, never a passed', async () => {
+    const checks = await loadPullRequestStatusChecks(checkSources({
+        state: 'failure', total_count: 2,
+        statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }],
+    }), 'acme', 'widgets', 'abc');
+    assert.deepEqual(checks, { complete: true, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+});
+
+test('each listed legacy context counts on its own alongside check runs', async () => {
+    const checks = await loadPullRequestStatusChecks(checkSources(
+        { state: 'failure', total_count: 3, statuses: [{ context: 'ci/lint', state: 'error' }, { context: 'ci/build', state: 'pending' }, { context: 'ci/docs', state: 'success' }] },
+        [{ name: 'unit', status: 'completed', conclusion: 'success' }, { name: 'e2e', status: 'in_progress', conclusion: null }],
+    ), 'acme', 'widgets', 'abc');
+    assert.deepEqual(checks, { complete: true, passed: 2, failed: 1, pending: 2, failedNames: ['ci/lint'] });
+});
+
+test('a non-blocking legacy context neither fails nor holds the status, and does not count as passed', async () => {
+    const checks = await loadPullRequestStatusChecks(checkSources(
+        { state: 'failure', total_count: 3, statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }, { context: 'coverage/optional', state: 'failure' }] },
+        [], ['coverage/*'],
+    ), 'acme', 'widgets', 'abc');
+    assert.deepEqual(checks, { complete: true, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+});
+
+test('legacy contexts left unlisted fall back to the combined state', async () => {
+    // total_count says 3 contexts exist but only 2 came back: the per-context
+    // states are not the whole picture, so the combined failure stands alone
+    // and the unlisted context is never reported as passed or pending.
+    const failed = await loadPullRequestStatusChecks(checkSources({
+        state: 'failure', total_count: 3,
+        statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'success' }],
+    }), 'acme', 'widgets', 'abc');
+    assert.equal(failed.complete, true);
+    assert.equal(failed.failed, 1);
+    assert.deepEqual(failed.failedNames, ['ci/lint']);
+    assert.equal(failed.passed + failed.pending, 2);
+
+    const pending = await loadPullRequestStatusChecks(checkSources({ state: 'pending', total_count: 2, statuses: [] }), 'acme', 'widgets', 'abc');
+    assert.equal(pending.failed, 0);
+    assert.ok(pending.pending >= 1, 'a combined pending state holds the status');
 });
