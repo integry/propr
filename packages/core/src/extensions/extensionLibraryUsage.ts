@@ -11,19 +11,21 @@ const parseList = (value: unknown): string[] => {
 
 /** Profile names of the legacy profile mappings, keyed by the migrated item names they list. */
 async function importedFrom(database: Knex, library: ExtensionLibraryRevision): Promise<ExtensionLibraryUsage['importedFrom']> {
-  const result: ExtensionLibraryUsage['importedFrom'] = { servers: {}, skills: {} };
-  if (!await database.schema.hasTable('extension_legacy_profile_items') || !await database.schema.hasTable('extension_profile_revisions')) return result;
+  // Item names are data: null-prototype maps never resolve a name such as `constructor` to an inherited property.
+  const result: ExtensionLibraryUsage['importedFrom'] = { servers: Object.create(null) as Record<string, string[]>, skills: Object.create(null) as Record<string, string[]> };
+  if (!await database.schema.hasTable('extension_legacy_profile_items') || !await database.schema.hasTable('extension_profile_revisions')) return { servers: {}, skills: {} };
   const rows = await database('extension_legacy_profile_items').select('profile_id', 'revision', 'servers', 'skills');
   for (const row of rows) {
     const revision = row.revision ?? (await database('extension_profiles').where({ id: row.profile_id }).first('revision'))?.revision;
     const snapshot = revision === undefined ? undefined : await database('extension_profile_revisions').where({ profile_id: row.profile_id, revision }).first('snapshot');
     let name = String(row.profile_id);
     try { name = (JSON.parse(snapshot?.snapshot ?? 'null') as { name?: string } | null)?.name || name; } catch { /* The id names the profile. */ }
-    const add = (target: Record<string, string[]>, key: string) => { target[key] = [...new Set([...(target[key] ?? []), name])]; };
+    const add = (target: Record<string, string[]>, key: string) => { target[key] = [...new Set([...(Object.hasOwn(target, key) ? target[key] : []), name])]; };
     for (const server of parseList(row.servers)) if (library.servers.some(s => s.name === server)) add(result.servers, server);
     for (const skill of parseList(row.skills)) if (library.skills.some(s => s.bundleId === skill)) add(result.skills, skill);
   }
-  return result;
+  // Ordinary objects for callers; `fromEntries` defines every name as an own property.
+  return { servers: Object.fromEntries(Object.entries(result.servers)), skills: Object.fromEntries(Object.entries(result.skills)) };
 }
 
 /** Automations adding each item of `library`, and profiles its migrated items came from. */

@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { ExtensionLibraryServer } from '@propr/shared';
 import { itemNotes } from './extensionNotes';
+import { CatalogServerDetails } from './ExtensionServerFields';
 import { EMPTY_USAGE, appliesToCodex, extensionChoices, runLimitExcess } from './extensionUi';
 
 const server = (name: string, patch: Partial<ExtensionLibraryServer> = {}) => ({
@@ -40,6 +41,22 @@ describe('extension warnings', () => {
     const notes = text(itemNotes(server('x', { enabled: false, autoApply: false, agents: ['claude-main'] }), { usage, choices }));
     expect(notes).toContain('Imported from profile “Docs”; not applied automatically.');
     expect(notes).toContain('Added by automations “Weekly”, “Nightly”, which currently run without it.');
+  });
+
+  it('reads no migration provenance for a server named like an inherited object property', () => {
+    const notes = itemNotes(server('constructor', { autoApply: false, agents: ['claude-main'] }), { usage: EMPTY_USAGE, choices, secrets: {} });
+    expect(text(notes)).not.toContain('Imported from');
+  });
+
+  it('notes migration provenance of a server named like an inherited object property', () => {
+    const usage = { automations: [], importedFrom: JSON.parse('{"servers":{"constructor":["Docs"]},"skills":{}}') };
+    expect(text(itemNotes(server('constructor', { autoApply: false, agents: ['claude-main'] }), { usage, choices }))).toContain('Imported from profile “Docs”; not applied automatically.');
+  });
+
+  it('falls back to the catalog secret status for a catalog server named like an inherited object property', () => {
+    const catalogServer = { kind: 'catalog', name: 'constructor', catalogId: 'docs', digest: 'abc', enabled: true, tools: [], capability: 'read', repositories: [], agents: [], autoApply: true } as unknown as ExtensionLibraryServer;
+    render(<CatalogServerDetails server={catalogServer} catalog={[{ id: 'docs', secrets: { configured: true } }] as never} secrets={{}} />);
+    expect(screen.getByText('Operator secrets: configured')).toBeTruthy();
   });
 
   it('warns about a Bearer server without a stored token', () => {

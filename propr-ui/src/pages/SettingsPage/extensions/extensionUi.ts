@@ -11,6 +11,9 @@ export type ItemLimitFields = Pick<ExtensionLibrarySkill, 'repositories' | 'agen
 export type LibraryItem = ExtensionLibraryServer | ExtensionLibrarySkill;
 /** New library items apply everywhere and automatically until limited. */
 export const NEW_ITEM_LIMITS: ItemLimitFields = { repositories: [], agents: [], autoApply: true };
+/** The value `record` holds under `key` itself; item names are data, never inherited properties such as `constructor`. */
+export const ownEntry = <T>(record: Record<string, T> | undefined, key: string): T | undefined =>
+  (record && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined);
 export const EMPTY_USAGE: ExtensionLibraryUsage = { automations: [], importedFrom: { servers: {}, skills: {} } };
 
 /** Instance choices the item limits offer, and which agent aliases run Codex. */

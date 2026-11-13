@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryServer, ExtensionSecretStatus } from '@propr/shared';
 import { discoverExtensionTools } from '../../../api/extensionProfilesApi';
 import { ExtensionItemPicker } from './ExtensionItemPicker';
-import { buttonClass, inputClass } from './extensionUi';
+import { buttonClass, inputClass, ownEntry } from './extensionUi';
 
 type Patch = (patch: Partial<ExtensionLibraryServer>) => void;
 
@@ -31,7 +31,7 @@ export function ServerEndpointField({ server, endpoints, onChange }: { server: E
 /** Identity and credential status of an operator catalog server. */
 export function CatalogServerDetails({ server, catalog, secrets }: { server: ExtensionLibraryServer; catalog: ExtensionCatalogEntry[]; secrets?: Record<string, ExtensionSecretStatus> }) {
   if (server.kind !== 'catalog') return null;
-  const configured = (secrets?.[server.name] ?? catalog.find(entry => entry.id === server.catalogId)?.secrets)?.configured;
+  const configured = (ownEntry(secrets, server.name) ?? catalog.find(entry => entry.id === server.catalogId)?.secrets)?.configured;
   return (
     <div className="break-all text-xs text-slate-600">
       <p>Operator catalog entry: {server.catalogId}</p>
