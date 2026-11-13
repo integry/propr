@@ -111,7 +111,9 @@ export interface PullRequestStatus {
     detail: PullRequestStatusDetail;
 }
 
-const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled']);
+/** Task states after which a task no longer runs; every other state is active. */
+export const TERMINAL_TASK_STATES: readonly string[] = ['completed', 'failed', 'cancelled'];
+const TERMINAL_STATES = new Set(TERMINAL_TASK_STATES);
 
 export function isActiveTaskState(state: string): boolean {
     return !TERMINAL_STATES.has(state);

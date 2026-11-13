@@ -6,6 +6,7 @@ import { loadPullRequestScoreHistory } from '../reviewScoreStore.js';
 import logger from '../../utils/logger.js';
 import {
     computePullRequestStatus,
+    TERMINAL_TASK_STATES,
     type PullRequestStatus,
     type PullRequestStatusChecks,
     type PullRequestStatusFacts,
@@ -42,6 +43,7 @@ export interface PullRequestStatusSources {
 const PULL_REQUEST_TASK_TYPES = ['pr-comment', 'review', 'merge_conflict'];
 /** Task types that open a pull request; their `pr_number` is the pull request they produced. */
 const PULL_REQUEST_CREATING_TASK_TYPES = ['issue', 'implementation'];
+/** Newest task records read for the latest outcome; active tasks are read regardless. */
 const TASK_LIMIT = 20;
 const CHECK_RUN_PAGE = 100;
 const MAX_CHECK_RUN_PAGES = 3;
@@ -64,20 +66,43 @@ function taskMode(type: string, jobData: Record<string, unknown>): PullRequestSt
     return review ? 'review' : 'follow_up';
 }
 
+type TaskRow = { task_id: string; task_type: string | null; created_at: string | Date; initial_job_data: unknown; state: string | null };
+
+function createdTime(row: TaskRow): number {
+    const time = row.created_at instanceof Date ? row.created_at.getTime() : Date.parse(String(row.created_at));
+    return Number.isFinite(time) ? time : 0;
+}
+
+/**
+ * The pull request's tasks, newest first: the TASK_LIMIT newest records, which
+ * carry the latest outcome, plus every task still active however many newer
+ * records there are. A history limit alone could hide a running task behind
+ * newer terminal ones (for example newer queued runs that were cancelled), and
+ * the status would then read ready while ProPR is still working.
+ */
 export async function loadPullRequestStatusTasks(db: Knex, repository: string, prNumber: number): Promise<PullRequestStatusTask[]> {
     const latestState = db('task_history').select('state')
         .where('task_id', db.ref('tasks.task_id')).orderBy('history_id', 'desc').limit(1);
-    const rows: Array<{ task_type: string | null; created_at: string; initial_job_data: unknown; state: string | null }> = await db('tasks')
+    const pullRequestTasks = () => db('tasks')
         .where('tasks.repository', repository)
         .andWhere(query => query.where('tasks.pr_number', prNumber)
             .orWhere(nested => nested.whereIn('tasks.task_type', PULL_REQUEST_TASK_TYPES).andWhere('tasks.issue_number', prNumber)))
-        .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc')
-        .limit(TASK_LIMIT)
-        .select('tasks.task_type', 'tasks.created_at', 'tasks.initial_job_data', latestState.as('state'));
-    return rows.map(row => {
-        const type = row.task_type ?? 'issue';
-        return { type, mode: taskMode(type, parseJson(row.initial_job_data)), state: row.state ?? 'pending', createdAt: String(row.created_at) };
-    });
+        .select('tasks.task_id', 'tasks.task_type', 'tasks.created_at', 'tasks.initial_job_data', latestState.clone().as('state'));
+    const [recent, active]: [TaskRow[], TaskRow[]] = await Promise.all([
+        pullRequestTasks().orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc').limit(TASK_LIMIT),
+        // A task without history counts as pending, as isActiveTaskState reads it.
+        db.from(pullRequestTasks().as('pr_tasks'))
+            .where(query => query.whereNull('pr_tasks.state').orWhereNotIn('pr_tasks.state', TERMINAL_TASK_STATES))
+            .select('*'),
+    ]);
+    const rows = new Map<string, TaskRow>();
+    for (const row of [...recent, ...active]) rows.set(row.task_id, row);
+    return [...rows.values()]
+        .sort((a, b) => createdTime(b) - createdTime(a) || (String(b.task_id) < String(a.task_id) ? -1 : String(b.task_id) > String(a.task_id) ? 1 : 0))
+        .map(row => {
+            const type = row.task_type ?? 'issue';
+            return { type, mode: taskMode(type, parseJson(row.initial_job_data)), state: row.state ?? 'pending', createdAt: String(row.created_at) };
+        });
 }
 
 /**

@@ -13,6 +13,9 @@ const {
     resolvePullRequestsForCommitStatus, setPullRequestStatusMergeabilityRefreshDelaysForTests, syncPullRequestStatus, updatePullRequestBody,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
+const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = await import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
+// A second instance of the lock module stands in for another process (daemon vs worker): it has its own in-process chains.
+const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
@@ -30,16 +33,29 @@ const HUMAN_BODY = [
 
 class FakeRedis {
     values = new Map<string, string>();
-    async get(key: string) { return this.values.get(key) ?? null; }
+    expiries = new Map<string, number>();
+    failRenewals = false;
+    private live(key: string) {
+        const expiresAt = this.expiries.get(key);
+        if (expiresAt !== undefined && Date.now() >= expiresAt) { this.values.delete(key); this.expiries.delete(key); }
+        return this.values.get(key);
+    }
+    async get(key: string) { return this.live(key) ?? null; }
     async set(key: string, value: string, ...args: unknown[]) {
-        if (args.includes('NX') && this.values.has(key)) return null;
+        if (args.includes('NX') && this.live(key) !== undefined) return null;
         this.values.set(key, value);
+        const px = args.indexOf('PX');
+        if (px >= 0) this.expiries.set(key, Date.now() + Number(args[px + 1]));
+        else this.expiries.delete(key);
         return 'OK';
     }
-    async del(key: string) { return this.values.delete(key) ? 1 : 0; }
-    async eval(_script: string, _keys: number, key: string, token: string) {
-        if (this.values.get(key) !== token) return 0;
+    async del(key: string) { this.expiries.delete(key); return this.values.delete(key) ? 1 : 0; }
+    async eval(script: string, _keys: number, key: string, token: string, ttl?: string) {
+        if (script.includes('pexpire') && this.failRenewals) throw new Error('redis unavailable');
+        if (this.live(key) !== token) return 0;
+        if (script.includes('pexpire')) { this.expiries.set(key, Date.now() + Number(ttl)); return 1; }
         this.values.delete(key);
+        this.expiries.delete(key);
         return 1;
     }
 }
@@ -501,4 +517,147 @@ test('another body writer near the limit keeps its text and drops the block rath
     const published = 'p'.repeat(PR_BODY_MAX_LENGTH - 20);
     await updatePullRequestBody(github as never, { owner: 'integry', repo: 'propr', pullNumber: PR, body: published }, { preserveStatusBlock: true, redis: redis as never });
     assert.equal(github.pull.body, published);
+});
+
+// --- Active work beyond the task history limit (F8) ---
+
+test('an active task older than 20 newer terminal tasks still reads working, never ready', async () => {
+    await addTask('issue', 'completed');
+    await addTask('pr-comment', 'processing', { commandMode: 'follow_up' });
+    for (let index = 0; index < 20; index++) await addTask('pr-comment', 'cancelled');
+    const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+    assert.ok(facts.tasks.some(task => task.state === 'processing'), 'the active task is read');
+    assert.equal(facts.tasks[0]?.state, 'cancelled', 'newest first, so the latest outcome is still the newest record');
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /🔨 Follow-up in progress/);
+    assert.doesNotMatch(statusLine(), /Ready/);
+});
+
+// --- Body lock lease (F9) ---
+
+const LOCK_KEY = `propr:pr-status:lock:${REPOSITORY}#${PR}`;
+const PREVIEW_BODY = `${HUMAN_BODY}\n\n<!-- propr:visual-preview -->\nNewer preview\n<!-- /propr:visual-preview -->`;
+const fastLock = { ttlMs: 120, renewMs: 30, pollMs: 10, waitMs: 5_000 };
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** A status sync whose facts read stays outstanding until `release` is called. */
+function slowStatusSync(): { done: Promise<string>; factsStarted: Promise<void>; release: () => void } {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const factsStarted = new Promise<void>(resolve => { started = resolve; });
+    const base = deps();
+    const done = syncPullRequestStatus(REPOSITORY, PR, {
+        ...base, sources: { ...base.sources!, loadRatingGoal: async () => { started(); await gate; return 7; } },
+    });
+    return { done, factsStarted, release };
+}
+
+/** Another process's body writer (e.g. visual preview publication): read, then write under its own lock. */
+async function otherProcessPublishesPreview(): Promise<void> {
+    await otherProcessLock.withPullRequestBodyLock(REPOSITORY, PR, redis as never, async lease => {
+        await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner: 'integry', repo: 'propr', pull_number: PR });
+        await lease.assertHeld();
+        await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner: 'integry', repo: 'propr', pull_number: PR, body: PREVIEW_BODY });
+    });
+}
+
+function withFastLock(): void {
+    setPullRequestBodyLockTimingForTests(fastLock);
+    otherProcessLock.setPullRequestBodyLockTimingForTests(fastLock);
+}
+
+function restoreLock(): void {
+    setPullRequestBodyLockTimingForTests(null);
+    otherProcessLock.setPullRequestBodyLockTimingForTests(null);
+}
+
+test('the body lock is renewed while a slow status read runs, so another process waits for it', async () => {
+    await addTask('issue', 'completed');
+    withFastLock();
+    try {
+        const status = slowStatusSync();
+        await status.factsStarted;
+        const other = otherProcessPublishesPreview();
+        await pause(fastLock.ttlMs * 4);
+        assert.equal(github.patches.length, 0, 'the other writer is still waiting for the lock');
+        status.release();
+        assert.equal(await status.done, 'updated');
+        await other;
+        assert.equal(github.patches.length, 2);
+        assert.ok(extractPullRequestStatusBlock(github.patches[0]), 'the status write came first');
+        assert.equal(github.pull.body, PREVIEW_BODY, 'the newer writer read the status body and wrote after it');
+    } finally {
+        restoreLock();
+    }
+});
+
+test('a status writer whose lock was taken over does not overwrite the newer body', async () => {
+    await addTask('issue', 'completed');
+    withFastLock();
+    try {
+        const status = slowStatusSync();
+        await status.factsStarted;
+        // The lease is gone (expired, or lost in a Redis failover) and another process takes the lock.
+        await redis.del(LOCK_KEY);
+        await otherProcessPublishesPreview();
+        assert.equal(github.pull.body, PREVIEW_BODY);
+        status.release();
+        await assert.rejects(status.done, PullRequestBodyLockLostError);
+        assert.equal(github.pull.body, PREVIEW_BODY, 'the stale read of the body is never written');
+        assert.equal(github.patches.length, 1);
+
+        // The retry re-reads the newer body and keeps the preview.
+        assert.equal(await sync(), 'updated');
+        assert.equal(stripPullRequestStatusBlock(github.pull.body), PREVIEW_BODY);
+    } finally {
+        restoreLock();
+    }
+});
+
+test('a lease that lapses while renewals fail is not written through', async () => {
+    await addTask('issue', 'completed');
+    withFastLock();
+    try {
+        const status = slowStatusSync();
+        await status.factsStarted;
+        redis.failRenewals = true;
+        await pause(fastLock.ttlMs * 3);
+        redis.failRenewals = false;
+        status.release();
+        await assert.rejects(status.done, PullRequestBodyLockLostError);
+        assert.equal(github.patches.length, 0);
+        assert.equal(github.pull.body, HUMAN_BODY);
+    } finally {
+        restoreLock();
+    }
+});
+
+test('another body writer whose lock was taken over does not overwrite the newer body', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    withFastLock();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let reading!: () => void;
+    const readStarted = new Promise<void>(resolve => { reading = resolve; });
+    // The writer's GitHub read stays outstanding past its lease.
+    const slowGitHub = {
+        request: async (route: string, params: Record<string, unknown>) => {
+            if (route.startsWith('GET ')) { const response = await github.request(route, params); reading(); await gate; return response; }
+            return await github.request(route, params);
+        },
+    };
+    try {
+        const published = `${HUMAN_BODY}\n\nStale writer`;
+        const write = updatePullRequestBody(slowGitHub as never, { owner: 'integry', repo: 'propr', pullNumber: PR, body: published }, { preserveStatusBlock: true, redis: redis as never });
+        await readStarted;
+        await redis.del(LOCK_KEY);
+        await otherProcessPublishesPreview();
+        release();
+        await assert.rejects(write, PullRequestBodyLockLostError);
+        assert.equal(github.pull.body, PREVIEW_BODY);
+    } finally {
+        restoreLock();
+    }
 });

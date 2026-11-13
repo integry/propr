@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { PR_BODY_MAX_LENGTH } from '@propr/shared';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
@@ -9,6 +8,7 @@ import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
+import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
 import {
     applyPullRequestStatusBlock,
@@ -100,49 +100,6 @@ async function findOpenPullRequestsForCommit(repository: string, sha: string): P
     return (await findPRsForCommitCached(owner, repo, sha)).map(pull => pull.number);
 }
 
-// --- Per-PR serialization ---
-
-const LOCK_TTL_MS = 30_000;
-const LOCK_WAIT_MS = 20_000;
-const LOCK_POLL_MS = 150;
-const RELEASE_SCRIPT = 'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
-const localChains = new Map<string, Promise<unknown>>();
-
-function prKey(repository: string, prNumber: number): string {
-    return `${repository.toLowerCase()}#${prNumber}`;
-}
-
-/**
- * Runs `work` while holding the pull request's body lock, so two transitions
- * (or a transition and another body writer) cannot interleave their
- * read-modify-write of the body. Serialized in-process and across processes.
- */
-export async function withPullRequestBodyLock<T>(repository: string, prNumber: number, redis: LockRedis | null, work: () => Promise<T>): Promise<T> {
-    const key = prKey(repository, prNumber);
-    const previous = localChains.get(key) ?? Promise.resolve();
-    const run = previous.catch(() => undefined).then(async () => {
-        if (!redis) return await work();
-        const lockKey = `propr:pr-status:lock:${key}`;
-        const token = randomUUID();
-        const deadline = Date.now() + LOCK_WAIT_MS;
-        while (await redis.set(lockKey, token, 'PX', LOCK_TTL_MS, 'NX') !== 'OK') {
-            if (Date.now() > deadline) throw new Error(`Timed out waiting for the pull request body lock of ${key}`);
-            await new Promise(resolve => setTimeout(resolve, LOCK_POLL_MS));
-        }
-        try {
-            return await work();
-        } finally {
-            await redis.eval(RELEASE_SCRIPT, 1, lockKey, token).catch(() => undefined);
-        }
-    });
-    localChains.set(key, run);
-    try {
-        return await run;
-    } finally {
-        if (localChains.get(key) === run) localChains.delete(key);
-    }
-}
-
 // --- Body sync ---
 
 async function readPull(github: PullRequestStatusGitHub, repository: string, prNumber: number): Promise<PullRequestStatusPull> {
@@ -186,7 +143,7 @@ async function syncPullRequestStatusOnce(
 ): Promise<SyncOutcome> {
     const resolved = resolveDeps(overrides);
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
-    return await withPullRequestBodyLock(repository, prNumber, deps.redis, async () => {
+    return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
         const pull = await readPull(deps.github, repository, prNumber);
         const status = await desiredStatus(deps, { repository, prNumber, pull });
         const awaitingMergeability = awaitsMergeability(status);
@@ -194,6 +151,9 @@ async function syncPullRequestStatusOnce(
         const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
         const written = extractPullRequestStatusBlock(next) !== null;
         if (next === current || sameRenderedStatus(next, current)) return { result: written ? 'unchanged' : 'skipped', awaitingMergeability };
+        // The facts read above can outlast the lease; a writer that took the
+        // lock since may have changed the body, so this read must not be written.
+        await lease.assertHeld();
         const [owner, repo] = repository.split('/');
         await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
         logger.debug({ repository, prNumber, removed: !written }, 'Updated the pull request status block');
@@ -248,8 +208,12 @@ function runScheduled(repository: string, prNumber: number, key: string): void {
     let awaitingMergeability = false;
     void syncPullRequestStatusOnce(repository, prNumber, {})
         .then(outcome => { awaitingMergeability = outcome.awaitingMergeability; })
-        .catch(error => logger.warn({ repository, prNumber, error: (error as Error).message },
-            'Failed to update the pull request status block; the next transition retries'))
+        .catch(error => {
+            // Another writer took the body lock mid-update: re-read and write again.
+            if (error instanceof PullRequestBodyLockLostError) entry.rerun = true;
+            logger.warn({ repository, prNumber, error: (error as Error).message },
+                'Failed to update the pull request status block; the next transition retries');
+        })
         .finally(() => {
             entry.running = false;
             if (!awaitingMergeability) entry.mergeabilityRefreshes = 0;
@@ -342,12 +306,13 @@ export async function updatePullRequestBody<T = { data: { body?: string | null }
     const patch = (nextBody: string) => github.request<T>('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: pullNumber, body: nextBody });
     if (!(options.preserveStatusBlock ?? runtimeEnabled)) return await patch(body);
     const redis = options.redis !== undefined ? options.redis : (runtimeDeps.redis !== undefined ? runtimeDeps.redis : getUltrafixStateRedis());
-    return await withPullRequestBodyLock(`${owner}/${repo}`, pullNumber, redis, async () => {
+    return await withPullRequestBodyLock(`${owner}/${repo}`, pullNumber, redis, async lease => {
         const current = (await github.request<{ data: { body?: string | null } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: pullNumber })).data?.body ?? '';
         const preserved = preservePullRequestStatusBlock(body, current);
         // The writer's text wins over the block; the next status sync fits the block back in if it can.
         const next = preserved.length > PR_BODY_MAX_LENGTH ? stripPullRequestStatusBlock(body) : preserved;
         if (next === current) return { data: { body: current } } as T;
+        await lease.assertHeld();
         return await patch(next);
     });
 }
