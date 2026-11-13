@@ -574,6 +574,7 @@ export * from './changedFileKinds.js';
 // Agents: definition/run contract and the UTC cron evaluator shared by the
 // API, MCP, CLI, UI, worker and scheduler.
 export * from './automationDefinitions.js';
+export * from './automationTemplates.js';
 export * from './automationRunProductivity.js';
 // Deprecated names remain available to existing clients.
 export * from './agentDefinitions.js';
