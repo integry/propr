@@ -66,10 +66,11 @@ export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evid
       && item.pageId === record.pageId
       && item.errorText === errorText);
     const nativeDenials = matching('net::ERR_BLOCKED_BY_CSP');
-    // Without a native issue, only the old document's single current-user
-    // fetch, observed being replaced by a new main-frame document in this
-    // phase, can explain its connect-src console diagnostic.
-    const replacedRequests = nativeDenials.length === 0 && request === 'current-user'
+    // Without a native issue, only the old document's single bootstrap fetch
+    // (current-user or demo-mode), observed being replaced by a new main-frame
+    // document in this phase, can explain its connect-src console diagnostic.
+    // The "Fetch API cannot load" diagnostic always requires a native issue.
+    const replacedRequests = nativeDenials.length === 0
       && denial.kind === 'csp-connect-policy' ? matching(DOCUMENT_REPLACED_BEFORE_AUDIT) : [];
     if (nativeDenials.length + replacedRequests.length !== 1) return [];
     if (request === 'current-user') {

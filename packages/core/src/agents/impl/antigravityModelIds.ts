@@ -27,7 +27,9 @@ function antigravityCliModelBase(model: { id: string; shortAlias: string }): str
 }
 
 function antigravityDisplayModelId(model: { shortName: string }, level: ModelReasoningLevel): string {
-    return `${model.shortName} (${level[0].toUpperCase()}${level.slice(1)})`;
+    // `agy models` spells the extra-high level "XHigh" (Gemini 4 Hydrogen (XHigh)).
+    const label = level === 'xhigh' ? 'XHigh' : `${level[0].toUpperCase()}${level.slice(1)}`;
+    return `${model.shortName} (${label})`;
 }
 
 export function toAntigravityCliModelId(modelName: string, reasoningLevel?: ModelReasoningLevel): string {

@@ -604,3 +604,8 @@ export {
   type TokenOutlierSettings,
 } from './tokenOutlierSettings.js';
 export * from './acceptanceCriteria.js';
+
+// The durable repository change-event journal: domains, event types and payloads.
+export * from './repositoryEvents.js';
+// Reading and waiting on the repository change-event journal: cursor codec, limits and errors.
+export * from './repositoryEventWait.js';

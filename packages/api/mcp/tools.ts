@@ -15,6 +15,7 @@ import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecu
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
+import type { ReadinessEvaluator } from '../routes/pullRequestReadinessRoutes.js';
 import type { FollowupHandoffRouteDeps } from '../routes/followupHandoffRoutes.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createDockerRoutes, stopTaskExecution } from '../routes/dockerRoutes.js';
@@ -44,6 +45,7 @@ import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addStatsTools } from './toolsStats.js';
 import { addDocsTools } from './toolsDocs.js';
 import { addGoalWaitTools } from './toolsGoalWait.js';
+import { addRepositoryEventTools } from './toolsRepositoryEvents.js';
 import { getDocsMetadata } from './docsIndex.js';
 import { summarizeGoal } from './listSummaries.js';
 import { markMergedPullRequests, markMergedListPullRequests } from '../services/pullRequestMergeState.js';
@@ -52,6 +54,7 @@ import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
 import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import { queryTaskSummaries } from './taskListing.js';
+import { taskLineage } from '../routes/taskAttemptLineage.js';
 import { resolveAssigneeSelection, selectsNothing } from '../routes/taskAssignees.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 import { resolveUltrafixGoal, ultrafixGoalSchema } from './ultrafix.js';
@@ -103,7 +106,7 @@ export interface McpTool {
   authorize?: (context: Pick<ToolContext, 'principal' | 'args'>) => Promise<void>;
   run:  (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Test hook for get_agent_run_admission; the core snapshot otherwise. */ agentRunAdmissionSnapshot?: () => Promise<AgentRunAdmissionSnapshot> }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Readiness evaluator; core's evaluatePullRequestReadiness unless a test injects one. */ pullRequestReadiness?: ReadinessEvaluator ; /** Test hook for get_agent_run_admission; the core snapshot otherwise. */ agentRunAdmissionSnapshot?: () => Promise<AgentRunAdmissionSnapshot> }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };
@@ -187,6 +190,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addMaintenanceTools(tools, deps);
   addArtifactTools(tools, deps, planner, goals);
   addPullRequestTools(tools, deps);
+  addRepositoryEventTools(tools, deps);
   addContextTools(tools, deps);
   addManagementTools(tools, deps, { todos, config, runtime });
   addNotificationTools(tools, deps, notifications);
@@ -246,7 +250,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
 
   const taskTarget = { table: 'tasks', column: 'task_id', arg: 'taskId' };
   const taskColumns = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'];
-  tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks. Omit repository to list every repository in this grant; filter with state to see only what is still running, and with assignee to see whose work it is.', scope: 'read', readOnly: true, schema: z.object({
+  tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks. Omit repository to list every repository in this grant; filter with state to see only what is still running, and with assignee to see whose work it is. Rows of automatic-replacement attempts add attemptNumber, replacesTaskId and replacedByTaskId.', scope: 'read', readOnly: true, schema: z.object({
     ...listScopeShape, ...pageShape,
     assignee: z.string().max(1000).optional().describe('me (you), unassigned, or comma-separated GitHub logins (any of them). Omit, or all, for every task. Matches the Tasks screen and propr task list --assignee.'),
   }).strict(), run: async ({ principal, args }) => {
@@ -260,11 +264,12 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
       offset: args.offset, limit: args.limit, assignee });
     return ok({ tasks: taskSummaries, nextOffset: taskSummaries.length === args.limit ? args.offset + args.limit : null });
   } });
-  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts and linked pull request. changesSummary is null when no file-change data is persisted; it never reports zero for unknown.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
+  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts, linked pull request and automatic-replacement lineage. changesSummary is null when no file-change data is persisted; it never reports zero for unknown. lineage.attempts lists every attempt only when the task was replaced or is a replacement; follow lineage.replacedByTaskId to the newer attempt.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
     ...await db('tasks').where({ task_id: args.taskId }).first(taskColumns),
     latestEvent: await db('task_history').where({ task_id: args.taskId }).orderBy('history_id', 'desc').first('state', 'reason', 'timestamp'),
     ...await taskDetail({ db, redisClient }, { repository: args.repository, taskId: args.taskId }, principal.user.id,
       (repository, items, fields) => markMergedPullRequests(db, repository, items, fields)),
+    lineage: await taskLineage(db, args.taskId),
   }) });
   tools.push({
     name: 'get_agent_activity',

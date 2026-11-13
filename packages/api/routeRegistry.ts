@@ -6,6 +6,7 @@ import type { createTaskSubmissionRoutes } from './routes/taskSubmissionRoutes.j
 import type { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summaryPathUtils.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
 import {
   requireAgentTankUsageAccess,
   requireManageAgents,
@@ -34,7 +35,8 @@ interface ManagementRouteDeps {
   visualPreviewAuthRoutes: ReturnType<typeof routes.createVisualPreviewAuthRoutes>;
 }
 
-interface OperationalRouteDeps {
+/** Integration signal routes (readiness, repository events) are typed in their own registry. */
+interface OperationalRouteDeps extends IntegrationSignalRouteDeps {
   activeWorkRoutes: ReturnType<typeof routes.createActiveWorkRoutes>;
   agentRunAdmissionRoutes: ReturnType<typeof routes.createAgentRunAdmissionRoutes>;
   automationDefinitionRoutes: ReturnType<typeof routes.createAutomationDefinitionRoutes>;
@@ -360,6 +362,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/stats/cost', costExportRoutes.getCost],
     ['get', '/api/stats/cost.csv', costExportRoutes.getCostCsv],
     ['get', '/api/pull-requests/:number/scores', reviewScoreRoutes.getPullRequestScores],
+    ...createIntegrationSignalRouteEntries(deps),
     ['get', '/api/usage-tips', usageTipsRoutes.get],
     ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
     ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative],

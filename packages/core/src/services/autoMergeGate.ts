@@ -2,6 +2,7 @@ import type { Knex } from 'knex';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
 import { db } from '../db/connection.js';
 import { replayableTransaction } from '../db/sqliteRetry.js';
+import { appendRepositoryEvent } from './repositoryEventJournal.js';
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { findPlanIssueByRepoAndPR } from '../config/planIssueManager.js';
@@ -230,10 +231,26 @@ function decisionEventMetadata(input: AutoMergeDecisionEventInput): Record<strin
     };
 }
 
-/** Write one task timeline event for an auto-merge decision. Never throws. */
+/**
+ * Journal an auto-merge decision. The same decision for the same head is one
+ * event, however often the opportunity is re-evaluated. Never throws.
+ */
+async function journalAutoMergeDecision(database: Knex, input: AutoMergeDecisionEventInput, occurredAt: number, log: Log): Promise<void> {
+    const outcome = input.action ?? (input.decision.arm ? 'armed' : 'not_armed');
+    await appendRepositoryEvent(database, {
+        repository: input.repository, domain: 'pull_request', type: 'auto_merge_decision', entityId: input.prNumber,
+        prNumber: input.prNumber, issueNumber: input.issueNumber ?? null, headSha: input.headSha ?? null,
+        payload: decisionEventMetadata(input), occurredAt: new Date(occurredAt),
+        dedupeKey: input.headSha ? `pr:${input.prNumber}:auto_merge:${input.headSha}:${input.opportunity}:${outcome}:${input.decision.reason}` : null,
+    }, { log });
+}
+
+/** Write one task timeline event (and one journal event) for an auto-merge decision. Never throws. */
 export async function recordAutoMergeDecisionEvent(input: AutoMergeDecisionEventInput, deps: AutoMergeGateDependencies = {}, log: Log = logger): Promise<boolean> {
     const database = deps.database ?? db;
     const { decision } = input;
+    const occurredAt = (deps.now ?? Date.now)();
+    let journaled = false;
     try {
         // Without a known issue, the PR's plan issue (or a PR follow-up task) owns the timeline.
         const issueNumber = input.issueNumber ?? (input.taskId ? undefined : (await findPlanIssueByRepoAndPR(input.repository, input.prNumber))?.issue_number);
@@ -241,6 +258,8 @@ export async function recordAutoMergeDecisionEvent(input: AutoMergeDecisionEvent
         const taskId = input.taskId ?? await resolveDecisionTaskId(database, input.repository, numbers);
         if (!taskId) {
             log.info({ repository: input.repository, prNumber: input.prNumber, reason: decision.reason }, 'No task found for auto-merge decision event');
+            journaled = true;
+            await journalAutoMergeDecision(database, input, occurredAt, log);
             return false;
         }
         const verb = input.action ? DECISION_VERBS[input.action] : decision.arm ? 'armed' : 'not armed';
@@ -253,14 +272,17 @@ export async function recordAutoMergeDecisionEvent(input: AutoMergeDecisionEvent
             await trx('task_history').insert({
                 task_id: taskId,
                 state: latest?.state ?? 'completed',
-                timestamp: new Date((deps.now ?? Date.now)()).toISOString(),
+                timestamp: new Date(occurredAt).toISOString(),
                 reason: `Auto-merge ${verb} for PR #${input.prNumber}: ${decision.reason}`,
                 metadata: JSON.stringify({ autoMergeDecision: decisionEventMetadata(input) }),
             });
+            await journalAutoMergeDecision(trx, input, occurredAt, log);
         }, replayableTransaction());
         return true;
     } catch (error) {
         log.warn({ repository: input.repository, prNumber: input.prNumber, error: (error as Error).message }, 'Failed to record auto-merge decision event');
+        // The journal does not depend on the task timeline.
+        if (!journaled) await journalAutoMergeDecision(database, input, occurredAt, log);
         return false;
     }
 }

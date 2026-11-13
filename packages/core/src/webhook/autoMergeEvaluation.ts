@@ -31,22 +31,54 @@ export interface AutoMergeEligibilityContext {
     prNumber: number;
     prInfo: PRAutoMergeInfo;
     log: ReturnType<typeof logger.withCorrelation>;
+    /** Linked-issue label reader; defaults to {@link readLinkedIssueAutoMergeLabel} with the App identity. */
+    readLinkedIssueLabel?: (owner: string, repoName: string, prNumber: number) => Promise<boolean | null>;
+}
+
+/**
+ * Why {@link evaluateAutoMergeEligibilityWithReason} decided as it did.
+ * Eligible: `pr_label` (the PR, epic or not, carries `auto-merge`) or
+ * `linked_issue_label`. Ineligible: `ultrafix_failed`, `ultrafix_not_succeeded`
+ * (the `ultrafix` label remains without a successful completion),
+ * `epic_without_label` or `no_auto_merge_label`. Transient: `ultrafix_active`,
+ * `ultrafix_state_unavailable` or `linked_issue_unavailable`.
+ */
+export type AutoMergeEligibilityReason =
+    | 'pr_label'
+    | 'linked_issue_label'
+    | 'ultrafix_active'
+    | 'ultrafix_failed'
+    | 'ultrafix_state_unavailable'
+    | 'ultrafix_not_succeeded'
+    | 'epic_without_label'
+    | 'linked_issue_unavailable'
+    | 'no_auto_merge_label';
+
+export interface AutoMergeEligibilityResult {
+    eligibility: AutoMergeEligibility;
+    reason: AutoMergeEligibilityReason;
 }
 
 /**
  * Whether the PR's labels and Ultrafix state make it an auto-merge candidate.
  */
 export async function evaluateAutoMergeEligibility(ctx: AutoMergeEligibilityContext): Promise<AutoMergeEligibility> {
+    return (await evaluateAutoMergeEligibilityWithReason(ctx)).eligibility;
+}
+
+/** {@link evaluateAutoMergeEligibility} together with the reason code of its decision. */
+export async function evaluateAutoMergeEligibilityWithReason(ctx: AutoMergeEligibilityContext): Promise<AutoMergeEligibilityResult> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
+    const result = (eligibility: AutoMergeEligibility, reason: AutoMergeEligibilityReason): AutoMergeEligibilityResult => ({ eligibility, reason });
 
     if (prInfo.hasActiveUltrafixLoop) {
         log.info({ owner, repoName, prNumber }, 'PR has an active ultrafix loop, skipping auto-merge');
-        return 'transient';
+        return result('transient', 'ultrafix_active');
     }
 
     if (prInfo.ultrafixCompletionStatus === 'failed') {
         log.info({ owner, repoName, prNumber }, 'PR has a failed ultrafix loop, keeping auto-merge blocked');
-        return 'ineligible';
+        return result('ineligible', 'ultrafix_failed');
     }
 
     if (prInfo.hasUltrafixLabel && prInfo.ultrafixStateUnavailable) {
@@ -54,7 +86,7 @@ export async function evaluateAutoMergeEligibility(ctx: AutoMergeEligibilityCont
             { owner, repoName, prNumber },
             'Ultrafix state is unavailable while ultrafix label is present, keeping auto-merge blocked'
         );
-        return 'transient';
+        return result('transient', 'ultrafix_state_unavailable');
     }
 
     if (prInfo.hasUltrafixLabel && prInfo.ultrafixCompletionStatus !== 'succeeded') {
@@ -62,26 +94,26 @@ export async function evaluateAutoMergeEligibility(ctx: AutoMergeEligibilityCont
             { owner, repoName, prNumber, ultrafixCompletionStatus: prInfo.ultrafixCompletionStatus },
             'Ultrafix label remains without a successful completion state, keeping auto-merge blocked'
         );
-        return 'ineligible';
+        return result('ineligible', 'ultrafix_not_succeeded');
     }
 
     if (isEpicBranch(prInfo.headBranch)) {
         if (!prInfo.hasLabel) {
             log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping merge');
-            return 'ineligible';
+            return result('ineligible', 'epic_without_label');
         }
-        return 'eligible';
+        return result('eligible', 'pr_label');
     }
 
-    if (prInfo.hasLabel) return 'eligible';
-    const issueHasLabel = await readLinkedIssueAutoMergeLabel(owner, repoName, prNumber);
-    if (issueHasLabel === true) return 'eligible';
+    if (prInfo.hasLabel) return result('eligible', 'pr_label');
+    const issueHasLabel = await (ctx.readLinkedIssueLabel ?? readLinkedIssueAutoMergeLabel)(owner, repoName, prNumber);
+    if (issueHasLabel === true) return result('eligible', 'linked_issue_label');
     if (issueHasLabel === null) {
         log.debug({ owner, repoName, prNumber }, 'Linked issue labels are unavailable, skipping auto-merge for now');
-        return 'transient';
+        return result('transient', 'linked_issue_unavailable');
     }
     log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
-    return 'ineligible';
+    return result('ineligible', 'no_auto_merge_label');
 }
 
 /** Ultrafix still working, or labels/state that could not be read, are inconclusive; a missing label or failed Ultrafix is not. */

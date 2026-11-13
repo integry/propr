@@ -88,9 +88,19 @@ function goalWaitSummary(result: Args): string {
   return `Goal wait${condition} timed out after ${result.timeoutSeconds}s. The timeout itself is not a goal failure; the goal is currently ${state}. Retry with cursor ${result.cursor}.`;
 }
 
+/** A repository event read, with the cursor to resume from; a wait timeout is not an error. */
+function repositoryEventsSummary(result: Args): string {
+  const count = Array.isArray(result.events) ? result.events.length : 0;
+  if (result.outcome === 'timeout') return `No matching repository events within ${result.timeoutSeconds}s. Wait again with cursor ${result.cursor}.`;
+  const more = result.truncated ? ' More follow; read again with the cursor.' : '';
+  return `${count} repository events.${more} Resume with cursor ${result.cursor}.`;
+}
+
 /** Digest reads answer a whole-instance question, so they summarize by section. */
 const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   wait_goal: goalWaitSummary,
+  list_repository_events: repositoryEventsSummary,
+  wait_repository_events: repositoryEventsSummary,
   get_current_activity: result => `Across ${result.repositories.length} repositories: ${Object
     .entries(result.sections as Record<string, { count: number }>)
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)

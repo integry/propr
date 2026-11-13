@@ -121,6 +121,7 @@ const sidebars: SidebarsConfig = {
         'architecture/coding-agent-integration',
         'architecture/agent-runtime',
         'architecture/git-management',
+        'architecture/repository-event-journal',
         'operations/web-ui-integration',
         'features/cli-workflows',
         {
