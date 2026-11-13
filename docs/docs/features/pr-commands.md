@@ -126,6 +126,7 @@ Every `/review` comment follows a fixed structure:
 
 ## Merge blockers
 ### F1: 🔴 <problem this PR introduced>
+- **Category:** <correctness | requirement | security | tests | complexity | style>
 - **Required behavior:** <what the code has to do>
 - **Evidence:** <changed file and line that breaks it>
 - **Minimum fix:** <smallest correction that resolves it>
@@ -139,7 +140,7 @@ Every `/review` comment follows a fixed structure:
 Score: N/10
 ```
 
-The four sections always appear in this order. **Merge blockers** holds the problems the PR introduced that have to be resolved before merging, each published as a numbered `F#` record carrying those three fields; **Suggestions** holds the non-blocking follow-ups, each published as a numbered `S#` record with its explanation. A review that found nothing prints `No merge blockers.` or `No suggestions.` in place of the records.
+The four sections always appear in this order. **Merge blockers** holds the problems the PR introduced that have to be resolved before merging, each published as a numbered `F#` record carrying those four fields. **Category** says what kind of problem the blocker is, from a closed vocabulary: `correctness`, `requirement`, `security`, `tests`, `complexity` (unrequested complexity the issue did not call for) or `style`. A review comment written before categories existed has no **Category** line; its blockers are read as `correctness`; **Suggestions** holds the non-blocking follow-ups, each published as a numbered `S#` record with its explanation. A review that found nothing prints `No merge blockers.` or `No suggestions.` in place of the records.
 
 Both identifier sequences are PR-wide and never reused, so `F20` or `S5` names one record for the life of the pull request — that is what makes them selectable by [`/fix F20 S3 S5`](#fix). The comment ends with a `Score: N/10` line, which [`/ultrafix`](#ultrafix) reads to decide whether its goal is reached. ProPR also stores every parsed score, with the reviewer, the implementing model, the reviewed head and (for Ultrafix) the cycle number, so the Analytics page can compare review quality per model; see [Review scores](../operations/metrics.md#review-scores).
 
@@ -419,7 +420,8 @@ The loop is controlled by the visible `ultrafix` PR label, which acts as a circu
 #### Completion
 
 - **Goal reached**: the `ultrafix` label is removed. If the PR belongs to a planned issue labeled `auto-merge`, ProPR re-enables GitHub auto-merge on the PR.
-- **Stopped before the goal** (max cycles exhausted, a review that cannot advance the loop, or CI that did not settle within the CI wait timeout): ProPR posts a warning comment with the requested goal and the last score, and manual review takes over. The `ultrafix` label is left on the PR; remove it once you take over.
+- **Stopped before the goal** (max cycles exhausted, a review that cannot advance the loop, a review whose only remaining blockers are category `style`, or CI that did not settle within the CI wait timeout): ProPR posts a warning comment with the requested goal and the last score, and manual review takes over. The `ultrafix` label is left on the PR; remove it once you take over.
+- **Style-only findings**: when every merge blocker in the latest review has category `style`, Ultrafix schedules no further fix and stops with the "stopped before reaching its goal" comment, which says only stylistic findings remain. The goal is not counted as reached, because the review still has blockers. Review the remaining findings yourself, or run [`/fix`](#fix) for the ones worth applying. A review that mixes `style` blockers with any other category continues the loop as usual.
 
 Reserve `/ultrafix` for stronger cleanup passes. For small edits and direct changes, a normal PR comment is usually better.
 
