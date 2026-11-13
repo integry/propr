@@ -10,6 +10,8 @@ import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/exte
 import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../githubMetadataAuth.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
+import { extensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
+import { createExtensionOAuthRoutes, extensionOAuthInstanceInfo } from './extensionOAuthRoutes.js';
 
 export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(db)) {
   const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
@@ -33,11 +35,13 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
     throw new ExtensionError(400, 'Invalid extension item');
   };
   return {
+    ...createExtensionOAuthRoutes(store, handle, store.environment),
     // The library, the skill bundles it can reference and the operator catalog in one read.
     // Usage names the automations that add items and the profiles migrated items came from.
     list: handle(async (_req, actor) => {
       const library = await store.readLibrary(actor);
-      return { contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library, bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries(), usage: await extensionLibraryUsage(store, library) };
+      // OAuth connection state is credential state outside the revision: state, who connected and when, granted scopes. Never tokens.
+      return { contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library, bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries(), usage: await extensionLibraryUsage(store, library), oauth: await extensionOAuthInstanceInfo(store, library, store.environment) };
     }),
     save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expectedRevision']); return { library: await store.saveLibrary(actor, req.body.input, req.body.secrets, req.body.expectedRevision) }; }),
     setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
@@ -46,12 +50,15 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
     validate: handle(async (req, actor) => {
       exact(req, []);
       const { servers, secrets } = await store.validationTargets(actor);
+      const library = { instanceId: await store.instanceId() };
       const results = [];
       for (const server of servers) {
         let reachable = false;
         if (server.kind === 'catalog') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
         try {
-          const response = await requestExtensionMcp(server.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'propr-validation', version: '1' } } }, secrets[server.name]) as { result?: unknown };
+          // An OAuth server is validated with its current access token; its library secret is a client secret, never sent upstream.
+          const credential = server.authentication === 'oauth' ? await extensionOAuth(store).accessToken(library.instanceId, server) : secrets[server.name];
+          const response = await requestExtensionMcp(server.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'propr-validation', version: '1' } } }, credential) as { result?: unknown };
           reachable = Boolean(response?.result);
         } catch { /* No response content or error from upstream is disclosed. */ }
         results.push({ name: server.name, reachable, status: reachable ? 'reachable' : 'unavailable' });

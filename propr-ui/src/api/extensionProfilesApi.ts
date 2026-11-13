@@ -1,4 +1,6 @@
-import type { ExtensionCatalogEntry, ExtensionLibraryInput, ExtensionLibraryRevision, ExtensionLibraryUsage, ExtensionSkillBundle } from '@propr/shared';
+import type {
+  ExtensionCatalogEntry, ExtensionLibraryInput, ExtensionLibraryRevision, ExtensionLibraryUsage, ExtensionOAuthCheckResult, ExtensionOAuthInstanceInfo, ExtensionSkillBundle,
+} from '@propr/shared';
 import { API_BASE_URL, apiFetch } from './apiClient';
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await apiFetch(`${API_BASE_URL}/api/instance/extensions/v1${path}`, {
@@ -23,6 +25,8 @@ export interface ExtensionLibraryResponse {
   catalog?: ExtensionCatalogEntry[];
   /** Automations that add items explicitly, and profiles migrated items came from. */
   usage?: ExtensionLibraryUsage;
+  /** OAuth redirect URI of this instance and the connection state of OAuth servers; never tokens. */
+  oauth?: ExtensionOAuthInstanceInfo;
 }
 export type ExtensionValidationResult = { name: string; reachable: boolean | null; status?: 'reachable' | 'unavailable' | 'not_validated' };
 export const getExtensionLibrary = () => request<ExtensionLibraryResponse>('');
@@ -47,3 +51,11 @@ export const discoverExtensionTools = (url: string) => request<{ tools: string[]
 export type GithubSkillRef = { name: string; ref: string; kind: 'branch' | 'tag' };
 export const listGithubSkillRefs = (repository: string) => request<{ refs: GithubSkillRef[] }>('/skills/github-source', { repository });
 export const resolveGithubSkillRef = (repository: string, ref: string) => request<{ commit: string }>('/skills/github-source', { repository, ref });
+
+/** Run OAuth discovery for a server URL; stores nothing and sends no credential. */
+export const checkExtensionOAuth = (url: string, options: { clientId?: string; scopes?: string[] } = {}) =>
+  request<{ check: ExtensionOAuthCheckResult }>('/oauth/check', { url, ...(options.clientId ? { clientId: options.clientId } : {}), ...(options.scopes?.length ? { scopes: options.scopes } : {}) });
+/** Start a sign-in bound to this browser session; returns the provider's authorization page. */
+export const startExtensionOAuth = (name: string) => request<{ authorizationUrl: string }>('/oauth/start', { name });
+/** Revoke at the provider when supported, then delete the stored tokens. */
+export const disconnectExtensionOAuth = (name: string) => request<{ revoked: boolean }>('/oauth/disconnect', { name });

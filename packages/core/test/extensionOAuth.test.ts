@@ -1,0 +1,321 @@
+import test, { type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+import { extensionTestResources } from './helpers/extensionTestResources.js';
+import type { ExtensionLibraryServerInput } from '@propr/shared';
+import { ExtensionLibraryStore, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
+import { ExtensionOAuthStore, setExtensionOAuth, type ExtensionOAuthOptions } from '../src/extensions/extensionOAuthStore.js';
+import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
+import { createOAuthHttpsTransport, oauthRequest } from '../src/extensions/extensionOAuthHttp.js';
+import { discoverOAuth, parseBearerChallenge, requestTokens } from '../src/extensions/extensionOAuth.js';
+import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
+import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
+import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
+import { up as oauthMigration } from '../src/db/migrations/20261113120000_extension_oauth.js';
+import logger from '../src/utils/logger.js';
+import { OAUTH_ISSUER, OAUTH_MCP_URL, OAUTH_URLS, PREREGISTERED_CLIENT, syntheticOAuthProvider, type SyntheticOAuthOptions } from '../../../test/fixtures/extensionOAuthFixture.js';
+
+const oauthServer = (extra: Partial<ExtensionLibraryServerInput> = {}): ExtensionLibraryServerInput => ({ kind: 'https', name: 'docs', url: OAUTH_MCP_URL, enabled: true, tools: ['lookup'], capability: 'read', authentication: 'oauth', repositories: [], agents: [], autoApply: true, ...extra } as ExtensionLibraryServerInput);
+const context: ExtensionLaunchContext = { agentAlias: 'claude-main', runtime: 'claude', repositories: ['team/repo'], allowWrite: false };
+
+async function fixture(t: TestContext, provider: SyntheticOAuthOptions = { advertise: { dynamic: true } }, options: Partial<ExtensionOAuthOptions> = {}) {
+  const database = extensionTestResources(t).database();
+  await database.schema.createTable('config', c => { c.string('key').primary(); c.text('value'); });
+  await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
+  await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
+  await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }, { github_user_id: '3', role: 'admin' }]);
+  await up(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database);
+  let clock = Date.now();
+  const synthetic = syntheticOAuthProvider({ now: () => clock, ...provider });
+  const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-oauth-custody-root' });
+  const notifications: { serverName: string }[] = [];
+  const oauth = new ExtensionOAuthStore(store, { transport: synthetic.transport, now: () => clock, notify: async event => { notifications.push(event); }, retryDelayMs: 1, ...options });
+  setExtensionOAuth(store, oauth);
+  const save = async (servers: ExtensionLibraryServerInput[], secrets: Record<string, string | null> = {}) => store.saveLibrary('1', { version: 1, servers, skills: [] }, secrets, (await store.readLibrary('1')).revision);
+  /** Start in session-a as administrator 1, consent at the provider, and return the callback parameters. */
+  const consent = async (override: Parameters<typeof synthetic.authorize>[1] = {}, session = 'session-a', actor = '1') => {
+    const { authorizationUrl } = await oauth.startSignIn(actor, session, 'docs', OAUTH_URLS);
+    return { authorizationUrl, params: synthetic.authorize(authorizationUrl, override) };
+  };
+  const connect = async () => { const { params } = await consent(); return oauth.completeSignIn('1', 'session-a', params); };
+  const launch = async (taskId = 'task-1') => {
+    const prepared = await store.resolveLaunch(context, false);
+    const token = await store.createGrant(prepared, taskId);
+    await store.activateGrant(token, prepared, context);
+    return { prepared, token };
+  };
+  const call = (token: string, id = 1) => extensionGatewayCall(store, token, 'docs', { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'lookup', arguments: {} } }, synthetic.send);
+  const connectionRows = () => database('extension_oauth_connections').select();
+  return { database, store, oauth, synthetic, notifications, save, consent, connect, launch, call, connectionRows, tick: (ms: number) => { clock += ms; } };
+}
+
+test('discovery follows the 401 challenge and falls back to the well-known location, and Check stores nothing', async t => {
+  for (const discovery of ['challenge', 'well_known'] as const) {
+    const f = await fixture(t, { discovery, advertise: { metadataDocument: true, dynamic: true } });
+    const check = await f.oauth.check('1', { url: OAUTH_MCP_URL }, OAUTH_URLS);
+    assert.equal(check.authorizationRequired, true);
+    assert.equal(check.discoveredFrom, discovery);
+    assert.equal(check.issuer, OAUTH_ISSUER);
+    assert.equal(check.registration, 'metadata_document');
+    assert.deepEqual(check.scopes, ['docs.read']);
+    assert.equal(check.redirectUri, OAUTH_URLS.redirectUri);
+    // Without a public base URL a metadata document cannot be served: registration falls back.
+    assert.equal((await f.oauth.check('1', { url: OAUTH_MCP_URL }, { redirectUri: null, clientMetadataUrl: null })).registration, 'dynamic');
+    assert.equal((await f.oauth.check('1', { url: OAUTH_MCP_URL, clientId: 'console-client' }, OAUTH_URLS)).registration, 'preregistered');
+    assert.equal((await f.connectionRows()).length, 0);
+    assert.equal((await f.database('extension_oauth_pending').select()).length, 0);
+    assert.equal(f.synthetic.state.registrations, 0);
+    await assert.rejects(f.oauth.check('2', { url: OAUTH_MCP_URL }, OAUTH_URLS), /administrator/);
+  }
+  const none = await fixture(t, { advertise: {} });
+  const check = await none.oauth.check('1', { url: OAUTH_MCP_URL }, OAUTH_URLS);
+  assert.equal(check.registration, null);
+  assert.match(check.message, /developer console.*Bearer token/);
+  assert.deepEqual(parseBearerChallenge('Bearer error="invalid_token", resource_metadata="https://x.example/.well-known/oauth-protected-resource", scope="a b"'), { resourceMetadata: 'https://x.example/.well-known/oauth-protected-resource', scope: 'a b' });
+});
+
+test('each registration method completes a sign-in, and a run uses the connection through the gateway', async t => {
+  const cases = [
+    { provider: { advertise: { metadataDocument: true, dynamic: true } }, server: oauthServer(), registration: 'metadata_document', secrets: {} },
+    { provider: { advertise: { dynamic: true } }, server: oauthServer({ scopes: ['docs.read', 'docs.write'] }), registration: 'dynamic', secrets: {} },
+    { provider: { advertise: {} }, server: oauthServer({ clientId: PREREGISTERED_CLIENT.id }), registration: 'preregistered', secrets: { docs: PREREGISTERED_CLIENT.secret } },
+  ] as const;
+  for (const item of cases) {
+    const f = await fixture(t, item.provider);
+    const saved = await f.save([item.server], { ...item.secrets });
+    assert.deepEqual(saved.secrets.docs, item.registration === 'preregistered' ? { fields: ['clientSecret'], configured: true } : undefined);
+    // Not connected: the auto-applied server is skipped with the reason, the run proceeds without it.
+    const before = await f.store.resolveLaunch(context, false);
+    assert.deepEqual(before.set.servers, []);
+    assert.deepEqual(before.set.skipped, [{ kind: 'server', name: 'docs', reason: 'oauth_not_connected', source: 'auto' }]);
+    const explicit = await f.store.resolveLaunch({ ...context, autoApply: false, additional: { servers: ['docs'], skills: [] } }, false);
+    assert.deepEqual(explicit.set.skipped, [{ kind: 'server', name: 'docs', reason: 'oauth_not_connected', source: 'additional' }]);
+    const { authorizationUrl, params } = await f.consent();
+    const url = new URL(authorizationUrl);
+    assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
+    assert.equal(url.searchParams.get('resource'), OAUTH_MCP_URL);
+    assert.equal(url.searchParams.get('redirect_uri'), OAUTH_URLS.redirectUri);
+    if (item.registration === 'metadata_document') assert.equal(url.searchParams.get('client_id'), OAUTH_URLS.clientMetadataUrl);
+    if (item.registration === 'preregistered') assert.equal(url.searchParams.get('client_id'), PREREGISTERED_CLIENT.id);
+    if (item.registration === 'dynamic') assert.equal(url.searchParams.get('scope'), 'docs.read docs.write');
+    assert.deepEqual(await f.oauth.completeSignIn('1', 'session-a', params), { name: 'docs' });
+    const statuses = await f.oauth.statuses(saved.instanceId, saved.servers);
+    assert.equal(statuses.docs.state, 'connected');
+    assert.equal(statuses.docs.registration, item.registration);
+    assert.equal(statuses.docs.connectedBy, '1');
+    // Connecting is credential state, not configuration: no new revision.
+    assert.equal((await f.store.readLibrary('1')).revision, saved.revision);
+    assert.deepEqual((await f.oauth.audit('1')).map(e => [e.server, e.action, e.actor]), [['docs', 'connect', '1']]);
+    const { prepared, token } = await f.launch();
+    assert.deepEqual(prepared.set.servers.map(s => s.name), ['docs']);
+    const result = await f.call(token);
+    const issuedAccess = f.synthetic.state.issued.find(v => v.startsWith('SYNTHETIC_ACCESS_TOKEN'))!;
+    assert.equal(f.synthetic.state.upstreamCalls.at(-1)!.token, issuedAccess);
+    // The upstream echoed the token; the gateway redacts it.
+    assert.ok(!JSON.stringify(result).includes(issuedAccess));
+    assert.match(JSON.stringify(result), /Found the document/);
+  }
+});
+
+test('PKCE mismatch, unknown, reused or expired state, another session or administrator, and a mismatched iss are refused and store nothing', async t => {
+  const f = await fixture(t, { advertise: { dynamic: true }, issParameter: true });
+  await f.save([oauthServer()]);
+  const empty = async () => assert.equal((await f.connectionRows()).length, 0);
+
+  const tampered = await f.consent({ challenge: 'A'.repeat(43) });
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', tampered.params), /refused the sign-in/);
+  await empty();
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', { state: 'B'.repeat(43), code: 'x', iss: OAUTH_ISSUER }), /Unknown, used or expired/);
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', { state: 'not a state', code: 'x' }), /Unknown, used or expired/);
+  await empty();
+
+  const otherSession = await f.consent();
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-b', otherSession.params), /another session/);
+  // Single use: the refused attempt consumed the state.
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', otherSession.params), /Unknown, used or expired/);
+  await empty();
+
+  const otherAdmin = await f.consent();
+  await assert.rejects(f.oauth.completeSignIn('3', 'session-a', otherAdmin.params), /another session/);
+  await empty();
+
+  const mixUp = await f.consent({ iss: 'https://1.1.1.1' });
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', mixUp.params), /another issuer/);
+  const missingIss = await f.consent({ iss: null });
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', missingIss.params), /another issuer/);
+  await empty();
+
+  const expired = await f.consent();
+  f.tick(10 * 60 * 1000 + 1);
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', expired.params), /Unknown, used or expired/);
+  await empty();
+
+  const denied = await f.consent();
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', { state: denied.params.state, error: 'access_denied' }), /did not authorize/);
+  await empty();
+  await assert.rejects(f.oauth.startSignIn('2', 'session-a', 'docs', OAUTH_URLS), /administrator/);
+  await assert.rejects(f.oauth.startSignIn('1', 'session-a', 'docs', { redirectUri: null, clientMetadataUrl: null }), /public HTTPS base URL/);
+
+  const reused = await f.consent();
+  await f.oauth.completeSignIn('1', 'session-a', reused.params);
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', reused.params), /Unknown, used or expired/);
+  assert.equal((await f.connectionRows()).length, 1);
+  const registrations = f.synthetic.state.registrations;
+  await f.connect();
+  assert.equal(f.synthetic.state.registrations, registrations, 'reconnecting reuses the dynamic registration of the connection');
+});
+
+test('refresh before expiry is single-flight, persists a rotated refresh token, and an upstream 401 refreshes once and retries once', async t => {
+  const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 120 });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const { token } = await f.launch();
+  await f.call(token);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 0);
+  // Within the refresh margin: refreshed before use.
+  f.tick(90 * 1000);
+  let release!: () => void; f.synthetic.state.holdRefresh = new Promise(resolve => { release = resolve; });
+  const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+  const concurrent = Promise.all([f.oauth.accessToken(instanceId, server), f.oauth.accessToken(instanceId, server)]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  release(); f.synthetic.state.holdRefresh = null;
+  const [first, second] = await concurrent;
+  assert.equal(first, second);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 1, 'two concurrent callers cause exactly one refresh');
+  const version = (await f.connectionRows())[0].version;
+  // The rotated refresh token was persisted: the next refresh succeeds although the first one is now invalid.
+  f.tick(120 * 1000);
+  await f.call(token, 2);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 2);
+  assert.ok((await f.connectionRows())[0].version > version);
+  assert.equal((await f.connectionRows())[0].state, 'connected');
+  // The provider invalidated the access token early: one refresh and one retry.
+  f.synthetic.expireAccessTokens();
+  const calls = f.synthetic.state.upstreamCalls.length;
+  const result = await f.call(token, 3);
+  assert.match(JSON.stringify(result), /Found the document/);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 3);
+  assert.equal(f.synthetic.state.upstreamCalls.length - calls, 2);
+  // A refresh that cannot help (the token is refused again) fails the call once, without looping.
+  f.synthetic.state.upstreamCalls.length = 0;
+  const send = async (...args: Parameters<typeof f.synthetic.send>) => { f.synthetic.state.upstreamCalls.push({ token: args[2], method: 'refused' }); return f.synthetic.send(args[0], args[1], 'refused-token'); };
+  await assert.rejects(extensionGatewayCall(f.store, token, 'docs', { jsonrpc: '2.0', id: 4, method: 'tools/list' }, send), /connection failed/);
+  assert.equal(f.synthetic.state.upstreamCalls.filter(c => c.method === 'refused').length, 2);
+});
+
+test('a rejected refresh moves to Needs sign-in with one notification; later runs skip the server; a network failure changes nothing', async t => {
+  const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 30 });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+  f.tick(31 * 1000);
+  f.synthetic.state.refreshFailure = 'network';
+  await assert.rejects(f.oauth.accessToken(instanceId, server), /unavailable|failed/);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 3, 'network errors are retried');
+  assert.equal((await f.connectionRows())[0].state, 'connected');
+  assert.equal(f.notifications.length, 0);
+  f.synthetic.state.refreshFailure = 'authorization';
+  const results = await Promise.allSettled([f.oauth.accessToken(instanceId, server), f.oauth.accessToken(instanceId, server)]);
+  assert.ok(results.every(r => r.status === 'rejected'));
+  assert.equal((await f.connectionRows())[0].state, 'needs_sign_in');
+  assert.deepEqual(f.notifications.map(n => n.serverName), ['docs']);
+  await assert.rejects(f.oauth.accessToken(instanceId, server), /unavailable/);
+  assert.equal(f.notifications.length, 1, 'one notification, not one per run');
+  const later = await f.store.resolveLaunch(context, false);
+  assert.deepEqual(later.set.servers, []);
+  assert.deepEqual(later.set.skipped, [{ kind: 'server', name: 'docs', reason: 'oauth_needs_sign_in', source: 'auto' }]);
+  assert.equal((await f.oauth.statuses(instanceId, [server])).docs.state, 'needs_sign_in');
+  assert.ok((await f.oauth.audit('1')).some(e => e.action === 'needs_sign_in' && e.actor === 'system'));
+  // Reconnecting returns to Connected.
+  f.synthetic.state.refreshFailure = null;
+  await f.connect();
+  assert.equal((await f.connectionRows())[0].state, 'connected');
+});
+
+test('discovery, registration and token requests to private or loopback addresses are refused by the endpoint policy', async t => {
+  let dialed = 0;
+  const counting = async () => { dialed++; return { status: 200, headers: {}, body: '{}' }; };
+  for (const url of ['https://127.0.0.1/mcp', 'https://10.0.0.5/mcp', 'https://localhost/mcp', 'https://169.254.169.254/latest', 'http://8.8.8.8/mcp', 'https://8.8.8.8:8443/mcp']) {
+    await assert.rejects(oauthRequest(counting, { method: 'GET', url }), /endpoint policy/);
+  }
+  await assert.rejects(discoverOAuth(counting, 'https://127.0.0.1/mcp'), /could not be reached/);
+  const metadata = { issuer: OAUTH_ISSUER, authorization_endpoint: `${OAUTH_ISSUER}/authorize`, token_endpoint: 'https://192.168.1.10/token', registration_endpoint: 'https://[::1]/register' };
+  await assert.rejects(requestTokens(counting, metadata, { registration: 'dynamic', clientId: 'c', authMethod: 'none' }, { grant_type: 'refresh_token', refresh_token: 'r' }), /endpoint policy/);
+  assert.equal(dialed, 0);
+  // Names are resolved before dialing; a private answer is refused.
+  const transport = createOAuthHttpsTransport({ lookup: async () => [{ address: '10.1.2.3', family: 4 }] });
+  await assert.rejects(oauthRequest(transport, { method: 'GET', url: 'https://auth.example.com/.well-known/oauth-authorization-server' }), /OAuth request failed|public/);
+  // A provider whose metadata names a private token endpoint cannot complete a sign-in.
+  const f = await fixture(t, { advertise: { dynamic: true } });
+  f.synthetic.metadata.token_endpoint = 'https://10.0.0.7/token';
+  await f.save([oauthServer()]);
+  const { params } = await f.consent();
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', params), /refused the sign-in/);
+  assert.ok(!f.synthetic.state.requests.some(r => r.url.includes('10.0.0.7')));
+  assert.equal((await f.connectionRows()).length, 0);
+});
+
+test('changing the URL or authentication discards the connection; disabling keeps it; Disconnect revokes and deletes', async t => {
+  const f = await fixture(t, { advertise: { dynamic: true } });
+  await f.save([oauthServer()]);
+  await f.connect();
+  await f.store.setItemEnabled('1', { kind: 'server', name: 'docs' }, false);
+  await f.store.setItemEnabled('1', { kind: 'server', name: 'docs' }, true);
+  assert.equal((await f.connectionRows()).length, 1, 'disabling and re-enabling keeps the connection');
+  await f.save([oauthServer({ tools: ['lookup', 'search'] })]);
+  assert.equal((await f.connectionRows()).length, 1, 'other edits keep the connection');
+  await f.save([oauthServer({ url: 'https://8.8.8.8/v2/mcp' })]);
+  assert.equal((await f.connectionRows()).length, 0, 'a new URL needs a new sign-in');
+  await f.save([oauthServer()]);
+  await f.connect();
+  await f.save([oauthServer({ authentication: 'none' })]);
+  assert.equal((await f.connectionRows()).length, 0, 'switching the authentication type discards the tokens');
+  await f.save([oauthServer()]);
+  await f.connect();
+  const [row] = await f.connectionRows();
+  assert.equal(row.state, 'connected');
+  const issued = f.synthetic.state.issued.slice(-2);
+  assert.deepEqual(await f.oauth.disconnect('1', 'docs'), { revoked: true });
+  assert.deepEqual(f.synthetic.state.revoked.sort(), [...issued].sort());
+  assert.equal((await f.connectionRows()).length, 0);
+  assert.deepEqual((await f.oauth.audit('1')).slice(0, 2).map(e => e.action), ['disconnect', 'connect']);
+  assert.ok((await f.oauth.audit('1')).filter(e => e.action === 'discarded').length >= 2);
+  await assert.rejects(f.oauth.disconnect('2', 'docs'), /administrator/);
+});
+
+test('tokens and client secrets never appear in projections, revisions, logs, task events or telemetry', async t => {
+  // Every log call made by the flow below, as its structured arguments.
+  const logged: string[] = [];
+  for (const level of ['debug', 'info', 'warn', 'error'] as const) {
+    const original = logger[level];
+    (logger as unknown as Record<string, unknown>)[level] = (...args: unknown[]) => { logged.push(JSON.stringify(args)); return (original as (...a: unknown[]) => void).apply(logger, args); };
+    t.after(() => { (logger as unknown as Record<string, unknown>)[level] = original; });
+  }
+  const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 30 });
+  await f.database.schema.createTable('tasks', c => { c.string('task_id').primary(); });
+  await f.database.schema.createTable('task_history', c => { c.increments('id'); c.string('task_id'); c.string('state'); c.string('timestamp'); c.text('reason'); c.text('metadata'); });
+  await f.database('tasks').insert({ task_id: 'task-1' });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const { prepared, token } = await f.launch('task-1');
+  await f.call(token);
+  await f.store.recordResolution('task-1', { event: 'extensions.resolved', libraryRevision: prepared.snapshot.revision, runKind: 'automation', provenance: { source: 'auto', auditActor: '1' }, servers: ['docs'], skills: [], autoApplied: { servers: ['docs'], skills: [] }, added: { servers: [], skills: [] }, skipped: [], omitted: [] });
+  await f.store.retainGatewayTelemetry(token);
+  // Refresh, a transient failure and a rejected refresh all log.
+  const instanceId = await f.store.instanceId(); const server = (await f.store.readLibrary('1')).servers[0];
+  f.tick(31 * 1000); await f.oauth.accessToken(instanceId, server);
+  f.tick(31 * 1000); f.synthetic.state.refreshFailure = 'network'; await assert.rejects(f.oauth.accessToken(instanceId, server));
+  f.synthetic.state.refreshFailure = 'authorization'; await assert.rejects(f.oauth.accessToken(instanceId, server));
+  assert.ok(logged.some(line => line.includes('needs a new sign-in')));
+  const library = await f.store.readLibrary('1');
+  const surfaces = JSON.stringify([
+    library, await f.store.history('1'), await f.oauth.statuses(library.instanceId, library.servers), await f.oauth.audit('1'),
+    await f.database('task_history').select(), await f.database('extension_library_revisions').select(), await f.database('extension_oauth_audit').select(),
+    logged,
+  ]);
+  const sealed = JSON.stringify(await f.connectionRows());
+  assert.ok(f.synthetic.state.issued.length >= 3);
+  for (const value of f.synthetic.state.issued) {
+    assert.ok(!surfaces.includes(value), 'no token or registration secret in any projection or log');
+    assert.ok(!sealed.includes(value), 'stored only in sealed form');
+  }
+});

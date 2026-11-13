@@ -24,6 +24,13 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'post', path: '/api/instance/extensions/v1/skills/github', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
   { method: 'post', path: '/api/instance/extensions/v1/skills/github-source', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
   { method: 'post', path: '/api/instance/extensions/v1/tools/discover', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'post', path: '/api/instance/extensions/v1/oauth/check', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'post', path: '/api/instance/extensions/v1/oauth/start', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'post', path: '/api/instance/extensions/v1/oauth/disconnect', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'get', path: '/api/instance/extensions/v1/oauth/audit', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'get', path: '/api/instance/extensions/v1/oauth/callback', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  // The public OAuth Client ID Metadata Document: ProPR's client name and redirect URI only.
+  { method: 'get', path: '/api/instance/extensions/v1/oauth/client-metadata.json', auth: 'public', source: 'server.ts' },
   { method: 'get', path: '/health', auth: 'public', source: 'server.ts' },
   { method: 'post', path: '/webhook', auth: 'webhook', source: 'server.ts' },
   { method: 'get', path: '/api/compatibility', auth: 'public', source: 'server.ts' },

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ExtensionCatalogEntry, ExtensionLibraryRevision, ExtensionLibraryServer, ExtensionLibrarySkill, ExtensionLibraryUsage, ExtensionSkillBundle, InstanceCatalogResponse } from '@propr/shared';
-import { getExtensionLibrary, saveExtensionLibrary, setExtensionItemEnabled, type ExtensionItemRef } from '../../../api/extensionProfilesApi';
+import type { ExtensionCatalogEntry, ExtensionLibraryRevision, ExtensionLibraryServer, ExtensionLibrarySkill, ExtensionLibraryUsage, ExtensionOAuthInstanceInfo, ExtensionSkillBundle, InstanceCatalogResponse } from '@propr/shared';
+import { disconnectExtensionOAuth, getExtensionLibrary, saveExtensionLibrary, setExtensionItemEnabled, startExtensionOAuth, type ExtensionItemRef } from '../../../api/extensionProfilesApi';
 import { getInstanceCatalog } from '../../../api/proprApi';
-import { EMPTY_USAGE, extensionChoices, itemRefKey, type ExtensionChoices } from './extensionUi';
+import { EMPTY_USAGE, extensionChoices, itemRefKey, ownEntry, type ExtensionChoices } from './extensionUi';
 
 export type LibraryItems = { servers: ExtensionLibraryServer[]; skills: ExtensionLibrarySkill[] };
+const NO_OAUTH: ExtensionOAuthInstanceInfo = { redirectUri: null, clientMetadataUrl: null, connections: {} };
+/** The sign-in result page posts on this channel when the API shares the Settings origin. */
+const OAUTH_CHANNEL = 'propr-extension-oauth';
 
 /**
  * The saved extension library and its operations. Every change is saved at
@@ -19,6 +22,10 @@ export function useExtensionLibrary() {
   const [catalog, setCatalog] = useState<ExtensionCatalogEntry[]>([]);
   const [bundles, setBundles] = useState<ExtensionSkillBundle[]>([]);
   const [usage, setUsage] = useState<ExtensionLibraryUsage>(EMPTY_USAGE);
+  const [oauth, setOAuth] = useState<ExtensionOAuthInstanceInfo>(NO_OAUTH);
+  /** Servers whose sign-in tab is open: their state is refreshed when this tab regains focus. */
+  const [signingIn, setSigningIn] = useState<string[]>([]);
+  const [oauthBusy, setOAuthBusy] = useState<Record<string, boolean>>({});
   const [choices, setChoices] = useState<ExtensionChoices>(() => extensionChoices({ agents: [], repositories: [] }));
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [error, setError] = useState('');
@@ -36,6 +43,7 @@ export function useExtensionLibrary() {
     setCatalog(result.catalog ?? []);
     setBundles(result.bundles ?? []);
     setUsage(result.usage ?? EMPTY_USAGE);
+    setOAuth(result.oauth ?? NO_OAUTH);
   }, [adopt]);
   useEffect(() => {
     let active = true;
@@ -47,6 +55,7 @@ export function useExtensionLibrary() {
       setCatalog(result.catalog ?? []);
       setBundles(result.bundles ?? []);
       setUsage(result.usage ?? EMPTY_USAGE);
+      setOAuth(result.oauth ?? NO_OAUTH);
     }).catch(e => { if (active) setError((e as Error).message); });
     return () => { active = false; };
   }, [adopt]);
@@ -59,6 +68,10 @@ export function useExtensionLibrary() {
     const result = await saveExtensionLibrary({ version: 1, servers: next.servers, skills: next.skills }, base.revision, secrets);
     adopt(result.library);
     setError('');
+    // A changed URL, authentication or client discards an OAuth connection: show the current state.
+    if (next.servers.some(server => server.kind === 'https' && server.authentication === 'oauth') || base.servers.some(server => server.kind === 'https' && server.authentication === 'oauth')) {
+      void getExtensionLibrary().then(read => setOAuth(read.oauth ?? NO_OAUTH)).catch(() => {});
+    }
   }, [adopt]);
 
   const toggle = useCallback(async (ref: ExtensionItemRef, label: string, enabled: boolean) => {
@@ -86,11 +99,65 @@ export function useExtensionLibrary() {
     } catch (e) { setError((e as Error).message); }
   }, [save]);
 
+  /** Re-read connection state without closing open forms. */
+  const refreshConnections = useCallback(async () => {
+    const result = await getExtensionLibrary();
+    adopt(result.library);
+    const next = result.oauth ?? NO_OAUTH;
+    setOAuth(next);
+    setSigningIn(names => names.filter(name => ownEntry(next.connections, name)?.state !== 'connected'));
+  }, [adopt]);
+  useEffect(() => {
+    if (!signingIn.length) return;
+    const refresh = () => { if (document.visibilityState !== 'hidden') void refreshConnections().catch(() => {}); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(OAUTH_CHANNEL);
+    if (channel) channel.onmessage = refresh;
+    return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); channel?.close(); };
+  }, [signingIn.length, refreshConnections]);
+
+  /**
+   * Open the provider's sign-in page in a new tab. The tab is opened at once,
+   * inside the click, so it is not blocked; it is detached from this page
+   * before it navigates to the provider.
+   */
+  const connectOAuth = useCallback(async (name: string) => {
+    const tab = window.open('', '_blank');
+    if (tab) tab.opener = null;
+    setError(''); setNotice('');
+    setOAuthBusy(values => ({ ...values, [name]: true }));
+    try {
+      const { authorizationUrl } = await startExtensionOAuth(name);
+      if (tab) tab.location.href = authorizationUrl; else window.open(authorizationUrl, '_blank', 'noopener,noreferrer');
+      setSigningIn(names => [...new Set([...names, name])]);
+      setNotice(`Finish signing in to ${name} in the new tab. This list refreshes when you come back.`);
+    } catch (e) {
+      tab?.close();
+      setError(`${name} could not start a sign-in: ${(e as Error).message}`);
+    } finally {
+      setOAuthBusy(values => { const next = { ...values }; delete next[name]; return next; });
+    }
+  }, []);
+  const disconnectOAuth = useCallback(async (name: string) => {
+    setError(''); setNotice('');
+    setOAuthBusy(values => ({ ...values, [name]: true }));
+    try {
+      const { revoked } = await disconnectExtensionOAuth(name);
+      await refreshConnections();
+      setNotice(revoked ? `${name} disconnected; the provider revoked its tokens.` : `${name} disconnected; its stored tokens were deleted.`);
+    } catch (e) { setError(`${name} could not be disconnected: ${(e as Error).message}`); }
+    finally { setOAuthBusy(values => { const next = { ...values }; delete next[name]; return next; }); }
+  }, [refreshConnections]);
+
   const addBundle = useCallback((bundle: ExtensionSkillBundle) =>
     setBundles(items => [...items.filter(existing => existing.id !== bundle.id), bundle]), []);
   /** The checkbox state of an item: the requested state while its toggle is in flight. */
   const shownEnabled = (ref: ExtensionItemRef, saved: boolean) => pending[itemRefKey(ref)] ?? saved;
   const isPending = (ref: ExtensionItemRef) => itemRefKey(ref) in pending;
-  return { library, loads, catalog, bundles, usage, choices, error, notice, setError, setNotice, reload, save, toggle, remove, addBundle, shownEnabled, isPending };
+  return {
+    library, loads, catalog, bundles, usage, choices, error, notice, setError, setNotice, reload, save, toggle, remove, addBundle, shownEnabled, isPending,
+    oauth, connectOAuth, disconnectOAuth, refreshConnections, isOAuthBusy: (name: string) => Boolean(oauthBusy[name]),
+  };
 }
 export type ExtensionLibraryState = ReturnType<typeof useExtensionLibrary>;

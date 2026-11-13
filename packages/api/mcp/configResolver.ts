@@ -157,7 +157,8 @@ function deriveKeyCheckValue(key: Buffer): string {
   return createHash('sha256').update('propr:mcp:key-check').update('\0').update(key).digest('hex');
 }
 
-function derivePublicOrigin(env: NodeJS.ProcessEnv): string | undefined {
+/** The instance's public HTTPS API origin: MCP_PUBLIC_ORIGIN, API_PUBLIC_URL or GH_OAUTH_CALLBACK_URL, first HTTPS one. */
+export function derivePublicOrigin(env: NodeJS.ProcessEnv): string | undefined {
   const candidates = [
     env.MCP_PUBLIC_ORIGIN,
     env.API_PUBLIC_URL ? (() => { try { return new URL(env.API_PUBLIC_URL!).origin; } catch { return undefined; } })() : undefined,

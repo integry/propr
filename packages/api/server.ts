@@ -375,6 +375,10 @@ export function setupRoutes(): void {
   });
   const extensionRoutes = createExtensionLibraryRoutes();
   app.post('/api/extensions/mcp/:serverName', extensionRoutes.gateway);
+  // INTENTIONALLY UNAUTHENTICATED: ProPR's public OAuth Client ID Metadata
+  // Document. Its URL is the client id authorization servers fetch; it holds
+  // only ProPR's name and this instance's redirect URI.
+  app.get('/api/instance/extensions/v1/oauth/client-metadata.json', extensionRoutes.clientMetadata);
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
   // Worker-only: run-scoped MCP grants for agent containers, authenticated by
@@ -521,6 +525,11 @@ export function setupRoutes(): void {
   app.post('/api/instance/extensions/v1/skills/github', extensionRoutes.importGithub);
   app.post('/api/instance/extensions/v1/skills/github-source', extensionRoutes.githubSource);
   app.post('/api/instance/extensions/v1/tools/discover', extensionRoutes.discoverTools);
+  app.post('/api/instance/extensions/v1/oauth/check', extensionRoutes.oauthCheck);
+  app.post('/api/instance/extensions/v1/oauth/start', extensionRoutes.oauthStart);
+  app.post('/api/instance/extensions/v1/oauth/disconnect', extensionRoutes.oauthDisconnect);
+  app.get('/api/instance/extensions/v1/oauth/audit', extensionRoutes.oauthAudit);
+  app.get('/api/instance/extensions/v1/oauth/callback', extensionRoutes.oauthCallback);
 }
 
 function setupWebhookRoute(): void {

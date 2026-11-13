@@ -197,7 +197,9 @@ export interface ExtensionLibraryInput {
     enabled: boolean;
     tools: string[];
     capability: "read" | "write";
-    authentication: "none" | "bearer";
+    authentication: "none" | "bearer" | "oauth";
+    scopes?: string[];
+    clientId?: string;
     repositories: string[];
     agents: string[];
     autoApply: boolean;
@@ -253,6 +255,7 @@ export interface ExtensionLibraryRead {
     }[];
     [key: string]: unknown;
   };
+  oauth: ExtensionOAuthInstanceInfo;
   bundles: {
     [key: string]: unknown;
   }[];
@@ -313,6 +316,54 @@ export interface ExtensionLibrarySave {
   secrets?: {
     [key: string]: string | null;
   };
+}
+
+export interface ExtensionOAuthCheckRequest {
+  url: string;
+  clientId?: string;
+  scopes?: string[];
+}
+
+export interface ExtensionOAuthCheckResponse {
+  check: {
+    authorizationRequired: boolean;
+    discoveredFrom?: "challenge" | "well_known";
+    resource?: string;
+    issuer?: string;
+    scopes?: string[];
+    registration: "metadata_document" | "dynamic" | "preregistered" | null;
+    message: string;
+    redirectUri: string | null;
+  };
+}
+
+/** OAuth sign-in facts of this instance and the connection state of its OAuth library servers. */
+export interface ExtensionOAuthInstanceInfo {
+  /** Redirect URI to register with a provider; null without a public HTTPS base URL, which disables Connect. */
+  redirectUri: string | null;
+  /** ProPR's Client ID Metadata Document URL, used as the client id where supported. */
+  clientMetadataUrl: string | null;
+  /** Connection state by OAuth server name. Tokens are never returned. */
+  connections: {
+    [key: string]: {
+      state: "not_connected" | "connected" | "needs_sign_in";
+      /** Actor id of the administrator who signed in. */
+      connectedBy?: string;
+      connectedAt?: number;
+      /** Scopes the authorization server granted. */
+      scopes?: string[];
+      registration?: "metadata_document" | "dynamic" | "preregistered";
+    };
+  };
+}
+
+export interface ExtensionOAuthItemRequest {
+  name: string;
+}
+
+export interface ExtensionOAuthStartResponse {
+  /** Provider authorization page to open in a new tab; carries a single-use state bound to this session, PKCE S256 and the resource indicator. */
+  authorizationUrl: string;
 }
 
 export interface ExtensionSecretReplaceRequest {

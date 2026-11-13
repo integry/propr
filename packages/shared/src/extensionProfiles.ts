@@ -16,7 +16,13 @@ export type ExtensionSelection = z.infer<typeof extensionSelectionSchema>;
 export const remoteMcpSchema = z.strictObject({
   kind: z.literal('https'), name: extensionServerNameSchema, url: z.string().max(2048), enabled: z.boolean(),
   tools: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/)).max(EXTENSION_LIMITS.tools),
-  capability: z.enum(['read', 'write']), authentication: z.enum(['none', 'bearer']),
+  capability: z.enum(['read', 'write']), authentication: z.enum(['none', 'bearer', 'oauth']),
+  /**
+   * OAuth only: scopes to request at sign-in, and a client pre-registered with
+   * the provider. The client secret is write-only, stored like a Bearer token.
+   */
+  scopes: z.array(z.string().regex(/^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/)).max(32).optional(),
+  clientId: z.string().regex(/^[\x21-\x7e]{1,512}$/).optional(),
 });
 export const catalogMcpSchema = z.strictObject({
   kind: z.literal('catalog'), name: extensionServerNameSchema, catalogId: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
@@ -35,7 +41,7 @@ export interface ExtensionSkillBundle {
   source: { kind: 'archive'; filename: string } | { kind: 'github'; repository: string; commit: string; directory: string };
   requirements: string[]; createdAt: number; auditActor: string;
 }
-export type ExtensionSecretStatus = { fields: ['bearerToken']; count?: never; configured: boolean } | { count: number; fields?: never; configured: boolean };
+export type ExtensionSecretStatus = { fields: ['bearerToken'] | ['clientSecret']; count?: never; configured: boolean } | { count: number; fields?: never; configured: boolean };
 
 /** Legacy profile input, read only by the startup migration to the extension library. */
 export interface LegacyExtensionProfileInput {

@@ -23,6 +23,9 @@ async function fixture(t: test.TestContext) {
     CREATE TABLE extension_skill_bundles(id TEXT, descriptor TEXT, files_json TEXT);
     CREATE TABLE extension_instance_identity(id INTEGER, instance_id TEXT);
     CREATE TABLE extension_run_grants(token_hash TEXT);
+    CREATE TABLE extension_oauth_connections(instance_id TEXT, server_name TEXT, sealed TEXT);
+    CREATE TABLE extension_oauth_pending(state_hash TEXT, sealed TEXT);
+    CREATE TABLE extension_oauth_audit(id INTEGER PRIMARY KEY, server_name TEXT, action TEXT, actor TEXT);
     CREATE TABLE task_submissions(id TEXT, payload TEXT, extension_authorization TEXT);
     CREATE TABLE system_configs(key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE knex_migrations(id INTEGER PRIMARY KEY, name TEXT);
@@ -36,6 +39,9 @@ async function fixture(t: test.TestContext) {
   db.prepare('INSERT INTO extension_instance_identity VALUES(?,?)').run(1, 'extension-instance');
   db.prepare('INSERT INTO task_submissions VALUES(?,?,?)').run('submission', JSON.stringify({ extensionAllowWrite: true }), 'previous-extension-submission-authority-canary');
   db.prepare('INSERT INTO extension_run_grants VALUES(?)').run('previous-execution-lease-canary');
+  db.prepare('INSERT INTO extension_oauth_connections VALUES(?,?,?)').run('extension-instance', 'documentation', 'oauth-access-refresh-token-canary');
+  db.prepare('INSERT INTO extension_oauth_pending VALUES(?,?)').run('pending-state-hash', 'oauth-pkce-verifier-canary');
+  db.prepare('INSERT INTO extension_oauth_audit(server_name, action, actor) VALUES(?,?,?)').run('documentation', 'connect', '1');
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('agents', JSON.stringify([{ id: 'agent', alias: 'My agent', configPath: '/provider-home-canary', envVars: { API_KEY: 'operator-env-canary' } }]));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('operator_extension_catalog', JSON.stringify({ executable: '/usr/bin/env', args: ['CATALOG_ARGUMENT_SENTINEL', '/opt/propr/CATALOG_PATH_SENTINEL'], secretEnv: { API_KEY: 'OPERATOR_DOCS_KEY' } }));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('fleet_control_secret', JSON.stringify('fleet-secret-canary'));
@@ -108,6 +114,11 @@ test('real WAL writer: coherent restorable customer database, integrity, metadat
       assert.equal(JSON.parse(db.prepare('SELECT descriptor FROM extension_skill_bundles').get().descriptor).digest, 'immutable-skill-digest');
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_run_grants').get().n, 0);
       assert.equal(data.includes(Buffer.from('previous-execution-lease-canary')), false);
+      // OAuth token custody and pending sign-ins are erased; the audit trail is kept.
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_oauth_connections').get().n, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_oauth_pending').get().n, 0);
+      assert.equal(db.prepare('SELECT action FROM extension_oauth_audit').get().action, 'connect');
+      for (const canary of ['oauth-access-refresh-token-canary', 'oauth-pkce-verifier-canary']) assert.equal(data.includes(Buffer.from(canary)), false, canary);
       assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM system_configs WHERE key='agents'").get().value), [{ id: 'agent', alias: 'My agent' }]);
       db.prepare('INSERT INTO customer(body) VALUES(?)').run('restored write');
     } finally { db.close(); }
