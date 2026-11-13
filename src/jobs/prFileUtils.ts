@@ -138,6 +138,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         output: null,
         sessionId: result.sessionId || null,
         conversationId: result.conversationId,
+        executionId: result.executionId,
         finalResult: result.summary || terminationReason === 'max_turns'
             ? { type: 'result', result: result.summary, subtype: terminationReason === 'max_turns' ? 'error_max_turns' : undefined }
             : null,

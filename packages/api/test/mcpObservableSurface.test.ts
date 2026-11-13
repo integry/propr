@@ -326,6 +326,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Grouping dimensions and figures of get_cost_breakdown rows.
+    'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
     // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.

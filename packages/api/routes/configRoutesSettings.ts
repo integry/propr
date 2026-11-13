@@ -12,6 +12,7 @@ import {
   MAX_PROVIDER_REPLACEMENTS_LIMIT,
   normalizeLegacyReviewMaxContextTokens,
   normalizeReviewContextBudgetPercent,
+  TOKEN_OUTLIER_SETTING_NAMES,
 } from '@propr/shared';
 
 /**
@@ -72,6 +73,22 @@ export async function agentNetworkSettingsResponse(configStore: typeof configMan
       agent_network_ignore_repository_allow: effective.ignoreRepositoryAllow,
     },
   };
+}
+
+function pickSettings(settings: Record<string, unknown>, names: readonly string[]): { picked: Record<string, unknown>; rest: Record<string, unknown> } {
+  const picked: Record<string, unknown> = {};
+  const rest: Record<string, unknown> = { ...settings };
+  for (const name of names) {
+    if (!(name in rest)) continue;
+    picked[name] = rest[name];
+    delete rest[name];
+  }
+  return { picked, rest };
+}
+
+/** Token-outlier alert settings in force (stored value, or the default when unset or invalid). */
+export async function tokenOutlierSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  return { ...await configManager.loadTokenOutlierSettings({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }) };
 }
 
 interface SettingsStore {
@@ -281,8 +298,9 @@ async function saveNormalizedSettingsWithRollback({
     agent_network_mode_enforced,
     agent_network_allow,
     agent_network_ignore_repository_allow,
-    ...otherSettings
+    ...remainingSettings
   } = settings;
+  const { picked: tokenOutlierFields, rest: otherSettings } = pickSettings(remainingSettings, TOKEN_OUTLIER_SETTING_NAMES);
 
   const extracted = await extractSettingSaves({
     auto_followup_score_threshold,
@@ -310,7 +328,8 @@ async function saveNormalizedSettingsWithRollback({
     agent_network_mode,
     agent_network_mode_enforced,
     agent_network_allow,
-    agent_network_ignore_repository_allow
+    agent_network_ignore_repository_allow,
+    ...tokenOutlierFields
   });
 
   if (extracted.error) {

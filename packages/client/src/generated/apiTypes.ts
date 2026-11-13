@@ -47,6 +47,67 @@ export interface Compatibility {
   desktopAuthentication: DesktopAuthenticationCapabilities;
 }
 
+/** Recorded LLM executions grouped by the requested dimensions. */
+export interface CostExport {
+  /** The requested period; null for all time. */
+  period: "24h" | "7d" | "30d" | "90d" | "1y" | "all" | null;
+  /** `all` or `owner/repo`. */
+  repository: string;
+  /** The grouping dimensions, in column order. */
+  group_by: Array<"day" | "repository" | "agent" | "model" | "reasoning_level" | "execution_type" | "outcome">;
+  /** Ascending by each dimension in column order; unrecorded values last. */
+  rows: CostRow[];
+  totals: CostFigures;
+}
+
+/** Execution, task, token and cost totals. */
+export interface CostFigures {
+  /** Agent executions in the row. */
+  executions: number;
+  /** Distinct tasks with at least one execution in the row. */
+  tasks: number;
+  /** Input tokens, cache reads and writes included, as each execution was priced. */
+  input_tokens: number;
+  output_tokens: number;
+  /** Of `input_tokens`, prompt-cache writes. */
+  cache_creation_input_tokens: number;
+  /** Of `input_tokens`, prompt-cache reads. */
+  cache_read_input_tokens: number;
+  /** Recorded cost in USD; null when no execution in the row recorded a cost. */
+  cost_usd: number | null;
+}
+
+/** One group of recorded executions. */
+export interface CostRow {
+  /** UTC day the execution started, `YYYY-MM-DD`. Present when grouped by it; null when unrecorded. */
+  day?: string | null;
+  /** `owner/repo` of the execution's task. Present when grouped by it; null when unrecorded. */
+  repository?: string | null;
+  /** Agent alias that ran the execution. Present when grouped by it; null when unrecorded. */
+  agent?: string | null;
+  /** Model name. Present when grouped by it; null when unrecorded. */
+  model?: string | null;
+  /** Effective reasoning level (effort). Present when grouped by it; null when unrecorded. */
+  reasoning_level?: string | null;
+  /** Execution type, for example `implementation` or `review`. Present when grouped by it; null when unrecorded. */
+  execution_type?: string | null;
+  /** Present when grouped by outcome. */
+  outcome?: "success" | "failed";
+  /** Agent executions in the row. */
+  executions: number;
+  /** Distinct tasks with at least one execution in the row. */
+  tasks: number;
+  /** Input tokens, cache reads and writes included, as each execution was priced. */
+  input_tokens: number;
+  output_tokens: number;
+  /** Of `input_tokens`, prompt-cache writes. */
+  cache_creation_input_tokens: number;
+  /** Of `input_tokens`, prompt-cache reads. */
+  cache_read_input_tokens: number;
+  /** Recorded cost in USD; null when no execution in the row recorded a cost. */
+  cost_usd: number | null;
+}
+
 export interface DemoModeStatus {
   demoMode: boolean;
 }
@@ -670,6 +731,16 @@ export interface TaskSummary {
 export interface DeleteTaskQuery {
   /** Delete even when the task is still active. */
   force?: "true" | "false";
+}
+
+/** Query parameters of `getCostExport`, `getCostExportCsv`. */
+export interface CostExportQuery {
+  /** Bounds executions by when they started; omitted means all time. */
+  period?: "24h" | "7d" | "30d" | "90d" | "1y" | "all";
+  /** `owner/repo`, or `all` (default). */
+  repository?: string;
+  /** Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`. */
+  group_by?: string;
 }
 
 /** Query parameters of `getInstanceDatabaseExport`. */
