@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import { normalizeAutomationEventTriggers, type AutomationEventTrigger, type AutomationTriggerEventType } from '@propr/shared';
 import { db } from '../../db/connection.js';
+import { rowToAgentRun, type AgentRunRow, type StoredAgentRun } from './agentRunStore.js';
 
 /**
  * Storage behind automation event triggers. Events are consumed from their durable record
@@ -174,4 +175,23 @@ export async function countAgentRunsForTriggerSubject(
   const row = await database(RUNS).where({ definition_id: definitionId, trigger_subject: subject }).whereNot('state', 'skipped')
     .count<{ count: number | string }[]>({ count: '*' }).first();
   return Number(row?.count ?? 0);
+}
+
+/**
+ * Accepted `event` runs still `queued` that have not changed since `before`: the dispatch
+ * obligation of a receipt whose enqueue failed. It is kept by the run itself, not by the
+ * event cursor, so a subscription reset (re-enable, resubscribe) that moves the cursor past
+ * the event does not drop it. Runs a deferred retry admitted (`deferred_until` set) are
+ * dispatched by that retry's consumer. Oldest first, on the `(state, deferred_until)` index.
+ */
+export async function listUndispatchedEventAgentRuns(
+  before: number,
+  limit: number,
+  { database = db }: { database?: Knex } = {},
+): Promise<StoredAgentRun[]> {
+  const rows = await database(RUNS).where({ state: 'queued', trigger: 'event' }).whereNull('deferred_until')
+    .where('updated_at', '<=', before)
+    .orderBy([{ column: 'updated_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+    .limit(Math.max(1, Math.trunc(limit))).select<AgentRunRow[]>();
+  return rows.map(rowToAgentRun);
 }

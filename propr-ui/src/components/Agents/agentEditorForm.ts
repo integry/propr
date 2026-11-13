@@ -69,6 +69,20 @@ export const formFromDefinition = (definition: AutomationDefinitionRecord): Agen
   blockedTriggerReasonKinds: [...(blockedTriggerOf(definition)?.reasonKinds ?? [])],
 });
 
+const withinAutomation = (form: AgentEditorForm) => form.blockedTriggerRepositories.filter(repository =>
+  form.repositories.some(candidate => candidate.toLowerCase() === repository.toLowerCase()));
+
+/**
+ * The trigger was limited to repositories that were all removed from the automation. An
+ * empty filter means every repository of the automation, so dropping the stale entries would
+ * silently start runs for repositories the user had excluded: the user has to choose again.
+ */
+export const eventTriggerFilterLost = (form: AgentEditorForm): boolean =>
+  form.blockedTrigger && form.blockedTriggerRepositories.length > 0 && withinAutomation(form).length === 0;
+
+export const EVENT_TRIGGER_FILTER_LOST_MESSAGE =
+  'The event trigger was limited to repositories that are no longer in this automation. Choose the repositories it reacts to, or turn it off.';
+
 /** The request body for a create or a full-form update, in the shared input contract. */
 export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput => ({
   ...(form.extensionProfile !== undefined ? { extensionProfile: form.extensionProfile } : {}),
@@ -82,11 +96,11 @@ export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput =>
   agentId: form.agentId,
   model: form.agentId ? form.model : null,
   previousReportCount: form.previousReportCount,
-  // The repository filter never reaches beyond the automation's own repositories.
+  // The repository filter never reaches beyond the automation's own repositories. A filter
+  // that lost every repository is sent as it was, so it is refused rather than widened to all.
   eventTriggers: form.blockedTrigger ? [{
     event: 'plan.issue_blocked',
-    repositories: form.blockedTriggerRepositories.filter(repository =>
-      form.repositories.some(candidate => candidate.toLowerCase() === repository.toLowerCase())),
+    repositories: eventTriggerFilterLost(form) ? form.blockedTriggerRepositories : withinAutomation(form),
     reasonKinds: form.blockedTriggerReasonKinds,
   }] : [],
 });

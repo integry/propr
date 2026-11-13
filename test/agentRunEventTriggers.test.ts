@@ -17,7 +17,7 @@ import {
   type StoredAgentDefinition,
   type TriggerAgentRunInput,
 } from '@propr/core';
-import { runAgentEventTriggerSweep, type AgentEventTriggerSweepDependencies } from '../src/agentRunEventTriggers.ts';
+import { AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS, runAgentEventTriggerSweep, type AgentEventTriggerSweepDependencies } from '../src/agentRunEventTriggers.ts';
 import { buildAgentReportPrompt } from '../src/jobs/agentRuns/reportPrompt.ts';
 import { buildAgentActionPrompt } from '../src/jobs/agentRuns/actionPrompt.ts';
 
@@ -194,6 +194,65 @@ describe('automation event triggers', () => {
     assert.equal((await sweep()).existing, 0);
   });
 
+  for (const [reset, change] of [
+    ['disabled and re-enabled', async (definition: StoredAgentDefinition) => {
+      await updateAgentDefinition(definition.id, 'alice', { enabled: false }, { database, now });
+      await updateAgentDefinition(definition.id, 'alice', { enabled: true }, { database, now });
+    }],
+    ['unsubscribed and resubscribed', async (definition: StoredAgentDefinition) => {
+      await updateAgentDefinition(definition.id, 'alice', { eventTriggers: [] }, { database, now });
+      await updateAgentDefinition(definition.id, 'alice', { eventTriggers: [BLOCKED] }, { database, now });
+    }],
+  ] as const) {
+    test(`an accepted run whose enqueue failed is still dispatched after the definition is ${reset}`, async () => {
+      const definition = await define();
+      clock += 1_000;
+      const eventId = await block(7);
+      failEnqueue = true;
+      assert.equal((await sweep()).failed, 1);
+      const [run] = await runsOf(definition);
+      assert.equal(run.state, 'queued');
+
+      // The reset moves the cursor past the event with the undispatched receipt.
+      await change(definition);
+      assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), eventId);
+      failEnqueue = false;
+      // Within the grace the recovery pass leaves a queued run alone (its job may just be waiting).
+      assert.equal((await sweep()).redispatched, 0);
+      assert.deepEqual(enqueued, []);
+
+      clock += AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS;
+      const recovered = await sweep();
+      assert.equal(recovered.redispatched, 1);
+      assert.deepEqual(enqueued, [run.id]);
+      // The receipt is dispatched; the skipped event is not replayed into a second run.
+      assert.equal(recovered.created + recovered.existing, 0);
+      assert.equal((await runsOf(definition)).length, 1);
+    });
+  }
+
+  test('the recovery pass enqueues nothing for an offboarded owner or a run that left queued', async () => {
+    const definition = await define();
+    clock += 1_000;
+    await block(7);
+    failEnqueue = true;
+    await sweep();
+    failEnqueue = false;
+    await updateAgentDefinition(definition.id, 'alice', { enabled: false }, { database, now });
+    const [run] = await runsOf(definition);
+    clock += AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS;
+
+    assert.equal((await sweep({ isMember: async () => false })).redispatched, 0);
+    assert.deepEqual(enqueued, []);
+    // An accepted receipt is dispatched even while its definition is disabled; the run uses its snapshot.
+    assert.equal((await sweep()).redispatched, 1);
+    assert.deepEqual(enqueued, [run.id]);
+    // Once the worker took it, the obligation is released.
+    await database('agent_runs').where({ id: run.id }).update({ state: 'running' });
+    assert.equal((await sweep()).redispatched, 0);
+    assert.deepEqual(enqueued, [run.id]);
+  });
+
   test('events from before the subscription or while disabled are not run later', async () => {
     await block(1);
     const definition = await define();
@@ -356,8 +415,9 @@ describe('automation event triggers', () => {
     const queries: string[] = [];
     database.on('query', (query: { sql: string }) => queries.push(query.sql));
     const result = await sweep();
-    assert.deepEqual(result, { created: 0, existing: 0, skipped: 0, unmatched: 0, failed: 0 });
-    assert.equal(queries.length, 1);
+    assert.deepEqual(result, { created: 0, existing: 0, skipped: 0, unmatched: 0, redispatched: 0, failed: 0 });
+    // The subscriber page and the (empty) undispatched-receipt check; neither reads events.
+    assert.equal(queries.length, 2);
     assert.ok(!queries.some(sql => sql.includes('epic_queue_blocked_events')));
     assert.equal((await runsOf(scheduled)).length, 0);
     assert.equal(await getAgentDefinitionEventCursor(scheduled.id, 'plan.issue_blocked', { database }), null);

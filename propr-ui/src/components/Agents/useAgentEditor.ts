@@ -14,7 +14,9 @@ import {
   type AutomationDefinitionRecord,
   type AutomationRunRecord,
 } from '../../api/automationDefinitionsApi';
-import { emptyAgentForm, formFromDefinition, formToInput, type AgentEditorForm, type AgentEditorFormPatch } from './agentEditorForm';
+import {
+  EVENT_TRIGGER_FILTER_LOST_MESSAGE, emptyAgentForm, eventTriggerFilterLost, formFromDefinition, formToInput, type AgentEditorForm, type AgentEditorFormPatch,
+} from './agentEditorForm';
 import type { ProprMcpSupport } from './AgentCapabilitiesSection';
 import { capacityWarning } from './agentRunPresentation';
 
@@ -191,6 +193,7 @@ export function useAgentEditor(
   }, [agents]);
 
   const save = useCallback(async () => {
+    if (eventTriggerFilterLost(form)) { setError(EVENT_TRIGGER_FILTER_LOST_MESSAGE); return; }
     const input = formToInput(form);
     if (proprMcpSupport === 'unsupported') input.capabilities = input.capabilities?.filter(capability => !MCP_CAPABILITIES.has(capability));
     const invalid = validateAutomationDefinitionInput(input);

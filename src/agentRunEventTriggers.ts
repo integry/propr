@@ -19,6 +19,7 @@ import {
     initializeAgentDefinitionEventCursor,
     listEventSubscribedAgentDefinitionIds,
     listPlanIssueBlockedEventsAfter,
+    listUndispatchedEventAgentRuns,
     logger,
     recordSkippedRun,
     rowToAgentDefinition,
@@ -46,12 +47,23 @@ import {
  *   run: the cursor jumps to the newest event when the definition subscribes or is enabled.
  * - Every run goes through `triggerAgentRun` as an unattended `event` run, so the cost gate,
  *   the definition's autonomy, capabilities and grants apply exactly as for a schedule.
+ * - An accepted run whose enqueue failed stays `queued`. The replay of its event dispatches it
+ *   again, and so does a recovery pass over such runs once they are older than
+ *   `AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS`, so a cursor reset that skips the event (the
+ *   definition was re-enabled or resubscribed) does not strand it. Events themselves are
+ *   still never replayed after a reset; only receipts recorded before it are dispatched.
  * - Loop bound: after `MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE` event runs of a definition for the
  *   same issue of the same plan, later events for that issue are recorded as skipped runs.
  */
 
 export const AGENT_EVENT_TRIGGER_BATCH_SIZE = 50;
 const DEFINITION_PAGE_SIZE = 100;
+/**
+ * How long a `queued` event run may sit unchanged before the recovery pass enqueues it again.
+ * Enqueueing is idempotent (the job id is deterministic and the worker skips a run that is no
+ * longer queued); the grace only keeps the pass from re-adding jobs that are simply waiting.
+ */
+export const AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS = 5 * 60_000;
 const EVENT_IDEMPOTENCY_PREFIX = 'event:plan.issue_blocked:';
 /** Blocker reasons are short; a longer one is cut so the run input and its receipts stay small. */
 export const TRIGGER_EVENT_REASON_MAX_CHARS = 4_000;
@@ -77,10 +89,12 @@ export interface AgentEventTriggerSweepResult {
     skipped: number;
     /** Events the definition's subscription did not match. */
     unmatched: number;
+    /** Accepted runs left `queued` by a failed enqueue that the recovery pass enqueued again. */
+    redispatched: number;
     failed: number;
 }
 
-type EventOutcome = Exclude<keyof AgentEventTriggerSweepResult, 'failed'>;
+type EventOutcome = Exclude<keyof AgentEventTriggerSweepResult, 'failed' | 'redispatched'>;
 /** The subscription was reset, disabled or dropped after its events were read: nothing was recorded. */
 const FENCED = 'fenced';
 
@@ -91,6 +105,8 @@ interface SweepContext {
     gate: AgentRunGate;
     isMember: (ownerId: string) => Promise<boolean>;
     dispatch: (run: TriggerAgentRunResult['run']) => Promise<unknown>;
+    /** Runs this sweep already enqueued, which the recovery pass leaves alone. */
+    dispatched: Set<string>;
     batchSize: number;
     frontendUrl: string;
 }
@@ -230,6 +246,28 @@ async function sweepDefinition(definitionId: string, context: SweepContext, resu
 }
 
 /**
+ * Enqueues accepted event runs left `queued` without a job, whatever happened to their
+ * definition's cursor since. Only receipts are dispatched; no event is read. An owner who is
+ * no longer a member starts nothing, as for new events.
+ */
+async function redispatchUndispatchedRuns(context: SweepContext, before: number, result: AgentEventTriggerSweepResult): Promise<void> {
+    const members = new Map<string, boolean>();
+    for (const run of await listUndispatchedEventAgentRuns(before - AGENT_EVENT_DISPATCH_RECOVERY_GRACE_MS, context.batchSize, { database: context.database })) {
+        try {
+            if (context.dispatched.has(run.id)) continue;
+            if (!members.has(run.ownerId)) members.set(run.ownerId, await context.isMember(run.ownerId));
+            if (!members.get(run.ownerId)) continue;
+            await context.dispatch(run);
+            result.redispatched += 1;
+            logger.info({ runId: run.id, definitionId: run.definitionId }, 'Enqueued an accepted event-triggered automation run again');
+        } catch (error) {
+            result.failed += 1;
+            logger.error({ runId: run.id, definitionId: run.definitionId, err: error }, 'Could not enqueue an accepted event-triggered automation run; retrying on the next sweep');
+        }
+    }
+}
+
+/**
  * Starts the runs for new events of every subscribed, enabled definition. Each definition is
  * handled on its own, so one that keeps failing never stops the others; its cursor stays on
  * the failing event, which is retried on the next sweep.
@@ -245,11 +283,16 @@ export async function runAgentEventTriggerSweep(
         trigger: deps.trigger ?? (input => triggerAgentRun(input, { database, now: clock, enqueue: deps.enqueue })),
         gate: deps.gate ?? createAgentRunCostGate({ now: clock }),
         isMember: deps.isMember,
-        dispatch: run => enqueueAgentRunPhase(run, 'report', { enqueue: deps.enqueue }),
+        dispatch: async run => {
+            await enqueueAgentRunPhase(run, 'report', { enqueue: deps.enqueue });
+            context.dispatched.add(run.id);
+        },
+        dispatched: new Set(),
         batchSize: deps.batchSize ?? AGENT_EVENT_TRIGGER_BATCH_SIZE,
         frontendUrl: (deps.frontendUrl ?? defaultFrontendUrl()).replace(/\/+$/, ''),
     };
-    const result: AgentEventTriggerSweepResult = { created: 0, existing: 0, skipped: 0, unmatched: 0, failed: 0 };
+    const startedAt = clock();
+    const result: AgentEventTriggerSweepResult = { created: 0, existing: 0, skipped: 0, unmatched: 0, redispatched: 0, failed: 0 };
     let afterId: string | null = null;
     for (;;) {
         const ids = await listEventSubscribedAgentDefinitionIds(DEFINITION_PAGE_SIZE, afterId, { database });
@@ -264,6 +307,7 @@ export async function runAgentEventTriggerSweep(
         if (ids.length < DEFINITION_PAGE_SIZE) break;
         afterId = ids[ids.length - 1];
     }
-    if (result.created + result.existing + result.skipped + result.failed > 0) logger.info({ ...result }, 'Automation event trigger sweep finished');
+    await redispatchUndispatchedRuns(context, startedAt, result);
+    if (result.created + result.existing + result.skipped + result.redispatched + result.failed > 0) logger.info({ ...result }, 'Automation event trigger sweep finished');
     return result;
 }

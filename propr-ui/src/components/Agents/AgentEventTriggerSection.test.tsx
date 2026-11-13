@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import type { AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { AgentEventTriggerSection } from './AgentEventTriggerSection';
 import { AgentRunTriggerEvent } from './AgentRunTriggerEvent';
-import { emptyAgentForm, formToInput } from './agentEditorForm';
+import { emptyAgentForm, eventTriggerFilterLost, formToInput } from './agentEditorForm';
 import { runTriggerLabel } from './agentRunPresentation';
 
 const event = {
@@ -26,6 +26,32 @@ describe('automation event trigger', () => {
       blockedTrigger: true, blockedTriggerRepositories: ['acme/app', 'acme/removed'], blockedTriggerReasonKinds: ['agent_blocked'],
     });
     expect(input.eventTriggers).toEqual([{ event: 'plan.issue_blocked', repositories: ['acme/app'], reasonKinds: ['agent_blocked'] }]);
+  });
+
+  it('never widens a filter whose last repository was removed from the automation', () => {
+    // Limited to acme/app; acme/app is removed and acme/api remains.
+    const form = {
+      ...emptyAgentForm(), name: 'A', prompt: 'B', repositories: ['acme/api'],
+      blockedTrigger: true, blockedTriggerRepositories: ['acme/app'], blockedTriggerReasonKinds: [],
+    };
+    expect(eventTriggerFilterLost(form)).toBe(true);
+    // Sent as it was, so the scope check refuses it instead of an empty filter matching acme/api.
+    expect(formToInput(form).eventTriggers).toEqual([{ event: 'plan.issue_blocked', repositories: ['acme/app'], reasonKinds: [] }]);
+    // An explicit choice is not a lost filter.
+    expect(eventTriggerFilterLost({ ...form, blockedTriggerRepositories: [] })).toBe(false);
+    expect(eventTriggerFilterLost({ ...form, blockedTriggerRepositories: ['acme/app', 'acme/api'] })).toBe(false);
+    expect(eventTriggerFilterLost({ ...form, blockedTrigger: false })).toBe(false);
+  });
+
+  it('asks for a new filter when the last limited repository was removed', () => {
+    const onChange = vi.fn();
+    render(<AgentEventTriggerSection enabled repositories={['acme/app']} reasonKinds={[]} automationRepositories={['acme/api']} onChange={onChange} disabled={false} />);
+    expect(screen.getByTestId('agent-event-trigger-filter-lost')).toHaveTextContent('acme/app');
+    expect(screen.getByRole('checkbox', { name: 'acme/api' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'acme/api' }));
+    expect(onChange).toHaveBeenLastCalledWith({ blockedTriggerRepositories: ['acme/api'] });
+    fireEvent.click(screen.getByRole('button', { name: "React to all of this automation's repositories" }));
+    expect(onChange).toHaveBeenLastCalledWith({ blockedTriggerRepositories: [] });
   });
 
   it('turns on and filters by repository and reason', () => {

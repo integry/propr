@@ -39,6 +39,10 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
   enabled, repositories, reasonKinds, automationRepositories, onChange, disabled,
 }) => {
   const noRepositories = automationRepositories.length === 0;
+  const isAutomationRepository = (repository: string) =>
+    automationRepositories.some(candidate => candidate.toLowerCase() === repository.toLowerCase());
+  // Every repository the trigger was limited to was removed: an empty filter would mean all of them.
+  const filterLost = !noRepositories && repositories.length > 0 && !repositories.some(isAutomationRepository);
   return (
     <AgentFormRow
       label="Event trigger"
@@ -83,6 +87,22 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
                   </li>
                 ))}
               </ul>
+              {filterLost && (
+                <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert" data-testid="agent-event-trigger-filter-lost">
+                  <p>
+                    This trigger was limited to <span className="font-mono">{repositories.join(', ')}</span>, which {repositories.length === 1 ? 'is' : 'are'} no
+                    longer in this automation. Check the repositories it should react to, or turn it off.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onChange({ blockedTriggerRepositories: [] })}
+                    className="mt-1.5 font-medium text-amber-900 underline hover:text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    React to all of this automation&apos;s repositories
+                  </button>
+                </div>
+              )}
             </fieldset>
           )}
           <fieldset>
