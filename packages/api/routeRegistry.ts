@@ -214,8 +214,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     voiceRoutes,
     taskSubmissionUpload,
     goalAttachmentUpload,
-    attachmentUpload,
-    automationDefinitionAttachmentUpload,
+    attachmentUpload, automationDefinitionAttachmentUpload,
   } = deps;
   return [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
