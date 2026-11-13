@@ -218,6 +218,63 @@ describe('automation event triggers', () => {
     assert.deepEqual((await runsOf(definition)).map(run => run.triggerEvent?.eventId), [fresh]);
   });
 
+  test('a reset between reading a batch and admitting it starts nothing from the batch', async () => {
+    const definition = await define();
+    clock += 1_000;
+    let disabledEvent = 0;
+    let intercepted = false;
+    // The sweep reads its cursor, then pauses at the event-list query: meanwhile the definition
+    // is disabled, an event is recorded, the query reads it, and the definition is re-enabled
+    // (resetting its cursor to that event) before the sweep re-reads the definition.
+    const paused = new Proxy(database, {
+      apply(target, thisArg, args: unknown[]) {
+        const builder = Reflect.apply(target, thisArg, args) as Knex.QueryBuilder;
+        if (intercepted || args[0] !== 'epic_queue_blocked_events as e') return builder;
+        intercepted = true;
+        const execute = builder.then.bind(builder);
+        Object.assign(builder, { then: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => (async () => {
+          await updateAgentDefinition(definition.id, 'alice', { enabled: false }, { database, now });
+          disabledEvent = await block(1);
+          const rows = await new Promise((done, fail) => { execute(done, fail); });
+          await updateAgentDefinition(definition.id, 'alice', { enabled: true }, { database, now });
+          return rows;
+        })().then(resolve, reject) });
+        return builder;
+      },
+    });
+
+    const result = await sweep({ database: paused });
+    assert.equal(intercepted, true);
+    assert.deepEqual({ created: result.created, existing: result.existing, skipped: result.skipped }, { created: 0, existing: 0, skipped: 0 });
+    assert.equal((await runsOf(definition)).length, 0);
+    assert.deepEqual(enqueued, []);
+    assert.equal(await getAgentDefinitionEventCursor(definition.id, 'plan.issue_blocked', { database }), disabledEvent);
+
+    // The next sweep starts after the reset cursor: only events from after re-enabling run.
+    assert.equal((await sweep()).created, 0);
+    const fresh = await block(2);
+    assert.equal((await sweep()).created, 1);
+    assert.deepEqual((await runsOf(definition)).map(run => run.triggerEvent?.eventId), [fresh]);
+  });
+
+  test('a skipped receipt is fenced too: a reset before admission records nothing', async () => {
+    const definition = await define();
+    clock += 1_000;
+    await block(1);
+    // The definition no longer validates (its repository is not enabled), so the event would be
+    // recorded as a skipped run; a reset between the batch read and that receipt prevents it.
+    const result = await sweep({ trigger: async input => {
+      await updateAgentDefinition(definition.id, 'alice', { enabled: false }, { database, now });
+      await block(2);
+      await updateAgentDefinition(definition.id, 'alice', { enabled: true }, { database, now });
+      return triggerAgentRun(input, {
+        database, now, enqueue, loadRepos: async () => [], loadAgents: async () => agents, loadSyntheticAgents: async () => [],
+      });
+    } });
+    assert.equal(result.skipped, 0);
+    assert.equal((await runsOf(definition)).length, 0);
+  });
+
   test('a definition disabled while its events are handled starts nothing more', async () => {
     const definition = await define();
     clock += 1_000;

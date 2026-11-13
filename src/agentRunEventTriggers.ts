@@ -6,6 +6,7 @@ import {
     type AutomationTriggerEvent,
 } from '@propr/shared';
 import {
+    AgentRunAdmissionRefusedError,
     AgentRunTriggerError,
     advanceAgentDefinitionEventCursor,
     countAgentRunsForTriggerSubject,
@@ -14,6 +15,7 @@ import {
     enqueueAgentRunPhase,
     getAgentDefinitionEventCursor,
     getAgentRunByIdempotencyKey,
+    holdAgentDefinitionEventCursor,
     initializeAgentDefinitionEventCursor,
     listEventSubscribedAgentDefinitionIds,
     listPlanIssueBlockedEventsAfter,
@@ -22,6 +24,7 @@ import {
     rowToAgentDefinition,
     triggerAgentRun,
     type AgentDefinitionRow,
+    type AgentRunAdmission,
     type AgentRunEnqueue,
     type AgentRunGate,
     type PlanIssueBlockedEventRecord,
@@ -78,6 +81,8 @@ export interface AgentEventTriggerSweepResult {
 }
 
 type EventOutcome = Exclude<keyof AgentEventTriggerSweepResult, 'failed'>;
+/** The subscription was reset, disabled or dropped after its events were read: nothing was recorded. */
+const FENCED = 'fenced';
 
 interface SweepContext {
     database: Knex;
@@ -122,24 +127,35 @@ async function readDefinition(id: string, database: Knex): Promise<StoredAgentDe
     return row ? rowToAgentDefinition(row) : null;
 }
 
+type EventRun = Pick<TriggerAgentRunInput, 'triggerSource' | 'idempotencyKey' | 'triggerEvent' | 'triggerSubject'> & { admit: AgentRunAdmission };
+
 async function recordSkipped(
     definition: StoredAgentDefinition,
-    run: Pick<TriggerAgentRunInput, 'triggerSource' | 'idempotencyKey' | 'triggerEvent' | 'triggerSubject'>,
+    run: EventRun,
     skipReason: string,
     context: SweepContext,
-): Promise<EventOutcome> {
-    const { created } = await recordSkippedRun({ definition, trigger: 'event', ...run, skipReason },
-        { database: context.database, now: context.clock });
-    return created ? 'skipped' : 'existing';
+): Promise<EventOutcome | typeof FENCED> {
+    try {
+        const { created } = await recordSkippedRun({ definition, trigger: 'event', ...run, skipReason },
+            { database: context.database, now: context.clock });
+        return created ? 'skipped' : 'existing';
+    } catch (error) {
+        if (error instanceof AgentRunAdmissionRefusedError) return FENCED;
+        throw error;
+    }
 }
 
-/** Starts (or replays) the run for one event. Throws when it should be retried on the next sweep. */
+/**
+ * Starts (or replays) the run for one event read under `cursor`. Every receipt is recorded
+ * behind the cursor fence, so a reset after the batch was read records nothing. Throws when
+ * it should be retried on the next sweep.
+ */
 async function fireEvent(
     definition: StoredAgentDefinition,
     subscription: AutomationEventTrigger,
-    event: PlanIssueBlockedEventRecord,
+    { event, cursor }: { event: PlanIssueBlockedEventRecord; cursor: number },
     context: SweepContext,
-): Promise<EventOutcome> {
+): Promise<EventOutcome | typeof FENCED> {
     const repository = event.repository;
     if (!repository || !automationEventTriggerMatches(subscription, definition.repositories,
         { type: 'plan.issue_blocked', repository, reasonKind: event.blockedKind })) {
@@ -151,6 +167,7 @@ async function fireEvent(
         idempotencyKey: `${EVENT_IDEMPOTENCY_PREFIX}${event.id}`,
         triggerEvent,
         triggerSubject: planIssueTriggerSubject(event),
+        admit: (trx: Knex) => holdAgentDefinitionEventCursor(trx, { definitionId: definition.id, event: subscription.event, cursor }, { now: context.clock }),
     };
     const storeDeps = { database: context.database };
 
@@ -174,6 +191,7 @@ async function fireEvent(
         }
         return 'created';
     } catch (error) {
+        if (error instanceof AgentRunAdmissionRefusedError) return FENCED;
         if (!(error instanceof AgentRunTriggerError)) throw error;
         // The history shows why the event did not run.
         return recordSkipped(definition, run, `Not started: ${error.message}`, context);
@@ -193,7 +211,9 @@ async function sweepSubscription(definitionId: string, subscription: AutomationE
         const definition = await readDefinition(definitionId, context.database);
         const current = definition?.eventTriggers.find(candidate => candidate.event === subscription.event);
         if (!definition?.enabled || !current) return;
-        const outcome = await fireEvent(definition, current, event, context);
+        const outcome = await fireEvent(definition, current, { event, cursor }, context);
+        // Reset (re-enabled or resubscribed), disabled or unsubscribed since the batch was read.
+        if (outcome === FENCED) return;
         result[outcome] += 1;
         // Lost to a concurrent sweep, or reset because the definition was re-enabled: stop here.
         if (!await advanceAgentDefinitionEventCursor(definitionId, subscription.event, { from: cursor, to: event.id }, storeDeps)) return;

@@ -181,6 +181,8 @@ export interface CreateAgentRunInput {
   triggerEvent?: AutomationTriggerEvent | null;
   triggerSubject?: string | null;
   initialState?: AgentRunInitialState;
+  /** Checked in the transaction that inserts the receipt; false records nothing and throws `AgentRunAdmissionRefusedError`. */
+  admit?: AgentRunAdmission | null;
   /** Required when `initialState` is `deferred`. */
   deferredUntil?: number | null;
   /** Why the run was held; recorded when `initialState` is `skipped` or `deferred`. */
@@ -191,6 +193,14 @@ export interface CreateAgentRunResult {
   run: StoredAgentRun;
   /** False when an existing run with the same idempotency key was returned. */
   created: boolean;
+}
+
+/** A check that must still hold when a run's receipt is recorded, run in that transaction. */
+export type AgentRunAdmission = (trx: Knex) => Promise<boolean>;
+
+/** The admission fence refused the run: nothing was recorded. */
+export class AgentRunAdmissionRefusedError extends Error {
+  override name = 'AgentRunAdmissionRefusedError';
 }
 
 function triggerEventColumns({ triggerEvent, triggerSubject }: Pick<CreateAgentRunInput, 'triggerEvent' | 'triggerSubject'>): Partial<AgentRunRow> {
@@ -241,8 +251,11 @@ export async function createAgentRun(
   };
   // RETURNING binds the receipt to this insert: a run transitioned by another
   // process right after creation is still reported as it was created.
-  const [inserted] = await database(TABLE).insert(row).onConflict(['definition_id', 'idempotency_key']).ignore()
-    .returning('*') as AgentRunRow[];
+  const insert = async (trx: Knex) => {
+    if (input.admit && !await input.admit(trx)) throw new AgentRunAdmissionRefusedError('Run admission was refused');
+    return await trx(TABLE).insert(row).onConflict(['definition_id', 'idempotency_key']).ignore().returning('*') as AgentRunRow[];
+  };
+  const [inserted] = input.admit ? await database.transaction(trx => insert(trx)) : await insert(database);
   if (inserted) return { run: rowToAgentRun(inserted), created: true };
   if (idempotencyKey === null) throw new Error('createAgentRun: insert without an idempotency key was ignored');
 

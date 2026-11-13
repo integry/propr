@@ -16,6 +16,7 @@ import {
   getAgentRunById,
   getAgentRunByIdempotencyKey,
   transitionAgentRun,
+  type AgentRunAdmission,
   type StoredAgentRun,
 } from './agentRunStore.js';
 
@@ -105,6 +106,11 @@ export interface TriggerAgentRunInput {
   /** For an `event` run: the event handed to the run and the subject (issue) it concerns. */
   triggerEvent?: AutomationTriggerEvent | null;
   triggerSubject?: string | null;
+  /**
+   * Checked in the transaction that records the receipt (see `createAgentRun`); a refusal
+   * records and enqueues nothing and throws `AgentRunAdmissionRefusedError`.
+   */
+  admit?: AgentRunAdmission | null;
   gate?: AgentRunGate;
   /**
    * Leave the receipt `queued` when its report phase cannot be enqueued, for a
@@ -334,7 +340,7 @@ export async function triggerAgentRun(
 
   const admit = gate ?? defaultCostGate(deps);
   const decision = (await admit({ definition, trigger, triggerSource })) ?? { action: 'proceed' as const };
-  // `event`: the triggering event and its subject, for an `event` run.
+  // `event`: the triggering event and its subject, for an `event` run, and its admission fence.
   const base = { definition, trigger, triggerSource, idempotencyKey, ...event };
   const { run, created } = decision.action === 'skip'
     ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)

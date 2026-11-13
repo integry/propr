@@ -1,5 +1,5 @@
 import type { Knex } from 'knex';
-import type { AutomationEventTrigger, AutomationTriggerEventType } from '@propr/shared';
+import { normalizeAutomationEventTriggers, type AutomationEventTrigger, type AutomationTriggerEventType } from '@propr/shared';
 import { db } from '../../db/connection.js';
 
 /**
@@ -106,6 +106,31 @@ export async function advanceAgentDefinitionEventCursor(
   const updated = await database(CURSORS).where({ definition_id: definitionId, event, cursor: from })
     .update({ cursor: to, updated_at: now() });
   return Number(updated) > 0;
+}
+
+/**
+ * The admission fence for one event run, called inside the transaction that records the
+ * run's receipt. It holds the definition's cursor row and confirms that the cursor is still
+ * the one the caller read the event under and that the definition is still enabled and
+ * subscribed. A subscribe or re-enable resets the cursor in its own transaction, so a batch
+ * read before that reset is refused here instead of starting an event from while the
+ * definition was disabled. False means no receipt may be recorded.
+ */
+export async function holdAgentDefinitionEventCursor(
+  trx: Knex,
+  { definitionId, event, cursor }: { definitionId: string; event: AutomationTriggerEventType; cursor: number },
+  { now = Date.now }: { now?: () => number } = {},
+): Promise<boolean> {
+  // A write, not a read: it locks the row until the receipt commits, so a reset waits for
+  // this admission or this admission sees the reset's cursor.
+  const held = await trx(CURSORS).where({ definition_id: definitionId, event, cursor }).update({ updated_at: now() });
+  if (Number(held) === 0) return false;
+  const row = await trx(DEFINITIONS).where({ id: definitionId })
+    .first<{ enabled: boolean | number; event_triggers: string | null } | undefined>('enabled', 'event_triggers');
+  if (!row?.enabled) return false;
+  let triggers: unknown = [];
+  try { triggers = JSON.parse(row.event_triggers ?? '[]'); } catch { return false; }
+  return normalizeAutomationEventTriggers(triggers).some(trigger => trigger.event === event);
 }
 
 /**
