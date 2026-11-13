@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
+import type { Knex } from 'knex';
 import logger from './logger.js';
 import type { ClaudeResult } from './llmMetrics.types.js';
 
@@ -89,5 +90,38 @@ export async function releaseExecutionStage(
     } catch (error) {
         logger.error({ ...context, executionId: claim.executionId, key: claim.key, error: (error as Error).message },
             'Failed to release LLM metrics claim; this execution stage stays claimed');
+    }
+}
+
+/**
+ * Whether an `llm_executions` insert failed because a row with the same
+ * execution id already exists: the database's own record that this execution
+ * was persisted, which holds after every Redis and in-process claim is gone.
+ */
+export function isDuplicateExecutionRow(error: unknown): boolean {
+    const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+    const unique = code === 'SQLITE_CONSTRAINT_UNIQUE' || code === '23505' || (typeof message === 'string' && /unique/i.test(message));
+    return unique && typeof message === 'string' && message.includes('execution_uuid');
+}
+
+/** The execution's row already exists: an earlier record of the same result wrote it. */
+export const ALREADY_PERSISTED = 'already_persisted' as const;
+
+/**
+ * Inserts the execution's `llm_executions` row under its execution id and
+ * returns the row id; `already_persisted` when the id already has a row, so the
+ * caller keeps its claim and writes nothing more.
+ */
+export async function insertExecutionRow(
+    database: Knex, row: Record<string, unknown>, executionId: string | undefined, context: { correlationId?: string; taskId?: string | null },
+): Promise<string | typeof ALREADY_PERSISTED> {
+    try {
+        // Unique: the database keeps one row per execution once every claim has expired.
+        const [inserted] = await database('llm_executions').insert({ ...row, execution_uuid: executionId ?? null }).returning('execution_id');
+        return (inserted as { execution_id: string }).execution_id;
+    } catch (error) {
+        if (!isDuplicateExecutionRow(error)) throw error;
+        logger.info({ ...context, executionId }, 'LLM execution row already persisted for this execution; skipping');
+        return ALREADY_PERSISTED;
     }
 }

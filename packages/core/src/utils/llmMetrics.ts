@@ -4,7 +4,7 @@ import { db } from '../db/connection.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
-import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, type StageClaim } from './llmMetricsExecutionClaim.js';
+import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, insertExecutionRow, ALREADY_PERSISTED, type StageClaim } from './llmMetricsExecutionClaim.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -232,8 +232,12 @@ function normalizeStoredReasoningLevel(level: string | null | undefined): string
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
 interface PersistedExecution { executionId: number | string; taskId: string | null; }
-/** Writes the execution row and its details; the row once inserted, even if its details then fail, else null. */
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | null> {
+/**
+ * Writes the execution row and its details; the row once inserted, even if its
+ * details then fail, `already_persisted` when the execution id already has a
+ * row, else null.
+ */
+async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId, reasoningLevel } = metrics;
     let persisted: PersistedExecution | null = null;
     try {
@@ -260,8 +264,8 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             cache_usage_reported: cacheUsageReported ?? null,
             reasoning_level: normalizeStoredReasoningLevel(reasoningLevel)
         };
-        const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
-        const executionId = (insertedExecution as { execution_id: string }).execution_id;
+        const executionId = await insertExecutionRow(db, executionData, claudeResult.executionId, { correlationId, taskId });
+        if (executionId === ALREADY_PERSISTED) return executionId;
         persisted = { executionId, taskId: effectiveTaskId };
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
@@ -279,13 +283,13 @@ const PULL_REQUEST_JOB_TYPES = new Set(['pr_comment', 'pr_review', 'merge_confli
  * type baseline and alerts on an outlier. Best-effort: a failure is logged and
  * never affects the recording. The module is loaded on first use.
  */
-async function checkTokenOutlier(persisted: PersistedExecution, issueRef: IssueRef, details: { model: string; success: boolean; totalTokens: number; executionType: string; jobType: string; correlationId?: string }): Promise<void> {
+async function checkTokenOutlier(persisted: PersistedExecution | typeof ALREADY_PERSISTED, issueRef: IssueRef, details: { model: string; success: boolean; totalTokens: number; executionType: string; jobType: string; correlationId?: string }): Promise<void> {
+    if (persisted === ALREADY_PERSISTED) return;
     try {
         const { recordTokenUsageSample } = await import('./tokenOutlierAlert.js');
         await recordTokenUsageSample({
-            executionId: persisted.executionId, taskId: persisted.taskId,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, model: details.model, executionType: details.executionType,
-            success: details.success, totalTokens: details.totalTokens, number: issueRef.number,
+            executionId: persisted.executionId, taskId: persisted.taskId, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+            model: details.model, executionType: details.executionType, success: details.success, totalTokens: details.totalTokens, number: issueRef.number,
             kind: PULL_REQUEST_JOB_TYPES.has(details.jobType) || details.executionType === 'pr-review' ? 'pull_request' : 'issue',
         });
     } catch (error) {
@@ -351,6 +355,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
                 sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd,
                 tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType, reasoningLevel,
             });
+            // An existing row keeps the claim: the stage is done, and its sample was taken then.
             if (!persisted) await releaseExecutionStage(metricsRedis, rowClaim, claimContext);
             else await checkTokenOutlier(persisted, issueRef, {
                 model, success, totalTokens: cumulativeTokens.totalInputWithCache + cumulativeTokens.outputTokens,

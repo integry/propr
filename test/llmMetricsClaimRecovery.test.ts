@@ -5,6 +5,7 @@ import { beforeEach, mock, test } from 'node:test';
 const claims = new Map<string, string>();
 const counters = new Map<string, number>();
 const executions: Array<Record<string, unknown>> = [];
+const details: unknown[] = [];
 const failNext = { setex: 0, incr: 0, executionInsert: 0, detailsInsert: 0 };
 
 await mock.module('ioredis', { namedExports: { Redis: class {
@@ -45,8 +46,16 @@ await mock.module('../packages/core/src/db/connection.js', { namedExports: {
                     rejected.catch(() => {});
                     return Object.assign(rejected, { returning: () => rejected });
                 }
+                const uuid = (value as Record<string, unknown>).execution_uuid;
+                if (uuid && executions.some(row => row.execution_uuid === uuid)) {
+                    // What better-sqlite3 raises for the unique execution_uuid index.
+                    const rejected = Promise.reject(Object.assign(new Error('UNIQUE constraint failed: llm_executions.execution_uuid'), { code: 'SQLITE_CONSTRAINT_UNIQUE' }));
+                    rejected.catch(() => {});
+                    return Object.assign(rejected, { returning: () => rejected });
+                }
                 executions.push(value as Record<string, unknown>);
             }
+            if (table === 'llm_execution_details') details.push(value);
             if (table === 'llm_execution_details' && failNext.detailsInsert > 0) {
                 failNext.detailsInsert--;
                 return Promise.reject(new Error('details insert failed'));
@@ -61,6 +70,7 @@ await mock.module('../packages/core/src/services/pricingService.js', { namedExpo
 } });
 
 const { recordLLMMetrics } = await import('../packages/core/src/utils/llmMetrics.js');
+const { releaseExecutionStage } = await import('../packages/core/src/utils/llmMetricsExecutionClaim.js');
 
 const issueRef = { repoOwner: 'integry', repoName: 'propr', number: 3437 };
 const failedCount = () => counters.get('llm:metrics:total:failed') ?? 0;
@@ -73,7 +83,7 @@ const record = (executionId: string) =>
     recordLLMMetrics(failedResult(executionId), issueRef, { jobType: 'issue', correlationId: `correlation-${executionId}`, taskId: 'task-3437' });
 
 beforeEach(() => {
-    claims.clear(); counters.clear(); executions.length = 0;
+    claims.clear(); counters.clear(); executions.length = 0; details.length = 0;
     Object.assign(failNext, { setex: 0, incr: 0, executionInsert: 0, detailsInsert: 0 });
 });
 
@@ -134,4 +144,32 @@ test('a release never removes a claim another recorder holds', async () => {
     await record('held-elsewhere');
     assert.equal(claims.get('llm:metrics:persisted:held-elsewhere'), 'other-token');
     assert.equal(executions.length, 0);
+});
+
+test('the row stays unique after every claim is gone: a late record of a persisted execution inserts nothing', async () => {
+    await record('claims-expired');
+    assert.equal(executions.length, 1);
+    assert.equal(executions[0].execution_uuid, 'claims-expired', 'the execution id is stored on its row');
+    const detailRows = details.length;
+
+    // Both protections disappear: the Redis claims expire and this process's bounded set evicts the ids.
+    for (const key of ['llm:metrics:recorded:claims-expired', 'llm:metrics:persisted:claims-expired']) {
+        await releaseExecutionStage({ set: async () => 'OK', eval: async () => 1 }, { key, token: claims.get(key) ?? '' });
+    }
+    claims.clear();
+    await record('claims-expired');
+    assert.equal(executions.length, 1, 'the unique execution id rejects a second row');
+    assert.equal(details.length, detailRows, 'no details are written for the rejected row');
+    assert.equal(claims.has('llm:metrics:persisted:claims-expired'), true, 'the row stage stays claimed');
+
+    await record('claims-expired');
+    assert.equal(executions.length, 1);
+});
+
+test('results without an execution id are stored without one and never collide', async () => {
+    const { executionId: _omitted, ...withoutId } = failedResult('unused');
+    await recordLLMMetrics(withoutId, issueRef, { jobType: 'issue', correlationId: 'no-id-1', taskId: 'task-3437' });
+    await recordLLMMetrics(withoutId, issueRef, { jobType: 'issue', correlationId: 'no-id-2', taskId: 'task-3437' });
+    assert.equal(executions.length, 2);
+    assert.deepEqual(executions.map(row => row.execution_uuid), [null, null]);
 });
