@@ -85,6 +85,8 @@ export const CODEX_MODELS: ModelInfo[] = [
 export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-gemini-3.8-flash', name: 'Antigravity Gemini 3.8 Flash', shortName: 'Gemini 3.8 Flash', shortAlias: 'flash38', githubLabel: 'llm-antigravity-flash38', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.8-flash', minAgentVersion: '1.1.25' },
   { id: 'antigravity-gemini-4-argon', name: 'Antigravity Gemini 4 Argon', shortName: 'Gemini 4 Argon', shortAlias: 'argon', githubLabel: 'llm-antigravity-argon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-argon', minAgentVersion: '1.4.0' },
+  // Gemini 4 Hydrogen ships in Antigravity CLI 1.5.8 as gemini-4-hydrogen-{low,medium,high,xhigh}.
+  { id: 'antigravity-gemini-4-hydrogen', name: 'Antigravity Gemini 4 Hydrogen', shortName: 'Gemini 4 Hydrogen', shortAlias: 'hydrogen', githubLabel: 'llm-antigravity-hydrogen', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-hydrogen', minAgentVersion: '1.5.8' },
   { id: 'antigravity-claude-sonnet-5.5', name: 'Antigravity Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-antigravity-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5' },
   { id: 'antigravity-claude-opus-5.5', name: 'Antigravity Claude Opus 5.5', shortName: 'Claude Opus 5.5', shortAlias: 'opus55', githubLabel: 'llm-antigravity-opus55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5.5' },
   { id: 'antigravity-gpt-oss-120b', name: 'Antigravity GPT-OSS 120B', shortName: 'GPT-OSS 120B', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
@@ -174,7 +176,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.322'
+    defaultCliVersion: '2.1.323'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -182,7 +184,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.167.2'
+    defaultCliVersion: '0.168.0'
   },
   antigravity: {
     dockerImage: 'propr/agent:latest',
@@ -190,7 +192,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.6'
+    defaultCliVersion: '1.5.8'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

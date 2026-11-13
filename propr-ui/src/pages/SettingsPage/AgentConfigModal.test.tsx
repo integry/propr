@@ -249,6 +249,10 @@ describe('AgentConfigModal', () => {
     expect(Array.from(flash.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
     const argon = screen.getByLabelText('Reasoning level for Antigravity Gemini 4 Argon');
     expect(Array.from(argon.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    // Gemini 4 Hydrogen alone also offers XHigh, labelled as supported.
+    const hydrogen = screen.getByLabelText('Reasoning level for Antigravity Gemini 4 Hydrogen');
+    expect(Array.from(hydrogen.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high', 'xhigh']);
+    expect(Array.from(hydrogen.querySelectorAll('option')).map(option => option.textContent)).toContain('XHigh — GitHub: level-xhigh');
     expect(screen.queryByLabelText('Reasoning level for Antigravity Gemini 3.1 Pro')).not.toBeInTheDocument();
     const oss = screen.getByLabelText('Reasoning level for Antigravity GPT-OSS 120B');
     expect(Array.from(oss.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'medium']);
