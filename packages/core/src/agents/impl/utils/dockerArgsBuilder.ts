@@ -20,6 +20,7 @@ import {
     REPOSITORY_SCOUT_CONTAINER_ROOT,
     REPOSITORY_SCOUT_MCP_TOOLS,
 } from './repositoryScoutMcpServer.js';
+import { buildOperatorQuestionMcpConfig, type OperatorQuestionLaunch } from './operatorQuestionMcpServer.js';
 
 const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -81,6 +82,16 @@ export interface DockerArgsParams {
     resumeSessionId?: string;
     /** Identity to assign a fresh goal session so it is durable before any work starts. */
     sessionId?: string;
+    /**
+     * Inject the `ask_operator` MCP tool. Goal sessions only: ordinary task
+     * runs are one-shot and never receive it, whatever the caller passes.
+     */
+    operatorQuestions?: OperatorQuestionLaunch;
+}
+
+function operatorQuestionArgs(executionMode: 'task' | 'goal', launch: OperatorQuestionLaunch | undefined): string[] {
+    if (executionMode !== 'goal' || !launch) return [];
+    return ['--mcp-config', buildOperatorQuestionMcpConfig(launch)];
 }
 
 function repositoryInspectionArgs(enabled: boolean): string[] {
@@ -288,6 +299,7 @@ export function buildDockerArgs(
     }
 
     dockerArgs.push(...policyArgs.cliArgs);
+    dockerArgs.push(...operatorQuestionArgs(executionMode, params.operatorQuestions));
 
     logger.info({
         issueNumber,

@@ -17,7 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gemini-4-hydrogen-<effort>`. Usage is priced at $1.50/M input and $7.50/M
   output. It needs Antigravity CLI 1.5.8 and supersedes no model. Its
   availability to `agy login` accounts has not yet been confirmed.
-
+- **Claude goals can ask you a question**: Claude goal sessions now get an
+  `ask_operator` tool. It takes one question (up to 1,000 characters,
+  optionally with 2-10 suggested answers) and waits for your reply. The
+  question shows under "Needs you", and the next goal input you send is
+  returned to Claude as the answer. Pause and cancel still work while it
+  waits. After the new `goal_question_max_wait_ms` instance setting (default
+  24 hours), or shortly before the attempt's agent timeout if that comes
+  first, Claude is told nobody answered. The tool runs inside the container and needs no network access or
+  new credentials. Ordinary task runs never get it.
+  `get_goal_capabilities` reports question support as
+  `controls.operatorQuestions`.
 - **Automation templates**: a versioned catalog of automation templates ships
   in `@propr/shared`, generated from `packages/shared/automation-templates/`
   and checked in CI against the automation definition contract

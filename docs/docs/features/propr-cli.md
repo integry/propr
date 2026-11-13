@@ -322,7 +322,7 @@ Every goal command accepts `--json` and prints a versioned document: `{ "version
 
 | Option | Meaning |
 | --- | --- |
-| `--until <condition>` | `completed`, `failed`, `cancelled` (the goal's persisted result), `paused` (a pause the worker confirmed), `terminal` (any of completed, failed or cancelled) or `checkpoint` (a checkpoint published after the cursor). Omit it to wait for any new goal event. |
+| `--until <condition>` | `completed`, `failed`, `cancelled` (the goal's persisted result), `paused` (a pause the worker confirmed), `terminal` (any of completed, failed or cancelled) `checkpoint` (a checkpoint published after the cursor) or `blocked` (the agent opened a question or approval for you; a still-open one matches immediately without a cursor). Omit it to wait for any new goal event, including a blocker opening or closing. |
 | `--after-cursor <cursor>` | Only count events after this cursor, as printed by an earlier wait. |
 | `--timeout <seconds>` | Overall deadline, `0`–`86400` (default `300`). `0` checks once without waiting. |
 | `-j, --json` | Print a `goal-wait` document: `outcome`, `condition`, `cursor`, `matchedImmediately`, the triggering `event`, the current `goal` projection, `requests` and `exitCode`. The timeout and Ctrl-C variants are described below. |
@@ -552,6 +552,7 @@ Settings keys:
 | `ultrafix_max_cycles` | Maximum number of ultrafix cycles |
 | `ultrafix_pause_seconds` | Pause duration between ultrafix cycles |
 | `default_max_cost_usd` | Default per-run [spend cap](./execution-safety.md#spend-caps) in USD (0 = no cap) |
+| `goal_question_max_wait_ms` | How long a Claude goal's [`ask_operator` question](./goals.md#claude-questions) waits for an answer, in ms (at least 60000, default 86400000; never longer than the agent timeout) |
 | `agent_stall_timeout_ms` | Stop an agent run silent this long, in ms (0 disables; `default` restores `AGENT_STALL_TIMEOUT_MS`) |
 | `agent_tool_stall_timeout_ms` | Silence allowed while a tool call runs, in ms (0 disables; `default` restores `AGENT_TOOL_STALL_TIMEOUT_MS`) |
 | `agent_degenerate_output_limit` | Consecutive whitespace-only deltas that stop a run (0 disables; `default` restores `AGENT_DEGENERATE_OUTPUT_LIMIT`) |

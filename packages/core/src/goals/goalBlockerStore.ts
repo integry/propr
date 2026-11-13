@@ -34,10 +34,23 @@ export interface GoalBlockerOwner {
 /** Why a blocker stopped waiting. Stored verbatim for audit. */
 export type GoalBlockerResolution =
     | 'provider_resolved'
+    /** ProPR delivered the operator's input as the answer (Claude `ask_operator`). */
+    | 'answered'
+    /** The question waited its maximum and the agent was told nobody answered. */
+    | 'question_timed_out'
     | 'turn_ended'
     | 'attempt_ended'
     | 'superseded_by_attempt'
     | 'goal_terminal';
+
+/** What `recordGoalBlocker` recorded for an open request. */
+export interface RecordedGoalBlocker {
+    /** Highest input sequence recorded before the blocker was first opened. */
+    inputBoundary: number | null;
+    blockerId: string;
+    /** True only for the call that inserted the row, so the operator is told once. */
+    opened: boolean;
+}
 
 /**
  * Open (or refresh) the blocker for one provider request. Returns the highest
@@ -49,7 +62,7 @@ export async function recordGoalBlocker(
     attempt: GoalBlockerAttempt,
     goal: GoalBlockerOwner,
     report: GoalBlockerReport,
-): Promise<{ inputBoundary: number | null } | null> {
+): Promise<RecordedGoalBlocker | null> {
     const requestKey = report.requestKey.slice(0, 255);
     const existing = await trx('goal_blockers')
         .where({ goal_id: attempt.goalId, request_key: requestKey })
@@ -60,7 +73,11 @@ export async function recordGoalBlocker(
         if (existing.status !== 'open' || existing.run_claim !== attempt.claimId) return null;
         await trx('goal_blockers').where({ blocker_id: existing.blocker_id, status: 'open' })
             .update({ last_observed_at: trx.fn.now() });
-        return { inputBoundary: existing.input_boundary === null ? null : Number(existing.input_boundary) };
+        return {
+            inputBoundary: existing.input_boundary === null ? null : Number(existing.input_boundary),
+            blockerId: existing.blocker_id,
+            opened: false,
+        };
     }
     const questions = normalizeGoalBlockerQuestions(report.questions ?? []);
     const blockerId = randomUUID();
@@ -88,7 +105,7 @@ export async function recordGoalBlocker(
     });
     const inserted = await trx('goal_blockers').where({ blocker_id: blockerId })
         .first('input_boundary') as { input_boundary: number | string };
-    return { inputBoundary: Number(inserted.input_boundary) };
+    return { inputBoundary: Number(inserted.input_boundary), blockerId, opened: true };
 }
 
 /** Close one open blocker raised by this attempt. */
@@ -123,8 +140,9 @@ export async function closeGoalBlockers(
     const query = database('goal_blockers').where({ goal_id: goalId, status: 'open' });
     if (scope.claim) query.where('run_claim', scope.claim);
     if (scope.exceptClaim) query.whereNot('run_claim', scope.exceptClaim);
+    const resolved: GoalBlockerResolution[] = ['provider_resolved', 'answered', 'question_timed_out', 'turn_ended'];
     return await query.update({
-        status: resolution === 'provider_resolved' || resolution === 'turn_ended' ? 'resolved' : 'superseded',
+        status: resolved.includes(resolution) ? 'resolved' : 'superseded',
         resolution,
         resolved_at: database.fn.now(),
     });

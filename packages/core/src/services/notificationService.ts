@@ -1137,6 +1137,31 @@ export class NotificationService {
     }
 
     /**
+     * Dismiss every active Inbox receipt of the events with these
+     * deduplication keys, for producers whose cards describe a condition that
+     * has since ended (a goal question that was answered). Unknown keys and
+     * receipts already dismissed are ignored; events stay as audit records.
+     */
+    async dismissNotificationsByDeduplicationKeys(
+        deduplicationKeys: readonly string[]
+    ): Promise<number> {
+        const keys = [...new Set(deduplicationKeys)];
+        if (keys.length === 0) return 0;
+        const announcements: NotificationAnnouncement[] = [];
+        let dismissed = 0;
+        for (let index = 0; index < keys.length; index += 200) {
+            const chunk = keys.slice(index, index + 200);
+            dismissed += await this.dismissReceiptQuery(
+                this.database('notification_events').select('event_id').whereIn('deduplication_key', chunk),
+                this.database,
+                { into: announcements, repository: null }
+            );
+        }
+        await this.flushAnnouncements(announcements);
+        return dismissed;
+    }
+
+    /**
      * Close every Inbox card whose target is the given pull request. Audit
      * events and push-delivery history remain untouched.
      */
@@ -1699,6 +1724,8 @@ export const dismissAllNotifications = notificationService.dismissAllNotificatio
     .bind(notificationService) as NotificationService['dismissAllNotifications'];
 export const dismissNotificationReceipts = notificationService.dismissNotificationReceipts
     .bind(notificationService) as NotificationService['dismissNotificationReceipts'];
+export const dismissNotificationsByDeduplicationKeys = notificationService.dismissNotificationsByDeduplicationKeys
+    .bind(notificationService) as NotificationService['dismissNotificationsByDeduplicationKeys'];
 export const dismissNotificationsForPullRequest = notificationService
     .dismissNotificationsForPullRequest
     .bind(notificationService) as NotificationService['dismissNotificationsForPullRequest'];
