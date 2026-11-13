@@ -91,6 +91,29 @@ async function locate(database: Knex, input: EpicQueueActionInput): Promise<{ qu
   return { queue, item };
 }
 
+const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
+
+/**
+ * An issue task for this issue that has not reached a terminal state. A blocked run's own task is
+ * marked terminal before its blocker is recorded, so an unfinished task is a newer attempt (a person
+ * started the issue again) that the old blocker must not skip or redispatch. Used inside the guarded
+ * write, so a task that becomes visible between the checks and the write still refuses the action.
+ */
+function unfinishedIssueTask(database: Knex, repository: string, issueNumber: number): Knex.QueryBuilder {
+  return database('tasks').select('tasks.task_id')
+    .join('task_history', function latestState(this: Knex.JoinClause) {
+      this.on('tasks.task_id', '=', 'task_history.task_id')
+        .andOn('task_history.history_id', '=', database.raw('(SELECT MAX(th2.history_id) FROM task_history th2 WHERE th2.task_id = tasks.task_id)'));
+    })
+    .where({ 'tasks.repository': repository, 'tasks.issue_number': issueNumber, 'tasks.task_type': 'issue' })
+    .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
+}
+
+/** A blocked issue whose newer attempt is still running is in flight; its old blocker authorizes nothing. */
+async function refuseRunningAttempt(database: Knex, queue: EpicExecutionQueue, item: EpicQueueIssue): Promise<void> {
+  if (await unfinishedIssueTask(database, queue.repository, item.issueNumber).first()) refuseSettledOrInFlight({ ...item, state: 'dispatched' });
+}
+
 /** Whether the issue runs without a queue claim: a person started it, so its plan status is in progress. */
 async function runsWithoutClaim(database: Knex, draftId: string, issueNumber: number): Promise<boolean> {
   return Boolean(await database('plan_issues').where({ draft_id: draftId, issue_number: issueNumber })
@@ -134,11 +157,14 @@ export async function skipEpicQueueIssue(input: EpicQueueActionInput & { satisfi
   // A merged prerequisite is done even before its queue row settles; skipping it would strand its dependents.
   if (await mergedPlanIssue(database, queue.draftId, item.issueNumber).first()) refuseSettledOrInFlight({ ...item, state: 'done' });
   if (item.state === 'pending' && await runsWithoutClaim(database, queue.draftId, item.issueNumber)) refuseSettledOrInFlight({ ...item, state: 'dispatched' });
+  if (item.state === 'blocked') await refuseRunningAttempt(database, queue, item);
   await refuseReserved(database, queue, item, timestamp);
   const changed = await writeQueueIssue(database, { owner: queue, item, resolution: 'skipped', timestamp }, trx => {
     const query = unreserved(ownedIssue(trx, queue, item).where({ state: item.state }), timestamp)
       .whereNotExists(mergedPlanIssue(trx, queue.draftId, item.issueNumber));
-    if (item.state === 'blocked') query.where({ blocked_kind: item.blockedKind });
+    if (item.state === 'blocked') {
+      query.where({ blocked_kind: item.blockedKind }).whereNotExists(unfinishedIssueTask(trx, queue.repository, item.issueNumber));
+    }
     // A pending issue a person started meanwhile is in flight.
     else query.whereNull('dispatched_at').whereNotExists(trx('plan_issues').select('id')
       .where({ draft_id: queue.draftId, issue_number: item.issueNumber }).whereNotIn('status', RUNNING_PLAN_STATUSES_EXCLUDED));
@@ -147,6 +173,7 @@ export async function skipEpicQueueIssue(input: EpicQueueActionInput & { satisfi
   });
   if (!changed) {
     if (await mergedPlanIssue(database, queue.draftId, item.issueNumber).first()) refuseSettledOrInFlight({ ...item, state: 'done' });
+    if (item.state === 'blocked') await refuseRunningAttempt(database, queue, item);
     throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being skipped; read the execution queue again.`);
   }
   await drive(() => startEpicQueueHead(input.draftId, deps), input);
@@ -161,9 +188,10 @@ const PLAN_RESET_KINDS: EpicQueueBlockedKind[] = ['agent_blocked', 'closed_unmer
 /** One retry of a blocked occurrence the caller read. */
 interface RetryAttempt { database: Knex; queue: EpicExecutionQueue; item: EpicQueueIssue; kind: EpicQueueBlockedKind; timestamp: number }
 
-/** The blocked occurrence the caller read, as it read it. */
+/** The blocked occurrence the caller read, as it read it, with no newer attempt of the issue running. */
 function retryable(database: Knex, { queue, item, kind }: RetryAttempt): Knex.QueryBuilder {
-  return ownedIssue(database, queue, item, { ready: true }).where({ state: 'blocked', blocked_kind: kind, blocked_reason: item.blockedReason });
+  return ownedIssue(database, queue, item, { ready: true }).where({ state: 'blocked', blocked_kind: kind, blocked_reason: item.blockedReason })
+    .whereNotExists(unfinishedIssueTask(database, queue.repository, item.issueNumber));
 }
 
 /**
@@ -176,6 +204,7 @@ async function reserveRetry(attempt: RetryAttempt): Promise<number> {
   const reserved = await unreserved(retryable(database, attempt), timestamp).update({ retry_reserved_at: timestamp });
   if (!reserved) {
     await refuseReserved(database, queue, item, timestamp);
+    await refuseRunningAttempt(database, queue, item);
     throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
   }
   return timestamp;
@@ -223,6 +252,8 @@ async function reopenGithubIssue(repository: string, issueNumber: number): Promi
  *   take effect (the reopen failed or the issue changed) and lapses after RETRY_RESERVATION_MS if the process stops.
  * - awaiting_human_merge, label_handoff: the claim is kept; the queue re-evaluates the merge or the label release.
  * - setup_not_ready is refused: setup recovery owns it.
+ * - Any blocker is refused (IN_FLIGHT) while an issue task for the issue is unfinished: a person started a
+ *   newer attempt, which the old blocker does not authorize redispatching. Skip refuses it the same way.
  * The queue's own dispatch never consults MCP implementation receipts, so an issue started through
  * implement_plan is retried the same way.
  */
@@ -240,9 +271,14 @@ export async function retryEpicQueueIssue(input: EpicQueueActionInput, deps: Epi
   if (!kind || kind === 'setup_not_ready' || !queue.ready) {
     throw new EpicQueueActionError('NOT_RETRYABLE', `Issue #${item.issueNumber} is waiting for the execution's setup; recovery completes or cancels it.`);
   }
+  // A newer attempt a person started after the blocker is in flight: retrying it would dispatch duplicate work.
+  await refuseRunningAttempt(database, queue, item);
   const changed = await clearBlockerForRetry({ database, queue, item, kind, timestamp: (deps.now ?? Date.now)() },
     deps.reopenIssue ?? reopenGithubIssue);
-  if (!changed) throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
+  if (!changed) {
+    await refuseRunningAttempt(database, queue, item);
+    throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
+  }
   // Every mode dispatches the retried issue from its own pass, which resume and the recovery sweep repeat:
   // a paused plan, or a process that stops here, leaves the dispatch owed rather than lost.
   await drive(() => startEpicQueueHead(input.draftId, deps), input);

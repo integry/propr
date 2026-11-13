@@ -10,7 +10,8 @@ interface PlanIssueQueueNoticeProps {
   dependents?: number[];
   pendingAction?: PlanQueueAction | null;
   disabled?: boolean;
-  onAction: (action: PlanQueueAction) => void;
+  /** Absent for a read-only plan: a blocker is still explained, without actions. */
+  onAction?: (action: PlanQueueAction) => void;
 }
 
 const issueList = (issues: number[]) => issues.map(issue => `#${issue}`).join(', ');
@@ -31,36 +32,46 @@ const ActionButton: React.FC<{ label: string; icon: React.ReactNode; busy: boole
   </button>
 );
 
+/** Which blocker holds the issue and why; `actions` is absent for a read-only plan. */
+const BlockedNotice: React.FC<{ state: PlanExecutionQueueIssue; actions: React.ReactNode }> = ({ state, actions }) => {
+  const kind = state.blockedKind;
+  return (
+    <div role="status" data-testid="plan-queue-blocked" className="mt-2 flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex min-w-0 items-start gap-2 text-xs text-amber-900">
+        <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-amber-600" aria-hidden />
+        <div className="min-w-0">
+          <p className="font-semibold">Blocked{kind ? ` · ${BLOCKED_KIND_LABELS[kind] ?? kind}` : ''}</p>
+          {state.blockedReason && <p className="mt-0.5 break-words text-amber-800">{state.blockedReason}</p>}
+        </div>
+      </div>
+      {actions}
+    </div>
+  );
+};
+
 /**
  * How an issue stands in the plan's execution queue when a person may need to act:
  * which blocker holds it and why (with Retry and Skip), a skipped issue whose graph
  * dependents still wait, or a pending issue waiting on a skipped prerequisite.
+ * Without `onAction` (a read-only plan) only the blocker explanation is shown.
  */
 export const PlanIssueQueueNotice: React.FC<PlanIssueQueueNoticeProps> = ({ state, dependents = [], pendingAction = null, disabled = false, onAction }) => {
   const busy = pendingAction !== null;
   const button = (action: PlanQueueAction, label: string, icon: React.ReactNode, tone?: 'primary' | 'quiet') => (
     <ActionButton key={action} testId={`plan-queue-${action}`} label={label} icon={icon} tone={tone}
-      busy={pendingAction === action} disabled={disabled || busy} onClick={() => onAction(action)} />
+      busy={pendingAction === action} disabled={disabled || busy} onClick={() => onAction?.(action)} />
   );
   if (state.state === 'blocked') {
-    const kind = state.blockedKind;
-    return (
-      <div role="status" data-testid="plan-queue-blocked" className="mt-2 flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-2 text-xs text-amber-900">
-          <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-amber-600" aria-hidden />
-          <div className="min-w-0">
-            <p className="font-semibold">Blocked{kind ? ` · ${BLOCKED_KIND_LABELS[kind] ?? kind}` : ''}</p>
-            {state.blockedReason && <p className="mt-0.5 break-words text-amber-800">{state.blockedReason}</p>}
-          </div>
-        </div>
-        <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5">
-          {kind !== 'setup_not_ready' && button('retry', 'Retry', <RotateCcw size={12} />, 'primary')}
-          {button('skip', 'Skip', <SkipForward size={12} />)}
-          {dependents.length > 0 && button('skip_release', `Skip and start ${issueList(dependents)}`, <SkipForward size={12} />)}
-        </div>
+    return <BlockedNotice state={state} actions={onAction ? (
+      <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5">
+        {state.blockedKind !== 'setup_not_ready' && button('retry', 'Retry', <RotateCcw size={12} />, 'primary')}
+        {button('skip', 'Skip', <SkipForward size={12} />)}
+        {dependents.length > 0 && button('skip_release', `Skip and start ${issueList(dependents)}`, <SkipForward size={12} />)}
       </div>
-    );
+    ) : null} />;
   }
+  // The other notices are offers to act; a read-only plan has none.
+  if (!onAction) return null;
   if (state.state === 'skipped' && dependents.length > 0 && state.skipSatisfiesDependents === false) {
     return (
       <div data-testid="plan-queue-skipped" className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">

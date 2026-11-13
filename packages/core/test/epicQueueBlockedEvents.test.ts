@@ -58,6 +58,12 @@ await database.schema.createTable('plan_issues', table => {
   table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.integer('pr_number'); table.string('status');
   table.string('task_id');
 });
+await database.schema.createTable('tasks', table => {
+  table.string('task_id').primary(); table.string('repository'); table.integer('issue_number'); table.string('task_type');
+});
+await database.schema.createTable('task_history', table => {
+  table.increments('history_id'); table.string('task_id'); table.string('state');
+});
 for (const migrate of [up, finalization, useEpic, parallel, recovery, issueStates, graph, blockedEvents]) await migrate(database);
 // Delivery is covered by epicQueueBlockedNotify.test.ts; here it is recorded and marked delivered.
 setEpicQueueBlockedEventDelivery(async ids => {
@@ -67,7 +73,7 @@ setEpicQueueBlockedEventDelivery(async ids => {
 after(async () => { setEpicQueueBlockedEventDelivery(null); await database.destroy(); });
 
 beforeEach(async () => {
-  for (const table of ['epic_queue_blocked_events', 'epic_execution_queue_issues', 'epic_execution_queues', 'plan_issues', 'task_drafts']) {
+  for (const table of ['tasks', 'task_history', 'epic_queue_blocked_events', 'epic_execution_queue_issues', 'epic_execution_queues', 'plan_issues', 'task_drafts']) {
     await database(table).delete();
   }
   await database('task_drafts').insert([{ draft_id: 'draft', context_config: JSON.stringify({ epicLabel: 'base-epic' }) }, { draft_id: 'manual' }]);
@@ -87,6 +93,11 @@ const events = async () => (await listEpicQueueBlockedEvents(draftId)).events
   .map(event => [event.issueNumber, event.type, event.blockedKind, event.resolution]);
 const issueState = async (issueNumber: number) => summarizeEpicQueue(await getEpicExecutionQueue(draftId))!.issueStates
   .find(state => state.issue === issueNumber);
+/** An issue task for `issueNumber`, its latest state `state`. */
+const runTask = async (taskId: string, issueNumber: number, ...states: string[]) => {
+  await database('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: issueNumber, task_type: 'issue' });
+  for (const state of states) await database('task_history').insert({ task_id: taskId, state });
+};
 async function refused(action: Promise<unknown>, code: string) {
   await assert.rejects(action, (error: unknown) => error instanceof EpicQueueActionError && error.code === code);
 }
@@ -262,6 +273,72 @@ test('retry of an agent-reported blocker puts the issue back to pending and disp
   assert.equal((await issueState(1))?.state, 'dispatched');
   assert.equal((await database('plan_issues').where({ draft_id: draftId, issue_number: 1 }).first()).status, 'pending');
   await refused(retryEpicQueueIssue({ draftId, executionId: queue.executionId, issueNumber: 2 }, deps), 'NOT_BLOCKED');
+});
+
+test('an agent blocker does not authorize skipping or retrying a newer attempt a person started while it runs', async () => {
+  for (const mode of ['chain', 'graph'] as const) {
+    const queue = mode === 'chain' ? await chain()
+      : await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2], mode: 'graph',
+        dependsOn: new Map([[2, [1]]]), maxParallel: 1 }, deps);
+    const target = { draftId, executionId: queue.executionId, issueNumber: 1, expectedState: 'blocked' as const };
+    await startEpicQueueHead(draftId, deps);
+    // The first run stops on a reported blocker: its task is terminal, the plan issue stays in progress.
+    await runTask(`${mode}-first`, 1, 'pending', 'processing', 'completed');
+    await setStatus(1, 'processing');
+    await markEpicQueueHeadBlocked({ draftId, issueNumber: 1 });
+    // A person starts the issue again; its in-progress notification keeps the old blocker.
+    await runTask(`${mode}-rerun`, 1, 'pending', 'processing');
+    await advanceEpicQueue({ draftId, issueNumber: 1, status: 'processing' as never }, deps);
+    assert.equal((await issueState(1))?.state, 'blocked', mode);
+    const startsBefore = starts.length;
+    await refused(skipEpicQueueIssue(target, deps), 'IN_FLIGHT');
+    await refused(retryEpicQueueIssue(target, deps), 'IN_FLIGHT');
+    assert.equal((await issueState(1))?.state, 'blocked', `${mode}: the running attempt keeps its row`);
+    assert.equal((await database('plan_issues').where({ draft_id: draftId, issue_number: 1 }).first()).status, 'processing',
+      `${mode}: the running attempt keeps its plan status`);
+    assert.equal(starts.length, startsBefore, `${mode}: nothing is dispatched again`);
+    // Once the newer attempt finishes (blocked again), a retry is accepted as for any completed blocked attempt.
+    await database('task_history').insert({ task_id: `${mode}-rerun`, state: 'completed' });
+    await retryEpicQueueIssue(target, deps);
+    assert.equal((await issueState(1))?.state, 'dispatched', mode);
+    assert.equal(starts.length, startsBefore + 1, mode);
+    for (const table of ['tasks', 'task_history', 'epic_queue_blocked_events', 'epic_execution_queue_issues', 'epic_execution_queues']) {
+      await database(table).delete();
+    }
+    await setStatus(1, 'pending');
+  }
+});
+
+test('a newer attempt that appears between the checks and the guarded write refuses skip and retry', async () => {
+  const queue = await chain();
+  await startEpicQueueHead(draftId, deps);
+  await setStatus(1, 'processing');
+  await markEpicQueueHeadBlocked({ draftId, issueNumber: 1 });
+  const client = database.client as { acquireConnection(): Promise<{ prepare: (sql: string) => unknown }>; releaseConnection(c: unknown): Promise<void> };
+  const connection = await client.acquireConnection();
+  await client.releaseConnection(connection);
+  const prepare = connection.prepare;
+  let started = 0;
+  // The rerun's task is created just before each action's guarded write (the connection is shared and synchronous).
+  connection.prepare = function (this: unknown, sql: string) {
+    if (/^update `epic_execution_queue_issues` set `state`/.test(sql) && sql.includes('task_history')) {
+      started += 1;
+      const id = `rerun-${started}`;
+      (prepare.call(this, `insert into tasks (task_id, repository, issue_number, task_type) values ('${id}', 'acme/repo', 1, 'issue')`) as { run(): void }).run();
+      (prepare.call(this, `insert into task_history (task_id, state) values ('${id}', 'processing')`) as { run(): void }).run();
+    }
+    return prepare.call(this, sql);
+  };
+  const target = { draftId, executionId: queue.executionId, issueNumber: 1, expectedState: 'blocked' as const };
+  try {
+    await refused(skipEpicQueueIssue(target, deps), 'IN_FLIGHT');
+    await database('task_history').insert({ task_id: 'rerun-1', state: 'completed' });
+    await refused(retryEpicQueueIssue(target, deps), 'IN_FLIGHT');
+  } finally { connection.prepare = prepare; }
+  assert.equal(started, 2);
+  assert.equal((await issueState(1))?.state, 'blocked');
+  assert.equal((await database('plan_issues').where({ draft_id: draftId, issue_number: 1 }).first()).status, 'processing');
+  assert.deepEqual(starts, [1]);
 });
 
 test('retry of an issue closed without merge reopens it and dispatches it again', async () => {

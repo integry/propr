@@ -55,7 +55,7 @@ interface PlanIssueRowProps {
   onQueueAction?: (issueNumber: number, action: PlanQueueAction) => void;
 }
 
-/** Renders the execution-queue notice only for rows that belong to an active queue. */
+/** Renders the execution-queue notice only for rows that belong to an active queue; read-only rows explain blockers without actions. */
 const RowQueueNotice: React.FC<{
   issueNumber: number;
   state?: PlanExecutionQueueIssue;
@@ -64,10 +64,10 @@ const RowQueueNotice: React.FC<{
   disabled: boolean;
   onAction?: (issueNumber: number, action: PlanQueueAction) => void;
 }> = ({ issueNumber, state, dependents, pendingAction, disabled, onAction }) => {
-  if (!state || !onAction) return null;
+  if (!state) return null;
   return (
     <PlanIssueQueueNotice state={state} dependents={dependents} pendingAction={pendingAction}
-      disabled={disabled} onAction={action => onAction(issueNumber, action)} />
+      disabled={disabled} onAction={onAction ? action => onAction(issueNumber, action) : undefined} />
   );
 };
 

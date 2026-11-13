@@ -167,6 +167,25 @@ describe('normalizeRefinedPlan', () => {
       [['schema', undefined], ['api', ['schema']], ['docs', ['api']]]);
   });
 
+  test('a complete refinement that returns a null or empty id keeps the recovered id and its dependants', () => {
+    const withIds = [
+      { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+      { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+    ];
+    for (const returnedId of [null, '', '   ']) {
+      const result = normalizeRefinedPlan(withIds, [
+        { id: returnedId, title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+        { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+      ]);
+      assert.equal(result.ok, true, `id ${JSON.stringify(returnedId)}`);
+      if (!result.ok) return;
+      assert.deepEqual(result.plan.map(item => [item.id, item.dependsOn]), [['schema', undefined], ['api', ['schema']]],
+        `id ${JSON.stringify(returnedId)}`);
+      assert.deepEqual(preparePlanItemsFromModel(result.plan).map(item => [item.id, item.dependsOn]),
+        [['schema', undefined], ['api', ['schema']]], `stored, id ${JSON.stringify(returnedId)}`);
+    }
+  });
+
   test('a changed id stays a new task when its match is ambiguous', () => {
     const withIds = [
       { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },

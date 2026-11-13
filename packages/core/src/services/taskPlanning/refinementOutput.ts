@@ -144,7 +144,9 @@ function restoreOmittedIdentity(currentPlan: Plan, refined: TaskRecord[]): TaskR
     used.add(id);
     // A replacement id that more than one refined item uses is not renamed for references.
     if (returned !== undefined) replaced.set(returned, refined.filter(other => itemId(other) === returned).length === 1 ? id : returned);
-    return returned === undefined ? { id, ...item } : { ...item, id };
+    // The model may return an explicit null or empty id; the recovered id must win over it.
+    if (returned !== undefined || 'id' in item) return { ...item, id };
+    return { id, ...item };
   });
   return identified.map(item => {
     let restored = item;
