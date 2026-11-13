@@ -725,6 +725,19 @@ and a separate current-focus value when available; raw provider reasoning, raw
 protocol envelopes, tool inputs, and tool results are excluded.
 `includeReasoningSummaries: true` opts in to Codex app-server reasoning summaries.
 
+`get_agent_run_admission` reports what agent-run admission enforces right now:
+`admission.enabled`, the global limit and its source, and globally and per
+direct agent the ceiling, the executions holding a slot by state, nested
+executions apart from those holders, launches waiting split by reason
+(`globalLimit`, `agentCeiling`, a recovering holder, or a first reply still
+pending) and queue jobs deferred until their agent has capacity. It also
+lists queue worker concurrency and repository workflow slots, each labelled.
+With admission off it says so and still returns those limits. Task IDs and repositories appear
+only within the grant; tokens, container IDs and environment values never do.
+It is not subscription usage: provider quota comes from `get_provider_usage`
+and `get_provider_status`. See the operations guide "Agent-run capacity" for
+the fields and for changing ceilings safely.
+
 ## Operating an instance from a chat client
 
 This is the flow the operator surface is built for: find out what is happening,

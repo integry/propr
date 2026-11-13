@@ -80,6 +80,11 @@ function aliasCeiling(config: AdmissionConfig | null | undefined, alias: string)
     return agentRunAliasCeiling(config?.aliasLimits, alias);
 }
 
+/** The configured ceiling of `alias` (`PROPR_AGENT_RUN_ALIAS_LIMITS`), if any; for messages and reports. */
+export function agentAliasCeiling(alias: string, options: CapacityOptions = {}): number | undefined {
+    return aliasCeiling(resolveConfig(options), alias);
+}
+
 /** Whether any per-agent ceiling is configured; without one no job is ever deferred for agent capacity. */
 export function agentCapacityPolicyConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
     try { return !!resolveAgentRunAdmission(env)?.aliasLimits; } catch { return false; }

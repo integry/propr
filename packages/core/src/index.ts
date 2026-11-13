@@ -681,9 +681,14 @@ export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';
 
 export { validateAgentRunAdmissionPolicy, revalidateAgentRunAdmissionPolicy } from './agents/agentRunAdmissionPolicy.js';
 export {
+    readAgentRunAdmissionSnapshot, type AgentRunAdmissionSnapshot, type AgentAdmissionAgentReport, type AgentAdmissionTaskRef,
+    type AgentAdmissionStateCounts, type AgentAdmissionWaitingCounts,
+} from './agents/agentRunAdmissionSnapshot.js';
+export type { RepositoryWorkflowSlotUsage } from './workflow/workflowSlotUsage.js';
+export {
     AgentCapacityError, AgentCapacityWaitTimeoutError, isAgentCapacityError, agentAliasHasCapacity, assertAgentAliasCapacity,
     agentCapacityPolicyConfigured, registerAgentCapacityWaiter, forgetAgentCapacityWaiter, wakeAgentCapacityWaiters, agentCapacityWaitersKey,
-    configureAgentCapacityRedis, runWithAgentCapacityContext, reserveAgentCapacity, agentCapacityPins,
+    configureAgentCapacityRedis, runWithAgentCapacityContext, reserveAgentCapacity, agentCapacityPins, agentAliasCeiling,
     type AgentCapacityReservation, type AgentCapacityJobContext,
 } from './agents/agentCapacity.js';
 export { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, agentRunAliasLimitProblems } from './agents/agentRunAliasLimits.js';

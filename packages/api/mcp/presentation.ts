@@ -96,7 +96,19 @@ const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
     .join(', ')}.`,
   get_recent_activity: result => `${result.events.length} events between ${result.window.since} and ${result.window.until}.`,
+  get_agent_run_admission: admissionSummary,
 };
+
+/** One line per limit the report labels; admission first, then each capped agent. */
+function admissionSummary(result: Args): string {
+  const { admission, agents = [] } = result;
+  if (!admission?.enabled) return 'Agent-run admission is off; queue worker and repository limits still apply.';
+  if (!admission.global) return `Agent-run admission is on, but its state is unavailable: ${admission.unavailable ?? 'unknown reason'}.`;
+  const { global } = admission;
+  const capped = (agents as Args[]).filter(agent => agent.ceiling !== null)
+    .map(agent => `${agent.alias} ${agent.inUse}/${agent.ceiling} (${agent.waiting.agentCeiling} waiting, ${agent.deferred} deferred)`);
+  return `Agent runs ${global.inUse}/${global.limit} in use, ${global.waiting.total} waiting (${global.waiting.globalLimit} on the global limit, ${global.waiting.agentCeiling} on an agent ceiling), ${global.deferred} deferred${capped.length ? `; ${capped.join('; ')}` : ''}.`;
+}
 
 function readSummary(tool: McpTool, args: Args, result: Args): string {
   if (tool.name === 'get_task') return `Task ${args.taskId}: ${result.latestEvent?.state || 'no execution state yet'}.`;

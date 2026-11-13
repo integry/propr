@@ -89,7 +89,16 @@ function wiredApp(secret: string, rateLimitMax = 600) {
         taskQueue: {
             getWaitingCount: async () => 2,
             getActiveCount: async () => 1,
-            // Fleet consumes only waiting/active; other counts must not be read.
+            // Delayed jobs count only when deferred for capacity: a retry backoff is not pending capacity work.
+            getJobs: async (types: string[]) => {
+                assert.deepEqual(types, ['delayed']);
+                return [
+                    { data: { agentCapacityDeferrals: 2, agentCapacityRetryAt: Date.now() + 1000 } },
+                    { data: { repositoryWorkflowDeferrals: 1 } },
+                    { data: { attemptsMade: 1 } },
+                ];
+            },
+            // Fleet consumes only waiting/active/deferred; other counts must not be read.
             getCompletedCount: async () => { throw new Error('completed count not needed'); },
             getFailedCount: async () => { throw new Error('failed count not needed'); },
             getDelayedCount: async () => { throw new Error('delayed count not needed'); },
@@ -221,7 +230,7 @@ describe('hosted fleet Express wiring', () => {
                     'githubAuth', 'githubAuthMode', 'githubEventIntake', 'githubEventIntakeStatus',
                 ]);
             } else if (path.endsWith('/queue')) {
-                assert.deepEqual(body, { waiting: 2, active: 1 });
+                assert.deepEqual(body, { waiting: 2, active: 1, deferred: 2 });
             }
         }
     });

@@ -7,6 +7,110 @@
  */
 /* eslint-disable */
 
+/** Admission state of one direct agent. */
+export interface AgentRunAdmissionAgent {
+  /** Direct agent alias (never a synthetic alias). */
+  alias: string;
+  /** PROPR_AGENT_RUN_ALIAS_LIMITS entry; null = global limit only. */
+  ceiling: number | null;
+  /** What the ceiling is compared with: holders plus nested executions counted against it. */
+  inUse: number;
+  holders: AgentRunAdmissionStateCounts;
+  nested: {
+    total: number;
+    chargedUnderParent: number;
+    countedAgainstCeiling: number;
+  };
+  waiting: AgentRunAdmissionWaitingCounts;
+  /** Queue jobs delayed until this agent has capacity. */
+  deferred: number;
+  tasks: AgentRunAdmissionTask[];
+}
+
+/** What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect. */
+export interface AgentRunAdmissionReport {
+  asOf: string;
+  admission: {
+    enabled: boolean;
+    agentCeilingsConfigured: boolean;
+    /** Null when admission is off or its state could not be read. */
+    global: {
+      limit: number;
+      limitSource: "PROPR_AGENT_RUN_LIMIT" | "hosted_entitlement";
+      generation: number;
+      nestedLimit: number;
+      nestedLimitSource: "PROPR_AGENT_RUN_NESTED_LIMIT" | "default";
+      /** Top-level executions; each takes one global slot. */
+      inUse: number;
+      holders: AgentRunAdmissionStateCounts;
+      unattributedHolders: number;
+      nested: {
+        total: number;
+        chargedUnderParent: number;
+        countedAgainstOtherAgent: number;
+      };
+      waiting: AgentRunAdmissionWaitingCounts;
+      deferred: number;
+    } | null;
+    /** Why the admission state is missing although admission is enabled. */
+    unavailable?: string;
+  };
+  agents: AgentRunAdmissionAgent[];
+  queueWorkers: {
+    label: string;
+    inUse: number | null;
+    /** Sum of the concurrency live workers report; null when unknown. */
+    total: number | null;
+    workers: number | null;
+  };
+  repositoryWorkflowSlots: {
+    label: string;
+    repositories: {
+      repository: string;
+      inUse: number;
+      limit: number;
+      waiting: number;
+    }[];
+  };
+  /** Subscription usage is reported elsewhere; this says where. */
+  subscriptionUsage: string;
+}
+
+/** Admitted executions by state. */
+export interface AgentRunAdmissionStateCounts {
+  /** Admitted, container not started yet. */
+  reserved: number;
+  running: number;
+  /** Finished parents that keep their slot until their nested executions end. */
+  draining: number;
+  /** Holders whose removal is not confirmed yet, including expired leases; nothing else is admitted meanwhile. */
+  recovering: number;
+  total: number;
+}
+
+/** A task holding or waiting for a slot. Listed only when the caller may see the task. */
+export interface AgentRunAdmissionTask {
+  taskId: string;
+  alias: string | null;
+  state: "reserved" | "running" | "draining" | "recovering" | "waiting";
+  waitReason?: "global_limit" | "alias_limit" | "recovering" | "starting";
+  nested: boolean;
+  since?: string;
+}
+
+/** Launches waiting at the admission boundary, by reason. Jobs deferred to the queue are counted separately. */
+export interface AgentRunAdmissionWaitingCounts {
+  total: number;
+  /** Waiting because the instance-wide limit is full. */
+  globalLimit: number;
+  /** Waiting because the agent's own ceiling is full. */
+  agentCeiling: number;
+  /** Waiting until an unconfirmed holder is removed. */
+  recovering: number;
+  /** Registered; first admission reply still pending. */
+  starting: number;
+}
+
 /** Users that can be assigned to issues and pull requests of a repository. */
 export interface AssignableUsers {
   users: AttributedUser[];

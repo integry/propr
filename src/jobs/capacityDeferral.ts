@@ -67,7 +67,8 @@ export async function recordCapacityDeferral(options: {
         if (!current || ENDED_STATES.includes(current.state)) return;
         const historyMetadata = { ...options.metadata, [fields.deferrals]: options.deferrals, [fields.retryAt]: new Date(options.retryAt).toISOString() };
         const latest = current.history?.at(-1);
-        if (latest?.state === current.state && latest.metadata?.[fields.deferrals]) {
+        // The same wait is updated in place; a wait for another agent (or ceiling) gets its own row, so the row always names what it waits for.
+        if (latest?.state === current.state && latest.metadata?.[fields.deferrals] && (latest.reason === undefined || latest.reason === options.reason)) {
             await stateManager.updateHistoryMetadata(taskId, current.state, historyMetadata);
             return;
         }

@@ -6,6 +6,7 @@ export { createFileChangesRoutes } from './fileChangesRoutes.js';
 export { createTaskAssignmentRoutes } from './taskAssignmentRoutes.js';
 export { createConfigRoutes } from './configRoutes.js';
 export { createQueueRoutes } from './queueRoutes.js';
+export { createAgentRunAdmissionRoutes } from './agentRunAdmissionRoutes.js';
 export { createExecutionRoutes } from './executionRoutes.js';
 export { createDockerRoutes } from './dockerRoutes.js';
 export { createGitHubRoutes } from './githubRoutes.js';

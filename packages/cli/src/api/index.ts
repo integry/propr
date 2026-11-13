@@ -308,3 +308,6 @@ export type {
   CreateGoalRequest,
   GoalApiOptions,
 } from "./goals.js";
+
+export { getAgentRunAdmission } from './admission.js';
+export type { AgentRunAdmissionReport, AdmissionAgent } from './admission.js';

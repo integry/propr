@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 307
-    documented: 69
+    total: 308
+    documented: 70
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -974,6 +974,28 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/agent-run-admission:
+    get:
+      operationId: getAgentRunAdmission
+      summary: Report agent-run admission capacity per agent
+      description: Read-only. Whether physical agent-run admission is enabled, the global limit and its source, and globally and per direct agent the ceiling and the running, reserved, recovering, waiting (by reason) and deferred executions; nested executions are counted apart from holders. Also lists queue worker concurrency and repository workflow slots, each labelled. Subscription usage is not included. No tokens, container IDs or environment values; task IDs only for tasks the caller may see (none for the read-only demo viewer). With admission off, `admission.enabled` is false and the other limits are still returned. See docs/operations/agent-run-capacity.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The admission report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunAdmissionReport"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-auth: member
   /api/agent-runs/{runId}:
     get:
       operationId: getApiAgentRunsRunId
@@ -8614,6 +8636,321 @@ paths:
       x-legacy-error: true
 components:
   schemas:
+    AgentRunAdmissionAgent:
+      type: object
+      properties:
+        alias:
+          type: string
+          description: Direct agent alias (never a synthetic alias).
+        ceiling:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0
+            - type: "null"
+          description: PROPR_AGENT_RUN_ALIAS_LIMITS entry; null = global limit only.
+        inUse:
+          type: integer
+          minimum: 0
+          description: "What the ceiling is compared with: holders plus nested executions counted against it."
+        holders:
+          $ref: "#/components/schemas/AgentRunAdmissionStateCounts"
+        nested:
+          type: object
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            chargedUnderParent:
+              type: integer
+              minimum: 0
+            countedAgainstCeiling:
+              type: integer
+              minimum: 0
+          required:
+            - total
+            - chargedUnderParent
+            - countedAgainstCeiling
+          additionalProperties: false
+        waiting:
+          $ref: "#/components/schemas/AgentRunAdmissionWaitingCounts"
+        deferred:
+          type: integer
+          minimum: 0
+          description: Queue jobs delayed until this agent has capacity.
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRunAdmissionTask"
+      required:
+        - alias
+        - ceiling
+        - inUse
+        - holders
+        - nested
+        - waiting
+        - deferred
+        - tasks
+      additionalProperties: false
+      description: Admission state of one direct agent.
+    AgentRunAdmissionReport:
+      type: object
+      properties:
+        asOf:
+          type: string
+          format: date-time
+        admission:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            agentCeilingsConfigured:
+              type: boolean
+            global:
+              anyOf:
+                - type: object
+                  properties:
+                    limit:
+                      type: integer
+                      exclusiveMinimum: 0
+                    limitSource:
+                      type: string
+                      enum:
+                        - PROPR_AGENT_RUN_LIMIT
+                        - hosted_entitlement
+                    generation:
+                      type: integer
+                      minimum: 0
+                    nestedLimit:
+                      type: integer
+                      exclusiveMinimum: 0
+                    nestedLimitSource:
+                      type: string
+                      enum:
+                        - PROPR_AGENT_RUN_NESTED_LIMIT
+                        - default
+                    inUse:
+                      type: integer
+                      minimum: 0
+                      description: Top-level executions; each takes one global slot.
+                    holders:
+                      $ref: "#/components/schemas/AgentRunAdmissionStateCounts"
+                    unattributedHolders:
+                      type: integer
+                      minimum: 0
+                    nested:
+                      type: object
+                      properties:
+                        total:
+                          type: integer
+                          minimum: 0
+                        chargedUnderParent:
+                          type: integer
+                          minimum: 0
+                        countedAgainstOtherAgent:
+                          type: integer
+                          minimum: 0
+                      required:
+                        - total
+                        - chargedUnderParent
+                        - countedAgainstOtherAgent
+                      additionalProperties: false
+                    waiting:
+                      $ref: "#/components/schemas/AgentRunAdmissionWaitingCounts"
+                    deferred:
+                      type: integer
+                      minimum: 0
+                  required:
+                    - limit
+                    - limitSource
+                    - generation
+                    - nestedLimit
+                    - nestedLimitSource
+                    - inUse
+                    - holders
+                    - unattributedHolders
+                    - nested
+                    - waiting
+                    - deferred
+                  additionalProperties: false
+                - type: "null"
+              description: Null when admission is off or its state could not be read.
+            unavailable:
+              description: Why the admission state is missing although admission is enabled.
+              type: string
+          required:
+            - enabled
+            - agentCeilingsConfigured
+            - global
+          additionalProperties: false
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRunAdmissionAgent"
+        queueWorkers:
+          type: object
+          properties:
+            label:
+              type: string
+            inUse:
+              anyOf:
+                - type: integer
+                  minimum: 0
+                - type: "null"
+            total:
+              anyOf:
+                - type: integer
+                  minimum: 0
+                - type: "null"
+              description: Sum of the concurrency live workers report; null when unknown.
+            workers:
+              anyOf:
+                - type: integer
+                  minimum: 0
+                - type: "null"
+          required:
+            - label
+            - inUse
+            - total
+            - workers
+          additionalProperties: false
+        repositoryWorkflowSlots:
+          type: object
+          properties:
+            label:
+              type: string
+            repositories:
+              type: array
+              items:
+                type: object
+                properties:
+                  repository:
+                    type: string
+                  inUse:
+                    type: integer
+                    minimum: 0
+                  limit:
+                    type: integer
+                    exclusiveMinimum: 0
+                  waiting:
+                    type: integer
+                    minimum: 0
+                required:
+                  - repository
+                  - inUse
+                  - limit
+                  - waiting
+                additionalProperties: false
+          required:
+            - label
+            - repositories
+          additionalProperties: false
+        subscriptionUsage:
+          type: string
+          description: Subscription usage is reported elsewhere; this says where.
+      required:
+        - asOf
+        - admission
+        - agents
+        - queueWorkers
+        - repositoryWorkflowSlots
+        - subscriptionUsage
+      additionalProperties: false
+      description: What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.
+    AgentRunAdmissionStateCounts:
+      type: object
+      properties:
+        reserved:
+          type: integer
+          minimum: 0
+          description: Admitted, container not started yet.
+        running:
+          type: integer
+          minimum: 0
+        draining:
+          type: integer
+          minimum: 0
+          description: Finished parents that keep their slot until their nested executions end.
+        recovering:
+          type: integer
+          minimum: 0
+          description: Holders whose removal is not confirmed yet, including expired leases; nothing else is admitted meanwhile.
+        total:
+          type: integer
+          minimum: 0
+      required:
+        - reserved
+        - running
+        - draining
+        - recovering
+        - total
+      additionalProperties: false
+      description: Admitted executions by state.
+    AgentRunAdmissionTask:
+      type: object
+      properties:
+        taskId:
+          type: string
+        alias:
+          type:
+            - string
+            - "null"
+        state:
+          type: string
+          enum:
+            - reserved
+            - running
+            - draining
+            - recovering
+            - waiting
+        waitReason:
+          type: string
+          enum:
+            - global_limit
+            - alias_limit
+            - recovering
+            - starting
+        nested:
+          type: boolean
+        since:
+          type: string
+          format: date-time
+      required:
+        - taskId
+        - alias
+        - state
+        - nested
+      additionalProperties: false
+      description: A task holding or waiting for a slot. Listed only when the caller may see the task.
+    AgentRunAdmissionWaitingCounts:
+      type: object
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        globalLimit:
+          type: integer
+          minimum: 0
+          description: Waiting because the instance-wide limit is full.
+        agentCeiling:
+          type: integer
+          minimum: 0
+          description: Waiting because the agent's own ceiling is full.
+        recovering:
+          type: integer
+          minimum: 0
+          description: Waiting until an unconfirmed holder is removed.
+        starting:
+          type: integer
+          minimum: 0
+          description: Registered; first admission reply still pending.
+      required:
+        - total
+        - globalLimit
+        - agentCeiling
+        - recovering
+        - starting
+      additionalProperties: false
+      description: Launches waiting at the admission boundary, by reason. Jobs deferred to the queue are counted separately.
     AssignableUsers:
       type: object
       properties:
