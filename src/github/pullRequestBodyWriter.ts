@@ -1,3 +1,5 @@
+import { PR_STATUS_BLOCK_MAX_LENGTH } from '@propr/shared';
+
 /**
  * Every ProPR rewrite of a pull request body goes through here. Core's
  * `updatePullRequestBody` re-reads the current body under the body lock and
@@ -59,7 +61,11 @@ export function withPullRequestStatusBlock(body: string, block: string | null): 
     return body ? `${block}\n\n${body}` : block;
 }
 
-/** Characters the status block takes from a new pull request body's length budget. */
-export function pullRequestStatusBlockLength(block: string | null): number {
-    return block ? block.length + 2 : 0;
+/**
+ * Characters a new pull request body reserves for its status block: the most
+ * the block can ever take (plus its separator), not the initial block's
+ * length, so later, longer statuses still fit within GitHub's body limit.
+ */
+export function pullRequestStatusBlockReserve(block: string | null): number {
+    return block ? Math.max(PR_STATUS_BLOCK_MAX_LENGTH, block.length) + 2 : 0;
 }

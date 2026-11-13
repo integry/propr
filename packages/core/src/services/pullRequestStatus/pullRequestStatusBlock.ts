@@ -1,3 +1,4 @@
+import { PR_STATUS_BLOCK_MAX_LENGTH } from '@propr/shared';
 import type { PullRequestActivity, PullRequestAttentionReason, PullRequestStatus } from './pullRequestStatus.js';
 
 /**
@@ -21,6 +22,7 @@ const ACTIVITY_TEXT: Record<PullRequestActivity, string> = {
     ultrafix: 'Ultrafix in progress',
     waiting_for_ci: 'Waiting for CI',
     queued: 'Queued',
+    checking_mergeability: 'Checking for conflicts',
 };
 
 const REASON_TEXT: Record<PullRequestAttentionReason, string> = {
@@ -50,7 +52,7 @@ function inlineName(name: string): string {
     return name.replace(/[\r\n`*_<>|[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
-function reasonText(status: PullRequestStatus): string {
+function reasonText(status: PullRequestStatus, maxNames: number): string {
     const { detail } = status;
     if (detail.reason === 'ultrafix_stopped' && detail.ultrafixStopped) {
         const { cycles, finalScore } = detail.ultrafixStopped;
@@ -58,7 +60,7 @@ function reasonText(status: PullRequestStatus): string {
         return `Ultrafix stopped after ${cycles} cycle${cycles === 1 ? '' : 's'}${score}`;
     }
     if (detail.reason === 'check_failed' && detail.failedChecks.length > 0) {
-        const names = detail.failedChecks.slice(0, MAX_FAILED_CHECK_NAMES).map(inlineName).filter(Boolean);
+        const names = detail.failedChecks.slice(0, maxNames).map(inlineName).filter(Boolean);
         const more = detail.failedChecks.length > names.length ? ` +${detail.failedChecks.length - names.length}` : '';
         if (names.length > 0) return `failed: ${names.join(', ')}${more}`;
     }
@@ -76,11 +78,10 @@ function utcTime(now: Date): string {
     return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
 }
 
-/** The one-line status text, e.g. "**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC". */
-export function renderPullRequestStatusLine(status: PullRequestStatus, now: Date = new Date()): string {
+function statusLine(status: PullRequestStatus, now: Date, maxNames: number): string {
     const { detail } = status;
     const parts = [`**ProPR** ${headline(status)}`];
-    if (status.state === 'needs_attention') parts.push(reasonText(status));
+    if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
     if (detail.ultrafix) parts.push(`Ultrafix cycle ${detail.ultrafix.cycle} of ${detail.ultrafix.maxCycles}`);
     if (detail.reviewScore !== null && detail.reason !== 'ultrafix_stopped') {
         parts.push(status.state === 'working' ? `last review ${detail.reviewScore}/10` : `review ${detail.reviewScore}/10`);
@@ -92,10 +93,45 @@ export function renderPullRequestStatusLine(status: PullRequestStatus, now: Date
     return parts.filter(Boolean).join(' · ');
 }
 
+const MARKERS_LENGTH = `${PR_STATUS_BLOCK_START}\n\n${PR_STATUS_BLOCK_END}`.length;
+/** The longest status line that keeps the block within PR_STATUS_BLOCK_MAX_LENGTH. */
+const MAX_LINE_LENGTH = PR_STATUS_BLOCK_MAX_LENGTH - MARKERS_LENGTH;
+
+/**
+ * The one-line status text, e.g. "**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC".
+ * Never longer than the block budget: failed check names are dropped first,
+ * then the line is cut, so the space new descriptions reserve always holds it.
+ */
+export function renderPullRequestStatusLine(status: PullRequestStatus, now: Date = new Date()): string {
+    for (let names = MAX_FAILED_CHECK_NAMES; names >= 0; names--) {
+        const line = statusLine(status, now, names);
+        if (line.length <= MAX_LINE_LENGTH) return line;
+    }
+    const line = statusLine(status, now, 0);
+    const stamp = ` · updated ${utcTime(now)}`;
+    // The line always ends with the stamp; cut before it, never inside a surrogate pair.
+    const cut = line.slice(0, MAX_LINE_LENGTH - stamp.length - 1).replace(/[\uD800-\uDBFF]$/, '');
+    return `${cut}…${stamp}`;
+}
+
+function wrapBlock(line: string): string {
+    return `${PR_STATUS_BLOCK_START}\n${line}\n${PR_STATUS_BLOCK_END}`;
+}
+
 /** The marked block for a status, or null when the pull request shows no block (`none`). */
 export function renderPullRequestStatusBlock(status: PullRequestStatus, now: Date = new Date()): string | null {
     if (status.state === 'none') return null;
-    return `${PR_STATUS_BLOCK_START}\n${renderPullRequestStatusLine(status, now)}\n${PR_STATUS_BLOCK_END}`;
+    return wrapBlock(renderPullRequestStatusLine(status, now));
+}
+
+/**
+ * The shortest block for a status: its headline and update time only. Used
+ * when the full block would push a body a person filled close to GitHub's
+ * limit over it, since the text outside the block is never shortened.
+ */
+export function renderCompactPullRequestStatusBlock(status: PullRequestStatus, now: Date = new Date()): string | null {
+    if (status.state === 'none') return null;
+    return wrapBlock(`**ProPR** ${headline(status)} · updated ${utcTime(now)}`);
 }
 
 /** The current block, markers included, without its trailing separator. */

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { PR_STATUS_BLOCK_MAX_LENGTH } from '@propr/shared';
 import {
     computePullRequestStatus,
     type PullRequestStatusFacts,
@@ -12,6 +13,7 @@ import {
     PR_STATUS_BLOCK_END,
     PR_STATUS_BLOCK_START,
     preservePullRequestStatusBlock,
+    renderCompactPullRequestStatusBlock,
     renderPullRequestStatusBlock,
     renderPullRequestStatusLine,
     sameRenderedStatus,
@@ -170,6 +172,20 @@ test('checks that could not be read never report ready', () => {
     assert.equal(status.detail.reason, 'checks_unavailable');
 });
 
+test('unknown mergeability is never ready: the status waits for GitHub to finish computing it', () => {
+    const unknown = { state: 'open', merged: false, headSha: 'a', mergeable: null };
+    for (const latestReviewScore of [null, 7, 8]) {
+        const status = computePullRequestStatus(facts({ pullRequest: unknown, latestReviewScore }));
+        assert.equal(status.state, 'working');
+        assert.equal(status.detail.activity, 'checking_mergeability');
+        assert.match(renderPullRequestStatusLine(status, NOW), /^\*\*ProPR\*\* 🔨 Checking for conflicts · /);
+    }
+    // A known problem still needs you while mergeability is being computed.
+    const failed = computePullRequestStatus(facts({ pullRequest: unknown, checks: { complete: true, passed: 1, failed: 1, pending: 0, failedNames: ['unit'] } }));
+    assert.equal(failed.state, 'needs_attention');
+    assert.equal(computePullRequestStatus(facts({ pullRequest: unknown, latestReviewScore: 6 })).detail.reason, 'review_below_goal');
+});
+
 // --- state table: ready ---
 
 test('never reviewed with passing checks is ready', () => {
@@ -218,6 +234,29 @@ test('failed check names cannot break out of the one-line block', () => {
     })), NOW);
     assert.equal(line.includes('\n'), false);
     assert.equal(line.includes(PR_STATUS_BLOCK_END), false);
+});
+
+test('the block never exceeds the size new descriptions reserve for it', () => {
+    const longName = 'n'.repeat(200);
+    const worst = computePullRequestStatus(facts({
+        latestReviewScore: Number.MAX_SAFE_INTEGER, ratingGoal: 10,
+        checks: { complete: true, passed: Number.MAX_SAFE_INTEGER, failed: Number.MAX_SAFE_INTEGER, pending: 0, failedNames: Array.from({ length: 99_999 }, () => longName) },
+        tasks: [task('issue', 'completed')], epic: { merged: Number.MAX_SAFE_INTEGER, total: Number.MAX_SAFE_INTEGER },
+    }));
+    assert.equal(worst.state, 'needs_attention');
+    const block = renderPullRequestStatusBlock(worst, NOW);
+    assert.ok(block && block.length <= PR_STATUS_BLOCK_MAX_LENGTH, `block is ${block?.length} characters`);
+    assert.match(block!, /updated 09:41 UTC\n<!-- \/propr:pr-status -->$/, 'the block keeps its markers and update time');
+    // Every state stays within the bound.
+    for (const status of [computePullRequestStatus(facts()), computePullRequestStatus(facts({ tasks: [task('issue', 'processing')] }))]) {
+        assert.ok(renderPullRequestStatusBlock(status, NOW)!.length <= PR_STATUS_BLOCK_MAX_LENGTH);
+    }
+});
+
+test('the compact block keeps only the headline and the update time', () => {
+    const status = computePullRequestStatus(facts({ latestReviewScore: 6 }));
+    assert.equal(renderCompactPullRequestStatusBlock(status, NOW), `${PR_STATUS_BLOCK_START}\n**ProPR** ⚠️ Needs you · updated 09:41 UTC\n${PR_STATUS_BLOCK_END}`);
+    assert.equal(renderCompactPullRequestStatusBlock(computePullRequestStatus(facts({ isProprPullRequest: false })), NOW), null);
 });
 
 test('none renders no block', () => {

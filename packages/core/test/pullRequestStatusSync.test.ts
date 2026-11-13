@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import knexFactory, { type Knex } from 'knex';
+import { PR_BODY_MAX_LENGTH } from '@propr/shared';
 import type { PullRequestStatusSyncDeps } from '../src/services/pullRequestStatus/pullRequestStatusSync.js';
 
 process.env.PROPR_DEMO_MODE = 'true';
@@ -9,10 +10,10 @@ const { closeConnection } = await import('../src/db/connection.js');
 const { PR_STATUS_BLOCK_START, extractPullRequestStatusBlock, stripPullRequestStatusBlock } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
 const {
     disablePullRequestStatusSync, enablePullRequestStatusSync, initialPullRequestStatusBlock,
-    resolvePullRequestsForCommitStatus, syncPullRequestStatus, updatePullRequestBody,
+    resolvePullRequestsForCommitStatus, setPullRequestStatusMergeabilityRefreshDelaysForTests, syncPullRequestStatus, updatePullRequestBody,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
-const { requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
+const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 const { resolveRepositoryPrTitleStatus } = await import('../src/config/repositoryPrTitleStatusSetting.js');
@@ -377,4 +378,127 @@ test('the block a pull request was created with is confirmed without a PATCH, th
     assert.equal(await sync(), 'updated');
     assert.match(statusLine(), /✅ Ready/);
     assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+});
+
+// --- Unavailable facts (F5) ---
+
+async function assertUnavailableKeepsBlock(breakRead: () => Promise<void> | void, label: string): Promise<void> {
+    await sync();
+    const before = github.pull.body;
+    assert.match(statusLine(), /⚠️ Needs you · review below goal|🔨 Ultrafix|🔨 Queued/, `${label}: baseline`);
+    await breakRead();
+    await assert.rejects(loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github }), undefined, `${label}: the read failure is not erased`);
+    await assert.rejects(sync(), undefined, `${label}: the sync fails instead of computing a status`);
+    assert.equal(github.pull.body, before, `${label}: the previous block is kept, never replaced by Ready`);
+}
+
+test('a review score that cannot be read never turns a reviewed pull request ready', async () => {
+    await addTask('issue', 'completed');
+    await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score: 5, created_at: '2026-11-13T09:10:00Z' });
+    try {
+        await assertUnavailableKeepsBlock(() => database.schema.renameTable('review_scores', 'review_scores_offline'), 'review');
+    } finally {
+        await database.schema.renameTable('review_scores_offline', 'review_scores');
+    }
+});
+
+test('an Ultrafix state that cannot be read never turns an active loop ready', async () => {
+    await addTask('issue', 'completed');
+    redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify({ goal: 7, maxCycles: 5, cycleCount: 1, active: true }));
+    const get = redis.get.bind(redis);
+    await assertUnavailableKeepsBlock(() => {
+        redis.get = async (key: string) => {
+            if (key.startsWith('ultrafix:')) throw new Error('redis unavailable');
+            return await get(key);
+        };
+    }, 'ultrafix');
+});
+
+test('queued work that cannot be counted never reads ready', async () => {
+    await addTask('issue', 'completed');
+    let failing = false;
+    const queued = async () => { if (failing) throw new Error('queue unavailable'); return 1; };
+    const sources = deps().sources!;
+    const withQueue = (): Partial<PullRequestStatusSyncDeps> => ({ ...deps(), sources: { ...sources, countQueuedJobs: queued } });
+    await syncPullRequestStatus(REPOSITORY, PR, withQueue());
+    assert.match(statusLine(), /🔨 Queued/);
+    const before = github.pull.body;
+    failing = true;
+    await assert.rejects(loadPullRequestStatusFacts(REPOSITORY, PR, { ...sources, countQueuedJobs: queued, github }));
+    await assert.rejects(syncPullRequestStatus(REPOSITORY, PR, withQueue()));
+    assert.equal(github.pull.body, before);
+});
+
+// --- Unknown mergeability (F6) ---
+
+test('unknown mergeability is not ready, and the status is refreshed until GitHub settles it', async () => {
+    await addTask('issue', 'completed');
+    github.pull.mergeable = null;
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /🔨 Checking for conflicts · checks: 1 passed/);
+    assert.doesNotMatch(statusLine(), /Ready/);
+
+    setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20, 20]);
+    enablePullRequestStatusSync(deps());
+    const reads = () => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}').length;
+    const waitFor = async (condition: () => boolean) => {
+        const deadline = Date.now() + 8_000;
+        while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    };
+    try {
+        // GitHub resolves to a conflict after the first read: the refresh, not a webhook, settles the block.
+        const start = reads();
+        requestPullRequestStatusSync(REPOSITORY, PR);
+        await waitFor(() => reads() >= start + 2);
+        github.pull.mergeable = false;
+        await waitFor(() => /conflicts with base/.test(statusLine()));
+        assert.match(statusLine(), /⚠️ Needs you · conflicts with base/);
+
+        // While mergeability stays unknown, refreshes stop after the bounded schedule.
+        github.pull.mergeable = null;
+        const bounded = reads();
+        requestPullRequestStatusSync(REPOSITORY, PR);
+        await waitFor(() => reads() >= bounded + 4);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        assert.equal(reads() - bounded, 4, 'one sync and three refreshes');
+        assert.match(statusLine(), /🔨 Checking for conflicts/);
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+    }
+});
+
+// --- Body length (F7) ---
+
+test('a body close to the limit gets the compact block, and none when even that does not fit', async () => {
+    await addTask('issue', 'completed');
+    await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score: 8, created_at: '2026-11-13T09:10:00Z' });
+    const filler = (room: number) => `${HUMAN_BODY}\n${'x'.repeat(PR_BODY_MAX_LENGTH - HUMAN_BODY.length - 1 - room)}`;
+
+    github.pull.body = filler(100);
+    const human = github.pull.body;
+    assert.equal(await sync(), 'updated');
+    assert.ok(github.pull.body.length <= PR_BODY_MAX_LENGTH);
+    assert.equal(stripPullRequestStatusBlock(github.pull.body), human, 'the text outside the block is never shortened');
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · updated \d{2}:\d{2} UTC$/);
+
+    github.pull.body = filler(10);
+    const writes = github.writes().length;
+    assert.equal(await sync(), 'skipped', 'no room for any block: nothing is written');
+    assert.equal(github.writes().length, writes);
+
+    // A person grows the description around an existing block until it no longer fits: the block is left out, not left stale.
+    github.pull.body = `${extractPullRequestStatusBlock(`${(await initialBlock())!}`)}\n\n${filler(10)}`;
+    assert.equal(await sync(), 'removed');
+    assert.equal(github.pull.body, filler(10));
+    assert.ok(github.patches.every(body => body.length <= PR_BODY_MAX_LENGTH));
+});
+
+test('another body writer near the limit keeps its text and drops the block rather than exceed the limit', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    assert.ok(extractPullRequestStatusBlock(github.pull.body));
+    const published = 'p'.repeat(PR_BODY_MAX_LENGTH - 20);
+    await updatePullRequestBody(github as never, { owner: 'integry', repo: 'propr', pullNumber: PR, body: published }, { preserveStatusBlock: true, redis: redis as never });
+    assert.equal(github.pull.body, published);
 });

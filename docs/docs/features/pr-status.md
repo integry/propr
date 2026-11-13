@@ -13,14 +13,14 @@ ProPR computes one status for every pull request it created: is it being worked 
 
 | State | When |
 | --- | --- |
-| `working` | A ProPR task for this pull request is queued or running (implementation, follow-up, review, conflict resolution), an Ultrafix loop is active (including while it waits for CI), or checks on the current head are still pending. |
+| `working` | A ProPR task for this pull request is queued or running (implementation, follow-up, review, conflict resolution), an Ultrafix loop is active (including while it waits for CI), checks on the current head are still pending, or GitHub is still working out whether the PR conflicts with its base ("Checking for conflicts"). |
 | `needs_attention` | Nothing is running, and one of these is true: the last ProPR run on the PR failed; an Ultrafix loop ended without reaching its goal (cycles exhausted, failed, or stopped because CI did not settle); a check on the current head failed; the PR conflicts with its base, or the conflict resolution failed; the latest review score is below the instance Ultrafix rating goal; or the checks could not be read. |
-| `ready` | Nothing is running, every check on the current head completed and passed, the PR does not conflict with its base, and the latest review score (if the PR has been reviewed) meets the instance Ultrafix rating goal. |
+| `ready` | Nothing is running, every check on the current head completed and passed, GitHub has confirmed that the PR does not conflict with its base, and the latest review score (if the PR has been reviewed) meets the instance Ultrafix rating goal. |
 | `none` | The pull request is closed or merged, or ProPR did not create it. A pull request someone else opened stays `none` even after ProPR reviews it or runs a follow-up on it. |
 
-A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; if one of those checks then fails, it becomes `needs_attention`. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR. ProPR reads up to 300 check runs on the head; if a commit has more, it can't confirm that they all passed, so the status is `needs_attention` with "checks could not be read" rather than `ready`.
+A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; if one of those checks then fails, it becomes `needs_attention`. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR. ProPR reads up to 300 check runs on the head; if a commit has more, it can't confirm that they all passed, so the status is `needs_attention` with "checks could not be read" rather than `ready`. The same goes for ProPR's own records: if the review score, the Ultrafix state or the queued work can't be read, no status is computed. The body keeps its previous line, and MCP returns `proprStatus: null`.
 
-Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged.
+Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI, checking for conflicts), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged.
 
 ## The status line in the pull request body
 
@@ -39,6 +39,8 @@ How the line behaves:
 - Editing a pull request body adds nothing to the timeline, so the line can change often without filling the conversation. When the only change would be the "updated" time, nothing is sent to GitHub.
 - ProPR ignores the `edited` webhooks its own status updates cause, so they never start more work.
 - When the pull request is merged or closed, the line is removed.
+- GitHub works out whether a pull request conflicts with its base in the background and sends no event when it is done. While it is working, the line reads "Checking for conflicts", and ProPR checks again after about 3, 10, 30 and 60 seconds. If GitHub still hasn't decided after that, the next change updates the line.
+- The line never takes more than 512 characters. New pull request descriptions keep that much room free, so the line still fits when it grows longer than it was at creation. If a person fills the body so close to GitHub's 65,536-character limit that the line doesn't fit, ProPR writes a shorter line with just the state and the time. If even that doesn't fit, ProPR leaves the line out. Your text is never shortened to make room.
 - If an update fails, the task, review or loop that caused it carries on as normal. The failure is logged, and the next change tries again.
 
 The line has no setting and can't be turned off. ProPR already owns that part of the body, and the edits leave no timeline entry, so there is nothing to opt out of. Pull requests ProPR did not create never get the line.

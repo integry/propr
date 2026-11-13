@@ -1,4 +1,4 @@
-import { initialPullRequestStatusBlock, pullRequestStatusBlockLength, withPullRequestStatusBlock, writePullRequestBody } from '../github/pullRequestBodyWriter.js';
+import { initialPullRequestStatusBlock, pullRequestStatusBlockReserve, withPullRequestStatusBlock, writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import type { Logger } from 'pino';
 import {
     generateCompletionCommentParts,
@@ -261,7 +261,7 @@ export async function createPullRequest(
             digest: completion.digest,
         }),
         loadTemplate: () => loadPullRequestTemplate({ octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch, correlationId: issueRef.correlationId }),
-        maxBodyLength: templateBodyLengthBudget(visualPreviewSection) - pullRequestStatusBlockLength(statusBlock),
+        maxBodyLength: templateBodyLengthBudget(visualPreviewSection) - pullRequestStatusBlockReserve(statusBlock),
         onError: message => recordPullRequestTemplateError({ stateManager: options.stateManager, taskId: options.taskId, message, correlatedLogger }),
         context: { jobId, issueNumber: issueRef.number },
     });

@@ -14,11 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detail of what is happening (activity, Ultrafix cycle, latest review score,
   passed/failed/pending checks, the reason it needs you, and epic issue
   progress). A review score alone never makes a pull request `ready`: its
-  checks on the current head must have completed and passed. ProPR keeps
+  checks on the current head must have completed and passed, and GitHub
+  must have confirmed that the PR does not conflict with its base. If the
+  review score, Ultrafix state or queued work can't be read, no status is
+  reported. ProPR keeps
   that status as one live line at the top of the body of every open pull
   request it created, in every repository; there is no setting for it. Only
   the text between its markers is ever rewritten, other ProPR body writers
-  keep it, and it is removed when the pull request is merged or closed.
+  keep it, and it is removed when the pull request is merged or closed. The
+  line is at most 512 characters, and new descriptions keep that much room
+  free for it.
   `get_pull_request`, `list_pull_requests` and `get_work_overview` return the
   same status as `proprStatus`. The new repository setting `prTitleStatus`
   (on by default; Repositories → Automation,

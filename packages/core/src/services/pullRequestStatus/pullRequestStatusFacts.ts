@@ -215,16 +215,20 @@ export async function loadPullRequestStatusFacts(
     if (closed || !isPropr) {
         return { pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs: 0, ultrafix: null, checks: empty, latestReviewScore: null, ratingGoal: 0, epic: null };
     }
+    // Queued work, the Ultrafix loop and the review score each decide whether
+    // the PR is ready, so a failed read is not the same as "none": it rejects,
+    // and callers keep the previous block (body) or report null (MCP).
     const [queuedJobs, ultrafix, checks, score, ratingGoal, epic] = await Promise.all([
-        sources.countQueuedJobs ? sources.countQueuedJobs(repository, prNumber).catch(() => 0) : 0,
-        loadUltrafix(sources.redis, owner, repo, prNumber).catch(error => {
-            logger.warn({ repository, prNumber, error: (error as Error).message }, 'Failed to read Ultrafix state for the pull request status');
+        sources.countQueuedJobs ? sources.countQueuedJobs(repository, prNumber) : 0,
+        loadUltrafix(sources.redis, owner, repo, prNumber),
+        loadPullRequestStatusChecks(sources, owner, repo, pullRequest.headSha),
+        latestReviewScore(sources.db, repository, prNumber),
+        sources.loadRatingGoal(),
+        // Epic progress is display only; it never decides the state.
+        loadEpicProgress(sources.db, repository, pr.head.ref).catch(error => {
+            logger.warn({ repository, prNumber, error: (error as Error).message }, 'Failed to read epic progress for the pull request status');
             return null;
         }),
-        loadPullRequestStatusChecks(sources, owner, repo, pullRequest.headSha),
-        latestReviewScore(sources.db, repository, prNumber).catch(() => null),
-        sources.loadRatingGoal(),
-        loadEpicProgress(sources.db, repository, pr.head.ref).catch(() => null),
     ]);
     return { pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, latestReviewScore: score, ratingGoal, epic };
 }

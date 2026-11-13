@@ -19,7 +19,9 @@ export type PullRequestActivity =
     | 'resolving_conflicts'
     | 'ultrafix'
     | 'waiting_for_ci'
-    | 'queued';
+    | 'queued'
+    /** GitHub is still computing whether the pull request conflicts with its base. */
+    | 'checking_mergeability';
 
 /** Why a pull request needs a human. */
 export type PullRequestAttentionReason =
@@ -161,8 +163,9 @@ function emptyDetail(facts: PullRequestStatusFacts): PullRequestStatusDetail {
 
 /**
  * Computes the status of a pull request from its facts. `ready` is only ever
- * reported once nothing is running and every blocking check on the current
- * head completed and passed; a review score alone never makes a PR ready.
+ * reported once nothing is running, every blocking check on the current head
+ * completed and passed, and GitHub has determined that the PR does not
+ * conflict with its base; a review score alone never makes a PR ready.
  */
 export function computePullRequestStatus(facts: PullRequestStatusFacts): PullRequestStatus {
     const base = emptyDetail(facts);
@@ -184,5 +187,7 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
             : null;
         return { state: 'needs_attention', detail: { ...detail, reason, ultrafixStopped: stopped } };
     }
+    // Unknown mergeability has not established that the PR is free of conflicts.
+    if (facts.pullRequest.mergeable === null) return { state: 'working', detail: { ...detail, activity: 'checking_mergeability' } };
     return { state: 'ready', detail };
 }

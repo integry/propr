@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
+import { PR_BODY_MAX_LENGTH } from '@propr/shared';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
 import { loadUltrafixRatingGoal } from '../../config/configManagerUltrafix.js';
 import { getNonBlockingChecksForRepository } from '../../daemon/configLoader.js';
@@ -7,13 +8,16 @@ import { db } from '../../db/connection.js';
 import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
-import { computePullRequestStatus } from './pullRequestStatus.js';
+import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
 import { setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } from './pullRequestStatusSignal.js';
 import {
     applyPullRequestStatusBlock,
+    extractPullRequestStatusBlock,
     preservePullRequestStatusBlock,
+    renderCompactPullRequestStatusBlock,
     renderPullRequestStatusBlock,
     sameRenderedStatus,
+    stripPullRequestStatusBlock,
 } from './pullRequestStatusBlock.js';
 import {
     countQueuedPullRequestJobs,
@@ -146,13 +150,55 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
     return (await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber })).data as PullRequestStatusPull;
 }
 
-async function desiredBlock(
+async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
-): Promise<string | null> {
+): Promise<PullRequestStatus | null> {
     const { repository, prNumber, pull } = target;
     if (pull.state !== 'open' || pull.merged) return null;
     const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
-    return renderPullRequestStatusBlock(computePullRequestStatus(facts), deps.now());
+    return computePullRequestStatus(facts);
+}
+
+/**
+ * The body with the status block for `status`, within GitHub's body limit.
+ * Text outside the block is never shortened: when the full block does not fit,
+ * the compact one is used, and when neither fits the block is left out.
+ */
+function bodyWithStatus(current: string, status: PullRequestStatus | null, now: Date, target: { repository: string; prNumber: number }): string {
+    if (!status) return applyPullRequestStatusBlock(current, null);
+    for (const block of [renderPullRequestStatusBlock(status, now), renderCompactPullRequestStatusBlock(status, now)]) {
+        const next = applyPullRequestStatusBlock(current, block);
+        if (next.length <= PR_BODY_MAX_LENGTH) return next;
+    }
+    logger.warn(target, 'The pull request body leaves no room for the status block; it is left out until the body is shorter');
+    return applyPullRequestStatusBlock(current, null);
+}
+
+/** GitHub is still computing mergeability, so the status cannot settle yet. */
+function awaitsMergeability(status: PullRequestStatus | null): boolean {
+    return status?.state === 'working' && status.detail.activity === 'checking_mergeability';
+}
+
+interface SyncOutcome { result: PullRequestStatusSyncResult; awaitingMergeability: boolean }
+
+async function syncPullRequestStatusOnce(
+    repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps>,
+): Promise<SyncOutcome> {
+    const resolved = resolveDeps(overrides);
+    const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
+    return await withPullRequestBodyLock(repository, prNumber, deps.redis, async () => {
+        const pull = await readPull(deps.github, repository, prNumber);
+        const status = await desiredStatus(deps, { repository, prNumber, pull });
+        const awaitingMergeability = awaitsMergeability(status);
+        const current = pull.body ?? '';
+        const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
+        const written = extractPullRequestStatusBlock(next) !== null;
+        if (next === current || sameRenderedStatus(next, current)) return { result: written ? 'unchanged' : 'skipped', awaitingMergeability };
+        const [owner, repo] = repository.split('/');
+        await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
+        logger.debug({ repository, prNumber, removed: !written }, 'Updated the pull request status block');
+        return { result: written ? 'updated' : 'removed', awaitingMergeability };
+    });
 }
 
 /**
@@ -164,57 +210,86 @@ async function desiredBlock(
 export async function syncPullRequestStatus(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps> = {},
 ): Promise<PullRequestStatusSyncResult> {
-    const resolved = resolveDeps(overrides);
-    const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
-    return await withPullRequestBodyLock(repository, prNumber, deps.redis, async () => {
-        const pull = await readPull(deps.github, repository, prNumber);
-        const block = await desiredBlock(deps, { repository, prNumber, pull });
-        const current = pull.body ?? '';
-        const next = applyPullRequestStatusBlock(current, block);
-        if (next === current || sameRenderedStatus(next, current)) return block ? 'unchanged' : 'skipped';
-        const [owner, repo] = repository.split('/');
-        await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
-        logger.debug({ repository, prNumber, removed: !block }, 'Updated the pull request status block');
-        return block ? 'updated' : 'removed';
-    });
+    return (await syncPullRequestStatusOnce(repository, prNumber, overrides)).result;
 }
 
 // --- Scheduling from transitions ---
 
 const DEFAULT_DEBOUNCE_MS = 1_000;
-interface ScheduledSync { timer: NodeJS.Timeout | null; running: boolean; rerun: boolean }
+/**
+ * GitHub computes mergeability in the background after a read, and sends no
+ * webhook when it finishes. While it is unknown the status is re-read on this
+ * schedule, then left to the next transition.
+ */
+const MERGEABILITY_REFRESH_DELAYS_MS = [3_000, 10_000, 30_000, 60_000];
+interface ScheduledSync {
+    timer: NodeJS.Timeout | null;
+    running: boolean;
+    rerun: boolean;
+    /** Mergeability refreshes already run for this entry. */
+    mergeabilityRefreshes: number;
+    /** The pending timer is a mergeability refresh, which a transition may bring forward. */
+    refreshPending: boolean;
+}
 const scheduled = new Map<string, ScheduledSync>();
+let mergeabilityRefreshDelaysMs: readonly number[] = MERGEABILITY_REFRESH_DELAYS_MS;
+
+/** Test hook: shortens the mergeability refresh schedule; null restores it. */
+export function setPullRequestStatusMergeabilityRefreshDelaysForTests(delays: readonly number[] | null): void {
+    mergeabilityRefreshDelaysMs = delays ?? MERGEABILITY_REFRESH_DELAYS_MS;
+}
 
 function runScheduled(repository: string, prNumber: number, key: string): void {
     const entry = scheduled.get(key);
     if (!entry) return;
     entry.timer = null;
+    entry.refreshPending = false;
     entry.running = true;
-    void syncPullRequestStatus(repository, prNumber)
+    let awaitingMergeability = false;
+    void syncPullRequestStatusOnce(repository, prNumber, {})
+        .then(outcome => { awaitingMergeability = outcome.awaitingMergeability; })
         .catch(error => logger.warn({ repository, prNumber, error: (error as Error).message },
             'Failed to update the pull request status block; the next transition retries'))
         .finally(() => {
             entry.running = false;
-            if (entry.rerun && runtimeEnabled) {
-                entry.rerun = false;
-                entry.timer = setTimeout(() => runScheduled(repository, prNumber, key), DEFAULT_DEBOUNCE_MS);
-                entry.timer.unref?.();
-            } else {
+            if (!awaitingMergeability) entry.mergeabilityRefreshes = 0;
+            const refreshDelay = awaitingMergeability ? mergeabilityRefreshDelaysMs[entry.mergeabilityRefreshes] : undefined;
+            if (!runtimeEnabled || (!entry.rerun && refreshDelay === undefined)) {
                 scheduled.delete(key);
+                return;
             }
+            if (!entry.rerun) {
+                entry.mergeabilityRefreshes++;
+                entry.refreshPending = true;
+            }
+            const delay = entry.rerun ? DEFAULT_DEBOUNCE_MS : refreshDelay as number;
+            entry.rerun = false;
+            entry.timer = setTimeout(() => runScheduled(repository, prNumber, key), delay);
+            entry.timer.unref?.();
         });
 }
 
-/** Bursts of transitions coalesce into one update; a failure is logged and retried on the next transition. */
+/**
+ * Bursts of transitions coalesce into one update; a failure is logged and
+ * retried on the next transition. While mergeability is unknown the update is
+ * repeated on a bounded schedule (MERGEABILITY_REFRESH_DELAYS_MS).
+ */
 function schedulePullRequestStatusSync(repository: string, number: number): void {
     if (!runtimeEnabled) return;
     const key = prKey(repository, number);
     const entry = scheduled.get(key);
     if (entry) {
         if (entry.running) entry.rerun = true;
+        else if (entry.refreshPending && entry.timer) {
+            // A transition does not wait for a slow mergeability refresh.
+            clearTimeout(entry.timer);
+            entry.refreshPending = false;
+            entry.timer = setTimeout(() => runScheduled(repository, number, key), DEFAULT_DEBOUNCE_MS);
+            entry.timer.unref?.();
+        }
         return;
     }
-    const created: ScheduledSync = { timer: null, running: false, rerun: false };
+    const created: ScheduledSync = { timer: null, running: false, rerun: false, mergeabilityRefreshes: 0, refreshPending: false };
     scheduled.set(key, created);
     created.timer = setTimeout(() => runScheduled(repository, number, key), DEFAULT_DEBOUNCE_MS);
     created.timer.unref?.();
@@ -269,7 +344,9 @@ export async function updatePullRequestBody<T = { data: { body?: string | null }
     const redis = options.redis !== undefined ? options.redis : (runtimeDeps.redis !== undefined ? runtimeDeps.redis : getUltrafixStateRedis());
     return await withPullRequestBodyLock(`${owner}/${repo}`, pullNumber, redis, async () => {
         const current = (await github.request<{ data: { body?: string | null } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: pullNumber })).data?.body ?? '';
-        const next = preservePullRequestStatusBlock(body, current);
+        const preserved = preservePullRequestStatusBlock(body, current);
+        // The writer's text wins over the block; the next status sync fits the block back in if it can.
+        const next = preserved.length > PR_BODY_MAX_LENGTH ? stripPullRequestStatusBlock(body) : preserved;
         if (next === current) return { data: { body: current } } as T;
         return await patch(next);
     });
