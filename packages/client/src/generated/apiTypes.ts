@@ -397,6 +397,8 @@ export interface ExtensionLibrarySave {
   secrets?: {
     [key: string]: string | null;
   };
+  /** Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed. */
+  acknowledgements?: string[];
 }
 
 export interface ExtensionOAuthCheckRequest {

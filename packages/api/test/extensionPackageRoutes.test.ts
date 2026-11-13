@@ -12,6 +12,7 @@ import { up } from '../../core/src/db/migrations/20261013210000_extension_profil
 import { up as grantMigration } from '../../core/src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../../core/src/db/migrations/20261113000000_extension_library.js';
 import { npmRegistryFixture } from '../../core/test/helpers/npmRegistryFixture.js';
+import { ExtensionLibrarySave } from '../openapi/schemas.js';
 
 const secret = 'UNMISTAKABLE_API_PACKAGE_SECRET_SENTINEL';
 
@@ -67,7 +68,11 @@ test('local package servers over HTTP: Check, exact pins, acknowledgement and re
   const unacknowledged = await post('/library', { input: { version: 1, servers: [packageServer], skills: [] }, secrets: { 'local/FIXTURE_TOKEN': secret }, expectedRevision: 0 });
   assert.equal(unacknowledged.status, 400);
   assert.match((await unacknowledged.json()).error, /Confirm that the secret variables of local are readable/);
-  const saved = await post('/library', { input: { version: 1, servers: [packageServer], skills: [] }, secrets: { 'local/FIXTURE_TOKEN': secret }, expectedRevision: 0, acknowledgements: ['local'] });
+  // The request the Settings UI sends for a package secret is valid under the published contract.
+  const acknowledgedSave = { input: { version: 1, servers: [packageServer], skills: [] }, secrets: { 'local/FIXTURE_TOKEN': secret }, expectedRevision: 0, acknowledgements: ['local'] };
+  const contract = ExtensionLibrarySave.safeParse(acknowledgedSave);
+  assert.ok(contract.success, JSON.stringify(contract.error?.issues));
+  const saved = await post('/library', acknowledgedSave);
   assert.equal(saved.status, 200);
   const text = await saved.text(); assert.ok(!text.includes(secret));
   const library = JSON.parse(text).library;
