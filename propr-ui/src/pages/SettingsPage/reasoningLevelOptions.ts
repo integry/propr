@@ -16,10 +16,11 @@ const reasoningLevelLabels: Record<ReasoningLevel, string> = {
   auto: 'Auto (Claude only)',
 };
 
-export function formatReasoningLevelOption(level: string, agentType?: AgentType): string {
+/** Pass the model when the agent type's levels differ per model (Antigravity). */
+export function formatReasoningLevelOption(level: string, agentType?: AgentType, model?: string): string {
   const displayLabel = reasoningLevelLabels[level as ReasoningLevel] ?? level;
   if (!(REASONING_LEVELS as readonly string[]).includes(level)) return displayLabel;
-  if (agentType && !getReasoningLevelsForAgentType(agentType).includes(level as ReasoningLevel)) {
+  if (agentType && !getReasoningLevelsForAgentType(agentType, model).includes(level as ReasoningLevel)) {
     const plainLabel = displayLabel.replace(/\s+\([^)]+ only\)$/, '');
     const agentLabel = agentType === 'codex' ? 'Codex' : agentType === 'claude' ? 'Claude' : agentType;
     return `${plainLabel} (unsupported for ${agentLabel}) — GitHub: level-${level}`;

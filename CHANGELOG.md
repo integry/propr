@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Gemini 4 Hydrogen (Antigravity)**: Google's fast Gemini 4 model, released
+  2026-11-12, is in the Antigravity catalog as `antigravity-gemini-4-hydrogen`
+  (label `llm-antigravity-hydrogen`, alias `hydrogen`, 1M context). It is the
+  only Antigravity model that offers `xhigh` effort, launched as
+  `gemini-4-hydrogen-xhigh`; low, medium and high run as
+  `gemini-4-hydrogen-<effort>`. Usage is priced at $1.50/M input and $7.50/M
+  output. It needs Antigravity CLI 1.5.8 and supersedes no model. Its
+  availability to `agy login` accounts has not yet been confirmed.
+
 - **Automation templates**: a versioned catalog of automation templates ships
   in `@propr/shared`, generated from `packages/shared/automation-templates/`
   and checked in CI against the automation definition contract
@@ -71,6 +80,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.323, Codex 0.168.0 and Antigravity CLI 1.5.8**:
+  the `propr/agent` image moves from Claude Code 2.1.322, Codex 0.167.2 and
+  Antigravity CLI 1.5.6.
+  - Antigravity 1.5.8 is release `4602374149505024`, SHA-512 checked against
+    Google's linux_amd64 install manifest. From 1.5.7, headless sessions with
+    no saved Agent Mode start in Auto instead of Default. ProPR always passes
+    `--dangerously-skip-permissions` (tasks and goals) or `--sandbox`
+    (repository inspection), so its runs are unaffected.
+  - Codex stays on 0.168.0: 0.169.0 stops `codex exec` loading a
+    repository's `.codex/config.toml` and project MCP servers in untrusted
+    directories, which needs a separate decision. 0.168.0's bundled model
+    catalog is unchanged.
+  - Claude Code 2.1.323 needs no change: ProPR does not pass `--settings`,
+    which `claude -p` now validates at startup.
 - **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
   moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
   tool-policy checks pass against both binaries. Codex 0.167 rewords the
