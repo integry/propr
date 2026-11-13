@@ -55,6 +55,22 @@ interface PlanIssueRowProps {
   onQueueAction?: (issueNumber: number, action: PlanQueueAction) => void;
 }
 
+/** Renders the execution-queue notice only for rows that belong to an active queue. */
+const RowQueueNotice: React.FC<{
+  issueNumber: number;
+  state?: PlanExecutionQueueIssue;
+  dependents?: number[];
+  pendingAction?: PlanQueueAction | null;
+  disabled: boolean;
+  onAction?: (issueNumber: number, action: PlanQueueAction) => void;
+}> = ({ issueNumber, state, dependents, pendingAction, disabled, onAction }) => {
+  if (!state || !onAction) return null;
+  return (
+    <PlanIssueQueueNotice state={state} dependents={dependents} pendingAction={pendingAction}
+      disabled={disabled} onAction={action => onAction(issueNumber, action)} />
+  );
+};
+
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   issue,
   issueTitle,
@@ -193,10 +209,8 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             />
           </div>
         </div>
-        {queueState && onQueueAction && (
-          <PlanIssueQueueNotice state={queueState} dependents={queueDependents} pendingAction={queueAction}
-            disabled={disableImplementation} onAction={action => onQueueAction(issue.issue_number, action)} />
-        )}
+        <RowQueueNotice issueNumber={issue.issue_number} state={queueState} dependents={queueDependents}
+          pendingAction={queueAction} disabled={disableImplementation} onAction={onQueueAction} />
       </div>
 
       {/* Expandable Content */}
