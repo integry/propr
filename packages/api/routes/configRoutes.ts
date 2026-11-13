@@ -10,7 +10,7 @@ import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
 import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
-import { agentNetworkSettingsResponse, agentWatchdogSettingsResponse, followupRequiresAssignmentResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
+import { agentNetworkSettingsResponse, agentWatchdogSettingsResponse, followupRequiresAssignmentResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback, tokenOutlierSettingsResponse } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
@@ -285,6 +285,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         goal_question_max_wait_ms: goalQuestionWait.value,
         ...await agentWatchdogSettingsResponse(configStore),
         ...await agentNetworkSettingsResponse(configStore),
+        ...await tokenOutlierSettingsResponse(configStore),
         ...(Object.keys(invalidIntegerSettings).length > 0 ? { invalid_settings: invalidIntegerSettings } : {})
       });
     } catch (error) {

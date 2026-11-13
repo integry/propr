@@ -767,6 +767,21 @@ Use `state: "recent"` with `sinceMinutes`, or `state: "all"`, when completed
 work belongs in the answer. `githubLookups` reports the requested/completed
 enrichment count and whether the bounded lookup was truncated.
 
+For spend rather than progress, `get_cost_breakdown` returns the same rows as
+`GET /api/stats/cost`: recorded agent executions grouped by any of `day`,
+`repository`, `agent`, `model`, `reasoning_level`, `execution_type` and
+`outcome`, each with `executions`, `tasks`, input/output/cache tokens and
+`cost_usd`, plus `totals`:
+
+```json
+{ "period": "30d", "groupBy": ["repository", "model", "outcome"] }
+```
+
+Without `repository` it covers the repositories in the grant (`repositories`
+lists them); executions with no task have no repository and are left out. A
+dimension that was never recorded, or a group with no recorded cost, is
+`null` rather than a guess or `0`.
+
 For what already finished, `get_recent_activity` merges one newest-first
 timeline — terminal tasks, opened and merged pull requests, finished goals,
 published plans, reviews, ultrafix loops and blocking notifications:

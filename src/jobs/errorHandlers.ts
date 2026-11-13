@@ -51,6 +51,7 @@ interface PostErrorCommentOptions {
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
+        executionId: response.executionId,
         model: response.model,
         success: response.success,
         executionTime: response.executionTime,

@@ -12,7 +12,6 @@ _Last reviewed: 2026-07-04._
 Driving ProPR entirely from CI and scripts.
 
 - `--json` on every mutating command + a documented exit-code contract — [#1671](https://github.com/integry/propr/issues/1671)
-- Metrics and LLM-cost export — [#1675](https://github.com/integry/propr/issues/1675)
 - Log following (`log --follow`, `task logs -f`) — [#1676](https://github.com/integry/propr/issues/1676)
 - `propr teardown` — [#1677](https://github.com/integry/propr/issues/1677)
 - Version-skew / update notice — [#1678](https://github.com/integry/propr/issues/1678)
@@ -39,6 +38,10 @@ Driving ProPR entirely from CI and scripts.
 
 ## Shipped
 
+- Metrics and LLM-cost export: `GET /api/stats/cost` and `cost.csv`,
+  `propr stats cost` and the MCP `get_cost_breakdown` tool, grouped by day,
+  repository, agent, model, effort, execution type and outcome —
+  [#1675](https://github.com/integry/propr/issues/1675)
 - Dashboard HTTP API reference (monitoring & integrations): an OpenAPI 3.1
   spec generated from the route registry, the
   [API reference](https://docs.propr.dev/docs/operations/api-reference) page and

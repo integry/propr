@@ -57,10 +57,12 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
         merge_rate: { value: merged / prs, merged, n: prs }, cost_per_merged_pr: { usd: cost, n: cost === null ? 0 : merged },
         score_delta: { mean: final - first, n: prs }, runs_to_merge: { mean: cost === null ? null : 2.4, n: cost === null ? 0 : merged },
       });
-      return route.fulfill({ json: { period, repository: 'all', prs_scored: 6 * scale, scores_recorded: 14 * scale, models: [
-        { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', ...figures(4 * scale, 6.4, 8.6, 3 * scale, 1.84) },
-        { implementer_model: 'gpt-5.6', implementer_agent: 'codex', ...figures(2 * scale, 5.9, 8.1, scale, null) },
-      ] } });
+      const claude = { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude' }, gpt = { implementer_model: 'gpt-5.6', implementer_agent: 'codex' };
+      const effort = (model: object, implementer_reasoning_level: string, f: object) => ({ ...model, implementer_reasoning_level, ...f });
+      return route.fulfill({ json: { period, repository: 'all', prs_scored: 6 * scale, scores_recorded: 14 * scale,
+        models: [{ ...claude, ...figures(4 * scale, 6.4, 8.6, 3 * scale, 1.84) }, { ...gpt, ...figures(2 * scale, 5.9, 8.1, scale, null) }],
+        by_effort: [effort(claude, 'high', figures(2 * scale, 6.2, 8.4, scale, 1.42)), effort(claude, 'xhigh', figures(scale, 6.6, 9.1, scale, 2.65)),
+          effort(claude, 'unknown', figures(scale, 6.6, 8.5, scale, 1.47)), effort(gpt, 'medium', figures(2 * scale, 5.9, 8.1, scale, null))] } });
     }
     return route.fulfill({ json: {
       tasks: { completed: 8 * scale, planned: 0, pr_iterations_avg: 1.4, merged_prs: 7 * scale, total_followups: scale },
@@ -279,12 +281,9 @@ test('repository and model rows drill down to the filtered lists', async ({ page
   const repositories = page.getByTestId('repository-performance-table');
   await expect(repositories.getByText('workspace')).toBeVisible();
 
-  await expect(repositories.getByRole('link', { name: 'Tasks in example/workspace', exact: true }))
-    .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace');
-  await expect(repositories.getByRole('link', { name: '3 failed tasks in example/workspace' }))
-    .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace&status=failed');
-  await expect(page.getByTestId('model-breakdown-table').getByRole('link', { name: 'LLM log for GPT-5.6' }))
-    .toHaveAttribute('href', '/llm-logs?model=gpt-5.6');
+  await expect(repositories.getByRole('link', { name: 'Tasks in example/workspace', exact: true })).toHaveAttribute('href', '/tasks?repository=example%2Fworkspace');
+  await expect(repositories.getByRole('link', { name: '3 failed tasks in example/workspace' })).toHaveAttribute('href', '/tasks?repository=example%2Fworkspace&status=failed');
+  await expect(page.getByTestId('model-breakdown-table').getByRole('link', { name: 'LLM log for GPT-5.6' })).toHaveAttribute('href', '/llm-logs?model=gpt-5.6');
 
   const row = repositories.locator('tbody tr').first();
   await expect(row).toHaveCSS('cursor', 'pointer');
@@ -305,6 +304,9 @@ test('the agent efficacy matrix shows one figure per cell, denominators on hover
   await expect(rows.first().getByTestId('review-quality-delta')).toHaveText('+2.2 ▲');
   await expect(rows.first().getByTestId('review-quality-final')).toHaveAttribute('title', 'Mean over 40 PRs');
   await expect(rows.nth(1).getByTestId('review-quality-runs')).toHaveText('—');
+  // Effort is the secondary grouping: a row per level under a model with several, a tag on one with a single level.
+  await expect(pane.getByTestId('review-quality-effort-row')).toHaveText([/^High effort/, /^XHigh effort/, /^Unknown effort/]);
+  await expect(rows.nth(1).getByTestId('review-quality-effort-tag')).toHaveText('Medium effort');
   await expect(pane.getByText(/n=\d/)).toHaveCount(0);
   // Every column fits the pane: nothing scrolls sideways.
   const table = pane.getByTestId('review-quality-table');

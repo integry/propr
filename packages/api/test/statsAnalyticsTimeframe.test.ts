@@ -54,8 +54,9 @@ async function seedRecentAndOlder(): Promise<void> {
     states: [{ state: 'processing', timestamp: daysAgo(2) }, { state: 'failed', timestamp: daysAgo(1.9), reason: 'nope' }],
   });
   await database('llm_executions').insert([
-    { execution_id: 1, task_id: 'recent', start_time: minutesAgo(29), cost_usd: 1.5, model_name: 'claude-opus-5-5' },
-    { execution_id: 2, task_id: 'older', start_time: daysAgo(2), cost_usd: 0.5, model_name: 'gpt-5.6' },
+    { execution_id: 1, task_id: 'recent', start_time: minutesAgo(29), cost_usd: 1.5, model_name: 'claude-opus-5-5', success: true },
+    // The failed task's run: its spend is reported apart as spend on failed attempts.
+    { execution_id: 2, task_id: 'older', start_time: daysAgo(2), cost_usd: 0.5, model_name: 'gpt-5.6', success: false },
   ]);
   await database('llm_execution_details').insert([
     { execution_id: 1, token_count_input: 100, token_count_output: 20 },
@@ -101,13 +102,15 @@ test('without a period the endpoints keep their historical scope', async () => {
     input_tokens: 1100,
     output_tokens: 220,
     total_cost_usd: 2,
+    successful_cost_usd: 1.5,
+    failed_cost_usd: 0.5,
     models: { 'claude-opus-5-5': 1, 'gpt-5.6': 1 },
     // This schema records no cache breakdown, so there is no hit rate to report.
     cache: null,
   });
   assert.deepEqual(overview.body.model_usage, [
-    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
-    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 },
+    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5, successful_cost_usd: 0, failed_cost_usd: 0.5, failed_runs: 1 },
+    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5, successful_cost_usd: 1.5, failed_cost_usd: 0, failed_runs: 0 },
   ]);
   // Two runs across the three tasks the totals band counts.
   assert.deepEqual(overview.body.runs, { total: 2, tasks: 3, per_task: 0.67 });
@@ -249,11 +252,12 @@ test('a period bounds overview usage by execution start but never the indexed re
 
   const lastDay = await call(stats.getOverview, { period: '24h' });
   assert.deepEqual(lastDay.body.usage, {
-    total_tokens: 120, input_tokens: 100, output_tokens: 20, total_cost_usd: 1.5, models: { 'claude-opus-5-5': 1 }, cache: null,
+    total_tokens: 120, input_tokens: 100, output_tokens: 20, total_cost_usd: 1.5, successful_cost_usd: 1.5, failed_cost_usd: 0,
+    models: { 'claude-opus-5-5': 1 }, cache: null,
   });
   assert.equal((lastDay.body.tasks as { completed: number }).completed, 1);
   assert.deepEqual(lastDay.body.system, { repos_indexed: 1 });
-  assert.deepEqual(lastDay.body.model_usage, [{ model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 }]);
+  assert.deepEqual(lastDay.body.model_usage, [{ model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5, successful_cost_usd: 1.5, failed_cost_usd: 0, failed_runs: 0 }]);
 
   const week = await call(stats.getOverview, { period: '7d' });
   assert.equal((week.body.usage as { total_tokens: number }).total_tokens, 1320);
@@ -320,9 +324,9 @@ test('every run reaches the Models table, so its runs sum to the delivery band a
   const overview = await call(stats.getOverview, { period: '7d' });
   // The unknown runs share one row, listed last, with no review figures of its own.
   assert.deepEqual(overview.body.model_usage, [
-    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
-    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 },
-    { model: null, runs: 2, tasks: 2, tokens: 15, cost_usd: 0.25 },
+    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5, successful_cost_usd: 0, failed_cost_usd: 0.5, failed_runs: 1 },
+    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5, successful_cost_usd: 1.5, failed_cost_usd: 0, failed_runs: 0 },
+    { model: null, runs: 2, tasks: 2, tokens: 15, cost_usd: 0.25, successful_cost_usd: 0.25, failed_cost_usd: 0, failed_runs: 0 },
   ]);
   const modelRuns = (overview.body.model_usage as Array<{ runs: number }>).reduce((sum, row) => sum + row.runs, 0);
   assert.equal((overview.body.runs as { total: number }).total, modelRuns);
@@ -359,9 +363,9 @@ test('token figures use each run\'s cache-inclusive totals and fall back to step
 
   const overview = await call(stats.getOverview, { period: '7d' });
   assert.deepEqual(overview.body.model_usage, [
-    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 3_020_000, cost_usd: 1.5 },
+    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 3_020_000, cost_usd: 1.5, successful_cost_usd: 1.5, failed_cost_usd: 0, failed_runs: 0 },
     // No recorded totals: the run's step details stand in.
-    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
+    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5, successful_cost_usd: 0, failed_cost_usd: 0.5, failed_runs: 1 },
   ]);
   const usage = overview.body.usage as { total_tokens: number; input_tokens: number; output_tokens: number };
   assert.deepEqual(
