@@ -412,9 +412,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
   ];
 }
 
-export function createMemberCatalogRouteEntries({
-  instanceCatalogRoutes,
-}: MemberCatalogRouteDeps): RouteEntry[] {
+export function createMemberCatalogRouteEntries({ instanceCatalogRoutes }: MemberCatalogRouteDeps): RouteEntry[] {
   return [
     ['get', '/api/catalog', instanceCatalogRoutes.getLegacyCatalog],
     ['get', '/api/instance/catalog', instanceCatalogRoutes.getCatalog],
