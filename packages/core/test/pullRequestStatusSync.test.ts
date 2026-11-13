@@ -19,7 +19,7 @@ const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = a
 // A second instance of the lock module stands in for another process (daemon vs worker): it has its own in-process chains.
 const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
-const { isRecordedPullRequestStatusWrite, resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
+const { isRecordedPullRequestStatusWrite, recordPullRequestStatusWrite, resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
 const { classifyPullRequestStatusEdit, signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 const { resolveRepositoryPrTitleStatus } = await import('../src/config/repositoryPrTitleStatusSetting.js');
@@ -431,6 +431,67 @@ test('a block the status update removed is ProPR\'s own edit; one a person remov
         assert.deepEqual(await processWebhookEvent(editedWebhook(withBlock, 'propr[bot]'), 'pull_request', 'corr-1'), { status: 'ignored', reason: 'pull_request_status_edit' });
         assert.deepEqual(signalled, []);
     });
+});
+
+test('after close and reopen, a person deleting the restored block gets it reconciled', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    const withBlock = github.pull.body;
+    github.pull.state = 'closed';
+    assert.equal(await sync(), 'removed', 'the removal is recorded as a write');
+    github.pull.state = 'open';
+    clock = new Date('2026-11-13T09:05:00Z');
+    assert.equal(await sync(), 'updated', 'the reopened pull request gets its block back');
+    const restored = github.pull.body;
+    github.pull.body = HUMAN_BODY;
+    await asWebhookProcess(async signalled => {
+        // The earlier removal must not vouch for this deletion; seen through Redis alone as well.
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(restored), 'pull_request'), 'foreign');
+        resetPullRequestStatusProvenanceForTests();
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(restored), 'pull_request'), 'foreign');
+        assert.deepEqual(await processWebhookEvent(editedWebhook(restored), 'pull_request', 'corr-1'),
+            { status: 'accepted', reason: 'pull_request_status_block_edited', billing: { seatConsumed: false } });
+        assert.deepEqual(signalled, [[REPOSITORY, PR]]);
+    });
+    assert.notEqual(withBlock, restored);
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /✅ Ready/);
+    assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+});
+
+test('a person putting back an earlier block ProPR wrote gets the current status reconciled', async () => {
+    const review = await addTask('issue', 'processing');
+    await sync();
+    const earlier = github.pull.body;
+    assert.doesNotMatch(statusLine(), /✅ Ready/);
+    await setTaskState(review, 'completed');
+    clock = new Date('2026-11-13T09:05:00Z');
+    assert.equal(await sync(), 'updated');
+    const current = github.pull.body;
+    assert.match(statusLine(), /✅ Ready/);
+    github.pull.body = earlier;
+    await asWebhookProcess(async signalled => {
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(current), 'pull_request'), 'foreign');
+        resetPullRequestStatusProvenanceForTests();
+        assert.equal(await classifyPullRequestStatusEdit(editedWebhook(current), 'pull_request'), 'foreign');
+        await processWebhookEvent(editedWebhook(current), 'pull_request', 'corr-1');
+        assert.deepEqual(signalled, [[REPOSITORY, PR]], 'the outdated status is not left standing');
+    });
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /✅ Ready/);
+});
+
+/** Records, in this process only, that ProPR left the block of `body` (none here). */
+async function recordWriteFor(body: string): Promise<void> {
+    await recordPullRequestStatusWrite(null, REPOSITORY, PR, extractPullRequestStatusBlock(body));
+}
+
+test('a recorded write stops counting once it expires, in this process too', async (context) => {
+    context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-13T09:00:00Z') });
+    await recordWriteFor(HUMAN_BODY);
+    assert.equal(await isRecordedPullRequestStatusWrite(null, REPOSITORY, PR, HUMAN_BODY), true);
+    context.mock.timers.tick(6 * 60 * 60 * 1000);
+    assert.equal(await isRecordedPullRequestStatusWrite(null, REPOSITORY, PR, HUMAN_BODY), false);
 });
 
 test('the write is recorded before the PATCH, and a browser edit of the same block still matches', async () => {
