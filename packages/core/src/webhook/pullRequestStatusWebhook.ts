@@ -1,4 +1,4 @@
-import { isRescueRef } from '../git/rescueRefs.js';
+import { isRescueRef } from '../git/rescueRefPrefix.js';
 import { isStatusBlockOnlyEdit } from '../services/pullRequestStatus/pullRequestStatusBlock.js';
 import {
     requestPullRequestStatusSync, requestPullRequestStatusSyncForBase, requestPullRequestStatusSyncForCommit,
