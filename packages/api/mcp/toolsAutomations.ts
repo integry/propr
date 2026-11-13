@@ -133,7 +133,8 @@ function definitionSummary(definition: StoredAgentDefinition) {
     repositories: definition.repositories, agentAlias: definition.agentAlias, modelName: definition.modelName,
     capabilities: definition.capabilities, autonomyMode: definition.autonomyMode, enabled: definition.enabled,
     scheduleCron: definition.scheduleCron, scheduleTimezone: definition.scheduleTimezone,
-    scheduleEnabled: definition.scheduleEnabled, nextRunAt: definition.nextRunAt, updatedAt: definition.updatedAt,
+    scheduleEnabled: definition.scheduleEnabled, nextRunAt: definition.nextRunAt, eventTriggers: definition.eventTriggers,
+    updatedAt: definition.updatedAt,
   };
 }
 
@@ -215,7 +216,7 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
   const definitionShape = { definitionId: idSchema };
   const runShape = { runId: idSchema };
 
-  tools.push({ name: 'list_automation_definitions', description: `List your saved automations (reusable definitions that run on demand or on a schedule), most recently updated first. ${DEFINITION_NOTE} Only automations whose every repository this grant can access are listed; filter to one repository with repository.`, scope: 'read', readOnly: true,
+  tools.push({ name: 'list_automation_definitions', description: `List your saved automations (reusable definitions that run on demand, on a schedule or on a subscribed event), most recently updated first. ${DEFINITION_NOTE} Only automations whose every repository this grant can access are listed; filter to one repository with repository.`, scope: 'read', readOnly: true,
     schema: z.object({ repository: repositorySchema.optional().describe('Only automations that include this repository.'),
       offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(50).default(20) }).strict(),
     run: async ({ principal, args }) => {
@@ -236,16 +237,16 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
         nextOffset: matching.length > args.offset + args.limit ? args.offset + args.limit : null });
     } });
 
-  tools.push({ name: 'get_automation_definition', description: `Read one of your automations in full: prompt, repositories, agent and model, capabilities, autonomy mode, schedule and next scheduled run, and input file metadata. ${DEFINITION_NOTE}`, scope: 'read', readOnly: true,
+  tools.push({ name: 'get_automation_definition', description: `Read one of your automations in full: prompt, repositories, agent and model, capabilities, autonomy mode, schedule and next scheduled run, event triggers, and input file metadata. ${DEFINITION_NOTE}`, scope: 'read', readOnly: true,
     schema: z.object(definitionShape).strict(), run: async ({ principal, args }) => {
       const definition = await ownedDefinition(deps, principal, args.definitionId, false);
       return ok({ definition: publicAutomationDefinition(definition), url: `${frontendUrl(deps)}/automations/${encodeURIComponent(definition.id)}` });
     } });
 
-  tools.push({ name: 'get_automation_definition_contract', description: 'Read the automation definition contract shared by the API, MCP, UI and CLI: capabilities, autonomy modes, run triggers and states, field limits and schedule rules.', scope: 'read', readOnly: true,
+  tools.push({ name: 'get_automation_definition_contract', description: 'Read the automation definition contract shared by the API, MCP, UI and CLI: capabilities, autonomy modes, run triggers and states, event triggers (events, reason kinds, the per-issue run bound), field limits and schedule rules.', scope: 'read', readOnly: true,
     schema: z.object({}).strict(), run: async () => ok(AUTOMATION_DEFINITION_CONTRACT) });
 
-  tools.push({ name: 'list_automation_runs', description: 'List the runs of one of your automations newest first: trigger, state, timing and skip or failure reasons. Report bodies are omitted; read one with get_automation_run.', scope: 'read', readOnly: true,
+  tools.push({ name: 'list_automation_runs', description: 'List the runs of one of your automations newest first: trigger (with triggerEvent, the event that started an event run), state, timing and skip or failure reasons. Report bodies are omitted; read one with get_automation_run.', scope: 'read', readOnly: true,
     schema: z.object({ ...definitionShape, offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) }).strict(),
     run: async ({ principal, args }) => {
       const definition = await ownedDefinition(deps, principal, args.definitionId, false);

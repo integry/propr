@@ -36,6 +36,7 @@ import {
     type TriggerAgentRunInput,
     type TriggerAgentRunResult,
 } from '@propr/core';
+import { runAgentEventTriggerSweep } from './agentRunEventTriggers.js';
 import { revokeAgentRunMcpGrant } from './jobs/agentRuns/mcpGrantClient.js';
 import type { AgentRunPhase } from './jobs/agentRuns/toolPolicy.js';
 
@@ -51,6 +52,8 @@ import type { AgentRunPhase } from './jobs/agentRuns/toolPolicy.js';
  *   run's idempotency key `schedule:<slot ISO>` makes a replay of the same slot
  *   return the same run. Missed slots coalesce into one run for the latest
  *   due slot.
+ * - event triggers: starts runs for durable events (an epic queue issue became blocked)
+ *   that subscribed definitions match; see `agentRunEventTriggers.ts`.
  * - deferred retry: re-evaluates deferred runs through the cost gate.
  * - stuck runs: fails `running`/`acting` runs whose task ended long ago, i.e.
  *   the worker stopped before recording the result.
@@ -526,7 +529,7 @@ function serializedTick(name: string, task: () => Promise<unknown>): { tick: () 
 }
 
 /**
- * Starts the agent run sweeps: schedule, deferred retry and stuck-run
+ * Starts the agent run sweeps: schedule, event triggers, deferred retry and stuck-run
  * recovery every `intervalMs`, grant cleanup every ten minutes. Each runs once
  * immediately. Returns a function that clears the intervals and waits for
  * in-flight sweeps.
@@ -544,6 +547,7 @@ export function scheduleAgentRunSweeps(
     const runs = serializedTick('Agent run sweep', async () => {
         const steps: Array<[string, () => Promise<unknown>]> = [
             ['schedule', () => runAgentScheduleSweep(sweepDeps)],
+            ['event triggers', () => runAgentEventTriggerSweep({ ...sweepDeps, isMember: sweepDeps.isMember ?? (owner => isAgentOwnerInstanceMember(owner, sweepDeps.database)) })],
             ['deferred retry', () => runDeferredAgentRunRetrySweep(sweepDeps)],
             ['stuck run recovery', () => recoverStuckAgentRuns(sweepDeps)],
         ];

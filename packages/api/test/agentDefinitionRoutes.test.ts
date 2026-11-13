@@ -315,10 +315,48 @@ describe('automation definition routes', () => {
     const cli = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger: 'cli' } }));
     assert.equal(cli.body.run.trigger, 'cli');
 
-    for (const trigger of ['schedule', 'mcp', 'bogus']) {
+    for (const trigger of ['schedule', 'mcp', 'event', 'bogus']) {
       const refused = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger } }));
       assert.equal(refused.status, 400);
     }
+  });
+
+  test('event triggers are opt-in, validated and never reach beyond the definition repositories', async () => {
+    const plain = await createDefinition('alice');
+    assert.deepEqual(plain.eventTriggers, []);
+
+    const subscribed = await createDefinition('alice', {
+      repositories: ['acme/app', 'acme/lib'],
+      eventTriggers: [{ event: 'plan.issue_blocked', repositories: ['acme/lib'], reasonKinds: ['agent_blocked'] }],
+    });
+    assert.deepEqual(subscribed.eventTriggers, [{ event: 'plan.issue_blocked', repositories: ['acme/lib'], reasonKinds: ['agent_blocked'] }]);
+    const cursor = await database('agent_definition_event_cursors').where({ definition_id: subscribed.id }).first();
+    assert.equal(cursor?.event, 'plan.issue_blocked');
+
+    const invalid: Array<[Record<string, unknown>, RegExp]> = [
+      [{ eventTriggers: [{ event: 'plan.issue_done' }] }, /event must be one of: plan.issue_blocked/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked', reasonKinds: ['tired'] }] }, /reasonKinds must be one of/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked' }, { event: 'plan.issue_blocked' }] }, /same event twice/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked', repositories: ['acme/other'] }] }, /must be repositories of the automation: acme\/other/],
+      [{ repositories: [], eventTriggers: [{ event: 'plan.issue_blocked' }] }, /must name the repositories/],
+    ];
+    for (const [body, message] of invalid) {
+      const created = await call(routes.create, request('alice', { body: { name: 'Recover', prompt: 'Unblock', repositories: ['acme/app'], ...body } }));
+      assert.equal(created.status, 400, JSON.stringify(body));
+      assert.match(created.body.error, message);
+    }
+
+    // An update cannot drop a repository the trigger is limited to, nor subscribe without repositories.
+    const narrowed = await call(routes.update, request('alice', { params: { id: subscribed.id }, body: { repositories: ['acme/app'] } }));
+    assert.equal(narrowed.status, 400);
+    assert.match(narrowed.body.error, /acme\/lib/);
+    const cleared = await call(routes.update, request('alice', { params: { id: plain.id }, body: { repositories: [], eventTriggers: [{ event: 'plan.issue_blocked' }] } }));
+    assert.equal(cleared.status, 400);
+    const opted = await call(routes.update, request('alice', { params: { id: plain.id }, body: { eventTriggers: [{ event: 'plan.issue_blocked' }] } }));
+    assert.equal(opted.status, 200, JSON.stringify(opted.body));
+    assert.deepEqual(opted.body.definition.eventTriggers, [{ event: 'plan.issue_blocked', repositories: [], reasonKinds: [] }]);
+    assert.deepEqual(AUTOMATION_DEFINITION_CONTRACT.eventTriggers.events, ['plan.issue_blocked']);
+    assert.ok((AUTOMATION_DEFINITION_CONTRACT.runTriggers as readonly string[]).includes('event'));
   });
 
   test('the trigger applies the cost gate and records a held run without enqueueing', async () => {

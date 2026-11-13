@@ -112,13 +112,17 @@ currently accepts text instructions; file uploads remain available in the UI.
 
 ## Automations
 
-Automations are saved, reusable definitions that run on demand or on a schedule and
-produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
+Automations are saved, reusable definitions that run on demand, on a schedule or on a
+subscribed event and produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
 `repository` filter) and `get_automation_definition` show your automations, including the
-schedule, next run, capabilities and autonomy mode;
-`get_automation_definition_contract` returns the shared field contract.
+schedule, next run, `eventTriggers`, capabilities and autonomy mode;
+`get_automation_definition_contract` returns the shared field contract, including
+`runTriggers` (with `event`) and `eventTriggers` (the events, here `plan.issue_blocked`,
+their reason kinds and `maxRunsPerIssue`, the loop bound of 3 runs per issue of a plan).
 `list_automation_runs` lists a definition's runs newest first without report bodies,
-and `get_automation_run` returns one run with its report. A report over 200 KB is
+and `get_automation_run` returns one run with its report. A run started by an event has
+`trigger: "event"` and `triggerEvent`: the repository, plan, execution, issue number,
+reason kind and text, and links to the plan and the issue. A report over 200 KB is
 truncated with `reportTruncated: true`; the full report is at the run's `url`.
 
 With execute scope, `trigger_automation_run` starts a run now:

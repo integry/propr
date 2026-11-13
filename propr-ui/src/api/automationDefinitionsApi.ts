@@ -2,7 +2,9 @@ import type {
   AutomationAutonomyMode,
   AutomationCapability,
   AutomationDefinitionInput,
+  AutomationEventTrigger,
   AutomationRunState,
+  AutomationTriggerEvent,
   AutomationRunTrigger,
   AUTOMATION_DEFINITION_CONTRACT,
   AttributedUser,
@@ -43,6 +45,8 @@ export interface AutomationDefinitionRecord {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Event subscriptions; empty means the automation reacts to no event. */
+  eventTriggers?: AutomationEventTrigger[];
   enabled: boolean;
   /** Optimistic concurrency token; send it back as `expectedRevision`. */
   revision: number;
@@ -58,6 +62,8 @@ export interface AutomationRunRecord {
   ownerId: string;
   trigger: AutomationRunTrigger;
   triggerSource: string | null;
+  /** For an `event` run: the event that started it. */
+  triggerEvent?: AutomationTriggerEvent | null;
   idempotencyKey: string | null;
   state: AutomationRunState;
   autonomyMode: AutomationAutonomyMode;

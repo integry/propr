@@ -288,7 +288,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             if (stopped) return stopped;
             mcpGrant = await deps.mcpGrants.request(runId, 'action');
             const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
-            const prompt = deps.buildPrompt({ definition, run: { id: runId }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
+            const prompt = deps.buildPrompt({ definition, run: { id: runId, triggerEvent: run.triggerEvent }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },

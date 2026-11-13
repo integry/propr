@@ -4,6 +4,7 @@ import {
   type AutomationAutonomyMode,
   type AutomationCapability,
   type AutomationDefinitionInput,
+  type PlanIssueBlockedReasonKind,
 } from '@propr/shared';
 import type { AutomationDefinitionRecord } from '../../api/automationDefinitionsApi';
 
@@ -22,6 +23,10 @@ export interface AgentEditorForm {
   schedule: string;
   scheduleEnabled: boolean;
   autonomy: AutomationAutonomyMode;
+  /** The `plan.issue_blocked` event trigger and its filters (empty: no filter). */
+  blockedTrigger: boolean;
+  blockedTriggerRepositories: string[];
+  blockedTriggerReasonKinds: PlanIssueBlockedReasonKind[];
 }
 
 export type AgentEditorFormPatch = Partial<AgentEditorForm>;
@@ -38,7 +43,13 @@ export const emptyAgentForm = (): AgentEditorForm => ({
   schedule: '',
   scheduleEnabled: false,
   autonomy: DEFAULT_AUTOMATION_AUTONOMY_MODE,
+  blockedTrigger: false,
+  blockedTriggerRepositories: [],
+  blockedTriggerReasonKinds: [],
 });
+
+const blockedTriggerOf = (definition: AutomationDefinitionRecord) =>
+  (definition.eventTriggers ?? []).find(trigger => trigger.event === 'plan.issue_blocked');
 
 export const formFromDefinition = (definition: AutomationDefinitionRecord): AgentEditorForm => ({
   extensionProfile: definition.extensionProfile,
@@ -53,6 +64,9 @@ export const formFromDefinition = (definition: AutomationDefinitionRecord): Agen
   schedule: definition.scheduleCron ?? '',
   scheduleEnabled: definition.scheduleEnabled && Boolean(definition.scheduleCron),
   autonomy: definition.autonomyMode,
+  blockedTrigger: Boolean(blockedTriggerOf(definition)),
+  blockedTriggerRepositories: [...(blockedTriggerOf(definition)?.repositories ?? [])],
+  blockedTriggerReasonKinds: [...(blockedTriggerOf(definition)?.reasonKinds ?? [])],
 });
 
 /** The request body for a create or a full-form update, in the shared input contract. */
@@ -68,4 +82,11 @@ export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput =>
   agentId: form.agentId,
   model: form.agentId ? form.model : null,
   previousReportCount: form.previousReportCount,
+  // The repository filter never reaches beyond the automation's own repositories.
+  eventTriggers: form.blockedTrigger ? [{
+    event: 'plan.issue_blocked',
+    repositories: form.blockedTriggerRepositories.filter(repository =>
+      form.repositories.some(candidate => candidate.toLowerCase() === repository.toLowerCase())),
+    reasonKinds: form.blockedTriggerReasonKinds,
+  }] : [],
 });

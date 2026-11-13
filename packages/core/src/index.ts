@@ -652,6 +652,7 @@ export * from './services/agents/agentRunReports.js';
 export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
+export * from './services/agents/agentEventTriggerStore.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/taskPlanning/epicQueueActions.js';

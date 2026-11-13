@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
-import { agentSupportsSavedModel, agentTypeSupportsProprMcp, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
+import { agentSupportsSavedModel, agentTypeSupportsProprMcp, type AutomationRunTrigger, type AutomationTriggerEvent, type SyntheticAgentConfig } from '@propr/shared';
 import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
@@ -102,6 +102,9 @@ export interface TriggerAgentRunInput {
   triggerSource?: string | null;
   /** Replays with the same key return the existing run without enqueueing again. */
   idempotencyKey?: string | null;
+  /** For an `event` run: the event handed to the run and the subject (issue) it concerns. */
+  triggerEvent?: AutomationTriggerEvent | null;
+  triggerSubject?: string | null;
   gate?: AgentRunGate;
   /**
    * Leave the receipt `queued` when its report phase cannot be enqueued, for a
@@ -314,7 +317,7 @@ export async function validateAgentDefinitionRuntime(
  * `keepQueuedOnEnqueueFailure`) and the error is rethrown.
  */
 export async function triggerAgentRun(
-  { definition, trigger, triggerSource = null, idempotencyKey = null, gate, keepQueuedOnEnqueueFailure = false }: TriggerAgentRunInput,
+  { definition, trigger, triggerSource = null, idempotencyKey = null, gate, keepQueuedOnEnqueueFailure = false, ...event }: TriggerAgentRunInput,
   deps: AgentRunTriggerDependencies = {},
 ): Promise<TriggerAgentRunResult> {
   const storeDeps = { database: deps.database, now: deps.now };
@@ -331,7 +334,8 @@ export async function triggerAgentRun(
 
   const admit = gate ?? defaultCostGate(deps);
   const decision = (await admit({ definition, trigger, triggerSource })) ?? { action: 'proceed' as const };
-  const base = { definition, trigger, triggerSource, idempotencyKey };
+  // `event`: the triggering event and its subject, for an `event` run.
+  const base = { definition, trigger, triggerSource, idempotencyKey, ...event };
   const { run, created } = decision.action === 'skip'
     ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)
     : decision.action === 'defer'

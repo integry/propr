@@ -10,7 +10,14 @@ export const RUN_TRIGGER_LABELS: Record<AutomationRunTrigger, string> = {
   api: 'API',
   mcp: 'MCP',
   cli: 'CLI',
+  event: 'Event',
 };
+
+/** `Issue #12 blocked` for a run a blocked epic issue started; the trigger label otherwise. */
+export const runTriggerLabel = (run: Pick<AutomationRunRecord, 'trigger' | 'triggerEvent'>): string =>
+  run.trigger === 'event' && run.triggerEvent?.type === 'plan.issue_blocked'
+    ? `Issue #${run.triggerEvent.issueNumber} blocked`
+    : RUN_TRIGGER_LABELS[run.trigger];
 
 /** States a run can still be cancelled from. */
 export const CANCELLABLE_RUN_STATES: readonly AutomationRunState[] = ['queued', 'deferred', 'running', 'awaiting_approval', 'acting'];

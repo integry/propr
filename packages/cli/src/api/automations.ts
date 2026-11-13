@@ -10,7 +10,7 @@
  * {@link GoalMutationUncertainError} with the key needed to retry safely.
  */
 
-import type { AutomationAutonomyMode, AutomationCapability, AutomationRunState, AutomationRunTrigger } from "@propr/shared";
+import type { AutomationAutonomyMode, AutomationCapability, AutomationEventTrigger, AutomationRunState, AutomationRunTrigger, AutomationTriggerEvent } from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { mutate } from "./goals.js";
 
@@ -42,6 +42,8 @@ export interface Automation {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Event subscriptions; absent from servers that predate event triggers. */
+  eventTriggers?: AutomationEventTrigger[];
   enabled: boolean;
   revision: number;
   createdAt: number;
@@ -55,6 +57,8 @@ export interface AutomationRun {
   ownerId: string;
   trigger: AutomationRunTrigger;
   triggerSource: string | null;
+  /** For an `event` run: the event that started it. */
+  triggerEvent?: AutomationTriggerEvent | null;
   idempotencyKey: string | null;
   state: AutomationRunState;
   autonomyMode: AutomationAutonomyMode;

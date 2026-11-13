@@ -13,7 +13,7 @@ The UI, REST API, MCP tools and shared contract call these **Automations**. **Co
 
 Every run follows the same path:
 
-1. **Definition.** A name, a prompt with optional input files, repositories, an agent and model, capabilities, an optional schedule and an autonomy mode.
+1. **Definition.** A name, a prompt with optional input files, repositories, an agent and model, capabilities, an optional schedule, an optional [event trigger](#event-trigger) and an autonomy mode.
 2. **Isolated report run.** ProPR starts an ordinary task container for the run. The agent investigates and its final message becomes the report.
 3. **Free-form report.** Markdown stored with the run, shown on the **Automations** page and available over the API, MCP and CLI.
 4. **Optional acting step.** In `preview` or `auto` mode, a second, separate agent run reads the report and acts on it through ProPR's MCP tools (see [Acting on a report](#acting-on-a-report)).
@@ -21,7 +21,7 @@ Every run follows the same path:
 What an Automation is **not**:
 
 - **Not a new engine.** Report and acting runs are ordinary ProPR task executions with the same containers, spend caps, watchdog, logs and LLM Log entries as any other task.
-- **Not an event watcher.** v1 has no built-in event triggers: it does not watch labels, issues, pushes or webhooks. Use the schedule, or call the [trigger](#triggers) from your own automation (a GitHub Actions workflow, a webhook relay or a crontab).
+- **Not a general event watcher.** The only built-in event is an [epic queue issue becoming blocked](#event-trigger). Automations do not watch labels, issues, pushes or webhooks. For those, use the schedule, or call the [trigger](#triggers) from your own automation (a GitHub Actions workflow, a webhook relay or a crontab).
 - **Not structured actions.** ProPR never parses a report for actions. A report is text for a human. Acting on it is a separate agent run with a fixed tool set.
 
 Automations are personal: every definition and run belongs to the user who created it. Another user's automation reads as "not found" on every surface.
@@ -87,6 +87,30 @@ The rules:
 
 Setting **Schedule** back to **Off** stops scheduled runs; the automation can still be triggered. A definition disabled through the API (`"enabled": false` on `PATCH /api/automation-definitions/:id`) also refuses every trigger with `AGENT_DISABLED`. Neither deletes the definition or its history.
 
+### Event trigger
+
+**Event trigger** is off by default, and no automation reacts to an event unless you turn it on. Set it to **Plan issue blocked** to run the automation once each time an issue in an [epic plan's execution queue](./planning.md) becomes blocked, for example to start Ultrafix, create a replacement task or escalate instead of leaving the queue stopped.
+
+- The automation must name its repositories. It only reacts to plans in those repositories. You can limit it further to some of them, and to some blocker reasons (`closed_unmerged`, `missing_from_plan`, `dispatch_failed`, `agent_blocked`, `awaiting_human_merge`, `label_handoff`, `setup_not_ready`). Nothing checked means all of them.
+- **One run per event.** Each blocked event starts at most one run of each subscribed automation, including after a restart or a repeated delivery. The daemon reads the durable blocked-event log with a cursor per automation, about once a minute.
+- **No backlog.** Events from before you subscribed, and events from while the automation was disabled, are never run later.
+- **The event is the run's input.** The report step and the acting step get the event as data: `repository`, `planId` and `planName`, `executionId`, `issueNumber`, `reasonKind` and `reason`, `planUrl` and `issueUrl`, `eventId` and `occurredAt`. The run detail and `propr automation runs` show which event started a run.
+- **Unattended, like a schedule.** An event run is [cost-gated](#cost-control) and uses the automation's autonomy mode, capabilities and grants. An event never widens what the automation may do: a `dry_run` automation still only reports, and a `preview` one still waits for your approval.
+- **Loop protection.** An automation runs at most **3 times for the same issue of the same plan**. If its own actions keep blocking that issue again, later blocked events for it are recorded as `skipped` runs with the reason "loop protection", and nothing else starts.
+
+A minimal recovery automation, as the `POST /api/automation-definitions` body:
+
+```json
+{
+  "name": "Recover blocked epic issues",
+  "prompt": "An epic queue issue is blocked; the trigger event has the details. Read the issue and the blocker reason. If a fresh attempt is likely to succeed, recommend a replacement task with a sharper description; otherwise recommend escalating to a person and explain why.",
+  "repositories": ["acme/app"],
+  "capabilities": ["repository_read", "propr_mcp"],
+  "autonomy": "preview",
+  "eventTriggers": [{ "event": "plan.issue_blocked", "reasonKinds": ["agent_blocked", "dispatch_failed"] }]
+}
+```
+
 ### Autonomy
 
 The autonomy mode decides what happens after the report is stored:
@@ -110,6 +134,7 @@ Every run goes through one trigger primitive, whatever started it. The run histo
 | `api` | `POST /api/automation-definitions/:id/runs` from a script or service | Yes |
 | `cli` | `propr automation run` | Yes |
 | `mcp` | The MCP tool `trigger_automation_run` | Yes |
+| `event` | The daemon, from a subscribed [event](#event-trigger); the run records the event | Yes |
 
 All non-UI triggers take an **idempotency key**. The same key for the same automation always returns the first run (`created: false`) instead of starting another one, so retries are safe. Use a value that identifies the event, such as the CI run id or the date, not a random value generated on every attempt.
 
@@ -245,7 +270,7 @@ Only one autonomy mode applies to every action. Per-action-kind autonomy (for ex
 
 ## Cost control
 
-Unattended runs (`schedule`, `api`, `cli`, `mcp`) start while nobody is watching. Before one is queued, before a deferred run is retried and before an `auto` acting step starts, ProPR compares the provider's subscription usage from [Agent Tank](../operations/agent-tank.md) with the instance's **pause threshold**.
+Unattended runs (`schedule`, `event`, `api`, `cli`, `mcp`) start while nobody is watching. Before one is queued, before a deferred run is retried and before an `auto` acting step starts, ProPR compares the provider's subscription usage from [Agent Tank](../operations/agent-tank.md) with the instance's **pause threshold**.
 
 The threshold is the instance setting `agent_run_usage_pause_percent` (50–100, default 90). Change it with `propr setting update agent_run_usage_pause_percent 80` or MCP `update_execution_settings`. It is not in the Settings UI in v1.
 
@@ -275,7 +300,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 | `acting` | The acting step is running |
 | `completed` | Finished: the report, and the acting step if any, are done |
 | `failed` | The report or acting run failed; see the reason |
-| `skipped` | Never ran: cost gate, disabled automation or schedule, or offboarded owner; see the reason |
+| `skipped` | Never ran: cost gate, disabled automation or schedule, offboarded owner, or the event trigger's loop protection; see the reason |
 | `rejected` | A `preview` run was rejected; the report is kept |
 | `cancelled` | Cancelled by you |
 
@@ -284,6 +309,8 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 ## Troubleshooting
 
 - **A run is `skipped` or `deferred`.** Read the reason on the run. Usage reasons come from the [cost gate](#cost-control): wait for the window to reset, raise `agent_run_usage_pause_percent`, or use **Run now**. "The scheduled run was skipped: Automation is disabled" or "the schedule was turned off" means the definition changed after the slot was claimed.
+- **An event run is `skipped` with "loop protection".** The automation already ran 3 times for that issue of that plan. Resolve the issue by hand, or retry or skip it from Planner Studio.
+- **A blocked issue started no run.** Check that the automation is enabled, that the event trigger is on, that the plan's repository is one of the automation's (and of the trigger's filter), and that the blocker reason is allowed by the filter. Events from while the automation was disabled are not run later.
 - **`GITHUB_AUTHORIZATION_REQUIRED`.** A run with `propr_mcp`, or an acting step, failed with "ProPR MCP grant request failed (GITHUB_AUTHORIZATION_REQUIRED): The agent owner must sign in to ProPR to authorize GitHub access." The owner's stored GitHub authorization is missing or expired. Sign in to the Web UI again, then trigger a new run.
 - **`MCP_DISABLED`.** The grant request failed because ProPR's MCP server is not enabled on this instance. An administrator enables it under **Settings → Integrations & MCP → MCP Server** (see [MCP](./mcp.md)). Until then, use `dry_run` automations without `propr_mcp`.
 - **`SYSTEM_TASK_SECRET_MISSING` or "ProPR API unreachable".** The worker could not request the grant. `SYSTEM_TASK_SECRET` must be set, and identical, on the API and worker. The worker must reach the API at `PROPR_INTERNAL_API_URL` (default `http://api:4000`). Agent containers must reach the MCP endpoint at `PROPR_AGENT_MCP_URL`. See [execution safety](./execution-safety.md#agent-runs).
@@ -299,7 +326,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 
 ## Deferred beyond v1
 
-- Built-in event triggers (label watching, issue or PR events, push webhooks). Call the trigger from your own automation instead.
+- Other built-in event triggers (label watching, issue or PR events, push webhooks), and goals reacting to plan events. Call the trigger from your own automation instead.
 - Per-action-kind autonomy.
 - Schedule time zones (schedules are UTC).
 - Structured or typed actions parsed from reports.
