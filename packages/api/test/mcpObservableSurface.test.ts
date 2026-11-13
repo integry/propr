@@ -328,6 +328,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'plan_item_id', 'depends_on_issues',
     // Statuses of the blocked-by links publish_plan records in dependencyLinks.
     'existing',
+    // Epic execution modes and the per-issue schedule states reported in epicQueue.
+    'sequential', 'parallel', 'graph', 'schedule', 'waiting', 'ready', 'in_flight', 'done', 'blocked',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
   ]);
