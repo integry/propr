@@ -212,6 +212,32 @@ test('deferred jobs count only waiters whose queue job is still delayed', integr
     } finally { await queue.close(); }
 });
 
+test('a deferred-job lookup that fails after discovery reports admission unavailable, not zero deferred', integration(), async () => {
+    // Each failure is a real Redis error on the lookup's own command (WRONGTYPE),
+    // raised after the waiters list was read: first `getJob`, then `isDelayed`.
+    for (const broken of ['job', 'delayed'] as const) {
+        const name = instance(`deferred-unreadable-${broken}`);
+        const config: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { local: 1 } };
+        const queueName = `snapshot-unreadable-${broken}-${run}`;
+        queues.push(queueName);
+        const queue = new Queue(queueName, { connection: client() });
+        try {
+            await queue.add('job', { agentCapacityDeferrals: 1, agentCapacityAliases: ['local'] }, { jobId: 'pending', delay: 60_000 });
+            await registerAgentCapacityWaiter(['local'], JSON.stringify([queueName, 'pending']), 1, { client: client(), config });
+            assert.equal(agentOf(await snapshot(config), 'local').deferred, 1, 'readable before the failure');
+
+            const key = broken === 'job' ? queue.toKey('pending') : queue.keys.delayed;
+            await client().del(key);
+            await client().set(key, 'not a hash or sorted set');
+            const report = await snapshot(config);
+            assert.equal(report.unavailable, 'Admission state could not be read from Redis', `${broken}: a failed lookup is unavailable state`);
+            assert.equal(report.global, undefined, `${broken}: no definitive global deferred count`);
+            assert.deepEqual(report.agents, [], `${broken}: no definitive per-agent deferred count`);
+            assert.equal(report.enabled, true);
+        } finally { await queue.close(); }
+    }
+});
+
 test('removing a ceiling keeps its still-delayed jobs in the report until their backoff passes', integration(), async () => {
     const name = instance('removed-ceiling');
     const capped: AdmissionConfig = { instance: name, limit: 2, aliasLimits: { local: 1, cloud: 1 } };

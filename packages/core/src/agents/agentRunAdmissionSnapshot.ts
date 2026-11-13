@@ -280,17 +280,14 @@ async function deferredWaiters(client: Redis, config: AdmissionConfig, prefix: s
         if (!found) queues.set(name, found = new Queue(name, { connection: client, ...(prefix ? { prefix } : {}) }));
         return found;
     };
+    // A missing or non-delayed job is absent; a failed read propagates, so the
+    // report says admission state is unavailable instead of counting it as zero.
     const isDelayed = async (waiter: string, alias: string): Promise<boolean> => {
         const target = waiterJob(waiter);
         if (!target) return false;
-        try {
-            const job = await queue(target[0]).getJob(target[1]);
-            // Same rule as the wakeup: a stored refusal naming only other aliases no longer waits for this one.
-            return Boolean(job && !job.finishedOn && jobWaitsForAgentCapacity(job.data, alias) && await job.isDelayed());
-        } catch (error) {
-            logger.debug({ error: (error as Error).message }, 'Could not read a deferred agent capacity waiter');
-            return false;
-        }
+        const job = await queue(target[0]).getJob(target[1]);
+        // Same rule as the wakeup: a stored refusal naming only other aliases no longer waits for this one.
+        return Boolean(job && !job.finishedOn && jobWaitsForAgentCapacity(job.data, alias) && await job.isDelayed());
     };
     const configured = Object.keys(config.aliasLimits ?? {});
     const result = new Map<string, string[]>();
