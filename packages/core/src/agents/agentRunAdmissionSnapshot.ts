@@ -17,6 +17,7 @@ import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { agentAdmissionDetailsKey, agentAdmissionKeys, resolveAgentRunAdmission, type AdmissionConfig, type AgentAdmissionWaitReason } from './agentRunAdmission.js';
+import { admissionConfigurationState, type AgentAdmissionConfigurationState } from './agentRunAdmissionConfigState.js';
 import { AGENT_RUN_ALIAS_LIMITS_ENV } from './agentRunAliasLimits.js';
 import { agentCapacityWaitersPrefix, jobWaitsForAgentCapacity } from './agentCapacity.js';
 import { AGENT_RUN_NESTED_LIMIT_ENV, DEFAULT_AGENT_RUN_NESTED_LIMIT } from './agentRunNesting.js';
@@ -33,8 +34,10 @@ export interface AgentAdmissionDetail {
 }
 
 
-// Reads holders, the unexpired waiting set and the details in one snapshot, by
-// Redis server time. Details of tokens that are neither holders nor waiting
+// Reads holders, the unexpired waiting set, the details and the stored
+// admission configuration ('' when absent) in one snapshot, by Redis server
+// time. The configuration is returned last so a missing one cannot shorten
+// the reply. Details of tokens that are neither holders nor waiting
 // (a process that died while waiting, or a holder released by another
 // process's recovery) are removed here: garbage only, never state admission reads.
 const SNAPSHOT_SCRIPT = `
@@ -43,6 +46,7 @@ local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local holders = redis.call('HGETALL', KEYS[1])
 local waiting = redis.call('ZRANGEBYSCORE', KEYS[2], '(' .. now, '+inf')
 local details = redis.call('HGETALL', KEYS[3])
+local config = redis.call('GET', KEYS[4]) or ''
 local known = {}
 for i=1,#holders,2 do known[holders[i]] = true end
 for _,member in ipairs(waiting) do known[member] = true end
@@ -54,7 +58,7 @@ for i=1,#details,2 do
     redis.call('HDEL', KEYS[3], details[i])
   end
 end
-return {tostring(now), holders, waiting, kept}
+return {tostring(now), holders, waiting, kept, config}
 `;
 
 export type AgentAdmissionHolderState = 'reserved' | 'running' | 'draining' | 'recovering';
@@ -108,9 +112,13 @@ export interface AgentRunAdmissionSnapshot {
     asOf: string;
     /** Present when admission is enabled. */
     global?: {
+        /** This process's configured limit (from `limitSource`); admission enforces it only while `configuration.admitting`. */
         limit: number;
         limitSource: 'PROPR_AGENT_RUN_LIMIT' | 'hosted_entitlement';
+        /** This process's configured generation (`PROPR_AGENT_RUN_GENERATION`, default 0). */
         generation: number;
+        /** The stored configuration admission compares `limit` and `generation` with, and whether it admits. */
+        configuration: AgentAdmissionConfigurationState;
         nestedLimit: number;
         nestedLimitSource: 'PROPR_AGENT_RUN_NESTED_LIMIT' | 'default';
         /** Top-level executions (each takes one global slot), by state. */
@@ -313,8 +321,10 @@ function globalSettings(config: AdmissionConfig, env: NodeJS.ProcessEnv) {
 }
 
 async function admissionPart(client: Redis, config: AdmissionConfig, env: NodeJS.ProcessEnv, prefix: string | undefined) {
-    const [holdersKey, , waitingKey] = agentAdmissionKeys(config.instance);
-    const [nowRaw, holdersFlat, waitingFlat, detailsFlat] = await client.eval(SNAPSHOT_SCRIPT, 3, holdersKey, waitingKey, agentAdmissionDetailsKey(config.instance)) as [string, string[], string[], string[]];
+    const [holdersKey, configKey, waitingKey] = agentAdmissionKeys(config.instance);
+    const [nowRaw, holdersFlat, waitingFlat, detailsFlat, storedConfig] = await client.eval(
+        SNAPSHOT_SCRIPT, 4, holdersKey, waitingKey, agentAdmissionDetailsKey(config.instance), configKey,
+    ) as [string, string[], string[], string[], string | null];
     const details = new Map(pairs(detailsFlat).map(([token, value]) => [token, parseJson<AgentAdmissionDetail>(value) ?? {}]));
     const tally = new AdmissionTally(config.aliasLimits ?? {}, Number(nowRaw), details);
     for (const [token, value] of pairs(holdersFlat)) {
@@ -328,8 +338,10 @@ async function admissionPart(client: Redis, config: AdmissionConfig, env: NodeJS
         for (const waiter of waiters) deferred.add(waiter);
     }
     const { holders, nested, waiting } = tally;
+    const settings = globalSettings(config, env);
+    const configuration = admissionConfigurationState(String(storedConfig ?? ''), settings, pairs(holdersFlat).length);
     return {
-        global: { ...globalSettings(config, env), inUse: holders.total, holders, unattributedHolders: tally.unattributed, nested, waiting, deferred: deferred.size },
+        global: { ...settings, configuration, inUse: holders.total, holders, unattributedHolders: tally.unattributed, nested, waiting, deferred: deferred.size },
         agents: [...tally.agents.values()].sort((left, right) => left.alias.localeCompare(right.alias)),
     };
 }

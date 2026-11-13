@@ -732,7 +732,10 @@ executions apart from those holders, launches waiting split by reason
 (`globalLimit`, `agentCeiling`, a recovering holder, or a first reply still
 pending) and queue jobs deferred until their agent has capacity. It also
 lists queue worker concurrency and repository workflow slots, each labelled.
-With admission off it says so and still returns those limits. Task IDs and repositories appear
+With admission off it says so and still returns those limits. `global.configuration`
+compares the stored limit and generation with the configured ones; when
+`admitting` is false (`mismatch` or `missing`) every launch is refused and the
+summary says so instead of showing free capacity. Task IDs and repositories appear
 only within the grant; tokens, container IDs and environment values never do.
 It is not subscription usage: provider quota comes from `get_provider_usage`
 and `get_provider_status`. See the operations guide "Agent-run capacity" for

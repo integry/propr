@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { closeConnection, type AgentRunAdmissionSnapshot } from '@propr/core';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
 import { McpError } from '../mcp/config.js';
+import { presentResult } from '../mcp/presentation.js';
 import { addAdmissionTools, AGENT_RUN_ADMISSION_TOOL } from '../mcp/toolsAdmission.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
@@ -20,7 +21,8 @@ function enabledSnapshot(): AgentRunAdmissionSnapshot {
   return {
     enabled: true, asOf: '2026-11-13T10:00:00.000Z', agentCeilingsConfigured: true,
     global: {
-      limit: 2, limitSource: 'PROPR_AGENT_RUN_LIMIT', generation: 0, nestedLimit: 4, nestedLimitSource: 'default',
+      limit: 2, limitSource: 'PROPR_AGENT_RUN_LIMIT', generation: 0, configuration: { status: 'current', admitting: true, stored: { limit: 2, generation: 0 } },
+      nestedLimit: 4, nestedLimitSource: 'default',
       inUse: 2, holders: counts(2), unattributedHolders: 0, nested: { total: 0, chargedUnderParent: 0, countedAgainstOtherAgent: 0 },
       waiting: { total: 1, globalLimit: 0, agentCeiling: 1, recovering: 0, starting: 0 }, deferred: 1,
     },
@@ -159,4 +161,31 @@ test('MCP shows task IDs and repositories only within the grant the policy allow
   const hidden = (await tool.run({ principal: narrow, args: {} } as never)).data as Report;
   assert.deepEqual(hidden.agents.flatMap(agent => agent.tasks), []);
   assert.equal(hidden.admission.global!.waiting.agentCeiling, 1);
+});
+
+test('a stored configuration admission refuses is reported as refusing, in REST and in the MCP summary', async () => {
+  const refusing = (): AgentRunAdmissionSnapshot => {
+    const snapshot = enabledSnapshot();
+    return { ...snapshot, global: { ...snapshot.global!, limit: 5, inUse: 0, configuration: { status: 'mismatch', admitting: false, stored: { limit: 3, generation: 0 } } } };
+  };
+  const { record, response } = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => refusing() }).getAgentRunAdmission(member, response);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.deepEqual(body.admission.global!.configuration, { status: 'mismatch', admitting: false, stored: { limit: 3, generation: 0 } });
+
+  const tools: McpTool[] = [];
+  addAdmissionTools(tools, { db, taskQueue, redisClient, policy: { repository: async () => undefined }, agentRunAdmissionSnapshot: async () => refusing() } as unknown as ToolDeps);
+  const tool = tools.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  const principal = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
+  const config = { instanceId: 'example', origin: 'https://propr.example' };
+  const summary = presentResult(tool, {}, (await tool.run({ principal, args: {} } as never)).data as never, config).summary;
+  assert.match(summary, /^Agent-run admission refuses every launch: stored configuration mismatch \(limit 3, generation 0\) vs configured limit 5, generation 0/);
+  assert.doesNotMatch(summary, /0\/5 in use/, 'refused capacity is not presented as available');
+
+  const pending = enabledSnapshot();
+  pending.global = { ...pending.global!, generation: 1, configuration: { status: 'pending_generation', admitting: true, stored: { limit: 2, generation: 0 } } };
+  addAdmissionTools(tools, { db, taskQueue, redisClient, policy: { repository: async () => undefined }, agentRunAdmissionSnapshot: async () => pending } as unknown as ToolDeps);
+  const pendingTool = tools.at(-1)!;
+  const pendingSummary = presentResult(pendingTool, {}, (await pendingTool.run({ principal, args: {} } as never)).data as never, config).summary;
+  assert.match(pendingSummary, /^Agent runs 2\/2 in use, .*generation 1 pending: the next admission fences every older reservation first/);
 });

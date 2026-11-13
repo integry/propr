@@ -11,6 +11,14 @@ import { ApiClient, createApiClient } from "./index.js";
 export interface AdmissionStateCounts { reserved: number; running: number; draining: number; recovering: number; total: number }
 export interface AdmissionWaitingCounts { total: number; globalLimit: number; agentCeiling: number; recovering: number; starting: number }
 
+/** The stored admission configuration compared with the configured limit and generation. */
+export interface AdmissionConfiguration {
+  status: "current" | "uninitialized" | "pending_generation" | "mismatch" | "missing";
+  /** False when admission refuses every launch: `limit` minus `inUse` is then not usable capacity. */
+  admitting: boolean;
+  stored: { limit: number; generation: number } | null;
+}
+
 export interface AdmissionAgent {
   alias: string;
   ceiling: number | null;
@@ -31,6 +39,7 @@ export interface AgentRunAdmissionReport {
       limit: number;
       limitSource: string;
       generation: number;
+      configuration: AdmissionConfiguration;
       nestedLimit: number;
       nestedLimitSource: string;
       inUse: number;

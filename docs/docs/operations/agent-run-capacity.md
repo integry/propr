@@ -35,6 +35,7 @@ The report contains:
 
 - `admission.enabled`: whether admission is on. With admission off the report says so, `admission.global` is `null`, `agents` is empty, and the other limits are still returned. Nothing errors.
 - `admission.global`: the limit and its source (`PROPR_AGENT_RUN_LIMIT` or `hosted_entitlement`), the admission generation, the nested limit and its source, and:
+  - `configuration`: the limit and generation stored in Redis (`stored`), compared with the configured ones above. `status` is `current` (they match), `uninitialized` (nothing stored yet; the first admission stores them), `pending_generation` (the configured generation is higher: the next admission attempt fences and removes every older reservation, then switches), `mismatch` (same generation with another limit, a lower generation, or an unreadable stored record) or `missing` (nothing stored while holder records remain). With `mismatch` or `missing`, `admitting` is `false`: admission refuses every launch, so `limit` minus `inUse` is not free capacity, and `propr admission` prints `refused` instead of the limit. The stored Docker daemon identity is neither shown nor compared: the report does not query Docker, so a daemon change still reads as `current` here while admission refuses it.
   - `inUse` and `holders` (`reserved`, `running`, `draining`, `recovering`): top-level executions, each taking one global slot. `recovering` includes holders whose lease expired: only the next admission attempt's recovery frees them, and nothing is admitted while one is being recovered.
   - `nested`: executions charged under a parent, shown apart from holders: `chargedUnderParent` (same agent as the parent, no second slot) and `countedAgainstOtherAgent` (another agent, which counts against that agent's ceiling).
   - `waiting`: launches waiting at the boundary, split into `globalLimit`, `agentCeiling`, `recovering` and `starting` (registered, first reply pending).
@@ -70,11 +71,11 @@ Set `PROPR_AGENT_RUN_ALIAS_LIMITS` to comma-separated `alias=N` entries of **dir
 
 ## Changing the global limit
 
-The global limit is different: it is part of the stored admission configuration, fenced by a **generation**. Changing `PROPR_AGENT_RUN_LIMIT` (or the Hosted entitlement) without also raising `PROPR_AGENT_RUN_GENERATION` makes admission refuse with `configuration/daemon mismatch`. To change it:
+The global limit is different: it is part of the stored admission configuration, fenced by a **generation**. Changing `PROPR_AGENT_RUN_LIMIT` (or the Hosted entitlement) without also raising `PROPR_AGENT_RUN_GENERATION` makes admission refuse with `configuration/daemon mismatch`, and draining does not clear it; the report then shows `configuration.status: mismatch` with the stored limit and generation. To change it:
 
 1. Pick a new, never-used generation (increment the last one) and lower any ceiling that would exceed the new limit.
 2. If running work should finish, stop intake and wait until the report shows no holders, waiting launches or deferred jobs.
-3. Set the new limit and generation on every process together and restart them.
+3. Set the new limit and generation on every process together and restart them. Until the first admission attempt switches it, the report shows `pending_generation`; afterwards `current`.
 
 The first admission with the new generation fences every older reservation, removes their containers and releases them before anything new starts: work still running under the old generation is interrupted, which is why step 2 matters. **Rollback** is another change: the previous limit with a **new, higher** generation, never the old generation number. See [Fleet resize](../architecture/agent-run-admission.md#fleet-resizereconcile-integration).
 

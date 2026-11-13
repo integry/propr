@@ -27,6 +27,19 @@ export interface AgentRunAdmissionAgent {
   tasks: AgentRunAdmissionTask[];
 }
 
+/** The stored admission configuration compared with the configured global limit and generation. The Docker daemon identity is neither shown nor compared. */
+export interface AgentRunAdmissionConfiguration {
+  /** current: the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. pending_generation: the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. mismatch: same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused until a higher generation is configured. missing: nothing stored while holder records remain; every launch is refused. */
+  status: "current" | "uninitialized" | "pending_generation" | "mismatch" | "missing";
+  /** False when admission refuses every launch with the configured limit and generation: `limit` minus `inUse` is then not usable capacity. */
+  admitting: boolean;
+  /** Limit and generation of the stored admission configuration; null when none (or none readable) is stored. */
+  stored: {
+    limit: number;
+    generation: number;
+  } | null;
+}
+
 /** What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect. */
 export interface AgentRunAdmissionReport {
   asOf: string;
@@ -35,9 +48,12 @@ export interface AgentRunAdmissionReport {
     agentCeilingsConfigured: boolean;
     /** Null when admission is off or its state could not be read. */
     global: {
+      /** Global limit configured on the answering process; enforced only while `configuration.admitting`. */
       limit: number;
       limitSource: "PROPR_AGENT_RUN_LIMIT" | "hosted_entitlement";
+      /** Admission generation configured on the answering process (PROPR_AGENT_RUN_GENERATION, default 0). */
       generation: number;
+      configuration: AgentRunAdmissionConfiguration;
       nestedLimit: number;
       nestedLimitSource: "PROPR_AGENT_RUN_NESTED_LIMIT" | "default";
       /** Top-level executions; each takes one global slot. */

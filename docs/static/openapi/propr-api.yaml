@@ -8692,6 +8692,43 @@ components:
         - tasks
       additionalProperties: false
       description: Admission state of one direct agent.
+    AgentRunAdmissionConfiguration:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - current
+            - uninitialized
+            - pending_generation
+            - mismatch
+            - missing
+          description: "current: the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. pending_generation: the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. mismatch: same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused until a higher generation is configured. missing: nothing stored while holder records remain; every launch is refused."
+        admitting:
+          type: boolean
+          description: "False when admission refuses every launch with the configured limit and generation: `limit` minus `inUse` is then not usable capacity."
+        stored:
+          anyOf:
+            - type: object
+              properties:
+                limit:
+                  type: integer
+                  exclusiveMinimum: 0
+                generation:
+                  type: integer
+                  minimum: 0
+              required:
+                - limit
+                - generation
+              additionalProperties: false
+            - type: "null"
+          description: Limit and generation of the stored admission configuration; null when none (or none readable) is stored.
+      required:
+        - status
+        - admitting
+        - stored
+      additionalProperties: false
+      description: The stored admission configuration compared with the configured global limit and generation. The Docker daemon identity is neither shown nor compared.
     AgentRunAdmissionReport:
       type: object
       properties:
@@ -8712,6 +8749,7 @@ components:
                     limit:
                       type: integer
                       exclusiveMinimum: 0
+                      description: Global limit configured on the answering process; enforced only while `configuration.admitting`.
                     limitSource:
                       type: string
                       enum:
@@ -8720,6 +8758,9 @@ components:
                     generation:
                       type: integer
                       minimum: 0
+                      description: Admission generation configured on the answering process (PROPR_AGENT_RUN_GENERATION, default 0).
+                    configuration:
+                      $ref: "#/components/schemas/AgentRunAdmissionConfiguration"
                     nestedLimit:
                       type: integer
                       exclusiveMinimum: 0
@@ -8763,6 +8804,7 @@ components:
                     - limit
                     - limitSource
                     - generation
+                    - configuration
                     - nestedLimit
                     - nestedLimitSource
                     - inUse

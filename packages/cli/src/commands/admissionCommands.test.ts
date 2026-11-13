@@ -21,6 +21,7 @@ function report(): AgentRunAdmissionReport {
       enabled: true, agentCeilingsConfigured: true,
       global: {
         limit: 3, limitSource: "PROPR_AGENT_RUN_LIMIT", generation: 0, nestedLimit: 4, nestedLimitSource: "default",
+        configuration: { status: "current", admitting: true, stored: { limit: 3, generation: 0 } },
         inUse: 3, holders: states(2, 1), unattributedHolders: 0,
         nested: { total: 1, chargedUnderParent: 1, countedAgainstOtherAgent: 0 }, waiting: waiting(1, 2), deferred: 4,
       },
@@ -59,6 +60,27 @@ test("the readable report labels every limit and lists visible tasks", () => {
   assert.match(text, /Queue workers: 5 of 5 job slots in use across 1 worker\(s\)\./);
   assert.match(text, /acme\/app {2}2\/2 in use, 1 waiting/);
   assert.match(text, /Subscription usage is not part of this report\./);
+});
+
+test("a changed limit at an unchanged generation is printed as refused, not as free capacity", () => {
+  const base = report();
+  const refused: AgentRunAdmissionReport = {
+    ...base, agents: [],
+    admission: { ...base.admission, global: { ...base.admission.global!, limit: 5, inUse: 0, configuration: { status: "mismatch", admitting: false, stored: { limit: 3, generation: 0 } } } },
+  };
+  assert.equal(formatAdmissionRows(refused)[0][1], "refused");
+  const text = formatAdmissionReport(refused).join("\n");
+  assert.match(text, /^Admission refuses every launch: the stored configuration \(limit 3, generation 0\) does not match this one \(limit 5, generation 0\)\.$/m);
+  assert.match(text, /Configure a generation higher than 0 on every process/);
+  assert.doesNotMatch(text, /^\(global\) +5 /m);
+
+  const pending: AgentRunAdmissionReport = {
+    ...base,
+    admission: { ...base.admission, global: { ...base.admission.global!, limit: 5, generation: 1, configuration: { status: "pending_generation", admitting: true, stored: { limit: 3, generation: 0 } } } },
+  };
+  assert.equal(formatAdmissionRows(pending)[0][1], "5");
+  assert.match(formatAdmissionReport(pending).join("\n"), /^Generation change pending: the stored configuration is limit 3, generation 0\. The next admission attempt fences and removes every older reservation, then switches to limit 5, generation 1\.$/m);
+  assert.doesNotMatch(formatAdmissionReport(base).join("\n"), /refuses|pending|No configuration stored/, "a current configuration adds no line");
 });
 
 test("with admission off the report says so and still prints the other limits", () => {

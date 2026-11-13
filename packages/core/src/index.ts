@@ -684,6 +684,7 @@ export {
     readAgentRunAdmissionSnapshot, type AgentRunAdmissionSnapshot, type AgentAdmissionAgentReport, type AgentAdmissionTaskRef,
     type AgentAdmissionStateCounts, type AgentAdmissionWaitingCounts,
 } from './agents/agentRunAdmissionSnapshot.js';
+export type { AgentAdmissionConfigurationState, AgentAdmissionConfigurationStatus } from './agents/agentRunAdmissionConfigState.js';
 export type { RepositoryWorkflowSlotUsage } from './workflow/workflowSlotUsage.js';
 export {
     AgentCapacityError, AgentCapacityWaitTimeoutError, isAgentCapacityError, agentAliasHasCapacity, assertAgentAliasCapacity,

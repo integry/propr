@@ -129,7 +129,8 @@ test('counts under contention: holders, waits split by global limit and agent ce
     assert.equal(report.enabled, true);
     assert.equal(report.agentCeilingsConfigured, true);
     assert.deepEqual({ ...report.global, holders: undefined, waiting: undefined }, {
-        limit: 3, limitSource: 'PROPR_AGENT_RUN_LIMIT', generation: 0, nestedLimit: 4, nestedLimitSource: 'default', inUse: 2,
+        limit: 3, limitSource: 'PROPR_AGENT_RUN_LIMIT', generation: 0, configuration: { status: 'current', admitting: true, stored: { limit: 3, generation: 0 } },
+        nestedLimit: 4, nestedLimitSource: 'default', inUse: 2,
         holders: undefined, unattributedHolders: 0, nested: { total: 0, chargedUnderParent: 0, countedAgainstOtherAgent: 0 }, waiting: undefined, deferred: 0,
     });
     assert.deepEqual(report.global!.holders, { reserved: 0, running: 2, draining: 0, recovering: 0, total: 2 });
@@ -285,6 +286,57 @@ test('redaction: no tokens, container IDs, daemon identity or instance ID', inte
         for (const secret of [...tokens, admitted!.id, DAEMON, name, holders]) assert.ok(!text.includes(secret), `report must not contain ${secret.slice(0, 12)}…`);
         assert.ok(text.includes('task-redaction'), 'task IDs are returned for the caller to filter');
     } finally { await admitted!.finish(); }
+});
+
+test('stored configuration: a changed limit at the same generation is reported as refusing, as admission refuses it', integration(), async () => {
+    const name = instance('configuration');
+    const [holders, configKey] = agentAdmissionKeys(name);
+    const options = { client: client(), docker: lifecycle() };
+    const configuration = async (config: AdmissionConfig) => (await snapshot(config)).global!.configuration;
+    const original: AdmissionConfig = { instance: name, limit: 3 };
+    assert.deepEqual(await configuration(original), { status: 'uninitialized', admitting: true, stored: null }, 'nothing stored before the first admission');
+
+    // Initialized with limit 3, generation 0, and fully drained afterwards.
+    await (await prepareAdmittedAgent(['run', 'agent'], { ...options, config: original }))!.finish();
+    assert.equal(await client().hlen(holders), 0, 'drained');
+    assert.deepEqual(await configuration(original), { status: 'current', admitting: true, stored: { limit: 3, generation: 0 } });
+
+    // Restarted with limit 5 and the same generation: admission refuses, drained or not, and so does the report.
+    const changed: AdmissionConfig = { instance: name, limit: 5 };
+    await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, config: changed }), /configuration\/daemon mismatch/);
+    const refused = await snapshot(changed);
+    assert.equal(refused.global!.limit, 5, 'the configured limit is still shown, labelled by its source');
+    assert.deepEqual(refused.global!.configuration, { status: 'mismatch', admitting: false, stored: { limit: 3, generation: 0 } });
+    assert.equal(refused.global!.inUse, 0);
+    assert.ok(!JSON.stringify(refused).includes(DAEMON), 'the stored daemon identity is never reported');
+
+    // A higher generation is the documented change: pending until an admission attempt switches it, then current.
+    const raised: AdmissionConfig = { instance: name, limit: 5, generation: 1 };
+    assert.deepEqual(await configuration(raised), { status: 'pending_generation', admitting: true, stored: { limit: 3, generation: 0 } });
+    await (await prepareAdmittedAgent(['run', 'agent'], { ...options, config: raised }))!.finish();
+    assert.deepEqual(await configuration(raised), { status: 'current', admitting: true, stored: { limit: 5, generation: 1 } });
+
+    // Rolling back to the old generation number is refused too (rollback needs a new, higher generation).
+    await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, config: original }), /configuration\/daemon mismatch/);
+    assert.deepEqual(await configuration(original), { status: 'mismatch', admitting: false, stored: { limit: 5, generation: 1 } });
+
+    // An unreadable stored record is refused by the identity comparison as well.
+    await client().set(configKey, 'not json');
+    assert.deepEqual(await configuration(raised), { status: 'mismatch', admitting: false, stored: null });
+
+    // No stored configuration while a holder record remains: recovery, and with it every launch, is refused.
+    await client().set(configKey, JSON.stringify({ limit: 5, daemon: DAEMON, generation: 1 }));
+    const holder = await prepareAdmittedAgent(['run', 'agent'], { ...options, config: raised });
+    try {
+        await client().del(configKey);
+        await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, config: raised }), /configuration missing/);
+        const missing = await snapshot(raised);
+        assert.deepEqual(missing.global!.configuration, { status: 'missing', admitting: false, stored: null });
+        assert.equal(missing.global!.inUse, 1);
+    } finally {
+        await client().set(configKey, JSON.stringify({ limit: 5, daemon: DAEMON, generation: 1 }));
+        await holder!.finish();
+    }
 });
 
 test('admission off: the report says so and still returns repository workflow slots', integration(), async () => {

@@ -48,15 +48,27 @@ export const AgentRunAdmissionAgent = component('AgentRunAdmissionAgent', z.obje
   tasks: z.array(AgentRunAdmissionTask),
 }), 'Admission state of one direct agent.');
 
+export const AgentRunAdmissionConfiguration = component('AgentRunAdmissionConfiguration', z.object({
+  status: z.enum(['current', 'uninitialized', 'pending_generation', 'mismatch', 'missing']).describe(
+    'current: the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. '
+    + 'pending_generation: the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. '
+    + 'mismatch: same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused until a higher generation is configured. '
+    + 'missing: nothing stored while holder records remain; every launch is refused.'),
+  admitting: z.boolean().describe('False when admission refuses every launch with the configured limit and generation: `limit` minus `inUse` is then not usable capacity.'),
+  stored: z.object({ limit: z.number().int().positive(), generation: count }).nullable()
+    .describe('Limit and generation of the stored admission configuration; null when none (or none readable) is stored.'),
+}), 'The stored admission configuration compared with the configured global limit and generation. The Docker daemon identity is neither shown nor compared.');
+
 export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.object({
   asOf: isoDateTime,
   admission: z.object({
     enabled: z.boolean(),
     agentCeilingsConfigured: z.boolean(),
     global: z.object({
-      limit: z.number().int().positive(),
+      limit: z.number().int().positive().describe('Global limit configured on the answering process; enforced only while `configuration.admitting`.'),
       limitSource: z.enum(['PROPR_AGENT_RUN_LIMIT', 'hosted_entitlement']),
-      generation: count,
+      generation: count.describe('Admission generation configured on the answering process (PROPR_AGENT_RUN_GENERATION, default 0).'),
+      configuration: AgentRunAdmissionConfiguration,
       nestedLimit: z.number().int().positive(),
       nestedLimitSource: z.enum(['PROPR_AGENT_RUN_NESTED_LIMIT', 'default']),
       inUse: count.describe('Top-level executions; each takes one global slot.'),

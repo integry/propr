@@ -107,7 +107,12 @@ function admissionSummary(result: Args): string {
   const { global } = admission;
   const capped = (agents as Args[]).filter(agent => agent.ceiling !== null)
     .map(agent => `${agent.alias} ${agent.inUse}/${agent.ceiling} (${agent.waiting.agentCeiling} waiting, ${agent.deferred} deferred)`);
-  return `Agent runs ${global.inUse}/${global.limit} in use, ${global.waiting.total} waiting (${global.waiting.globalLimit} on the global limit, ${global.waiting.agentCeiling} on an agent ceiling), ${global.deferred} deferred${capped.length ? `; ${capped.join('; ')}` : ''}.`;
+  const { configuration } = global;
+  if (configuration && !configuration.admitting) {
+    return `Agent-run admission refuses every launch: stored configuration ${configuration.status}${configuration.stored ? ` (limit ${configuration.stored.limit}, generation ${configuration.stored.generation})` : ''} vs configured limit ${global.limit}, generation ${global.generation}; ${global.inUse} holding, ${global.waiting.total} waiting, ${global.deferred} deferred.`;
+  }
+  const pending = configuration?.status === 'pending_generation' ? `; generation ${global.generation} pending: the next admission fences every older reservation first` : '';
+  return `Agent runs ${global.inUse}/${global.limit} in use, ${global.waiting.total} waiting (${global.waiting.globalLimit} on the global limit, ${global.waiting.agentCeiling} on an agent ceiling), ${global.deferred} deferred${pending}${capped.length ? `; ${capped.join('; ')}` : ''}.`;
 }
 
 function readSummary(tool: McpTool, args: Args, result: Args): string {

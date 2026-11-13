@@ -9,6 +9,7 @@
 
 import { Command } from "commander";
 import { getAgentRunAdmission, type AgentRunAdmissionReport } from "../api/index.js";
+import type { AdmissionConfiguration } from "../api/admission.js";
 import { printOutput } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 
@@ -23,7 +24,8 @@ export function formatAdmissionRows(report: AgentRunAdmissionReport): string[][]
   const global = report.admission.global;
   if (!global) return [];
   const rows: string[][] = [[
-    "(global)", String(global.limit), String(global.inUse), String(global.holders.running), String(global.holders.reserved),
+    // A configuration admission refuses is not capacity: never print it as a limit to fill.
+    "(global)", global.configuration.admitting ? String(global.limit) : "refused", String(global.inUse), String(global.holders.running), String(global.holders.reserved),
     String(global.holders.recovering), String(global.holders.draining), String(global.nested.total),
     String(global.waiting.globalLimit), String(global.waiting.agentCeiling), String(global.waiting.recovering + global.waiting.starting),
     String(global.deferred),
@@ -46,6 +48,30 @@ function table(headers: string[], rows: string[][]): string[] {
   return [line(headers), widths.map(width => "-".repeat(width)).join("  "), ...rows.map(line)];
 }
 
+const storedText = (stored: AdmissionConfiguration["stored"]): string =>
+  stored ? `limit ${stored.limit}, generation ${stored.generation}` : "unreadable";
+
+/** What the stored admission configuration means for this one; empty when it is current. */
+export function formatConfigurationLines(global: { limit: number; generation: number; configuration: AdmissionConfiguration }): string[] {
+  const { status, stored } = global.configuration;
+  const configured = `limit ${global.limit}, generation ${global.generation}`;
+  switch (status) {
+    case "mismatch":
+      return [
+        `Admission refuses every launch: the stored configuration (${storedText(stored)}) does not match this one (${configured}).`,
+        `Draining does not clear this. Configure a generation higher than ${stored ? stored.generation : "the stored one"} on every process; see "Changing the global limit" in the operations docs.`,
+      ];
+    case "missing":
+      return ["Admission refuses every launch: no configuration is stored while holder records remain (configuration missing; drain before recovery)."];
+    case "pending_generation":
+      return [`Generation change pending: the stored configuration is ${storedText(stored)}. The next admission attempt fences and removes every older reservation, then switches to ${configured}.`];
+    case "uninitialized":
+      return ["No configuration stored yet: the first admission stores this one."];
+    default:
+      return [];
+  }
+}
+
 const known = (value: number | null): string => value === null ? "unknown" : String(value);
 
 /** The human-readable report, as lines. */
@@ -62,6 +88,7 @@ export function formatAdmissionReport(report: AgentRunAdmissionReport): string[]
     const source = global.limitSource === "hosted_entitlement" ? "Hosted entitlement" : global.limitSource;
     const nestedSource = global.nestedLimitSource === "default" ? "default" : global.nestedLimitSource;
     lines.push(`Global limit ${global.limit} (${source}) · generation ${global.generation} · nested executions per parent ${global.nestedLimit} (${nestedSource})`);
+    lines.push(...formatConfigurationLines(global));
     if (!admission.agentCeilingsConfigured) lines.push("No per-agent ceilings (PROPR_AGENT_RUN_ALIAS_LIMITS unset): agents share the global limit.");
     lines.push("");
     lines.push(...table(ADMISSION_HEADERS, formatAdmissionRows(report)));
