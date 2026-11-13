@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import type { GoalJobData } from '@propr/core';
 import {
     closeGoalBlockers,
+    dismissClosedGoalBlockerNotificationsSafely,
     db,
     getEventPublisher,
     executeDockerCommand,
@@ -115,8 +116,11 @@ async function supersedeBlockers(
     scope: Parameters<typeof closeGoalBlockers>[2],
     resolution: Parameters<typeof closeGoalBlockers>[3],
 ): Promise<void> {
-    await closeGoalBlockers(database, goalId, scope, resolution).catch(error => logger.warn(
-        { goalId, error: (error as Error).message }, 'Could not close goal blockers during recovery'));
+    const closed = await closeGoalBlockers(database, goalId, scope, resolution).catch(error => {
+        logger.warn({ goalId, error: (error as Error).message }, 'Could not close goal blockers during recovery');
+        return 0;
+    });
+    if (closed > 0) await dismissClosedGoalBlockerNotificationsSafely(database, goalId);
 }
 
 async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): Promise<boolean> {

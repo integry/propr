@@ -307,6 +307,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'provider_approval', 'provider_question', 'question', 'questions', 'reason', 'summary',
     // Conditions, outcomes and event fields returned by wait_goal.
     'checkpoint', 'condition', 'event', 'lifecycle', 'matched', 'terminal', 'timed_out', 'unreachable',
+    // The wait_goal blocker condition and the blocker event's statuses.
+    'blocked', 'blocker', 'open', 'resolved', 'superseded',
     // Re-anchoring report fields returned by fix_review_findings.
     'applied', 'skipped', 'comparison', 'same_head', 'compared', 'unavailable', 'code_removed',
     // Reasons fix_review_findings gives for an identifier it cannot locate.
@@ -348,6 +350,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'lineage', 'infra_lost', 'provider_transient', 'dispatched', 'exhausted',
     'cap_reached', 'budget_exhausted', 'user_cancelled', 'issue_closed', 'watchdog_stop', 'cost_cap_stop',
     'blocked_stop', 'goal_task', 'unsupported_task', 'replacement_not_started',
+    // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.
+    'ask_operator', 'goal_question_max_wait_ms',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)

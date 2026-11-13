@@ -24,6 +24,7 @@ export const SPECIALIZED_SETTING_NAMES = [
   'agent_run_usage_pause_percent',
   'automation_unproductive_run_threshold',
   'ultrafix_ci_wait_timeout_ms',
+  'goal_question_max_wait_ms',
   'agent_stall_timeout_ms',
   'agent_tool_stall_timeout_ms',
   'agent_degenerate_output_limit',

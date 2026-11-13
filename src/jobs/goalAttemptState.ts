@@ -1,9 +1,11 @@
 import type { Knex } from 'knex';
 import {
     closeGoalBlockers,
+    dismissClosedGoalBlockerNotificationsSafely,
     getEventPublisher,
     db,
     logger,
+    notifyGoalBlockerOpenedSafely,
     publishGoalTransition,
     recordGoalBlocker,
     resolveGoalBlocker,
@@ -81,8 +83,9 @@ export async function claimGoalAttempt(job: GoalJobData): Promise<GoalRow | null
     // A new attempt replaces whatever session raised an older blocker; nothing
     // that attempt was waiting on can still be answered.
     // The projection already fences them out, so a failed write here must not fail the claim.
-    await closeGoalBlockers(db, job.goalId, { exceptClaim: job.claimId }, 'superseded_by_attempt')
-        .catch(error => logger.warn({ goalId: job.goalId, error: (error as Error).message }, 'Could not supersede goal blockers'));
+    const superseded = await closeGoalBlockers(db, job.goalId, { exceptClaim: job.claimId }, 'superseded_by_attempt')
+        .catch(error => { logger.warn({ goalId: job.goalId, error: (error as Error).message }, 'Could not supersede goal blockers'); return 0; });
+    if (superseded > 0) await dismissClosedGoalBlockerNotificationsSafely(db, job.goalId);
     const goal = await attemptWhere(db<GoalRow>('goals'), job).first() as GoalRow | null;
     // The one place a goal starts executing. Announced from the claim itself so
     // 'queued' becoming 'running' is pushed rather than discovered by polling.
@@ -144,6 +147,7 @@ function attemptIdentity(job: GoalJobData) {
 export async function closeAttemptBlockers(job: GoalJobData): Promise<void> {
     if (await closeGoalBlockers(db, job.goalId, { claim: job.claimId }, 'attempt_ended') > 0) {
         void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+        await dismissClosedGoalBlockerNotificationsSafely(db, job.goalId);
     }
 }
 
@@ -249,17 +253,38 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
             const recorded = await db.transaction(async trx => {
                 // Fenced: a delayed event from a superseded attempt cannot open a blocker.
                 const owned = await attemptWhere(trx<GoalRow>('goals'), job)
-                    .first('owner_id', 'repository', 'session_id', 'agent_type') as Pick<GoalRow,
-                        'owner_id' | 'repository' | 'session_id' | 'agent_type'> | undefined;
+                    .first('owner_id', 'repository', 'session_id', 'agent_type', 'title', 'objective') as Pick<GoalRow,
+                        'owner_id' | 'repository' | 'session_id' | 'agent_type' | 'title' | 'objective'> | undefined;
                 if (!owned) return null;
-                return recordGoalBlocker(trx, attemptIdentity(job), owned, report);
+                const blocker = await recordGoalBlocker(trx, attemptIdentity(job), owned, report);
+                return blocker ? { blocker, owned } : null;
             });
-            if (recorded) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
-            return recorded?.inputBoundary ?? null;
+            if (!recorded) return null;
+            void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+            if (recorded.blocker.opened) {
+                // After commit, so the card never describes a blocker that rolled back.
+                const stored = await db('goal_blockers').where({ blocker_id: recorded.blocker.blockerId })
+                    .first('summary', 'category', 'provider') as { summary: string; category: string; provider: string } | undefined;
+                if (stored) {
+                    await notifyGoalBlockerOpenedSafely(db, {
+                        blockerId: recorded.blocker.blockerId,
+                        goalId: job.goalId,
+                        ownerId: recorded.owned.owner_id,
+                        repository: recorded.owned.repository,
+                        taskId: job.taskId,
+                        category: stored.category,
+                        provider: stored.provider,
+                        summary: stored.summary,
+                        goalTitle: recorded.owned.title || recorded.owned.objective,
+                    });
+                }
+            }
+            return recorded.blocker.inputBoundary;
         },
         async resolveBlocker(requestKey, resolution) {
             if (await resolveGoalBlocker(db, attemptIdentity(job), requestKey, resolution)) {
                 void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+                await dismissClosedGoalBlockerNotificationsSafely(db, job.goalId);
             }
         },
         async appendOutput(records) {
