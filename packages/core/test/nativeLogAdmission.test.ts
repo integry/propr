@@ -130,7 +130,7 @@ test('launch admission accepts unaccounted inodes on spool and native mounts, in
             const admission = await prepareAdmittedAgent(args, {
                 config:{instance:'tenant-a',limit:1},
                 client:{zadd:async()=>0,zrem:async()=>0,zremrangebyscore:async()=>0,zcard:async()=>0,hgetall:async()=>({}),
-                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                    eval:async(_sql,_keys,_holders,_config,_parents,op)=> {
                         if (op === 'expired') return [];
                         if (op === 'release') released++;
                         if (op === 'acquire') {
@@ -199,7 +199,7 @@ test('self-managed launch gate refreshes multi-GB originals, refuses unsafe root
             await assert.rejects(prepareAdmittedAgent(args, {
                 config:{instance:'tenant-a',limit:1},
                 client:{zadd:async()=>0,zrem:async()=>0,
-                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                    eval:async(_sql,_keys,_holders,_config,_parents,op)=> {
                         if (op === 'expired') return [];
                         if (op === 'acquire') fs.ftruncateSync(fd, 3 * 1024 ** 3);
                         return 1;
@@ -286,7 +286,7 @@ test('bounded homes and saturated copy cursors preserve task, goal and declared-
             const admission = await prepareAdmittedAgent(args, {
                 config:{instance:'tenant-a',limit:1},
                 client:{zadd:async()=>0,zrem:async()=>0,zremrangebyscore:async()=>0,zcard:async()=>0,hgetall:async()=>({}),
-                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                    eval:async(_sql,_keys,_holders,_config,_parents,op)=> {
                         if (op === 'expired') return [];
                         if (op === 'release') released++;
                         if (op === 'acquire') {
@@ -485,7 +485,7 @@ test('session-dominated homes admit another agent through declared and physical 
             const admission = await prepareAdmittedAgent(args(other), {
                 config:{instance:'tenant-a',limit:1},
                 client:{zadd:async()=>0,zrem:async()=>0,zremrangebyscore:async()=>0,zcard:async()=>0,hgetall:async()=>({}),
-                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                    eval:async(_sql,_keys,_holders,_config,_parents,op)=> {
                         if (op === 'expired') return [];
                         if (op === 'release') released++;
                         if (op === 'acquire') {
