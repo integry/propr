@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
-import type { ExtensionMcpDescriptor } from '@propr/shared';
+import { validateAutomationDefinitionInput, type ExtensionMcpDescriptor } from '@propr/shared';
 import { extensionTestResources } from './helpers/extensionTestResources.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -75,6 +75,26 @@ test('identical servers merge with the union of their limits, colliding names ar
   assert.deepEqual(await store.legacyProfileExtensions(third), { revision: 1, servers: [renamed.name], skills: [] });
   // Old profile tables stay readable.
   assert.equal((await database('extension_profiles')).length, 4);
+});
+
+test('identical servers one profile names differently merge into one item its migrated selections name once', async t => {
+  const { database, instanceId, store } = await fixture(t);
+  await database.schema.createTable('agent_runs', c => { c.string('id').primary(); c.string('state'); c.text('definition_snapshot'); });
+  // The legacy contract required only unique names, so one profile could hold the same server twice.
+  const profileId = await profile(database, instanceId, { name: 'Docs', servers: [docs(), docs({ name: 'docs-copy' }), docs({ name: 'search', authentication: 'none', url: 'https://8.8.4.4/mcp' })], secrets: { docs: 'SHARED_SENTINEL_TOKEN', 'docs-copy': 'SHARED_SENTINEL_TOKEN' } });
+  const picked = JSON.parse(selection(instanceId, profileId));
+  await database('agent_definitions').insert({ id: 'bound', name: 'Bound', extension_profile: selection(instanceId, profileId) });
+  await database('agent_runs').insert({ id: 'queued', state: 'queued', definition_snapshot: JSON.stringify({ id: 'bound', extensionProfile: picked }) });
+  assert.equal((await migrateExtensionProfilesToLibrary(database, environment, quiet)).migrated, true);
+  assert.deepEqual((await store.readLibrary('1')).servers.map(s => s.name), ['docs', 'search']);
+  const expected = { servers: ['docs', 'search'], skills: [] };
+  assert.deepEqual(await store.legacyProfileExtensions(profileId), { revision: 1, ...expected });
+  assert.deepEqual(await legacySnapshotExtensions(picked, database), expected);
+  const definition = JSON.parse((await database('agent_definitions').where({ id: 'bound' }).first()).extensions);
+  const run = JSON.parse((await database('agent_runs').where({ id: 'queued' }).first()).definition_snapshot).extensions;
+  assert.deepEqual(definition, expected); assert.deepEqual(run, expected);
+  // The migrated selection stays editable: it passes the automation contract, also with another item added.
+  for (const extensions of [definition, run, { ...definition, servers: [...definition.servers, 'wiki'] }]) assert.equal(validateAutomationDefinitionInput({ extensions }, { partial: true }), null);
 });
 
 test('an automation bound to an old profile launches with the same servers and skills; re-running changes nothing', async t => {

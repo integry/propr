@@ -21,8 +21,10 @@ import { libraryIdentity } from './extensionProfileStore.js';
  *   authentication, credential and enabled state) merge, with the union of
  *   their limits (an empty source limit keeps the merged limit empty);
  *   different servers that share a name get a deterministic `-2`, `-3`...
- *   suffix. A server disabled in one source and enabled in another stays two
- *   items, so a disabled selection never maps to an enabled item;
+ *   suffix. A profile's identical servers under different names merge too,
+ *   and its selection names the merged item once. A server disabled in one
+ *   source and enabled in another stays two items, so a disabled selection
+ *   never maps to an enabled item;
  * - a skill bundle (one library item per bundle) selected only through
  *   disabled profiles stays disabled; one with an enabled source takes its
  *   limits only from its enabled sources, and a disabled profile's selection
@@ -204,7 +206,8 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
             taken.add(name); byIdentity.set(key, name);
             candidates.set(name, { server: { ...server, name }, token, status: profile.secrets?.[server.name], enabled, repositories: profile.repositoryScope.length ? [...profile.repositoryScope] : null, agents: profile.agentScope.length ? [...profile.agentScope] : null });
           }
-          items.servers.push(name);
+          // Differently named identical servers of one profile merge into one item, which its selection names once.
+          if (!items.servers.includes(name)) items.servers.push(name);
         }
         for (const bundleId of profile.skillBundleIds) {
           const current = skills.get(bundleId); const enabled = profile.enabled;
