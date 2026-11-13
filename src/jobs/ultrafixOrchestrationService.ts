@@ -15,16 +15,10 @@ import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
 import type { UltrafixOutcome } from '@propr/shared';
 import { ultrafixEndedEvent, ultrafixOutcomeFromCompletion, ultrafixStartedEvent, writeUltrafixJournalEvent as journal } from './ultrafixJournal.js';
 export {
-    clearDeferredContinuationIfCurrent,
-    clearUltrafixStateIfCurrent,
-    getUltrafixAutomaticWorkEpoch,
-    getUltrafixAutomaticWorkEpochKey,
-    getUltrafixDeferredKey,
-    hasUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWorkForComment,
-    isUltrafixAutomaticWorkCurrent,
-    saveUltrafixStateIfCurrent,
+    clearDeferredContinuationIfCurrent, clearUltrafixStateIfCurrent, getUltrafixAutomaticWorkEpoch,
+    getUltrafixAutomaticWorkEpochKey, getUltrafixDeferredKey, hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork, invalidateUltrafixAutomaticWorkForComment,
+    isUltrafixAutomaticWorkCurrent, saveUltrafixStateIfCurrent,
 } from './ultrafixAutomaticWorkEpoch.js';
 export {
     claimDeferredContinuation,
@@ -46,11 +40,7 @@ export {
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixClaimedStep, UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
 export {
-    areChecksReadyForUltrafix,
-    checkReadiness,
-    hasFollowUpJobsForPR,
-    hasPendingBatchedComments,
-    isCooldownElapsed,
+    areChecksReadyForUltrafix, checkReadiness, hasFollowUpJobsForPR, hasPendingBatchedComments, isCooldownElapsed,
 } from './ultrafixReadinessPolicy.js';
 
 // --- Interfaces ---
