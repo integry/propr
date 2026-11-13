@@ -93,6 +93,12 @@ const SQLite = require(d.sqliteModule);
       const update = copy.prepare('UPDATE extension_profile_revisions SET snapshot = ? WHERE rowid = ?');
       for (const row of copy.prepare('SELECT rowid, snapshot FROM extension_profile_revisions').all()) update.run(JSON.stringify(publicExtensionProfile(JSON.parse(row.snapshot))), row.rowid);
     }
+    // The public extension library is exported; its credential custody is erased.
+    if (copy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extension_library_revisions'").get()) {
+      copy.exec("UPDATE extension_library_revisions SET secrets_encrypted = ''");
+      const update = copy.prepare('UPDATE extension_library_revisions SET snapshot = ? WHERE rowid = ?');
+      for (const row of copy.prepare('SELECT rowid, snapshot FROM extension_library_revisions').all()) update.run(JSON.stringify(publicExtensionProfile(JSON.parse(row.snapshot))), row.rowid);
+    }
     if (copy.prepare("SELECT 1 FROM pragma_table_info('task_submissions') WHERE name='extension_authorization'").get()) copy.exec("UPDATE task_submissions SET extension_authorization = NULL");
     if (copy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extension_run_grants'").get()) copy.exec('DELETE FROM extension_run_grants');
     // Rebuild pages so removed fields/free pages cannot leak in the downloadable file.

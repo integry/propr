@@ -67,14 +67,25 @@ export interface AgentToolPolicy {
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
 }
 
+export interface AgentExtensionRequest {
+    /** Include library items with `autoApply`. */
+    autoApply: boolean;
+    /** Library server names and skill bundle ids added explicitly. */
+    servers: string[];
+    skills: string[];
+    /** Repositories the run works on; defaults to the issue repository. */
+    repositories?: string[];
+    /** Explicit per-run write authorization; the library cannot grant write capabilities. */
+    allowWrite?: boolean;
+}
+
 export interface AgentTaskOptions {
-    /** Immutable, instance-local extension revision selected by an administrator. */
-    extensionProfile?: import('@propr/shared').ExtensionSelection | null;
-    /** Worker-validated actor; never read from profile input. */
-    extensionActorId?: string;
-    extensionRepositories?: string[];
-    /** Explicit per-run authorization; a profile cannot grant write capabilities. */
-    extensionAllowWrite?: boolean;
+    /**
+     * Resolve instance extension library items for this run at launch: items
+     * that apply automatically (when `autoApply`) plus the explicitly added
+     * ones. Worker-built only; never read from issue text or customer input.
+     */
+    extensions?: AgentExtensionRequest | null;
     worktreePath: string;
     issueRef: IssueRef;
     issueDetails?: IssueDetails;

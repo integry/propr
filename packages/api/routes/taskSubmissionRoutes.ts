@@ -1,6 +1,6 @@
 import { sealSubmissionExtensions } from '../../core/src/services/taskSubmissionService.js';
 import { reconcileSubmissionIntake, type SubmissionIntakeEvidence } from '../../core/src/services/taskSubmissionIntake.js';
-import { ExtensionError, ExtensionProfileStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { ExtensionError, ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'fs-extra';
 import path from 'node:path';
@@ -331,22 +331,15 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
   const resolveRouting = services.routing ?? routing;
   const getOctokit = services.getOctokit ?? getAuthenticatedOctokit;
   const processingLabels = services.processingLabels ?? loadPrimaryProcessingLabels;
-  // eslint-disable-next-line max-params -- submission and routing inputs remain explicit at the queue publication boundary
-  const checkExtensions = async (actor: string, profile: NonNullable<SubmissionPayload['extensionProfile']>, agentAlias: string, runtime: string | undefined, repository: string, allowWrite: boolean) => {
-    try {
-      await new ExtensionProfileStore(db).assertLaunch(actor, profile, { agentAlias, runtime: runtime ?? '', repositories: [repository], allowWrite }, false);
-    } catch (error) {
-      // These local rejections precede the GitHub POST. Mark them definite,
-      // so the submission retains permission to retry rather than reconcile.
-      if (error instanceof ExtensionError) throw new ExtensionError(400, error.message);
-      throw error;
-    }
-  };
+  // Submissions queued before the extension library may still carry a profile
+  // selection; it maps to its migrated library items for the initial task.
   const validateExtensions = async (row: TaskSubmission) => {
     const payload = JSON.parse(row.payload) as SubmissionPayload;
     if (!payload.extensionProfile) return;
+    // These local rejections precede the GitHub POST. Mark them definite,
+    // so the submission retains permission to retry rather than reconcile.
     const resolved = await resolveRouting(payload);
-    await checkExtensions(row.user_id, payload.extensionProfile, resolved.agentAlias, resolved.runtime, row.repository, payload.extensionAllowWrite === true);
+    if (!['claude', 'codex'].includes(resolved.runtime ?? '')) throw new ExtensionError(400, 'Extensions require Claude or Codex task execution');
   };
   const resume = async (id: string) => {
     const octokit = await getOctokit();
@@ -363,6 +356,18 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
     if (await handleGitHubRepositoryAccessError(req, res, error)) return;
     res.status((error as { status?: number }).status || 500).json({ error: (error as Error).message });
   };
+  /**
+   * Extension profiles were replaced by the instance extension library, so
+   * only an exact replay of a submission accepted before the upgrade may still
+   * carry a selection; its receipt stays recoverable under its original key.
+   * The replay keeps the guards it was accepted under, as it may still seal
+   * the submission's extension authority.
+   */
+  const legacyExtensionReplay = async (req: Request, row: TaskSubmission | undefined) => {
+    if (!row) throw Object.assign(new Error('Extension profiles were replaced by the extension library; submit without extensionProfile'), { status: 400 });
+    if (req.get('X-ProPR-Extensions') !== '1') throw Object.assign(new Error('Extension selection requires a preflight-protected request'), { status: 403 });
+    await new ExtensionLibraryStore(db).authorize(String(req.user!.id));
+  };
   const submit = async (req: Request, res: Response) => {
     const files = (Array.isArray(req.files) ? req.files : []) as MulterFile[];
     try {
@@ -371,18 +376,17 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       const { body, key } = parseSubmissionRequest(req);
       const repository = body.repository.toLowerCase();
       const config = await checkAccess(req, repository);
-      if (body.extensionProfile && req.get('X-ProPR-Extensions') !== '1') throw Object.assign(new Error('Extension selection requires a preflight-protected request'), { status: 403 });
-      if (body.extensionProfile) await new ExtensionProfileStore(db).authorize(req.user.id);
       const payloadHash = fingerprint({ repository, instruction: body.instruction, ...(body.extensionProfile ? { extensionProfile: body.extensionProfile, extensionAllowWrite: body.extensionAllowWrite === true } : {}), agentAlias: body.agentAlias || '', model: body.model || '', todoIds: body.todoIds || [], files: await goalUploadIdentity(files), ...submissionAutomation(body), ...submissionBudget(body) });
       let row = await db<TaskSubmission>('task_submissions').where({ user_id: String(req.user!.id), submission_key: key }).first();
       if (row && row.payload_hash !== payloadHash) { res.status(409).json({ error: 'Submission identity was already used with different content' }); return; }
+      if (body.extensionProfile) await legacyExtensionReplay(req, row);
       if (!row) {
-        const { runtime, ...selection } = await resolveRouting(body);
-        if (body.extensionProfile) await checkExtensions(req.user.id, body.extensionProfile, selection.agentAlias, runtime, repository, body.extensionAllowWrite === true);
+        const { agentAlias, model, routingLabel } = await resolveRouting(body);
+        const selection = { agentAlias, model, routingLabel };
         const octokit = await getOctokit();
         const [owner, repo] = repository.split('/');
         await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
-        const payload: SubmissionPayload = { extensionAllowWrite: body.extensionAllowWrite === true, extensionProfile: body.extensionProfile, instruction: body.instruction, ...selection, baseBranch: config.baseBranch,
+        const payload: SubmissionPayload = { instruction: body.instruction, ...selection, baseBranch: config.baseBranch,
           trigger: (await processingLabels())[0] || 'AI', username: req.user!.username, todoIds: body.todoIds,
           ...submissionAutomation(body), ...submissionBudget(body) };
         let attachments: SubmissionAttachment[];

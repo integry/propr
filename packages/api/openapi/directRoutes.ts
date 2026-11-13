@@ -15,9 +15,10 @@ import type { RegisteredRoute } from './types.js';
 export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'post', path: '/api/extensions/mcp/:serverName', auth: 'extensionGrant', source: 'server.ts' },
   { method: 'get', path: '/api/instance/extensions/v1', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
-  { method: 'post', path: '/api/instance/extensions/v1/profiles', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
-  { method: 'get', path: '/api/instance/extensions/v1/profiles/:profileId/history', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
-  { method: 'post', path: '/api/instance/extensions/v1/delete', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'post', path: '/api/instance/extensions/v1/library', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'post', path: '/api/instance/extensions/v1/items/enabled', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'post', path: '/api/instance/extensions/v1/secrets', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
+  { method: 'get', path: '/api/instance/extensions/v1/history', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
   { method: 'post', path: '/api/instance/extensions/v1/validate', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
   { method: 'post', path: '/api/instance/extensions/v1/skills/archive', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },
   { method: 'post', path: '/api/instance/extensions/v1/skills/github', auth: 'member', permission: 'instance.manage_settings', source: 'server.ts' },

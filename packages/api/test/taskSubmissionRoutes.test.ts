@@ -367,29 +367,47 @@ test('submission routing rejects extension selections on unsupported runtimes be
   }
 });
 
-test('extension write choices default false, persist exact authority and cannot be replayed or substituted', async () => {
+test('a queued legacy profile submission keeps its write choice and migrated items for the exact initial run only', async () => {
   const db = await fixture();
   const { sealSubmissionExtensions, submissionExtensionsForRun } = await import('../../core/src/services/taskSubmissionService.js');
   await db.schema.alterTable('task_submissions', t => t.text('extension_authorization'));
+  await db.schema.createTable('extension_legacy_profile_items', t => { t.string('profile_id').primary(); t.integer('revision'); t.text('servers'); t.text('skills'); });
   const environment = { SYSTEM_TASK_SECRET: 'synthetic-submission-integrity-key' };
   const selection = { instanceId: randomUUID(), profileId: randomUUID(), revision: 1 };
+  await db('extension_legacy_profile_items').insert({ profile_id: selection.profileId, revision: 1, servers: JSON.stringify(['docs']), skills: '[]' });
   const run = { taskId: 'initial', agentAlias: 'claude', model: 'model', repository: 'owner/repo', issueNumber: 42 };
+  const resolve = (row: unknown, target = run) => submissionExtensionsForRun(row as never, target, environment, db);
   try {
     for (const choice of [undefined, false, true]) {
       const row = await insertTaskSubmission(db, { user_id: '1', submission_key: randomUUID(), payload_hash: randomUUID(), repository: run.repository, attachments: '[]', payload: JSON.stringify({ instruction: 'Fix it', agentAlias: run.agentAlias, model: run.model, routingLabel: 'route', trigger: 'AI', username: 'admin', extensionProfile: selection, ...(choice === undefined ? {} : { extensionAllowWrite: choice }) }) });
       await sealSubmissionExtensions(db, row, environment);
       await db('task_submissions').where({ id: row.id }).update({ task_id: run.taskId, latest_task_id: run.taskId, issue_number: run.issueNumber, state: 'queued' });
       const saved = await db('task_submissions').where({ id: row.id }).first();
-      assert.equal(submissionExtensionsForRun(saved, run, environment).extensionAllowWrite, choice === true);
-      for (const changed of [{ agentAlias: 'codex' }, { model: 'other' }, { repository: 'other/repo' }, { issueNumber: 43 }]) assert.throws(() => submissionExtensionsForRun(saved, { ...run, ...changed }, environment), /exact run/);
-      assert.deepEqual(submissionExtensionsForRun(saved, { ...run, taskId: 'replayed' }, environment), {});
-      for (const changed of [{ latest_task_id: 'retry' }, { task_id: 'replacement' }, { state: 'completed' }, { extension_authorization: null }]) assert.deepEqual(submissionExtensionsForRun({ ...saved, ...changed }, run, environment), {});
-      assert.throws(() => submissionExtensionsForRun({ ...saved, user_id: '2' }, run, environment), /unavailable/);
-      assert.throws(() => submissionExtensionsForRun({ ...saved, payload: JSON.stringify({ ...JSON.parse(saved.payload), extensionAllowWrite: choice !== true }) }, run, environment), /exact run/);
-      assert.throws(() => submissionExtensionsForRun({ ...saved, payload: JSON.stringify({ ...JSON.parse(saved.payload), extensionProfile: { ...selection, revision: 2 } }) }, run, environment), /exact run/);
-
+      assert.deepEqual((await resolve(saved)).extensions, { autoApply: false, servers: ['docs'], skills: [], repositories: ['owner/repo'], allowWrite: choice === true });
+      for (const changed of [{ agentAlias: 'codex' }, { model: 'other' }, { repository: 'other/repo' }, { issueNumber: 43 }]) await assert.rejects(resolve(saved, { ...run, ...changed }), /exact run/);
+      assert.deepEqual(await resolve(saved, { ...run, taskId: 'replayed' }), {});
+      for (const changed of [{ latest_task_id: 'retry' }, { task_id: 'replacement' }, { state: 'completed' }, { extension_authorization: null }]) assert.deepEqual(await resolve({ ...saved, ...changed }), {});
+      await assert.rejects(resolve({ ...saved, user_id: '2' }), /unavailable/);
+      await assert.rejects(resolve({ ...saved, payload: JSON.stringify({ ...JSON.parse(saved.payload), extensionAllowWrite: choice !== true }) }), /exact run/);
+      await assert.rejects(resolve({ ...saved, payload: JSON.stringify({ ...JSON.parse(saved.payload), extensionProfile: { ...selection, revision: 2 } }) }), /exact run/);
       await db('task_submissions').where({ id: row.id }).delete();
     }
+    // A profile without a migrated mapping launches without extensions.
+    const unmapped = await insertTaskSubmission(db, { user_id: '1', submission_key: randomUUID(), payload_hash: randomUUID(), repository: run.repository, attachments: '[]', payload: JSON.stringify({ instruction: 'Fix it', agentAlias: run.agentAlias, model: run.model, extensionProfile: { ...selection, profileId: randomUUID() } }) });
+    await sealSubmissionExtensions(db, unmapped, environment);
+    await db('task_submissions').where({ id: unmapped.id }).update({ task_id: run.taskId, latest_task_id: run.taskId, issue_number: run.issueNumber, state: 'queued' });
+    assert.deepEqual(await resolve(await db('task_submissions').where({ id: unmapped.id }).first()), {});
+    // A submission sealed for revision 1 never receives the items migrated from a later revision.
+    await db('task_submissions').where({ id: unmapped.id }).delete();
+    const superseded = { ...selection, profileId: randomUUID() };
+    await db('extension_legacy_profile_items').insert({ profile_id: superseded.profileId, revision: 2, servers: JSON.stringify(['docs', 'deploy']), skills: '[]' });
+    const stale = await insertTaskSubmission(db, { user_id: '1', submission_key: randomUUID(), payload_hash: randomUUID(), repository: run.repository, attachments: '[]', payload: JSON.stringify({ instruction: 'Fix it', agentAlias: run.agentAlias, model: run.model, extensionProfile: superseded, extensionAllowWrite: true }) });
+    await sealSubmissionExtensions(db, stale, environment);
+    await db('task_submissions').where({ id: stale.id }).update({ task_id: run.taskId, latest_task_id: run.taskId, issue_number: run.issueNumber, state: 'queued' });
+    await assert.rejects(resolve(await db('task_submissions').where({ id: stale.id }).first()), /revision 1 .*superseded/);
+    // So does one whose mapping recorded no revision.
+    await db('extension_legacy_profile_items').where({ profile_id: superseded.profileId }).update({ revision: null });
+    await assert.rejects(resolve(await db('task_submissions').where({ id: stale.id }).first()), /superseded/);
   } finally { await db.destroy(); }
 });
 
@@ -406,149 +424,92 @@ test('submission API rejects implicit, malformed or unselected write escalation 
   } finally { await db.destroy(); }
 });
 
-test('authenticated API seals the explicit choice and idempotency rejects changing it', async t => {
-  const database = await fixture(); t.after(() => database.destroy());
-  const previous = process.env.SYSTEM_TASK_SECRET; process.env.SYSTEM_TASK_SECRET = 'synthetic-api-submission-key';
-  t.after(() => { if (previous === undefined) delete process.env.SYSTEM_TASK_SECRET; else process.env.SYSTEM_TASK_SECRET = previous; });
-  await database.schema.alterTable('task_submissions', c => c.text('extension_authorization'));
-  await database.schema.createTable('instance_members', c => { c.string('github_user_id'); c.string('role'); });
-  await database.schema.createTable('agent_definitions', c => c.string('id').primary());
-  await (await import('../../core/src/db/migrations/20261013210000_extension_profiles.js')).up(database);
-  await (await import('../../core/src/db/migrations/20261013220000_extension_grant_network.js')).up(database);
-  await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
-  const { ExtensionProfileStore } = await import('../../core/src/extensions/extensionProfileStore.js');
-  const profile = await new ExtensionProfileStore(database).save('1', { version: 1, name: 'Write tools', enabled: true, agentScope: [], repositoryScope: [], mcpServers: [{ kind: 'https', name: 'tools', url: 'https://8.8.8.8/mcp', enabled: true, tools: ['update'], capability: 'write', authentication: 'none' }], skillBundleIds: [] });
-  const extensionProfile = { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision };
-  let issue = 41; let sideEffects = 0;
-  const routes = createTaskSubmissionRoutes({ db: database, services: {
+test('new submissions can no longer select an extension profile', async () => {
+  const db = await fixture();
+  let sideEffects = 0;
+  const routes = createTaskSubmissionRoutes({ db, services: {
     authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }),
-    getOctokit: async () => ({ request: async (route: string) => { sideEffects++; return { data: route === 'POST /repos/{owner}/{repo}/issues' ? { number: ++issue, html_url: 'https://github.com/owner/repo/issues/' + issue } : {} }; } }) as never,
-    processingLabels: async () => ['AI'], enqueue: async () => {},
+    routing: async () => { sideEffects++; return { agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }; },
+    getOctokit: async () => { sideEffects++; return {} as never; }, processingLabels: async () => ['AI'], enqueue: async () => {},
   } });
-  for (const choice of [false, true]) {
-    const key = randomUUID(); const body = { repository: 'owner/repo', instruction: 'Update documentation', extensionProfile, extensionAllowWrite: choice };
-    const make = (input: unknown) => { const req = request(input, key, { id: '1', username: 'admin' }); req.get = ((name: string) => name === 'X-ProPR-Extensions' ? '1' : key) as Request['get']; return req; };
-    const first = response(); await routes.submit(make(body), first.res); assert.equal(first.state.status, 200);
-    const saved = await database('task_submissions').where({ submission_key: key }).first(); assert.ok(saved.extension_authorization); assert.equal(JSON.parse(saved.payload).extensionAllowWrite, choice);
-    const before = sideEffects;
-    const changed = response(); await routes.submit(make({ ...body, extensionAllowWrite: !choice }), changed.res); assert.equal(changed.state.status, 409); assert.equal(sideEffects, before);
-    const replay = response(); await routes.submit(make(body), replay.res); assert.equal(replay.state.body.id, first.state.body.id); assert.equal(sideEffects, before);
-    assert.ok(!JSON.stringify(replay.state.body).includes(saved.extension_authorization));
-  }
-
+  try {
+    const key = randomUUID();
+    const req = request({ repository: 'owner/repo', instruction: 'Use tools', extensionProfile: { instanceId: randomUUID(), profileId: randomUUID(), revision: 1 } }, key, { id: '1', username: 'admin' });
+    req.get = ((name: string) => name === 'X-ProPR-Extensions' ? '1' : key) as Request['get'];
+    const res = response(); await routes.submit(req, res.res);
+    assert.equal(res.state.status, 400); assert.match(String(res.state.body.error), /extension library/);
+    assert.equal(sideEffects, 0); assert.equal((await db('task_submissions')).length, 0);
+  } finally { await db.destroy(); }
 });
 
+test('an exact replay of a submission accepted with a profile selection before the upgrade recovers its receipt', async t => {
+  const db = await fixture(); t.after(() => db.destroy());
+  const previous = process.env.SYSTEM_TASK_SECRET; process.env.SYSTEM_TASK_SECRET = 'synthetic-api-submission-key';
+  t.after(() => { if (previous === undefined) delete process.env.SYSTEM_TASK_SECRET; else process.env.SYSTEM_TASK_SECRET = previous; });
+  await db.schema.alterTable('task_submissions', c => c.text('extension_authorization'));
+  await db.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
+  await db('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
+  let created = 0;
+  const routes = createTaskSubmissionRoutes({ db, services: {
+    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
+    routing: async () => { created++; return { agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }; },
+    getOctokit: async () => ({ request: async (route: string) => assert.fail(`Unexpected GitHub call for a queued submission: ${route}`) }) as never,
+    processingLabels: async () => ['AI'], enqueue: async () => {},
+  } });
+  const extensionProfile = { instanceId: randomUUID(), profileId: randomUUID(), revision: 1 };
+  const body = { repository: 'owner/repo', instruction: 'Use tools', extensionProfile, extensionAllowWrite: true };
+  // The identity the server recorded for this request before the upgrade.
+  const payloadHash = createHash('sha256').update(JSON.stringify({ repository: 'owner/repo', instruction: 'Use tools', extensionProfile, extensionAllowWrite: true, agentAlias: '', model: '', todoIds: [], files: [] })).digest('hex');
+  const submit = async (userId: string, key: string, payload: unknown = body, preflight = true) => {
+    const req = request(payload, key, { id: userId, username: 'admin' });
+    req.get = ((name: string) => name === 'X-ProPR-Extensions' ? (preflight ? '1' : undefined) : key) as Request['get'];
+    const res = response(); await routes.submit(req, res.res); return res.state;
+  };
+  for (const userId of ['1', '2']) {
+    const key = randomUUID();
+    const row = await insertTaskSubmission(db, { user_id: userId, submission_key: key, payload_hash: payloadHash, repository: 'owner/repo', attachments: '[]', payload: JSON.stringify({ instruction: 'Use tools', agentAlias: 'claude', model: 'model', routingLabel: 'route', trigger: 'AI', username: 'admin', extensionProfile, extensionAllowWrite: true }) });
+    await db('task_submissions').where({ id: row.id }).update({ state: 'queued', issue_number: 6 + Number(userId), issue_url: `https://github.com/owner/repo/issues/${6 + Number(userId)}`, task_id: 'task', latest_task_id: 'task', dispatch_complete: true });
+    // The replay keeps the guards it was accepted under: the preflight header and a durable
+    // administrator. The route reports their 403 as an inaccessible repository, as before.
+    const sealed = async () => (await db('task_submissions').where({ id: row.id }).first()).extension_authorization;
+    assert.equal((await submit(userId, key, body, false)).status, 404); assert.equal(await sealed(), null);
+    const replay = await submit(userId, key);
+    if (userId === '2') { assert.equal(replay.status, 404); assert.equal(await sealed(), null); continue; }
+    assert.equal(replay.status, 200); assert.equal(replay.body.issueNumber, 7); assert.equal(replay.body.taskId, 'task');
+    assert.ok(await sealed(), 'the replay seals the authority it was accepted with');
+    // A modified payload under the same key is still a different submission.
+    assert.equal((await submit(userId, key, { repository: 'owner/repo', instruction: 'Use tools' })).status, 409);
+  }
+  // Without an existing submission a profile selection is refused, as before.
+  const fresh = await submit('1', randomUUID());
+  assert.equal(fresh.status, 400); assert.match(String(fresh.body.error), /extension library/);
+  assert.equal(created, 0); assert.equal((await db('task_submissions')).length, 2);
+});
 
-test('extension scope preflight rejects mismatches and rechecks awaited boundaries without losing reconciliation', async t => {
+test('a prepared legacy profile submission is refused locally on an unsupported runtime and still reconciles', async t => {
   const database = await fixture(); t.after(() => database.destroy());
   const previous = process.env.SYSTEM_TASK_SECRET; process.env.SYSTEM_TASK_SECRET = 'synthetic-api-submission-key';
   t.after(() => { if (previous === undefined) delete process.env.SYSTEM_TASK_SECRET; else process.env.SYSTEM_TASK_SECRET = previous; });
   await database.schema.alterTable('task_submissions', c => c.text('extension_authorization'));
-  await database.schema.createTable('instance_members', c => { c.string('github_user_id'); c.string('role'); });
-  await database.schema.createTable('agent_definitions', c => c.string('id').primary());
-  await (await import('../../core/src/db/migrations/20261013210000_extension_profiles.js')).up(database);
-  await (await import('../../core/src/db/migrations/20261013220000_extension_grant_network.js')).up(database);
-  await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
-  const { ExtensionProfileStore } = await import('../../core/src/extensions/extensionProfileStore.js');
+  const extensionProfile = { instanceId: randomUUID(), profileId: randomUUID(), revision: 1 };
+  const pending = await insertTaskSubmission(database, { user_id: '1', submission_key: randomUUID(), payload_hash: 'pending', repository: 'owner/repo', attachments: '[]', payload: JSON.stringify({ instruction: 'Retry', agentAlias: 'opencode', model: 'model', routingLabel: 'route', trigger: 'AI', username: 'admin', extensionProfile }) });
   let sideEffects = 0;
   const routes = createTaskSubmissionRoutes({ db: database, services: {
     authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }),
-    getOctokit: async () => ({ request: async (route: string) => { sideEffects++; assert.fail(`Unexpected GitHub call before scope rejection: ${route}`); } }) as never,
+    routing: async () => ({ agentAlias: 'opencode', model: 'model', routingLabel: 'route', runtime: 'opencode' }),
+    getOctokit: async () => ({ request: async (route: string) => { sideEffects++; assert.fail(`Unexpected GitHub call before refusal: ${route}`); } }) as never,
     processingLabels: async () => ['AI'], enqueue: async () => {},
   } });
-  const store = new ExtensionProfileStore(database);
-  const make = (profile: { instanceId: string; profileId: string; revision: number }, key = randomUUID()) => {
-    const req = request({ repository: 'owner/repo', instruction: 'Scoped task', extensionProfile: { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision } }, key, { id: '1', username: 'admin' });
-    req.get = ((name: string) => name === 'X-ProPR-Extensions' ? '1' : key) as Request['get'];
-    return req;
-  };
-  for (const scope of [{ agentScope: ['other'], repositoryScope: [] }, { agentScope: [], repositoryScope: ['owner/other'] }]) {
-    const scoped = await store.save('1', { version: 1, name: 'Scoped', enabled: true, ...scope, mcpServers: [], skillBundleIds: [] });
-    const rejected = response(); const before = sideEffects;
-    await routes.submit(make(scoped), rejected.res);
-    assert.equal(rejected.state.status, 400);
-    assert.match(String(rejected.state.body.error), /scope does not match/);
-    assert.equal(sideEffects, before);
-    assert.equal(await database('task_submissions').count('* as count').first().then(row => row?.count), 0);
-  }
-  // A prepared retry must use its durable payload, including the resolved alias.
-  const scoped = await store.save('1', { version: 1, name: 'Retry scope', enabled: true, agentScope: ['other'], repositoryScope: [], mcpServers: [], skillBundleIds: [] });
-  const pending = await insertTaskSubmission(database, { user_id: '1', submission_key: randomUUID(), payload_hash: 'pending', repository: 'owner/repo', attachments: '[]', payload: JSON.stringify({ instruction: 'Retry', agentAlias: 'claude', model: 'model', routingLabel: 'route', trigger: 'AI', username: 'admin', extensionProfile: { instanceId: scoped.instanceId, profileId: scoped.profileId, revision: scoped.revision } }) });
-  const retryReq = make(scoped, pending.submission_key); const retryResult = response(); const beforeRetry = sideEffects;
-  await routes.retry(retryReq, retryResult.res);
-  assert.equal(retryResult.state.status, 400); assert.equal(sideEffects, beforeRetry);
+  const retryReq = request({}, pending.submission_key, { id: '1', username: 'admin' });
+  const refused = response(); await routes.retry(retryReq, refused.res);
+  assert.equal(refused.state.status, 400); assert.equal(sideEffects, 0);
   assert.equal((await database('task_submissions').where({ id: pending.id }).first()).state, 'prepared');
-  const scopedInput = { version: 1 as const, name: 'Boundary scope', enabled: true, agentScope: ['claude'], repositoryScope: ['OWNER/REPO'], mcpServers: [], skillBundleIds: [] };
-  const boundaryProfile = await store.save('1', scopedInput);
-  let octokitReads = 0; let posts = 0;
-  const boundaryRoutes = createTaskSubmissionRoutes({ db: database, services: {
-    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }),
-    getOctokit: async () => {
-      if (++octokitReads === 2) await store.save('1', { ...scopedInput, enabled: false }, {}, { instanceId: boundaryProfile.instanceId, profileId: boundaryProfile.profileId, revision: boundaryProfile.revision });
-      return { request: async (route: string) => { if (route.startsWith('POST')) posts++; return { data: {} }; } } as never;
-    }, processingLabels: async () => ['AI'], enqueue: async () => {},
-  } });
-  const boundaryResult = response(); const boundaryReq = make(boundaryProfile);
-  await boundaryRoutes.submit(boundaryReq, boundaryResult.res);
-  assert.equal(boundaryResult.state.status, 400); assert.equal(posts, 0);
-  const boundaryRow = await database('task_submissions').where({ submission_key: boundaryReq.params.key }).first();
-  assert.equal(boundaryRow.state, 'prepared'); assert.equal(boundaryRow.issue_number, null);
-  const uploadProfile = await store.save('1', scopedInput);
-  const uploadPending = await insertTaskSubmission(database, { user_id: '1', submission_key: randomUUID(), payload_hash: 'upload', repository: 'owner/repo', payload: JSON.stringify({ instruction: 'Upload', agentAlias: 'claude', model: 'model', routingLabel: 'route', trigger: 'AI', username: 'admin', extensionProfile: { instanceId: uploadProfile.instanceId, profileId: uploadProfile.profileId, revision: uploadProfile.revision } }), attachments: JSON.stringify([{ id: 'image', originalName: 'image.png', mimeType: 'image/png', extension: '.png', content: Buffer.from('fixture').toString('base64') }]) });
-  const uploadRoutes = createTaskSubmissionRoutes({ db: database, services: {
-    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }),
-    getOctokit: async () => ({ request: async (route: string) => { if (route.startsWith('POST')) posts++; return { data: { id: 1 } }; } }) as never,
-    images: { resolveToken: async () => 'fixture-upload-token', upload: async () => {
-      await store.save('1', { ...scopedInput, enabled: false }, {}, { instanceId: uploadProfile.instanceId, profileId: uploadProfile.profileId, revision: uploadProfile.revision });
-      return 'https://github.com/user-attachments/assets/fixture';
-    } }, enqueue: async () => {},
-  } });
-  const uploadResult = response(); await uploadRoutes.retry(make(uploadProfile, uploadPending.submission_key), uploadResult.res);
-  assert.equal(posts, 0);
-  const afterUpload = await database('task_submissions').where({ id: uploadPending.id }).first();
-  assert.equal(afterUpload.state, 'prepared'); assert.equal(afterUpload.issue_number, null);
-  assert.match(afterUpload.error, /disabled, deleted or superseded/);
-  const bearerProfile = await store.save('1', { ...scopedInput, mcpServers: [{ kind: 'https', name: 'auth', url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read', authentication: 'bearer' }] });
-  const bearerResult = response(); const beforeBearer = sideEffects;
-  await routes.submit(make(bearerProfile), bearerResult.res);
-  assert.equal(bearerResult.state.status, 400); assert.equal(sideEffects, beforeBearer);
-  assert.match(String(bearerResult.state.body.error), /authentication is not configured/);
-  // Refusals after attachment upload still precede the GitHub POST. Preserve
-  // prepared state for every local ExtensionError, including demotion/503.
-  const { ExtensionError } = await import('../../core/src/extensions/extensionProfileStore.js');
-  for (const status of [403, 503, 404]) {
-    const localPending = await insertTaskSubmission(database, { user_id: '1', submission_key: randomUUID(), payload_hash: `local-${status}`, repository: 'owner/repo', payload: uploadPending.payload, attachments: uploadPending.attachments });
-    // Use a live selection so only the final awaited boundary refuses.
-    const live = await store.save('1', scopedInput);
-    await database('task_submissions').where({ id: localPending.id }).update({ payload: JSON.stringify({ ...JSON.parse(localPending.payload), extensionProfile: { instanceId: live.instanceId, profileId: live.profileId, revision: live.revision } }) });
-    const original = ExtensionProfileStore.prototype.assertLaunch;
-    let checks = 0;
-    const mocked = t.mock.method(ExtensionProfileStore.prototype, 'assertLaunch', async function (...args: Parameters<typeof original>) {
-      if (++checks === 2) throw new ExtensionError(status, 'Local extension refusal');
-      return original.apply(this, args);
-    });
-    const localRoutes = createTaskSubmissionRoutes({ db: database, services: {
-      authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-      routing: async () => ({ agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }),
-      getOctokit: async () => ({ request: async () => assert.fail('A local refusal must not POST or reconcile') }) as never,
-      images: { resolveToken: async () => 'fixture', upload: async () => 'https://github.com/user-attachments/assets/fixture' }, enqueue: async () => {},
-    } });
-    await localRoutes.retry(make(live, localPending.submission_key), response().res);
-    mocked.mock.restore();
-    assert.equal(checks, 2);
-    const row = await database('task_submissions').where({ id: localPending.id }).first();
-    assert.equal(row.state, 'prepared'); assert.equal(row.issue_number, null); assert.match(row.error, /Local extension refusal/);
-  }
-  // Ambiguous external creation still needs reconciliation after scope changes.
+  // Ambiguous external creation still needs reconciliation.
   await database('task_submissions').where({ id: pending.id }).update({ state: 'creating' });
   const { submissionMarker } = await import('../../core/src/services/taskSubmissionService.js');
   const reconcileRoutes = createTaskSubmissionRoutes({ db: database, services: {
     authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }),
+    routing: async () => ({ agentAlias: 'opencode', model: 'model', routingLabel: 'route', runtime: 'opencode' }),
     getOctokit: async () => ({ request: async (route: string) => {
       if (route === 'POST /repos/{owner}/{repo}/issues') assert.fail('Never create another issue for an ambiguous attempt');
       if (route === 'GET /repos/{owner}/{repo}/issues') return { data: [{ number: 99, html_url: 'https://github.com/owner/repo/issues/99', body: submissionMarker(pending.id) }] };
@@ -558,7 +519,6 @@ test('extension scope preflight rejects mismatches and rechecks awaited boundari
   const reconciled = response(); await reconcileRoutes.retry(retryReq, reconciled.res);
   assert.equal(reconciled.state.status, 200); assert.equal(reconciled.state.body.issueNumber, 99);
   assert.equal((await database('task_submissions').where({ id: pending.id }).first()).state, 'queued');
-
 });
 
 test('extension submission routing rejects label round trips that change the alias or model', async () => {

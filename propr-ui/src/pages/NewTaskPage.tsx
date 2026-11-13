@@ -1,4 +1,3 @@
-import { ExtensionProfileSelector } from '../components/Extensions/ExtensionProfileSelector';
 import { formatModelName } from '../utils/modelDisplay';
 import { resolvePlanIssueDefaultSelection } from '../components/TaskPlanner/planIssueDefaultSelection';
 import TextareaAutosize from 'react-textarea-autosize';
@@ -51,8 +50,6 @@ function useNewTaskLauncher(scope: string) {
   const [saved] = useState(() => savedRouting(scope));
   const [repository, setRepository] = useState(prefill.initialRepository || saved.repository || '');
   const [instruction, setInstruction] = useState(prefill.initialPrompt || '');
-  const [extensionAllowWrite, setExtensionAllowWrite] = useState(false);
-  const [extensionProfile, setExtensionProfile] = useState<import('@propr/shared').ExtensionSelection | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [todoIds, setTodoIds] = useState(prefill.todoIds);
   const [agentAlias, setAgent] = useState(saved.agentAlias || '');
@@ -90,8 +87,6 @@ function useNewTaskLauncher(scope: string) {
       sessionStorage.setItem(activeStorageKey, value.key);
       setTodoIds(value.payload.todoIds);
       setSnapshot(value); setRepository(value.payload.repository); setInstruction(value.payload.instruction);
-      setExtensionProfile(value.payload.extensionProfile ?? null);
-      setExtensionAllowWrite(value.payload.extensionAllowWrite === true);
       setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || ''); setFiles(value.files);
       void getTaskSubmission(value.key).then(row => { if (active && sessionStorage.getItem(activeStorageKey) === value.key) setResult(row); }).catch(() => undefined);
     }).catch(() => undefined).finally(() => { if (active) setReady(true); });
@@ -118,7 +113,7 @@ function useNewTaskLauncher(scope: string) {
   const run = async () => {
     if (submitting.current || processingFiles || isDemoMode) return;
     submitting.current = true; setBusy(true); setError(null);
-    const current = snapshot || { key: crypto.randomUUID(), payload: { repository, instruction, ...(extensionProfile ? { extensionProfile, extensionAllowWrite } : {}), ...(agentAlias ? { agentAlias } : {}), ...(routedModel ? { model: routedModel } : {}), todoIds }, files };
+    const current = snapshot || { key: crypto.randomUUID(), payload: { repository, instruction, ...(agentAlias ? { agentAlias } : {}), ...(routedModel ? { model: routedModel } : {}), todoIds }, files };
     try {
       // Persist before the network mutation. A reload can safely repeat this exact request.
       const storageError = await persistForRetry(scope, current);
@@ -169,8 +164,6 @@ function useNewTaskLauncher(scope: string) {
       setSnapshot(value); setResult(undefined);
       setRepository(value.payload.repository); setInstruction(value.payload.instruction);
       setTodoIds(value.payload.todoIds); setFiles(value.files);
-      setExtensionProfile(value.payload.extensionProfile ?? null);
-      setExtensionAllowWrite(value.payload.extensionAllowWrite === true);
       setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || '');
       try { setResult(await getTaskSubmission(value.key)); } catch { /* Retry the saved request with its original key. */ }
     } catch (error) { setError(errorMessage(error)); }
@@ -200,7 +193,7 @@ function useNewTaskLauncher(scope: string) {
   };
   const locked = busy || Boolean(snapshot) || Boolean(planDraft);
   return {
-    extensionAllowWrite, setExtensionAllowWrite, extensionProfile, setExtensionProfile, repository, setRepository, instruction, setInstruction, files, setFiles,
+    repository, setRepository, instruction, setInstruction, files, setFiles,
     agentAlias, setAgent, model, setModel, catalog, selection, agentModel, invalidRouting,
     snapshot, result, busy, processingFiles, setProcessingFiles, planDraft,
     ready, error, setError, run, startOver, dismiss, planFirst, locked, isDemoMode, recoverable, reopen,
@@ -350,8 +343,6 @@ function NewTaskLauncher({ scope }: { scope: string }) {
           </div>
         </div>
       </fieldset>
-      <ExtensionProfileSelector value={launcher.extensionProfile} onChange={value => { setDirty(true); launcher.setExtensionProfile(value); launcher.setExtensionAllowWrite(false); }} disabled={locked || isDemoMode} />
-      {launcher.extensionProfile && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={launcher.extensionAllowWrite} disabled={locked || isDemoMode} onChange={e => { setDirty(true); launcher.setExtensionAllowWrite(e.target.checked); }} />Allow selected MCP write capabilities for this run</label>}
       <TaskRoutingOptions {...launcher} />
       <TaskSubmissionFeedback {...launcher} />
       </div>

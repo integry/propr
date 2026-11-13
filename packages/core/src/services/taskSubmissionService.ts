@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { sealExtensionSecrets, unsealExtensionSecrets } from '../extensions/privateSecrets.js';
+import { ExtensionLibraryStore } from '../extensions/extensionProfileStore.js';
+import type { AgentExtensionRequest } from '../agents/types.js';
 import knex, { type Knex } from 'knex';
 import fs from 'fs-extra';
 import path from 'node:path';
@@ -36,6 +38,7 @@ export interface TaskSubmission {
 }
 export interface SubmissionPayload {
   extensionAllowWrite?: boolean;
+  /** Legacy profile selection of submissions queued before the extension library; never set by new submissions. */
   extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   instruction: string;
   agentAlias: string;
@@ -72,7 +75,15 @@ export async function sealSubmissionExtensions(database: Knex, row: TaskSubmissi
   const authorization = sealExtensionSecrets({ payloadDigest: createHash('sha256').update(row.payload).digest('hex'), allowWrite: payload.extensionAllowWrite === true ? 'true' : 'false' }, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
   await database('task_submissions').where({ id: row.id }).whereNull('extension_authorization').update({ extension_authorization: authorization });
 }
-export function submissionExtensionsForRun(row: TaskSubmission | undefined, run: { taskId: string; agentAlias: string; model: string; repository: string; issueNumber: number }, environment: NodeJS.ProcessEnv = process.env) {
+/**
+ * Extension authority of a queued submission recorded before profiles were
+ * replaced by the extension library. Only the submission's initial task uses
+ * it: the old profile maps to its migrated library items, added explicitly
+ * (no auto-applied items), only when the submission selected the migrated
+ * revision; a superseded selection is refused, as it was at launch before.
+ * New submissions no longer carry a selection.
+ */
+export async function submissionExtensionsForRun(row: TaskSubmission | undefined, run: { taskId: string; agentAlias: string; model: string; repository: string; issueNumber: number }, environment: NodeJS.ProcessEnv = process.env, database: Knex = db): Promise<{ extensions?: AgentExtensionRequest }> {
   if (!row) return {};
   const payload = JSON.parse(row.payload) as SubmissionPayload;
   if (!payload.extensionProfile) return {};
@@ -80,7 +91,20 @@ export function submissionExtensionsForRun(row: TaskSubmission | undefined, run:
   if (row.task_id !== run.taskId || row.latest_task_id !== run.taskId || !['queued', 'issue_created'].includes(row.state) || !row.extension_authorization) return {};
   const authorization = unsealExtensionSecrets(row.extension_authorization, `submission/${row.id}/${row.user_id}/${row.repository}/${row.payload_hash}`, environment);
   if (row.issue_number !== run.issueNumber || row.repository !== run.repository.toLowerCase() || payload.agentAlias !== run.agentAlias || payload.model !== run.model || authorization.payloadDigest !== createHash('sha256').update(row.payload).digest('hex')) throw new Error('Extension submission does not authorize this exact run');
-  return { extensionProfile: payload.extensionProfile, extensionActorId: row.user_id, extensionAllowWrite: authorization.allowWrite === 'true' && payload.extensionAllowWrite === true };
+  const store = new ExtensionLibraryStore(database, environment);
+  let items = await store.legacyProfileExtensions(payload.extensionProfile.profileId);
+  if (!items) {
+    // The mapping is written by the startup migration. Until it completes, a missing mapping
+    // is not an absent selection: retry it now, and refuse the run rather than drop the extensions.
+    const { ensureExtensionLibraryMigrated } = await import('../extensions/extensionLibraryMigration.js');
+    if (!await ensureExtensionLibraryMigrated(database, environment)) throw new Error('The extension library migration has not completed, so this submission\'s extensions cannot be resolved yet; retry the task once it succeeds');
+    items = await store.legacyProfileExtensions(payload.extensionProfile.profileId);
+  }
+  if (!items) return {};
+  // The sealed payload authorized this exact revision; the mapping holds the migrated
+  // revision's items. Never give the task another revision's extensions.
+  if (items.revision !== payload.extensionProfile.revision) throw new Error(`This submission selected revision ${payload.extensionProfile.revision} of its extension profile, which was superseded before the upgrade to the extension library; its extensions are never taken from another revision, so submit the task again`);
+  return { extensions: { autoApply: false, servers: items.servers, skills: items.skills, repositories: [row.repository], allowWrite: authorization.allowWrite === 'true' && payload.extensionAllowWrite === true } };
 }
 
 /** The submission owns the initial delivery only; normal task retries keep their own contract. */

@@ -134,7 +134,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   let agentResult;
   try {
     const extensionSubmission = await findIssueSubmission(issueRef);
-    const extensions = submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, issueNumber: issueRef.number });
+    const extensions = await submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, issueNumber: issueRef.number });
     agentResult = await runRepositoryWorkflow({
       workflow: repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
       redisClient, taskId, stateManager, correlatedLogger,

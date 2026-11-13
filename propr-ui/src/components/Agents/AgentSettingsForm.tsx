@@ -1,7 +1,7 @@
-import { ExtensionProfileSelector } from '../Extensions/ExtensionProfileSelector';
+import { ExtensionItemsSelector } from '../Extensions/ExtensionItemsSelector';
 import React from 'react';
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react';
-import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH } from '@propr/shared';
+import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH, EMPTY_AUTOMATION_EXTENSIONS, type AutomationExtensions } from '@propr/shared';
 import { AgentModelSelector } from '../TaskPlanner/AgentModelSelector';
 import { AGENT_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
 import { AgentScopeSection } from './AgentScopeSection';
@@ -38,6 +38,11 @@ const AgentSaveFooter: React.FC<{ isNew: boolean; saving: boolean; disabled: boo
   );
 };
 
+const sameExtensions = (left: AutomationExtensions, right: AutomationExtensions | undefined) => {
+  const key = (value: AutomationExtensions | undefined) => JSON.stringify([[...(value?.servers ?? [])].sort(), [...(value?.skills ?? [])].sort()]);
+  return key(left) === key(right);
+};
+
 /** The agent's settings: scope, prompt and files, model, capabilities, schedule and autonomy. */
 export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, isNew, readOnly, isDemoMode, hidden, onDelete }) => {
   const { definition, form, update } = editor;
@@ -72,7 +77,13 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           />
         </AgentFormRow>
 
-        <div className="px-4 py-4 empty:hidden"><ExtensionProfileSelector value={form.extensionProfile} onChange={extensionProfile => update({ extensionProfile })} disabled={readOnly} /></div>
+        <div className="px-4 py-4 empty:hidden">
+          <ExtensionItemsSelector
+            value={form.extensions ?? definition?.extensions ?? EMPTY_AUTOMATION_EXTENSIONS}
+            onChange={extensions => update({ extensions: sameExtensions(extensions, definition?.extensions) ? undefined : extensions })}
+            disabled={readOnly}
+          />
+        </div>
         <AgentScopeSection repositories={form.repositories} onChange={repositories => update({ repositories })} disabled={readOnly} />
 
         <AgentPromptSection

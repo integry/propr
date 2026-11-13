@@ -13,7 +13,11 @@ import {
   DesktopPairingStartRequest,
   DesktopPairingTicket,
   Health,
-  ExtensionProfileSave,
+  ExtensionItemEnabledRequest,
+  ExtensionLibraryRead,
+  ExtensionLibraryRevisionResponse,
+  ExtensionLibrarySave,
+  ExtensionSecretReplaceRequest,
   JsonObject,
 } from './schemas.js';
 import type { RouteDoc } from './types.js';
@@ -24,23 +28,32 @@ const MCP_OAUTH = 'Served by the MCP SDK\'s OAuth router at the API origin root,
 
 export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
   'GET /api/instance/extensions/v1': {
-    operationId: 'listAgentExtensionProfiles', summary: 'List secret-free current extension revisions, the versioned contract and operator catalog identity/digest, tools/capability and opaque secret count/configuration status.', tags: ['Configuration'],
-    responses: { 200: { description: 'Current durable instance administrators only; works without Connect.', schema: JsonObject } },
+    operationId: 'getAgentExtensionLibrary', summary: 'Read the current secret-free extension library revision, the imported skill bundles, the versioned contract and the operator catalog identity/digest, tools/capability and opaque secret count/configuration status in one call.', tags: ['Configuration'],
+    responses: { 200: { description: 'Current durable instance administrators only; works without Connect.', schema: ExtensionLibraryRead } },
   },
-  'POST /api/instance/extensions/v1/profiles': {
-    operationId: 'saveAgentExtensionProfile', summary: 'Create an immutable revision with optional write-only secret replacements.', tags: ['Configuration'],
+  'POST /api/instance/extensions/v1/library': {
+    operationId: 'saveAgentExtensionLibrary', summary: 'Save the library as a new revision with optional write-only secret replacements. Removing or renaming an item an automation adds explicitly is refused with the automations named.', tags: ['Configuration'],
     headers: [{ name: 'X-ProPR-Extensions', description: 'Must be 1. JSON requests only.', required: true }],
-    requestBody: { schema: ExtensionProfileSave, description: 'input follows ExtensionProfileInput v1; expected is the exact instance/profile/revision selection for updates. secrets maps server names to replacement tokens or null; values are never returned.' },
-    responses: { 200: { description: 'Secret-free revision.', schema: JsonObject } },
+    requestBody: { schema: ExtensionLibrarySave, description: 'input follows ExtensionLibraryInput v1; expectedRevision is the revision the edit is based on (0 before the first save). secrets maps server names to replacement tokens or null; values are never returned.' },
+    responses: { 200: { description: 'Secret-free library revision.', schema: ExtensionLibraryRevisionResponse } },
   },
-  'GET /api/instance/extensions/v1/profiles/:profileId/history': {
-    operationId: 'getAgentExtensionProfileHistory', summary: 'Read immutable, secret-free revision history.', tags: ['Configuration'], responses: { 200: { description: 'Revision history.', schema: JsonObject } },
+  'POST /api/instance/extensions/v1/items/enabled': {
+    operationId: 'setAgentExtensionItemEnabled', summary: 'Enable or disable one library item. Only enabled changes; configuration, limits and the stored secret are kept. Disabling is never refused.', tags: ['Configuration'],
+    headers: [{ name: 'X-ProPR-Extensions', description: 'Must be 1. JSON requests only.', required: true }],
+    requestBody: { schema: ExtensionItemEnabledRequest },
+    responses: { 200: { description: 'Secret-free library revision.', schema: ExtensionLibraryRevisionResponse } },
   },
-  'POST /api/instance/extensions/v1/delete': {
-    operationId: 'deleteAgentExtensionProfile', summary: 'Disable new launches without changing active snapshots.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'selection: exact instanceId, profileId and revision.' }, responses: { 200: { description: 'Profile tombstoned.', schema: JsonObject } },
+  'POST /api/instance/extensions/v1/secrets': {
+    operationId: 'replaceAgentExtensionSecret', summary: 'Replace or clear the write-only Bearer token of one library server as a new revision.', tags: ['Configuration'],
+    headers: [{ name: 'X-ProPR-Extensions', description: 'Must be 1. JSON requests only.', required: true }],
+    requestBody: { schema: ExtensionSecretReplaceRequest },
+    responses: { 200: { description: 'Secret-free library revision.', schema: ExtensionLibraryRevisionResponse } },
+  },
+  'GET /api/instance/extensions/v1/history': {
+    operationId: 'getAgentExtensionLibraryHistory', summary: 'Read recent immutable, secret-free library revisions, newest first.', tags: ['Configuration'], responses: { 200: { description: 'Revision history.', schema: JsonObject } },
   },
   'POST /api/instance/extensions/v1/validate': {
-    operationId: 'validateAgentExtensionMcp', summary: 'Validate connectivity without disclosing any upstream response content.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'selection: exact instanceId, profileId and revision.' }, responses: { 200: { description: 'Server names and reachable booleans only.', schema: JsonObject } },
+    operationId: 'validateAgentExtensionMcp', summary: 'Validate connectivity of enabled library servers without disclosing any upstream response content.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'Empty object.' }, responses: { 200: { description: 'Server names and reachable booleans only.', schema: JsonObject } },
   },
   'POST /api/instance/extensions/v1/skills/archive': {
     operationId: 'importAgentExtensionSkillArchive', summary: 'Import a bounded strict tar or tar.gz skill bundle.', tags: ['Configuration'], requestBody: { schema: JsonObject, description: 'filename and base64 archive, at most 5 MiB compressed and 4 MiB expanded. Requires SKILL.md.' }, responses: { 200: { description: 'Immutable digest and provenance.', schema: JsonObject } },

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extensionProfileInputSchema, extensionSelectionSchema, INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
+import { automationExtensionsSchema, extensionLibraryInputSchema, extensionSelectionSchema, INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
 
 /**
  * Request and response schemas for the dashboard HTTP API reference.
@@ -200,13 +200,31 @@ export const TaskHistory = component('TaskHistory', z.object({
   budget: z.object({}).loose().optional().describe('Spend so far against the task\'s cost cap, when a cap applies.'),
 }).loose(), 'A task together with its lifecycle events.');
 
-export const ExtensionProfileInput = component('ExtensionProfileInput', extensionProfileInputSchema as unknown as z.ZodType, 'Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
-export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType);
-export const ExtensionProfileSave = component('ExtensionProfileSave', z.strictObject({ input: ExtensionProfileInput, expected: ExtensionSelection.optional(), secrets: z.record(z.string(), z.string().nullable()).optional() }));
+export const ExtensionLibraryInput = component('ExtensionLibraryInput', extensionLibraryInputSchema as unknown as z.ZodType, 'Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
+export const ExtensionLibrarySave = component('ExtensionLibrarySave', z.strictObject({ input: ExtensionLibraryInput, expectedRevision: z.number().int().min(0), secrets: z.record(z.string(), z.string().nullable()).optional() }));
+export const ExtensionItemEnabledRequest = component('ExtensionItemEnabledRequest', z.strictObject({
+  item: z.union([z.strictObject({ kind: z.literal('server'), name: z.string() }), z.strictObject({ kind: z.literal('skill'), bundleId: z.uuid() })]),
+  enabled: z.boolean(),
+}));
+export const ExtensionSecretReplaceRequest = component('ExtensionSecretReplaceRequest', z.strictObject({ name: z.string(), secret: z.string().nullable(), expectedRevision: z.number().int().min(0).optional() }));
+const ExtensionLibraryRevisionSchema = z.object({
+  version: z.literal(1), instanceId: z.string(), revision: z.number().int().describe('0 before the first save.'),
+  createdAt: z.number(), updatedAt: z.number(), auditActor: z.string(),
+  servers: z.array(z.object({}).loose()), skills: z.array(z.object({}).loose()),
+  secrets: z.record(z.string(), z.object({ configured: z.boolean() }).loose()).describe('Presence markers only; secret values are never returned.'),
+  skillBundles: z.array(z.object({}).loose()),
+}).loose();
+export const ExtensionLibraryRevisionResponse = component('ExtensionLibraryRevisionResponse', z.object({ library: ExtensionLibraryRevisionSchema }));
+export const ExtensionLibraryRead = component('ExtensionLibraryRead', z.object({
+  contract: z.object({}).loose(), instanceId: z.string(), library: ExtensionLibraryRevisionSchema,
+  bundles: z.array(z.object({}).loose()), catalog: z.array(z.object({}).loose()),
+}));
+export const AutomationExtensions = component('AutomationExtensions', automationExtensionsSchema as unknown as z.ZodType, 'Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.');
+export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType, 'Legacy profile selection; no longer accepted for new submissions.');
 
 export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object({
-  extensionProfile: ExtensionSelection.nullable().optional(),
-  extensionAllowWrite: z.boolean().optional().describe('Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries.'),
+  extensionProfile: ExtensionSelection.nullable().optional().describe('Removed: extension profiles were replaced by the instance extension library. A non-null value is refused.'),
+  extensionAllowWrite: z.boolean().optional().describe('Legacy write opt-in that accompanied a profile selection; true without one is refused.'),
   repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.'),
   instruction: z.string().min(1).max(50_000).regex(/\S/).describe('What the agent should do; becomes the GitHub issue body. Must not be only whitespace.'),
   agentAlias: z.string().optional().describe('Agent to route to. Omit to use the instance default.'),

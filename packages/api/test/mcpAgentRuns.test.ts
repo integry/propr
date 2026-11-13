@@ -445,18 +445,24 @@ testWithFixture('new automation receipts replay through legacy approval and reje
 });
 
 
-testWithFixture('MCP automation tools cannot write extension selections into definitions', async f => {
+testWithFixture('MCP automation tools read extensions but cannot write them into definitions', async f => {
   for (const name of ['create_automation_definition', 'update_automation_definition', 'create_agent_definition', 'update_agent_definition']) assert.equal(f.catalog.find(tool => tool.name === name), undefined);
   const definition = await f.define(['acme/app']);
-  const selection = { instanceId: 'instance', profileId: 'profile', revision: 1 };
+  const extensions = { servers: ['docs'], skills: [] };
   for (const family of ['automation', 'agent']) {
     for (const action of ['trigger', 'approve', 'reject']) {
       const tool = f.catalog.find(tool => tool.name === `${action}_${family}_run`)!;
       const args = action === 'trigger' ? { definitionId: definition.id, idempotencyKey: 'selection-write' } : { runId: 'run' };
-      assert.equal(tool.schema.safeParse({ ...args, extensionProfile: selection }).success, false);
+      assert.equal(tool.schema.safeParse({ ...args, extensions }).success, false);
+      assert.equal(tool.schema.safeParse({ ...args, extensionProfile: { instanceId: 'instance', profileId: 'profile', revision: 1 } }).success, false);
     }
   }
-  assert.equal((await f.db('agent_definitions').where({ id: definition.id }).first()).extension_profile, null);
+  assert.equal((await f.db('agent_definitions').where({ id: definition.id }).first()).extensions, null);
+  // Definitions stored with added items round-trip through the read tools.
+  await f.db('agent_definitions').where({ id: definition.id }).update({ extensions: JSON.stringify(extensions) });
+  assert.deepEqual((await f.call('get_automation_definition', { definitionId: definition.id })).data.definition.extensions, extensions);
+  const listed = (await f.call('list_automation_definitions', {})).data.definitions.find((d: { id: string }) => d.id === definition.id);
+  assert.deepEqual(listed.extensions, extensions);
 });
 
 testWithFixture('get_automation_run and list_automation_runs expose the unproductive-run flags', async f => {

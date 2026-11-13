@@ -12,7 +12,6 @@ vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn().mockResolvedValu
 vi.mock('../contexts/AuthContext', async importOriginal => ({ ...await importOriginal<typeof import('../contexts/AuthContext')>(), useCurrentUser: () => ({ id: 'alice', permissions: [] }) }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => ({ isDemoMode: false }) }));
 vi.mock('../components/RepositorySelector', () => ({ RepositorySelector: ({ selectedRepo, onRepoChange }: { selectedRepo: string; onRepoChange: (value: string) => void }) => <select aria-label="Repository" value={selectedRepo} onChange={event => onRepoChange(event.target.value)}><option value="" /><option>acme/billing</option></select> }));
-vi.mock('../components/Extensions/ExtensionProfileSelector', () => ({ ExtensionProfileSelector: ({ value, onChange, disabled }: React.ComponentProps<typeof import('../components/Extensions/ExtensionProfileSelector').ExtensionProfileSelector>) => <select aria-label="Agent extension profile" disabled={disabled} value={value?.profileId ?? ''} onChange={e => onChange(e.target.value ? { instanceId: 'instance', profileId: e.target.value, revision: 1 } : null)}><option value="">None</option><option value="docs">Documentation tools</option></select> }));
 function Destination() { const location = useLocation(); return <div data-testid="destination">{location.pathname} {JSON.stringify(location.state)}</div>; }
 const pending = { id: 'submission', state: 'failed' as const, issueNumber: 42, issueUrl: 'https://github.com/acme/billing/issues/42', taskId: null, error: 'Queue unavailable' };
 const renderPage = () => render(<MemoryRouter initialEntries={[{ pathname: '/tasks/new', state: { initialRepository: 'acme/billing', initialPrompt: 'Fix invoice dates', todoIds: ['todo-1'] } }]}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /><Route path="*" element={<Destination />} /></Routes></MemoryRouter>);
@@ -296,22 +295,25 @@ describe('New Task issue launcher', () => {
 });
 
 
-it.each([false, true])('persists only the explicit extension write choice (%s)', async choice => {
+it('offers no extension selection and submits none', async () => {
   vi.mocked(submissions.submitTask).mockResolvedValue(pending);
   renderPage();
-  fireEvent.change(screen.getByLabelText('Agent extension profile'), { target: { value: 'docs' } });
-  const grant = screen.getByLabelText('Allow selected MCP write capabilities for this run');
-  expect(grant).not.toBeChecked();
-  if (choice) fireEvent.click(grant);
+  expect(screen.queryByText(/extension/i)).toBeNull();
+  expect(screen.queryByLabelText(/MCP write/i)).toBeNull();
   const run = await screen.findByRole('button', { name: 'Run task' }); await waitFor(() => expect(run).toBeEnabled()); fireEvent.click(run);
   await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(submissions.submitTask).mock.calls[0][1]).toMatchObject({ extensionProfile: { instanceId: 'instance', profileId: 'docs', revision: 1 }, extensionAllowWrite: choice });
-  await waitFor(() => expect(grant).toBeDisabled());
+  const payload = vi.mocked(submissions.submitTask).mock.calls[0][1];
+  expect(payload).not.toHaveProperty('extensionProfile');
+  expect(payload).not.toHaveProperty('extensionAllowWrite');
 });
 
-it('clears the write opt-in when selecting a profile again', () => {
-  renderPage(); const select = screen.getByLabelText('Agent extension profile');
-  fireEvent.change(select, { target: { value: 'docs' } }); fireEvent.click(screen.getByLabelText('Allow selected MCP write capabilities for this run'));
-  fireEvent.change(select, { target: { value: '' } }); expect(screen.queryByLabelText('Allow selected MCP write capabilities for this run')).toBeNull();
-  fireEvent.change(select, { target: { value: 'docs' } }); expect(screen.getByLabelText('Allow selected MCP write capabilities for this run')).not.toBeChecked();
+it('restores an older draft that selected extensions without showing extension controls', async () => {
+  sessionStorage.setItem(`task-active-submission:${API_BASE_URL}:alice`, 'saved-key');
+  const payload = { repository: 'acme/billing', instruction: 'Saved request', extensionProfile: { instanceId: 'instance', profileId: 'docs', revision: 1 }, extensionAllowWrite: true };
+  vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue({ key: 'saved-key', payload, files: [] } as unknown as Awaited<ReturnType<typeof submissions.taskSnapshotStorage>>);
+  vi.mocked(submissions.getTaskSubmission).mockResolvedValue(pending);
+  renderPage();
+  await waitFor(() => expect(screen.getByLabelText('Prompt')).toHaveValue('Saved request'));
+  expect(screen.queryByText(/extension/i)).toBeNull();
+  expect(screen.queryByLabelText(/MCP write/i)).toBeNull();
 });

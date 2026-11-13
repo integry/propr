@@ -116,7 +116,7 @@ for the operator walkthrough and the log's filters.
 - **General** contains usage tips and **Experimental**, where voice briefings and dashboard AI summaries are turned on.
 - **AI & Models** configures implementation, planning, review and summarization roles.
 - **Automation** configures trigger users/labels, follow-up keywords, concurrency and review/merge rules.
-- **Agent Extensions & Packages** contains [agent extension profiles](./agent-extensions.md) for MCP tools and skills, and the Debian system packages built into every agent image.
+- **Agent Extensions & Packages** contains the [instance extension library](./agent-extensions.md) of MCP servers and skills, and the Debian system packages built into every agent image.
 - **Integrations** contains Agent Tank, [MCP server and connected apps](./mcp.md), visual preview uploads, and managed storage.
 - **Notifications** configures personal Inbox/push categories, quiet hours and browser subscription. See [Inbox and push](./inbox.md).
 

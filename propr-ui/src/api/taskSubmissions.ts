@@ -8,8 +8,6 @@ export interface TaskSubmission {
   error: string | null;
 }
 export interface TaskRequest {
-  extensionAllowWrite?: boolean;
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   repository: string;
   instruction: string;
   agentAlias?: string;
@@ -22,14 +20,29 @@ async function request(path: string, options?: RequestInit): Promise<TaskSubmiss
   catch (error) { throw Object.assign(error as Error, { status: response.status }); }
   return response.json();
 }
+/** Fields of drafts saved before extension profiles were replaced by the extension library. */
+const LEGACY_PAYLOAD_FIELDS = ['extensionProfile', 'extensionAllowWrite'];
+const resumeByKey = (key: string) => request(`/${encodeURIComponent(key)}/retry`, { method: 'POST' });
 export async function submitTask(key: string, payload: TaskRequest, files: File[]): Promise<TaskSubmission> {
+  const legacy = Object.keys(payload).some(field => LEGACY_PAYLOAD_FIELDS.includes(field));
+  if (legacy) {
+    // A restored older draft may already have been accepted under this key, before
+    // or after its selection was dropped. Resume that submission by key rather than
+    // replay a payload whose identity no longer matches the stored one.
+    try { return await resumeByKey(key); }
+    catch (error) {
+      if ((error as { status?: number }).status !== 404) throw error;
+    }
+  }
   const form = new FormData();
-  form.append('payload', JSON.stringify(payload));
+  // A new submission from such a draft drops the profile selection the API no longer accepts.
+  const current = legacy ? Object.fromEntries(Object.entries(payload).filter(([field]) => !LEGACY_PAYLOAD_FIELDS.includes(field))) : payload;
+  form.append('payload', JSON.stringify(current));
   files.forEach(file => form.append('files', file));
-  return request('', { method: 'POST', headers: { 'Idempotency-Key': key, ...(payload.extensionProfile ? { 'X-ProPR-Extensions': '1' } : {}) }, body: form });
+  return request('', { method: 'POST', headers: { 'Idempotency-Key': key }, body: form });
 }
 export const getTaskSubmission = (key: string) => request(`/${encodeURIComponent(key)}`);
-export const retryTaskSubmission = (key: string) => request(`/${encodeURIComponent(key)}/retry`, { method: 'POST' });
+export const retryTaskSubmission = resumeByKey;
 
 export interface TaskSnapshot { key: string; payload: TaskRequest; files: File[] }
 /** Attachment bytes and metadata as persisted. Plain ArrayBuffers store in every engine; WebKit aborts File/Blob writes. */

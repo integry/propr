@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 307
-    documented: 69
+    total: 308
+    documented: 70
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4203,8 +4203,8 @@ paths:
       x-legacy-error: true
   /api/instance/extensions/v1:
     get:
-      operationId: listAgentExtensionProfiles
-      summary: List secret-free current extension revisions, the versioned contract and operator catalog identity/digest, tools/capability and opaque secret count/configuration status.
+      operationId: getAgentExtensionLibrary
+      summary: Read the current secret-free extension library revision, the imported skill bundles, the versioned contract and the operator catalog identity/digest, tools/capability and opaque secret count/configuration status in one call.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4217,7 +4217,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JsonObject"
+                $ref: "#/components/schemas/ExtensionLibraryRead"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4227,26 +4227,19 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/delete:
-    post:
-      operationId: deleteAgentExtensionProfile
-      summary: Disable new launches without changing active snapshots.
+  /api/instance/extensions/v1/history:
+    get:
+      operationId: getAgentExtensionLibraryHistory
+      summary: Read recent immutable, secret-free library revisions, newest first.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
       security:
         - sessionCookie: []
         - bearerAuth: []
-      requestBody:
-        required: true
-        description: "selection: exact instanceId, profileId and revision."
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Profile tombstoned.
+          description: Revision history.
           content:
             application/json:
               schema:
@@ -4260,10 +4253,10 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/profiles:
+  /api/instance/extensions/v1/items/enabled:
     post:
-      operationId: saveAgentExtensionProfile
-      summary: Create an immutable revision with optional write-only secret replacements.
+      operationId: setAgentExtensionItemEnabled
+      summary: Enable or disable one library item. Only enabled changes; configuration, limits and the stored secret are kept. Disabling is never refused.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4279,18 +4272,17 @@ paths:
             type: string
       requestBody:
         required: true
-        description: input follows ExtensionProfileInput v1; expected is the exact instance/profile/revision selection for updates. secrets maps server names to replacement tokens or null; values are never returned.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ExtensionProfileSave"
+              $ref: "#/components/schemas/ExtensionItemEnabledRequest"
       responses:
         "200":
-          description: Secret-free revision.
+          description: Secret-free library revision.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JsonObject"
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4300,10 +4292,10 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/profiles/{profileId}/history:
-    get:
-      operationId: getAgentExtensionProfileHistory
-      summary: Read immutable, secret-free revision history.
+  /api/instance/extensions/v1/library:
+    post:
+      operationId: saveAgentExtensionLibrary
+      summary: Save the library as a new revision with optional write-only secret replacements. Removing or renaming an item an automation adds explicitly is refused with the automations named.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4311,18 +4303,65 @@ paths:
         - sessionCookie: []
         - bearerAuth: []
       parameters:
-        - name: profileId
-          in: path
+        - name: X-ProPR-Extensions
+          in: header
           required: true
+          description: Must be 1. JSON requests only.
           schema:
             type: string
+      requestBody:
+        required: true
+        description: input follows ExtensionLibraryInput v1; expectedRevision is the revision the edit is based on (0 before the first save). secrets maps server names to replacement tokens or null; values are never returned.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionLibrarySave"
       responses:
         "200":
-          description: Revision history.
+          description: Secret-free library revision.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JsonObject"
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/secrets:
+    post:
+      operationId: replaceAgentExtensionSecret
+      summary: Replace or clear the write-only Bearer token of one library server as a new revision.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionSecretReplaceRequest"
+      responses:
+        "200":
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4467,7 +4506,7 @@ paths:
   /api/instance/extensions/v1/validate:
     post:
       operationId: validateAgentExtensionMcp
-      summary: Validate connectivity without disclosing any upstream response content.
+      summary: Validate connectivity of enabled library servers without disclosing any upstream response content.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4476,7 +4515,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
-        description: "selection: exact instanceId, profileId and revision."
+        description: Empty object.
         content:
           application/json:
             schema:
@@ -8704,6 +8743,27 @@ components:
         - authorizationSource
       additionalProperties: false
       description: The signed-in GitHub user and their instance role.
+    AutomationExtensions:
+      type: object
+      properties:
+        servers:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+            pattern: ^[a-z][a-z0-9_-]{0,47}$
+        skills:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+      required:
+        - servers
+        - skills
+      additionalProperties: false
+      description: Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.
     Compatibility:
       type: object
       properties:
@@ -9013,32 +9073,49 @@ components:
         - message
       additionalProperties: false
       description: The common error envelope. New routes return it for every 4xx and 5xx response.
-    ExtensionProfileInput:
+    ExtensionItemEnabledRequest:
+      type: object
+      properties:
+        item:
+          anyOf:
+            - type: object
+              properties:
+                kind:
+                  type: string
+                  const: server
+                name:
+                  type: string
+              required:
+                - kind
+                - name
+              additionalProperties: false
+            - type: object
+              properties:
+                kind:
+                  type: string
+                  const: skill
+                bundleId:
+                  type: string
+                  format: uuid
+                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+              required:
+                - kind
+                - bundleId
+              additionalProperties: false
+        enabled:
+          type: boolean
+      required:
+        - item
+        - enabled
+      additionalProperties: false
+    ExtensionLibraryInput:
       type: object
       properties:
         version:
           type: number
           const: 1
-        name:
-          type: string
-          minLength: 1
-          maxLength: 100
-        enabled:
-          type: boolean
-        agentScope:
-          maxItems: 64
-          type: array
-          items:
-            type: string
-            pattern: ^[A-Za-z0-9_-]{1,100}$
-        repositoryScope:
-          maxItems: 64
-          type: array
-          items:
-            type: string
-            pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
-        mcpServers:
-          maxItems: 8
+        servers:
+          maxItems: 32
           type: array
           items:
             oneOf:
@@ -9071,6 +9148,23 @@ components:
                     enum:
                       - none
                       - bearer
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
                 required:
                   - kind
                   - name
@@ -9079,6 +9173,9 @@ components:
                   - tools
                   - capability
                   - authentication
+                  - repositories
+                  - agents
+                  - autoApply
                 additionalProperties: false
               - type: object
                 properties:
@@ -9107,6 +9204,23 @@ components:
                     enum:
                       - read
                       - write
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
                 required:
                   - kind
                   - name
@@ -9115,31 +9229,214 @@ components:
                   - enabled
                   - tools
                   - capability
+                  - repositories
+                  - agents
+                  - autoApply
                 additionalProperties: false
-        skillBundleIds:
-          maxItems: 8
+        skills:
+          maxItems: 32
           type: array
           items:
-            type: string
-            format: uuid
-            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+            type: object
+            properties:
+              bundleId:
+                type: string
+                format: uuid
+                pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+              enabled:
+                type: boolean
+              repositories:
+                default: []
+                maxItems: 64
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+              agents:
+                default: []
+                maxItems: 64
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{1,100}$
+              autoApply:
+                default: true
+                type: boolean
+            required:
+              - bundleId
+              - enabled
+              - repositories
+              - agents
+              - autoApply
+            additionalProperties: false
       required:
         - version
-        - name
-        - enabled
-        - agentScope
-        - repositoryScope
-        - mcpServers
-        - skillBundleIds
+        - servers
+        - skills
       additionalProperties: false
-      description: Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.
-    ExtensionProfileSave:
+      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
+    ExtensionLibraryRead:
+      type: object
+      properties:
+        contract:
+          type: object
+          properties: {}
+          additionalProperties: {}
+        instanceId:
+          type: string
+        library:
+          type: object
+          properties:
+            version:
+              type: number
+              const: 1
+            instanceId:
+              type: string
+            revision:
+              type: integer
+              description: 0 before the first save.
+            createdAt:
+              type: number
+            updatedAt:
+              type: number
+            auditActor:
+              type: string
+            servers:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            skills:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            secrets:
+              type: object
+              propertyNames:
+                type: string
+              additionalProperties:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                required:
+                  - configured
+                additionalProperties: {}
+              description: Presence markers only; secret values are never returned.
+            skillBundles:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+          required:
+            - version
+            - instanceId
+            - revision
+            - createdAt
+            - updatedAt
+            - auditActor
+            - servers
+            - skills
+            - secrets
+            - skillBundles
+          additionalProperties: {}
+        bundles:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties: {}
+        catalog:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties: {}
+      required:
+        - contract
+        - instanceId
+        - library
+        - bundles
+        - catalog
+      additionalProperties: false
+    ExtensionLibraryRevisionResponse:
+      type: object
+      properties:
+        library:
+          type: object
+          properties:
+            version:
+              type: number
+              const: 1
+            instanceId:
+              type: string
+            revision:
+              type: integer
+              description: 0 before the first save.
+            createdAt:
+              type: number
+            updatedAt:
+              type: number
+            auditActor:
+              type: string
+            servers:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            skills:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            secrets:
+              type: object
+              propertyNames:
+                type: string
+              additionalProperties:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                required:
+                  - configured
+                additionalProperties: {}
+              description: Presence markers only; secret values are never returned.
+            skillBundles:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+          required:
+            - version
+            - instanceId
+            - revision
+            - createdAt
+            - updatedAt
+            - auditActor
+            - servers
+            - skills
+            - secrets
+            - skillBundles
+          additionalProperties: {}
+      required:
+        - library
+      additionalProperties: false
+    ExtensionLibrarySave:
       type: object
       properties:
         input:
-          $ref: "#/components/schemas/ExtensionProfileInput"
-        expected:
-          $ref: "#/components/schemas/ExtensionSelection"
+          $ref: "#/components/schemas/ExtensionLibraryInput"
+        expectedRevision:
+          type: integer
+          minimum: 0
         secrets:
           type: object
           propertyNames:
@@ -9150,6 +9447,23 @@ components:
               - "null"
       required:
         - input
+        - expectedRevision
+      additionalProperties: false
+    ExtensionSecretReplaceRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        secret:
+          type:
+            - string
+            - "null"
+        expectedRevision:
+          type: integer
+          minimum: 0
+      required:
+        - name
+        - secret
       additionalProperties: false
     ExtensionSelection:
       type: object
@@ -9170,6 +9484,7 @@ components:
         - profileId
         - revision
       additionalProperties: false
+      description: Legacy profile selection; no longer accepted for new submissions.
     FollowupHandoffDetail:
       type: object
       properties:
@@ -10342,11 +10657,12 @@ components:
       type: object
       properties:
         extensionProfile:
+          description: "Removed: extension profiles were replaced by the instance extension library. A non-null value is refused."
           anyOf:
             - $ref: "#/components/schemas/ExtensionSelection"
             - type: "null"
         extensionAllowWrite:
-          description: Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries.
+          description: Legacy write opt-in that accompanied a profile selection; true without one is refused.
           type: boolean
         repository:
           type: string
