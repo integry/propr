@@ -49,6 +49,12 @@ export interface FinalResult {
 }
 
 export interface ClaudeResult {
+    /**
+     * Identifies this one agent execution for metrics: `recordLLMMetrics` records
+     * an execution id at most once, so a failure path that records the same
+     * result again does not count it twice.
+     */
+    executionId?: string;
     model?: string;
     success?: boolean;
     executionTime?: number;
@@ -116,14 +122,6 @@ export interface AggregatedMetrics {
     numTurns: number;
     executionTimeMs: number;
     dateKey: string;
-}
-
-export interface CostCheckMetrics {
-    timestamp: string;
-    correlationId?: string;
-    costUsd: number;
-    model: string;
-    numTurns: number;
 }
 
 export interface PersistMetrics {
@@ -201,22 +199,10 @@ export interface DailyMetric {
     costUsd: number;
 }
 
-export interface HighCostAlert {
-    timestamp: string;
-    correlationId?: string;
-    issueNumber: number;
-    repository: string;
-    costUsd: number;
-    threshold: number;
-    model: string;
-    numTurns: number;
-}
-
 export interface LLMMetricsSummaryResult {
     summary: LLMMetricsSummary;
     modelBreakdown: Record<string, ModelMetrics>;
     dailyMetrics: DailyMetric[];
-    recentHighCostAlerts: HighCostAlert[];
     /** Agent runs stopped by the stall/degenerate-output watchdog, per rule. */
     watchdogTrips: Record<string, number>;
     lastUpdated: string;

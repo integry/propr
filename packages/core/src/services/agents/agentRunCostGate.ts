@@ -4,6 +4,7 @@ import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.j
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
 import logger from '../../utils/logger.js';
 import type { SyntheticUsageSnapshotProvider } from '../syntheticRoutingTypes.js';
+import type { TokenOutlierPause } from '../../utils/tokenOutlierAlert.js';
 import { AliasSpecificAgentTankSnapshotProvider } from '../syntheticUsageSnapshotProvider.js';
 import { loadConfiguredDefaultAgentAlias, type AgentRunGate, type AgentRunGateDecision } from './agentRunTrigger.js';
 
@@ -221,6 +222,35 @@ export interface AgentRunCostGateOptions {
   deferStepMs?: number;
   loadThreshold?: () => Promise<number>;
   evaluateCapacity?: (agentAlias: string | null, threshold: number, modelName: string | null) => Promise<ProviderCapacity>;
+  /** The repository whose scheduled automations token-outlier alerts have paused, if any. */
+  loadTokenOutlierPause?: (repositories: string[]) => Promise<TokenOutlierPause | null>;
+}
+
+async function defaultTokenOutlierPause(repositories: string[]): Promise<TokenOutlierPause | null> {
+  const { loadTokenOutlierAutomationPause } = await import('../../utils/tokenOutlierAlert.js');
+  return loadTokenOutlierAutomationPause(repositories);
+}
+
+/**
+ * A scheduled run of a definition whose repository raised
+ * `token_outlier_pause_alerts` token-outlier alerts within the window is
+ * skipped. Off by default; a failed check lets the run proceed.
+ */
+async function tokenOutlierPauseDecision(
+  repositories: string[],
+  loadPause: (repositories: string[]) => Promise<TokenOutlierPause | null>,
+): Promise<AgentRunGateDecision | null> {
+  try {
+    const pause = await loadPause(repositories);
+    if (!pause) return null;
+    return {
+      action: 'skip',
+      reason: `Scheduled automations for ${pause.repository} are paused: ${pause.alerts} runs used far more tokens than usual in the last ${pause.windowHours} h (pause after ${pause.threshold}), so this run was skipped.`,
+    };
+  } catch (error) {
+    logger.warn({ repositories, err: error }, 'Could not check the token-outlier automation pause; letting the scheduled run proceed');
+    return null;
+  }
 }
 
 function formatPercent(percent: number): string {
@@ -241,12 +271,17 @@ export function createAgentRunCostGate({
   deferStepMs = DEFAULT_AGENT_RUN_DEFER_STEP_MS,
   loadThreshold = () => loadUsagePauseThreshold(),
   evaluateCapacity = (agentAlias, threshold, modelName) => evaluateProviderCapacity(agentAlias, threshold, { modelName, now }),
+  loadTokenOutlierPause = defaultTokenOutlierPause,
 }: AgentRunCostGateOptions = {}): AgentRunGate {
   const loggedUnknown = new Set<string>();
 
   return async ({ definition, trigger, run }): Promise<AgentRunGateDecision> => {
     // Attended: the person who clicked Run now sees the capacity warning instead.
     if (trigger === 'manual') return { action: 'proceed' };
+    if (trigger === 'schedule') {
+      const paused = await tokenOutlierPauseDecision(definition.repositories, loadTokenOutlierPause);
+      if (paused) return paused;
+    }
 
     const threshold = await loadThreshold();
     const capacity = await evaluateCapacity(definition.agentAlias, threshold, definition.modelName);

@@ -312,6 +312,8 @@ Every deferral and skip reason is a full sentence in the run history, for exampl
 
 For a synthetic pool, a run is held back only when every enabled member is over the threshold. The gate only reads the snapshot Agent Tank already has and never starts a refresh. It is a brake, not an accounting system. Each run also stays subject to the ordinary [per-run spend cap](./execution-safety.md#spend-caps), and v1 never escalates an automation run to another model.
 
+Scheduled runs can also be paused by [token-outlier alerts](../operations/metrics.md#token-outlier-alerts): with `token_outlier_pause_alerts` set (off by default), a `schedule` run of an agent whose repository raised that many alerts within `token_outlier_pause_window_hours` is **skipped** with the reason. Other triggers are not paused.
+
 ## Run states
 
 | State | Meaning |

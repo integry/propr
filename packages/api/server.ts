@@ -46,6 +46,7 @@ import {
   createReviewScoreRoutes,
   createPullRequestReadinessRoutes,
   createRepositoryEventRoutes,
+  createCostExportRoutes,
   createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
@@ -423,6 +424,7 @@ export function setupRoutes(): void {
   const repositoryEventRoutes = createRepositoryEventRoutes({ db });
   // Journal appends committed in this process wake repository event waiters at once.
   void installRepositoryEventAppendHook();
+  const costExportRoutes = createCostExportRoutes({ db });
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: isDashboardSummaryEnabled });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
@@ -486,6 +488,7 @@ export function setupRoutes(): void {
     reviewScoreRoutes,
     pullRequestReadinessRoutes,
     repositoryEventRoutes,
+    costExportRoutes,
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,

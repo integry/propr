@@ -21,6 +21,7 @@ export { createStatsRoutes } from './statsRoutes.js';
 export { createReviewScoreRoutes } from './reviewScoreStats.js';
 export { createPullRequestReadinessRoutes } from './pullRequestReadinessRoutes.js';
 export { createRepositoryEventRoutes } from './repositoryEventRoutes.js';
+export { createCostExportRoutes } from './costExport.js';
 export { createAnalyticsCache } from './analyticsCache.js';
 export { createDashboardRoutes } from './dashboardRoutes.js';
 export {

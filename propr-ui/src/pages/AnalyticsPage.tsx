@@ -99,8 +99,10 @@ const buildMetrics = (
     {
       label: 'Total spend',
       testId: 'metric-spend',
-      hint: 'Recorded spend: only executions that reported a cost contribute',
+      hint: 'Recorded spend: only executions that reported a cost contribute. The line below is the part spent on failed attempts (errors, usage limits, timeouts)',
       value: fromOverview(usage ? formatUsd(usage.total_cost_usd) : undefined),
+      // Usage limits, errors and timeouts still spend tokens; this is what they cost in the period.
+      detail: usage?.failed_cost_usd === undefined ? undefined : `${formatUsd(usage.failed_cost_usd)} on failed attempts`,
     },
   ];
 };

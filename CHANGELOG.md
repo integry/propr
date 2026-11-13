@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Review quality by effort**: `GET /api/stats/review-scores` adds `by_effort`,
+  the same figures per implementer model and reasoning level, with PRs whose
+  level was never recorded grouped under `unknown`; `models` keeps the
+  per-model totals. The review-scores CSV now has one row per model and effort
+  (new `implementer_reasoning_level` column), `propr stats review-scores` prints
+  model, effort, merged PRs, runs to merge and cost per merged PR, and the
+  Analytics "Agent efficacy by model" pane shows effort under each model.
+- **LLM cost export**: `GET /api/stats/cost` (JSON) and `GET /api/stats/cost.csv`
+  group recorded agent executions by any of day, repository, agent, model,
+  reasoning level, execution type and outcome, with executions, tasks,
+  input/output/cache tokens and cost in USD per row. They take the Analytics
+  `period` and `repository` filters and are in the OpenAPI spec and
+  `@propr/client` types. `propr stats cost [--period] [--repository]
+  [--group-by] [--json|--csv]` and the MCP read tool `get_cost_breakdown`
+  return the same data. See the Cost export section of the metrics docs.
 - **Claude goals can ask you a question**: Claude goal sessions now get an
   `ask_operator` tool. It takes one question (up to 1,000 characters,
   optionally with 2-10 suggested answers) and waits for your reply. The
@@ -82,6 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Automation runs in the task list**: a run's row is labelled `Automation`
+  instead of `#agent-ru` (the start of its task id), and its title is the
+  automation's name without the `Agent:` prefix.
+- **Shorter link to a preview's original**: a visual preview whose full-size
+  original is kept in ProPR Connect now shows a short `Full-size original`
+  link under the image, instead of a sign-in and retention sentence followed
+  by a separate link.
 - **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
   moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
   tool-policy checks pass against both binaries. Codex 0.167 rewords the

@@ -2,6 +2,7 @@
  * Agent execution for GitHub issue job.
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   TaskStates, AgentRegistry, findIssueSubmission, submissionExtensionsForRun, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
   resolveAgentTerminationReason, repositoryWorkflowPrompt
@@ -16,6 +17,7 @@ import { redisClient } from './config.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
   return {
+    executionId: response.executionId,
     model: response.modelUsed,
     success: response.success,
     executionTime: response.executionTimeMs,
@@ -45,6 +47,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     output: null,
     sessionId: result.sessionId || null,
     conversationId: result.conversationId,
+    executionId: result.executionId,
     finalResult: result.summary || terminationReason === 'max_turns'
       ? { type: 'result', result: result.summary, subtype: terminationReason === 'max_turns' ? 'error_max_turns' : undefined }
       : null,
@@ -155,8 +158,15 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     clearInterval(fileChangesInterval);
   }
 
+  // One id for this execution, so recording it here and again in the job's
+  // failure handler (when a later step throws) leaves one execution row.
+  agentResult.executionId ??= randomUUID();
+
   // Convert to ClaudeCodeResponse for backwards compatibility
   const claudeResult = agentResultToClaudeResponse(agentResult);
+
+  // The run's spend is recorded whatever happens next, a cancellation included.
+  await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId, reasoningLevel: agentResult.reasoningLevel });
 
   // Check if task was cancelled during execution
   const currentState = await stateManager.getTaskState(taskId);
@@ -174,8 +184,6 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
     historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
   });
-
-  await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId, reasoningLevel: agentResult.reasoningLevel });
 
   correlatedLogger.info({
     agentAlias,

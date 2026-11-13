@@ -293,9 +293,8 @@ function publishedBody(
       const original = originalsByIndex.get(assetIndex);
       const published = metadata.assets.find(item => item.assetIndex === assetIndex);
       const notes = asset.description ? [asset.description] : [];
-      if (published?.managedViewerUrl && original?.stored) {
-        notes.push(`Connect sign-in required. Original retained until ${new Date(original.artifact.retentionExpiresAt).toISOString()}.`);
-      } else if (original || options.evidence.originalCapacity?.source === 'managed-storage') {
+      // A stored original needs no note beyond its link line.
+      if (!(published?.managedViewerUrl && original?.stored) && (original || options.evidence.originalCapacity?.source === 'managed-storage')) {
         notes.push(originalUnavailableText(original));
       }
       if (!uploadedUrls.has(assetIndex)) {
