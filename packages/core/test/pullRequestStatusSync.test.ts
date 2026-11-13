@@ -3,6 +3,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import knexFactory, { type Knex } from 'knex';
 import { PR_BODY_MAX_LENGTH } from '@propr/shared';
 import type { PullRequestStatusSyncDeps } from '../src/services/pullRequestStatus/pullRequestStatusSync.js';
+import type { PullRequestStatusScheduleOptions } from '../src/services/pullRequestStatus/pullRequestStatusReconcile.js';
 
 process.env.PROPR_DEMO_MODE = 'true';
 
@@ -1065,25 +1066,134 @@ test('a backfilled update that fails is retried, since no transition may follow'
     }
 });
 
-test('the backfill and the base fan-out read a bounded number of repositories and pages, and schedule only ProPR pull requests', async () => {
-    // 350 open pull requests: only the first 300 (three pages) are read; ProPR created 10, 150 and 320.
-    for (const prNumber of [10, 150, 320]) {
+const openPulls = (numbers: number[]) => numbers.map(number => ({ number, head: { sha: `h${number}`, ref: `b${number}`, repo: { full_name: REPOSITORY } }, base: { ref: 'main', sha: 'base-1' } }));
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+async function ownPullRequests(numbers: number[], state: string | null = null): Promise<void> {
+    for (const prNumber of numbers) {
         await database('tasks').insert({ task_id: `owned-${prNumber}`, repository: REPOSITORY, issue_number: prNumber + 1000, task_type: 'issue', created_at: '2026-11-13T08:00:00Z', initial_job_data: '{}', pr_number: prNumber });
+        if (state) await database('task_history').insert({ task_id: `owned-${prNumber}`, state });
     }
-    github.listed = Array.from({ length: 350 }, (_, index) => ({ number: index + 1, head: { sha: `h${index}`, ref: `b${index}`, repo: { full_name: REPOSITORY } }, base: { ref: 'main', sha: 'base-1' } }));
-    const scheduled: Array<[string, number, Record<string, unknown>]> = [];
+}
+function recordingReconcileDeps() {
+    const scheduled: Array<[string, number, PullRequestStatusScheduleOptions]> = [];
     // The other repositories have no open pull requests.
     const listing = { request: async (route: string, params: Record<string, unknown>) => (params.repo === 'propr' ? await github.request(route, params) : (github.calls.push({ route, params }), { data: [] })) };
-    const reconcileDeps = { github: listing, db: database, spacingMs: 100, schedule: (repository: string, prNumber: number, options: Record<string, unknown>) => { scheduled.push([repository, prNumber, options]); } };
+    const reconcileDeps = { github: listing, db: database, spacingMs: 100, schedule: (repository: string, prNumber: number, options: PullRequestStatusScheduleOptions) => { scheduled.push([repository, prNumber, options]); } };
+    return { scheduled, reconcileDeps };
+}
+const listedPages = (repo = 'propr') => github.calls.filter(call => call.params.repo === repo && call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.page);
+
+test('the backfill and the base fan-out read in bounded batches, and resume where a batch stopped until every pull request is listed', async () => {
+    // 350 open pull requests: one batch reads three pages; ProPR created 10, 150 and 320.
+    await ownPullRequests([10, 150, 320]);
+    github.listed = openPulls(range(1, 350));
+    const { scheduled, reconcileDeps } = recordingReconcileDeps();
 
     const repositories = [REPOSITORY, ...Array.from({ length: MAX_STATUS_BACKFILL_REPOSITORIES + 5 }, (_, index) => `integry/other-${index}`)];
-    const result = await schedulePullRequestStatusBackfill({ ...reconcileDeps, listRepositories: async () => repositories });
-    assert.equal(result.repositories, MAX_STATUS_BACKFILL_REPOSITORIES);
+    const first = await schedulePullRequestStatusBackfill({ ...reconcileDeps, listRepositories: async () => repositories });
+    assert.equal(first.repositories, MAX_STATUS_BACKFILL_REPOSITORIES);
     assert.equal(new Set(github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.repo)).size, MAX_STATUS_BACKFILL_REPOSITORIES);
-    assert.deepEqual(github.calls.filter(call => call.params.repo === 'propr' && call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.page), [1, 2, 3]);
+    assert.deepEqual(listedPages(), [1, 2, 3]);
     assert.deepEqual(scheduled, [[REPOSITORY, 10, { reconcile: true, delayMs: 0 }], [REPOSITORY, 150, { reconcile: true, delayMs: 100 }]]);
+    assert.deepEqual(first.failed, []);
+    // Deferred, not dropped: the repositories past the batch, then the rest of the cut-short listing.
+    assert.deepEqual(first.remaining, [
+        ...repositories.slice(MAX_STATUS_BACKFILL_REPOSITORIES).map(repository => ({ repository, from: null })),
+        { repository: REPOSITORY, from: { page: 3, after: 300 } },
+    ]);
+    assert.ok(first.resumeAfterMs >= 2 * 100, 'the next batch starts after this one\'s updates have');
 
+    github.calls.length = 0;
     scheduled.length = 0;
-    assert.deepEqual(await schedulePullRequestStatusForBasePush(reconcileDeps, { repository: REPOSITORY, branch: 'main', sha: PUSHED_TIP }), [10, 150]);
+    const second = await schedulePullRequestStatusBackfill({ ...reconcileDeps, listRepositories: async () => { throw new Error('the work is not listed again'); } }, first.remaining);
+    assert.equal(second.repositories, repositories.length - MAX_STATUS_BACKFILL_REPOSITORIES + 1);
+    assert.deepEqual(listedPages(), [3, 4]);
+    assert.deepEqual(scheduled, [[REPOSITORY, 320, { reconcile: true, delayMs: 0 }]]);
+    assert.deepEqual(second.remaining, []);
+    assert.deepEqual(second.failed, []);
+
+    github.calls.length = 0;
+    scheduled.length = 0;
+    const firstPush = await schedulePullRequestStatusForBasePush(reconcileDeps, { repository: REPOSITORY, branch: 'main', sha: PUSHED_TIP });
+    assert.deepEqual(firstPush.scheduled, [10, 150]);
+    assert.deepEqual(firstPush.next, { page: 3, after: 300 });
     assert.deepEqual(scheduled, [[REPOSITORY, 10, { baseSha: PUSHED_TIP, delayMs: 0 }], [REPOSITORY, 150, { baseSha: PUSHED_TIP, delayMs: 100 }]]);
+    scheduled.length = 0;
+    const secondPush = await schedulePullRequestStatusForBasePush(reconcileDeps, { repository: REPOSITORY, branch: 'main', sha: PUSHED_TIP, from: firstPush.next });
+    assert.deepEqual(secondPush.scheduled, [320]);
+    assert.equal(secondPush.next, null);
+    assert.deepEqual(scheduled, [[REPOSITORY, 320, { baseSha: PUSHED_TIP, delayMs: 0 }]]);
+    assert.deepEqual(github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls').map(call => call.params.base), ['main', 'main', 'main', 'main', 'main']);
+});
+
+test('a resumed listing finds its place again when pull requests before it closed between batches', async () => {
+    await ownPullRequests([303, 320]);
+    const { reconcileDeps } = recordingReconcileDeps();
+    const target = { repository: REPOSITORY, branch: 'main', sha: PUSHED_TIP };
+    github.listed = openPulls(range(1, 350));
+    const first = await schedulePullRequestStatusForBasePush(reconcileDeps, target);
+    assert.deepEqual(first.next, { page: 3, after: 300 });
+
+    // Five earlier pull requests close: #301-#305 move onto page 3, which the next batch reads again.
+    github.listed = openPulls(range(6, 350));
+    github.calls.length = 0;
+    const few = await schedulePullRequestStatusForBasePush(reconcileDeps, { ...target, from: first.next });
+    assert.deepEqual(few.scheduled, [303, 320]);
+    assert.equal(few.next, null);
+    assert.deepEqual(listedPages(), [3, 4]);
+
+    // 150 close, more than a page: the listing steps back to the page that holds its cursor.
+    github.listed = openPulls(range(151, 350));
+    github.calls.length = 0;
+    const many = await schedulePullRequestStatusForBasePush(reconcileDeps, { ...target, from: first.next });
+    assert.deepEqual(many.scheduled, [303, 320]);
+    assert.equal(many.next, null);
+    assert.deepEqual(listedPages(), [3, 2, 3]);
+
+    // 250 close: stepping back takes the whole batch, and the next one goes on from where it got to.
+    github.listed = openPulls(range(251, 350));
+    github.calls.length = 0;
+    const most = await schedulePullRequestStatusForBasePush(reconcileDeps, { ...target, from: first.next });
+    assert.deepEqual(listedPages(), [3, 2, 1]);
+    assert.deepEqual(most.scheduled, [303, 320]);
+    assert.deepEqual(most.next, { page: 1, after: 350 });
+    const rest = await schedulePullRequestStatusForBasePush(reconcileDeps, { ...target, from: most.next });
+    assert.deepEqual(rest.scheduled, []);
+    assert.equal(rest.next, null);
+});
+
+test('an idle ProPR pull request past the first batch of a large repository gets its block from the startup backfill', async () => {
+    await ownPullRequests([320], 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    github.listed = openPulls(range(1, 350));
+    enablePullRequestStatusSync({ ...deps(), listRepositories: async () => [REPOSITORY] }, { backfill: true });
+    try {
+        await until(() => /✅ Ready/.test(statusLine()), 10_000);
+        assert.match(statusLine(), /✅ Ready/);
+        assert.ok(pullReads(320) > 0, 'the pull request on the fourth page is updated');
+        assert.deepEqual(listedPages(), [1, 2, 3, 3, 4]);
+        await pause(300);
+        assert.equal(listings(), 5, 'the backfill ends once every page is listed');
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});
+
+test('a push to a base with more open pull requests than one batch reaches the ProPR pull requests past it', async () => {
+    await ownPullRequests([320], 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    github.listed = openPulls(range(1, 350));
+    await syncPullRequestStatus(REPOSITORY, 320, deps());
+    assert.match(statusLine(), /✅ Ready/);
+    enablePullRequestStatusSync(deps());
+    try {
+        github.pull.base = { ref: 'main', sha: PUSHED_TIP };
+        github.pull.mergeable = false;
+        push('refs/heads/main', PUSHED_TIP);
+        await until(() => /conflicts with base/.test(statusLine()), 10_000);
+        assert.match(statusLine(), /⚠️ Needs you · conflicts with base/);
+        assert.deepEqual(listedPages(), [1, 2, 3, 3, 4]);
+    } finally {
+        disablePullRequestStatusSync();
+    }
 });

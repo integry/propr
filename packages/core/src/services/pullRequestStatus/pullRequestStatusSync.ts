@@ -14,9 +14,19 @@ import { setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunne
 import {
     schedulePullRequestStatusBackfill,
     schedulePullRequestStatusForBasePush,
+    type PullRequestListCursor,
+    type PullRequestStatusBackfillResult,
+    type PullRequestStatusBackfillWork,
+    type PullRequestStatusBasePushResult,
     type PullRequestStatusReconcileDeps,
     type PullRequestStatusScheduleOptions,
 } from './pullRequestStatusReconcile.js';
+import {
+    schedulePullRequestStatusBaseListing,
+    startPullRequestStatusBackfillRun,
+    stopPullRequestStatusReconcileRuns,
+    type PullRequestStatusReconcileRunner,
+} from './pullRequestStatusReconcileRuns.js';
 import {
     applyPullRequestStatusBlock,
     extractPullRequestStatusBlock,
@@ -58,7 +68,6 @@ export type PullRequestStatusSyncResult = 'updated' | 'removed' | 'unchanged' | 
 let runtimeEnabled = false;
 let runtimeDeps: Partial<PullRequestStatusSyncDeps> = {};
 let backfillStarted = false;
-let backfillRetry: NodeJS.Timeout | null = null;
 
 /**
  * `backfill` also schedules, once per process, the update of every open pull
@@ -73,36 +82,15 @@ export function enablePullRequestStatusSync(deps: Partial<PullRequestStatusSyncD
     setPullRequestStatusBaseSyncRunner(schedulePullRequestStatusSyncForBase);
     if (options.backfill && !backfillStarted) {
         backfillStarted = true;
-        runBackfill(0);
+        startPullRequestStatusBackfillRun(reconcileRunner);
     }
-}
-
-/**
- * A repository whose open pull requests could not be listed (or every one,
- * when the monitored repositories could not be read) is listed again on the
- * bounded settle schedule: a failure proves nothing about its pull requests.
- */
-function runBackfill(attempt: number, repositories?: string[]): void {
-    backfillRetry = null;
-    void backfillPullRequestStatus(repositories ? { listRepositories: async () => repositories } : {})
-        .then(result => result.failed, error => {
-            logger.warn({ error: (error as Error).message }, 'Failed to read the repositories for the pull request status backfill');
-            return repositories;
-        })
-        .then(failed => {
-            const delay = settleRefreshDelaysMs[attempt];
-            if ((failed && failed.length === 0) || delay === undefined || !runtimeEnabled) return;
-            backfillRetry = setTimeout(() => runBackfill(attempt + 1, failed), delay);
-            backfillRetry.unref?.();
-        });
 }
 
 export function disablePullRequestStatusSync(): void {
     runtimeEnabled = false;
     runtimeDeps = {};
     backfillStarted = false;
-    if (backfillRetry) clearTimeout(backfillRetry);
-    backfillRetry = null;
+    stopPullRequestStatusReconcileRuns();
     setPullRequestStatusSyncRunner(null);
     setPullRequestStatusCommitSyncRunner(null);
     setPullRequestStatusBaseSyncRunner(null);
@@ -110,8 +98,6 @@ export function disablePullRequestStatusSync(): void {
     scheduled.clear();
     for (const timer of commitLookups.values()) clearTimeout(timer);
     commitLookups.clear();
-    for (const lookup of baseLookups.values()) clearTimeout(lookup.timer);
-    baseLookups.clear();
 }
 
 export function isPullRequestStatusSyncEnabled(): boolean {
@@ -404,53 +390,34 @@ async function reconcileDeps(overrides: Partial<PullRequestStatusSyncDeps>): Pro
     return { github: await resolved.github(), db: resolved.sources.db, schedule: schedulePullRequestStatusSync, listRepositories: resolved.listRepositories };
 }
 
-/** Schedules the status update of the open ProPR pull requests into `branch`, which was pushed to `sha`. */
+/**
+ * Schedules the status update of the open ProPR pull requests into `branch`,
+ * which was pushed to `sha`: one batch, from `from` (the start when absent).
+ */
 export async function refreshPullRequestStatusForBasePush(
-    repository: string, branch: string, sha: string, overrides: Partial<PullRequestStatusSyncDeps> = {},
-): Promise<number[]> {
-    return await schedulePullRequestStatusForBasePush(await reconcileDeps(overrides), { repository, branch, sha });
+    push: { repository: string; branch: string; sha: string; from?: PullRequestListCursor | null }, overrides: Partial<PullRequestStatusSyncDeps> = {},
+): Promise<PullRequestStatusBasePushResult> {
+    return await schedulePullRequestStatusForBasePush(await reconcileDeps(overrides), push);
 }
 
-/** Schedules the status update of every open ProPR pull request in the monitored repositories. */
+/** Schedules the status update of open ProPR pull requests in the monitored repositories: one batch of `work` (all of them when absent). */
 export async function backfillPullRequestStatus(
-    overrides: Partial<PullRequestStatusSyncDeps> = {},
-): Promise<{ repositories: number; scheduled: number; failed: string[] }> {
-    return await schedulePullRequestStatusBackfill(await reconcileDeps(overrides));
+    overrides: Partial<PullRequestStatusSyncDeps> = {}, work?: PullRequestStatusBackfillWork[],
+): Promise<PullRequestStatusBackfillResult> {
+    return await schedulePullRequestStatusBackfill(await reconcileDeps(overrides), work);
 }
 
-const baseLookups = new Map<string, { timer: NodeJS.Timeout; sha: string; attempts: number }>();
+/** Runs the enumerations above batch by batch, with this process's maintenance state and retry schedule. */
+const reconcileRunner: PullRequestStatusReconcileRunner = {
+    enabled: () => runtimeEnabled,
+    retryDelaysMs: () => settleRefreshDelaysMs,
+    debounceMs: DEFAULT_DEBOUNCE_MS,
+    backfill: work => backfillPullRequestStatus({}, work),
+    refreshForBasePush: push => refreshPullRequestStatusForBasePush(push),
+};
 
-function armBaseLookup(push: { repository: string; branch: string; key: string }, state: { sha: string; attempts: number }, delayMs: number): void {
-    const timer = setTimeout(() => runBaseLookup(push), delayMs);
-    timer.unref?.();
-    baseLookups.set(push.key, { ...state, timer });
-}
-
-function runBaseLookup(push: { repository: string; branch: string; key: string }): void {
-    const lookup = baseLookups.get(push.key);
-    if (!lookup) return;
-    baseLookups.delete(push.key);
-    void refreshPullRequestStatusForBasePush(push.repository, push.branch, lookup.sha).catch(error => {
-        // A failed listing settles nothing; retry it on the bounded schedule unless a newer push did.
-        const delay = settleRefreshDelaysMs[lookup.attempts];
-        logger.warn({ repository: push.repository, branch: push.branch, error: (error as Error).message, retrying: delay !== undefined },
-            'Failed to list the open pull requests into a pushed branch for their status');
-        if (delay !== undefined && runtimeEnabled && !baseLookups.has(push.key)) armBaseLookup(push, { sha: lookup.sha, attempts: lookup.attempts + 1 }, delay);
-    });
-}
-
-/** A burst of pushes to one branch costs one listing, for its latest tip. */
 function schedulePullRequestStatusSyncForBase(repository: string, branch: string, sha: string): void {
-    if (!runtimeEnabled) return;
-    const push = { repository, branch, key: `${repository.toLowerCase()}:${branch}` };
-    const pending = baseLookups.get(push.key);
-    if (pending && pending.attempts === 0) {
-        pending.sha = sha;
-        return;
-    }
-    // A new push does not wait for the retry of a failed listing.
-    if (pending) clearTimeout(pending.timer);
-    armBaseLookup(push, { sha, attempts: 0 }, DEFAULT_DEBOUNCE_MS);
+    if (runtimeEnabled) schedulePullRequestStatusBaseListing(reconcileRunner, { repository, branch, sha });
 }
 
 // --- Checks reported against a commit ---

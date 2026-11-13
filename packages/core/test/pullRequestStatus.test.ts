@@ -148,6 +148,59 @@ test('goal reached with a failed check needs attention', () => {
     assert.deepEqual(status.detail.failedChecks, ['unit tests']);
 });
 
+test('goal reached with one failed check and another still pending needs attention', () => {
+    const status = computePullRequestStatus(facts({
+        latestReviewScore: 8,
+        ultrafix: loop({ active: false, completionStatus: 'succeeded', completionReason: 'goal_reached', finalScore: 8, completedAt: '2026-11-13T09:40:00Z' }),
+        checks: { complete: true, passed: 33, failed: 1, pending: 1, failedNames: ['unit tests'] },
+    }));
+    assert.equal(status.state, 'needs_attention');
+    assert.equal(status.detail.reason, 'check_failed');
+    assert.equal(status.detail.activity, null);
+    assert.deepEqual(status.detail.checks, { passed: 33, failed: 1, pending: 1 });
+    assert.match(renderPullRequestStatusLine(status, NOW), /^\*\*ProPR\*\* ⚠️ Needs you · failed: unit tests · review 8\/10 · checks: 33 passed, 1 failed, 1 pending · /);
+});
+
+test('checks still pending never hide a confirmed problem once no ProPR work is left', () => {
+    const pending = { complete: true, passed: 30, failed: 0, pending: 2, failedNames: [] };
+    const conflicting = { state: 'open', merged: false, headSha: 'a', mergeable: false };
+    const cases: Array<[Partial<PullRequestStatusFacts>, string]> = [
+        [{ tasks: [task('pr-comment', 'failed', 'follow_up')] }, 'last_run_failed'],
+        [{ tasks: [task('merge_conflict', 'failed')], pullRequest: conflicting }, 'conflict_resolution_failed'],
+        [{ ultrafix: loop({ active: false, cycleCount: 10, completionStatus: 'failed', completionReason: 'cycles_exhausted', finalScore: 6, completedAt: '2026-11-13T10:00:00Z' }) }, 'ultrafix_stopped'],
+        [{ pullRequest: conflicting }, 'merge_conflict'],
+        [{ latestReviewScore: 6 }, 'review_below_goal'],
+    ];
+    for (const [overrides, reason] of cases) {
+        const status = computePullRequestStatus(facts({ checks: pending, ...overrides }));
+        assert.equal(status.state, 'needs_attention', reason);
+        assert.equal(status.detail.reason, reason);
+    }
+});
+
+test('ProPR work still in progress stays working over a failed check while others are pending', () => {
+    const mixed = { complete: true, passed: 30, failed: 1, pending: 1, failedNames: ['unit'] };
+    const running = computePullRequestStatus(facts({ checks: mixed, tasks: [task('pr-comment', 'processing', 'follow_up')] }));
+    assert.equal(running.state, 'working');
+    assert.equal(running.detail.activity, 'follow_up');
+    const cycling = computePullRequestStatus(facts({ checks: mixed, ultrafix: loop() }));
+    assert.equal(cycling.state, 'working');
+    assert.equal(cycling.detail.activity, 'waiting_for_ci');
+    const queued = computePullRequestStatus(facts({ checks: mixed, queuedJobs: 1 }));
+    assert.equal(queued.state, 'working');
+    assert.equal(queued.detail.activity, 'queued');
+});
+
+test('checks partly unread with some still pending wait for CI: being unread is no confirmed problem', () => {
+    const status = computePullRequestStatus(facts({ checks: { complete: false, passed: 3, failed: 0, pending: 2, failedNames: [] } }));
+    assert.equal(status.state, 'working');
+    assert.equal(status.detail.activity, 'waiting_for_ci');
+    // A failure among the checks that were read is confirmed, read completely or not.
+    const failed = computePullRequestStatus(facts({ checks: { complete: false, passed: 3, failed: 1, pending: 2, failedNames: ['lint'] } }));
+    assert.equal(failed.state, 'needs_attention');
+    assert.equal(failed.detail.reason, 'check_failed');
+});
+
 test('a conflict with the base and no resolution queued needs attention', () => {
     const status = computePullRequestStatus(facts({ pullRequest: { state: 'open', merged: false, headSha: 'a', mergeable: false } }));
     assert.equal(status.state, 'needs_attention');

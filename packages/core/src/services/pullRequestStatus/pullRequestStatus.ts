@@ -126,12 +126,16 @@ function taskActivity(task: PullRequestStatusTask): PullRequestActivity {
     return 'implementing';
 }
 
-function currentActivity(facts: PullRequestStatusFacts): PullRequestActivity | null {
+/**
+ * ProPR work on the pull request: a task running, an active Ultrafix loop or a
+ * queued job. Checks still pending are not ProPR work: they hold the status at
+ * working only when no confirmed problem needs a person (computePullRequestStatus).
+ */
+function activeProprWork(facts: PullRequestStatusFacts): PullRequestActivity | null {
     const active = facts.tasks.find(task => isActiveTaskState(task.state));
     if (active) return taskActivity(active);
     if (facts.ultrafix?.active) return facts.ultrafix.waitingForCi || facts.checks.pending > 0 ? 'waiting_for_ci' : 'ultrafix';
     if (facts.queuedJobs > 0) return 'queued';
-    if (facts.checks.pending > 0) return 'waiting_for_ci';
     return null;
 }
 
@@ -145,14 +149,18 @@ function stoppedUltrafix(facts: PullRequestStatusFacts): PullRequestStatusUltraf
     return loop;
 }
 
-function attentionReason(facts: PullRequestStatusFacts): PullRequestAttentionReason | null {
+/**
+ * A problem that is established whatever the checks still pending conclude:
+ * no pending check can undo a failed run or check, a stopped loop, a conflict
+ * or a recorded review score.
+ */
+function confirmedAttentionReason(facts: PullRequestStatusFacts): PullRequestAttentionReason | null {
     const latest = facts.tasks[0];
     if (latest?.state === 'failed') return latest.type === 'merge_conflict' ? 'conflict_resolution_failed' : 'last_run_failed';
     if (stoppedUltrafix(facts)) return 'ultrafix_stopped';
     if (facts.checks.failed > 0) return 'check_failed';
     if (facts.pullRequest.mergeable === false) return 'merge_conflict';
     if (facts.latestReviewScore !== null && facts.latestReviewScore < facts.ratingGoal) return 'review_below_goal';
-    if (!facts.checks.complete) return 'checks_unavailable';
     return null;
 }
 
@@ -179,16 +187,20 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
     const loop = facts.ultrafix;
     if (loop?.active) detail.ultrafix = { cycle: Math.min(loop.cycleCount + 1, Math.max(loop.maxCycles, 1)), maxCycles: loop.maxCycles };
 
-    const activity = currentActivity(facts);
+    const activity = activeProprWork(facts);
     if (activity) return { state: 'working', detail: { ...detail, activity } };
 
-    const reason = attentionReason(facts);
+    const reason = confirmedAttentionReason(facts);
     if (reason) {
         const stopped = reason === 'ultrafix_stopped' && loop
             ? { cycles: loop.cycleCount, finalScore: loop.finalScore, reason: loop.completionReason }
             : null;
         return { state: 'needs_attention', detail: { ...detail, reason, ultrafixStopped: stopped } };
     }
+    // Nothing ProPR runs is left and nothing is known to be wrong: the checks
+    // still pending decide, so the PR is neither ready nor needs a person yet.
+    if (facts.checks.pending > 0) return { state: 'working', detail: { ...detail, activity: 'waiting_for_ci' } };
+    if (!facts.checks.complete) return { state: 'needs_attention', detail: { ...detail, reason: 'checks_unavailable' } };
     // Unknown mergeability has not established that the PR is free of conflicts.
     if (facts.pullRequest.mergeable === null) return { state: 'working', detail: { ...detail, activity: 'checking_mergeability' } };
     return { state: 'ready', detail };
