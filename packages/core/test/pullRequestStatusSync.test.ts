@@ -10,9 +10,9 @@ const { closeConnection } = await import('../src/db/connection.js');
 const { PR_STATUS_BLOCK_START, extractPullRequestStatusBlock, stripPullRequestStatusBlock } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
 const {
     disablePullRequestStatusSync, enablePullRequestStatusSync, initialPullRequestStatusBlock,
-    resolvePullRequestsForCommitStatus, setPullRequestStatusMergeabilityRefreshDelaysForTests, syncPullRequestStatus, updatePullRequestBody,
+    PullRequestChangedDuringStatusSyncError, resolvePullRequestsForCommitStatus, setPullRequestStatusMergeabilityRefreshDelaysForTests, syncPullRequestStatus, updatePullRequestBody,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
-const { loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
+const { loadPullRequestStatus, loadPullRequestStatusFacts } = await import('../src/services/pullRequestStatus/pullRequestStatusFacts.js');
 const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = await import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 // A second instance of the lock module stands in for another process (daemon vs worker): it has its own in-process chains.
 const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
@@ -102,6 +102,7 @@ before(async () => {
     await database.schema.createTable('plan_issues', table => {
         table.increments('id'); table.string('repository'); table.integer('pr_number'); table.integer('issue_number'); table.string('draft_id'); table.string('status');
     });
+    await database.schema.createTable('task_drafts', table => { table.string('draft_id').primary(); table.string('repository'); table.json('context_config'); });
     await database.schema.createTable('goals', table => { table.string('goal_id'); table.string('repository'); table.integer('final_pr_number'); });
     await database.schema.createTable('review_scores', table => {
         table.increments('id'); table.string('repository_id'); table.integer('pr_number'); table.integer('score'); table.string('created_at');
@@ -114,7 +115,7 @@ after(async () => {
 });
 
 beforeEach(async () => {
-    for (const name of ['tasks', 'task_history', 'plan_issues', 'goals', 'review_scores']) await database(name).del();
+    for (const name of ['tasks', 'task_history', 'plan_issues', 'task_drafts', 'goals', 'review_scores']) await database(name).del();
     github = new FakeGitHub();
     redis = new FakeRedis();
     clock = new Date('2026-11-13T09:00:00Z');
@@ -456,7 +457,8 @@ test('unknown mergeability is not ready, and the status is refreshed until GitHu
 
     setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20, 20]);
     enablePullRequestStatusSync(deps());
-    const reads = () => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}').length;
+    // One facts read per sync: the pull request itself is read before and after it.
+    const reads = () => github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs').length;
     const waitFor = async (condition: () => boolean) => {
         const deadline = Date.now() + 8_000;
         while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
@@ -659,5 +661,138 @@ test('another body writer whose lock was taken over does not overwrite the newer
         assert.equal(github.pull.body, PREVIEW_BODY);
     } finally {
         restoreLock();
+    }
+});
+
+// --- Human edits during the facts read (F10) ---
+
+test('a description edit saved while the status facts are read is kept', async () => {
+    await addTask('issue', 'completed');
+    const status = slowStatusSync();
+    await status.factsStarted;
+    // A person saves on GitHub, which takes no ProPR lock.
+    const edited = `${HUMAN_BODY}\n\nA person edited this while the status was read.`;
+    github.pull.body = edited;
+    status.release();
+    assert.equal(await status.done, 'updated');
+    assert.equal(stripPullRequestStatusBlock(github.pull.body), edited, 'the edit survives the status write');
+    assert.match(statusLine(), /✅ Ready/);
+    assert.equal(github.patches.length, 1);
+});
+
+test('a block already current is not rewritten over an edit saved during the facts read', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    const block = extractPullRequestStatusBlock(github.pull.body);
+    const status = slowStatusSync();
+    await status.factsStarted;
+    const edited = `${block}\n\n${HUMAN_BODY}\n\nEdited during the read.`;
+    github.pull.body = edited;
+    status.release();
+    assert.equal(await status.done, 'unchanged');
+    assert.equal(github.pull.body, edited);
+});
+
+test('a push during the facts read reads them again for the new head before writing', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = [];
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    let pushed = false;
+    const base = deps();
+    const result = await syncPullRequestStatus(REPOSITORY, PR, {
+        ...base,
+        sources: {
+            ...base.sources!,
+            loadRatingGoal: async () => {
+                if (!pushed) {
+                    pushed = true;
+                    github.pull.head = { ...github.pull.head, sha: 'head-2' };
+                    github.pull.body = `${HUMAN_BODY}\n\nEdited with the push.`;
+                    github.checkRuns = [{ name: 'unit', status: 'in_progress', conclusion: null }];
+                }
+                return 7;
+            },
+        },
+    });
+    assert.equal(result, 'updated');
+    const checkedRefs = github.calls.filter(call => call.route.endsWith('/check-runs')).map(call => call.params.ref);
+    assert.deepEqual(checkedRefs, ['head-1', 'head-2'], 'the facts are read again for the new head');
+    assert.match(statusLine(), /checks: 1 pending/);
+    assert.doesNotMatch(statusLine(), /Ready/, 'the old head\'s checks never decide the new head');
+    assert.equal(stripPullRequestStatusBlock(github.pull.body), `${HUMAN_BODY}\n\nEdited with the push.`);
+});
+
+test('a pull request merged during the facts read loses its block, and the latest body is kept', async () => {
+    await addTask('issue', 'completed');
+    await sync();
+    const status = slowStatusSync();
+    await status.factsStarted;
+    const edited = `${github.pull.body}\n\nEdited before the merge.`;
+    github.pull.body = edited;
+    github.pull.state = 'closed';
+    github.pull.merged = true;
+    status.release();
+    assert.equal(await status.done, 'removed');
+    assert.equal(github.pull.body, stripPullRequestStatusBlock(edited));
+});
+
+test('a pull request that changes head on every read is left unwritten for a retry', async () => {
+    await addTask('issue', 'completed');
+    let sha = 1;
+    const base = deps();
+    const pushing = { ...base, sources: { ...base.sources!, loadRatingGoal: async () => { github.pull.head = { ...github.pull.head, sha: `head-${++sha}` }; return 7; } } };
+    await assert.rejects(syncPullRequestStatus(REPOSITORY, PR, pushing), PullRequestChangedDuringStatusSyncError);
+    assert.equal(github.writes().length, 0);
+});
+
+// --- Pull request ownership (F11) ---
+
+const EPIC_BRANCH = '800-epic-short-name-x7y';
+
+test('a person\'s pull request from an epic-shaped branch gets no block', async () => {
+    github.pull.head = { sha: 'head-1', ref: EPIC_BRANCH };
+    const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+    assert.equal(facts.isProprPullRequest, false);
+    assert.equal((await loadPullRequestStatus(REPOSITORY, PR, { ...deps().sources!, github })).state, 'none', 'MCP reads none');
+    assert.equal(await sync(), 'skipped');
+    assert.equal(github.writes().length, 0);
+    assert.equal(github.pull.body, HUMAN_BODY);
+});
+
+test('an epic-shaped branch whose plan recorded a different epic branch is not ProPR\'s', async () => {
+    github.pull.head = { sha: 'head-1', ref: EPIC_BRANCH };
+    await database('task_drafts').insert({ draft_id: 'draft-1', repository: REPOSITORY, context_config: JSON.stringify({ epicLabel: 'base-800-epic-short-name-abc' }) });
+    await database('plan_issues').insert({ repository: REPOSITORY, issue_number: 800, draft_id: 'draft-1', status: 'open' });
+    assert.equal(await sync(), 'skipped');
+    assert.equal(github.writes().length, 0);
+});
+
+test('an epic pull request whose branch ProPR recorded for its plan gets the block', async () => {
+    github.pull.head = { sha: 'head-1', ref: EPIC_BRANCH };
+    await database('task_drafts').insert({ draft_id: 'draft-1', repository: REPOSITORY, context_config: JSON.stringify({ epicLabel: `base-${EPIC_BRANCH}` }) });
+    await database('plan_issues').insert({ repository: REPOSITORY, issue_number: 800, draft_id: 'draft-1', status: 'merged' });
+    await database('plan_issues').insert({ repository: REPOSITORY, issue_number: 801, draft_id: 'draft-1', status: 'open' });
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /issues: 1 of 2 merged/);
+    assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+});
+
+test('a scheduled update whose pull request kept changing runs again and writes', async () => {
+    await addTask('issue', 'completed');
+    let pushes = 3;
+    const base = deps();
+    enablePullRequestStatusSync({
+        ...base,
+        sources: { ...base.sources!, loadRatingGoal: async () => { if (pushes > 0) github.pull.head = { ...github.pull.head, sha: `head-push-${pushes--}` }; return 7; } },
+    });
+    try {
+        requestPullRequestStatusSync(REPOSITORY, PR);
+        const deadline = Date.now() + 8_000;
+        while (github.patches.length === 0 && Date.now() < deadline) await pause(20);
+        assert.equal(github.patches.length, 1, 'the retry wrote the block');
+        assert.match(statusLine(), /✅ Ready/);
+        assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+    } finally {
+        disablePullRequestStatusSync();
     }
 });

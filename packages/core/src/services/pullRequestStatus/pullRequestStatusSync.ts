@@ -138,21 +138,61 @@ function awaitsMergeability(status: PullRequestStatus | null): boolean {
 
 interface SyncOutcome { result: PullRequestStatusSyncResult; awaitingMergeability: boolean }
 
+/** Times the facts are read again because the pull request changed state or head while they were read. */
+const MAX_STATUS_READS = 3;
+
+/**
+ * The pull request changed state or head on every facts read: the status is
+ * left unwritten and the update runs again.
+ */
+export class PullRequestChangedDuringStatusSyncError extends Error {
+    constructor() {
+        super('The pull request kept changing while its status was read');
+        this.name = 'PullRequestChangedDuringStatusSyncError';
+    }
+}
+
+/** The facts read for `read` still describe `latest`: same state and head. */
+function sameStatusSubject(read: PullRequestStatusPull, latest: PullRequestStatusPull): boolean {
+    return read.state === latest.state && (read.merged === true) === (latest.merged === true) && read.head.sha === latest.head.sha;
+}
+
+/**
+ * The status of the pull request and the pull request as GitHub has it after
+ * the facts were read. People edit the description without ProPR's body lock,
+ * and the facts read takes a while (database, Redis, queue and GitHub checks),
+ * so the body read before it may already be stale: the block is applied to
+ * the body read after it. A change of state or head meanwhile reads the facts
+ * again. A person can still save between this read and the PATCH; GitHub
+ * offers no conditional body update, so that window stays.
+ */
+async function statusForLatestPull(
+    deps: PullRequestStatusSyncDeps, repository: string, prNumber: number,
+): Promise<{ status: PullRequestStatus | null; pull: PullRequestStatusPull }> {
+    let read = await readPull(deps.github, repository, prNumber);
+    for (let attempt = 1; attempt <= MAX_STATUS_READS; attempt++) {
+        const status = await desiredStatus(deps, { repository, prNumber, pull: read });
+        const latest = await readPull(deps.github, repository, prNumber);
+        if (sameStatusSubject(read, latest)) return { status, pull: latest };
+        read = latest;
+    }
+    throw new PullRequestChangedDuringStatusSyncError();
+}
+
 async function syncPullRequestStatusOnce(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps>,
 ): Promise<SyncOutcome> {
     const resolved = resolveDeps(overrides);
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
-        const pull = await readPull(deps.github, repository, prNumber);
-        const status = await desiredStatus(deps, { repository, prNumber, pull });
+        const { status, pull } = await statusForLatestPull(deps, repository, prNumber);
         const awaitingMergeability = awaitsMergeability(status);
         const current = pull.body ?? '';
         const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
         const written = extractPullRequestStatusBlock(next) !== null;
         if (next === current || sameRenderedStatus(next, current)) return { result: written ? 'unchanged' : 'skipped', awaitingMergeability };
-        // The facts read above can outlast the lease; a writer that took the
-        // lock since may have changed the body, so this read must not be written.
+        // The facts read can outlast the lease; a writer that took the lock
+        // since may have changed the body, so this read must not be written.
         await lease.assertHeld();
         const [owner, repo] = repository.split('/');
         await deps.github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber, body: next });
@@ -209,8 +249,9 @@ function runScheduled(repository: string, prNumber: number, key: string): void {
     void syncPullRequestStatusOnce(repository, prNumber, {})
         .then(outcome => { awaitingMergeability = outcome.awaitingMergeability; })
         .catch(error => {
-            // Another writer took the body lock mid-update: re-read and write again.
-            if (error instanceof PullRequestBodyLockLostError) entry.rerun = true;
+            // Another writer took the body lock mid-update, or the pull request
+            // kept changing while it was read: re-read and write again.
+            if (error instanceof PullRequestBodyLockLostError || error instanceof PullRequestChangedDuringStatusSyncError) entry.rerun = true;
             logger.warn({ repository, prNumber, error: (error as Error).message },
                 'Failed to update the pull request status block; the next transition retries');
         })

@@ -106,24 +106,40 @@ export async function loadPullRequestStatusTasks(db: Knex, repository: string, p
 }
 
 /**
+ * Whether ProPR recorded `headRef` as the epic branch of one of its plans. The
+ * branch name alone proves nothing (anyone can name a branch like an epic):
+ * ProPR stores the epic's `base-<branch>` label on the plan draft it created
+ * the branch for, and that draft holds the issue the branch name starts with.
+ */
+async function isRecordedEpicBranch(db: Knex, repository: string, headRef: string): Promise<boolean> {
+    const match = headRef.match(EPIC_BRANCH_PATTERN);
+    if (!match) return false;
+    const draftIds = db('plan_issues').where({ repository, issue_number: Number(match[1]) }).whereNotNull('draft_id').select('draft_id');
+    const drafts: Array<{ context_config: unknown }> = await db('task_drafts')
+        .where({ repository }).whereIn('draft_id', draftIds).select('context_config');
+    return drafts.some(draft => parseJson(draft.context_config).epicLabel === `base-${headRef}`);
+}
+
+/**
  * Whether ProPR created the pull request. Only creation records count: an
  * implementation task that produced it, a plan issue, a goal, or an epic
- * branch. Review, follow-up and conflict tasks prove ProPR worked on a pull
- * request, which it also does on pull requests people opened.
+ * branch ProPR recorded for one of its plans. Review, follow-up and conflict
+ * tasks prove ProPR worked on a pull request, which it also does on pull
+ * requests people opened.
  */
 async function isProprPullRequest(
     db: Knex, pullRequest: { repository: string; prNumber: number; headRef: string },
 ): Promise<boolean> {
     const { repository, prNumber, headRef } = pullRequest;
-    if (EPIC_BRANCH_PATTERN.test(headRef)) return true;
-    const [implementation, planIssue, goal] = await Promise.all([
+    const [implementation, planIssue, goal, epic] = await Promise.all([
         db('tasks').where({ repository, pr_number: prNumber })
             .andWhere(query => query.whereNull('task_type').orWhereIn('task_type', PULL_REQUEST_CREATING_TASK_TYPES))
             .first('task_id'),
         db('plan_issues').where({ repository, pr_number: prNumber }).first('id'),
         db('goals').where({ repository, final_pr_number: prNumber }).first('goal_id'),
+        isRecordedEpicBranch(db, repository, headRef),
     ]);
-    return Boolean(implementation || planIssue || goal);
+    return Boolean(implementation || planIssue || goal || epic);
 }
 
 async function loadEpicProgress(db: Knex, repository: string, headRef: string): Promise<PullRequestStatusFacts['epic']> {
