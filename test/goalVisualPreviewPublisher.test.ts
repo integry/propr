@@ -141,7 +141,7 @@ test('goal publication renders GitHub inline media with an independent managed o
   assert.deepEqual(order, ['managed', 'github']);
   assert.match(body, /github\.com\/user-attachments\/assets\/goal-inline-1/);
   assert.match(body, /connect\.example\.test\/previews\/managed-original-1/);
-  assert.match(body, /\(Connect sign-in, until 2099-01-01\)/);
+  assert.match(body, /\[Full-size original\]\([^)]+\)$/m);
   for (const localPath of [absolutePath, relativePath, localSource]) assert.equal(body.includes(localPath), false, localPath);
 });
 

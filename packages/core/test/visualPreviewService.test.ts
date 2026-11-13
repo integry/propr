@@ -221,8 +221,8 @@ test('renders hybrid previews only from validated structured publication metadat
   });
   const section = renderVisualPreviewSection(previewEvidence, { published });
   assert.match(section, /!\[Desktop\]\(https:\/\/github\.com\/user-attachments\/assets\/github-asset\)/);
-  assert.ok(section.includes('[Full-size original](https://connect.example.test/previews/artifact-1) (Connect sign-in, until 2099-01-01)'));
-  assert.equal(/sign-in required|retained until/i.test(section), false, 'the link line is the only note about the original');
+  assert.match(section, /^\[Full-size original\]\(https:\/\/connect\.example\.test\/previews\/artifact-1\)$/m);
+  assert.equal(/sign-in|retained until/i.test(section), false, 'the link line is the only note about the original');
   const expected = [{
     type: 'image', title: 'Desktop', description: 'Changed controls.',
     url: 'https://github.com/user-attachments/assets/github-asset',
@@ -267,7 +267,7 @@ test('hybrid rendering preserves a managed original and complete recovery guidan
     unavailableReason: 'github-authentication-failed',
   }]);
 
-  assert.match(section, /\[Full-size original\]\(https:\/\/connect\.example\.test\/previews\/artifact-0\) \(Connect sign-in, until \d{4}-\d{2}-\d{2}\)/);
+  assert.match(section, /\[Full-size original\]\(https:\/\/connect\.example\.test\/previews\/artifact-0\)$/m);
   assert.match(section, /the authenticated original remains available above/);
   assert.ok(section.includes(RESTORE_PREVIEW_UPLOADS_GUIDANCE));
 });

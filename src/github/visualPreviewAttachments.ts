@@ -293,7 +293,7 @@ function publishedBody(
       const original = originalsByIndex.get(assetIndex);
       const published = metadata.assets.find(item => item.assetIndex === assetIndex);
       const notes = asset.description ? [asset.description] : [];
-      // A stored original needs no note: its link line already says who can open it and until when.
+      // A stored original needs no note beyond its link line.
       if (!(published?.managedViewerUrl && original?.stored) && (original || options.evidence.originalCapacity?.source === 'managed-storage')) {
         notes.push(originalUnavailableText(original));
       }
