@@ -9,19 +9,16 @@
 import type { Redis } from 'ioredis';
 import type { UltrafixEscalationState } from './ultrafixEscalationPolicy.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
+import { hasOnlyStyleFindings, type ReviewFindingCategory } from './reviewFindingCategory.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
 import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
+import type { UltrafixOutcome } from '@propr/shared';
+import { ultrafixEndedEvent, ultrafixOutcomeFromCompletion, ultrafixStartedEvent, writeUltrafixJournalEvent as journal } from './ultrafixJournal.js';
 export {
-    clearDeferredContinuationIfCurrent,
-    clearUltrafixStateIfCurrent,
-    getUltrafixAutomaticWorkEpoch,
-    getUltrafixAutomaticWorkEpochKey,
-    getUltrafixDeferredKey,
-    hasUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWorkForComment,
-    isUltrafixAutomaticWorkCurrent,
-    saveUltrafixStateIfCurrent,
+    clearDeferredContinuationIfCurrent, clearUltrafixStateIfCurrent, getUltrafixAutomaticWorkEpoch,
+    getUltrafixAutomaticWorkEpochKey, getUltrafixDeferredKey, hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork, invalidateUltrafixAutomaticWorkForComment,
+    isUltrafixAutomaticWorkCurrent, saveUltrafixStateIfCurrent,
 } from './ultrafixAutomaticWorkEpoch.js';
 export {
     claimDeferredContinuation,
@@ -43,11 +40,7 @@ export {
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixClaimedStep, UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
 export {
-    areChecksReadyForUltrafix,
-    checkReadiness,
-    hasFollowUpJobsForPR,
-    hasPendingBatchedComments,
-    isCooldownElapsed,
+    areChecksReadyForUltrafix, checkReadiness, hasFollowUpJobsForPR, hasPendingBatchedComments, isCooldownElapsed,
 } from './ultrafixReadinessPolicy.js';
 
 // --- Interfaces ---
@@ -126,6 +119,18 @@ export interface NextActionDecision {
     action: UltrafixAction | null;
     /** Reason for the decision */
     reason: string;
+    /** The loop stops because every remaining blocker is stylistic. */
+    styleFindingsOnly?: boolean;
+}
+
+/** Stop reason of a loop whose review left only `style` blockers. */
+export const ULTRAFIX_STYLE_FINDINGS_ONLY_REASON = 'Only stylistic findings remain; no further fix was scheduled';
+
+/** Review facts beyond its status that the next-action decision reads. */
+export interface ReviewDecisionInput {
+    isPartial?: boolean;
+    /** Categories of the review's remaining blockers, one entry per blocker. */
+    findingCategories?: readonly ReviewFindingCategory[];
 }
 
 export interface StartLoopOptions {
@@ -255,9 +260,10 @@ export function determineNextAction(
     state: UltrafixLoopState,
     currentScore: number | null,
     reviewStatus: ReviewOutputStatus = 'invalid',
-    isPartial: boolean = false,
+    review: boolean | ReviewDecisionInput = false,
 ): NextActionDecision {
     const { reviewCount, fixCount } = getActionCounts(state);
+    const { isPartial = false, findingCategories = [] } = typeof review === 'boolean' ? { isPartial: review } : review;
 
     if (!state.active) {
         return { action: null, reason: 'Loop is inactive' };
@@ -295,6 +301,11 @@ export function determineNextAction(
                 return { action: null, reason: `Invalid review output and max review attempts reached (${state.maxCycles})` };
             }
             return { action: 'review', reason: 'Review output is invalid, retrying review' };
+        }
+        // Stylistic blockers alone never owe another fix: the review counts as
+        // clean for continuation, while score and goal rules stay unchanged.
+        if (hasOnlyStyleFindings(findingCategories.map(category => ({ category })))) {
+            return { action: null, reason: ULTRAFIX_STYLE_FINDINGS_ONLY_REASON, styleFindingsOnly: true };
         }
         if (fixCount >= state.maxCycles) {
             return { action: null, reason: `Max cycles reached: ${fixCount} ${fixCount === 1 ? 'fix step has' : 'fix steps have'} completed (limit ${state.maxCycles})` };
@@ -375,6 +386,7 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
             { key: getUltrafixStateKey(state.owner, state.repo, state.pr), serialized: JSON.stringify(state) },
         );
     if (!saved) throw new Error('Ultrafix startup was superseded before state commit');
+    await journal(ultrafixStartedEvent(state));
     return { state, initialAction };
 }
 
@@ -486,8 +498,11 @@ export async function stopLoop(redis: Redis, owner: string, repo: string, pr: nu
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
 
+    const wasRunning = state.active && state.completionStatus === null;
     state.active = false;
     await saveState(redis, state);
+    // Only a running loop ends here; one that already completed has its event.
+    if (wasRunning) await journal(ultrafixEndedEvent(state, { outcome: 'stopped', finalScore: state.finalScore, reason: 'Ultrafix was stopped' }));
     return state;
 }
 
@@ -501,6 +516,8 @@ export async function completeLoop(
         completionReason: string;
         finalScore: number | null;
         workEpoch?: number;
+        /** Coded outcome; derived from the status and reason when omitted. */
+        outcome?: UltrafixOutcome;
     },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadOwnedState(redis, params, params.workEpoch);
@@ -512,5 +529,8 @@ export async function completeLoop(
     state.finalScore = params.finalScore;
     state.completedAt = new Date().toISOString();
 
-    return await saveOwnedState(redis, state, params.workEpoch) ? state : null;
+    if (!await saveOwnedState(redis, state, params.workEpoch)) return null;
+    await journal(ultrafixEndedEvent(state, { finalScore: params.finalScore, reason: params.completionReason,
+        outcome: params.outcome ?? ultrafixOutcomeFromCompletion(params.completionStatus, params.completionReason) }));
+    return state;
 }

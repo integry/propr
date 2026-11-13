@@ -16,6 +16,8 @@ export interface GoalCapability {
     inputAtBoundary: boolean;
     modelAtBoundary: boolean;
     pauseAtBoundary: boolean;
+    /** The running goal can ask a question that goal input answers. */
+    operatorQuestions?: boolean;
   };
   reason?: string;
   models: string[];

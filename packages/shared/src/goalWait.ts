@@ -33,10 +33,14 @@ export const GOAL_WAIT_TERMINAL_STATES = ['completed', 'failed', 'cancelled'] as
  * - `completed`, `failed`, `cancelled`, `paused`: the persisted, confirmed state.
  * - `terminal`: any of completed, failed or cancelled.
  * - `checkpoint`: a checkpoint published after the cursor (never an older one).
+ * - `blocked`: the goal's provider opened a question or approval for its
+ *   operator. Without a cursor a blocker of the current attempt that is still
+ *   open matches immediately.
  *
- * Omitting the condition waits for any new durable event after the cursor.
+ * Omitting the condition waits for any new durable event after the cursor,
+ * including a blocker opening or closing.
  */
-export const GOAL_WAIT_CONDITIONS = ['completed', 'failed', 'cancelled', 'paused', 'terminal', 'checkpoint'] as const;
+export const GOAL_WAIT_CONDITIONS = ['completed', 'failed', 'cancelled', 'paused', 'terminal', 'checkpoint', 'blocked'] as const;
 export type GoalWaitCondition = typeof GOAL_WAIT_CONDITIONS[number];
 
 /**
@@ -48,16 +52,25 @@ export type GoalWaitCondition = typeof GOAL_WAIT_CONDITIONS[number];
 export const GOAL_WAIT_OUTCOMES = ['matched', 'timed_out', 'unreachable'] as const;
 export type GoalWaitOutcome = typeof GOAL_WAIT_OUTCOMES[number];
 
-export type GoalWaitEventKind = 'lifecycle' | 'checkpoint';
+export type GoalWaitEventKind = 'lifecycle' | 'checkpoint' | 'blocker';
+
+/**
+ * Journaled blocker status: `open` when the provider raised it, then `resolved`
+ * (answered, timed out or its turn ended) or `superseded` (its attempt ended).
+ */
+export type GoalWaitBlockerStatus = 'open' | 'resolved' | 'superseded';
 
 /** One durable journal entry. `cursor` resumes immediately after this event. */
 export interface GoalWaitEvent {
   cursor: string;
   sequence: number;
   kind: GoalWaitEventKind;
+  /** Lifecycle events only. */
   state: GoalWaitLifecycleState | null;
   previousState: GoalWaitLifecycleState | null;
   checkpoint: { id: string; kind: string | null; commitSha: string | null; prNumber: number | null; prUrl: string | null } | null;
+  /** Blocker events only; read the goal's attention for the question itself. */
+  blocker?: { id: string; status: GoalWaitBlockerStatus; category: string | null } | null;
   occurredAt: string;
 }
 
@@ -77,9 +90,9 @@ export function isTerminalGoalWaitState(state: string | null | undefined): boole
   return !!state && (GOAL_WAIT_TERMINAL_STATES as readonly string[]).includes(state);
 }
 
-/** Whether a lifecycle state satisfies a state condition. Checkpoint waits are event-only. */
+/** Whether a lifecycle state satisfies a state condition. Checkpoint and blocker waits are not lifecycle states. */
 export function goalWaitStateMatches(condition: GoalWaitCondition, state: string | null | undefined): boolean {
-  if (!state || condition === 'checkpoint') return false;
+  if (!state || condition === 'checkpoint' || condition === 'blocked') return false;
   if (condition === 'terminal') return isTerminalGoalWaitState(state);
   return condition === state;
 }

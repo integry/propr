@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import knex from 'knex';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -32,6 +33,7 @@ test('OAuth sign-in routes: durable administrators only, session-bound callback,
 
   const routes = createExtensionLibraryRoutes(store);
   const app = express();
+  app.use(rateLimit({ windowMs: 60_000, limit: 600 }));
   app.use(express.json());
   app.use((req, _res, next) => {
     const actor = req.get('x-test-actor'); if (actor) req.user = { id: actor, username: 'fixture' } as typeof req.user;

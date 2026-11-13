@@ -177,6 +177,25 @@ describe('toAntigravityCliModelId', () => {
         }
     });
 
+    test('maps Gemini 4 Hydrogen efforts, including XHigh, to the agy 1.5.8 IDs', () => {
+        for (const effort of ['low', 'medium', 'high', 'xhigh'] as const) {
+            const expected = `gemini-4-hydrogen-${effort}`;
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-4-hydrogen', effort), expected);
+            assert.equal(toAntigravityCliModelId(`antigravity:antigravity-gemini-4-hydrogen`, effort), expected);
+            // Streams report either the CLI ID or the `agy models` display name.
+            assert.ok(antigravityModelIdsMatch(expected, expected));
+        }
+        assert.ok(antigravityModelIdsMatch('gemini-4-hydrogen-xhigh', 'Gemini 4 Hydrogen (XHigh)'));
+        assert.ok(antigravityModelIdsMatch('antigravity-gemini-4-hydrogen', 'Gemini 4 Hydrogen (XHigh)'));
+        assert.ok(!antigravityModelIdsMatch('gemini-4-hydrogen-xhigh', 'Gemini 4 Hydrogen (High)'));
+        for (const effort of ['max', 'ultra', 'ultracode'] as const) {
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-4-hydrogen', effort), 'gemini-4-hydrogen-xhigh');
+        }
+        for (const effort of [undefined, '', 'auto'] as const) {
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-4-hydrogen', effort), 'gemini-4-hydrogen-medium');
+        }
+    });
+
     test('selects the closest supported effort going down for GPT-OSS', () => {
         assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'high'), 'gpt-oss-120b-medium');
         assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash'), 'gemini-3.8-flash-medium');

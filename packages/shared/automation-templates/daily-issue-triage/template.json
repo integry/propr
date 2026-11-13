@@ -1,0 +1,15 @@
+{
+  "id": "daily-issue-triage",
+  "name": "Daily issue triage",
+  "description": "Each morning, report likely duplicate issues, proposed severity and security labels, stale issues and the items that need a human.",
+  "category": "triage",
+  "capabilities": ["repository_read"],
+  "schedule": "0 7 * * 1-5",
+  "autonomy": "dry_run",
+  "previousReportCount": 1,
+  "reviewBeforeSaving": [
+    { "field": "repositories", "note": "Choose the repositories whose issues should be triaged. Without one the run has no issues to read." },
+    { "field": "schedule", "note": "Runs at 07:00 UTC on weekdays. Change the time or turn the schedule off to run it only on demand." },
+    { "field": "autonomy", "note": "Starts as Dry run, so a run only writes the report. Raise it to Preview & approve or Auto only when you want an agent to act on the report, for example by creating TODOs or tasks." }
+  ]
+}

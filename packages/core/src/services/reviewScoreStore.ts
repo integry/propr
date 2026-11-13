@@ -8,6 +8,7 @@
  */
 
 import type { Knex } from 'knex';
+import { appendRepositoryEvent } from './repositoryEventJournal.js';
 
 export const REVIEW_SCORE_SOURCES = ['review', 'ultrafix'] as const;
 export type ReviewScoreSource = typeof REVIEW_SCORE_SOURCES[number];
@@ -24,6 +25,8 @@ export interface ReviewScoreInput {
     reviewerModel: string | null;
     score: number;
     blockerCount: number;
+    /** Blocker counts keyed by finding category; null when not recorded. */
+    blockerCategoryCounts?: Readonly<Record<string, number>> | null;
     suggestionCount: number;
     source: ReviewScoreSource;
     /** Ultrafix cycle number; null for a plain `/review`. */
@@ -53,6 +56,8 @@ export interface ReviewScoreRow {
     reviewer_model: string | null;
     score: number;
     blocker_count: number;
+    /** JSON object of blocker counts by category; null for rows written before categories. */
+    blocker_categories: string | null;
     suggestion_count: number;
     cycle_number: number | null;
     goal: number | null;
@@ -127,6 +132,10 @@ function assertScoreInput(input: ReviewScoreInput): void {
     if (!REVIEW_SCORE_SOURCES.includes(input.source)) {
         throw new RangeError(`review score source must be one of: ${REVIEW_SCORE_SOURCES.join(', ')}`);
     }
+    const counts = Object.values(input.blockerCategoryCounts ?? {});
+    if (counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
+        throw new RangeError('review score blocker category counts must be non-negative integers');
+    }
 }
 
 /**
@@ -137,7 +146,7 @@ export async function recordReviewScores(database: Knex, inputs: readonly Review
     if (inputs.length === 0) return 0;
     inputs.forEach(assertScoreInput);
     const implementations = new Map<string, ImplementationTask | null>();
-    const rows = [];
+    const rows: Array<Omit<ReviewScoreRow, 'id' | 'goal_reached'> & { goal_reached: boolean | null }> = [];
     for (const input of inputs) {
         const key = `${input.repository}#${input.prNumber}`;
         if (!implementations.has(key)) {
@@ -156,6 +165,7 @@ export async function recordReviewScores(database: Knex, inputs: readonly Review
             reviewer_model: input.reviewerModel,
             score: input.score,
             blocker_count: input.blockerCount,
+            blocker_categories: input.blockerCategoryCounts ? JSON.stringify(input.blockerCategoryCounts) : null,
             suggestion_count: input.suggestionCount,
             cycle_number: input.cycleNumber,
             goal: input.goal,
@@ -166,7 +176,21 @@ export async function recordReviewScores(database: Knex, inputs: readonly Review
             created_at: (input.createdAt ?? new Date()).toISOString(),
         });
     }
-    await database('review_scores').insert(rows);
+    // The journal events commit with the scores they describe.
+    await database.transaction(async trx => {
+        const inserted = await trx('review_scores').insert(rows).returning('id') as Array<{ id: number } | number>;
+        for (const [index, row] of rows.entries()) {
+            const id = inserted[index];
+            const scoreId = typeof id === 'number' ? id : id?.id;
+            await appendRepositoryEvent(trx, {
+                repository: row.repository_id, domain: 'pull_request', type: 'review_scored', entityId: row.pr_number,
+                prNumber: row.pr_number, headSha: row.head_sha, occurredAt: row.created_at,
+                payload: { score: row.score, goal: row.goal, goalReached: row.goal_reached, source: row.source,
+                    cycle: row.cycle_number, reviewerModel: row.reviewer_model },
+                dedupeKey: scoreId === undefined ? null : `pr:${row.pr_number}:review_scored:${scoreId}`,
+            });
+        }
+    });
     return rows.length;
 }
 
@@ -212,8 +236,26 @@ export async function recordPullRequestOutcome(database: Knex, event: PullReques
         closed_at: closedAt,
         ...(event.merged && { merged_at: isoOrNow(event.mergedAt ?? event.closedAt) }),
     };
-    await database('notification_pull_request_state')
-        .insert({ ...identity, merged_at: null, ...values })
-        .onConflict(['repository', 'pr_number'])
-        .merge(values);
+    await database.transaction(async trx => {
+        await trx('notification_pull_request_state')
+            .insert({ ...identity, merged_at: null, ...values })
+            .onConflict(['repository', 'pr_number'])
+            .merge(values);
+        await appendPullRequestOutcomeEvent(trx, { ...event, closedAt });
+    });
+}
+
+/**
+ * Journal a merge or a close. A merge happens once; a pull request can be
+ * closed, reopened and closed again, so each close is keyed by its time.
+ */
+export async function appendPullRequestOutcomeEvent(database: Knex, event: {
+    repository: string; prNumber: number; merged: boolean; closedAt?: string | null; mergedAt?: string | null;
+}): Promise<void> {
+    const at = event.merged ? isoOrNow(event.mergedAt ?? event.closedAt) : isoOrNow(event.closedAt);
+    await appendRepositoryEvent(database, {
+        repository: event.repository, domain: 'pull_request', type: event.merged ? 'merged' : 'closed',
+        entityId: event.prNumber, prNumber: event.prNumber, occurredAt: at,
+        dedupeKey: event.merged ? `pr:${event.prNumber}:merged` : `pr:${event.prNumber}:closed:${at}`,
+    });
 }

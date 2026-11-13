@@ -195,6 +195,19 @@ describe('provider API pricing', () => {
     });
   });
 
+  test('prices Gemini 4 Hydrogen at the published OpenRouter rates through model resolution', async () => {
+    const modelId = getOpenRouterId('antigravity-gemini-4-hydrogen');
+    assert.strictEqual(modelId, 'google/gemini-4-hydrogen');
+    assert.strictEqual(getOpenRouterId('antigravity-gemini-4-hydrogen-xhigh'), modelId);
+    const pricing = await getModelPricing(modelId);
+    assert.deepStrictEqual(pricing, {
+      prompt: 1.5 / 1_000_000,
+      completion: 7.5 / 1_000_000,
+      cacheRead: 0.075 / 1_000_000,
+    });
+    assert.strictEqual(pricing, getOfficialModelPricing(modelId));
+  });
+
   test('preserves Sol-specific cached-read costs through model resolution', async () => {
     // Standard short-context pricing: https://developers.openai.com/api/docs/pricing
     for (const [model, expectedCost] of [

@@ -147,19 +147,14 @@ describe('LLM Metrics Tests', () => {
         assert.equal(metrics.repository, 'testowner/testrepo');
     });
 
-    it('should handle high cost alerts', async () => {
-        // Set a low threshold for testing
-        process.env.LLM_COST_THRESHOLD_USD = '5.00';
-
+    it('does not keep the retired high-cost alert list', async () => {
+        // Outlier runs raise token-outlier Inbox notifications instead of an unread Redis list.
         const highCostResult: ClaudeResultLike = {
             success: true,
             executionTime: 120000,
             model: 'claude-3-opus-20240229',
             sessionId: 'test-session-high-cost',
-            finalResult: {
-                num_turns: 20,
-                cost_usd: 15.00 // Above threshold
-            }
+            finalResult: { num_turns: 20, cost_usd: 15.00 }
         };
 
         await recordLLMMetrics(highCostResult as Parameters<typeof recordLLMMetrics>[0], {
@@ -169,15 +164,8 @@ describe('LLM Metrics Tests', () => {
         }, { jobType: 'issue', correlationId: 'test-correlation-high-cost' });
 
         const summary = await getLLMMetricsSummary();
-        assert.ok(summary.recentHighCostAlerts.length > 0, 'Should have high cost alerts');
-        
-        const alert = summary.recentHighCostAlerts[0];
-        assert.equal(alert.costUsd, 15.00);
-        assert.equal(alert.threshold, 5.00);
-        assert.equal(alert.issueNumber, 999);
-
-        // Clean up
-        delete process.env.LLM_COST_THRESHOLD_USD;
+        assert.equal('recentHighCostAlerts' in summary, false);
+        assert.equal(await redisClient.exists('llm:metrics:alerts:highcost'), 0);
     });
 
     it('should handle missing or null values gracefully', async () => {

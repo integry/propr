@@ -96,7 +96,7 @@ describe('runSingleReview budgeting', () => {
         const prompts = new Map<string, string>();
         const logs: Array<Record<string, unknown>> = [];
         renderCalls.length = 0;
-        const ctx = createContext({ claude: { type: 'claude' }, codex: { type: 'codex' } }, prompts, logs);
+        const ctx = { ...createContext({ claude: { type: 'claude' }, codex: { type: 'codex' } }, prompts, logs), acceptanceCriteria: [{ id: 'AC1', text: 'Keeps the objective' }] };
 
         await runSingleReview({ agentAlias: 'codex', model: 'gpt-6-astra', label: 'Astra' }, ctx as never);
         await runSingleReview({ agentAlias: 'claude', model: 'claude-opus-5-5', label: 'Opus' }, ctx as never);
@@ -109,6 +109,7 @@ describe('runSingleReview budgeting', () => {
             assert.ok((render.omittedDiffFiles as string[]).includes('src/generated.ts'));
         }
         assert.ok(prompts.get('claude')!.length > prompts.get('codex')!.length);
+        for (const prompt of prompts.values()) assert.ok(prompt.includes('- AC1: Keeps the objective'), 'every reviewer verifies the criteria');
 
         const budgetLogs = logs.filter(entry => 'safeInputTokens' in entry);
         assert.equal(budgetLogs.length, 2);

@@ -995,6 +995,8 @@ test('Antigravity compatibility aliases, review values and custom labels retain 
         ['antigravity-pro-high', 'antigravity-gemini-3.1-pro-high', 'gemini-4-argon-high'],
         ['antigravity-pro-low', 'antigravity-gemini-3.1-pro-low', 'gemini-4-argon-low'],
         ['antigravity-argon-high', 'antigravity-gemini-4-argon-high', 'gemini-4-argon-high'],
+        ['antigravity-hydrogen-low', 'antigravity-gemini-4-hydrogen-low', 'gemini-4-hydrogen-low'],
+        ['antigravity-hydrogen-xhigh', 'antigravity-gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-xhigh'],
         ['antigravity-opus46-thinking', 'antigravity-claude-opus-4.6-thinking', 'claude-opus-5-5-high'],
         ['antigravity-sonnet46-thinking', 'antigravity-claude-sonnet-4.6-thinking', 'claude-sonnet-5-5-high'],
     ]) {

@@ -139,6 +139,8 @@ describe('multiline review fields', () => {
         // continuation line indented beneath its bullet.
         assert.ok(published!.includes([
             '### F25: 🔴 Recheck attempts before cancellation',
+            '- **Category:** correctness',
+            '',
             '- **Required behavior:** Restore validation cancelled by ProPR for the current head.',
             '',
             '- **Evidence:** `cancelPendingRuns`',
@@ -155,6 +157,7 @@ describe('multiline review fields', () => {
             '  - preserve inherited obligations when withdrawing a new intent.',
             '',
             '### F26: 🔴 Release the renewed lease',
+            '- **Category:** correctness',
             '- **Required behavior:** A released lease must be reacquirable.',
             `- **Evidence:** ${F2_EVIDENCE}`,
             '- **Minimum fix:** Compare against the renewed token on release.',
@@ -293,6 +296,7 @@ describe('multiline review fields', () => {
         assert.ok(section.includes([
             '### F4: Other blocker',
             '- **Source review comment:** 5',
+            '- **Category:** correctness',
             '- **Violated requirement:** Keep order.',
             '- **Changed-code evidence:** src/b.ts:2 — reorder',
         ].join('\n')));

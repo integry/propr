@@ -1,4 +1,5 @@
 import type { Knex } from 'knex';
+import { isUltrafixOutcome, type UltrafixOutcome } from '@propr/shared';
 import { isUltrafixCommandTool } from './ultrafix.js';
 
 export const PICKUP_DEADLINE_MS = 10 * 60 * 1000;
@@ -11,7 +12,7 @@ export const COMMAND_NOT_PICKED_UP_FAILURE = {
   message: 'No worker picked up the command comment. Check that event intake is running (get_setup_status) and that the PR carries a processing label or the author is allowed.',
 } as const;
 
-export type UltrafixOutcome = 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+export type { UltrafixOutcome };
 export type UltrafixPhase = 'review' | 'fix' | 'waiting_for_ci' | 'paused' | 'stopping' | 'done';
 
 export interface CommandPickup {
@@ -135,8 +136,7 @@ function taskMode(data: Record<string, unknown>): 'review' | 'fix' | undefined {
 }
 
 function outcomeFrom(value: unknown): UltrafixOutcome | null {
-  return ['goal_reached', 'cycles_exhausted', 'stopped', 'failed'].includes(String(value))
-    ? value as UltrafixOutcome : null;
+  return isUltrafixOutcome(value) ? value : null;
 }
 
 /** Reconstruct one ultrafix epoch exclusively from durable task and history rows. */
@@ -266,6 +266,7 @@ export function summarizeLifecycle(tool: string, lifecycle: Record<string, unkno
     if (state === 'cancelled') return `Ultrafix was stopped after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'goal_reached') return `Ultrafix reached goal ${goal} after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'cycles_exhausted') return `Ultrafix stopped after exhausting ${cycle || maxCycles} cycles; ${scoreText} did not reach goal ${goal}.`;
+    if (progress.outcome === 'style_findings_only') return `Ultrafix stopped after ${cycle} cycle${cycle === 1 ? '' : 's'} because only stylistic findings remain; ${scoreText}.`;
     if (progress.outcome === 'stopped') return `Ultrafix was stopped after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'failed') return `Ultrafix failed during cycle ${cycle || 1}; ${scoreText}.`;
     if (state === 'completed') return `Ultrafix completed after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;

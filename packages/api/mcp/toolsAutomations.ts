@@ -16,7 +16,7 @@ import {
   type TriggerAgentRunInput,
   type TriggerAgentRunResult,
 } from '@propr/core';
-import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_DEFINITION_CONTRACT, type AutomationRunState } from '@propr/shared';
+import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG, type AutomationRunState } from '@propr/shared';
 import { createAutomationDefinitionRoutes, publicAutomationDefinition, publicAutomationRun } from '../routes/automationDefinitionRoutes.js';
 import { callWorkflow, type WorkflowHandler } from './adapter.js';
 import { AGENT_RUN_MCP_CLIENT_ID } from './agentRunGrants.js';
@@ -252,6 +252,9 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
 
   tools.push({ name: 'get_automation_definition_contract', description: 'Read the automation definition contract shared by the API, MCP, UI and CLI: capabilities, autonomy modes, run triggers and states, field limits and schedule rules.', scope: 'read', readOnly: true,
     schema: z.object({}).strict(), run: async () => ok(AUTOMATION_DEFINITION_CONTRACT) });
+
+  tools.push({ name: 'list_automation_templates', description: 'List the shipped automation templates (for example daily issue triage): id, name, description, category, prompt, capabilities, suggested schedule, autonomy (always dry_run) and what to review before saving. A template creates nothing; the user starts one from New automation in the Web UI and saves it.', scope: 'read', readOnly: true,
+    schema: z.object({}).strict(), run: async () => ok(AUTOMATION_TEMPLATE_CATALOG) });
 
   tools.push({ name: 'list_automation_runs', description: `List the runs of one of your automations newest first: trigger, state, timing and skip or failure reasons. Report bodies are omitted; read one with get_automation_run. ${NO_CHANGE_NOTE}`, scope: 'read', readOnly: true,
     schema: z.object({ ...definitionShape, offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) }).strict(),

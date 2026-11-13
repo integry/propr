@@ -74,6 +74,7 @@ function getSettingDescription(key: SettingKey): string {
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
     default_max_cost_usd: "Default per-run spend cap in USD (0 = no cap; task override and workflow.yml take precedence)",
     ultrafix_ci_wait_timeout_ms: "Milliseconds an Ultrafix review waits for blocking CI before stopping (default 7200000)",
+    goal_question_max_wait_ms: "Milliseconds a Claude goal question waits for an operator answer (default 86400000; bounded by the agent timeout)",
     agent_stall_timeout_ms: "Stop an agent run silent this long, in ms (0 disables; \"default\" = env AGENT_STALL_TIMEOUT_MS)",
     agent_tool_stall_timeout_ms: "Silence allowed while a tool call runs, in ms (0 disables; \"default\" = env AGENT_TOOL_STALL_TIMEOUT_MS)",
     agent_degenerate_output_limit: "Consecutive whitespace-only deltas that stop a run (0 disables; \"default\" = env AGENT_DEGENERATE_OUTPUT_LIMIT)",
@@ -81,6 +82,11 @@ function getSettingDescription(key: SettingKey): string {
     agent_network_mode_enforced: "With restricted mode, stop repositories choosing open (true/false; \"default\" = env AGENT_NETWORK_MODE_ENFORCED)",
     agent_network_allow: "Comma-separated hosts every restricted run may reach (\"default\" = env AGENT_NETWORK_ALLOW)",
     agent_network_ignore_repository_allow: "With enforced restricted mode, ignore hosts repositories add in network.allow (true/false; \"default\" = env AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW)",
+    token_outlier_multiplier: "Alert when a run uses more than this multiple of its baseline median tokens (1.5-100, default 4)",
+    token_outlier_min_tokens: "Runs at or below this many total tokens never raise a token alert (default 500000)",
+    token_outlier_baseline_runs: "Successful runs (same repository, model and execution type) in the baseline median (8-200, default 20)",
+    token_outlier_pause_alerts: "Skip a repository's scheduled automations after this many token alerts in the window (0 = off)",
+    token_outlier_pause_window_hours: "Hours over which token alerts count toward the automation pause (1-720, default 24)",
   };
   return descriptions[key];
 }

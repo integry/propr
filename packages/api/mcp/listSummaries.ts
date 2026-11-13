@@ -1,3 +1,5 @@
+import { attemptLineageSummary } from '../routes/taskAttemptLineage.js';
+
 const SUMMARY_LIMIT = 240;
 const TITLE_LIMIT = 160;
 const RELATION_LIMIT = 8;
@@ -139,6 +141,8 @@ export function summarizeTask(row: JsonObject, now = Date.now()): JsonObject {
     failure_reason: state === 'failed'
       ? compactText(stateError.message ?? row.state_reason, 500)
       : null,
+    // Automatic-replacement lineage, only for a task that is part of one.
+    ...attemptLineageSummary(row),
   };
 }
 

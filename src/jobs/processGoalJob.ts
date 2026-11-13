@@ -265,7 +265,7 @@ async function recordGoalMetrics(goal: GoalRow, job: GoalJobData, result: AgentE
     if (!await fencedGoal(job)) throw new Error('Goal metrics write was fenced');
     const [repoOwner, repoName] = goal.repository.split('/');
     await recordLLMMetrics({
-        success: result.success, sessionId: result.sessionId, conversationId: result.conversationId,
+        executionId: result.executionId, success: result.success, sessionId: result.sessionId, conversationId: result.conversationId,
         executionTime: result.executionTimeMs, model: result.modelUsed,
         conversationLog: result.conversationLog, tokenUsage: result.tokenUsage, error: result.error,
     }, { number: 0, repoOwner, repoName }, {

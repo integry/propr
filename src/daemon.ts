@@ -24,10 +24,6 @@ import {
     areAllChecksPassing,
     getCurrentPRHead,
     getCheckRunsStatusForRepo,
-    loadUltrafixRatingGoal,
-    loadUltrafixMaxCycles,
-    loadUltrafixPauseSeconds,
-    loadPrReviewModel,
     AgentRegistry,
     sweepConflictedPullRequests,
     getMergeConflictSweepIntervalMs,
@@ -47,6 +43,7 @@ import {
 } from '@propr/core';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
+import { sweepRepositoryEvents } from './daemon/repositoryEventRetention.js';
 import { sweepPushRescues } from './daemon/rescueRefSweep.js';
 import { scheduleWorktreeSweep } from './daemon/worktreeSweep.js';
 import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
@@ -54,16 +51,9 @@ import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
 import { scheduleEpicMergeProgressRetrySweep } from './daemon/epicMergeProgressRetrySweep.js';
 import { scheduleNoChangeCompletionRecoverySweep } from './daemon/noChangeCompletionRecoverySweep.js';
 import { scheduleAutoMergeSweep } from './daemon/autoMergeSweep.js';
-import {
-    clearUltrafixStateIfCurrent,
-    hasUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWorkForComment,
-    startLoop,
-} from './jobs/ultrafixOrchestrationService.js';
+import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
-import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
@@ -193,10 +183,12 @@ interface DaemonOptions {
 // Reclaim stale draft context (generated_context + cached file previews) past its TTL.
 // The first run on startup also backfills any historically-accumulated context, then
 // it runs on an interval. Returns the interval handle so the caller can clear it on shutdown.
+// The same hourly sweep prunes repository journal events past their 30-day retention.
 async function scheduleDraftContextSweep(): Promise<NodeJS.Timeout> {
     const DRAFT_CONTEXT_SWEEP_INTERVAL_MS = parseInt(process.env.DRAFT_CONTEXT_SWEEP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
-    await sweepDraftContext();
-    return setInterval(() => { void sweepDraftContext(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
+    const sweep = async () => { await sweepDraftContext(); await sweepRepositoryEvents(); };
+    await sweep();
+    return setInterval(() => { void sweep(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
 }
 
 // Delete push-salvage rescue refs and bundles past PUSH_RESCUE_RETENTION_DAYS. Runs in the
@@ -214,19 +206,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     await loadAllConfigs();
 
     // Wire up ultrafix dependencies so packages/core can call into app-level services
-    // without cross-package imports.
-    setUltrafixDeps({
-        loadUltrafixRatingGoal,
-        loadUltrafixMaxCycles,
-        loadUltrafixPauseSeconds,
-        loadPrReviewModel,
-        startLoop,
-        clearStateIfCurrent: clearUltrafixStateIfCurrent,
-        hasAutomaticWork: hasUltrafixAutomaticWork,
-        reserveAutomaticWork: invalidateUltrafixAutomaticWork,
-        invalidateAutomaticWork: invalidateUltrafixAutomaticWorkForComment,
-        getPendingReviewState,
-    });
+    // without cross-package imports. This also installs the Ultrafix journal writer.
+    setUltrafixDeps(createUltrafixDeps());
 
     // Wire up check_run dependencies for ultrafix readiness gating
     setCheckRunDeps({

@@ -4,6 +4,8 @@ import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { up as createPullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../../core/src/db/migrations/20261006000000_create_review_scores.js';
+import { up as addReasoningLevelColumns } from '../../core/src/db/migrations/20261111000000_add_reasoning_level_columns.js';
+import { up as addBlockerCategories } from '../../core/src/db/migrations/20261112000000_add_review_score_blocker_categories.js';
 import { createReviewScoreRoutes, loadReviewScoreSummary, median, reviewScoreSummaryCsv } from '../routes/reviewScoreStats.js';
 import { createAnalyticsCache } from '../routes/analyticsCache.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
@@ -23,6 +25,8 @@ interface ScoreSeed {
   score: number;
   at: string;
   model: string | null;
+  /** The implementation's recorded reasoning level; null for historical scores. */
+  effort?: string | null;
   blockers?: number;
   cycle?: number | null;
   goal?: number | null;
@@ -37,8 +41,10 @@ async function seedScore(seed: ScoreSeed): Promise<void> {
   await database('review_scores').insert({
     repository_id: seed.repository ?? 'acme/repo', pr_number: seed.pr, task_id: seed.task ?? `review-${seed.pr}-${seed.at}`,
     implementation_task_id: seed.model ? `impl-${seed.pr}` : null, implementer_agent: seed.model ? 'agent' : null,
-    implementer_model: seed.model, reviewer_agent: 'codex', reviewer_model: seed.reviewer ?? GPT, score: seed.score,
-    blocker_count: seed.blockers ?? 0, suggestion_count: 0, cycle_number: seed.cycle ?? null, goal: seed.goal ?? null,
+    implementer_model: seed.model, implementer_reasoning_level: seed.effort ?? null, reviewer_agent: 'codex', reviewer_model: seed.reviewer ?? GPT, score: seed.score,
+    blocker_count: seed.blockers ?? 0, suggestion_count: 0,
+    // Category counts are stored beside the total and never change the score statistics.
+    blocker_categories: seed.blockers ? JSON.stringify({ correctness: seed.blockers - 1, style: 1 }) : null, cycle_number: seed.cycle ?? null, goal: seed.goal ?? null,
     goal_reached: seed.goal ? seed.goalReached ?? (!seed.blockers && seed.score >= seed.goal) : null,
     source: seed.goal ? 'ultrafix' : 'review', head_sha: `sha-${seed.score}`, created_at: seed.at,
   });
@@ -82,18 +88,22 @@ before(async () => {
   });
   await createPullRequestState(database);
   await createReviewScores(database);
+  await addReasoningLevelColumns(database);
+  await addBlockerCategories(database);
 
   // Opus PR 1: Ultrafix from 5 (with a blocker) to a clean 8 at cycle 2, merged, then a stray post-merge review.
-  await seedScore({ pr: 1, score: 5, blockers: 1, cycle: 1, goal: 8, at: daysAgo(5), model: OPUS });
-  await seedScore({ pr: 1, score: 8, cycle: 2, goal: 8, at: daysAgo(4), model: OPUS });
-  await seedScore({ pr: 1, score: 9, at: daysAgo(2), model: OPUS });
-  // Opus PR 2: one review, closed unmerged. PR 3: still open; its Ultrafix never reached the goal.
-  await seedScore({ pr: 2, score: 7, at: daysAgo(5), model: OPUS });
+  // Implemented at high effort.
+  await seedScore({ pr: 1, score: 5, blockers: 1, cycle: 1, goal: 8, at: daysAgo(5), model: OPUS, effort: 'high' });
+  await seedScore({ pr: 1, score: 8, cycle: 2, goal: 8, at: daysAgo(4), model: OPUS, effort: 'high' });
+  await seedScore({ pr: 1, score: 9, at: daysAgo(2), model: OPUS, effort: 'high' });
+  // Opus PR 2: one review of an xhigh implementation, closed unmerged.
+  // PR 3: still open, effort never recorded; its Ultrafix never reached the goal.
+  await seedScore({ pr: 2, score: 7, at: daysAgo(5), model: OPUS, effort: 'xhigh' });
   await seedScore({ pr: 3, score: 4, blockers: 2, cycle: 1, goal: 9, at: daysAgo(3), model: OPUS });
-  // GPT PR 10 merged without any recorded cost; PR 11 merged with cost.
-  await seedScore({ pr: 10, score: 6, at: daysAgo(6), model: GPT });
-  await seedScore({ pr: 10, score: 8, at: daysAgo(5), model: GPT });
-  await seedScore({ pr: 11, score: 9, at: daysAgo(5), model: GPT });
+  // GPT PR 10 merged without any recorded cost; PR 11 merged with cost. Both at high effort.
+  await seedScore({ pr: 10, score: 6, at: daysAgo(6), model: GPT, effort: 'high' });
+  await seedScore({ pr: 10, score: 8, at: daysAgo(5), model: GPT, effort: 'high' });
+  await seedScore({ pr: 11, score: 9, at: daysAgo(5), model: GPT, effort: 'high' });
   // A PR whose implementer is unknown.
   await seedScore({ pr: 20, score: 3, at: daysAgo(1), model: null });
   // Outside a 30-day window, and in another repository.
@@ -230,26 +240,29 @@ test('exports the same summary as CSV, with unknown values as empty cells', asyn
   assert.equal(state.headers['content-type'], 'text/csv; charset=utf-8');
   assert.match(state.headers['content-disposition'], /review-scores-30d\.csv/);
   const lines = state.text!.trimEnd().split('\r\n');
-  assert.equal(lines[0], 'implementer_model,implementer_agent,prs_scored,first_score_mean,first_score_median,first_score_n,'
+  assert.equal(lines[0], 'implementer_model,implementer_agent,implementer_reasoning_level,prs_scored,first_score_mean,first_score_median,first_score_n,'
     + 'final_score_mean,final_score_n,cycles_to_goal_mean,cycles_to_goal_n,cycles_to_goal_attempted,merge_rate,merged,merge_rate_n,'
     + 'cost_per_merged_pr_usd,cost_per_merged_pr_n,score_delta_mean,score_delta_n,runs_to_merge_mean,runs_to_merge_n');
-  assert.equal(lines[1], `${OPUS},agent,3,5.33,5,3,6.33,3,2,1,2,0.5,1,2,3,1,1,3,2,1`);
-  assert.equal(lines[2], `${GPT},agent,2,7.5,7.5,2,8.5,2,,0,0,1,2,2,5,1,1,2,1,2`);
-  assert.equal(lines[3], ',,1,3,3,1,3,1,,0,0,,0,0,,0,0,1,,0');
-  assert.equal(lines.length, 4);
+  // One row per model and effort; historical rows with no recorded effort read `unknown`.
+  assert.deepEqual(lines.slice(1), [
+    `${OPUS},agent,high,1,5,5,1,8,1,2,1,1,1,1,1,3,1,3,1,2,1`,
+    `${OPUS},agent,xhigh,1,7,7,1,7,1,,0,0,0,0,1,,0,0,1,,0`,
+    `${OPUS},agent,unknown,1,4,4,1,4,1,,0,1,,0,0,,0,0,1,,0`,
+    `${GPT},agent,high,2,7.5,7.5,2,8.5,2,,0,0,1,2,2,5,1,1,2,1,2`,
+    ',,unknown,1,3,3,1,3,1,,0,0,,0,0,,0,0,1,,0',
+  ]);
 });
 
 test('CSV cells are quoted and cannot start a spreadsheet formula', () => {
   const csv = reviewScoreSummaryCsv({
-    period: null, repository: 'all', prs_scored: 1, scores_recorded: 1,
-    models: [{
-      implementer_model: '=HYPERLINK("x")', implementer_agent: 'a,b', prs_scored: 1,
+    by_effort: [{
+      implementer_model: '=HYPERLINK("x")', implementer_agent: 'a,b', implementer_reasoning_level: '-high', prs_scored: 1,
       first_score: { mean: 1, median: 1, n: 1 }, final_score: { mean: 1, n: 1 },
       cycles_to_goal: { mean: null, n: 0, attempted: 0 }, merge_rate: { value: null, merged: 0, n: 0 },
       cost_per_merged_pr: { usd: null, n: 0 }, score_delta: { mean: 0, n: 1 }, runs_to_merge: { mean: null, n: 0 },
     }],
   });
-  assert.ok(csv.split('\r\n')[1].startsWith(`"'=HYPERLINK(""x"")","a,b",1,`));
+  assert.ok(csv.split('\r\n')[1].startsWith(`"'=HYPERLINK(""x"")","a,b",'-high,1,`));
 });
 
 test('returns one PR\'s score history with its outcome', async () => {
@@ -258,10 +271,10 @@ test('returns one PR\'s score history with its outcome', async () => {
   const body = state.body as { outcome: string; merged_at: string; scores: Array<Record<string, unknown>> };
   assert.equal(body.outcome, 'merged');
   assert.equal(body.merged_at, daysAgo(3));
-  assert.deepEqual(body.scores.map(score => [score.cycle_number, score.score, score.source, score.reviewer_model, score.head_sha]), [
-    [1, 5, 'ultrafix', GPT, 'sha-5'],
-    [2, 8, 'ultrafix', GPT, 'sha-8'],
-    [null, 9, 'review', GPT, 'sha-9'],
+  assert.deepEqual(body.scores.map(score => [score.cycle_number, score.score, score.source, score.reviewer_model, score.head_sha, score.goal_reached]), [
+    [1, 5, 'ultrafix', GPT, 'sha-5', false],
+    [2, 8, 'ultrafix', GPT, 'sha-8', true],
+    [null, 9, 'review', GPT, 'sha-9', null],
   ]);
   const empty = await invoke(routes().getPullRequestScores, { repository: 'acme/repo' }, { number: '404' });
   assert.deepEqual(empty.body, { repository: 'acme/repo', pr_number: 404, outcome: null, merged_at: null, closed_at: null, scores: [] });
@@ -308,7 +321,7 @@ test('a merged PR with no score at or before its merge has an unknown final scor
     assert.deepEqual(model.first_score, { mean: null, median: null, n: 0 });
     assert.deepEqual(model.final_score, { mean: null, n: 0 });
     assert.deepEqual(model.score_delta, { mean: null, n: 0 });
-    assert.equal(reviewScoreSummaryCsv(summary).split('\r\n')[1].split(',').slice(3, 8).join(','), ',,0,,0');
+    assert.equal(reviewScoreSummaryCsv(summary).split('\r\n')[1].split(',').slice(4, 9).join(','), ',,0,,0');
   } finally {
     await database('review_scores').where({ repository_id: 'acme/late' }).delete();
     await database('notification_pull_request_state').where({ repository: 'acme/late' }).delete();

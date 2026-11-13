@@ -171,7 +171,7 @@ describe('processAgentActionJob', () => {
     const [create] = h.stateCalls;
     assert.deepEqual(create.slice(0, 2), ['create', TASK_ID]);
     assert.deepEqual(create[2], {
-      number: 0, repoOwner: 'acme', repoName: 'web', type: 'agent-run', title: 'Agent: Dependency watch', subtitle: 'Acting on report',
+      number: 0, repoOwner: 'acme', repoName: 'web', type: 'agent-run', title: 'Dependency watch', subtitle: 'Acting on report',
     });
 
     const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;

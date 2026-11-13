@@ -13,7 +13,7 @@ import {
   type MulterFile,
   type StoredAgentRun,
 } from '@propr/core';
-import { AUTOMATION_DEFINITION_CONTRACT } from '@propr/shared';
+import { AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG } from '@propr/shared';
 import {
   createAutomationDefinitionRoutes,
   type AutomationDefinitionRouteServices,
@@ -352,6 +352,18 @@ describe('automation definition routes', () => {
   test('serves the definition contract', async () => {
     const result = await call(routes.contract, request('alice'));
     assert.deepEqual(result.body, AUTOMATION_DEFINITION_CONTRACT);
+  });
+
+  test('serves the template catalog without creating anything', async () => {
+    const result = await call(routes.templates, request('alice'));
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, AUTOMATION_TEMPLATE_CATALOG);
+    assert.equal(result.body.version, 1);
+    const triage = result.body.templates.find((template: { id: string }) => template.id === 'daily-issue-triage');
+    assert.equal(triage.autonomy, 'dry_run');
+    assert.deepEqual(triage.reviewBeforeSaving.map((item: { field: string }) => item.field), ['repositories', 'schedule', 'autonomy']);
+    assert.equal((await call(routes.templates, request(null))).status, 401);
+    assert.equal((await call(routes.list, request('alice'))).body.total, 0);
   });
 
   test('rejects invalid input and runtime-invalid definitions with 400', async () => {
@@ -705,8 +717,13 @@ test('canonical REST routes and deprecated aliases share all handlers and upload
   const routes = createOperationalRouteEntries(deps);
   assertNoDuplicateRoutes(routes);
   const canonical = routes.filter(([, path]) => /^\/api\/automation-(definitions|runs)(?:\/|$)/.test(path));
-  assert.equal(canonical.length, 15);
-  for (const [method, path, ...chain] of canonical) {
+  assert.equal(canonical.length, 16);
+  // Routes added after the rename have no deprecated alias.
+  const canonicalOnly = new Set(['/api/automation-definitions/templates']);
+  for (const [method, path] of canonical.filter(([, path]) => canonicalOnly.has(path))) {
+    assert.ok(!routes.some(([verb, route]) => verb === method && route === path.replace('/automation-', '/agent-')), path);
+  }
+  for (const [method, path, ...chain] of canonical.filter(([, path]) => !canonicalOnly.has(path))) {
     const legacyPath = path.replace('/automation-', '/agent-');
     const legacy = routes.find(([verb, route]) => verb === method && route === legacyPath);
     assert.ok(legacy, `${method} ${legacyPath}`);

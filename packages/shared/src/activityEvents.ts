@@ -30,6 +30,8 @@ export const ACTIVITY_DOMAINS = [
   'indexing',
   'usage',
   'system',
+  // Pull request changes recorded in the repository event journal.
+  'pull_request',
 ] as const;
 export type ActivityDomain = (typeof ACTIVITY_DOMAINS)[number];
 

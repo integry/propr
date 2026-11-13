@@ -18,6 +18,8 @@ import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts'
 
 /** No stored watchdog or network overrides: the environment defaults (unset here) apply. */
 const DEFAULT_WATCHDOG_SETTINGS_RESPONSE = {
+    // Token-outlier alert settings are returned with their defaults when unset.
+    ...configManager.DEFAULT_TOKEN_OUTLIER_SETTINGS,
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
     agent_degenerate_output_limit: null,
@@ -1242,6 +1244,7 @@ describe('config route follow-up helpers', () => {
             agent_run_usage_pause_percent: 90,
             automation_unproductive_run_threshold: 3,
             ultrafix_ci_wait_timeout_ms: 7200000,
+            goal_question_max_wait_ms: 86400000,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
@@ -1335,6 +1338,7 @@ describe('config route follow-up helpers', () => {
             agent_run_usage_pause_percent: 90,
             automation_unproductive_run_threshold: 3,
             ultrafix_ci_wait_timeout_ms: 7200000,
+            goal_question_max_wait_ms: 86400000,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
@@ -1421,6 +1425,7 @@ describe('config route follow-up helpers', () => {
             agent_run_usage_pause_percent: 90,
             automation_unproductive_run_threshold: 3,
             ultrafix_ci_wait_timeout_ms: 7200000,
+            goal_question_max_wait_ms: 86400000,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
@@ -3136,6 +3141,7 @@ describe('config route follow-up helpers', () => {
                 agent_run_usage_pause_percent: 90,
                 automation_unproductive_run_threshold: 3,
                 ultrafix_ci_wait_timeout_ms: 7200000,
+                goal_question_max_wait_ms: 86400000,
                 ultrafix_escalation_enabled: false,
                 ultrafix_escalation_models: [],
                 ultrafix_escalation_patience: 3,

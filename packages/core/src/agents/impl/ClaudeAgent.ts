@@ -37,6 +37,7 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
+import { failedExecutionResult, usageLimitExecutionResult, recordUnreturnedFailedExecution, persistFailedExecutionLog } from './utils/failedAgentExecution.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, analysisReasoningLevelField, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { assertToolPolicySupported, claudeToolPolicyArgs } from '../agentToolPolicy.js';
@@ -45,6 +46,9 @@ import {
     claudeSessionTranscriptPath,
     executeClaudeNativeGoal,
 } from './claudeNativeGoal.js';
+import { createOperatorQuestionExchange, removeOperatorQuestionExchange } from './claudeOperatorQuestions.js';
+import { boundGoalQuestionMaxWaitMs, loadGoalQuestionMaxWaitMs } from '../../config/goalQuestionSettings.js';
+import type { OperatorQuestionLaunch } from './utils/operatorQuestionMcpServer.js';
 
 export { UsageLimitError };
 
@@ -135,8 +139,12 @@ export class ClaudeAgent implements Agent {
         assertToolPolicySupported(options);
         if (executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
 
+        let prompt: string | undefined;
+        // What the run produced before a later step threw, and whether its log row exists.
+        let completed: AgentExecutionResult | undefined;
+        let logsPersisted = false;
         try {
-            const prompt = buildClaudePrompt({
+            prompt = buildClaudePrompt({
                 customPrompt, issueRef, branchName, modelName: effectiveModel, issueDetails, isRetry, retryReason
             });
 
@@ -172,12 +180,14 @@ export class ClaudeAgent implements Agent {
 
             const { response, correctedTokenUsage, modelUsed } = processDockerResult(result, prompt, effectiveModel, executionTime);
             if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
+            completed = response;
 
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
                 executionTime, correctedTokenUsage, taskId, prNumber,
                 reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics, metadata
             });
+            logsPersisted = true;
 
             if (!response.success) {
                 logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Claude agent execution failed');
@@ -189,21 +199,45 @@ export class ClaudeAgent implements Agent {
             if (usageMetrics) response.usageMetrics = usageMetrics;
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) throw error;
-
             const executionTime = Date.now() - startTime;
+            const level = effectiveReasoningLevel || undefined;
+            if (error instanceof UsageLimitError) {
+                // Nothing downstream receives a result for a thrown usage limit, so the
+                // turns spent before it are recorded here, once, before the requeue.
+                await recordUnreturnedFailedExecution(usageLimitExecutionResult(error, {
+                    prompt, model: effectiveModel, executionTimeMs: executionTime, reasoningLevel: level,
+                }), options, this.config.alias);
+                throw error;
+            }
+
             logger.error({
                 issueNumber: issueRef.number, repository: repo, executionTime,
                 error: (error as Error).message, agentAlias: this.config.alias
             }, 'Error during Claude agent execution');
 
-            return {
-                success: false, error: (error as Error).message, executionTimeMs: executionTime,
-                logs: (error as { stderr?: string }).stderr || (error as Error).message,
-                modifiedFiles: [], commitMessage: null, summary: undefined,
-                modelUsed: this.config.defaultModel || 'unknown',
-                ...(effectiveReasoningLevel && { reasoningLevel: effectiveReasoningLevel })
-            };
+            const failed = failedExecutionResult(error as Error, {
+                completed, model: this.config.defaultModel || 'unknown', executionTimeMs: executionTime, reasoningLevel: level,
+            });
+            // The caller records the returned result; its execution id keeps that to one row.
+            if (!logsPersisted) await persistFailedExecutionLog(failed, options, this.config.alias);
+            return failed;
+        }
+    }
+
+    /**
+     * The `ask_operator` exchange of a goal attempt whose control can record
+     * blockers. A question waits at most the instance setting, bounded by this
+     * agent's own deadline.
+     */
+    private async prepareOperatorQuestions(options: AgentTaskOptions): Promise<OperatorQuestionLaunch | undefined> {
+        if (!options.goalControl?.reportBlocker || !options.goalControl.resolveBlocker) return undefined;
+        try {
+            const maxWaitMs = boundGoalQuestionMaxWaitMs(await loadGoalQuestionMaxWaitMs(), this.timeoutMs);
+            return await createOperatorQuestionExchange(maxWaitMs);
+        } catch (error) {
+            // The goal still runs; it only cannot ask the operator.
+            logger.warn({ taskId: options.taskId, error: (error as Error).message }, 'Could not prepare the operator question tool for a Claude goal');
+            return undefined;
         }
     }
 
@@ -229,19 +263,22 @@ export class ClaudeAgent implements Agent {
             // An identity persisted before the provider wrote its first
             // transcript record has nothing to resume; start it under that id.
             const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
-            const buildGoalDockerArgs = async () => {
+            const operatorQuestions = await this.prepareOperatorQuestions(options);
+            // The attempt binds the question launch to its own deadline before building the container.
+            const buildGoalDockerArgs = async (boundQuestions?: OperatorQuestionLaunch) => {
                 const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
                 return buildDockerArgs(this.config, this.maxTurns, {
                     worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number,
                     systemPrompt, tools, environment, taskId,
                     reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
                     ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
+                    ...(boundQuestions ? { operatorQuestions: boundQuestions } : {}),
                 });
             };
             const response = await executeClaudeNativeGoal(
                 { ...options, resumeSessionId: resumable ? sessionId : undefined },
-                { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
-            );
+                { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs, operatorQuestions },
+            ).finally(() => operatorQuestions && removeOperatorQuestionExchange(operatorQuestions));
             if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             logger.info({
@@ -249,13 +286,15 @@ export class ClaudeAgent implements Agent {
             }, 'Claude native goal attempt finished');
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) throw error;
+            const executionTimeMs = Date.now() - startTime;
+            if (error instanceof UsageLimitError) {
+                await recordUnreturnedFailedExecution(usageLimitExecutionResult(error, { model, executionTimeMs }), options, this.config.alias);
+                throw error;
+            }
             logger.error({ taskId, error: (error as Error).message, agentAlias: this.config.alias }, 'Claude native goal attempt failed');
-            return {
-                success: false, error: (error as Error).message, executionTimeMs: Date.now() - startTime,
-                logs: (error as Error).message, modifiedFiles: [], commitMessage: null,
-                modelUsed: model,
-            };
+            const failed = failedExecutionResult(error as Error, { model, executionTimeMs });
+            await persistFailedExecutionLog(failed, options, this.config.alias);
+            return failed;
         }
     }
 

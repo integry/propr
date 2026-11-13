@@ -104,7 +104,8 @@ export async function queryTaskSummaries(db: Knex, options: TaskSummaryQuery): P
   applyStateFilter(db, query, options.state, options.since);
   if (options.assignee) applyAssigneeSelection(db, query, options.assignee, 'tasks.task_id');
 
-  const selected = query.select(...TASK_COLUMNS, 'model_name', 'pr_number', 'initial_job_data');
+  const selected = query.select(...TASK_COLUMNS, 'model_name', 'pr_number', 'initial_job_data',
+    'attempt_number', 'replaces_task_id', 'replaced_by_task_id');
   // list_tasks historically pages before relation lookups and orders by creation.
   // Keep that SQL shape to preserve its response exactly.
   if ((options.order ?? 'created') === 'created') {

@@ -28,7 +28,7 @@ Automations are personal: every definition and run belongs to the user who creat
 
 ## Create an automation
 
-Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/automation-definitions`) accepts the same fields; `GET /api/automation-definitions/contract` and the MCP tool `get_automation_definition_contract` return the authoritative limits.
+Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form, or [start from a template](#templates), and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/automation-definitions`) accepts the same fields; `GET /api/automation-definitions/contract` and the MCP tool `get_automation_definition_contract` return the authoritative limits.
 
 ### Scope
 
@@ -113,6 +113,42 @@ The autonomy mode decides what happens after the report is stored:
 | `auto` | The acting step starts straight away, subject to the [cost gate](#cost-control). |
 
 The mode is captured when a run is queued. Editing the definition later does not change a run that already exists.
+
+## Templates
+
+ProPR ships a small catalog of automation templates for common recurring jobs. A template fills in the new-automation form. It creates nothing: the automation exists only once you choose **Create automation**.
+
+- On the **Automations** page, open **New Automation** and choose a card under **Start from a template**. When you have no automations yet, the empty list shows the same templates; choosing one opens the form already filled in.
+- The template sets the name, description, prompt, capabilities, a suggested schedule and the number of previous reports. Repositories you already picked and the coding agent stay as they are.
+- Every template starts in `dry_run` (**Dry run**), so its runs only write a report. To have an agent act on the report, raise the [autonomy](#autonomy) mode yourself before saving.
+- A **Review before saving** note lists what the template cannot choose for you, at least the repositories, the schedule and the autonomy mode.
+
+| Template | What the report contains | Suggested schedule |
+| --- | --- | --- |
+| **Daily issue triage** (`daily-issue-triage`) | Issues that need a human today, likely duplicates (including repeats of recently closed issues), proposed severity labels, proposed security labels and stale issues with a suggested next step. It only reads issues and never comments on, labels or closes them. | `0 7 * * 1-5` (weekdays at 07:00 UTC), with the previous report included so each run focuses on what changed |
+| **Instruction learning loop** (`instruction-learning-loop`) | Candidate rules from review corrections that repeat across pull requests, each with proposed wording, a target instruction file and links to at least two pull requests; existing instructions that look stale or contradicted, as removal candidates; and the size of the instruction files, with a warning when they grow too long. | `0 8 * * 1` (Mondays at 08:00 UTC), with the previous report included so candidates are not proposed twice |
+| **Weekly codebase drift report** (`weekly-codebase-drift-report`) | The last 7 days of merged changes: what changed and why, grouped by area; newly added functions or modules that appear to duplicate existing ones, each with both locations, listed only after both were read; lines and files added and removed per top-level area and the largest new files; and a short list of suggested consolidations. With autonomy raised, the acting step saves the consolidations as repository To-Dos. See [Repository Knowledge](./repository-knowledge.md#weekly-codebase-drift-report). | `0 9 * * 1` (Mondays at 09:00 UTC), with the previous report included so pairs are not listed twice |
+
+The triage template needs `repository_read`, which gives the run a read-only GitHub token for the repositories in scope. With `preview` or `auto`, the acting step can turn the report into TODOs, tasks or plans through ProPR's MCP tools (see [Acting on a report](#acting-on-a-report)).
+
+### Instruction learning loop
+
+The same correction often gets made in review after review: "use the shared helper", "add a migration test", "do not log the token". The **Instruction learning loop** template turns those repeats into proposed instructions, so the next run gets them right the first time.
+
+Each week the run reads the repository's agent instructions (`AGENTS.md`, `.propr/instructions.md` and the file named by `instructions` in [`.propr/workflow.yml`](./repository-workflow.md#instructions-and-validation)) and the last 30 days of pull request discussions through ProPR's MCP tools (`list_pull_requests`, `get_pull_request_discussion`, `list_tasks` and `get_task_events`). For each pull request it pages through the conversation, the submitted reviews and the inline review comments, because most human review corrections are made on specific lines rather than in the conversation. It needs `repository_read` and `propr_mcp`, so it runs on Claude Code or Codex. Its report lists:
+
+- **Candidate rules**: the proposed wording in one or two sentences, the target file, and links to at least two distinct pull requests where the same correction was made. A correction seen in a single pull request, or a one-off preference, is never proposed.
+- **Removal candidates**: existing instructions that look stale or that recent merged work contradicts.
+- **Instruction file size**: each file and the total, with a warning above 300 lines or 20,000 characters, because long instructions crowd out the task.
+- **Proposed task**: a ready-to-use task body with the changes and their citations.
+
+Pull request text is treated as untrusted data: the run never follows instructions found in it, and never proposes a rule whose only source is text asking for that rule.
+
+Instruction changes always go through a reviewed pull request. Instructions steer every later run in the repository, so a bad rule learned from a misread review, or one planted in a pull request comment, would repeat its mistake on every task. The template starts in `dry_run`, so a run only writes the report. With `preview` (recommended) or `auto`, the acting step creates one ProPR task per repository whose body carries the proposed changes and their citations. The acting step cannot edit files itself; the task opens a pull request, and a maintainer reviews and merges it like any other change.
+
+The catalog is also available outside the UI: `GET /api/automation-definitions/templates`, the MCP read tool `list_automation_templates` and `propr automation templates` (add `--json` for the versioned document). Each entry has an `id`, `name`, `description`, `category`, `prompt`, `capabilities`, `schedule`, `autonomy`, `previousReportCount` and `reviewBeforeSaving`, and the document carries a catalog `version`. To start an automation from a template through the API, send its fields to `POST /api/automation-definitions` together with your own `repositories`.
+
+Templates live in `packages/shared/automation-templates/<id>/` (`template.json` plus `prompt.md`). `npm run automation-templates:generate` builds `packages/shared/src/automationTemplates.catalog.json`, and CI checks that the committed catalog is current and that every template satisfies the automation definition contract and defaults to `dry_run`.
 
 ## Triggers
 
@@ -291,6 +327,8 @@ Every deferral and skip reason is a full sentence in the run history, for exampl
 
 For a synthetic pool, a run is held back only when every enabled member is over the threshold. The gate only reads the snapshot Agent Tank already has and never starts a refresh. It is a brake, not an accounting system. Each run also stays subject to the ordinary [per-run spend cap](./execution-safety.md#spend-caps), and v1 never escalates an automation run to another model.
 
+Scheduled runs can also be paused by [token-outlier alerts](../operations/metrics.md#token-outlier-alerts): with `token_outlier_pause_alerts` set (off by default), a `schedule` run of an agent whose repository raised that many alerts within `token_outlier_pause_window_hours` is **skipped** with the reason. Other triggers are not paused.
+
 ## Run states
 
 | State | Meaning |
@@ -337,7 +375,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 ## Naming and compatibility
 
 Use `list_automation_definitions`, `get_automation_definition`,
-`get_automation_definition_contract`, `list_automation_runs`, `get_automation_run`,
+`get_automation_definition_contract`, `list_automation_templates`, `list_automation_runs`, `get_automation_run`,
 `trigger_automation_run`, `approve_automation_run` and `reject_automation_run`.
 Their former `*_agent_*` names remain callable as deprecated aliases with the
 same scopes, repository authorization, recursion guard and input schemas.

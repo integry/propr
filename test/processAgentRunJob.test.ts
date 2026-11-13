@@ -218,7 +218,7 @@ describe('processAgentRunJob', () => {
     assert.equal(create[0], 'create');
     assert.equal(create[1], 'agent-run-run-1-report');
     assert.deepEqual(create[2], {
-      number: 0, repoOwner: 'acme', repoName: 'web', type: 'agent-run', title: 'Agent: Dependency watch', subtitle: 'Report run',
+      number: 0, repoOwner: 'acme', repoName: 'web', type: 'agent-run', title: 'Dependency watch', subtitle: 'Report run',
     });
     const completed = h.stateCalls.find(call => call[0] === 'completed');
     assert.ok(completed);
