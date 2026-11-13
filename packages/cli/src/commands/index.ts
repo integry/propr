@@ -18,6 +18,7 @@ export { createTodoCommand } from "./todoCommands.js";
 export { createRemoteStatusCommand, createQueueCommand, createBackendCommand } from "./systemCommands.js";
 export { createStatsCommand } from "./statsCommands.js";
 export { createPrCommand } from "./prCommands.js";
+export { createEventsCommand } from "./eventCommands.js";
 export { createInitCommand } from "./initCommands.js";
 export { createSetupCommand } from "./setupCommand.js";
 export { createAgentSkillCommand } from "./agentSkillCommands.js";

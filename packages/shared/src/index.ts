@@ -590,3 +590,5 @@ export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLi
 
 // The durable repository change-event journal: domains, event types and payloads.
 export * from './repositoryEvents.js';
+// Reading and waiting on the repository change-event journal: cursor codec, limits and errors.
+export * from './repositoryEventWait.js';

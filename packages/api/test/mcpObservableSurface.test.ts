@@ -339,6 +339,11 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'armed', 'skipped_protected_path', 'skipped_disabled', 'skipped_empty_diff', 'skipped_policy_invalid', 'skipped_diff_unavailable', 'auto_merge_not_requested', 'auto_merge_request_unavailable', 'pull_request_changed',
     'eligible', 'ineligible', 'transient', 'pr_label', 'linked_issue_label', 'no_auto_merge_label', 'epic_without_label',
     'ultrafix_not_succeeded', 'linked_issue_unavailable',
+    // Outcomes, filters, domains and event types of list_repository_events and wait_repository_events.
+    'events', 'timeout', 'domains', 'types', 'domain', 'type', 'payload',
+    'pull_request', 'epic_queue', 'plan_issue',
+    'opened', 'head_changed', 'review_scored', 'ultrafix_started', 'ultrafix_ended', 'auto_merge_decision',
+    'advanced', 'status_changed',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)

@@ -43,6 +43,7 @@ import { addActivityTools } from './toolsActivity.js';
 import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addDocsTools } from './toolsDocs.js';
 import { addGoalWaitTools } from './toolsGoalWait.js';
+import { addRepositoryEventTools } from './toolsRepositoryEvents.js';
 import { getDocsMetadata } from './docsIndex.js';
 import { summarizeGoal } from './listSummaries.js';
 import { markMergedPullRequests, markMergedListPullRequests } from '../services/pullRequestMergeState.js';
@@ -186,6 +187,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addMaintenanceTools(tools, deps);
   addArtifactTools(tools, deps, planner, goals);
   addPullRequestTools(tools, deps);
+  addRepositoryEventTools(tools, deps);
   addContextTools(tools, deps);
   addManagementTools(tools, deps, { todos, config, runtime });
   addNotificationTools(tools, deps, notifications);

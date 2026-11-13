@@ -97,6 +97,30 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "$PROPR_URL/api/pull-requests/42/readiness?repository=acme/app"
 ```
 
+## Repository change events
+
+`GET /api/repository-events?repository=owner/repo` reads a repository's durable change-event journal: pull request changes (`opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`), epic queue changes (`started`, `advanced`, `blocked`, `completed`) and plan issue status changes (`status_changed`). `GET /api/repository-events/wait` takes the same parameters plus `timeoutSeconds` (default 15, max 30) and blocks until a matching event exists after the cursor. The MCP tools `list_repository_events` and `wait_repository_events` and `propr events list|wait` return the same results.
+
+Parameters: `repository` (required), `afterCursor`, `fromStart=true`, `domains` and `types` (comma-separated), `pullRequest`, `planId` and `limit` (1–100, default 50). The list returns `{events, cursor, truncated}`; the wait returns `{outcome, events, cursor, truncated, waitedMs, timeoutSeconds}`, where `outcome` is `events` or `timeout`. A wait returns at once when matching events already exist; a timeout is an ordinary `200` with the cursor unchanged. Each event has `cursor`, `domain`, `type`, `repository`, `entityId`, `payload` (identifiers and small scalars only) and `occurredAt`, plus `pullRequest`, `issueNumber`, `planId` and `head` when they apply.
+
+**Cursor contract.** The cursor is an opaque string bound to the repository. Delivery is at-least-once and ordered: resume with the cursor of the last event you processed and no event is missed. Without `afterCursor` a read starts at the current end of the journal, returning the current cursor and no history, unless `fromStart=true`; page through that history with the returned cursor while `truncated` is true (a cursor inside retained history expires when retention next prunes the repository). The journal keeps 30 days of events.
+
+Errors use the error envelope; the `hint` says how to recover. `INVALID_INPUT` (400), `CURSOR_INVALID` (400, malformed or not issued here), `CURSOR_WRONG_REPOSITORY` (400), `CURSOR_EXPIRED` (410, older than the retained journal, so events may have been pruned; it is never reported as an empty result. Recover by first listing without `afterCursor` and saving that cursor, then re-reading the state, then resuming from the saved cursor), `WAIT_LIMIT` (429, too many open waits for you on this server, counted with MCP waits) and `REPOSITORY_NOT_ACCESSIBLE` (404, the repository is not configured here or you cannot read it on GitHub). Disconnecting releases a wait.
+
+A coordinator loop waits for changes, then reads the state it cares about:
+
+```bash
+cursor=""
+while :; do
+  result=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$PROPR_URL/api/repository-events/wait?repository=acme/app&pullRequest=42&timeoutSeconds=30${cursor:+&afterCursor=$cursor}")
+  cursor=$(echo "$result" | jq -r .cursor)
+  if [ "$(echo "$result" | jq -r .outcome)" = events ]; then
+    curl -s -H "Authorization: Bearer $TOKEN" "$PROPR_URL/api/pull-requests/42/readiness?repository=acme/app" | jq .verdict
+  fi
+done
+```
+
 ## Quick start with curl
 
 ```bash
