@@ -26,7 +26,10 @@ export interface PullRequestStatusPull {
     merged?: boolean | null;
     mergeable?: boolean | null;
     body?: string | null;
-    head: { sha: string; ref: string };
+    /** `repo` is null when the fork the pull request came from was deleted. */
+    head: { sha: string; ref: string; repo?: { full_name?: string | null } | null };
+    /** The branch the pull request merges into; `sha` is its tip as GitHub last compared it. */
+    base?: { ref?: string; sha?: string };
 }
 
 export interface PullRequestStatusSources {
@@ -106,14 +109,26 @@ export async function loadPullRequestStatusTasks(db: Knex, repository: string, p
 }
 
 /**
+ * The epic branch name the pull request comes from, when its head is a branch
+ * of `repository` itself. ProPR creates epic branches only there, so the same
+ * name on a fork's branch is someone else's branch, never ProPR's epic.
+ */
+function epicHeadRef(repository: string, head: PullRequestStatusPull['head']): string | null {
+    const headRepository = head.repo?.full_name;
+    if (typeof headRepository !== 'string' || headRepository.toLowerCase() !== repository.toLowerCase()) return null;
+    return EPIC_BRANCH_PATTERN.test(head.ref) ? head.ref : null;
+}
+
+/**
  * Whether ProPR recorded `headRef` as the epic branch of one of its plans. The
  * branch name alone proves nothing (anyone can name a branch like an epic):
  * ProPR stores the epic's `base-<branch>` label on the plan draft it created
  * the branch for, and that draft holds the issue the branch name starts with.
+ * `headRef` must already be a branch of `repository` (epicHeadRef).
  */
-async function isRecordedEpicBranch(db: Knex, repository: string, headRef: string): Promise<boolean> {
-    const match = headRef.match(EPIC_BRANCH_PATTERN);
-    if (!match) return false;
+async function isRecordedEpicBranch(db: Knex, repository: string, headRef: string | null): Promise<boolean> {
+    const match = headRef?.match(EPIC_BRANCH_PATTERN);
+    if (!headRef || !match) return false;
     const draftIds = db('plan_issues').where({ repository, issue_number: Number(match[1]) }).whereNotNull('draft_id').select('draft_id');
     const drafts: Array<{ context_config: unknown }> = await db('task_drafts')
         .where({ repository }).whereIn('draft_id', draftIds).select('context_config');
@@ -128,9 +143,9 @@ async function isRecordedEpicBranch(db: Knex, repository: string, headRef: strin
  * requests people opened.
  */
 async function isProprPullRequest(
-    db: Knex, pullRequest: { repository: string; prNumber: number; headRef: string },
+    db: Knex, pullRequest: { repository: string; prNumber: number; epicHeadRef: string | null },
 ): Promise<boolean> {
-    const { repository, prNumber, headRef } = pullRequest;
+    const { repository, prNumber, epicHeadRef: headRef } = pullRequest;
     const [implementation, planIssue, goal, epic] = await Promise.all([
         db('tasks').where({ repository, pr_number: prNumber })
             .andWhere(query => query.whereNull('task_type').orWhereIn('task_type', PULL_REQUEST_CREATING_TASK_TYPES))
@@ -142,8 +157,8 @@ async function isProprPullRequest(
     return Boolean(implementation || planIssue || goal || epic);
 }
 
-async function loadEpicProgress(db: Knex, repository: string, headRef: string): Promise<PullRequestStatusFacts['epic']> {
-    const match = headRef.match(EPIC_BRANCH_PATTERN);
+async function loadEpicProgress(db: Knex, repository: string, headRef: string | null): Promise<PullRequestStatusFacts['epic']> {
+    const match = headRef?.match(EPIC_BRANCH_PATTERN);
     if (!match) return null;
     const first = await db('plan_issues').where({ repository, issue_number: Number(match[1]) }).first('draft_id');
     if (!first?.draft_id) return null;
@@ -250,7 +265,9 @@ export async function loadPullRequestStatusFacts(
     const pr = pull ?? (await sources.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber })).data as PullRequestStatusPull;
     const pullRequest = { state: pr.state, merged: pr.merged === true, headSha: pr.head.sha, mergeable: typeof pr.mergeable === 'boolean' ? pr.mergeable : null };
     const tasks = await loadPullRequestStatusTasks(sources.db, repository, prNumber);
-    const isPropr = await isProprPullRequest(sources.db, { repository, prNumber, headRef: pr.head.ref });
+    // A fork's branch never counts as an epic branch, for ownership or progress.
+    const epicRef = epicHeadRef(repository, pr.head);
+    const isPropr = await isProprPullRequest(sources.db, { repository, prNumber, epicHeadRef: epicRef });
     const closed = pullRequest.state !== 'open' || pullRequest.merged;
     const empty: PullRequestStatusChecks = { complete: true, passed: 0, failed: 0, pending: 0, failedNames: [] };
     if (closed || !isPropr) {
@@ -266,7 +283,7 @@ export async function loadPullRequestStatusFacts(
         latestReviewScore(sources.db, repository, prNumber),
         sources.loadRatingGoal(),
         // Epic progress is display only; it never decides the state.
-        loadEpicProgress(sources.db, repository, pr.head.ref).catch(error => {
+        loadEpicProgress(sources.db, repository, epicRef).catch(error => {
             logger.warn({ repository, prNumber, error: (error as Error).message }, 'Failed to read epic progress for the pull request status');
             return null;
         }),

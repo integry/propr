@@ -60,10 +60,16 @@ class FakeRedis {
     }
 }
 
-interface FakePull { state: string; merged: boolean; mergeable: boolean | null; body: string; head: { sha: string; ref: string } }
+interface FakePull {
+    state: string; merged: boolean; mergeable: boolean | null; body: string;
+    head: { sha: string; ref: string; repo: { full_name: string } | null }; base: { ref: string; sha: string };
+}
 
 class FakeGitHub {
-    pull: FakePull = { state: 'open', merged: false, mergeable: true, body: HUMAN_BODY, head: { sha: 'head-1', ref: '12-feature' } };
+    pull: FakePull = {
+        state: 'open', merged: false, mergeable: true, body: HUMAN_BODY,
+        head: { sha: 'head-1', ref: '12-feature', repo: { full_name: REPOSITORY } }, base: { ref: 'main', sha: 'base-1' },
+    };
     checkRuns: Array<{ name: string; status: string; conclusion: string | null }> = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     commitStatus: { state: string; total_count: number; statuses: Array<{ context: string; state: string }> } = { state: 'pending', total_count: 0, statuses: [] };
     calls: Array<{ route: string; params: Record<string, unknown> }> = [];
@@ -722,6 +728,52 @@ test('a push during the facts read reads them again for the new head before writ
     assert.equal(stripPullRequestStatusBlock(github.pull.body), `${HUMAN_BODY}\n\nEdited with the push.`);
 });
 
+// F13: a push to the base branch leaves state and head as they were but can make the pull request conflict.
+test('a pull request that starts conflicting during the facts read is not written as ready', async () => {
+    await addTask('issue', 'completed');
+    github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+    let conflicted = false;
+    const base = deps();
+    const result = await syncPullRequestStatus(REPOSITORY, PR, {
+        ...base,
+        sources: {
+            ...base.sources!,
+            loadRatingGoal: async () => {
+                if (!conflicted) {
+                    conflicted = true;
+                    github.pull.mergeable = false;
+                }
+                return 7;
+            },
+        },
+    });
+    assert.equal(result, 'updated');
+    assert.equal(github.calls.filter(call => call.route.endsWith('/check-runs')).length, 2, 'the facts are read again');
+    assert.equal(github.pull.head.sha, 'head-1', 'the head did not move');
+    assert.doesNotMatch(statusLine(), /Ready/);
+    assert.match(statusLine(), /⚠️ Needs you · conflicts with base/);
+    assert.equal(github.patches.length, 1);
+});
+
+for (const [label, change] of [
+    ['base branch moves', (pull: FakePull) => { pull.base = { ...pull.base, sha: 'base-2' }; }],
+    ['base branch is retargeted', (pull: FakePull) => { pull.base = { ref: 'release', sha: 'release-1' }; }],
+    ['mergeability becomes unknown', (pull: FakePull) => { pull.mergeable = null; }],
+] as const) {
+    test(`a pull request whose ${label} during the facts read is read again before writing`, async () => {
+        await addTask('issue', 'completed');
+        github.commitStatus = { state: 'success', total_count: 0, statuses: [] };
+        let changed = false;
+        const base = deps();
+        await syncPullRequestStatus(REPOSITORY, PR, {
+            ...base,
+            sources: { ...base.sources!, loadRatingGoal: async () => { if (!changed) { changed = true; change(github.pull); } return 7; } },
+        });
+        assert.equal(github.calls.filter(call => call.route.endsWith('/check-runs')).length, 2, `${label}: the facts are read again`);
+        if (github.pull.mergeable === null) assert.match(statusLine(), /🔨 Checking for conflicts/);
+    });
+}
+
 test('a pull request merged during the facts read loses its block, and the latest body is kept', async () => {
     await addTask('issue', 'completed');
     await sync();
@@ -750,7 +802,7 @@ test('a pull request that changes head on every read is left unwritten for a ret
 const EPIC_BRANCH = '800-epic-short-name-x7y';
 
 test('a person\'s pull request from an epic-shaped branch gets no block', async () => {
-    github.pull.head = { sha: 'head-1', ref: EPIC_BRANCH };
+    github.pull.head = { ...github.pull.head, ref: EPIC_BRANCH };
     const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
     assert.equal(facts.isProprPullRequest, false);
     assert.equal((await loadPullRequestStatus(REPOSITORY, PR, { ...deps().sources!, github })).state, 'none', 'MCP reads none');
@@ -760,21 +812,48 @@ test('a person\'s pull request from an epic-shaped branch gets no block', async 
 });
 
 test('an epic-shaped branch whose plan recorded a different epic branch is not ProPR\'s', async () => {
-    github.pull.head = { sha: 'head-1', ref: EPIC_BRANCH };
+    github.pull.head = { ...github.pull.head, ref: EPIC_BRANCH };
     await database('task_drafts').insert({ draft_id: 'draft-1', repository: REPOSITORY, context_config: JSON.stringify({ epicLabel: 'base-800-epic-short-name-abc' }) });
     await database('plan_issues').insert({ repository: REPOSITORY, issue_number: 800, draft_id: 'draft-1', status: 'open' });
     assert.equal(await sync(), 'skipped');
     assert.equal(github.writes().length, 0);
 });
 
-test('an epic pull request whose branch ProPR recorded for its plan gets the block', async () => {
-    github.pull.head = { sha: 'head-1', ref: EPIC_BRANCH };
+async function recordEpicPlan(): Promise<void> {
     await database('task_drafts').insert({ draft_id: 'draft-1', repository: REPOSITORY, context_config: JSON.stringify({ epicLabel: `base-${EPIC_BRANCH}` }) });
     await database('plan_issues').insert({ repository: REPOSITORY, issue_number: 800, draft_id: 'draft-1', status: 'merged' });
     await database('plan_issues').insert({ repository: REPOSITORY, issue_number: 801, draft_id: 'draft-1', status: 'open' });
+}
+
+test('an epic pull request whose branch ProPR recorded for its plan gets the block', async () => {
+    github.pull.head = { ...github.pull.head, ref: EPIC_BRANCH, repo: { full_name: 'Integry/ProPR' } };
+    await recordEpicPlan();
     assert.equal(await sync(), 'updated');
     assert.match(statusLine(), /issues: 1 of 2 merged/);
     assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
+});
+
+// F12: ProPR creates epic branches in the repository itself; a fork's branch of the same name is not ProPR's.
+for (const [label, repo] of [['a fork', { full_name: 'someone/propr' }], ['a deleted fork', null]] as const) {
+    test(`a pull request from ${label} on the recorded epic branch name gets no block`, async () => {
+        github.pull.head = { ...github.pull.head, ref: EPIC_BRANCH, repo };
+        await recordEpicPlan();
+        const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+        assert.equal(facts.isProprPullRequest, false);
+        assert.equal((await loadPullRequestStatus(REPOSITORY, PR, { ...deps().sources!, github })).state, 'none', 'MCP reads none');
+        assert.equal(await sync(), 'skipped');
+        assert.equal(github.writes().length, 0);
+        assert.equal(github.pull.body, HUMAN_BODY);
+    });
+}
+
+test('a ProPR pull request from a fork on an epic branch name shows no epic progress', async () => {
+    await addTask('issue', 'completed');
+    github.pull.head = { ...github.pull.head, ref: EPIC_BRANCH, repo: { full_name: 'someone/propr' } };
+    await recordEpicPlan();
+    const facts = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github });
+    assert.equal(facts.isProprPullRequest, true, 'owned through its implementation task');
+    assert.equal(facts.epic, null, 'the fork branch is not the recorded epic');
 });
 
 test('a scheduled update whose pull request kept changing runs again and writes', async () => {

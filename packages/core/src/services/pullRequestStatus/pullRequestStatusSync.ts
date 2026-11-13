@@ -138,11 +138,11 @@ function awaitsMergeability(status: PullRequestStatus | null): boolean {
 
 interface SyncOutcome { result: PullRequestStatusSyncResult; awaitingMergeability: boolean }
 
-/** Times the facts are read again because the pull request changed state or head while they were read. */
+/** Times the facts are read again because the pull request changed (sameStatusSubject) while they were read. */
 const MAX_STATUS_READS = 3;
 
 /**
- * The pull request changed state or head on every facts read: the status is
+ * The pull request changed on every facts read (sameStatusSubject): the status is
  * left unwritten and the update runs again.
  */
 export class PullRequestChangedDuringStatusSyncError extends Error {
@@ -152,9 +152,21 @@ export class PullRequestChangedDuringStatusSyncError extends Error {
     }
 }
 
-/** The facts read for `read` still describe `latest`: same state and head. */
+function mergeability(pull: PullRequestStatusPull): boolean | null {
+    return typeof pull.mergeable === 'boolean' ? pull.mergeable : null;
+}
+
+/**
+ * The facts read for `read` still describe `latest`: same state, head, base
+ * and mergeability. A push to the base branch changes neither the head nor
+ * the state, but can make the pull request conflict: GitHub then reports a
+ * different mergeability (or base tip), and a status computed from the old
+ * value, such as ready, must not be written.
+ */
 function sameStatusSubject(read: PullRequestStatusPull, latest: PullRequestStatusPull): boolean {
-    return read.state === latest.state && (read.merged === true) === (latest.merged === true) && read.head.sha === latest.head.sha;
+    return read.state === latest.state && (read.merged === true) === (latest.merged === true) && read.head.sha === latest.head.sha
+        && mergeability(read) === mergeability(latest)
+        && read.base?.ref === latest.base?.ref && read.base?.sha === latest.base?.sha;
 }
 
 /**
@@ -162,9 +174,10 @@ function sameStatusSubject(read: PullRequestStatusPull, latest: PullRequestStatu
  * the facts were read. People edit the description without ProPR's body lock,
  * and the facts read takes a while (database, Redis, queue and GitHub checks),
  * so the body read before it may already be stale: the block is applied to
- * the body read after it. A change of state or head meanwhile reads the facts
- * again. A person can still save between this read and the PATCH; GitHub
- * offers no conditional body update, so that window stays.
+ * the body read after it. A change of state, head, base or mergeability
+ * meanwhile reads the facts again. A person can still save, or the base
+ * branch move, between this read and the PATCH; GitHub offers no conditional
+ * body update, so that window stays.
  */
 async function statusForLatestPull(
     deps: PullRequestStatusSyncDeps, repository: string, prNumber: number,
