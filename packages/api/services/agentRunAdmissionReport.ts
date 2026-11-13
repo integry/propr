@@ -35,7 +35,7 @@ export interface AgentRunAdmissionReportAccess {
 }
 
 export const QUEUE_WORKERS_LABEL = 'Queue worker concurrency: jobs the worker processes run at once (WORKER_CONCURRENCY per worker). A job holds its worker slot while it waits for admission; a deferred job does not.';
-export const REPOSITORY_SLOTS_LABEL = 'Repository workflow slots: runs of one repository at once (limits.max_parallel_tasks in .propr/workflow.yml). Only repositories with a limit and running work are listed.';
+export const REPOSITORY_SLOTS_LABEL = 'Repository workflow slots: runs of one repository at once (limits.max_parallel_tasks in .propr/workflow.yml). Every repository with a limit and running work is listed.';
 export const SUBSCRIPTION_USAGE_NOTE = 'Subscription usage (provider quota through Agent Tank) is not part of this report; read it with get_provider_usage or the automation capacity routes.';
 
 async function queueWorkers(deps: AgentRunAdmissionReportDeps) {
@@ -77,6 +77,8 @@ export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReport
     repositoryWorkflowSlots: {
       label: REPOSITORY_SLOTS_LABEL,
       repositories: snapshot.repositoryWorkflowSlots.filter(slot => visibleRepositories.has(slot.repository)),
+      // Present when usage could not be read: the empty list then means unknown, not idle.
+      ...(snapshot.repositoryWorkflowSlotsUnavailable ? { unavailable: snapshot.repositoryWorkflowSlotsUnavailable } : {}),
     },
     subscriptionUsage: SUBSCRIPTION_USAGE_NOTE,
   };

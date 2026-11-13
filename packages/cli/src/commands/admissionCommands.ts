@@ -82,7 +82,8 @@ export function formatAdmissionReport(report: AgentRunAdmissionReport): string[]
   lines.push("", `Queue workers: ${known(workers.inUse)} of ${known(workers.total)} job slots in use across ${known(workers.workers)} worker(s).`);
   lines.push(`  ${workers.label}`);
   const slots = report.repositoryWorkflowSlots;
-  lines.push("", `Repository workflow slots: ${slots.repositories.length ? "" : "none in use under a limit."}`.trimEnd());
+  const slotSummary = slots.unavailable ? `unavailable: ${slots.unavailable}.` : slots.repositories.length ? "" : "none in use under a limit.";
+  lines.push("", `Repository workflow slots: ${slotSummary}`.trimEnd());
   for (const slot of slots.repositories) lines.push(`  ${slot.repository}  ${slot.inUse}/${slot.limit} in use, ${slot.waiting} waiting`);
   lines.push(`  ${slots.label}`);
   lines.push("", report.subscriptionUsage);

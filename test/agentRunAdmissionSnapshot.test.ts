@@ -275,23 +275,50 @@ test('admission off: the report says so and still returns repository workflow sl
         assert.equal(report.global, undefined);
         assert.deepEqual(report.agents, []);
         assert.equal(report.unavailable, undefined);
+        assert.equal(report.repositoryWorkflowSlotsUnavailable, undefined, 'a successful read is not marked unavailable');
         const slots = report.repositoryWorkflowSlots.filter(slot => slot.repository.includes(run));
         assert.deepEqual(slots, [{ repository: repository.toLowerCase(), inUse: 2, limit: 2, waiting: 1 }], 'a repository without a limit is not listed');
-        // A malformed policy is reported, never thrown.
+        // A malformed policy is reported, never thrown, and repository usage is still read.
         const invalid = await readAgentRunAdmissionSnapshot({ client: client(), env: { PROPR_AGENT_RUN_LIMIT: 'many' } });
         assert.equal(invalid.enabled, true);
         assert.match(invalid.unavailable!, /Invalid admission configuration/);
         assert.doesNotMatch(invalid.unavailable!, /many/);
+        assert.equal(invalid.repositoryWorkflowSlotsUnavailable, undefined);
+        assert.deepEqual(invalid.repositoryWorkflowSlots.filter(slot => slot.repository.includes(run)), slots);
     } finally {
         await client().del(...keys, ...uncapped);
     }
 });
 
-test('admission off with Redis unreachable answers without an error', async () => {
-    const unreachable = new Redis({ host: '127.0.0.1', port: 1, lazyConnect: true, retryStrategy: () => null, maxRetriesPerRequest: 0, enableOfflineQueue: false });
-    unreachable.on('error', () => {});
-    const report = await readAgentRunAdmissionSnapshot({ env: {}, client: unreachable });
-    unreachable.disconnect();
-    assert.equal(report.enabled, false);
-    assert.deepEqual(report.repositoryWorkflowSlots, []);
+test('admission off: every repository with a limit is listed, past any discovery bound', integration(), async () => {
+    // Uncapped repositories sort first, so a bound applied before the limit check would drop capped ones.
+    const capped = Array.from({ length: 520 }, (_, index) => `acme/many-${run}-z${String(index).padStart(4, '0')}`);
+    const uncapped = Array.from({ length: 120 }, (_, index) => `acme/many-${run}-a${String(index).padStart(4, '0')}`);
+    const pipeline = client().pipeline();
+    for (const repository of capped) pipeline.eval(ACQUIRE_WORKFLOW_SLOT, 4, ...repositoryWorkflowSlotKeys(repository), 'slot', '1', '');
+    for (const repository of uncapped) pipeline.eval(ACQUIRE_WORKFLOW_SLOT, 4, ...repositoryWorkflowSlotKeys(repository), 'slot', '0', '');
+    await pipeline.exec();
+    try {
+        const report = await readAgentRunAdmissionSnapshot({ client: client(), env: {} });
+        assert.equal(report.repositoryWorkflowSlotsUnavailable, undefined);
+        const listed = report.repositoryWorkflowSlots.filter(slot => slot.repository.startsWith(`acme/many-${run}-`));
+        assert.deepEqual(listed.map(slot => slot.repository), capped, 'all 520 capped repositories, none of the uncapped');
+        assert.ok(listed.every(slot => slot.inUse === 1 && slot.limit === 1));
+    } finally {
+        await client().del(...[...capped, ...uncapped].flatMap(repository => repositoryWorkflowSlotKeys(repository)));
+    }
+});
+
+test('Redis unreachable: repository usage is reported unavailable, not empty, whether admission is off or on', async () => {
+    for (const env of [{}, { PROPR_AGENT_RUN_LIMIT: '2', PROPR_INSTANCE_ID: 'unreachable' }, { PROPR_AGENT_RUN_LIMIT: 'many' }]) {
+        const unreachable = new Redis({ host: '127.0.0.1', port: 1, lazyConnect: true, retryStrategy: () => null, maxRetriesPerRequest: 0, enableOfflineQueue: false });
+        unreachable.on('error', () => {});
+        const report = await readAgentRunAdmissionSnapshot({ env, client: unreachable });
+        unreachable.disconnect();
+        assert.equal(report.enabled, Object.keys(env).length > 0);
+        assert.deepEqual(report.repositoryWorkflowSlots, []);
+        assert.match(report.repositoryWorkflowSlotsUnavailable!, /could not be read/);
+        if (report.enabled) assert.ok(report.unavailable);
+        else assert.equal(report.unavailable, undefined);
+    }
 });

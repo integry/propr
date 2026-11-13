@@ -29,27 +29,36 @@ return {#live, limit, waiting}
 const PATTERN = 'propr:workflow:slots:{*}:limits';
 const REPOSITORY = /^propr:workflow:slots:\{(.+)\}:limits$/;
 
+const EVAL_BATCH = 100;
+
 /**
  * Slots in use per repository whose running work carries a limit. Discovered
  * from the slot keys, which exist only while a run holds a slot, so a
- * repository with a limit and nothing running is not listed.
+ * repository with a limit and nothing running is not listed. Discovery runs
+ * the whole scan: the result is the complete inventory, never a capped prefix.
+ * Throws when Redis cannot be read, so callers can say the usage is unknown
+ * rather than empty.
  */
-export async function repositoryWorkflowSlotUsage(redis: Pick<Redis, 'scan' | 'eval'>, maxRepositories = 500): Promise<RepositoryWorkflowSlotUsage[]> {
+export async function repositoryWorkflowSlotUsage(redis: Pick<Redis, 'scan' | 'eval'>): Promise<RepositoryWorkflowSlotUsage[]> {
     const repositories = new Set<string>();
     let cursor = '0';
     do {
-        const [next, keys] = await redis.scan(cursor, 'MATCH', PATTERN, 'COUNT', 200);
+        const [next, keys] = await redis.scan(cursor, 'MATCH', PATTERN, 'COUNT', 1000);
         cursor = next;
         for (const key of keys) {
             const repository = REPOSITORY.exec(key)?.[1];
             if (repository) repositories.add(repository);
         }
-    } while (cursor !== '0' && repositories.size < maxRepositories);
+    } while (cursor !== '0');
+    const sorted = [...repositories].sort();
     const usage: RepositoryWorkflowSlotUsage[] = [];
-    for (const repository of [...repositories].sort().slice(0, maxRepositories)) {
-        const keys = repositoryWorkflowSlotKeys(repository);
-        const [inUse, limit, waiting] = (await redis.eval(USAGE_SCRIPT, 4, ...keys) as number[]).map(Number);
-        if (limit > 0) usage.push({ repository, inUse, limit, waiting });
+    for (let start = 0; start < sorted.length; start += EVAL_BATCH) {
+        const batch = sorted.slice(start, start + EVAL_BATCH);
+        const results = await Promise.all(batch.map(repository => redis.eval(USAGE_SCRIPT, 4, ...repositoryWorkflowSlotKeys(repository)) as Promise<number[]>));
+        batch.forEach((repository, index) => {
+            const [inUse, limit, waiting] = results[index].map(Number);
+            if (limit > 0) usage.push({ repository, inUse, limit, waiting });
+        });
     }
     return usage;
 }

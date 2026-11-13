@@ -124,7 +124,10 @@ export interface AgentRunAdmissionSnapshot {
     };
     agentCeilingsConfigured: boolean;
     agents: AgentAdmissionAgentReport[];
+    /** The complete list of repositories with a limit and running work; empty only when read and none. */
     repositoryWorkflowSlots: RepositoryWorkflowSlotUsage[];
+    /** Why repository workflow slot usage could not be read; `repositoryWorkflowSlots` is then empty and means unknown, not idle. */
+    repositoryWorkflowSlotsUnavailable?: string;
     /** Why the admission part is missing although admission is enabled (Redis unavailable, invalid configuration). */
     unavailable?: string;
 }
@@ -334,36 +337,52 @@ async function admissionPart(client: Redis, config: AdmissionConfig, env: NodeJS
     };
 }
 
+const REDIS_UNAVAILABLE = 'Admission state could not be read from Redis';
+const REPOSITORY_SLOTS_UNAVAILABLE = 'Repository workflow slots could not be read from Redis';
+
+type RepositorySlots = Pick<AgentRunAdmissionSnapshot, 'repositoryWorkflowSlots' | 'repositoryWorkflowSlotsUnavailable'>;
+
+async function repositorySlots(client: Redis): Promise<RepositorySlots> {
+    try { return { repositoryWorkflowSlots: await repositoryWorkflowSlotUsage(client) }; }
+    catch (error) {
+        logger.debug({ error: (error as Error).message }, 'Repository workflow slot usage unavailable');
+        return { repositoryWorkflowSlots: [], repositoryWorkflowSlotsUnavailable: REPOSITORY_SLOTS_UNAVAILABLE };
+    }
+}
+
 /**
- * The admission report. With admission off, `enabled` is false and only the
- * repository workflow slots are read. Never throws for a Redis or
- * configuration failure: the admission part is then reported `unavailable`.
+ * The admission report. With admission off (or its configuration invalid),
+ * `enabled` is false (true) and only the repository workflow slots are read.
+ * Never throws for a Redis or configuration failure: the admission part is
+ * then reported `unavailable`, and repository slots that could not be read
+ * `repositoryWorkflowSlotsUnavailable`, so neither reads as idle.
  */
 export async function readAgentRunAdmissionSnapshot(options: AgentRunAdmissionSnapshotOptions = {}): Promise<AgentRunAdmissionSnapshot> {
     const env = options.env ?? process.env;
     const asOf = new Date().toISOString();
-    let config: AdmissionConfig | null;
+    let config: AdmissionConfig | null = null;
+    let invalid: string | undefined;
     try { config = options.config !== undefined ? options.config : resolveAgentRunAdmission(env); }
     catch (error) {
         // The message names the variable and the rule, never its value beyond what it validated.
-        return { enabled: true, asOf, agentCeilingsConfigured: Boolean(env[AGENT_RUN_ALIAS_LIMITS_ENV]?.trim()), agents: [], repositoryWorkflowSlots: [], unavailable: `Invalid admission configuration: ${(error as Error).name}` };
+        invalid = `Invalid admission configuration: ${(error as Error).name}`;
     }
-    return withClient(options.client, async client => {
-        const repositoryWorkflowSlots = await repositoryWorkflowSlotUsage(client).catch(error => {
-            logger.debug({ error: (error as Error).message }, 'Repository workflow slot usage unavailable');
-            return [];
-        });
-        if (!config) return { enabled: false, asOf, agentCeilingsConfigured: false, agents: [], repositoryWorkflowSlots };
+    const base = {
+        enabled: Boolean(config) || invalid !== undefined, asOf, agents: [],
+        agentCeilingsConfigured: invalid !== undefined ? Boolean(env[AGENT_RUN_ALIAS_LIMITS_ENV]?.trim()) : Boolean(config?.aliasLimits),
+    };
+    return withClient(options.client, async (client): Promise<AgentRunAdmissionSnapshot> => {
+        const slots = await repositorySlots(client);
+        if (invalid !== undefined) return { ...base, ...slots, unavailable: invalid };
+        if (!config) return { ...base, ...slots };
         try {
-            const part = await admissionPart(client, config, env, options.queuePrefix);
-            return { enabled: true, asOf, ...part, agentCeilingsConfigured: Boolean(config.aliasLimits), repositoryWorkflowSlots };
+            return { ...base, ...await admissionPart(client, config, env, options.queuePrefix), ...slots };
         } catch (error) {
             logger.warn({ error: (error as Error).message }, 'Agent admission snapshot unavailable');
-            return { enabled: true, asOf, agentCeilingsConfigured: Boolean(config.aliasLimits), agents: [], repositoryWorkflowSlots, unavailable: 'Admission state could not be read from Redis' };
+            return { ...base, ...slots, unavailable: REDIS_UNAVAILABLE };
         }
     }).catch(() => ({
-        enabled: config !== null, asOf, agentCeilingsConfigured: Boolean(config?.aliasLimits), agents: [], repositoryWorkflowSlots: [],
-        ...(config ? { unavailable: 'Admission state could not be read from Redis' } : {}),
+        ...base, repositoryWorkflowSlots: [], repositoryWorkflowSlotsUnavailable: REPOSITORY_SLOTS_UNAVAILABLE,
+        ...(invalid !== undefined ? { unavailable: invalid } : config ? { unavailable: REDIS_UNAVAILABLE } : {}),
     }));
 }
-

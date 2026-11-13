@@ -42,7 +42,7 @@ The report contains:
   - `unattributedHolders`: holders without an agent alias (records written before ceilings existed, or the documented global-only exemption).
 - `agents[]`: one entry per direct agent with a ceiling or with current work (including jobs still deferred for an agent whose ceiling was removed): `ceiling` (`null` = global limit only), `inUse` (what the ceiling is compared with), `holders`, `nested`, `waiting`, `deferred`, and `tasks` (task ID, state, wait reason).
 - `queueWorkers`: worker job slots in use and in total (summed from the concurrency each live worker reports; `null` when a worker has not reported).
-- `repositoryWorkflowSlots`: per repository whose running work carries a limit, slots in use, the limit and jobs waiting for a slot. A repository with a limit but nothing running is not listed.
+- `repositoryWorkflowSlots`: per repository whose running work carries a limit, slots in use, the limit and jobs waiting for a slot. The list is complete (every such repository the caller may see). A repository with a limit but nothing running is not listed. When Redis could not be read, `repositoryWorkflowSlots.unavailable` says why and the empty list means unknown, not idle; `propr admission` then prints `unavailable` instead of `none in use`.
 
 Each limit outside admission carries a `label` saying what it is. A waiting launch's reason comes from the same atomic decision that admits it, so the split matches what admission enforces.
 

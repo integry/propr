@@ -108,6 +108,25 @@ test('REST with admission off says so and returns the remaining limits', async (
   assert.equal(body.repositoryWorkflowSlots.repositories.length, 1);
 });
 
+test('REST says repository usage is unavailable instead of reporting it empty', async () => {
+  const routes = createAgentRunAdmissionRoutes({
+    db, taskQueue, redisClient,
+    readSnapshot: async () => ({
+      enabled: false, asOf: '2026-11-13T10:00:00.000Z', agentCeilingsConfigured: false, agents: [],
+      repositoryWorkflowSlots: [], repositoryWorkflowSlotsUnavailable: 'Repository workflow slots could not be read from Redis',
+    }),
+  });
+  const { record, response } = recorder();
+  await routes.getAgentRunAdmission(member, response);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.deepEqual(body.repositoryWorkflowSlots.repositories, []);
+  assert.equal(body.repositoryWorkflowSlots.unavailable, 'Repository workflow slots could not be read from Redis');
+  const read = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => ({ ...enabledSnapshot(), repositoryWorkflowSlots: [] }) })
+    .getAgentRunAdmission(member, read.response);
+  assert.equal((read.record.body as Report).repositoryWorkflowSlots.unavailable, undefined, 'a successful empty read is not marked unavailable');
+});
+
 test('REST failures use the error envelope without internal detail', async () => {
   const originalError = console.error;
   console.error = () => undefined;

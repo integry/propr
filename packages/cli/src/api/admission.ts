@@ -44,7 +44,7 @@ export interface AgentRunAdmissionReport {
   };
   agents: AdmissionAgent[];
   queueWorkers: { label: string; inUse: number | null; total: number | null; workers: number | null };
-  repositoryWorkflowSlots: { label: string; repositories: Array<{ repository: string; inUse: number; limit: number; waiting: number }> };
+  repositoryWorkflowSlots: { label: string; repositories: Array<{ repository: string; inUse: number; limit: number; waiting: number }>; unavailable?: string };
   subscriptionUsage: string;
 }
 

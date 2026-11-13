@@ -77,7 +77,9 @@ export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.ob
   }),
   repositoryWorkflowSlots: z.object({
     label: z.string(),
-    repositories: z.array(z.object({ repository: z.string(), inUse: count, limit: z.number().int().positive(), waiting: count })),
+    repositories: z.array(z.object({ repository: z.string(), inUse: count, limit: z.number().int().positive(), waiting: count }))
+      .describe('Every repository with a limit and running work that the caller may see; the list is complete, never truncated.'),
+    unavailable: z.string().optional().describe('Why repository usage could not be read; `repositories` is then empty and means unknown, not idle.'),
   }),
   subscriptionUsage: z.string().describe('Subscription usage is reported elsewhere; this says where.'),
 }), 'What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.');

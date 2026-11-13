@@ -8840,6 +8840,10 @@ components:
                   - limit
                   - waiting
                 additionalProperties: false
+              description: Every repository with a limit and running work that the caller may see; the list is complete, never truncated.
+            unavailable:
+              description: Why repository usage could not be read; `repositories` is then empty and means unknown, not idle.
+              type: string
           required:
             - label
             - repositories

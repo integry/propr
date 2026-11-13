@@ -65,12 +65,15 @@ export interface AgentRunAdmissionReport {
   };
   repositoryWorkflowSlots: {
     label: string;
+    /** Every repository with a limit and running work that the caller may see; the list is complete, never truncated. */
     repositories: {
       repository: string;
       inUse: number;
       limit: number;
       waiting: number;
     }[];
+    /** Why repository usage could not be read; `repositories` is then empty and means unknown, not idle. */
+    unavailable?: string;
   };
   /** Subscription usage is reported elsewhere; this says where. */
   subscriptionUsage: string;

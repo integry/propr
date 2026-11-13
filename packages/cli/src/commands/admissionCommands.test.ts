@@ -71,6 +71,19 @@ test("with admission off the report says so and still prints the other limits", 
   assert.match(text, /acme\/app/);
 });
 
+test("repository usage that could not be read is printed as unavailable, an empty read as none in use", () => {
+  const off = { enabled: false, agentCeilingsConfigured: false, global: null };
+  const unreadable: AgentRunAdmissionReport = {
+    ...report(), admission: off, agents: [],
+    repositoryWorkflowSlots: { label: "Repository workflow slots: …", repositories: [], unavailable: "Repository workflow slots could not be read from Redis" },
+  };
+  const text = formatAdmissionReport(unreadable).join("\n");
+  assert.match(text, /^Repository workflow slots: unavailable: Repository workflow slots could not be read from Redis\.$/m);
+  assert.doesNotMatch(text, /none in use/);
+  const empty: AgentRunAdmissionReport = { ...report(), admission: off, agents: [], repositoryWorkflowSlots: { label: "Repository workflow slots: …", repositories: [] } };
+  assert.match(formatAdmissionReport(empty).join("\n"), /^Repository workflow slots: none in use under a limit\.$/m);
+});
+
 async function run(args: string[]): Promise<{ output: string[]; requested: string[] }> {
   const output: string[] = [];
   const requested: string[] = [];
