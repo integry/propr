@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arguments, plain variables and write-only secret variables. Saving and
   **Check** look the version up in the registry and pin its SHA-512 integrity
   value; nothing runs in Settings. The worker installs each pinned package once
-  into its own cache with `--ignore-scripts`, outside every task workspace; a
+  into its own cache with `--ignore-scripts`, outside every task workspace,
+  through a proxy that reaches only the registry's host and port (dependency
+  tarball URLs, redirects, git and `file:` sources are refused); a
   run mounts it read-only, checks the files against the integrity value
   (a changed install is skipped and recorded as `package_integrity_mismatch`)
   and starts it through the stdio bridge for Claude and Codex. Secret variables

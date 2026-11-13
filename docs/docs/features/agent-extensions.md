@@ -425,6 +425,16 @@ scripts, so such a package would not work.
   installed the same way, and their lifecycle scripts do not run either. The
   installed package must report the stored integrity value, or the install is
   refused.
+- The install can reach the registry and nothing else. Every request npm makes,
+  including each redirect, goes through a proxy on the worker that admits only
+  the registry's host and port. The proxy resolves the name itself and connects
+  only to the address it checked. The public registry must resolve to public
+  addresses. A dependency that names a tarball URL elsewhere, such as a host on
+  the worker's network, is never requested, and the install fails. Git
+  dependencies cannot be fetched. A dependency that is not resolved from the
+  registry with an integrity value, such as a `file:` path on the worker, also
+  refuses the install. A refused install is skipped with `package_unavailable`,
+  and nothing from it is recorded or mounted.
 - Installed files are made read-only, and their digest is recorded in a manifest
   authenticated with the instance's private credential root. Later runs reuse the
   install.
@@ -443,8 +453,12 @@ scripts, so such a package would not work.
   never reachable through Core's HTTPS gateway.
 
 Operators can point installs and **Check** at a mirror of the public registry
-with `PROPR_EXTENSION_NPM_REGISTRY` on Core and workers. Private registries and
-registry credentials are not supported.
+with `PROPR_EXTENSION_NPM_REGISTRY` on Core and workers. The mirror is operator
+configuration, so it may resolve to a private address. Installs then reach the
+mirror's host and port only, and the mirror must serve the package tarballs from
+that same host and port. The worker's `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+settings apply to the install proxy's own connections, not to npm. Private
+registries and registry credentials are not supported.
 
 ### Credentials: the container trust boundary
 

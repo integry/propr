@@ -32,7 +32,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 });
 `;
 
-export interface FixturePackage { name: string; version: string; files: Record<string, string>; manifest: Record<string, unknown> }
+/** A fixture package; a manifest function receives the registry's base URL, for dependencies that point back at it. */
+export interface FixturePackage { name: string; version: string; files: Record<string, string>; manifest: Record<string, unknown> | ((base: string) => Record<string, unknown>) }
 interface Published { manifest: Record<string, unknown>; tarball: Buffer; integrity: string }
 
 /** Pack each fixture package with npm and serve packuments, version documents and tarballs over local HTTP. */
@@ -49,24 +50,13 @@ export async function npmRegistryFixture(extra: FixturePackage[] = [], marker = 
   ];
   const published = new Map<string, Map<string, Published>>();
   let base = '';
-  for (const pkg of packages) {
-    const directory = path.join(work, `${pkg.name}-${pkg.version}`);
-    for (const [file, content] of Object.entries(pkg.files)) {
-      await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
-      await fs.writeFile(path.join(directory, file), content, { mode: 0o755 });
-    }
-    await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, license: 'MIT', ...pkg.manifest }));
-    const { stdout } = await run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', work], { cwd: directory, env: { ...process.env, npm_config_update_notifier: 'false' } });
-    const filename = (JSON.parse(stdout) as { filename: string }[])[0].filename;
-    const tarball = await fs.readFile(path.join(work, filename));
-    const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
-    if (!published.has(pkg.name)) published.set(pkg.name, new Map());
-    published.get(pkg.name)!.set(pkg.version, { manifest: { name: pkg.name, version: pkg.version, ...pkg.manifest }, tarball, integrity });
-  }
   const requests: string[] = [];
   const document = (name: string, version: string, entry: Published) => ({ ...entry.manifest, ...(entry.manifest.scripts && Object.keys(entry.manifest.scripts as object).some(s => ['preinstall', 'install', 'postinstall'].includes(s)) ? { hasInstallScript: true } : {}), dist: { integrity: entry.integrity, tarball: `${base}/${name}/-/${name}-${version}.tgz` } });
   const server = http.createServer((request, response) => {
     const url = decodeURIComponent(request.url ?? '/'); requests.push(url);
+    // `/-/redirect/<encoded URL>` answers with a redirect there, as a package-controlled tarball URL could.
+    const redirect = /^\/-\/redirect\/([^/]+)$/.exec(request.url ?? '');
+    if (redirect) { response.writeHead(302, { Location: decodeURIComponent(redirect[1]) }).end(); return; }
     const tar = /^\/([^/]+)\/-\/[^/]+-([^/]+)\.tgz$/.exec(url);
     if (tar) {
       const entry = published.get(tar[1])?.get(tar[2]);
@@ -86,6 +76,23 @@ export async function npmRegistryFixture(extra: FixturePackage[] = [], marker = 
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    for (const pkg of packages) {
+      const directory = path.join(work, `${pkg.name}-${pkg.version}`);
+      for (const [file, content] of Object.entries(pkg.files)) {
+        await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
+        await fs.writeFile(path.join(directory, file), content, { mode: 0o755 });
+      }
+      const manifest = typeof pkg.manifest === 'function' ? pkg.manifest(base) : pkg.manifest;
+      await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, license: 'MIT', ...manifest }));
+      const { stdout } = await run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', work], { cwd: directory, env: { ...process.env, npm_config_update_notifier: 'false' } });
+      const filename = (JSON.parse(stdout) as { filename: string }[])[0].filename;
+      const tarball = await fs.readFile(path.join(work, filename));
+      const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
+      if (!published.has(pkg.name)) published.set(pkg.name, new Map());
+      published.get(pkg.name)!.set(pkg.version, { manifest: { name: pkg.name, version: pkg.version, ...manifest }, tarball, integrity });
+    }
+  } catch (error) { server.close(); await fs.rm(work, { recursive: true, force: true }); throw error; }
   return {
     url: base, marker, requests,
     integrity: (name: string, version: string) => published.get(name)!.get(version)!.integrity,

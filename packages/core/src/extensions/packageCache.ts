@@ -5,7 +5,8 @@ import path from 'node:path';
 import type { ExtensionLibraryPackageServer } from '@propr/shared';
 import { egressSocketRoots } from '../network/egressExecution.js';
 import { extensionPackageManifestTag } from './privateSecrets.js';
-import { npmRegistryUrl, packageBins, selectPackageBin } from './packageRegistry.js';
+import { assertRegistryDependencies, startPackageInstallProxy } from './packageInstallEgress.js';
+import { packageBins, selectPackageBin } from './packageRegistry.js';
 
 /** Why a package server cannot be used by a run; the run proceeds without it. */
 export class ExtensionPackageError extends Error {
@@ -135,17 +136,26 @@ export class ExtensionPackageCache {
     await fs.mkdir(root, { recursive: true, mode: 0o755 });
     const work = path.join(root, `.install-${randomBytes(8).toString('hex')}`);
     const home = `${work}-home`;
+    let proxy: Awaited<ReturnType<typeof startPackageInstallProxy>> | undefined;
     try {
       await fs.mkdir(work, { mode: 0o755 }); await fs.mkdir(home, { mode: 0o700 });
       await fs.writeFile(path.join(work, 'package.json'), JSON.stringify({ name: 'propr-extension-package', private: true, dependencies: { [server.package]: server.version } }, null, 2));
       // No lifecycle scripts, no user or global npm configuration, no registry credentials.
-      const env: NodeJS.ProcessEnv = {
-        PATH: this.environment.PATH ?? process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: home,
-        ...Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'].filter(k => this.environment[k]).map(k => [k, this.environment[k]])),
-      };
+      // Every connection goes through the install proxy, which admits only the
+      // registry's host and port and dials only addresses it vetted itself, so
+      // dependency URLs and redirects cannot reach the worker's network. The
+      // worker's own proxy variables configure that proxy, never npm.
+      proxy = await startPackageInstallProxy(this.environment);
+      const env: NodeJS.ProcessEnv = { PATH: this.environment.PATH ?? process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: home };
       await this.npm(['install', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--no-update-notifier', '--no-bin-links', '--install-strategy=hoisted',
-        '--registry', `${npmRegistryUrl(this.environment).url}/`, '--cache', path.join(home, 'cache'), '--userconfig', path.join(home, 'npmrc'), '--globalconfig', path.join(home, 'npmrc-global')], { cwd: work, env });
-      const lock = JSON.parse(await fs.readFile(path.join(work, 'package-lock.json'), 'utf8')) as { packages?: Record<string, { version?: string; integrity?: string; hasInstallScript?: boolean }> };
+        '--registry', `${proxy.registry}/`, '--proxy', proxy.url, '--https-proxy', proxy.url,
+        // Git dependencies would run git outside the proxy; none can be fetched.
+        '--git', path.join(home, 'git-dependencies-are-unsupported'),
+        '--cache', path.join(home, 'cache'), '--userconfig', path.join(home, 'npmrc'), '--globalconfig', path.join(home, 'npmrc-global')], { cwd: work, env });
+      const lock = JSON.parse(await fs.readFile(path.join(work, 'package-lock.json'), 'utf8')) as { packages?: Record<string, { version?: string; integrity?: string; hasInstallScript?: boolean; resolved?: string; link?: boolean; inBundle?: boolean }> };
+      try { assertRegistryDependencies(lock, proxy.registry); } catch {
+        throw new ExtensionPackageError('package_unavailable', 'A dependency of this package comes from outside the package registry, which ProPR never installs');
+      }
       const installed = lock.packages?.[`node_modules/${server.package}`];
       if (installed?.version !== server.version || installed.integrity !== server.integrity) throw new ExtensionPackageError('package_integrity_mismatch', 'The registry served a package that does not match the pinned integrity value');
       if (installed.hasInstallScript) throw new ExtensionPackageError('package_unavailable', 'This package needs install scripts, which ProPR never runs');
@@ -161,6 +171,7 @@ export class ExtensionPackageCache {
     } catch (error) {
       throw error instanceof ExtensionPackageError ? error : new ExtensionPackageError('package_unavailable', 'The package could not be installed');
     } finally {
+      await proxy?.close().catch(() => {});
       await removeTree(home).catch(() => {});
       if (await fs.lstat(work).catch(() => null)) await removeTree(work).catch(() => {});
     }
