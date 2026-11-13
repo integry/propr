@@ -92,6 +92,8 @@ export function getReasoningLevelsForAgentType(agentType: AgentType, model?: str
   if (agentType === 'claude') return CLAUDE_REASONING_LEVELS;
   if (agentType === 'antigravity') {
     if (model?.includes('gpt-oss-120b')) return ['medium'];
+    // Antigravity CLI 1.5.8 serves Gemini 4 Hydrogen at XHigh too.
+    if (model?.includes('gemini-4-hydrogen')) return ['low', 'medium', 'high', 'xhigh'];
     return ['low', 'medium', 'high'];
   }
   return [];
