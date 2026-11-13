@@ -1,3 +1,4 @@
+import { initialPullRequestStatusBlock, pullRequestStatusBlockLength, withPullRequestStatusBlock, writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import type { Logger } from 'pino';
 import {
     generateCompletionCommentParts,
@@ -30,10 +31,7 @@ import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, W
 import { PR_BODY_MAX_LENGTH, extractAcceptanceCriteria, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import { readReviewDigestChanges, recordReviewDigest } from './reviewDigestLazy.js';
-import {
-    isVisualPreviewUploadAuthenticationError,
-    publishPullRequestVisualPreviews,
-} from '../github/visualPreviewAttachments.js';
+import { isVisualPreviewUploadAuthenticationError, publishPullRequestVisualPreviews } from '../github/visualPreviewAttachments.js';
 
 export type RepoValidation = RepoValidationResult;
 
@@ -249,6 +247,7 @@ export async function createPullRequest(
             toolSuggestions: visualPreview.evidence.toolSuggestions
         }, {})
         : '';
+    const statusBlock = await initialPullRequestStatusBlock(`${issueRef.repoOwner}/${issueRef.repoName}`);
     const { title: prTitle, body: basePrBody } = await describePullRequest({
         pieces: buildIssuePullRequestBodyPieces({ issueRef, worktreeInfo, commitResult, claudeResult, completion }),
         defaultTitle: '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle,
@@ -262,11 +261,11 @@ export async function createPullRequest(
             digest: completion.digest,
         }),
         loadTemplate: () => loadPullRequestTemplate({ octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch, correlationId: issueRef.correlationId }),
-        maxBodyLength: templateBodyLengthBudget(visualPreviewSection),
+        maxBodyLength: templateBodyLengthBudget(visualPreviewSection) - pullRequestStatusBlockLength(statusBlock),
         onError: message => recordPullRequestTemplateError({ stateManager: options.stateManager, taskId: options.taskId, message, correlatedLogger }),
         context: { jobId, issueNumber: issueRef.number },
     });
-    const prBody = appendVisualPreviewSection(basePrBody, visualPreviewSection);
+    const prBody = withPullRequestStatusBlock(appendVisualPreviewSection(basePrBody, visualPreviewSection), statusBlock);
 
     try {
         const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
@@ -320,10 +319,10 @@ export async function createPullRequest(
             } catch (previewError) {
                 correlatedLogger.warn({ prNumber: prResponse.data.number, error: (previewError as Error).message }, 'Could not upload visual previews; publishing a text-only explanation');
                 try {
-                    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                    await writePullRequestBody(octokit, {
                         owner: issueRef.repoOwner,
                         repo: issueRef.repoName,
-                        pull_number: prResponse.data.number,
+                        pullNumber: prResponse.data.number,
                         body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(
                             visualPreview.evidence,
                             { authenticationFailure: isVisualPreviewUploadAuthenticationError(previewError) }

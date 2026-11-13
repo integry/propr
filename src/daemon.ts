@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { enablePullRequestStatusMaintenance } from './jobs/pullRequestStatusSignal.js';
 import { scheduleManagedDiagnostics } from './daemon/managedDiagnostics.js';
 import { reconcileTaskIntentsSafely } from './daemon/taskIntentReconciliation.js';
 import { Redis } from 'ioredis';
@@ -366,6 +367,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             redisClient,
             repositoryFilter: monitoredRepositoryFilter,
         });
+        // Webhook transitions (PR state, check runs) keep PR status blocks current.
+        await enablePullRequestStatusMaintenance();
     };
 
     // Serialize every reload source so an earlier, slower persisted-config read

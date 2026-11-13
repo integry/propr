@@ -12,6 +12,7 @@ import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRH
 import { getClosedPullRequestCiRedis, recordClosedPullRequestForCiCancellation } from './closedPullRequestCi.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import { handleAutoMergePolicyPullRequestEvent } from '../services/autoMergeGate.js';
+import { isOwnPullRequestStatusEdit, signalPullRequestStatusFromWebhook } from './pullRequestStatusWebhook.js';
 import type { IssuesEvent, IssueCommentEvent, PullRequestReviewCommentEvent, PullRequestEvent, CheckRunEvent } from '@octokit/webhooks-types';
 import {
     getRepositoryFullName, isIssuesEvent, isIssuesLabeledEvent, isIssueCommentEvent, isIssueCommentCreatedEvent,
@@ -418,6 +419,13 @@ export async function processWebhookEvent(
             return { status: 'ignored', reason: 'repository_not_monitored' };
         }
     }
+
+    // ProPR's own status block edit: nothing else changed, so no handler runs.
+    if (isOwnPullRequestStatusEdit(payload, eventType)) {
+        correlatedLogger.debug({ repository, event: eventType }, 'Ignoring the pull request edit made by a status update');
+        return { status: 'ignored', reason: 'pull_request_status_edit' };
+    }
+    signalPullRequestStatusFromWebhook(payload, eventType);
 
     const cancellation = handleIntentWithdrawal(payload, eventType).catch(error => {
         correlatedLogger.warn({ error }, 'Intent withdrawal failed; continuing webhook handlers, polling will retry cancellation');

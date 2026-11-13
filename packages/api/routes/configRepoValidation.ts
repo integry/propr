@@ -4,6 +4,7 @@ import type { RepoToMonitor, VisualPreviewSettings, VisualPreviewType } from '@p
 import { normalizeOptionalBranchName } from './branchNameValidation.js';
 import { normalizeContextRepositories } from './configRepoContext.js';
 import { normalizeRepoAutoAssign, preserveRepoAutoAssign, withDefaultRepoAutoAssign } from './configRepoAutoAssign.js';
+import { preserveRepoPrStatusDisplay } from './configRepoPrStatus.js';
 import { isValidAutoResolveMergeConflicts, normalizeStoredAutoResolveMergeConflicts, preserveRepoAutoResolveMergeConflicts, withAutoResolveMergeConflicts } from './configRepoAutoResolve.js';
 
 const MAX_VISUAL_PREVIEW_INSTRUCTIONS_LENGTH = 4000;
@@ -81,6 +82,7 @@ export function withDefaultRepoOptions(repo: RepoToMonitor): RepoToMonitor {
     nonBlockingChecks: normalizeStoredWorkflowSelection(repo.nonBlockingChecks),
     notificationsEnabled: repo.notificationsEnabled !== false,
     githubPrTemplateFallback: repo.githubPrTemplateFallback !== false,
+    prStatusDisplay: repo.prStatusDisplay === true,
     visualPreview: normalizeStoredVisualPreviewSettings(repo.visualPreview)
   };
 }
@@ -363,7 +365,7 @@ function normalizeNonBlockingChecks(value: unknown, repoName: string): Validatio
 }
 
 /** Optional booleans that are rejected when present with a non-boolean value. */
-const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled', 'githubPrTemplateFallback', 'autoAssignPullRequests', 'autoAssignRequestReview'] as const;
+const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled', 'githubPrTemplateFallback', 'autoAssignPullRequests', 'autoAssignRequestReview', 'prStatusDisplay'] as const;
 
 function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: string): ValidationResult<undefined> {
   for (const field of OPTIONAL_BOOLEAN_FIELDS) {
@@ -416,6 +418,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     nonBlockingChecks: nonBlockingChecks.value,
     notificationsEnabled: candidate.notificationsEnabled !== false,
     githubPrTemplateFallback: candidate.githubPrTemplateFallback !== false,
+    prStatusDisplay: candidate.prStatusDisplay === true,
     visualPreview: visualPreview.value,
     ...autoAssign.value,
     alias: alias.value,
@@ -470,5 +473,6 @@ export function preserveRepoSettings(
   repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);
   repos = preserveRepoAutoResolveMergeConflicts(previousRepos, preserveRepoNotifications(previousRepos, repos, incomingRepos), incomingRepos);
   repos = preserveRepoAutoAssign(previousRepos, preserveRepoGitHubPrTemplateFallback(previousRepos, repos, incomingRepos), incomingRepos);
+  repos = preserveRepoPrStatusDisplay(previousRepos, repos, incomingRepos);
   return preserveRepoVisualPreview(previousRepos, repos, incomingRepos);
 }

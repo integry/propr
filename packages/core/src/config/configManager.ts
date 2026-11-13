@@ -57,6 +57,9 @@ export interface RepoToMonitor {
     autoAssignDefaultAssignee?: string | null;
     // Also request a GitHub review from the assigned user. Defaults to false.
     autoAssignRequestReview?: boolean;
+    // Keep a live ProPR status block at the top of ProPR pull request bodies,
+    // repository-wide across branch entries. Defaults to false.
+    prStatusDisplay?: boolean;
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata

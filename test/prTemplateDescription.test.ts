@@ -237,3 +237,37 @@ test('createPullRequest never publishes a secret from a title placeholder', asyn
     assert.equal(published.length, 1);
     assert.equal(published[0].title, 'fix/[REDACTED_GITHUB_TOKEN]: Fix login');
 });
+
+test('with the PR status setting on, a new issue pull request opens with the status block first', async () => {
+    const { disablePullRequestStatusSync, enablePullRequestStatusSync } = await import('@propr/core');
+    const octokit = contentsOctokit({}, {});
+    const published: Array<Record<string, unknown>> = [];
+    const mockOctokit = {
+        async request<T>(endpoint: string, options: Record<string, unknown>): Promise<T> {
+            if (endpoint === 'POST /repos/{owner}/{repo}/pulls') {
+                published.push(options);
+                return { data: { number: 9, html_url: 'https://github.com/acme/app/pull/9', title: options.title } } as T;
+            }
+            if (endpoint.startsWith('POST /repos/{owner}/{repo}/issues/')) return { data: [] } as T;
+            return octokit.request<T>(endpoint, options);
+        },
+    };
+    const logger = { info() {}, warn() {}, error() {}, debug() {} };
+    const create = () => createPullRequest(mockOctokit as never, { repoOwner: 'acme', repoName: 'app', number: 7, baseBranch: 'main' } as never, { branchName: '7-fix-login' } as never, {
+        commitResult: null, claudeResult: null, modelName: 'claude-opus-4-5-20251101', repoValidation: {} as never, PR_LABEL: 'propr',
+        correlatedLogger: logger as never, issueTitle: 'Fix login',
+    });
+    enablePullRequestStatusSync({ loadEnabled: async repository => repository === 'acme/app', redis: null });
+    try {
+        await create();
+    } finally {
+        disablePullRequestStatusSync();
+    }
+    const body = String(published[0].body);
+    assert.match(body, /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 Implementing · updated \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n/);
+
+    // With the setting off the body is exactly what it was before the setting existed.
+    await create();
+    assert.equal(String(published[1].body), body.replace(/^<!-- propr:pr-status -->[\s\S]*?<!-- \/propr:pr-status -->\n\n/, ''));
+    assert.doesNotMatch(String(published[1].body), /propr:pr-status/);
+});

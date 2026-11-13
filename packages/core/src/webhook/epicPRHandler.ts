@@ -1,3 +1,5 @@
+import { updatePullRequestBody } from '../services/pullRequestStatus/pullRequestStatusSync.js';
+import { requestPullRequestStatusSync } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
@@ -326,8 +328,9 @@ async function updateEpicPRBody(
     });
     if (epic.data.state !== 'open') return;
     await lease.assertOwned();
-    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-        owner, repo, pull_number: epicPrNumber, body: newBody
+    // Carries the live status block over instead of dropping it.
+    await updatePullRequestBody(octokit as unknown as Parameters<typeof updatePullRequestBody>[0], {
+        owner, repo, pullNumber: epicPrNumber, body: newBody,
     });
 
     correlatedLogger.info({
@@ -499,6 +502,7 @@ async function createEpicPR(
         baseBranch,
         planName: planDetails?.planName
     }, 'Epic PR created after child PR merge');
+    requestPullRequestStatusSync(repository, prResponse.data.number);
 
     return { epicPrNumber: prResponse.data.number, carried: false };
 }

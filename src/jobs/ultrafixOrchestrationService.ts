@@ -7,6 +7,7 @@
  */
 
 import type { Redis } from 'ioredis';
+import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
 import type { UltrafixEscalationState } from './ultrafixEscalationPolicy.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { hasOnlyStyleFindings, type ReviewFindingCategory } from './reviewFindingCategory.js';
@@ -333,6 +334,7 @@ export function determineNextAction(
 export async function saveState(redis: Redis, state: UltrafixLoopState): Promise<void> {
     const key = getUltrafixStateKey(state.owner, state.repo, state.pr);
     await redis.set(key, JSON.stringify(state));
+    signalPullRequestStatus(`${state.owner}/${state.repo}`, state.pr);
 }
 
 export async function loadState(redis: Redis, owner: string, repo: string, pr: number): Promise<UltrafixLoopState | null> {
@@ -366,12 +368,9 @@ async function saveOwnedState(redis: Redis, state: UltrafixLoopState, workEpoch?
         return true;
     }
     if (state.workEpoch !== workEpoch) return false;
-    return saveUltrafixStateIfCurrent(
-        redis,
-        { owner: state.owner, repo: state.repo, pr: state.pr },
-        workEpoch,
-        JSON.stringify(state),
-    );
+    const saved = await saveUltrafixStateIfCurrent(redis, { owner: state.owner, repo: state.repo, pr: state.pr }, workEpoch, JSON.stringify(state));
+    if (saved) signalPullRequestStatus(`${state.owner}/${state.repo}`, state.pr);
+    return saved;
 }
 
 // --- High-level helpers ---
@@ -394,6 +393,7 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
             { key: getUltrafixStateKey(state.owner, state.repo, state.pr), serialized: JSON.stringify(state) },
         );
     if (!saved) throw new Error('Ultrafix startup was superseded before state commit');
+    signalPullRequestStatus(`${state.owner}/${state.repo}`, state.pr);
     return { state, initialAction };
 }
 

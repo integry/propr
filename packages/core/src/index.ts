@@ -659,6 +659,8 @@ export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/reviewScoreStore.js';
+// The one pull request status computation, its PR body block and its sync.
+export * from './services/pullRequestStatus/index.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

@@ -17,6 +17,7 @@ import {
     withUltrafixLabelTransition,
     recoverCiFailureFollowups,
 } from '@propr/core';
+import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
 import {
     clearDeferredContinuationIfCurrent,
     completeLoop,
@@ -306,6 +307,7 @@ export async function handleUltrafixCiDeferral(
         );
     }
     await redis.set(getUltrafixCiWaitKey(owner, repo, pr), JSON.stringify(record), 'EX', CI_WAIT_TTL_SECONDS);
+    signalPullRequestStatus(`${owner}/${repo}`, pr);
     return { stopped: false, waitedMs, blockingChecks };
 }
 

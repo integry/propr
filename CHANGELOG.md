@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pull request status**: ProPR now computes one status for each pull
+  request it created: `working`, `needs_attention`, `ready` or `none`, with a
+  detail of what is happening (activity, Ultrafix cycle, latest review score,
+  passed/failed/pending checks, the reason it needs you, and epic issue
+  progress). A review score alone never makes a pull request `ready`: its
+  checks on the current head must have completed and passed. The new
+  repository setting `prStatusDisplay` (off by default; Repositories →
+  Automation, `update_repository_configuration`, `propr repo toggle
+  owner/repo --pr-status on`) keeps that status as one live line at the top
+  of the body of every open ProPR pull request. Only the text between its
+  markers is ever rewritten, other ProPR body writers keep it, and it is
+  removed when the pull request is merged or closed or when the setting is
+  turned off. `get_pull_request`, `list_pull_requests` and
+  `get_work_overview` return the same status as `proprStatus`. See
+  [PR Status](docs/docs/features/pr-status.md).
 - **Claude goals can ask you a question**: Claude goal sessions now get an
   `ask_operator` tool. It takes one question (up to 1,000 characters,
   optionally with 2-10 suggested answers) and waits for your reply. The

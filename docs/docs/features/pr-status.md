@@ -1,0 +1,78 @@
+---
+sidebar_position: 7
+sidebar_label: "PR Status"
+title: "See whether a ProPR pull request is working, needs you, or is ready"
+description: "ProPR computes one status for each of its pull requests and can keep it live as the first line of the pull request body."
+---
+
+# PR Status
+
+ProPR computes one status for every pull request it created: is it being worked on, does it need a person, or is it ready to merge? The same answer appears at the top of the pull request (when the repository turns it on) and in the MCP tools `get_pull_request`, `list_pull_requests` and `get_work_overview`, so you don't have to read the comment thread to find out.
+
+## States
+
+| State | When |
+| --- | --- |
+| `working` | A ProPR task for this pull request is queued or running (implementation, follow-up, review, conflict resolution), an Ultrafix loop is active (including while it waits for CI), or checks on the current head are still pending. |
+| `needs_attention` | Nothing is running, and one of these is true: the last ProPR run on the PR failed; an Ultrafix loop ended without reaching its goal (cycles exhausted, failed, or stopped because CI did not settle); a check on the current head failed; the PR conflicts with its base, or the conflict resolution failed; the latest review score is below the instance Ultrafix rating goal; or the checks could not be read. |
+| `ready` | Nothing is running, every check on the current head completed and passed, the PR does not conflict with its base, and the latest review score (if the PR has been reviewed) meets the instance Ultrafix rating goal. |
+| `none` | The pull request is closed or merged, or ProPR did not create it. |
+
+A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; if one of those checks then fails, it becomes `needs_attention`. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR.
+
+Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged.
+
+## The status line in the pull request body
+
+Turn on **Show the ProPR status in the pull request** for a repository and ProPR keeps a single line as the first thing in the body of every open pull request it created:
+
+> **ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated 09:41 UTC
+
+> **ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC
+
+> **ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated 10:15 UTC
+
+How the line behaves:
+
+- A new issue pull request opens with the line already in it. After that, ProPR updates it whenever the status or its detail changes: a follow-up or review starts or finishes, a review score is recorded, an Ultrafix cycle advances or waits for CI, a loop ends, a check run is created or completes, the PR is pushed to, or conflicts appear.
+- The line sits between two hidden HTML comments (`<!-- propr:pr-status -->` and `<!-- /propr:pr-status -->`). ProPR only ever rewrites text between them. Everything else in the body stays exactly as it was, including your edits, the implementation summary, the visual preview section, continuation markers, the epic issue list and `Fixes #` lines. If you move the line further down the body, it is updated where you put it.
+- Editing a pull request body adds nothing to the timeline, so the line can change often without filling the conversation. When the only change would be the "updated" time, nothing is sent to GitHub.
+- ProPR ignores the `edited` webhooks its own status updates cause, so they never start more work.
+- When the pull request is merged or closed, the line is removed.
+- If an update fails, the task, review or loop that caused it carries on as normal. The failure is logged, and the next change tries again.
+
+The setting is off by default. While it is off, nothing is written. If you turn it off, the line is removed from each open pull request the next time that pull request's status changes.
+
+## Turn it on
+
+The setting is per repository and applies to every branch entry of that repository.
+
+| Where | How |
+| --- | --- |
+| Web UI | Repositories → repository → Automation → **Show the ProPR status in the pull request** |
+| MCP | `update_repository_configuration` with `prStatusDisplay: true`; `get_repository_configuration` reads it |
+| CLI | `propr repo toggle owner/repo --pr-status on` (or `--pr-status on` on `propr repo add`) |
+| REST | `prStatusDisplay` on the repository entries of `POST /api/config/repos` |
+
+## Read the status through MCP
+
+`get_pull_request` returns `proprStatus` for the pull request. `list_pull_requests` adds `proprStatus` to each result, and `get_work_overview` adds it to each item's `pullRequest`. Closed and merged pull requests read `{ "state": "none" }` without a GitHub lookup. To keep GitHub traffic bounded, each list call computes the status for at most 20 open pull requests: the rest read `null`, and `statusTruncated` is `true`. `proprStatus` is also `null` when the status could not be computed. The pull request itself is still returned.
+
+```json
+{
+  "state": "needs_attention",
+  "detail": {
+    "activity": null,
+    "ultrafix": null,
+    "ultrafixStopped": null,
+    "reviewScore": 8,
+    "ratingGoal": 7,
+    "checks": { "passed": 34, "failed": 1, "pending": 0 },
+    "reason": "check_failed",
+    "failedChecks": ["unit tests"],
+    "epic": null
+  }
+}
+```
+
+The status is computed the same way whether or not the body line is turned on.
