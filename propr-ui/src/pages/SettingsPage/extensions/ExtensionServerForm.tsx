@@ -2,7 +2,7 @@ import { useId, useState, type FormEvent } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryServer, ExtensionSecretAcknowledgement, ExtensionSecretStatus } from '@propr/shared';
 import { ExtensionItemLimits } from './ExtensionItemLimits';
 import { PackageServerFields } from './ExtensionPackageFields';
-import { PACKAGE_TYPE, acknowledgedNames, acknowledgementCovers, packageProblem, serverTypeValue, writeOnlyValues } from './packageServerUi';
+import { PACKAGE_TYPE, acknowledgedNames, acknowledgementCovers, acknowledgementScope, packageProblem, serverTypeValue, writeOnlyValues } from './packageServerUi';
 import { CatalogServerDetails, ServerAccessFields, ServerEndpointField, ServerToolsField } from './ExtensionServerFields';
 import { buttonClass, inputClass, ownEntry, primaryButtonClass, type ExtensionChoices } from './extensionUi';
 import { newHttpsServer, newPackageServer } from './libraryEdits';
@@ -16,6 +16,17 @@ const fromCatalog = (entry: ExtensionCatalogEntry, base: ExtensionLibraryServer)
 /** The name, endpoint, authentication or client changed, so the saved server's credential will not carry over. */
 const credentialDropped = (saved: ExtensionLibraryServer | undefined, draft: ExtensionLibraryServer) => saved?.kind === 'https' && draft.kind === 'https'
   && (draft.name !== saved.name || draft.url !== saved.url || draft.authentication !== saved.authentication || draft.clientId !== saved.clientId);
+
+/**
+ * Whether the secret-variable acknowledgement is given for the draft as it is now. The box is ticked for one scope (name,
+ * package, version and secret variables), or carried from the saved revision for the saved one; it is never extended to a
+ * changed scope, so editing any of them clears it until it is ticked again.
+ */
+function useScopedAcknowledgement(initial: ExtensionLibraryServer | undefined, saved: ExtensionSecretAcknowledgement | undefined, draft: ExtensionLibraryServer) {
+  const [scope, setScope] = useState<string | null>(() => (initial && acknowledgementCovers(saved, initial) ? acknowledgementScope(initial) : null));
+  const acknowledged = scope !== null && scope === acknowledgementScope(draft);
+  return [acknowledged, (checked: boolean) => setScope(checked ? acknowledgementScope(draft) : null)] as const;
+}
 
 /**
  * Add or edit one MCP server: an HTTPS endpoint or an operator catalog entry,
@@ -42,7 +53,7 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
   const [token, setToken] = useState('');
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
   const savedAcknowledgement = initial ? ownEntry(acknowledgements, initial.name) : undefined;
-  const [acknowledged, setAcknowledged] = useState(() => acknowledgementCovers(savedAcknowledgement, initial));
+  const [acknowledged, setAcknowledged] = useScopedAcknowledgement(initial, savedAcknowledgement, draft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   /**
@@ -105,7 +116,7 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
           <CatalogServerDetails server={draft} catalog={catalog} secrets={secrets} />
         </div>
         {draft.kind === 'package' && (
-          <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} acknowledgement={savedAcknowledgement}
+          <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} acknowledgement={draft.name === initial?.name ? savedAcknowledgement : undefined}
             secretValues={secretValues} onSecretValues={setSecretValues} acknowledged={acknowledged} onAcknowledged={setAcknowledged}
             onChange={patch => change(patch as Partial<ExtensionLibraryServer>)} />
         )}

@@ -123,21 +123,33 @@ describe('local package servers', () => {
     expect(acknowledged).toEqual(['server-1']);
   });
 
-  it('lists a local server as Local with its package and version, and saves edits with the recorded acknowledgement', async () => {
+  const openSaved = async () => {
     render(<AgentExtensionsSection />);
     const row = await screen.findByTestId('extension-server');
+    fireEvent.click(within(row).getByRole('button', { name: /Edit/ }));
+    return { row, form: screen.getByTestId('extension-server-form') };
+  };
+  const acknowledgement = (form: HTMLElement) => within(form).getByRole('checkbox', { name: /readable inside the task container/ });
+
+  it('lists a local server as Local with its package and version; a version change needs a new explicit acknowledgement', async () => {
+    const { row, form } = await openSaved();
     expect(row).toHaveTextContent('browser');
     expect(row).toHaveTextContent('Local · @example/browser-mcp@1.4.2');
     expect(row).not.toHaveTextContent('Secret variables not configured');
-    fireEvent.click(within(row).getByRole('button', { name: /Edit/ }));
-    const form = screen.getByTestId('extension-server-form');
     expect(within(form).getByText(`Pinned integrity: ${integrity}`)).toBeInTheDocument();
     expect(within(form).getByLabelText(/^BROWSER_TOKEN/)).toHaveValue('');
     expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('configured; write-only');
     // The saved acknowledgement covers this package, version and variables.
-    expect(within(form).getByRole('checkbox', { name: /readable inside the task container/ })).toBeChecked();
+    expect(acknowledgement(form)).toBeChecked();
     expect(within(form).getByText(/Acknowledged by user 1/)).toBeInTheDocument();
     fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '1.5.0' } });
+    // The saved acknowledgement no longer covers the new version, and is not silently extended to it.
+    expect(acknowledgement(form)).not.toBeChecked();
+    expect(within(form).queryByText(/Acknowledged by user 1/)).not.toBeInTheDocument();
+    fireEvent.click(within(form).getByRole('button', { name: 'Save server' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('Confirm that the secret values are readable');
+    expect(saveExtensionLibrary).not.toHaveBeenCalled();
+    fireEvent.click(acknowledgement(form));
     fireEvent.click(within(form).getByRole('button', { name: 'Save server' }));
     await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledTimes(1));
     const [input, revision, secrets, acknowledgements] = vi.mocked(saveExtensionLibrary).mock.calls[0];
@@ -145,6 +157,40 @@ describe('local package servers', () => {
     expect(input.servers[0]).toMatchObject({ kind: 'package', version: '1.5.0', secretEnv: ['BROWSER_TOKEN'] });
     expect(secrets).toEqual({});
     expect(acknowledgements).toEqual(['browser']);
+  });
+
+  it.each([
+    ['package', (form: HTMLElement) => fireEvent.change(within(form).getByLabelText(/^Package$/), { target: { value: '@example/other-mcp' } })],
+    ['secret variables', (form: HTMLElement) => {
+      fireEvent.change(within(form).getByLabelText('New secret variable name'), { target: { value: 'EXTRA_TOKEN' } });
+      fireEvent.click(within(form).getByRole('button', { name: 'Add secret variable' }));
+    }],
+    ['removed secret variable', (form: HTMLElement) => {
+      fireEvent.change(within(form).getByLabelText('New secret variable name'), { target: { value: 'EXTRA_TOKEN' } });
+      fireEvent.click(within(form).getByRole('button', { name: 'Add secret variable' }));
+      // Acknowledge the two-variable set, then remove the original one: the tick was for both.
+      fireEvent.click(acknowledgement(form));
+      fireEvent.click(within(form).getByRole('button', { name: 'Remove secret variable BROWSER_TOKEN' }));
+    }],
+    ['server name', (form: HTMLElement) => fireEvent.change(within(form).getByLabelText(/^Server name/), { target: { value: 'browser2' } })],
+  ])('changing the %s clears the acknowledgement until it is given again', async (_label, edit) => {
+    const { form } = await openSaved();
+    expect(acknowledgement(form)).toBeChecked();
+    edit(form);
+    expect(acknowledgement(form)).not.toBeChecked();
+    expect(within(form).queryByText(/Acknowledged by user 1/)).not.toBeInTheDocument();
+    fireEvent.click(within(form).getByRole('button', { name: 'Save server' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('Confirm that the secret values are readable');
+    expect(saveExtensionLibrary).not.toHaveBeenCalled();
+  });
+
+  it('an edit that keeps the package, version and secret variables keeps the saved acknowledgement', async () => {
+    const { form } = await openSaved();
+    fireEvent.change(within(form).getByLabelText(/^Arguments/), { target: { value: '--headless\n--read-only' } });
+    expect(acknowledgement(form)).toBeChecked();
+    fireEvent.click(within(form).getByRole('button', { name: 'Save server' }));
+    await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(saveExtensionLibrary).mock.calls[0][0].servers[0]).toMatchObject({ args: ['--headless', '--read-only'] });
   });
 
   it('warns on the row when a secret variable has no value', async () => {

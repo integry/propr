@@ -10,6 +10,13 @@ export const acknowledgementCovers = (acknowledgement: ExtensionSecretAcknowledg
   && server?.kind === 'package' && acknowledgement.package === server.package && acknowledgement.version === server.version
   && [...acknowledgement.secretEnv].sort().join('\n') === [...server.secretEnv].sort().join('\n'));
 
+/**
+ * What an acknowledgement given in the form is for: the server name, package, version and set of secret variables.
+ * Changing any of them makes a tick given earlier, or one carried from the saved revision, no longer apply.
+ */
+export const acknowledgementScope = (server: ExtensionLibraryServer) => (server.kind === 'package'
+  ? JSON.stringify([server.name, server.ecosystem, server.package, server.version, [...server.secretEnv].sort()]) : '');
+
 /** The value of the form's server type select. */
 export const serverTypeValue = (draft: ExtensionLibraryServer) => (draft.kind === 'catalog' ? draft.catalogId : draft.kind === 'package' ? PACKAGE_TYPE : '');
 /** The servers a save acknowledges: this package server when it has secret variables and the box is ticked. */
