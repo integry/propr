@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
+import { useCurrentUser } from '../../contexts/AuthContext';
+import { canManageHeldFollowups } from './settingsPermissions';
 import * as api from '../../api/followupHandoffsApi';
 import { SettingsSection } from './SettingsLayout';
 
@@ -22,13 +23,13 @@ const REASON_TEXT: Record<string, string> = {
 };
 
 /**
- * Operator maintenance. Today: follow-up handoffs held for an operator, which
+ * Follow-up handoffs held for an operator, which
  * block every later command on their pull request until someone resumes or
  * releases them. Admin-only, like the routes it calls.
  */
 export default function MaintenanceSection() {
   const user = useCurrentUser();
-  if (user?.role !== 'admin' || !userHasPermission(user, 'instance.manage_runtime')) return null;
+  if (!canManageHeldFollowups(user)) return null;
   return <HeldFollowups key={user.id} />;
 }
 
@@ -66,21 +67,20 @@ function HeldFollowups() {
   return (
     <SettingsSection
       className="min-w-0 [overflow-wrap:anywhere]"
-      title="Maintenance"
-      description="Operator decisions that otherwise need the CLI or the admin API."
+      title="Held follow-ups"
+      description="Follow-ups whose publication is still owed. These operator decisions otherwise need the CLI or the admin API."
     >
       <div className="space-y-5 text-xs">
         {error && <p role="alert" className="text-red-700">{error}</p>}
         {message && <p role="status">{message}</p>}
         <div>
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-            <h5 className="font-semibold text-slate-900">Held follow-ups</h5>
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <p className="min-w-0 max-w-2xl flex-1 leading-5 text-slate-500">
+              One held for an operator blocks every later command on its pull request until it is resumed or released.
+              Release frees the branch and never deletes files or commits; the next command redoes the request from the current branch.
+            </p>
             <button className={button} disabled={busy !== null} onClick={() => void refresh()}>Refresh</button>
           </div>
-          <p className="mb-3 max-w-2xl leading-5 text-slate-500">
-            A follow-up whose publication is still owed. One held for an operator blocks every later command on its pull request until it is resumed or released.
-            Release frees the branch and never deletes files or commits; the next command redoes the request from the current branch.
-          </p>
           {handoffs === undefined && !error && <p className="text-slate-500">Loading…</p>}
           {handoffs && handoffs.length === 0 && <p className="py-3 text-slate-500">No follow-up handoffs are tracked.</p>}
           {handoffs && handoffs.length > 0 && (

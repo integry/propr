@@ -95,8 +95,8 @@ A review judges the PR against its *effective objective*: the original objective
 
 | Runtime | Context window used | Source |
 |---|---|---|
-| Claude Code | 1M for models the runtime marks native-1M (Opus 4.7+, Opus 5.x, Sonnet 5.x, Haiku 5.5, Fable, Mythos); 200K otherwise, including Opus/Sonnet 4.6 without the `[1m]` suffix or with `CLAUDE_CODE_DISABLE_1M_CONTEXT` | Model catalog bundled with Claude Code 2.1.316 |
-| Codex | 272K for every listed model, including the GPT-6 family | `context_window` in the models catalog bundled with Codex CLI 0.166.0; larger windows are opt-in through `model_context_window`, which ProPR does not set |
+| Claude Code | 1M for models the runtime marks native-1M (Opus 4.7+, Opus 5.x, Sonnet 5.x, Haiku 5.5, Fable, Mythos); 200K otherwise, including Opus/Sonnet 4.6 without the `[1m]` suffix or with `CLAUDE_CODE_DISABLE_1M_CONTEXT` | Model catalog bundled with Claude Code 2.1.322 |
+| Codex | 272K for every listed model except GPT-6.1 Terra (500K), including the rest of the GPT-6 family | `context_window` in the models catalog bundled with Codex CLI 0.167.2; larger windows are opt-in through `model_context_window`, which ProPR does not set |
 | Other runtimes | ProPR model catalog window, with a runtime reserve of 10% of the window (minimum 16K) | Catalog only; the runtime limit is not verified |
 | Unknown model | 200K (Codex: its historical 272K) | Conservative fallback |
 
@@ -365,7 +365,7 @@ The first model is the model already implementing the PR, including its normal r
 
 After patience expires, the implementation model climbs one of its own available effort tiers. After the configured number of increases, or when no higher tier exists, ProPR tries the next handoff model at that model's own configured base effort. Each step receives a fresh patience window, while the best score remains shared across the run. Antigravity uses the matching effort variant of its model ID (Pro has low/high; GPT-OSS has only medium). Models without an effort dial hand off directly.
 
-Select escalation models from the ordered dropdowns in General settings. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
+Select escalation models from the ordered dropdowns in **Settings → Ultrafix & Escalation**. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
 
 The policy is captured when the first automatic fix starts and persisted with the run, including its current model, effort, best score, and patience counter. Webhook and polling intake use the same continuation; deferred CI resumes retain this state. Disabling the master toggle also bypasses escalation in existing runs. The existing overall maximum cycle limit and goal/coverage rules still apply across all models. With escalation disabled, model and reasoning selection and stopping behavior remain unchanged.
 

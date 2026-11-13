@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { claudeModelRetirement, currentClaudeModel, isClaudeModelRetired } from '../packages/shared/src/claudeCompatibility.ts';
 import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, currentOpenCodeModel } from '../packages/shared/src/openCodeCompatibility.ts';
 import { AGENT_DEFAULTS, AGENT_MODELS, ALL_MODELS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
 import { agentSupportsSavedModel, getModelInfoWithAntigravityCompatibility } from '../packages/shared/src/antigravityCompatibility.ts';
@@ -39,6 +40,8 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
 test('current GPT-6 Codex models are in the catalog with runtime requirements', () => {
     const expectedModels = [
         ['gpt-6.1-sol', 'llm-codex-gpt61-sol', '0.153.0'],
+        // GPT-6.1 Terra first ships in the models.json bundled with Codex 0.165.0
+        ['gpt-6.1-terra', 'llm-codex-gpt61-terra', '0.165.0'],
         ['gpt-6-sol', 'llm-codex-gpt6-sol', '0.155.0'],
         ['gpt-6-luna', 'llm-codex-gpt6-luna', '0.155.0'],
     ] as const;
@@ -63,8 +66,47 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.316');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.322');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, AGENT_DEFAULT_VERSIONS.claude);
+});
+
+test('Claude Fable 5.2 is the current canonical Fable model', () => {
+    assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-fable-5-2'));
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-2']?.githubLabel, 'llm-claude-fable52');
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-2']?.shortAlias, 'fable52');
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-2']?.openRouterId, 'anthropic/claude-fable-5.2');
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-2']?.contextWindow, '1M');
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-2']?.maxTokens, 1000000);
+    // Fable 5.2 needs Claude Code 2.1.321, so the pinned CLI must be at least that
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-2']?.minAgentVersion, '2.1.321');
+    // It sits in the current tier, ahead of the legacy Fable 5.1
+    const ids = CLAUDE_MODELS.map(model => model.id);
+    assert.ok(ids.indexOf('claude-fable-5-2') < ids.indexOf('claude-haiku-5-5'));
+    assert.ok(ids.indexOf('claude-fable-5-1') > ids.indexOf('claude-haiku-5-5'));
+    assert.ok(ids.indexOf('claude-fable-5-1') < ids.indexOf('claude-fable-5'));
+});
+
+test('Claude Sonnet 4.5 stays selectable until its retirement, then runs on Sonnet 5.5', () => {
+    const sonnet45 = 'claude-sonnet-4-5-20250929';
+    assert.ok(CLAUDE_MODELS.some(model => model.id === sonnet45), 'kept in the catalog before retirement');
+    assert.deepStrictEqual(claudeModelRetirement(sonnet45), { id: sonnet45, retiresOn: '2026-11-30', successor: 'claude-sonnet-5-5' });
+    assert.ok(CLAUDE_MODELS.some(model => model.id === claudeModelRetirement(sonnet45)!.successor));
+
+    const before = new Date('2026-11-29T23:59:59Z');
+    const on = new Date('2026-11-30T00:00:00Z');
+    assert.strictEqual(isClaudeModelRetired(sonnet45, before), false);
+    assert.strictEqual(currentClaudeModel(sonnet45, before), sonnet45);
+    assert.strictEqual(isClaudeModelRetired(sonnet45, on), true);
+    assert.strictEqual(currentClaudeModel(sonnet45, on), 'claude-sonnet-5-5');
+    // Undated, agent-prefixed and mixed-case forms name the same snapshot
+    assert.strictEqual(currentClaudeModel('claude-sonnet-4-5', on), 'claude-sonnet-5-5');
+    assert.strictEqual(currentClaudeModel('claude:Claude-Sonnet-4-5-20250929', on), 'claude-sonnet-5-5');
+
+    // Opus 4.5, Haiku 4.5 and Fable 5.1 are still active
+    for (const active of ['claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001', 'claude-fable-5-1', 'claude-sonnet-5-5']) {
+        assert.strictEqual(claudeModelRetirement(active), undefined, active);
+        assert.strictEqual(currentClaudeModel(active, new Date('2030-01-01T00:00:00Z')), active);
+    }
 });
 
 test('Claude Sonnet 5.5 is the current canonical Sonnet model', () => {
@@ -100,7 +142,7 @@ test('only the canonical Claude models own the bare tier aliases', () => {
     assert.strictEqual(MODEL_INFO_MAP['claude-fable-5']?.githubLabel, 'llm-claude-fable5');
 });
 
-test('Claude Fable 5.1, Opus 5, and Sonnet 5 remain supported Claude Code models', () => {
+test('legacy Claude Fable 5.1, Opus 5, and Sonnet 5 remain supported Claude Code models', () => {
     assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-fable-5-1'));
     assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-1']?.githubLabel, 'llm-claude-fable51');
     assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-1']?.minAgentVersion, '2.1.257');
@@ -154,7 +196,18 @@ test('GPT-6 Astra is the preferred Codex default', () => {
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
 });
 
+test('Claude Code CLI default supports every catalog model', () => {
+    for (const { id, minAgentVersion } of CLAUDE_MODELS) {
+        if (!minAgentVersion) continue;
+        assert.ok(
+            AGENT_DEFAULT_VERSIONS.claude.localeCompare(minAgentVersion, undefined, { numeric: true }) >= 0,
+            `Claude Code default ${AGENT_DEFAULT_VERSIONS.claude} must be >= ${minAgentVersion} for ${id}`
+        );
+    }
+});
+
 test('Codex CLI defaults agree and support every catalog model', () => {
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.167.2');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
     for (const { id, minAgentVersion } of CODEX_MODELS) {
         if (!minAgentVersion) continue;
@@ -189,7 +242,7 @@ test('Gemini 4 Argon is one namespaced Antigravity model with 1M limits', () => 
     assert.strictEqual(model?.shortAlias, 'argon');
     assert.strictEqual(model?.openRouterId, 'google/gemini-4-argon');
     assert.strictEqual(model?.minAgentVersion, '1.4.0');
-    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.4.0');
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.6');
     assert.strictEqual(model?.contextWindow, '1M');
     assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);

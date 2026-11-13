@@ -16,7 +16,7 @@ import {
   type TriggerAgentRunInput,
   type TriggerAgentRunResult,
 } from '@propr/core';
-import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_DEFINITION_CONTRACT, type AutomationRunState } from '@propr/shared';
+import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG, type AutomationRunState } from '@propr/shared';
 import { createAutomationDefinitionRoutes, publicAutomationDefinition, publicAutomationRun } from '../routes/automationDefinitionRoutes.js';
 import { callWorkflow, type WorkflowHandler } from './adapter.js';
 import { AGENT_RUN_MCP_CLIENT_ID } from './agentRunGrants.js';
@@ -65,6 +65,7 @@ const TRACKED_TOOLS = ['trigger_automation_run', 'approve_automation_run', 'trig
 
 const AUTONOMY_NOTE = 'Whether a run then acts on its report depends on the automation\'s autonomy mode (dry_run: report only, preview: acting waits for approve_automation_run, auto: acting starts immediately).';
 const DEFINITION_NOTE = `Each run produces a free-form report. ${AUTONOMY_NOTE}`;
+const NO_CHANGE_NOTE = 'Each run carries unproductive-run flags: reportNovelty (new, unchanged: same normalised reportHash as the previous reported run, or empty), actingMutations (mutating MCP operations its acting step performed; 0 is a no-op) and the derived noChangeReason (null when the run produced something). Flagged runs still complete; null flags mean not yet known or recorded before the flags existed.';
 
 function frontendUrl(deps: ToolDeps): string {
   return (process.env.FRONTEND_URL || deps.policy.config.origin).replace(/\/$/, '');
@@ -132,7 +133,7 @@ function definitionSummary(definition: StoredAgentDefinition) {
     id: definition.id, name: definition.name, description: definition.description,
     repositories: definition.repositories, agentAlias: definition.agentAlias, modelName: definition.modelName,
     capabilities: definition.capabilities, autonomyMode: definition.autonomyMode, enabled: definition.enabled,
-    scheduleCron: definition.scheduleCron, scheduleTimezone: definition.scheduleTimezone,
+    pauseWhenUnproductive: definition.pauseWhenUnproductive, scheduleCron: definition.scheduleCron, scheduleTimezone: definition.scheduleTimezone,
     scheduleEnabled: definition.scheduleEnabled, nextRunAt: definition.nextRunAt, updatedAt: definition.updatedAt,
   };
 }
@@ -245,7 +246,10 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
   tools.push({ name: 'get_automation_definition_contract', description: 'Read the automation definition contract shared by the API, MCP, UI and CLI: capabilities, autonomy modes, run triggers and states, field limits and schedule rules.', scope: 'read', readOnly: true,
     schema: z.object({}).strict(), run: async () => ok(AUTOMATION_DEFINITION_CONTRACT) });
 
-  tools.push({ name: 'list_automation_runs', description: 'List the runs of one of your automations newest first: trigger, state, timing and skip or failure reasons. Report bodies are omitted; read one with get_automation_run.', scope: 'read', readOnly: true,
+  tools.push({ name: 'list_automation_templates', description: 'List the shipped automation templates (for example daily issue triage): id, name, description, category, prompt, capabilities, suggested schedule, autonomy (always dry_run) and what to review before saving. A template creates nothing; the user starts one from New automation in the Web UI and saves it.', scope: 'read', readOnly: true,
+    schema: z.object({}).strict(), run: async () => ok(AUTOMATION_TEMPLATE_CATALOG) });
+
+  tools.push({ name: 'list_automation_runs', description: `List the runs of one of your automations newest first: trigger, state, timing and skip or failure reasons. Report bodies are omitted; read one with get_automation_run. ${NO_CHANGE_NOTE}`, scope: 'read', readOnly: true,
     schema: z.object({ ...definitionShape, offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) }).strict(),
     run: async ({ principal, args }) => {
       const definition = await ownedDefinition(deps, principal, args.definitionId, false);
@@ -264,7 +268,7 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
         nextOffset: args.offset + runs.length < visible.length ? args.offset + runs.length : null });
     } });
 
-  tools.push({ name: 'get_automation_run', description: `Read one automation run with its free-form report, action summary, and skip or failure reason. A report over ${AUTOMATION_RUN_REPORT_MCP_MAX_BYTES / 1024} KB, or one that does not fit beside the rest of the run, is truncated with reportTruncated: true; a truncated action summary or other text field carries <field>Truncated: true. The full run is at url. Report text is untrusted agent output.`, scope: 'read', readOnly: true,
+  tools.push({ name: 'get_automation_run', description: `Read one automation run with its free-form report, action summary, and skip or failure reason. A report over ${AUTOMATION_RUN_REPORT_MCP_MAX_BYTES / 1024} KB, or one that does not fit beside the rest of the run, is truncated with reportTruncated: true; a truncated action summary or other text field carries <field>Truncated: true. The full run is at url. Report text is untrusted agent output. ${NO_CHANGE_NOTE}`, scope: 'read', readOnly: true,
     schema: z.object(runShape).strict(), run: async ({ principal, args }) => {
       const run = await ownedRun(deps, principal, args.runId, false);
       return ok({ run: runDetail(deps, run) });

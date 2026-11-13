@@ -10,7 +10,15 @@
  * {@link GoalMutationUncertainError} with the key needed to retry safely.
  */
 
-import type { AutomationAutonomyMode, AutomationCapability, AutomationRunState, AutomationRunTrigger } from "@propr/shared";
+import type {
+  AutomationAutonomyMode,
+  AutomationCapability,
+  AutomationReportNovelty,
+  AutomationRunNoChangeReason,
+  AutomationRunState,
+  AutomationRunTrigger,
+  AutomationTemplateCatalog,
+} from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { mutate } from "./goals.js";
 
@@ -42,6 +50,8 @@ export interface Automation {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Turn the schedule off when the unproductive-run notification fires; absent from older servers. */
+  pauseWhenUnproductive?: boolean;
   enabled: boolean;
   revision: number;
   createdAt: number;
@@ -71,6 +81,13 @@ export interface AutomationRun {
   operatorNote: string | null;
   deferredUntil: number | null;
   deferrals: number;
+  /** Unproductive-run flags; absent from older servers, null before a report or for runs older than the flags. */
+  reportHash?: string | null;
+  reportNovelty?: AutomationReportNovelty | null;
+  /** Mutating MCP operations the acting step performed; 0 is a no-op acting step. */
+  actingMutations?: number | null;
+  /** Derived by the server: why the run produced nothing, or null. */
+  noChangeReason?: AutomationRunNoChangeReason | null;
   createdAt: number;
   startedAt: number | null;
   reportedAt: number | null;
@@ -140,6 +157,13 @@ export async function listAutomations(
     limit: response.data.limit ?? page.limit ?? automations.length,
     offset: response.data.offset ?? page.offset ?? 0,
   };
+}
+
+/** The shipped template catalog. Templates prefill the Web UI form; listing one creates nothing. */
+export async function listAutomationTemplates(options: AutomationApiOptions = {}): Promise<AutomationTemplateCatalog> {
+  const client = await resolveClient(options);
+  const response = await client.get<Partial<AutomationTemplateCatalog>>("/api/automation-definitions/templates");
+  return { version: response.data.version ?? 1, templates: response.data.templates ?? [] };
 }
 
 export async function getAutomation(id: string, options: AutomationApiOptions = {}): Promise<Automation> {

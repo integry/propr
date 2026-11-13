@@ -55,15 +55,21 @@ test('revocation reports how much the grant was used, and an unused grant is log
   const environment = { SYSTEM_TASK_SECRET: 'secret' };
   const grant = { grantId: 'g-1', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_x', expiresAt: NOW + 1, network: 'propr_propr-agent-mcp' };
 
-  const used = recorder(Response.json({ revoked: true, grantId: 'g-1', calls: 3 }));
-  assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: used.fetchImpl, now: () => NOW }), { revoked: true, grantId: 'g-1', calls: 3 });
+  const used = recorder(Response.json({ revoked: true, grantId: 'g-1', calls: 3, mutatingOperations: 2 }));
+  assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: used.fetchImpl, now: () => NOW }), { revoked: true, grantId: 'g-1', calls: 3, mutatingOperations: 2 });
 
+  // An older API answers without the counts; a malformed count is unknown, never a no-op.
   const legacy = recorder(Response.json({ revoked: false, grantId: null }));
-  assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: legacy.fetchImpl, now: () => NOW }), { revoked: false, grantId: null, calls: null });
+  assert.deepEqual(await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: legacy.fetchImpl, now: () => NOW }), { revoked: false, grantId: null, calls: null, mutatingOperations: null });
+  for (const mutatingOperations of [-1, 'many', Number.NaN]) {
+    const malformed = recorder(Response.json({ revoked: true, grantId: 'g-1', calls: 1, mutatingOperations }));
+    assert.equal((await revokeAgentRunMcpGrant('run-1', grant, { environment, fetchImpl: malformed.fetchImpl, now: () => NOW })).mutatingOperations, null);
+  }
 
   const warnings: Array<{ fields: Record<string, unknown>; message: string }> = [];
   const log = { warn: (fields: Record<string, unknown>, message: string) => { warnings.push({ fields, message }); } };
-  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: 0 }), 'run-1', grant, log);
+  assert.deepEqual(await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: 0, mutatingOperations: 0 }), 'run-1', grant, log),
+    { revoked: true, grantId: 'g-1', calls: 0, mutatingOperations: 0 }, 'the caller gets the counts back');
   assert.equal(warnings.length, 1);
   assert.match(warnings[0].message, /without a single recorded call/);
   assert.equal(warnings[0].fields.mcpUrl, grant.url);
@@ -71,10 +77,12 @@ test('revocation reports how much the grant was used, and an unused grant is log
   assert.ok(!JSON.stringify(warnings).includes('propr_mcp_x'));
 
   warnings.length = 0;
-  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: 2 }), 'run-1', grant, log);
-  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: null }), 'run-1', grant, log);
-  await revokeGrantQuietly(async () => undefined as never, 'run-1', grant, log);
+  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: 2, mutatingOperations: 1 }), 'run-1', grant, log);
+  await revokeGrantQuietly(async () => ({ revoked: true, grantId: 'g-1', calls: null, mutatingOperations: null }), 'run-1', grant, log);
+  assert.equal(await revokeGrantQuietly(async () => undefined as never, 'run-1', grant, log), null);
   assert.equal(warnings.length, 0);
+  assert.equal(await revokeGrantQuietly(async () => { throw new Error('API unreachable'); }, 'run-1', grant, log), null, 'a failed revoke reports nothing');
+  assert.equal(await revokeGrantQuietly(async () => { throw new Error('unused'); }, 'run-1', null, log), null);
 });
 
 for (const phase of ['report', 'action'] as const) {

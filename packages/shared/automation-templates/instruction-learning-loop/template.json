@@ -1,0 +1,16 @@
+{
+  "id": "instruction-learning-loop",
+  "name": "Instruction learning loop",
+  "description": "Each week, find review corrections that repeat across pull requests and propose short, cited additions or removals in the repository's agent instructions for a human to approve.",
+  "category": "maintenance",
+  "capabilities": ["repository_read", "propr_mcp"],
+  "schedule": "0 8 * * 1",
+  "autonomy": "dry_run",
+  "previousReportCount": 1,
+  "reviewBeforeSaving": [
+    { "field": "repositories", "note": "Choose the repositories whose pull request discussions and instruction files should be read. Without one the run has nothing to learn from." },
+    { "field": "schedule", "note": "Runs at 08:00 UTC every Monday. Change the day or time, or turn the schedule off to run it only on demand." },
+    { "field": "autonomy", "note": "Starts as Dry run, so a run only writes the report. Raise it to Preview & approve (recommended) to let the acting step create one ProPR task whose PR applies the approved instruction changes." },
+    { "field": "agent", "note": "Needs Claude Code or Codex (or a synthetic pool of them), because the run reads pull request discussions through ProPR's MCP tools." }
+  ]
+}
