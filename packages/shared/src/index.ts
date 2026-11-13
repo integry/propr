@@ -588,6 +588,7 @@ export * from './fleetData.js';
 
 export * from './extensionProfiles.js';
 export * from './extensionLibrary.js';
+export * from './extensionPackages.js';
 export * from './extensionOAuth.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';

@@ -214,6 +214,26 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+  } | {
+    name: string;
+    enabled: boolean;
+    tools: string[];
+    capability: "read" | "write";
+    kind: "package";
+    ecosystem: "npm";
+    package: string;
+    version: string;
+    integrity?: string;
+    bin?: string;
+    args: string[];
+    env: {
+      name: string;
+      value: string;
+    }[];
+    secretEnv: string[];
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   }>;
   skills: {
     bundleId: string;

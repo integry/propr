@@ -6,7 +6,7 @@ import type { Knex } from 'knex';
 import {
   EXTENSION_LIMITS, EXTENSION_LIBRARY_VERSION, extensionItemSkipReason, extensionLibraryInputSchema, publicExtensionProfile, resolveExtensionSet,
   type AutomationExtensions, type ExtensionLibraryInput, type ExtensionLibraryItems, type ExtensionLibraryRevision, type ExtensionLibraryServer,
-  type ExtensionLibrarySkill, type ExtensionResolutionContext, type ExtensionSecretStatus, type ExtensionSkillBundle, type LegacyExtensionProfileRevision,
+  type ExtensionLibrarySkill, type ExtensionResolutionContext, type ExtensionSkillBundle, type LegacyExtensionProfileRevision,
   type ResolvedExtensionSet,
 } from '@propr/shared';
 import { extensionEndpoint, resolveExtensionEndpoint } from './endpointPolicy.js';
@@ -14,7 +14,10 @@ import { sealExtensionSecrets, unsealExtensionSecrets } from './privateSecrets.j
 import { validateSkillFiles, type SkillFile } from './skillBundles.js';
 import { extensionResolutionReason, type ExtensionResolutionEvent } from './extensionRunResolution.js';
 import { discardStaleOAuthConnections, withOAuthStates } from './extensionOAuthState.js';
-import { bearerServers, credentialBinding, credentialBindings, credentialField, credentialServers } from './extensionCredentials.js';
+import {
+  bearerServers, credentialBindings, credentialField, credentialOwner, credentialServers, isCredentialKey, nextCredentials, packageSecretKeys, packageSecretServers, packageSecretStatus, packageSecretValues, revisionSecretStatuses,
+} from './extensionCredentials.js';
+import { parseAcknowledgements, pinPackageServers, secretAcknowledgements } from './extensionPackageLibrary.js';
 
 export interface ExtensionGrantNetwork { mode: 'open' | 'restricted'; allow: string[]; instanceAllow: string[] }
 export class ExtensionError extends Error { constructor(readonly status: number, message: string) { super(message); } }
@@ -101,7 +104,7 @@ export class ExtensionLibraryStore {
     const snapshot = JSON.parse(row.snapshot) as ExtensionLibraryRevision;
     if (snapshot.version !== EXTENSION_LIBRARY_VERSION || snapshot.instanceId !== instanceId || snapshot.revision !== revision) throw new ExtensionError(409, 'Extension library revision identity mismatch');
     // Native exports erase credential custody; erased bearer secrets are not configured.
-    if (row.secrets_encrypted === '') for (const server of credentialServers(snapshot.servers)) snapshot.secrets[server.name] = { fields: credentialField(server), configured: false };
+    if (row.secrets_encrypted === '') for (const server of [...credentialServers(snapshot.servers), ...packageSecretServers(snapshot.servers)]) snapshot.secrets[server.name] = server.kind === 'package' ? packageSecretStatus(server, {}) : { fields: credentialField(server), configured: false };
     return { snapshot: publicExtensionProfile(snapshot), secretsEncrypted: row.secrets_encrypted as string };
   }
   private unseal(head: Head): Record<string, string> {
@@ -178,7 +181,8 @@ export class ExtensionLibraryStore {
         const values = Object.values(this.catalog.secrets(entry));
         operatorSecretValues.push(...values);
         catalogSecrets.set(server.name, { count: values.length, configured: values.every(Boolean) });
-      } else await resolveExtensionEndpoint(server.url);
+      } else if (server.kind === 'https') await resolveExtensionEndpoint(server.url);
+      else if (!server.integrity) throw new ExtensionError(400, 'Package servers need a resolved integrity value');
     }
     if (operatorSecretValues.some(value => value && JSON.stringify(servers).includes(value))) throw new ExtensionError(400, 'Secrets cannot appear in public library fields');
     return catalogSecrets;
@@ -190,8 +194,8 @@ export class ExtensionLibraryStore {
    * credentials and their statuses carry over without decryption; they stay
    * bound to the same Bearer servers and endpoints.
    */
-  // eslint-disable-next-line max-params -- the transaction, actor, base head, items, credentials and catalog status are explicit revision inputs
-  private async writeRevision(trx: Knex.Transaction, actor: string, head: Head, items: ExtensionLibraryItems, secrets: Record<string, string> | typeof UNCHANGED_CREDENTIALS, catalogSecrets: Map<string, { count: number; configured: boolean }>): Promise<ExtensionLibraryRevision> {
+  // eslint-disable-next-line max-params -- the transaction, actor, base head, items, credentials, catalog status and acknowledgements are explicit revision inputs
+  private async writeRevision(trx: Knex.Transaction, actor: string, head: Head, items: ExtensionLibraryItems, secrets: Record<string, string> | typeof UNCHANGED_CREDENTIALS, catalogSecrets: Map<string, { count: number; configured: boolean }>, acknowledged: readonly string[] | 'carry' = 'carry'): Promise<ExtensionLibraryRevision> {
     const { instanceId } = head.snapshot; const previous = head.snapshot; const revision = previous.revision + 1; const now = Date.now();
     const bundleIds = items.skills.map(s => s.bundleId);
     const bundleRows = bundleIds.length ? await trx('extension_skill_bundles').where({ instance_id: instanceId }).whereIn('id', bundleIds) : [];
@@ -199,21 +203,15 @@ export class ExtensionLibraryStore {
     const unchanged = secrets === UNCHANGED_CREDENTIALS;
     if (unchanged && !sameJson(credentialBindings(items.servers), credentialBindings(previous.servers))) throw new Error('Carried extension credentials must keep their servers');
     if (!unchanged && Object.values(secrets).some(token => token && JSON.stringify(items).includes(token))) throw new ExtensionError(400, 'Secrets cannot appear in public library fields');
-    const statuses: Record<string, ExtensionSecretStatus> = {};
-    for (const server of items.servers) {
-      if (server.kind === 'https') {
-        if (credentialServers([server]).length) statuses[server.name] = unchanged ? previous.secrets[server.name] ?? { fields: credentialField(server), configured: false } : { fields: credentialField(server), configured: Boolean(secrets[server.name]) };
-        continue;
-      }
-      const same = previous.servers.find(s => s.kind === 'catalog' && s.name === server.name && s.catalogId === server.catalogId && s.digest === server.digest);
-      statuses[server.name] = catalogSecrets.get(server.name) ?? (same ? previous.secrets[server.name] : undefined) ?? { count: 0, configured: false };
-    }
+    const statuses = revisionSecretStatuses(items.servers, previous, unchanged ? null : secrets, catalogSecrets);
     const descriptors = new Map(bundleRows.map(row => [row.id as string, JSON.parse(row.descriptor) as ExtensionSkillBundle]));
     const snapshot: ExtensionLibraryRevision = {
       version: EXTENSION_LIBRARY_VERSION, instanceId, revision, createdAt: previous.revision ? previous.createdAt : now, updatedAt: now, auditActor: actor,
       servers: items.servers, skills: items.skills, secrets: statuses, skillBundles: bundleIds.map(id => descriptors.get(id)!),
     };
-    const sealed = unchanged ? carriedSecrets(head) : sealExtensionSecrets(Object.fromEntries(Object.entries(secrets).filter(([name, token]) => token && statuses[name])), libraryIdentity(instanceId, revision), this.environment);
+    const acknowledgements = secretAcknowledgements(previous, items.servers, acknowledged, actor, now);
+    if (Object.keys(acknowledgements).length) snapshot.acknowledgements = acknowledgements;
+    const sealed = unchanged ? carriedSecrets(head) : sealExtensionSecrets(Object.fromEntries(Object.entries(secrets).filter(([name, token]) => token && Object.hasOwn(statuses, credentialOwner(name)))), libraryIdentity(instanceId, revision), this.environment);
     if (previous.revision === 0 && !await trx('extension_library').where({ instance_id: instanceId }).first()) await trx('extension_library').insert({ instance_id: instanceId, revision });
     else if (!await trx('extension_library').where({ instance_id: instanceId, revision: previous.revision }).update({ revision })) throw new ExtensionError(409, 'Library revision changed; refresh before saving');
     await trx('extension_library_revisions').insert({ instance_id: instanceId, revision, snapshot: JSON.stringify(snapshot), secrets_encrypted: sealed });
@@ -228,30 +226,28 @@ export class ExtensionLibraryStore {
     if (using.length) throw new ExtensionError(409, `Automations add these extensions explicitly; remove them from ${using.map(a => `"${a.name}" (${[...a.servers, ...a.skills].join(', ')})`).join(', ')} before removing or renaming them`);
   }
 
-  async saveLibrary(actor: string, input: ExtensionLibraryInput, replacements: Record<string, string | null> = {}, expectedRevision?: number): Promise<ExtensionLibraryRevision> {
+  // eslint-disable-next-line max-params -- the actor, items, credentials, expected revision and acknowledgements are explicit save inputs
+  async saveLibrary(actor: string, input: ExtensionLibraryInput, replacements: Record<string, string | null> = {}, expectedRevision?: number, acknowledgedInput?: unknown): Promise<ExtensionLibraryRevision> {
     let parsed: ExtensionLibraryItems; try { parsed = extensionLibraryInputSchema.parse(input); } catch { throw new ExtensionError(400, 'Invalid extension library'); }
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision! < 0) throw new ExtensionError(400, 'Invalid expected library revision');
-    if (!replacements || typeof replacements !== 'object' || Array.isArray(replacements) || Object.entries(replacements).some(([name, token]) => !credentialServers(parsed.servers).some(s => s.name === name) || (token !== null && (typeof token !== 'string' || !tokenPattern.test(token))))) throw new ExtensionError(400, 'Invalid secret replacement');
+    if (!replacements || typeof replacements !== 'object' || Array.isArray(replacements) || Object.entries(replacements).some(([name, token]) => !isCredentialKey(parsed.servers, name) || (token !== null && (typeof token !== 'string' || !tokenPattern.test(token))))) throw new ExtensionError(400, 'Invalid secret replacement');
+    const acknowledged = parseAcknowledgements(acknowledgedInput, parsed.servers);
     await this.authorize(actor);
+    // Package versions resolve to the registry's integrity value; nothing is installed or run here.
+    parsed = { ...parsed, servers: await pinPackageServers(parsed.servers, (await this.head()).snapshot.servers, this.environment) };
     const catalogSecrets = await this.validateServers(parsed.servers);
     return this.database.transaction(async trx => {
       await this.authorize(actor, trx);
       const head = await this.head(trx);
       if (head.snapshot.revision !== expectedRevision) throw new ExtensionError(409, 'Library revision changed; refresh before saving');
       await this.refuseReferencedRemoval(trx, head.snapshot, parsed);
-      const secrets = this.unseal(head); const next: Record<string, string> = {};
+      const secrets = this.unseal(head);
       // Checked before credentials are cleared, dropped with their server or
       // withheld from a changed endpoint: none may become a public field.
       const supplied = [...Object.values(secrets), ...Object.values(replacements).filter((token): token is string => token !== null)];
       if (supplied.some(token => token && JSON.stringify(parsed).includes(token))) throw new ExtensionError(400, 'Secrets cannot appear in public library fields');
-      for (const server of credentialServers(parsed.servers)) {
-        if (server.kind !== 'https') continue;
-        // Changing an endpoint, authentication type or client must never transfer a credential silently.
-        const previous = head.snapshot.servers.find(s => s.name === server.name && sameJson(credentialBinding(s), credentialBinding(server)));
-        const token = Object.hasOwn(replacements, server.name) ? replacements[server.name] : previous ? secrets[server.name] : undefined;
-        if (token) next[server.name] = token;
-      }
-      const written = await this.writeRevision(trx, actor, head, parsed, next, catalogSecrets);
+      const next = nextCredentials(parsed.servers, head.snapshot.servers, secrets, replacements);
+      const written = await this.writeRevision(trx, actor, head, parsed, next, catalogSecrets, acknowledged);
       // OAuth connections are credential state outside the revision: a changed URL, authentication or client discards them.
       await discardStaleOAuthConnections(trx, written.instanceId, written.servers, actor); return written;
     });
@@ -264,7 +260,7 @@ export class ExtensionLibraryStore {
       await this.authorize(actor, trx);
       const head = await this.head(trx);
       if (expectedRevision !== undefined && head.snapshot.revision !== expectedRevision) throw new ExtensionError(409, 'Library revision changed; refresh before saving');
-      if (!credentialServers(head.snapshot.servers).some(s => s.name === name)) throw new ExtensionError(404, 'Bearer-authenticated or pre-registered OAuth library server unavailable');
+      if (!isCredentialKey(head.snapshot.servers, name)) throw new ExtensionError(404, 'Bearer-authenticated, pre-registered OAuth or package secret variable unavailable');
       const secrets = { ...this.unseal(head) };
       if (token) secrets[name] = token; else delete secrets[name];
       return this.writeRevision(trx, actor, head, { version: EXTENSION_LIBRARY_VERSION, servers: head.snapshot.servers, skills: head.snapshot.skills }, secrets, new Map());
@@ -332,7 +328,7 @@ export class ExtensionLibraryStore {
     if (validateResources) {
       for (const server of set.servers) {
         if (server.kind === 'catalog') await this.catalog.resolve(server.catalogId, server.digest, server.tools, server.capability);
-        else await resolveExtensionEndpoint(server.url);
+        else if (server.kind === 'https') await resolveExtensionEndpoint(server.url);
       }
     }
     return { snapshot, set };
@@ -387,13 +383,13 @@ export class ExtensionLibraryStore {
       if (!current || !sameJson(current, item) || extensionItemSkipReason(view, current, ctx)) throw changed();
     }
     for (const skill of prepared.set.skills) if (!sameJson(head.snapshot.skillBundles.find(b => b.id === skill.bundleId), skill.bundle)) throw changed();
-    const bearer = bearerServers(prepared.set.servers);
+    const bearer = [...bearerServers(prepared.set.servers).map(s => s.name), ...packageSecretServers(prepared.set.servers).flatMap(packageSecretKeys)];
     const preparedRow = bearer.length ? await this.revisionRow(prepared.snapshot.instanceId, prepared.snapshot.revision, database) : undefined;
     // The same sealed bytes of the same sealing revision hold the same
     // credentials, as after a toggle; only re-sealed ones are decrypted to compare.
     if (preparedRow && carriedSecrets(preparedRow) !== carriedSecrets(head)) {
       const before = this.unseal(preparedRow); const after = this.unseal(head);
-      if (bearer.some(s => before[s.name] !== after[s.name])) throw changed();
+      if (bearer.some(key => before[key] !== after[key])) throw changed();
     }
     return head.snapshot.revision;
   }
@@ -412,6 +408,11 @@ export class ExtensionLibraryStore {
     });
   }
    
+  /** Secret variable values of the prepared package servers by server and variable; they reach the container through environment names only. */
+  async packageSecrets(prepared: PreparedExtensionLaunch): Promise<Record<string, Record<string, string>>> {
+    const servers = packageSecretServers(prepared.set.servers);
+    return servers.length ? packageSecretValues(servers, this.unseal(await this.revisionRow(prepared.snapshot.instanceId, prepared.snapshot.revision))) : {};
+  }
   // eslint-disable-next-line max-params -- grant inputs mirror the launch record
   async createGrant(prepared: PreparedExtensionLaunch, taskId: string, network: ExtensionGrantNetwork = { mode: 'open', allow: [], instanceAllow: [] }, allowWrite = false, source: 'auto' | 'additional' | 'mixed' = 'auto'): Promise<string> {
     const token = randomBytes(32).toString('base64url');

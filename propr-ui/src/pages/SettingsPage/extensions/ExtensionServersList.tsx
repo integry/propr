@@ -5,6 +5,7 @@ import { ExtensionServerForm } from './ExtensionServerForm';
 import { ExtensionOAuthConnection } from './ExtensionOAuthConnection';
 import { itemNotes } from './extensionNotes';
 import { withServer } from './libraryEdits';
+import { serverKindLabel } from './packageServerUi';
 import { RUN_LIMITS, buttonClass, ownEntry, runLimitExcess, serverRef } from './extensionUi';
 import type { ExtensionLibraryState } from './useExtensionLibrary';
 
@@ -16,9 +17,9 @@ export function ExtensionServersList({ state }: { state: ExtensionLibraryState }
   const servers = library.servers;
   const full = servers.length >= EXTENSION_LIBRARY_LIMITS.servers;
   const excess = runLimitExcess(servers, state.choices, RUN_LIMITS.servers);
-  const save = async (server: ExtensionLibraryServer, token: string) => {
+  const save = async (server: ExtensionLibraryServer, secrets: Record<string, string>, acknowledged: string[]) => {
     const opened = editing?.opened;
-    await state.save(items => ({ ...items, servers: withServer(items.servers, server, opened) }), token ? { [server.name]: token } : {});
+    await state.save(items => ({ ...items, servers: withServer(items.servers, server, opened) }), secrets, acknowledged);
     setEditing(null);
     state.setNotice(opened === undefined ? `Server ${server.name} added.` : `Server ${server.name} saved.`);
   };
@@ -35,17 +36,17 @@ export function ExtensionServersList({ state }: { state: ExtensionLibraryState }
         </p>
       )}
       {editing && editing.opened === undefined && (
-        <ExtensionServerForm servers={servers} catalog={state.catalog} secrets={library.secrets} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />
+        <ExtensionServerForm servers={servers} catalog={state.catalog} secrets={library.secrets} acknowledgements={library.acknowledgements} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />
       )}
       {servers.length === 0 && !editing && <p className="text-sm text-slate-500">No MCP servers yet.</p>}
       <ul className="space-y-2">
         {servers.map(server => (editing?.opened?.name === server.name ? (
           <li key={server.name}>
-            <ExtensionServerForm initial={editing.opened} servers={servers} catalog={state.catalog} secrets={library.secrets} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />
+            <ExtensionServerForm initial={editing.opened} servers={servers} catalog={state.catalog} secrets={library.secrets} acknowledgements={library.acknowledgements} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />
           </li>
         ) : (
           <ExtensionItemRow key={server.name} testId="extension-server" name={server.name}
-            kind={server.kind === 'https' ? (server.authentication === 'oauth' ? 'HTTPS endpoint · OAuth' : 'HTTPS endpoint') : `Operator catalog: ${server.catalogId}`} capability={server.capability}
+            kind={serverKindLabel(server)} capability={server.capability}
             item={server} enabled={state.shownEnabled(serverRef(server), server.enabled)} pending={state.isPending(serverRef(server))}
             busy={editing !== null} notes={itemNotes(server, { usage: state.usage, choices: state.choices, secrets: library.secrets })}
             onToggle={enabled => void state.toggle(serverRef(server), server.name, enabled)}

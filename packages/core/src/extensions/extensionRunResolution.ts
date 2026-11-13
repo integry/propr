@@ -67,6 +67,8 @@ export function extensionResolutionEvent(snapshot: { revision: number; auditActo
   const { added, autoApplied } = appliedBySource(set, request);
   const anyAdded = added.servers.length + added.skills.length > 0;
   const anyAuto = autoApplied.servers.length + autoApplied.skills.length > 0;
+  // Package servers by name with their pinned version; never variables or secrets.
+  const packages = set.servers.flatMap(s => (s.kind === 'package' ? [{ name: s.name, ecosystem: s.ecosystem, package: s.package, version: s.version }] : []));
   return {
     event: 'extensions.resolved' as const,
     libraryRevision: snapshot.revision,
@@ -79,6 +81,7 @@ export function extensionResolutionEvent(snapshot: { revision: number; auditActo
     added,
     skipped: set.skipped,
     omitted: set.omitted,
+    ...(packages.length ? { packages } : {}),
     ...(notes.labelOptOut ? { labelOptOut: notes.labelOptOut } : {}),
     ...(notes.autoApplySkipped ? { autoApplySkipped: notes.autoApplySkipped } : {}),
   };

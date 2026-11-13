@@ -24,7 +24,7 @@ then two flat lists, **MCP servers** and **Skills**. Each row shows:
   disabled; if it fails, the checkbox returns to its previous state and the error
   is shown. A switched-off row stays in the list, dimmed with an **Off** status,
   and keeps all its settings and its stored secret;
-- the name, kind (HTTPS endpoint, operator catalog entry or skill source) and,
+- the name, kind (HTTPS endpoint, **Local** with the package and version, operator catalog entry or skill source) and,
   for servers, a **Read** or **Write** badge;
 - where it applies (**All repositories** or the repository list, plus any agent
   limit) and whether it applies automatically;
@@ -32,13 +32,14 @@ then two flat lists, **MCP servers** and **Skills**. Each row shows:
   **Needs sign-in**), who connected it and when, the granted scopes, and
   **Connect**, **Reconnect** and **Disconnect** (see [OAuth servers](#oauth-servers));
 - notes and warnings: the Codex configuration limitation (below) on items that
-  can reach a Codex agent, a missing Bearer token, *Imported from profile X; not
+  can reach a Codex agent, a missing Bearer token or secret variable, *Imported from profile X; not
   applied automatically* on migrated items, and the automations that add the item
   explicitly (on a switched-off item: that those automations currently run
   without it).
 
 **Add server** opens one form: an HTTPS endpoint (with tool discovery and
-authentication by a write-only Bearer token or OAuth sign-in) or an operator catalog entry, the allowed tools and
+authentication by a write-only Bearer token or OAuth sign-in), a
+[local package](#local-package-servers) or an operator catalog entry, the allowed tools and
 capability, then the item limits: **Limit to repositories** (empty means every
 repository), **Apply automatically** (on by default) and, under **Advanced**,
 **Limit to agents**. **Add skill** picks a skill already imported, or imports one
@@ -60,7 +61,7 @@ Automations pick further items in their editor under
 
 ## Library items
 
-An item is an MCP server (`https` or operator `catalog`, see below) or a reference
+An item is an MCP server (`https`, local `package` or operator `catalog`, see below) or a reference
 to an imported skill bundle. Server names are unique across the library. The
 library holds up to 32 servers and 32 skill bundles. Each item has:
 
@@ -182,7 +183,7 @@ Core resolves and checks all DNS answers on every connection, then dials only a
 vetted address while verifying the original TLS identity. Redirects, private,
 loopback, link-local, metadata and reserved destinations are refused. The fake-IP
 DNS range `198.18.0.0/15` remains reachable, matching the existing egress proxy;
-TLS still verifies the original endpoint hostname. Operator-installed catalog entries can qualify local stdio and fixed internal HTTPS exceptions, as described below. Customer commands, host paths, Docker sockets and bind
+TLS still verifies the original endpoint hostname. Operator-installed catalog entries can qualify local stdio and fixed internal HTTPS exceptions, and [local package servers](#local-package-servers) run a pinned npm package through the same stdio bridge, as described below. Customer commands, host paths, Docker sockets and bind
 mounts are rejected by the shared strict contract.
 
 Core bounds each request to 64 KiB, each response to 1 MiB, four simultaneous
@@ -355,7 +356,142 @@ tokens.
   by every run the item applies to.
 - OAuth for operator catalog servers and for skills.
 
+## Local package servers
+
+A **local package** server is an MCP server published as an npm package and
+started with `npx` elsewhere. An administrator adds it from Settings; it runs
+inside the task container, next to the agent. PyPI packages (`uvx`) are not
+supported yet: the agent image ships Node but no Python runtime for them.
+
+### Adding one
+
+**Add server**, then **Server type** › **Local package (npm)**. The form asks for:
+
+| Field | Meaning |
+| --- | --- |
+| Package | The npm package name, for example `@scope/browser-mcp`. Public npm registry only. |
+| Exact version | For example `1.4.2`. Ranges and tags (`latest`, `^1.2`, `1.x`) are rejected. |
+| Executable | Optional. Needed only when the package declares several executables; otherwise ProPR runs the only one, or the one named after the package. |
+| Arguments | A fixed list, one per line. Passed as is, without a shell. |
+| Variables | Plain `NAME=value` pairs, saved with the server and shown in Settings. |
+| Secret variables | Variable names whose values are write-only, stored like other extension secrets. |
+
+Then the common controls: allowed tools (typed in; the package is never run in
+Settings to discover them), capability, **Limit to repositories**, **Apply
+automatically** and **Limit to agents**. Variables that change how Node loads
+code or where a launch looks for programs (`PATH`, `HOME`, `NODE_OPTIONS`,
+`NODE_PATH`, `LD_*`, proxy variables, `PROPR_*`, `NPM_*`) are refused.
+
+**Check** looks the exact version up in the registry and shows the resolved
+version, its integrity value and the executable that will run. Nothing is
+downloaded or executed. The row shows the server as **Local** with its package
+and version.
+
+The library contract is:
+
+```json
+{ "kind": "package", "name": "browser", "ecosystem": "npm", "package": "@scope/browser-mcp", "version": "1.4.2",
+  "integrity": "sha512-…", "bin": "browser-mcp", "args": ["--headless"], "env": [{ "name": "LOG_LEVEL", "value": "info" }],
+  "secretEnv": ["BROWSER_TOKEN"], "enabled": true, "tools": ["navigate"], "capability": "read",
+  "repositories": [], "agents": [], "autoApply": true }
+```
+
+There is no free-form command, shell, host path, extra mount, Docker socket or
+Docker image: `command`, `argv`, endpoint overrides and every other unknown field
+are rejected by the API. Secret values are sent separately, as
+`secrets: { "<server>/<VARIABLE>": "<value>" }` on save or through
+`POST /api/instance/extensions/v1/secrets` with `name: "<server>/<VARIABLE>"`.
+
+### Pinning and integrity
+
+Saving resolves the version in the registry and stores the registry's SHA-512
+integrity value with the item; administrators never enter it, and a value sent
+by a client is replaced. A later save that keeps the package, version and
+executable keeps the stored value without asking the registry again. Updating a
+server is an explicit edit of its version, which creates a new library revision;
+ProPR never updates a version on its own.
+
+A package that declares install scripts (`preinstall`, `install`,
+`postinstall`) or a native build is unsupported: installs never run lifecycle
+scripts, so such a package would not work.
+
+### Where it runs
+
+- The package is installed once per pinned package and integrity value, by the
+  worker, into a worker-owned cache next to the skill staging area (under
+  `PROPR_EGRESS_SOCKET_DIR`), never at task start and never in the task
+  workspace. The install uses `npm install --ignore-scripts` with no user or
+  global npm configuration and no registry credentials; dependencies are
+  installed the same way, and their lifecycle scripts do not run either. The
+  installed package must report the stored integrity value, or the install is
+  refused.
+- Installed files are made read-only, and their digest is recorded in a manifest
+  authenticated with the instance's private credential root. Later runs reuse the
+  install.
+- At every launch the installed files are checked against that manifest and the
+  stored integrity value. A changed file refuses the server: the run proceeds
+  without it and the `extensions.resolved` event records it as skipped with
+  reason `package_integrity_mismatch`. A package that cannot be installed is
+  skipped with `package_unavailable`. To recover from a changed install, remove
+  its directory from the cache; the next run installs it again.
+- The run mounts the install read-only at `/opt/propr/packages/<n>` and starts
+  it with the image's Node through the same stdio bridge
+  (`/opt/propr/extension-stdio-bridge.mjs`) as an operator catalog stdio entry,
+  for Claude and Codex alike. The bridge enforces the selected tools, bounds the
+  JSON protocol, drops the server's stderr and redacts the configured secrets.
+- The server process has the run's own network policy and nothing more. It is
+  never reachable through Core's HTTPS gateway.
+
+Operators can point installs and **Check** at a mirror of the public registry
+with `PROPR_EXTENSION_NPM_REGISTRY` on Core and workers. Private registries and
+registry credentials are not supported.
+
+### Credentials: the container trust boundary
+
+A local server runs in the same container as the agent. Any secret variable
+value is readable by the agent CLI, its shell commands and the repository's
+setup scripts; output redaction does not prevent that. This is unlike HTTPS
+servers, whose credential stays in Core behind the gateway. Use a narrowly
+scoped credential that is safe for the agent to hold.
+
+The form says this next to the secret fields. Saving a package server that has
+any secret variable requires ticking **I understand that these values are
+readable inside the task container**; the API refuses the save without
+`acknowledgements: ["<server>"]`. The acknowledgement (administrator and time,
+with the package, version and variable names it covers) is stored with the
+library revision under `acknowledgements`, and carries over while those stay the
+same. Changing the version or the secret variables needs a new acknowledgement.
+A server with no secret variables shows no warning and needs none.
+
+Secret values reach the server through environment names only, never through
+launch arguments or configuration JSON, and are never written to the repository
+or the provider home. A server with a missing secret value is skipped with
+`secret_not_configured`. Changing the package or renaming the server clears its
+stored values.
+
+### Limits and what a run records
+
+The usual rules apply: a `write` server is exposed only when the run carries
+write authorization; the labels `disable-mcps` and `disable-extensions` remove
+it; disabling the item removes it and re-enabling restores it; and the per-run
+limit of 8 servers counts all kinds together. The `extensions.resolved` task
+event lists package servers by name and in `packages` with their ecosystem,
+package and version; it never includes variable values or secrets.
+
+### Out of scope
+
+- PyPI packages.
+- Servers distributed as Docker images or run as sidecar containers.
+- Free-form commands, shell snippets, host executables and host paths.
+- Private registries and registry credentials.
+- OAuth for local servers.
+- Automatic version updates.
+
 ## Operator-installed catalog
+
+Operator catalog entries remain for operators who want fixed servers baked into
+the agent image.
+
 
 An operator supplies a bounded JSON array through `PROPR_EXTENSION_CATALOG_FILE` on Core and workers. Install it outside task/repository mounts, owned by the operator with no group/other write permissions. The file contains configuration and secret **references**, never secret values. No API accepts catalog installation or command configuration. Restart/update the operator service configuration through its existing secret-management mechanism; never put credentials in library/UI input.
 

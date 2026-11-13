@@ -4,6 +4,7 @@ import {
   EXTENSION_LIMITS, EXTENSION_PROFILE_VERSION, catalogMcpSchema, extensionAgentAliasSchema, extensionRepositorySchema,
   extensionServerNameSchema, remoteMcpSchema, type ExtensionSecretStatus, type ExtensionSkillBundle,
 } from './extensionProfiles.js';
+import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServerFields, type ExtensionSecretAcknowledgement } from './extensionPackages.js';
 
 /**
  * The instance extension library: one list of MCP servers and skill bundle
@@ -24,7 +25,13 @@ const itemLimits = {
 };
 export const libraryRemoteServerSchema = remoteMcpSchema.extend(itemLimits);
 export const libraryCatalogServerSchema = catalogMcpSchema.extend(itemLimits);
-export const extensionLibraryServerSchema = z.discriminatedUnion('kind', [libraryRemoteServerSchema, libraryCatalogServerSchema]);
+/** A local server from a pinned npm package, run through the stdio bridge in the task container. */
+export const libraryPackageServerSchema = z.strictObject({
+  name: extensionServerNameSchema, enabled: z.boolean(), tools: remoteMcpSchema.shape.tools, capability: z.enum(['read', 'write']),
+  ...packageServerFields, ...itemLimits,
+});
+export const extensionLibraryServerSchema = z.discriminatedUnion('kind', [libraryRemoteServerSchema, libraryCatalogServerSchema, libraryPackageServerSchema]);
+export type ExtensionLibraryPackageServer = z.infer<typeof libraryPackageServerSchema>;
 export const extensionLibrarySkillSchema = z.strictObject({ bundleId: z.uuid(), enabled: z.boolean(), ...itemLimits });
 export type ExtensionLibraryServer = z.infer<typeof extensionLibraryServerSchema>;
 export type ExtensionLibrarySkill = z.infer<typeof extensionLibrarySkillSchema>;
@@ -39,6 +46,10 @@ export const extensionLibraryInputSchema = z.strictObject({
   if (new Set(v.servers.map(s => s.name)).size !== v.servers.length) ctx.addIssue({ code: 'custom', message: 'Duplicate server names' });
   if (new Set(v.skills.map(s => s.bundleId)).size !== v.skills.length) ctx.addIssue({ code: 'custom', message: 'Duplicate bundles' });
   if (v.servers.some(s => s.kind === 'https' && s.authentication !== 'oauth' && (s.scopes !== undefined || s.clientId !== undefined))) ctx.addIssue({ code: 'custom', message: 'Scopes and client id apply to OAuth servers only' });
+  for (const s of v.servers) {
+    const conflict = s.kind === 'package' ? extensionPackageEnvConflict(s) : null;
+    if (conflict) ctx.addIssue({ code: 'custom', message: `Variable ${conflict} is listed more than once` });
+  }
 });
 export type ExtensionLibraryInput = z.input<typeof extensionLibraryInputSchema>;
 export type ExtensionLibraryItems = z.infer<typeof extensionLibraryInputSchema>;
@@ -49,6 +60,11 @@ export interface ExtensionLibraryRevision extends ExtensionLibraryItems {
   createdAt: number; updatedAt: number; auditActor: string;
   secrets: Record<string, ExtensionSecretStatus>;
   skillBundles: ExtensionSkillBundle[];
+  /**
+   * Package servers with secret variables, keyed by server name: who
+   * acknowledged that those values are readable inside the task container.
+   */
+  acknowledgements?: Record<string, ExtensionSecretAcknowledgement>;
 }
 
 /** Library items an automation adds on top of what applies automatically. */
@@ -87,7 +103,7 @@ export function serializeAutomationExtensions(value: AutomationExtensions | null
   return JSON.stringify({ servers: value?.servers ?? [], skills: value?.skills ?? [] });
 }
 
-export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'oauth_not_connected' | 'oauth_needs_sign_in' | 'run_limit';
+export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'oauth_not_connected' | 'oauth_needs_sign_in' | 'run_limit' | 'package_unavailable' | 'package_integrity_mismatch';
 /** Skip reasons of an item whose credential is missing: reported for auto-applied items too. */
 const CREDENTIAL_SKIP_REASONS: readonly ExtensionSkipReason[] = ['secret_not_configured', 'oauth_not_connected', 'oauth_needs_sign_in'];
 export interface ExtensionSkippedItem {
@@ -152,6 +168,7 @@ export function extensionItemSkipReason(library: LibraryView, item: ExtensionLib
     // Catalog credentials come from the operator environment: callers report their current
     // availability. Without a status the item is not skipped, so identity problems still refuse.
     if (item.kind === 'catalog' && library.secrets?.[item.name]?.configured === false) return 'secret_not_configured';
+    if (item.kind === 'package' && item.secretEnv.length && library.secrets && !library.secrets[item.name]?.configured) return 'secret_not_configured';
   } else if (library.skillBundles && !library.skillBundles.some(b => b.id === item.bundleId)) return 'not_found';
   return null;
 }
@@ -245,7 +262,8 @@ export function taskRunExtensionRequest(input: { kind: 'issue' | 'pull_request';
 /** Machine-readable library contract. */
 export const EXTENSION_LIBRARY_CONTRACT = {
   version: EXTENSION_LIBRARY_VERSION, limits: EXTENSION_LIMITS, libraryLimits: EXTENSION_LIBRARY_LIMITS, runtimes: EXTENSION_RUNTIMES,
-  transports: ['https', 'catalog'], authentication: ['none', 'bearer', 'oauth'], localStdio: 'operator-installed-catalog-only',
+  transports: ['https', 'catalog', 'package'], authentication: ['none', 'bearer', 'oauth'], localStdio: 'operator-catalog-or-pinned-package',
+  packageEcosystems: EXTENSION_PACKAGE_ECOSYSTEMS,
   skills: ['tar', 'tar.gz', 'github-exact-commit'], permission: 'instance.manage_settings',
   itemFields: ['enabled', 'repositories', 'agents', 'autoApply'],
   optOutLabels: EXTENSION_OPT_OUT_LABELS,

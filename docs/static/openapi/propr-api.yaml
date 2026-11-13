@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 315
-    documented: 77
+    total: 316
+    documented: 78
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4506,6 +4506,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExtensionOAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/packages/resolve:
+    post:
+      operationId: resolveAgentExtensionPackage
+      summary: "Check a local package server: look up an exact npm package version in the registry and report its integrity value and executable. Nothing is downloaded, installed or executed."
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: ecosystem (npm), package, exact version and optional executable name. Ranges and tags are rejected.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonObject"
+      responses:
+        "200":
+          description: Resolved version, SHA-512 integrity value, the executable that will run and every executable the package declares.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -9477,6 +9510,111 @@ components:
                   - enabled
                   - tools
                   - capability
+                  - repositories
+                  - agents
+                  - autoApply
+                additionalProperties: false
+              - type: object
+                properties:
+                  name:
+                    type: string
+                    pattern: ^[a-z][a-z0-9_-]{0,47}$
+                  enabled:
+                    type: boolean
+                  tools:
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]{1,128}$
+                  capability:
+                    type: string
+                    enum:
+                      - read
+                      - write
+                  kind:
+                    type: string
+                    const: package
+                  ecosystem:
+                    type: string
+                    enum:
+                      - npm
+                  package:
+                    type: string
+                    maxLength: 214
+                    pattern: ^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$
+                  version:
+                    type: string
+                    maxLength: 256
+                    pattern: ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$
+                  integrity:
+                    type: string
+                    pattern: ^sha512-[A-Za-z0-9+/]{86}==$
+                  bin:
+                    type: string
+                    pattern: ^[A-Za-z0-9@._-]{1,128}$
+                  args:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      maxLength: 2048
+                      pattern: ^[^\x00\r\n]*$
+                  env:
+                    default: []
+                    maxItems: 32
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          pattern: ^[A-Z_][A-Z0-9_]{0,99}$
+                        value:
+                          type: string
+                          maxLength: 4096
+                          pattern: ^[^\x00\r\n]*$
+                      required:
+                        - name
+                        - value
+                      additionalProperties: false
+                  secretEnv:
+                    default: []
+                    maxItems: 16
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Z_][A-Z0-9_]{0,99}$
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
+                required:
+                  - name
+                  - enabled
+                  - tools
+                  - capability
+                  - kind
+                  - ecosystem
+                  - package
+                  - version
+                  - args
+                  - env
+                  - secretEnv
                   - repositories
                   - agents
                   - autoApply

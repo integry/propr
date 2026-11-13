@@ -68,11 +68,12 @@ export function useExtensionLibrary() {
   }, [adopt]);
 
   /** Save the library with `change` applied to the latest saved items; errors are thrown to the caller. */
-  const save = useCallback(async (change: (items: LibraryItems) => LibraryItems, secrets: Record<string, string | null> = {}) => {
+  const save = useCallback(async (change: (items: LibraryItems) => LibraryItems, secrets: Record<string, string | null> = {}, acknowledgements: string[] = []) => {
     const base = current.current;
     if (!base) throw new Error('The extension library is not loaded yet.');
     const next = change({ servers: base.servers, skills: base.skills });
-    const result = await saveExtensionLibrary({ version: 1, servers: next.servers, skills: next.skills }, base.revision, secrets);
+    const items = { version: 1 as const, servers: next.servers, skills: next.skills };
+    const result = acknowledgements.length ? await saveExtensionLibrary(items, base.revision, secrets, acknowledgements) : await saveExtensionLibrary(items, base.revision, secrets);
     adopt(result.library);
     setError('');
     // A changed URL, authentication or client discards an OAuth connection: show the current state.

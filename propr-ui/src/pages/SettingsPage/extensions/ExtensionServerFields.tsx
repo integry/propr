@@ -64,7 +64,7 @@ export function ServerToolsField({ server, catalog, knownTools, onChange }: { se
   }, [probe, url]);
   const options = server.kind === 'catalog'
     ? catalog.find(entry => entry.id === server.catalogId && entry.digest === server.digest)?.tools ?? server.tools
-    : [...new Set([...knownTools, ...(discovered?.url === url ? discovered.tools : [])])];
+    : server.kind === 'package' ? server.tools : [...new Set([...knownTools, ...(discovered?.url === url ? discovered.tools : [])])];
   return (
     <div className="space-y-2">
       {server.kind === 'https' && (
@@ -76,8 +76,9 @@ export function ServerToolsField({ server, catalog, knownTools, onChange }: { se
         </div>
       )}
       <ExtensionItemPicker label="Allowed tools" options={options} selected={server.tools} onChange={tools => onChange({ tools })}
-        allowManual={server.kind === 'https'} manualLabel="Unlisted tool name"
-        hint={server.kind === 'https' ? 'Discover tools or choose from saved servers on this endpoint.' : undefined} />
+        allowManual={server.kind !== 'catalog'} manualLabel={server.kind === 'package' ? 'Tool name' : 'Unlisted tool name'} manualOpen={server.kind === 'package'}
+        hint={server.kind === 'https' ? 'Discover tools or choose from saved servers on this endpoint.'
+          : server.kind === 'package' ? 'Enter the tools the agent may call. The bridge hides and refuses every other tool of the package.' : undefined} />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import type {
-  ExtensionCatalogEntry, ExtensionLibraryInput, ExtensionLibraryRevision, ExtensionLibraryUsage, ExtensionOAuthCheckResult, ExtensionOAuthInstanceInfo, ExtensionSkillBundle,
+  ExtensionCatalogEntry, ExtensionLibraryInput, ExtensionPackageResolution, ExtensionLibraryRevision, ExtensionLibraryUsage, ExtensionOAuthCheckResult, ExtensionOAuthInstanceInfo, ExtensionSkillBundle,
 } from '@propr/shared';
 import { API_BASE_URL, apiFetch } from './apiClient';
 async function request<T>(path: string, body?: unknown): Promise<T> {
@@ -30,8 +30,12 @@ export interface ExtensionLibraryResponse {
 }
 export type ExtensionValidationResult = { name: string; reachable: boolean | null; status?: 'reachable' | 'unavailable' | 'not_validated' };
 export const getExtensionLibrary = () => request<ExtensionLibraryResponse>('');
-export const saveExtensionLibrary = (input: ExtensionLibraryInput, expectedRevision: number, secrets: Record<string, string | null> = {}) =>
-  request<{ library: ExtensionLibraryRevision }>('/library', { input, expectedRevision, secrets });
+/**
+ * Save the library. `acknowledgements` names the local package servers whose
+ * secret variables the administrator confirmed are readable in the task container.
+ */
+export const saveExtensionLibrary = (input: ExtensionLibraryInput, expectedRevision: number, secrets: Record<string, string | null> = {}, acknowledgements: string[] = []) =>
+  request<{ library: ExtensionLibraryRevision }>('/library', { input, expectedRevision, secrets, ...(acknowledgements.length ? { acknowledgements } : {}) });
 /** Switch one saved item on or off in its own revision, keeping its settings and stored secret. */
 export const setExtensionItemEnabled = (item: ExtensionItemRef, enabled: boolean) =>
   request<{ library: ExtensionLibraryRevision }>('/items/enabled', { item, enabled });
@@ -47,6 +51,9 @@ export async function importArchiveSkill(file: File): Promise<{ bundle: Extensio
   return request('/skills/archive', { filename: file.name, archive: btoa(encoded) });
 }
 
+/** "Check" a local package: a registry lookup of the exact version. Nothing is installed or run. */
+export const resolveExtensionPackage = (pkg: { ecosystem: 'npm'; package: string; version: string; bin?: string }) =>
+  request<{ package: ExtensionPackageResolution }>('/packages/resolve', { ecosystem: pkg.ecosystem, package: pkg.package, version: pkg.version, ...(pkg.bin ? { bin: pkg.bin } : {}) });
 export const discoverExtensionTools = (url: string) => request<{ tools: string[] }>('/tools/discover', { url });
 export type GithubSkillRef = { name: string; ref: string; kind: 'branch' | 'tag' };
 export const listGithubSkillRefs = (repository: string) => request<{ refs: GithubSkillRef[] }>('/skills/github-source', { repository });
