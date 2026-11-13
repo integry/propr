@@ -18,12 +18,17 @@ import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epi
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 const activity: Array<{ domain: string; change: string; entityId: string; repository: string | null }> = [];
 let repositories: Array<{ name: string; notificationsEnabled?: boolean }> = [];
+let publishOutcome: () => Promise<boolean> = async () => true;
 const log = { info() {}, warn(...args: unknown[]) { if (process.env.DEBUG_NOTIFY) console.error(...args); }, error() {}, debug() {}, withCorrelation: () => log };
 await mock.module('../src/db/connection.js', { namedExports: { db: database, closeConnection: async () => {} } });
 await mock.module('../src/utils/logger.js', { defaultExport: log });
 const publisher = await import('../src/utils/eventPublisher.js');
 await mock.module('../src/utils/eventPublisher.js', { namedExports: { ...publisher, getEventPublisher: () => ({
-  publishActivity: async (frame: (typeof activity)[number]) => { activity.push(frame); return true; },
+  publishActivity: async (frame: (typeof activity)[number]) => {
+    const outcome = await publishOutcome();
+    if (outcome) activity.push(frame);
+    return outcome;
+  },
   publishNotificationUpdate: async () => true,
 }) } });
 const config = await import('../src/config/configManager.js');
@@ -45,6 +50,7 @@ beforeEach(async () => {
   await database('instance_members').insert([{ github_user_id: 'member' }, { github_user_id: 'owner' }]);
   activity.length = 0;
   repositories = [];
+  publishOutcome = async () => true;
   // Inbox rows are append-only: each test reads only its own execution's cards.
   execution = `exec-${++executions}`;
 });
@@ -105,4 +111,31 @@ test('a repository with notifications disabled gets no card, and the event count
   await deliverEpicQueueBlockedEvents([id], { database });
   assert.deepEqual(await inbox('owner'), []);
   assert.deepEqual(await database('epic_queue_blocked_events').whereNull('notified_at').pluck('id'), []);
+});
+
+test('an event is acknowledged only after its activity is published; recovery replays it without a second card', async () => {
+  const { deliverPendingEpicQueueBlockedEvents } = await import('../src/services/taskPlanning/epicQueueBlockedEvents.js');
+  const undelivered = () => database('epic_queue_blocked_events').whereNull('notified_at').pluck('id').then(ids => ids.map(Number));
+  // The publisher refuses the frame (Redis unavailable), then throws (a process stopping mid-delivery).
+  const refusedId = await record();
+  publishOutcome = async () => false;
+  await deliverEpicQueueBlockedEvents([refusedId], { database });
+  assert.equal((await inbox('owner')).length, 1, 'the Inbox card is stored before publication');
+  assert.deepEqual(await undelivered(), [refusedId]);
+  publishOutcome = async () => { throw new Error('connection reset'); };
+  await deliverEpicQueueBlockedEvents([refusedId], { database });
+  assert.deepEqual(await undelivered(), [refusedId]);
+  assert.deepEqual(activity, []);
+  // The sweep delivers it once publication succeeds: one frame, still one card, then acknowledged.
+  publishOutcome = async () => true;
+  assert.equal(await deliverPendingEpicQueueBlockedEvents({ database, now: () => created + 120_000 }), 1);
+  assert.deepEqual(activity.map(frame => frame.change), ['blocked']);
+  assert.equal((await inbox('owner')).length, 1);
+  assert.equal((await inbox('member')).length, 1);
+  assert.deepEqual(await undelivered(), []);
+  // A resolution that could not be published is retained the same way.
+  const resolved = await record({ event: 'resolved', blocked_event_id: refusedId, resolution: 'cleared' });
+  publishOutcome = async () => false;
+  await deliverEpicQueueBlockedEvents([resolved], { database });
+  assert.deepEqual(await undelivered(), [resolved]);
 });

@@ -313,3 +313,49 @@ test('retry of a parallel child dispatches only that child; setup and in-flight 
   const setup = await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2], ready: false }, deps);
   await refused(retryEpicQueueIssue({ draftId, executionId: setup.executionId, issueNumber: 1 }, deps), 'NOT_RETRYABLE');
 });
+
+test('a parallel retry while paused stays owed: resume and the recovery sweep dispatch it under the normal guards', async () => {
+  const queue = await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2, 3], parallel: true }, deps);
+  for (const issueNumber of [2, 3]) {
+    await setStatus(issueNumber, 'processing');
+    await markEpicQueueHeadBlocked({ draftId, issueNumber });
+  }
+  await database('task_drafts').where({ draft_id: draftId }).update({ paused: true });
+  await retryEpicQueueIssue({ draftId, executionId: queue.executionId, issueNumber: 2 }, deps);
+  assert.deepEqual(starts, []);
+  assert.equal((await issueState(2))?.state, 'pending');
+  assert.equal((await retryEpicQueueIssue({ draftId, executionId: queue.executionId, issueNumber: 2 }, deps)).outcome, 'already_retried');
+  // Neither another child's status change nor the sweep dispatches while the plan is paused.
+  await finish(1);
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(starts, []);
+  // Resuming runs the execution's pass, which dispatches the owed child once.
+  await database('task_drafts').where({ draft_id: draftId }).update({ paused: false });
+  await startEpicQueueHead(draftId, deps);
+  await startEpicQueueHead(draftId, deps);
+  assert.deepEqual(starts, [2]);
+  assert.equal((await issueState(2))?.state, 'dispatched');
+  // A process that stops after committing a retry (here: before its own pass) is recovered by the sweep.
+  await database('task_drafts').where({ draft_id: draftId }).update({ paused: true });
+  await retryEpicQueueIssue({ draftId, executionId: queue.executionId, issueNumber: 3 }, deps);
+  await database('task_drafts').where({ draft_id: draftId }).update({ paused: false });
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(starts, [2, 3]);
+});
+
+test('a retried parallel child whose start was lost is dispatched again after fifteen minutes; initial children are not', async () => {
+  const queue = await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2], parallel: true }, deps);
+  await setStatus(2, 'processing');
+  await markEpicQueueHeadBlocked({ draftId, issueNumber: 2 });
+  await database('task_drafts').where({ draft_id: draftId }).update({ paused: true });
+  await retryEpicQueueIssue({ draftId, executionId: queue.executionId, issueNumber: 2 }, deps);
+  await database('task_drafts').where({ draft_id: draftId }).update({ paused: false });
+  // The dispatch claim commits, but the process stops before the issue is labeled.
+  await database('epic_execution_queue_issues').where({ issue_number: 2 }).update({ state: 'dispatched', dispatched_at: clock });
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(starts, [], 'the claim is still fresh');
+  clock += 15 * 60 * 1000 + 1;
+  await reconcileEpicExecutionQueues(deps);
+  // Child 1 is still pending in the plan, but the execution dispatched it itself; only the retry is owed.
+  assert.deepEqual(starts, [2]);
+});

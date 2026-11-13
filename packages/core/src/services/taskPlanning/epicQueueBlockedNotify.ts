@@ -12,8 +12,10 @@ import { EPIC_QUEUE_BLOCKED_EVENTS, toBlockedEvent, type EpicQueueBlockedEvent }
  * state (execution, occurrence, kind and reason), so a blocker that recurs after the queue
  * retried it does not raise a second card. An agent-reported blocker already has its task
  * notification (`task-blocked:<task>`), so it raises no plan card for the same cause.
- * Delivery is best-effort per event; an event stays undelivered (and the sweep retries it)
- * only when its notification could not be written.
+ * Delivery is per event, and `notified_at` acknowledges both halves: it is set only after the
+ * notification is stored and the activity was published. An event whose notification could not be
+ * written, or whose publication failed (or that a crash interrupted in between), stays undelivered
+ * and the sweep delivers it again; the notification's deduplication key makes that replay add no card.
  */
 const NO_PLAN_CARD_KINDS = new Set(['agent_blocked']);
 
@@ -67,14 +69,15 @@ async function notify(database: Knex, event: EpicQueueBlockedEvent, draft: Draft
   }, recipients);
 }
 
-async function publish(event: EpicQueueBlockedEvent, draft: Draft): Promise<void> {
+/** Whether the realtime publisher accepted the activity frame. */
+async function publish(event: EpicQueueBlockedEvent, draft: Draft): Promise<boolean> {
   try {
     const { getEventPublisher } = await import('../../utils/eventPublisher.js');
-    await getEventPublisher().publishActivity({ domain: 'plan', entityId: event.draftId, repository: draft.repository ?? null,
+    return await getEventPublisher().publishActivity({ domain: 'plan', entityId: event.draftId, repository: draft.repository ?? null,
       change: event.type === 'blocked' ? 'blocked' : 'progressed' });
   } catch (error) {
-    // Freshness only: open views reread on their next refresh.
     logger.warn?.({ eventId: event.id, error: (error as Error).message }, 'Could not publish epic queue blocked activity');
+    return false;
   }
 }
 
@@ -90,7 +93,10 @@ export async function deliverEpicQueueBlockedEvents(ids: number[], { database = 
       logger.warn?.({ eventId: event.id, error: (error as Error).message }, 'Could not record the epic queue blocked notification');
       continue;
     }
+    if (!await publish(event, draft)) {
+      logger.warn?.({ eventId: event.id }, 'Epic queue blocked activity was not published; the sweep delivers it again');
+      continue;
+    }
     await database(EPIC_QUEUE_BLOCKED_EVENTS).where({ id: event.id }).whereNull('notified_at').update({ notified_at: Date.now() });
-    await publish(event, draft);
   }
 }

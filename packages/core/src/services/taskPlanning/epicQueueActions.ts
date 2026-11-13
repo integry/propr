@@ -3,7 +3,7 @@ import { db } from '../../db/connection.js';
 import logger from '../../utils/logger.js';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
 import {
-  clearedBlock, dispatchEpicQueueIssue, getEpicExecutionQueue, ownedIssue, startEpicQueueHead, summarizeEpicQueue, writeQueueIssue,
+  clearedBlock, getEpicExecutionQueue, ownedIssue, startEpicQueueHead, summarizeEpicQueue, writeQueueIssue,
   type EpicExecutionQueue, type EpicQueueBlockedKind, type EpicQueueDependencies, type EpicQueueIssue, type EpicQueueIssueState,
 } from './epicExecutionQueue.js';
 import { latestBlockedEvent } from './epicQueueBlockedEvents.js';
@@ -179,11 +179,8 @@ export async function retryEpicQueueIssue(input: EpicQueueActionInput, deps: Epi
     return cleared;
   });
   if (!changed) throw new EpicQueueActionError('STATE_CHANGED', `Issue #${item.issueNumber} changed while it was being retried; read the execution queue again.`);
-  await drive(async () => {
-    if (queue.mode !== 'parallel') return startEpicQueueHead(input.draftId, deps);
-    const current = await getEpicExecutionQueue(input.draftId, { database });
-    const retried = current?.executionId === queue.executionId ? current.items.find(candidate => candidate.issueNumber === item.issueNumber) : undefined;
-    if (current && retried?.state === 'pending') await dispatchEpicQueueIssue(current, retried, deps);
-  }, input);
+  // Every mode dispatches the retried issue from its own pass, which resume and the recovery sweep repeat:
+  // a paused plan, or a process that stops here, leaves the dispatch owed rather than lost.
+  await drive(() => startEpicQueueHead(input.draftId, deps), input);
   return result(database, input, 'retried');
 }

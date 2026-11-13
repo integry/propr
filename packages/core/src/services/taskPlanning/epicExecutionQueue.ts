@@ -17,6 +17,7 @@ import {
 import { assertGraphInput, clearedGraphColumns, driveGraphExecution, recordObservedGraphStart } from './epicQueueGraph.js';
 import { persistRecoveredEpicLabel, recoverOwedEpicLabel } from './epicQueueLabelRecovery.js';
 import { deliverPendingEpicQueueBlockedEvents, withBlockedEvents } from './epicQueueBlockedEvents.js';
+import { dispatchRetriedParallelChildren } from './epicQueueParallelRetry.js';
 
 export * from './epicQueueState.js';
 export * from './epicQueueSchedule.js';
@@ -180,6 +181,8 @@ async function completeParallelEpicQueue(queue: EpicExecutionQueue, deps: EpicQu
   if (queue.status !== 'active') return;
   const children = await database('plan_issues').where({ draft_id: queue.draftId }).whereIn('issue_number', queue.issues)
     .select<Array<{ issue_number: number; status: PlanIssueStatus }>>('issue_number', 'status');
+  await dispatchRetriedParallelChildren(queue, children, { database,
+    dispatch: (item, contextConfig) => dispatchPendingQueueHead(queue, item, contextConfig, deps) });
   const timestamp = (deps.now ?? Date.now)();
   for (const item of queue.items) {
     const child = children.find(candidate => candidate.issue_number === item.issueNumber);
@@ -460,14 +463,4 @@ export async function onPlanIssueStatusChanged(draftId: string, issueNumber: num
     }
   }
   catch (error) { logger.warn?.({ draftId, issueNumber, status, error: (error as Error).message }, 'Failed to advance epic queue after issue status change'); }
-}
-
-/**
- * Dispatches one unsettled issue under the queue's normal guards (pause, its own claim, a pending plan
- * status). Used by a retry in a parallel execution, which has no scheduler pass that starts issues.
- */
-export async function dispatchEpicQueueIssue(queue: EpicExecutionQueue, item: EpicQueueIssue, deps: EpicQueueDependencies = {}): Promise<void> {
-  const draft = await (deps.database ?? db)('task_drafts').where({ draft_id: queue.draftId }).first('paused', 'context_config');
-  if (!draft || draft.paused) return;
-  await dispatchPendingQueueHead(queue, item, draft.context_config, deps);
 }
