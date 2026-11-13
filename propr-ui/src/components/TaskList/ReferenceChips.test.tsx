@@ -25,4 +25,10 @@ describe('TaskReferenceChips', () => {
     expect(chip.className).toContain('bg-slate-100');
     expect(chip.className).toContain('rounded-sm');
   });
+
+  it('names an automation run instead of showing the start of its id', () => {
+    render(<TaskReferenceChips task={{ ...base, id: 'agent-run-3f2a9c1e-report' }} prNumber={null} />);
+    expect(screen.getByText('Automation')).toHaveAttribute('title', 'Automation run agent-run-3f2a9c1e-report');
+    expect(screen.queryByText('#agent-ru')).not.toBeInTheDocument();
+  });
 });

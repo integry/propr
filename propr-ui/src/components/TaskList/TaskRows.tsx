@@ -4,7 +4,7 @@ import { ChevronDown, Images } from 'lucide-react';
 import type { Task } from './types';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import { ReferenceChip } from './ReferenceChips';
+import { ReferenceChip, TaskIdChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
@@ -51,7 +51,7 @@ export const TaskPrimaryChip: React.FC<{ task: Task; prNumber?: number | null }>
     return <ReferenceChip title={`Pull request #${prNumber}${linked}`}>PR #{prNumber}</ReferenceChip>;
   }
   if (issue) return <ReferenceChip title={`Issue #${issue}`}>Issue #{issue}</ReferenceChip>;
-  return <ReferenceChip title={`Task ${task.id}`}>#{task.id.substring(0, 8)}</ReferenceChip>;
+  return <TaskIdChip task={task} />;
 };
 
 /**
