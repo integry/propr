@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pull request status**: ProPR now computes one status for each pull
+  request it created: `working`, `needs_attention`, `ready` or `none`, with a
+  detail of what is happening (activity, Ultrafix cycle, latest review score,
+  passed/failed/pending checks, the reason it needs you, and epic issue
+  progress). A review score alone never makes a pull request `ready`: its
+  checks on the current head must have completed and passed, and GitHub
+  must have confirmed that the PR does not conflict with its base. If the
+  review score, Ultrafix state or queued work can't be read, no status is
+  reported. ProPR keeps
+  that status as one live line at the top of the body of every open pull
+  request it created, in every repository; there is no setting for it. Only
+  the text between its markers is ever rewritten, other ProPR body writers
+  keep it, and it is removed when the pull request is merged or closed. A
+  push to the base branch refreshes the open ProPR pull requests into it, so
+  one that starts to conflict doesn't keep reading ready, and the worker
+  brings every open ProPR pull request up to date when it starts, including
+  ones opened before this release. The
+  line is at most 512 characters, and new descriptions keep that much room
+  free for it.
+  `get_pull_request`, `list_pull_requests` and `get_work_overview` return the
+  same status as `proprStatus`. The new repository setting `prTitleStatus`
+  (on by default; Repositories → Automation,
+  `update_repository_configuration`, `propr repo toggle owner/repo
+  --pr-title-status <on|off>`) controls only whether the pull request title
+  shows the state as a leading emoji. Nothing uses it yet: the title emoji
+  arrives in a later release. See [PR Status](docs/docs/features/pr-status.md).
 - **Claude goals can ask you a question**: Claude goal sessions now get an
   `ask_operator` tool. It takes one question (up to 1,000 characters,
   optionally with 2-10 suggested answers) and waits for your reply. The

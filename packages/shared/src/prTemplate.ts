@@ -16,6 +16,12 @@ export const PR_TEMPLATE_MAX_BYTES = 64 * 1024;
 export const PR_TITLE_MAX_LENGTH = 256;
 /** GitHub rejects pull request bodies above this many characters. */
 export const PR_BODY_MAX_LENGTH = 65536;
+/**
+ * The most characters ProPR's live status block (markers included) ever
+ * takes in a pull request body. New descriptions reserve this much, plus its
+ * separator, so the block can grow with its status and still fit.
+ */
+export const PR_STATUS_BLOCK_MAX_LENGTH = 512;
 
 /** Section names in the order they appear in a rendered pull request description. */
 export const PR_TEMPLATE_SECTIONS = [

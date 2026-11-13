@@ -1,3 +1,4 @@
+import { writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import {
     appendVisualPreviewSection,
     formatSubscriptionUsage,
@@ -150,9 +151,7 @@ export async function updateCompletedGoalPullRequest(
             visualPreviewSection(current.data.body || ''),
         );
         await dependencies.retry(
-            () => octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner, repo, pull_number: pullRequestNumber, body,
-            }),
+            () => writePullRequestBody(octokit, { owner, repo, pullNumber: pullRequestNumber, body }),
             `update_completed_goal_pr_${pullRequestNumber}`,
         );
         logger.info({ repository: goal.repository, prNumber: pullRequestNumber }, 'Updated completed goal PR description');

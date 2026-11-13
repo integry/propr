@@ -1,3 +1,4 @@
+import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
     AI_COMMIT_AUTHOR,
@@ -299,6 +300,7 @@ async function publishLocked(
             updated_at: db.fn.now(),
         });
         if (updated !== 1) throw new Error('Goal checkpoint result was fenced');
+        signalPullRequestStatus(goal.repository, pull.number);
         await db('goal_checkpoints').where({ checkpoint_id: recordId }).update({
             state: commit ? 'completed' : 'skipped',
             commit_sha: commit?.commitHash ?? null,
