@@ -74,6 +74,7 @@ function getSettingDescription(key: SettingKey): string {
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
     default_max_cost_usd: "Default per-run spend cap in USD (0 = no cap; task override and workflow.yml take precedence)",
     ultrafix_ci_wait_timeout_ms: "Milliseconds an Ultrafix review waits for blocking CI before stopping (default 7200000)",
+    goal_question_max_wait_ms: "Milliseconds a Claude goal question waits for an operator answer (default 86400000; bounded by the agent timeout)",
     agent_stall_timeout_ms: "Stop an agent run silent this long, in ms (0 disables; \"default\" = env AGENT_STALL_TIMEOUT_MS)",
     agent_tool_stall_timeout_ms: "Silence allowed while a tool call runs, in ms (0 disables; \"default\" = env AGENT_TOOL_STALL_TIMEOUT_MS)",
     agent_degenerate_output_limit: "Consecutive whitespace-only deltas that stop a run (0 disables; \"default\" = env AGENT_DEGENERATE_OUTPUT_LIMIT)",

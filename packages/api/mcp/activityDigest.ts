@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import {
-  NOTIFICATION_KINDS, NOTIFICATION_SEVERITIES,
+  GOAL_BLOCKER_NOTIFICATION_EVENT, NOTIFICATION_KINDS, NOTIFICATION_SEVERITIES,
   type NotificationKind, type NotificationSeverity,
 } from '@propr/shared';
 import { McpError } from './config.js';
@@ -332,6 +332,10 @@ const BLOCKER_SIGNALS: ReadonlyArray<readonly [string, (value: unknown) => boole
     typeof value === 'string' && ABORTED_ULTRAFIX_REASONS.has(value.trim().toLowerCase()), 'ultrafix_aborted'],
   // An explicit error code recorded by the producer.
   ['errorCode', presentText, 'error_reported'],
+  // A goal whose agent asked its operator a question or for an approval. The
+  // card is dismissed once the blocker closes, so a current read sees it only
+  // while the goal still waits.
+  ['event', value => value === GOAL_BLOCKER_NOTIFICATION_EVENT, 'goal_needs_input'],
 ];
 
 export interface OperatorRelevanceInput {
@@ -494,6 +498,7 @@ export function inboxReference(notification: InboxRow): Row {
   return reference({
     notificationId: notification.id,
     taskId: typeof target.taskId === 'string' ? target.taskId : undefined,
+    goalId: typeof notification.metadata.goalId === 'string' ? notification.metadata.goalId : undefined,
     planId: typeof target.draftId === 'string' ? target.draftId : undefined,
     issueNumber: positiveNumber(target.issueNumber),
     pullRequest: positiveNumber(target.prNumber),
