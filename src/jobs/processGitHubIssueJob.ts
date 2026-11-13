@@ -8,7 +8,7 @@ import { Job } from 'bullmq';
 import { postCancellationNotice } from './errorHandlers.js';
 import {
   isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, excludeWithdrawnIssue, retainClosureCleanup, releaseWithdrawalCleanup, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
-  UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId, runWithAgentAdmissionParent
+  UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId, runWithAgentAdmissionParent, parentScopeFromIssueBody
 } from '@propr/core';
 import type { TaskStateData, TaskTerminalReason, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
 import { issueRunCostCapDeps, issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
@@ -157,7 +157,7 @@ function prepareIssueRepositoryWorkflow(octokit: Awaited<ReturnType<typeof getAu
 
 export function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
   // A task started by an orchestrating goal is charged under the goal session while it runs (#3480).
-  return runWithAgentAdmissionParent(job.data.agentAdmissionParent, () => deferRepositoryWorkflowJob(job, () => processAdmittedIssueJob(job)));
+  return runWithAgentAdmissionParent(parentScopeFromIssueBody(job.data.issuePayload?.body, job.data), () => deferRepositoryWorkflowJob(job, () => processAdmittedIssueJob(job)));
 }
 
 async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResult> {

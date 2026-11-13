@@ -400,13 +400,9 @@ async function runReviewCommandMode(
 
 async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
-    // Pending comments may replace the queued command. Resolve after that awaited
-    // pickup, before any review/fix capacity check or physical execution.
-    job.data.agentAdmissionParent = parentScopeFromCommentJob(job.data, context.commentsToProcess);
-    return runWithAgentAdmissionParent(job.data.agentAdmissionParent, () => processInitializedPRCommentJob(job, context));
+    return processInitializedPRCommentJob(job, context);
 }
 
-// eslint-disable-next-line complexity -- admission, execution, failure settlement and handoff ownership share one lease lifecycle
 async function processInitializedPRCommentJob(job: Job<CommentJobData>, context: Awaited<ReturnType<typeof initializePRJobContext>>): Promise<JobResult> {
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
@@ -455,97 +451,103 @@ async function processInitializedPRCommentJob(job: Job<CommentJobData>, context:
         return predecessorGate;
     }
 
-    const executionController = new AbortController();
-    const stopLockHeartbeat = startPRProcessingLockHeartbeat({
-        redisClient, lockKey, lockToken,
-        onLockLost: () => { correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'); executionController.abort(new Error('PR processing lock was lost during agent execution')); },
-        onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
-    });
-
-    await createPRCommentTaskStateIfMissing({ job, taskId, stateManager, preexistingState, modelName, correlatedLogger });
-
-    let capacityRefused = false;
-    let executionFailed = false;
-    const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
-
-    try {
-        const reason = await preventWithdrawnJob(job);
-        if (reason) return { status: 'cancelled', reason };
-        // Cancellation and withdrawn intent are settled above; only then may the queue's
-        // own retry of a recorded failed attempt make the same task active again.
-        await resumeAutomaticPRCommentRetry({ job, taskId, stateManager, correlatedLogger });
-        // Re-read under the shared lease: implementation may have adopted while queued.
-        state.octokit = octokit;
-        const recovered = await runWithExecutionAbortSignal(executionController.signal,
-            () => recoverPendingPublication({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, redisClient), hashTaskAttemptToken(lockToken));
-        if (recovered) return recovered;
-        const stopped = await stopOriginalPRReviewCycle({
-            ref: context, continuation: await findPRContinuation(context), commandMode: job.data.commandMode,
-            ultrafix: Boolean(job.data.ultrafixMeta), redis: redisClient, octokit: state.octokit,
+    // Pending pickup can replace the command, and the awaited predecessor gate
+    // can remove released claims. Validate only the surviving resource proof
+    // before any capacity check or physical execution; cached scopes confer no authority.
+    job.data.agentAdmissionParent = parentScopeFromCommentJob(job.data, commentsToProcess);
+    return runWithAgentAdmissionParent(job.data.agentAdmissionParent, async () => {
+        const executionController = new AbortController();
+        const stopLockHeartbeat = startPRProcessingLockHeartbeat({
+            redisClient, lockKey, lockToken,
+            onLockLost: () => { correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'); executionController.abort(new Error('PR processing lock was lost during agent execution')); },
+            onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
         });
-        if (stopped) {
-            await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, { reason: stopped, historyMetadata: stoppedReviewRecap(stopped) });
-            return { status: 'skipped', reason: 'review_moved_to_continuation', pullRequestNumber };
-        }
-        // Branch early for review mode — read-only analysis, no commits or pushes
-        if (job.data.commandMode === 'review') {
-            return await runReviewCommandMode({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, executionController.signal);
-        }
-        return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
-    } catch (error) {
-        executionFailed = true;
-        // A recovery adopted this handoff: the successor now owns the starting
-        // comment, the task's terminal state and the handoff settlement, so
-        // neither failure publication nor settlement may run for this writer.
-        if (state.followupHandoffOwnershipLost) return stopAfterHandoffOwnershipLoss(error as Error, correlatedLogger);
-        const failJob = (failure: Error) => handleJobError(failure, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status, followupHandoff: state.followupHandoff, checkpointUsageLimitRetry: stage => checkpointExecutionHandoffUsageLimitRetry(state, stage, correlatedLogger) });
-        if (error instanceof RepositoryWorkflowCapacityError) {
-            capacityRefused = true;
-            // The delayed job keeps the claimed comments, command context and policy; store them before releasing
-            // the PR lock. On failure the queue retry owns the comments, but this attempt must not stay pending.
-            await persistRepositoryWorkflowDeferral({ job, workflow: state.repositoryWorkflow, baseBranch: state.repositoryWorkflowBaseBranch,
-                extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
-                onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
-            throw error;
-        }
-        if (isAgentCapacityRefusal(error)) {
-            capacityRefused = true;
-            // Same as a repository refusal: the delayed job keeps the claimed comments and holds no PR lock while it waits.
-            await persistAgentCapacityDeferral({ job, error, extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
-                onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
-            throw error;
-        }
+
+        await createPRCommentTaskStateIfMissing({ job, taskId, stateManager, preexistingState, modelName, correlatedLogger });
+
+        let capacityRefused = false;
+        let executionFailed = false;
+        const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
+
         try {
-            await failJob(error as Error);
-        } catch (failError) {
-            // A takeover observed inside the error handler (the usage-limit
-            // retry's confirmation) stops publication and settlement alike.
-            if (failError instanceof FollowupHandoffOwnershipLostError) return stopAfterHandoffOwnershipLoss(failError, correlatedLogger);
-            throw failError;
-        }
-        if (state.followupHandoffOwnershipLost) return stopAfterHandoffOwnershipLoss(error as Error, correlatedLogger);
-        // Don't re-throw for user cancellations (not an error, just cancelled)
-        const cancelledState = await stateManager.getTaskState(taskId);
-        // The handled failure delivered the owed comment and terminal state, so the
-        // handoff retires; a cancellation instead holds it for an operator decision.
-        // A usage-limit retry whose ownership checkpoint failed throws above and
-        // never reaches this settlement: the handoff keeps the claim for recovery.
-        await settleExecutionHandoffAfterError({
-            ref: { repoOwner, repoName, pullRequestNumber }, taskId, error: error as Error,
-            cancelledState, cancelledStateName: TaskStates.CANCELLED, correlatedLogger,
-        });
-        if (cancelledState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: cancelledState.terminalReason };
-        if ((error as Error).message?.includes('aborted by user')) return { status: 'cancelled', reason: 'cancelled_by_user' };
-        if (!(error instanceof UsageLimitError)) throw nonRetryableRepositoryWorkflowError(error);
-        return { status: 'requeued', reason: 'usage_limit' };
-    } finally {
-        try {
-            await cleanupJob({ beforeReleaseLock: stopLockHeartbeat, stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: writerOwnedWorktree(state), repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient, skipPendingCommentFollowup: capacityRefused, success: !executionFailed });
+            const reason = await preventWithdrawnJob(job);
+            if (reason) return { status: 'cancelled', reason };
+            // Cancellation and withdrawn intent are settled above; only then may the queue's
+            // own retry of a recorded failed attempt make the same task active again.
+            await resumeAutomaticPRCommentRetry({ job, taskId, stateManager, correlatedLogger });
+            // Re-read under the shared lease: implementation may have adopted while queued.
+            state.octokit = octokit;
+            const recovered = await runWithExecutionAbortSignal(executionController.signal,
+                () => recoverPendingPublication({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, redisClient), hashTaskAttemptToken(lockToken));
+            if (recovered) return recovered;
+            const stopped = await stopOriginalPRReviewCycle({
+                ref: context, continuation: await findPRContinuation(context), commandMode: job.data.commandMode,
+                ultrafix: Boolean(job.data.ultrafixMeta), redis: redisClient, octokit: state.octokit,
+            });
+            if (stopped) {
+                await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, { reason: stopped, historyMetadata: stoppedReviewRecap(stopped) });
+                return { status: 'skipped', reason: 'review_moved_to_continuation', pullRequestNumber };
+            }
+            // Branch early for review mode — read-only analysis, no commits or pushes
+            if (job.data.commandMode === 'review') {
+                return await runReviewCommandMode({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, executionController.signal);
+            }
+            return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
+        } catch (error) {
+            executionFailed = true;
+            // A recovery adopted this handoff: the successor now owns the starting
+            // comment, the task's terminal state and the handoff settlement, so
+            // neither failure publication nor settlement may run for this writer.
+            if (state.followupHandoffOwnershipLost) return stopAfterHandoffOwnershipLoss(error as Error, correlatedLogger);
+            const failJob = (failure: Error) => handleJobError(failure, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status, followupHandoff: state.followupHandoff, checkpointUsageLimitRetry: stage => checkpointExecutionHandoffUsageLimitRetry(state, stage, correlatedLogger) });
+            if (error instanceof RepositoryWorkflowCapacityError) {
+                capacityRefused = true;
+                // The delayed job keeps the claimed comments, command context and policy; store them before releasing
+                // the PR lock. On failure the queue retry owns the comments, but this attempt must not stay pending.
+                await persistRepositoryWorkflowDeferral({ job, workflow: state.repositoryWorkflow, baseBranch: state.repositoryWorkflowBaseBranch,
+                    extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
+                    onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
+                throw error;
+            }
+            if (isAgentCapacityRefusal(error)) {
+                capacityRefused = true;
+                // Same as a repository refusal: the delayed job keeps the claimed comments and holds no PR lock while it waits.
+                await persistAgentCapacityDeferral({ job, error, extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
+                    onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
+                throw error;
+            }
+            try {
+                await failJob(error as Error);
+            } catch (failError) {
+                // A takeover observed inside the error handler (the usage-limit
+                // retry's confirmation) stops publication and settlement alike.
+                if (failError instanceof FollowupHandoffOwnershipLostError) return stopAfterHandoffOwnershipLoss(failError, correlatedLogger);
+                throw failError;
+            }
+            if (state.followupHandoffOwnershipLost) return stopAfterHandoffOwnershipLoss(error as Error, correlatedLogger);
+            // Don't re-throw for user cancellations (not an error, just cancelled)
+            const cancelledState = await stateManager.getTaskState(taskId);
+            // The handled failure delivered the owed comment and terminal state, so the
+            // handoff retires; a cancellation instead holds it for an operator decision.
+            // A usage-limit retry whose ownership checkpoint failed throws above and
+            // never reaches this settlement: the handoff keeps the claim for recovery.
+            await settleExecutionHandoffAfterError({
+                ref: { repoOwner, repoName, pullRequestNumber }, taskId, error: error as Error,
+                cancelledState, cancelledStateName: TaskStates.CANCELLED, correlatedLogger,
+            });
+            if (cancelledState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: cancelledState.terminalReason };
+            if ((error as Error).message?.includes('aborted by user')) return { status: 'cancelled', reason: 'cancelled_by_user' };
+            if (!(error instanceof UsageLimitError)) throw nonRetryableRepositoryWorkflowError(error);
+            return { status: 'requeued', reason: 'usage_limit' };
         } finally {
-            await stopLockHeartbeat();
+            try {
+                await cleanupJob({ beforeReleaseLock: stopLockHeartbeat, stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: writerOwnedWorktree(state), repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient, skipPendingCommentFollowup: capacityRefused, success: !executionFailed });
+            } finally {
+                await stopLockHeartbeat();
+            }
+            // Only now is branch release provable; the handoff retires against that
+            // evidence, or stays at cleanup_pending for recovery to release it.
+            await retireExecutionHandoffAfterCleanup(state, correlatedLogger);
         }
-        // Only now is branch release provable; the handoff retires against that
-        // evidence, or stays at cleanup_pending for recovery to release it.
-        await retireExecutionHandoffAfterCleanup(state, correlatedLogger);
-    }
+    });
 }

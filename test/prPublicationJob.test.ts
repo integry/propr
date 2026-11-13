@@ -1,4 +1,4 @@
-import { parentScopeFromCommentJob, runWithAgentAdmissionParent, currentAgentAdmissionNesting } from '../packages/core/src/agents/agentRunNesting.js';
+import { parentExecutionMarker, parentScopeFromCommentJob, runWithAgentAdmissionParent, currentAgentAdmissionNesting } from '../packages/core/src/agents/agentRunNesting.js';
 import assert from 'node:assert/strict';
 import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
@@ -12,6 +12,8 @@ import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js
 let events: string[] = [];
 let refuseCapacity = false;
 let observedParents: Array<string | undefined> = [];
+let onPredecessorGate: ((params: { commentsToProcess: Array<{ id: number }> }) => Promise<void>) | undefined;
+const admissionTarget = { repoOwner: 'upstream', repoName: 'project', number: 42, commentId: 5 };
 let refuseAgentCapacity = false;
 // Other runs holding repository slots; admission and reconciliation compare caps against them.
 let otherRuns = 0;
@@ -243,7 +245,7 @@ const modules: Record<string, Record<string, unknown>> = {
         markExecutionHandoffAgentExited: async (state: { followupHandoffOwnershipLost?: boolean }) => { await onAgentExitedCheckpoint?.(state); },
         markExecutionHandoffCommitted: noOp, markExecutionHandoffPushed: noOp, markExecutionHandoffCommentPublished: noOp,
         markExecutionHandoffCleanupPending: noOp, retireExecutionHandoffAfterCleanup: noOp,
-        gatePredecessorHandoff: async () => undefined,
+        gatePredecessorHandoff: async (params: { commentsToProcess: Array<{ id: number }> }) => { await onPredecessorGate?.(params); return undefined; },
         checkpointExecutionHandoffUsageLimitRetry: async (state: { followupHandoffOwnershipLost?: boolean }, stage: string) => { await onUsageLimitCheckpoint?.(state, stage); },
         FollowupHandoffOwnershipLostError: OwnershipLostError,
         settleExecutionHandoffAfterError: async () => { events.push('settle-handoff'); },
@@ -299,6 +301,8 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
 });
 beforeEach(() => {
     observedParents = [];
+    onPredecessorGate = undefined;
+    process.env.SYSTEM_TASK_SECRET = 'pr-publication-parent-regression-root';
     refuseCapacity = false; refuseAgentCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined; onAgentExitedCheckpoint = undefined; onUsageLimitCheckpoint = undefined; onHandleJobError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0; deferralHistory.length = 0;
@@ -691,7 +695,7 @@ test('ownership loss observed while confirming the usage-limit retry stops publi
 for (const mode of ['review', 'fix']) {
     test(`goal ${mode} executes and checks capacity under its explicit parent`, async () => {
         const request = job(mode);
-        request.data.commentBody = `/${mode}\n<!-- propr-parent-execution: ${'a'.repeat(40)} -->`;
+        request.data.commentBody = `/${mode}\n${parentExecutionMarker('a'.repeat(40), admissionTarget)}`;
         if (mode === 'fix') {
             agentResult = { claudeResult: { success: true }, agentType: 'agent' };
             await assert.rejects(processPullRequestCommentJob(request as never), /post-execution stopped by test/);
@@ -706,13 +710,35 @@ for (const marked of [true, false]) {
     test(`pending review command resolves its own parent after pickup (marked: ${marked})`, async () => {
         realReentryHelpers = true;
         const request = job('review');
-        request.data.commentBody = `/review\n<!-- propr-parent-execution: ${'a'.repeat(40)} -->`;
+        request.data.commentBody = `/review\n${parentExecutionMarker('a'.repeat(40), admissionTarget)}`;
         const pendingKey = getPendingPrCommentsKey('upstream', 'project', 42);
         pendingCommentLists.set(pendingKey, [JSON.stringify({
-            id: 7, body: marked ? `/review\n<!-- propr-parent-execution: ${'b'.repeat(40)} -->` : '/review',
+            id: 7, body: marked ? `/review\n${parentExecutionMarker('b'.repeat(40), { ...admissionTarget, commentId: 7 })}` : '/review',
             author: 'reviewer', type: 'issue', commandMode: 'review',
         })]);
         await processPullRequestCommentJob(request as never);
         assert.deepEqual(observedParents, [marked ? `goal:${'b'.repeat(40)}` : undefined]);
+    });
+}
+
+for (const mode of ['review', 'fix']) {
+    test(`a removed parent command cannot exempt surviving ${mode} work after the awaited predecessor gate`, async () => {
+        realReentryHelpers = true;
+        const request = job(mode);
+        request.data.commentBody = `/${mode}\n${parentExecutionMarker('a'.repeat(40), admissionTarget)}`;
+        const pendingKey = getPendingPrCommentsKey('upstream', 'project', 42);
+        pendingCommentLists.set(pendingKey, [JSON.stringify({ id: 7, body: 'Unrelated work', author: 'reviewer', type: 'issue' })]);
+        onPredecessorGate = async ({ commentsToProcess }) => {
+            await Promise.resolve();
+            const removed = commentsToProcess.findIndex(comment => comment.id === 5);
+            assert.notEqual(removed, -1);
+            commentsToProcess.splice(removed, 1);
+        };
+        if (mode === 'fix') {
+            agentResult = { claudeResult: { success: true }, agentType: 'agent' };
+            await assert.rejects(processPullRequestCommentJob(request as never), /post-execution stopped by test/);
+        } else await processPullRequestCommentJob(request as never);
+        assert.ok(observedParents.length > 0);
+        assert.ok(observedParents.every(parent => parent === undefined));
     });
 }

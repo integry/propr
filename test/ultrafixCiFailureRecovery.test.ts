@@ -1,4 +1,4 @@
-import { parentScopeFromIssueBody } from '../packages/core/src/agents/agentRunNesting.js';
+import { parentExecutionMarker, parentScopeFromCommentJob, parentScopeFromIssueBody } from '../packages/core/src/agents/agentRunNesting.js';
 /**
  * End-to-end recovery of an Ultrafix loop stranded by a CI failure.
  *
@@ -173,7 +173,7 @@ function drainQueue() {
 async function strandLoopAfterCiFailure(
     pr: number,
     stateOverrides: Record<string, unknown> = {},
-    startOverrides: { instructions?: string; userId?: string } = {},
+    startOverrides: { instructions?: string; userId?: string; sourceCommentId?: number } = {},
     { followUpPushed = true }: { followUpPushed?: boolean } = {},
 ): Promise<FakeRedis> {
     const redis = createRedis();
@@ -510,8 +510,9 @@ describe('Ultrafix recovery after a CI failure', () => {
     });
 
     test('a recovered loop keeps the instructions and user that started it', async () => {
-        const instructions = `Keep the public API stable.\n<!-- propr-parent-execution: ${'b'.repeat(40)} -->`;
-        const redis = await strandLoopAfterCiFailure(111, {}, { instructions, userId: '4242' });
+        process.env.SYSTEM_TASK_SECRET = 'recovered-goal-regression-root';
+        const instructions = `Keep the public API stable.\n${parentExecutionMarker('b'.repeat(40), { repoOwner: OWNER, repoName: REPO, number: 111, commentId: 901 })}`;
+        const redis = await strandLoopAfterCiFailure(111, {}, { instructions, userId: '4242', sourceCommentId: 901 });
         assert.equal((await loadState(redis as never, OWNER, REPO, 111))?.instructions, instructions);
 
         const result = await checksTurnGreen(redis, 111);
@@ -520,8 +521,12 @@ describe('Ultrafix recovery after a CI failure', () => {
         const [review] = reviewJobs(111);
         assert.equal(review.data.commandInstructions, instructions);
         assert.equal(review.data.ultrafixMeta.instructions, instructions);
+        assert.equal(parentScopeFromCommentJob(review.data, review.data.comments), `goal:${'b'.repeat(40)}`);
+        assert.equal(review.data.ultrafixMeta.sourceCommentId, 901);
         assert.equal(review.data.agentAdmissionParent, `goal:${'b'.repeat(40)}`);
         assert.equal(review.data.userId, '4242');
+
+        assert.equal(parentScopeFromCommentJob({ ...review.data, pullRequestNumber: 112 }, review.data.comments), undefined);
 
         // Later steps inherit the restored metadata from the recovered review.
         drainQueue();

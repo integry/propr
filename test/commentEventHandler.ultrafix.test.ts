@@ -1,3 +1,4 @@
+import { parentExecutionMarker } from '../packages/core/src/agents/agentRunNesting.js';
 import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { Label } from '@octokit/webhooks-types';
@@ -330,6 +331,13 @@ describe('commentEventHandler — /ultrafix command', () => {
         }));
     });
 
+    test('the unsigned resource placeholder stays inert even on an opted-in PR', async () => {
+        const event = createPRCommentEvent('<!-- propr-parent-execution-pending -->', [{ name: 'AI' } as Label]);
+        const result = await processCommentEvent(event, 'issue_comment', 'corr-pending-parent', createTestConfig());
+        assert.strictEqual(result.status, 'ignored');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('/ultrafix persists its instructions and starting user in the loop state', async () => {
         const event = createPRCommentEvent('/ultrafix\nKeep the public API stable.');
         const config = createTestConfig();
@@ -343,15 +351,42 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.userId, String(event.sender.id));
     });
 
-    test('goal-originated Ultrafix retains the explicit parent in job data and durable loop instructions', async () => {
+    test('goal-originated Ultrafix retains its signed resource association through durable loop state', async () => {
+        process.env.SYSTEM_TASK_SECRET = 'ultrafix-intake-admission-root';
         const nonce = 'a'.repeat(40);
-        const marker = `<!-- propr-parent-execution: ${nonce} -->`;
-        await processCommentEvent(createPRCommentEvent(`/ultrafix\n${marker}`), 'issue_comment', 'corr-uf-parent', createTestConfig());
+        const event = createPRCommentEvent('/ultrafix');
+        const marker = parentExecutionMarker(nonce, { repoOwner: event.repository.owner.login, repoName: event.repository.name, number: 42, commentId: event.comment.id });
+        event.comment.body = `/ultrafix\n${marker}`;
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-parent', createTestConfig());
         const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(loopOptions.instructions, marker);
+        assert.strictEqual(loopOptions.sourceCommentId, event.comment.id);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.agentAdmissionParent, `goal:${nonce}`);
+        assert.strictEqual((jobData.ultrafixMeta as Record<string, unknown>).sourceCommentId, event.comment.id);
     });
+
+    for (const mode of ['review', 'fix', 'ultrafix']) {
+        test(`a goal authorizes its own /${mode} command before keyword stripping`, async () => {
+            process.env.SYSTEM_TASK_SECRET = 'ultrafix-intake-admission-root';
+            const event = createPRCommentEvent(`/${mode}`);
+            const marker = parentExecutionMarker('a'.repeat(40), { repoOwner: event.repository.owner.login, repoName: event.repository.name, number: 42, commentId: event.comment.id });
+            event.comment.body = `/${mode}\n${marker}`;
+            await processCommentEvent(event, 'issue_comment', `corr-${mode}-valid`, createTestConfig());
+            const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+            assert.strictEqual(jobData.agentAdmissionParent, `goal:${'a'.repeat(40)}`);
+        });
+        test(`a copied /${mode} marker cannot authorize another PR command`, async () => {
+            process.env.SYSTEM_TASK_SECRET = 'ultrafix-intake-admission-root';
+            const event = createPRCommentEvent(`/${mode}`);
+            const marker = parentExecutionMarker('a'.repeat(40), { repoOwner: event.repository.owner.login, repoName: event.repository.name, number: 42, commentId: event.comment.id + 1 });
+            event.comment.body = `/${mode}\n${marker}`;
+            await processCommentEvent(event, 'issue_comment', `corr-${mode}-copy`, createTestConfig());
+            assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+            const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+            assert.strictEqual(jobData.agentAdmissionParent, undefined);
+        });
+    }
 
     test('bare /ultrafix initializes loop and enqueues review job', async () => {
         const event = createPRCommentEvent('/ultrafix');

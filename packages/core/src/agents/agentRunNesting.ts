@@ -13,13 +13,13 @@
  *   acquire resolves the scope to the parent's holder record in Redis, so a
  *   scope that names no live holder makes it an ordinary top-level launch.
  *
- * Scopes: an orchestrating goal session uses `goal:<nonce>` (the nonce reaches
- * the issues and PR comments it creates as a body marker and from there the job data);
+ * Scopes: an orchestrating goal session uses `goal:<nonce>` (the signed child association reaches
+ * the issues and PR comments it creates as a resource-bound body marker);
  * an automation run phase uses `agent-run-grant:<grantId>` (its MCP grant
  * identifies the calling run on the API side). See
  * docs/docs/architecture/agent-run-admission.md#nested-executions.
  */
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** Nested executions may not themselves carry nested executions. */
@@ -93,15 +93,9 @@ export class AgentAdmissionNestingError extends Error {
 
 const GOAL_SCOPE_PREFIX = 'goal:';
 const NONCE = /^[A-Za-z0-9-]{32,64}$/;
-const MARKER = /<!--\s*propr-parent-execution:\s*([A-Za-z0-9-]{32,64})\s*-->/;
+const MARKER = /<!--\s*propr-parent-execution:\s*([A-Za-z0-9-]{32,64}):([a-f0-9]{64})\s*-->/;
 
-/**
- * The parent nonce of one orchestrating goal. Stable across the goal's
- * attempts, so an issue created before a resume still names the goal; it
- * reveals nothing about the goal ID. It is a link, not a credential: the
- * marker is visible to anyone who can read the issue (see
- * parentScopeFromIssueBody for why a copied marker is harmless).
- */
+/** Public identifier of one goal, stable across attempts. It grants no admission authority. */
 export function createGoalParentNonce(goalId: string): string {
     return createHash('sha256').update(`propr-goal-parent:${goalId}`).digest('hex').slice(0, 40);
 }
@@ -111,21 +105,54 @@ export function goalParentScope(nonce: string): string {
     return `${GOAL_SCOPE_PREFIX}${nonce}`;
 }
 
-/** The hidden line an orchestrating goal adds to each issue it creates for ProPR to implement. */
-export function parentExecutionMarker(nonce: string): string {
-    return `<!-- propr-parent-execution: ${nonce} -->`;
+/** A launch-specific signing capability; only the goal receives it, never the instance secret. */
+export const AGENT_ADMISSION_PARENT_KEY_ENV = 'PROPR_PARENT_EXECUTION_KEY';
+export function goalParentSigningKey(nonce: string, env: NodeJS.ProcessEnv = process.env): string {
+    goalParentScope(nonce);
+    const root = env.PROPR_CREDENTIAL_ENCRYPTION_KEY?.trim() || env.SYSTEM_TASK_SECRET?.trim() || env.SESSION_SECRET?.trim();
+    if (!root) throw new Error('Orchestrating goal admission requires PROPR_CREDENTIAL_ENCRYPTION_KEY, SYSTEM_TASK_SECRET or SESSION_SECRET');
+    return createHmac('sha256', root).update(`propr.goal-child.v1\0${nonce}`).digest('hex');
+}
+
+export interface AgentAdmissionChildTarget {
+    repoOwner: string;
+    repoName: string;
+    number: number;
+    /** Absent for an issue; present for a specific PR command, never a whole PR. */
+    commentId?: number;
+    commentType?: 'issue' | 'review';
+}
+
+/** Canonical resource binding signed by the goal before it triggers the child. */
+export function agentAdmissionChildIdentity(target: AgentAdmissionChildTarget): string {
+    if (!target.repoOwner || !target.repoName || !Number.isSafeInteger(target.number) || target.number < 1
+        || (target.commentId !== undefined && (!Number.isSafeInteger(target.commentId) || target.commentId < 1))) {
+        throw new Error('Invalid admission child target');
+    }
+    return `${target.repoOwner.toLowerCase()}/${target.repoName.toLowerCase()}/${target.commentId === undefined ? 'issues' : 'pull'}/${target.number}`
+        + (target.commentId === undefined ? '' : `/${target.commentType === 'review' ? 'review-comments' : 'comments'}/${target.commentId}`);
+}
+
+/** The signed association is durable in the resource body and serialized queue data. */
+export function parentExecutionMarker(nonce: string, target?: AgentAdmissionChildTarget, env: NodeJS.ProcessEnv = process.env): string {
+    if (!target) return `<!-- propr-parent-execution: ${nonce} -->`; // Historical, untrusted marker.
+    const signature = createHmac('sha256', goalParentSigningKey(nonce, env)).update(agentAdmissionChildIdentity(target)).digest('hex');
+    return `<!-- propr-parent-execution: ${nonce}:${signature} -->`;
 }
 
 /**
- * The parent scope named by an issue body's marker, if any. Only a goal scope
- * can be named this way. A copied or stale marker is harmless beyond the
- * bounds: it charges work only under a goal session that is still live, and
- * never past `PROPR_AGENT_RUN_NESTED_LIMIT`.
+ * Validate the durable association with this exact resource. A public marker
+ * copied to another issue, repository or command is ordinary work. Legacy
+ * unsigned markers and a bare scope saved by older workers grant no authority.
  */
-export function parentScopeFromIssueBody(body: unknown): string | undefined {
-    if (typeof body !== 'string') return undefined;
+export function parentScopeFromIssueBody(body: unknown, target?: AgentAdmissionChildTarget, env: NodeJS.ProcessEnv = process.env): string | undefined {
+    if (typeof body !== 'string' || !target) return undefined;
     const match = MARKER.exec(body);
-    return match ? goalParentScope(match[1]) : undefined;
+    if (!match) return undefined;
+    try {
+        const signature = createHmac('sha256', goalParentSigningKey(match[1], env)).update(agentAdmissionChildIdentity(target)).digest();
+        return timingSafeEqual(signature, Buffer.from(match[2], 'hex')) ? goalParentScope(match[1]) : undefined;
+    } catch { return undefined; } // Missing trust root or malformed identity: ordinary accounting.
 }
 
 /** An automation run phase, identified by its run-scoped MCP grant. */
@@ -158,16 +185,24 @@ export function nestedLaunchGate(env: NodeJS.ProcessEnv = process.env): <T>(task
 
 /** Select the explicit link of the command being executed, never the PR's issue or an older comment. */
 export function parentScopeFromCommentJob(data: {
-    commandCommentId?: number; commentBody?: string; agentAdmissionParent?: string;
-    ultrafixMeta?: { instructions?: string };
-}, comments: Array<{ id: number; body: string; createdAt?: string; commandMode?: string; agentAdmissionParent?: string }> = []): string | undefined {
+    repoOwner?: string; repoName?: string; pullRequestNumber?: number;
+    commandCommentId?: number; commandCommentType?: 'issue' | 'review'; commentId?: number; commentBody?: string; agentAdmissionParent?: string;
+    ultrafixMeta?: { instructions?: string; sourceCommentId?: number; sourceCommentType?: 'issue' | 'review' };
+}, comments: Array<{ id: number; body: string; createdAt?: string; commandMode?: string; agentAdmissionParent?: string; agentAdmissionParentProof?: string; type?: 'issue' | 'review' }> = []): string | undefined {
+    if (!data.repoOwner || !data.repoName || !data.pullRequestNumber) return undefined;
+    const verify = (body: unknown, commentId: number | undefined, commentType?: 'issue' | 'review') => commentId === undefined ? undefined
+        : parentScopeFromIssueBody(body, { repoOwner: data.repoOwner!, repoName: data.repoName!, number: data.pullRequestNumber!, commentId, commentType });
     const ordered = [...comments].sort((a, b) => (a.createdAt && b.createdAt ? a.createdAt.localeCompare(b.createdAt) : 0) || a.id - b.id);
     const selected = data.commandCommentId !== undefined
         ? ordered.find(comment => comment.id === data.commandCommentId)
         : ordered.filter(comment => comment.commandMode && comment.commandMode !== 'default').at(-1) ?? ordered.at(-1);
     if (selected) {
-        return selected.agentAdmissionParent ?? parentScopeFromIssueBody(selected.body)
-            ?? (selected.id === 0 ? parentScopeFromIssueBody(data.ultrafixMeta?.instructions) : undefined);
+        // Only internal synthetic loop steps may use the durable origin command.
+        // A real comment always has to prove its own association, after pickup.
+        return selected.id === 0
+            ? verify(data.ultrafixMeta?.instructions, data.ultrafixMeta?.sourceCommentId, data.ultrafixMeta?.sourceCommentType)
+            : verify(selected.agentAdmissionParentProof ?? selected.body, selected.id, selected.type);
     }
-    return parentScopeFromIssueBody(data.commentBody) ?? data.agentAdmissionParent;
+    if (comments.length) return undefined; // The queued command was removed or replaced.
+    return verify(data.commentBody, data.commandCommentId ?? data.commentId, data.commandCommentType);
 }

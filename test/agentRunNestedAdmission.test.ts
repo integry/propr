@@ -23,7 +23,7 @@ import {
 } from '../packages/core/src/agents/agentRunAdmission.js';
 import {
     AgentAdmissionNestingError, agentRunGrantParentScope, createGoalParentNonce, goalParentScope, nestedLaunchGate, parentExecutionMarker,
-    parentScopeFromIssueBody, parentScopeFromCommentJob, runAsAgentAdmissionParent, runWithAgentAdmissionParent, currentAgentAdmissionNesting,
+    goalParentSigningKey, agentAdmissionChildIdentity, parentScopeFromIssueBody, parentScopeFromCommentJob, runAsAgentAdmissionParent, runWithAgentAdmissionParent, currentAgentAdmissionNesting,
 } from '../packages/core/src/agents/agentRunNesting.js';
 import { agentAliasHasCapacity } from '../packages/core/src/agents/agentCapacity.js';
 import { isNonRetryableSyntheticFailure } from '../packages/core/src/services/syntheticRoutingTypes.js';
@@ -35,6 +35,10 @@ const run = randomUUID().slice(0, 8);
 let root: string, redis: Redis | undefined, server: ChildProcess | undefined;
 const children: ChildProcess[] = [];
 const previous = { ...process.env };
+process.env.SYSTEM_TASK_SECRET = 'nested-admission-regression-trust-root';
+const issueTarget = { repoOwner: 'acme', repoName: 'repo', number: 7 };
+const commentTarget = { ...issueTarget, commentId: 1 };
+const commentJob = { repoOwner: 'acme', repoName: 'repo', pullRequestNumber: 7 };
 
 async function freePort(): Promise<number> {
     const probe = createServer();
@@ -172,15 +176,15 @@ test('parent links are explicit: goal nonce, issue marker, grant scope and async
     assert.equal(nonce, createGoalParentNonce('goal-1'), 'stable across attempts of one goal');
     assert.notEqual(nonce, createGoalParentNonce('goal-2'));
     assert.ok(!nonce.includes('goal-1'), 'the nonce does not reveal the goal ID');
-    const body = `Implement the parser.\n\n${parentExecutionMarker(nonce)}\n`;
-    assert.equal(parentScopeFromIssueBody(body), goalParentScope(nonce));
+    const body = `Implement the parser.\n\n${parentExecutionMarker(nonce, issueTarget)}\n`;
+    assert.equal(parentScopeFromIssueBody(body, issueTarget), goalParentScope(nonce));
     for (const unlinked of [undefined, null, 42, 'no marker', '<!-- propr-parent-execution: short -->', '<!-- propr-parent-execution: agent-run-grant:abc -->']) {
         assert.equal(parentScopeFromIssueBody(unlinked), undefined, String(unlinked));
     }
     assert.equal(agentRunGrantParentScope('g1'), 'agent-run-grant:g1');
-    assert.deepEqual(buildGoalPolicyEnvironment('orchestrate', nonce), { PROPR_EXECUTION_MODE: 'goal', PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate', PROPR_PARENT_EXECUTION: nonce });
+    assert.deepEqual(buildGoalPolicyEnvironment('orchestrate', nonce), { PROPR_EXECUTION_MODE: 'goal', PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate', PROPR_PARENT_EXECUTION: nonce, PROPR_PARENT_EXECUTION_KEY: goalParentSigningKey(nonce) });
     assert.deepEqual(buildGoalPolicyEnvironment('direct'), { PROPR_EXECUTION_MODE: 'goal', PROPR_GOAL_LAUNCH_STRATEGY: 'direct' }, 'direct goals carry no parent');
-    assert.match(buildNativeGoalContext({ objective: 'x', launchStrategy: 'orchestrate' }), /<!-- propr-parent-execution: <value> -->/);
+    assert.match(buildNativeGoalContext({ objective: 'x', launchStrategy: 'orchestrate' }), /private PROPR_PARENT_EXECUTION_KEY/);
     assert.doesNotMatch(buildNativeGoalContext({ objective: 'x', launchStrategy: 'direct' }), /propr-parent-execution/);
     // A shared task label or timing never makes a launch nested: only the context does.
     assert.equal(currentAgentAdmissionNesting(), undefined);
@@ -362,8 +366,8 @@ test('goal PR reviews, fixes and Ultrafix continuations use the live parent at g
     const options = { client: client(), docker: runtime, config, agentAlias: 'local' };
     const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { register: goalParentScope(nonce) } });
     for (const mode of ['review', 'fix', 'ultrafix']) {
-        const body = `/${mode}\n${parentExecutionMarker(nonce)}`;
-        const queued = JSON.parse(JSON.stringify({ agentAdmissionParent: parentScopeFromCommentJob({}, [{ id: 1, body }]), comments: [{ id: 1, body }], ultrafixMeta: { instructions: parentExecutionMarker(nonce) } }));
+        const body = `/${mode}\n${parentExecutionMarker(nonce, commentTarget)}`;
+        const queued = JSON.parse(JSON.stringify({ ...commentJob, agentAdmissionParent: parentScopeFromCommentJob(commentJob, [{ id: 1, body }]), comments: [{ id: 1, body }], ultrafixMeta: { instructions: parentExecutionMarker(nonce, commentTarget), sourceCommentId: 1 } }));
         const comments = mode === 'ultrafix' ? [{ id: 0, body: '/review', commandMode: 'review' }] : queued.comments;
         await runWithAgentAdmissionParent(parentScopeFromCommentJob(queued, comments), async () => {
             assert.equal(await agentAliasHasCapacity('local', options), true);
@@ -379,17 +383,82 @@ test('goal PR reviews, fixes and Ultrafix continuations use the live parent at g
     await stale!.finish();
 });
 
-test('comment parent selection follows the current command across batching and redelivery', () => {
-    const scope = goalParentScope(createGoalParentNonce('parent'));
-    const marked = { id: 1, body: `/review\n${parentExecutionMarker(createGoalParentNonce('parent'))}`, commandMode: 'review' };
+test('comment parent selection validates exact resources across batching, retries and Ultrafix recovery', () => {
+    const nonce = createGoalParentNonce('parent');
+    const scope = goalParentScope(nonce);
+    const marked = { id: 1, body: `/review\n${parentExecutionMarker(nonce, commentTarget)}`, commandMode: 'review' };
     const unrelated = { id: 2, body: '/fix all', commandMode: 'fix' };
-    assert.equal(parentScopeFromCommentJob({}, [marked]), scope);
-    assert.equal(parentScopeFromCommentJob({ agentAdmissionParent: scope }, [marked, unrelated]), undefined);
-    assert.equal(parentScopeFromCommentJob({ commandCommentId: 1 }, [marked, { id: 3, body: 'thanks' }]), scope);
-    assert.equal(parentScopeFromCommentJob({}, [unrelated, { ...marked, id: 3 }]), scope);
-    assert.equal(parentScopeFromCommentJob({ agentAdmissionParent: scope }, []), scope, 'durable retry data retains its explicit link');
-    assert.equal(parentScopeFromCommentJob({ ultrafixMeta: { instructions: marked.body } }, [{ id: 0, body: '/fix' }]), scope);
-    assert.equal(parentScopeFromCommentJob({ ultrafixMeta: { instructions: marked.body } }, [unrelated]), undefined, 'a real unrelated comment overrides loop provenance');
+    assert.equal(parentScopeFromCommentJob(commentJob, [marked]), scope);
+    assert.equal(parentScopeFromCommentJob(commentJob, [{ ...marked, body: 'keyword-stripped instructions', agentAdmissionParentProof: marked.body }]), scope, 'raw proof survives trigger keyword stripping');
+    assert.equal(parentScopeFromCommentJob({ ...commentJob, commandCommentId: 1, commentBody: marked.body, agentAdmissionParent: scope }, [unrelated]), undefined, 'a claim removed at an awaited gate cannot fall back to its old proof');
+    assert.equal(parentScopeFromCommentJob({ ...commentJob, agentAdmissionParent: scope }, [marked, unrelated]), undefined);
+    assert.equal(parentScopeFromCommentJob({ ...commentJob, commandCommentId: 1 }, [marked, { id: 3, body: 'thanks' }]), scope);
+    assert.equal(parentScopeFromCommentJob(commentJob, [unrelated, { ...marked, id: 3 }]), undefined, 'copied command marker cannot authorize a new comment');
+    assert.equal(parentScopeFromCommentJob({ ...commentJob, agentAdmissionParent: scope }, []), undefined, 'legacy scope-only queue data grants no exemption');
+    assert.equal(parentScopeFromCommentJob({ ...commentJob, commentBody: marked.body, commandCommentId: 1 }, []), scope, 'retry retains resource-bound proof');
+    const continuation = { ...commentJob, ultrafixMeta: { instructions: marked.body, sourceCommentId: 1 } };
+    const recovered = JSON.parse(JSON.stringify(continuation));
+    assert.equal(parentScopeFromCommentJob(recovered, [{ id: 0, body: '/fix' }]), scope);
+    assert.equal(parentScopeFromCommentJob({ ...commentJob, ultrafixMeta: { instructions: marked.body } }, [{ id: 0, body: '/fix' }]), undefined, 'legacy instructions alone grant no exemption');
+    assert.equal(parentScopeFromCommentJob(recovered, [unrelated]), undefined, 'picked-up unrelated command overrides loop provenance');
+    assert.equal(parentScopeFromCommentJob({ ...recovered, pullRequestNumber: 8 }, [{ id: 0, body: '/fix' }]), undefined, 'loop proof is also bound to its PR');
+    assert.equal(parentScopeFromCommentJob(commentJob, [{ ...marked, type: 'review' }]), undefined, 'comment resource types cannot exchange proofs');
+});
+
+test('goal launch capability signs durable resource associations without publishing the trust root', () => {
+    const nonce = createGoalParentNonce('copy-source');
+    const issueBody = parentExecutionMarker(nonce, issueTarget);
+    assert.equal(parentScopeFromIssueBody(issueBody, issueTarget), goalParentScope(nonce));
+    for (const target of [{ ...issueTarget, number: 8 }, { ...issueTarget, repoName: 'other' }, commentTarget]) {
+        assert.equal(parentScopeFromIssueBody(issueBody, target), undefined);
+    }
+    assert.equal(parentScopeFromIssueBody(issueBody.replace(/:[a-f0-9]{64}/, ':' + '0'.repeat(64)), issueTarget), undefined, 'forged proof is ordinary work');
+    assert.equal(parentScopeFromIssueBody(parentExecutionMarker(nonce), issueTarget), undefined, 'public legacy nonce grants no authority');
+    assert.equal(parentScopeFromIssueBody(issueBody, issueTarget, {}), undefined, 'missing trust root fails closed');
+    assert.throws(() => goalParentSigningKey(nonce, {}), /requires/);
+    const policy = buildGoalPolicyEnvironment('orchestrate', nonce);
+    assert.notEqual(policy.PROPR_PARENT_EXECUTION_KEY, process.env.SYSTEM_TASK_SECRET);
+    const signed = spawnSync(process.execPath, ['-e', `const c=require('node:crypto'); console.log(c.createHmac('sha256',process.env.PROPR_PARENT_EXECUTION_KEY).update(process.argv[1]).digest('hex'))`, agentAdmissionChildIdentity(issueTarget)], { env: { ...process.env, ...policy }, encoding: 'utf8' });
+    assert.equal(signed.status, 0);
+    assert.ok(issueBody.includes(signed.stdout.trim()), 'the delegated launch capability produces the host-verifiable association');
+});
+
+test('goal signing fails before launch without a trust root only when admission is enabled', () => {
+    const keys = ['PROPR_CREDENTIAL_ENCRYPTION_KEY', 'SYSTEM_TASK_SECRET', 'SESSION_SECRET', 'PROPR_FLEET_CONTROL_SECRET', 'PROPR_AGENT_RUN_LIMIT', 'PROPR_AGENT_RUN_ALIAS_LIMITS', 'PROPR_AGENT_RUN_NESTED_LIMIT', 'PROPR_INSTANCE_ID'];
+    const saved = keys.map(key => [key, process.env[key]] as const);
+    try {
+        for (const key of keys) delete process.env[key];
+        const nonce = createGoalParentNonce('no-root');
+        assert.equal(buildGoalPolicyEnvironment('orchestrate', nonce).PROPR_PARENT_EXECUTION_KEY, undefined);
+        process.env.PROPR_AGENT_RUN_LIMIT = '1';
+        process.env.PROPR_INSTANCE_ID = 'no-root';
+        assert.throws(() => buildGoalPolicyEnvironment('orchestrate', nonce), /Orchestrating goal admission requires/);
+    } finally {
+        for (const [key, value] of saved) {
+            if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+    }
+});
+
+test('copied markers retain ordinary accounting at occupied limits', integration(), async () => {
+    const nonce = createGoalParentNonce('copy-source');
+    const issueBody = parentExecutionMarker(nonce, issueTarget);
+    const { runtime } = lifecycle();
+    const name = instance('copied-markers');
+    const options = { client: client(), docker: runtime, config: { instance: name, limit: 1, aliasLimits: { local: 1 } }, agentAlias: 'local' };
+    const parent = await prepareAdmittedAgent(['run', 'agent'], { ...options, nesting: { register: goalParentScope(nonce) } });
+    for (const target of [{ ...issueTarget, number: 8 }, { ...issueTarget, repoName: 'other' }, commentTarget]) {
+        const scope = parentScopeFromIssueBody(issueBody, target);
+        assert.equal(scope, undefined);
+        await runWithAgentAdmissionParent(scope, async () => {
+            assert.equal(await agentAliasHasCapacity('local', options), false, 'copied marker cannot bypass advisory alias accounting');
+            const waitReasons: AgentAdmissionWaitReason[] = [];
+            await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, signal: AbortSignal.timeout(500), pollMs: 5, onWaiting: reason => { waitReasons.push(reason); } }));
+            assert.ok(waitReasons.length > 0, 'authoritative acquire waits instead of sharing the parent');
+            assert.equal((await agentAdmissionMetrics(client(), name)).nested, 0);
+        });
+    }
+    await parent!.finish();
 });
 
 test('nesting depth and count bounds refuse with a clear error instead of waiting', integration(), async () => {

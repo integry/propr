@@ -69,6 +69,9 @@ export interface UseCommandMeta {
 }
 
 export interface UltrafixCommandMeta {
+    /** Original command identity, retained by internal continuations for admission proof validation. */
+    sourceCommentId?: number;
+    sourceCommentType?: 'issue' | 'review';
     mode: 'ultrafix';
     /** Epoch binding this automatic action to the latest manual takeover. */
     workEpoch?: number;

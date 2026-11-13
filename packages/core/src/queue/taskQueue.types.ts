@@ -89,9 +89,10 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
     /** Task IDs of earlier attempts (replaced runs) whose spend counts toward this run's cap. */
     costBudgetTaskIds?: string[];
     /**
-     * Admission parent scope (`goal:<nonce>`) from the issue body's
-     * `propr-parent-execution` marker: the orchestrating goal that started this
-     * task. While that goal session runs, admission charges the task under it.
+     * Verified admission parent scope (`goal:<nonce>`) from the issue body's
+     * signed, resource-bound `propr-parent-execution` marker. The processor
+     * validates the durable proof again; this scope alone grants no authority.
+     * While that goal session runs, admission charges the task under it.
      */
     agentAdmissionParent?: string;
 }
@@ -107,7 +108,7 @@ export interface AutoResolveContext {
 }
 
 export interface CommentJobData extends RepositoryWorkflowDeferralData, AgentCapacityDeferralData {
-    /** Explicit goal parent from the triggering comment; absent for unrelated comments. */
+    /** Verified goal parent from the triggering comment; scope alone grants no authority. */
     agentAdmissionParent?: string;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
@@ -160,7 +161,9 @@ export interface CommentJobData extends RepositoryWorkflowDeferralData, AgentCap
 }
 
 export interface UnprocessedComment {
-    /** Parent extracted before trigger keywords are stripped from the body. */
+    /** Original body retaining the signed resource proof before trigger keywords are stripped. */
+    agentAdmissionParentProof?: string;
+    /** Verified parent hint; the selected comment body is validated again before admission. */
     agentAdmissionParent?: string;
     id: number;
     /** GitHub creation time used to order issue and review comments together. */

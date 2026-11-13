@@ -408,9 +408,9 @@ async function firstDispatchLabels(job: Job<IssueJobData>, storedData: IssueJobD
 }
 
 /** The orchestrating goal named by the issue body's parent marker, as child job data (#3480). */
-function admissionParentLink(issue: CurrentIssueData): Pick<IssueJobData, 'agentAdmissionParent'> {
-    const scope = parentScopeFromIssueBody((issue.data as { body?: unknown }).body);
-    return scope ? { agentAdmissionParent: scope } : {};
+function admissionParentLink(issue: CurrentIssueData, target: IssueJobData): Pick<IssueJobData, 'agentAdmissionParent'> {
+    const scope = parentScopeFromIssueBody((issue.data as { body?: unknown }).body, target);
+    return { agentAdmissionParent: scope };
 }
 
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
@@ -462,7 +462,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
         issueRef.dispatchIssueLabels = await firstDispatchLabels(job, storedData, currentIssueData, deps);
         const children: RetryRunChild[] = [];
         // Explicit parent link from an orchestrating goal (#3480); never inferred from timing.
-        const parentLink = admissionParentLink(currentIssueData);
+        const parentLink = admissionParentLink(currentIssueData, issueRef);
         for (const base of basesToProcess) {
             for (const agentModel of agentModelsToProcess) {
                 const newJobData: IssueJobData = {

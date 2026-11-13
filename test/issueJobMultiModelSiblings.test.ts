@@ -205,11 +205,12 @@ test('a retried dispatch whose first child already finished the issue still runs
 });
 
 test('an issue created by an orchestrating goal carries its parent link from the body marker into the child job and its admission context', async () => {
+  process.env.SYSTEM_TASK_SECRET = 'issue-goal-regression-key';
   const nonce = core.createGoalParentNonce('goal-under-test');
   const queued = new Map<string, IssueJobData>();
   const deps = {
     findSubmission: async () => undefined,
-    getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { body: `Implement parsing.\n\n${core.parentExecutionMarker(nonce)}`, labels: liveLabels.map(name => ({ name })) } }) }),
+    getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { body: `Implement parsing.\n\n${core.parentExecutionMarker(nonce, { repoOwner: 'o', repoName: 'r', number: 7 })}`, labels: liveLabels.map(name => ({ name })) } }) }),
     withRetry: async (fn: () => Promise<unknown>) => fn(),
     retryConfigs: { githubApi: {} },
     validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
@@ -225,7 +226,12 @@ test('an issue created by an orchestrating goal carries its parent link from the
   assert.equal(child.agentAdmissionParent, core.goalParentScope(nonce));
   assert.equal((await processGitHubIssueJob({ id: 'child', data: child, updateData: async () => undefined, updateProgress: async () => undefined } as unknown as Job<IssueJobData>)).status, 'processed');
   assert.deepEqual(nestings, [{ parent: core.goalParentScope(nonce) }], 'the task runs on behalf of the goal session');
+  queued.clear();
+  await handleDispatchWithDeps({ ...dispatcher, data: { ...dispatcher.data, number: 8, agentAdmissionParent: core.goalParentScope(nonce) } } as Job<IssueJobData>, deps);
+  assert.equal([...queued.values()][0].agentAdmissionParent, undefined, 'dispatch clears a copied marker and stale queue scope');
+  await processGitHubIssueJob({ id: 'copied', data: { ...child, number: 8 }, updateData: async () => undefined, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
+  assert.equal(nestings[1], undefined, 'a copied marker and persisted parent scope cannot authorize another issue');
   // An issue without the marker is ordinary top-level work.
   await processGitHubIssueJob(childJob('model-b'));
-  assert.equal(nestings[1], undefined);
+  assert.equal(nestings[2], undefined);
 });
