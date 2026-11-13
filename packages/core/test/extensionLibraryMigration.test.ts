@@ -8,7 +8,7 @@ import { extensionTestResources } from './helpers/extensionTestResources.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
-import { migrateExtensionProfilesToLibrary, EXTENSION_LIBRARY_MIGRATION_ACTOR } from '../src/extensions/extensionLibraryMigration.js';
+import { migrateExtensionProfilesToLibrary, legacySnapshotExtensions, EXTENSION_LIBRARY_MIGRATION_ACTOR } from '../src/extensions/extensionLibraryMigration.js';
 import { ExtensionLibraryStore } from '../src/extensions/extensionProfileStore.js';
 import { sealExtensionSecrets } from '../src/extensions/privateSecrets.js';
 
@@ -70,9 +70,9 @@ test('identical servers merge with the union of their limits, colliding names ar
   const { secrets } = await store.validationTargets('1');
   assert.equal(secrets[merged.name], 'SHARED_SENTINEL_TOKEN'); assert.equal(secrets[renamed.name], 'OTHER_SENTINEL_TOKEN');
   assert.ok(!JSON.stringify(library).includes('SENTINEL_TOKEN'));
-  assert.deepEqual(await store.legacyProfileExtensions(first), { servers: [merged.name], skills: [bundleId] });
-  assert.deepEqual(await store.legacyProfileExtensions(second), { servers: [merged.name, 'search'], skills: [bundleId] });
-  assert.deepEqual(await store.legacyProfileExtensions(third), { servers: [renamed.name], skills: [] });
+  assert.deepEqual(await store.legacyProfileExtensions(first), { revision: 1, servers: [merged.name], skills: [bundleId] });
+  assert.deepEqual(await store.legacyProfileExtensions(second), { revision: 1, servers: [merged.name, 'search'], skills: [bundleId] });
+  assert.deepEqual(await store.legacyProfileExtensions(third), { revision: 1, servers: [renamed.name], skills: [] });
   // Old profile tables stay readable.
   assert.equal((await database('extension_profiles')).length, 4);
 });
@@ -111,7 +111,7 @@ test('an undecryptable credential migrates the server without a secret and never
   assert.equal(report.migrated, true); assert.equal(report.warnings.length, 1); assert.equal(warnings.length, 1);
   const library = await store.readLibrary('1');
   assert.deepEqual(library.secrets.docs, { fields: ['bearerToken'], configured: false });
-  assert.deepEqual(await store.legacyProfileExtensions(profileId), { servers: ['docs'], skills: [] });
+  assert.deepEqual(await store.legacyProfileExtensions(profileId), { revision: 1, servers: ['docs'], skills: [] });
   // The item is skipped at launch rather than failing it.
   const set = (await store.resolveLaunch({ agentAlias: 'claude', runtime: 'claude', repositories: ['team/repo'], allowWrite: false, additional: { servers: ['docs'], skills: [] } }, false)).set;
   assert.deepEqual(set.servers, []); assert.equal(set.skipped[0].reason, 'secret_not_configured');
@@ -155,9 +155,9 @@ test('a disabled source selection never maps to an enabled library item', async 
   assert.deepEqual(enabledDocs.length, 1); assert.deepEqual(enabledDocs[0].repositories, ['team/web'], 'disabled sources do not widen the active item');
   assert.equal(library.servers.length, 2, 'the disabled copies stay one separate, disabled item');
   const disabledDocs = library.servers.find(s => !s.enabled)!;
-  assert.deepEqual(await store.legacyProfileExtensions(active), { servers: [enabledDocs[0].name], skills: [bundleId] });
-  assert.deepEqual(await store.legacyProfileExtensions(serverOff), { servers: [disabledDocs.name], skills: [] });
-  assert.deepEqual(await store.legacyProfileExtensions(profileOff), { servers: [disabledDocs.name], skills: [inactiveBundleId] });
+  assert.deepEqual(await store.legacyProfileExtensions(active), { revision: 1, servers: [enabledDocs[0].name], skills: [bundleId] });
+  assert.deepEqual(await store.legacyProfileExtensions(serverOff), { revision: 1, servers: [disabledDocs.name], skills: [] });
+  assert.deepEqual(await store.legacyProfileExtensions(profileOff), { revision: 1, servers: [disabledDocs.name], skills: [inactiveBundleId] });
   assert.deepEqual(library.skills.map(s => [s.bundleId, s.enabled]).sort(), [[bundleId, true], [inactiveBundleId, false]].sort());
   // An automation that selected either inactive source launches with nothing.
   for (const profileId of [serverOff, profileOff]) {
@@ -181,8 +181,8 @@ for (const disabledFirst of [true, false]) {
     const library = await store.readLibrary('1');
     assert.equal(library.skills.length, 1);
     assert.deepEqual({ enabled: library.skills[0].enabled, repositories: library.skills[0].repositories, agents: library.skills[0].agents }, { enabled: true, repositories: ['team/private'], agents: ['claude-main'] });
-    assert.deepEqual(await store.legacyProfileExtensions(active), { servers: [], skills: [bundleId] });
-    assert.deepEqual(await store.legacyProfileExtensions(inactive), { servers: [], skills: [] });
+    assert.deepEqual(await store.legacyProfileExtensions(active), { revision: 1, servers: [], skills: [bundleId] });
+    assert.deepEqual(await store.legacyProfileExtensions(inactive), { revision: 1, servers: [], skills: [] });
     // The enabled profile's automation adds the bundle; elsewhere it stays out of limits.
     const { set } = await store.resolveLaunch({ agentAlias: 'codex-main', runtime: 'claude', repositories: ['team/public'], allowWrite: false, additional: { servers: [], skills: [bundleId] } }, false);
     assert.deepEqual(set.skills, []);
@@ -227,6 +227,40 @@ test('nonterminal automation runs keep the extensions their captured definition 
   assert.ok(report.warnings.some(w => w.includes('missing')));
   assert.equal(runs.done, before.done, 'terminal runs are history and stay unchanged');
   assert.equal(runs.new, before.new);
+});
+
+test('a selection of a superseded profile revision never takes the current revision\'s items', async t => {
+  const { database, instanceId, store } = await fixture(t);
+  await database.schema.createTable('agent_runs', c => { c.string('id').primary(); c.string('state'); c.text('definition_snapshot'); });
+  const profileId = await profile(database, instanceId, { name: 'Docs', servers: [docs({ authentication: 'none' })] });
+  // Revision 2 adds a write server that no revision 1 selection authorized.
+  const current = JSON.parse((await database('extension_profile_revisions').where({ profile_id: profileId, revision: 1 }).first()).snapshot);
+  const revision2 = { ...current, revision: 2, mcpServers: [...current.mcpServers, docs({ name: 'deploy', authentication: 'none', capability: 'write', url: 'https://8.8.4.4/mcp' })] };
+  await database('extension_profile_revisions').insert({ profile_id: profileId, revision: 2, snapshot: JSON.stringify(revision2), secrets_encrypted: '' });
+  await database('extension_profiles').where({ id: profileId }).update({ revision: 2 });
+  const pick = (revision: number) => ({ instanceId, profileId, revision });
+  await database('agent_definitions').insert([
+    { id: 'stale', name: 'Stale', extension_profile: JSON.stringify(pick(1)) },
+    { id: 'current', name: 'Current', extension_profile: JSON.stringify(pick(2)) },
+  ]);
+  await database('agent_runs').insert([
+    { id: 'stale-run', state: 'queued', definition_snapshot: JSON.stringify({ id: 'stale', extensionProfile: pick(1) }) },
+    { id: 'current-run', state: 'queued', definition_snapshot: JSON.stringify({ id: 'current', extensionProfile: pick(2) }) },
+  ]);
+  const report = await migrateExtensionProfilesToLibrary(database, environment, quiet);
+  assert.equal(report.migrated, true);
+  // The mapping records the migrated revision, so queued submissions can tell theirs apart.
+  assert.deepEqual(await store.legacyProfileExtensions(profileId), { revision: 2, servers: ['deploy', 'docs'], skills: [] });
+  const definitions = Object.fromEntries((await database('agent_definitions')).map(r => [r.id, JSON.parse(r.extensions)]));
+  assert.deepEqual(definitions.current, { servers: ['deploy', 'docs'], skills: [] });
+  assert.deepEqual(definitions.stale, { servers: [], skills: [] });
+  const runs = Object.fromEntries((await database('agent_runs')).map(r => [r.id, JSON.parse(r.definition_snapshot).extensions]));
+  assert.deepEqual(runs['current-run'], { servers: ['deploy', 'docs'], skills: [] });
+  assert.deepEqual(runs['stale-run'], { servers: [], skills: [] });
+  assert.equal(report.warnings.filter(w => w.includes('superseded revision')).length, 2, report.warnings.join('\n'));
+  // A snapshot read before the migration settled translates the same way at launch.
+  assert.deepEqual(await legacySnapshotExtensions(pick(1), database), { servers: [], skills: [] });
+  assert.deepEqual(await legacySnapshotExtensions(pick(2), database), { servers: ['deploy', 'docs'], skills: [] });
 });
 
 test('profiles holding more distinct servers than the library are not migrated lossily and stay retryable', async t => {

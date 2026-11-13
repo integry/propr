@@ -124,11 +124,15 @@ export class ExtensionLibraryStore {
     const missingSkills = extensions.skills.filter(id => !snapshot.skills.some(s => s.bundleId === id));
     if (missingServers.length || missingSkills.length) throw new ExtensionError(400, `Extension library items not found: ${[...missingServers, ...missingSkills].join(', ')}`);
   }
-  /** Migrated item names of a removed profile, for queued submissions that still carry it. */
-  async legacyProfileExtensions(profileId: string, database: Knex = this.database): Promise<AutomationExtensions | null> {
+  /**
+   * Migrated item names of a removed profile, for queued submissions that
+   * still carry it, with the profile revision they were migrated from (null
+   * when unrecorded). The items are only those of that revision.
+   */
+  async legacyProfileExtensions(profileId: string, database: Knex = this.database): Promise<(AutomationExtensions & { revision: number | null }) | null> {
     if (!await database.schema.hasTable('extension_legacy_profile_items')) return null;
     const row = await database('extension_legacy_profile_items').where({ profile_id: profileId }).first();
-    return row ? { servers: JSON.parse(row.servers), skills: JSON.parse(row.skills) } : null;
+    return row ? { revision: row.revision ?? null, servers: JSON.parse(row.servers), skills: JSON.parse(row.skills) } : null;
   }
 
   /** Validate public fields, endpoints and catalog identities of enabled servers before any write. */

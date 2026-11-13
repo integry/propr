@@ -29,7 +29,7 @@ export async function extensionLaunchIntegrationFixture() {
   /** A pre-library profile selection whose legacy mapping names the migrated item. */
   const legacyProfileId = '00000000-0000-4000-8000-000000000001';
   const selection = { instanceId: await store.instanceId(), profileId: legacyProfileId, revision: 1 };
-  await database('extension_legacy_profile_items').insert({ profile_id: legacyProfileId, servers: JSON.stringify(['docs']), skills: '[]' });
+  await database('extension_legacy_profile_items').insert({ profile_id: legacyProfileId, revision: selection.revision, servers: JSON.stringify(['docs']), skills: '[]' });
   let captures = 0;
   return {
     selection,

@@ -79,9 +79,10 @@ export async function sealSubmissionExtensions(database: Knex, row: TaskSubmissi
  * Extension authority of a queued submission recorded before profiles were
  * replaced by the extension library. Only the submission's initial task uses
  * it: the old profile maps to its migrated library items, added explicitly
- * (no auto-applied items). New submissions no longer carry a selection.
+ * (no auto-applied items), only when the submission selected the migrated
+ * revision; a superseded selection is refused, as it was at launch before.
+ * New submissions no longer carry a selection.
  */
- 
 export async function submissionExtensionsForRun(row: TaskSubmission | undefined, run: { taskId: string; agentAlias: string; model: string; repository: string; issueNumber: number }, environment: NodeJS.ProcessEnv = process.env, database: Knex = db): Promise<{ extensions?: AgentExtensionRequest }> {
   if (!row) return {};
   const payload = JSON.parse(row.payload) as SubmissionPayload;
@@ -100,6 +101,9 @@ export async function submissionExtensionsForRun(row: TaskSubmission | undefined
     items = await store.legacyProfileExtensions(payload.extensionProfile.profileId);
   }
   if (!items) return {};
+  // The sealed payload authorized this exact revision; the mapping holds the migrated
+  // revision's items. Never give the task another revision's extensions.
+  if (items.revision !== payload.extensionProfile.revision) throw new Error(`This submission selected revision ${payload.extensionProfile.revision} of its extension profile, which was superseded before the upgrade to the extension library; its extensions are never taken from another revision, so submit the task again`);
   return { extensions: { autoApply: false, servers: items.servers, skills: items.skills, repositories: [row.repository], allowWrite: authorization.allowWrite === 'true' && payload.extensionAllowWrite === true } };
 }
 

@@ -189,6 +189,13 @@ safe to re-run, and never blocks startup):
   renamed) items explicitly, so it launches with the same servers and skills.
 - Queued New Task submissions that carried such a selection keep it for their
   initial task through a small legacy mapping to the migrated item names.
+  Re-sending such a submission with its original idempotency key still returns
+  its receipt.
+- The copy uses each bundle's current revision. A selection of an older revision
+  (an automation, a queued automation run, or a queued submission saved before
+  the bundle was last edited) never receives the current revision's items, since
+  they were never authorized for it. An automation or run adds no items, and a
+  warning is logged. A submission's task is refused, as it was before the upgrade.
 - Bearer tokens are re-sealed to the library. A token that cannot be decrypted
   (for example under a different encryption root) leaves the item with its secret
   marked not configured and logs a warning; replace it in Settings.

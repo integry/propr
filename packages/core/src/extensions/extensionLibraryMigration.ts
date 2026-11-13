@@ -29,7 +29,11 @@ import { libraryIdentity } from './extensionProfileStore.js';
  *   of it is left out of that profile's mapping;
  * - automations that selected a profile add its (possibly renamed) items, and
  *   so do the definition snapshots of their nonterminal runs;
- * - each profile id maps to its item names for queued New Task submissions;
+ * - each profile id maps to its item names for queued New Task submissions,
+ *   recorded with the profile revision migrated. A selection (submission,
+ *   automation or run snapshot) of a superseded revision never takes the
+ *   current revision's items: it adds none and logs a warning, or, for a
+ *   queued submission, its task is refused as it was at launch before;
  * - Bearer tokens are re-bound to the library revision; an undecryptable
  *   credential leaves the item without one and logs a warning.
  * Profile tables are left untouched. A migration that would not fit the
@@ -117,16 +121,22 @@ export async function storedLegacyDefinitionExtensions(id: string, database: Kne
   try { if (!JSON.parse(row.extension_profile)?.profileId) return undefined; } catch { return undefined; }
   return { extensions: row.extensions ?? null };
 }
+/** The migrated items of a legacy selection: only when it selected the revision migrated. */
+function selectedRevisionItems(selection: unknown, mapped: { revision: number | null; items: { servers: string[]; skills: string[] } } | undefined) {
+  const revision = (selection as { revision?: unknown } | null)?.revision;
+  return mapped && mapped.revision !== null && mapped.revision === revision ? mapped.items : undefined;
+}
 /**
  * The translated selection of a run snapshot captured before the upgrade,
  * once the migration has settled: the same legacy mapping the migration wrote
- * into the stored snapshot (an unavailable profile adds nothing).
+ * into the stored snapshot (an unavailable profile or superseded revision adds nothing).
  */
 export async function legacySnapshotExtensions(selection: unknown, database: Knex): Promise<{ servers: string[]; skills: string[] }> {
   const profileId = (selection as { profileId?: unknown } | null)?.profileId;
   if (typeof profileId !== 'string' || !await database.schema.hasTable('extension_legacy_profile_items')) return { servers: [], skills: [] };
-  const row = await database('extension_legacy_profile_items').where({ profile_id: profileId }).first('servers', 'skills');
-  return row ? { servers: JSON.parse(row.servers), skills: JSON.parse(row.skills) } : { servers: [], skills: [] };
+  const row = await database('extension_legacy_profile_items').where({ profile_id: profileId }).first('revision', 'servers', 'skills');
+  const mapped = row ? { revision: row.revision ?? null, items: { servers: JSON.parse(row.servers), skills: JSON.parse(row.skills) } } : undefined;
+  return selectedRevisionItems(selection, mapped) ?? { servers: [], skills: [] };
 }
 /** Retry the startup migration now when it has not completed; true once it has settled. */
 export async function ensureExtensionLibraryMigrated(database: Knex, environment: NodeJS.ProcessEnv = process.env, log: Log = defaultLogger): Promise<boolean> {
@@ -171,7 +181,7 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
       const taken = new Set((head?.servers ?? []).map(s => s.name));
       const candidates = new Map<string, Candidate>(); const byIdentity = new Map<string, string>();
       const skills = new Map<string, { enabled: boolean; repositories: string[] | null; agents: string[] | null }>();
-      const mapping = new Map<string, { servers: string[]; skills: string[] }>();
+      const mapping = new Map<string, { servers: string[]; skills: string[] }>(); const migratedRevisions = new Map<string, number>();
       // Skills a disabled profile selected: kept in its mapping only if the merged item stays disabled.
       const inactiveSkills = new Map<string, Set<string>>();
       for (const profile of profiles) {
@@ -206,7 +216,7 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
           items.skills.push(bundleId);
           if (!enabled) inactiveSkills.set(profile.profileId, (inactiveSkills.get(profile.profileId) ?? new Set()).add(bundleId));
         }
-        mapping.set(profile.profileId, items);
+        mapping.set(profile.profileId, items); migratedRevisions.set(profile.profileId, profile.revision);
       }
       const servers: ExtensionLibraryServer[] = [...(head?.servers ?? [])];
       const secrets: Record<string, string> = { ...headSecrets };
@@ -264,15 +274,22 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
         const inactive = inactiveSkills.get(profileId);
         const kept = { servers: items.servers.filter(n => keptServers.has(n)), skills: items.skills.filter(id => keptSkills.has(id) && !(inactive?.has(id) && activeSkills.has(id))) };
         mapping.set(profileId, kept);
-        await trx('extension_legacy_profile_items').insert({ profile_id: profileId, servers: JSON.stringify(kept.servers), skills: JSON.stringify(kept.skills) }).onConflict('profile_id').ignore();
+        await trx('extension_legacy_profile_items').insert({ profile_id: profileId, revision: migratedRevisions.get(profileId), servers: JSON.stringify(kept.servers), skills: JSON.stringify(kept.skills) }).onConflict('profile_id').ignore();
       }
+      // A selection maps to the migrated items only if it selected the migrated revision.
+      const translate = (selection: unknown, subject: string) => {
+        const profileId = (selection as { profileId?: unknown } | null)?.profileId;
+        const items = typeof profileId === 'string' ? mapping.get(profileId) : undefined;
+        const selected = items ? selectedRevisionItems(selection, { revision: migratedRevisions.get(profileId as string) ?? null, items }) : undefined;
+        if (!items) report.warnings.push(`${subject} selected an unavailable extension profile; it now adds no extensions`);
+        else if (!selected) report.warnings.push(`${subject} selected a superseded revision of extension profile ${profileId as string}; it now adds no extensions rather than the current revision's`);
+        return selected ?? { servers: [], skills: [] };
+      };
       if (await trx.schema.hasTable('agent_definitions') && await trx.schema.hasColumn('agent_definitions', 'extension_profile') && await trx.schema.hasColumn('agent_definitions', 'extensions')) {
         const automations = await trx('agent_definitions').whereNotNull('extension_profile').whereNull('extensions').select('id', 'extension_profile');
         for (const automation of automations) {
-          let profileId: string | undefined; try { profileId = JSON.parse(automation.extension_profile)?.profileId; } catch { /* unreadable selection */ }
-          const items = profileId ? mapping.get(profileId) : undefined;
-          if (!items) report.warnings.push(`Automation ${automation.id} selected an unavailable extension profile; it now adds no extensions`);
-          await trx('agent_definitions').where({ id: automation.id }).update({ extensions: JSON.stringify(items ?? { servers: [], skills: [] }) });
+          let selection: unknown; try { selection = JSON.parse(automation.extension_profile); } catch { /* unreadable selection */ }
+          await trx('agent_definitions').where({ id: automation.id }).update({ extensions: JSON.stringify(translate(selection, `Automation ${automation.id}`)) });
           report.automations += 1;
         }
       }
@@ -282,10 +299,7 @@ export async function migrateExtensionProfilesToLibrary(database: Knex, environm
         for (const run of runs) {
           let snapshot: Record<string, unknown>; try { snapshot = JSON.parse(run.definition_snapshot); } catch { continue; }
           if (!snapshot || typeof snapshot !== 'object' || !snapshot.extensionProfile || snapshot.extensions) continue;
-          const profileId = (snapshot.extensionProfile as { profileId?: unknown }).profileId;
-          const items = typeof profileId === 'string' ? mapping.get(profileId) : undefined;
-          if (!items) report.warnings.push(`Automation run ${run.id} selected an unavailable extension profile; it now adds no extensions`);
-          await trx('agent_runs').where({ id: run.id }).update({ definition_snapshot: JSON.stringify({ ...snapshot, extensions: items ?? { servers: [], skills: [] } }) });
+          await trx('agent_runs').where({ id: run.id }).update({ definition_snapshot: JSON.stringify({ ...snapshot, extensions: translate(snapshot.extensionProfile, `Automation run ${run.id}`) }) });
         }
       }
       report.migrated = true;

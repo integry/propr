@@ -371,10 +371,10 @@ test('a queued legacy profile submission keeps its write choice and migrated ite
   const db = await fixture();
   const { sealSubmissionExtensions, submissionExtensionsForRun } = await import('../../core/src/services/taskSubmissionService.js');
   await db.schema.alterTable('task_submissions', t => t.text('extension_authorization'));
-  await db.schema.createTable('extension_legacy_profile_items', t => { t.string('profile_id').primary(); t.text('servers'); t.text('skills'); });
+  await db.schema.createTable('extension_legacy_profile_items', t => { t.string('profile_id').primary(); t.integer('revision'); t.text('servers'); t.text('skills'); });
   const environment = { SYSTEM_TASK_SECRET: 'synthetic-submission-integrity-key' };
   const selection = { instanceId: randomUUID(), profileId: randomUUID(), revision: 1 };
-  await db('extension_legacy_profile_items').insert({ profile_id: selection.profileId, servers: JSON.stringify(['docs']), skills: '[]' });
+  await db('extension_legacy_profile_items').insert({ profile_id: selection.profileId, revision: 1, servers: JSON.stringify(['docs']), skills: '[]' });
   const run = { taskId: 'initial', agentAlias: 'claude', model: 'model', repository: 'owner/repo', issueNumber: 42 };
   const resolve = (row: unknown, target = run) => submissionExtensionsForRun(row as never, target, environment, db);
   try {
@@ -397,6 +397,17 @@ test('a queued legacy profile submission keeps its write choice and migrated ite
     await sealSubmissionExtensions(db, unmapped, environment);
     await db('task_submissions').where({ id: unmapped.id }).update({ task_id: run.taskId, latest_task_id: run.taskId, issue_number: run.issueNumber, state: 'queued' });
     assert.deepEqual(await resolve(await db('task_submissions').where({ id: unmapped.id }).first()), {});
+    // A submission sealed for revision 1 never receives the items migrated from a later revision.
+    await db('task_submissions').where({ id: unmapped.id }).delete();
+    const superseded = { ...selection, profileId: randomUUID() };
+    await db('extension_legacy_profile_items').insert({ profile_id: superseded.profileId, revision: 2, servers: JSON.stringify(['docs', 'deploy']), skills: '[]' });
+    const stale = await insertTaskSubmission(db, { user_id: '1', submission_key: randomUUID(), payload_hash: randomUUID(), repository: run.repository, attachments: '[]', payload: JSON.stringify({ instruction: 'Fix it', agentAlias: run.agentAlias, model: run.model, extensionProfile: superseded, extensionAllowWrite: true }) });
+    await sealSubmissionExtensions(db, stale, environment);
+    await db('task_submissions').where({ id: stale.id }).update({ task_id: run.taskId, latest_task_id: run.taskId, issue_number: run.issueNumber, state: 'queued' });
+    await assert.rejects(resolve(await db('task_submissions').where({ id: stale.id }).first()), /revision 1 .*superseded/);
+    // So does one whose mapping recorded no revision.
+    await db('extension_legacy_profile_items').where({ profile_id: superseded.profileId }).update({ revision: null });
+    await assert.rejects(resolve(await db('task_submissions').where({ id: stale.id }).first()), /superseded/);
   } finally { await db.destroy(); }
 });
 
@@ -429,6 +440,50 @@ test('new submissions can no longer select an extension profile', async () => {
     assert.equal(res.state.status, 400); assert.match(String(res.state.body.error), /extension library/);
     assert.equal(sideEffects, 0); assert.equal((await db('task_submissions')).length, 0);
   } finally { await db.destroy(); }
+});
+
+test('an exact replay of a submission accepted with a profile selection before the upgrade recovers its receipt', async t => {
+  const db = await fixture(); t.after(() => db.destroy());
+  const previous = process.env.SYSTEM_TASK_SECRET; process.env.SYSTEM_TASK_SECRET = 'synthetic-api-submission-key';
+  t.after(() => { if (previous === undefined) delete process.env.SYSTEM_TASK_SECRET; else process.env.SYSTEM_TASK_SECRET = previous; });
+  await db.schema.alterTable('task_submissions', c => c.text('extension_authorization'));
+  await db.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
+  await db('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
+  let created = 0;
+  const routes = createTaskSubmissionRoutes({ db, services: {
+    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
+    routing: async () => { created++; return { agentAlias: 'claude', model: 'model', routingLabel: 'route', runtime: 'claude' }; },
+    getOctokit: async () => ({ request: async (route: string) => assert.fail(`Unexpected GitHub call for a queued submission: ${route}`) }) as never,
+    processingLabels: async () => ['AI'], enqueue: async () => {},
+  } });
+  const extensionProfile = { instanceId: randomUUID(), profileId: randomUUID(), revision: 1 };
+  const body = { repository: 'owner/repo', instruction: 'Use tools', extensionProfile, extensionAllowWrite: true };
+  // The identity the server recorded for this request before the upgrade.
+  const payloadHash = createHash('sha256').update(JSON.stringify({ repository: 'owner/repo', instruction: 'Use tools', extensionProfile, extensionAllowWrite: true, agentAlias: '', model: '', todoIds: [], files: [] })).digest('hex');
+  const submit = async (userId: string, key: string, payload: unknown = body, preflight = true) => {
+    const req = request(payload, key, { id: userId, username: 'admin' });
+    req.get = ((name: string) => name === 'X-ProPR-Extensions' ? (preflight ? '1' : undefined) : key) as Request['get'];
+    const res = response(); await routes.submit(req, res.res); return res.state;
+  };
+  for (const userId of ['1', '2']) {
+    const key = randomUUID();
+    const row = await insertTaskSubmission(db, { user_id: userId, submission_key: key, payload_hash: payloadHash, repository: 'owner/repo', attachments: '[]', payload: JSON.stringify({ instruction: 'Use tools', agentAlias: 'claude', model: 'model', routingLabel: 'route', trigger: 'AI', username: 'admin', extensionProfile, extensionAllowWrite: true }) });
+    await db('task_submissions').where({ id: row.id }).update({ state: 'queued', issue_number: 6 + Number(userId), issue_url: `https://github.com/owner/repo/issues/${6 + Number(userId)}`, task_id: 'task', latest_task_id: 'task', dispatch_complete: true });
+    // The replay keeps the guards it was accepted under: the preflight header and a durable
+    // administrator. The route reports their 403 as an inaccessible repository, as before.
+    const sealed = async () => (await db('task_submissions').where({ id: row.id }).first()).extension_authorization;
+    assert.equal((await submit(userId, key, body, false)).status, 404); assert.equal(await sealed(), null);
+    const replay = await submit(userId, key);
+    if (userId === '2') { assert.equal(replay.status, 404); assert.equal(await sealed(), null); continue; }
+    assert.equal(replay.status, 200); assert.equal(replay.body.issueNumber, 7); assert.equal(replay.body.taskId, 'task');
+    assert.ok(await sealed(), 'the replay seals the authority it was accepted with');
+    // A modified payload under the same key is still a different submission.
+    assert.equal((await submit(userId, key, { repository: 'owner/repo', instruction: 'Use tools' })).status, 409);
+  }
+  // Without an existing submission a profile selection is refused, as before.
+  const fresh = await submit('1', randomUUID());
+  assert.equal(fresh.status, 400); assert.match(String(fresh.body.error), /extension library/);
+  assert.equal(created, 0); assert.equal((await db('task_submissions')).length, 2);
 });
 
 test('a prepared legacy profile submission is refused locally on an unsupported runtime and still reconciles', async t => {

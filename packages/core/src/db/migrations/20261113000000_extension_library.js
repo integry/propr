@@ -22,9 +22,14 @@ export async function up(knex) {
   }
   if (!await knex.schema.hasTable('extension_legacy_profile_items')) {
     // Old profile id -> migrated library item names, for queued New Task submissions.
+    // The items are those of the profile revision migrated (`revision`); a
+    // selection of any other revision never maps to them.
     await knex.schema.createTable('extension_legacy_profile_items', t => {
-      t.uuid('profile_id').primary(); t.text('servers').notNullable(); t.text('skills').notNullable();
+      t.uuid('profile_id').primary(); t.integer('revision'); t.text('servers').notNullable(); t.text('skills').notNullable();
     });
+  } else if (!await knex.schema.hasColumn('extension_legacy_profile_items', 'revision')) {
+    // A mapping without a revision matches no selection.
+    await knex.schema.alterTable('extension_legacy_profile_items', t => { t.integer('revision'); });
   }
   if (!await knex.schema.hasTable('extension_library_migration')) {
     await knex.schema.createTable('extension_library_migration', t => {

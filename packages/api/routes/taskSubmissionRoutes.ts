@@ -1,6 +1,6 @@
 import { sealSubmissionExtensions } from '../../core/src/services/taskSubmissionService.js';
 import { reconcileSubmissionIntake, type SubmissionIntakeEvidence } from '../../core/src/services/taskSubmissionIntake.js';
-import { ExtensionError } from '../../core/src/extensions/extensionProfileStore.js';
+import { ExtensionError, ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'fs-extra';
 import path from 'node:path';
@@ -356,6 +356,18 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
     if (await handleGitHubRepositoryAccessError(req, res, error)) return;
     res.status((error as { status?: number }).status || 500).json({ error: (error as Error).message });
   };
+  /**
+   * Extension profiles were replaced by the instance extension library, so
+   * only an exact replay of a submission accepted before the upgrade may still
+   * carry a selection; its receipt stays recoverable under its original key.
+   * The replay keeps the guards it was accepted under, as it may still seal
+   * the submission's extension authority.
+   */
+  const legacyExtensionReplay = async (req: Request, row: TaskSubmission | undefined) => {
+    if (!row) throw Object.assign(new Error('Extension profiles were replaced by the extension library; submit without extensionProfile'), { status: 400 });
+    if (req.get('X-ProPR-Extensions') !== '1') throw Object.assign(new Error('Extension selection requires a preflight-protected request'), { status: 403 });
+    await new ExtensionLibraryStore(db).authorize(String(req.user!.id));
+  };
   const submit = async (req: Request, res: Response) => {
     const files = (Array.isArray(req.files) ? req.files : []) as MulterFile[];
     try {
@@ -364,11 +376,10 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       const { body, key } = parseSubmissionRequest(req);
       const repository = body.repository.toLowerCase();
       const config = await checkAccess(req, repository);
-      // Extension profiles were replaced by the instance extension library.
-      if (body.extensionProfile) throw Object.assign(new Error('Extension profiles were replaced by the extension library; submit without extensionProfile'), { status: 400 });
       const payloadHash = fingerprint({ repository, instruction: body.instruction, ...(body.extensionProfile ? { extensionProfile: body.extensionProfile, extensionAllowWrite: body.extensionAllowWrite === true } : {}), agentAlias: body.agentAlias || '', model: body.model || '', todoIds: body.todoIds || [], files: await goalUploadIdentity(files), ...submissionAutomation(body), ...submissionBudget(body) });
       let row = await db<TaskSubmission>('task_submissions').where({ user_id: String(req.user!.id), submission_key: key }).first();
       if (row && row.payload_hash !== payloadHash) { res.status(409).json({ error: 'Submission identity was already used with different content' }); return; }
+      if (body.extensionProfile) await legacyExtensionReplay(req, row);
       if (!row) {
         const { agentAlias, model, routingLabel } = await resolveRouting(body);
         const selection = { agentAlias, model, routingLabel };
