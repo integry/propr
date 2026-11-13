@@ -8,10 +8,12 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
+import type { Redis } from 'ioredis';
 import type { SyntheticAgentConfig } from '@propr/shared';
 import { SyntheticRoutingService } from '../src/services/syntheticRoutingService.js';
 import { SyntheticAgent } from '../src/agents/SyntheticAgent.js';
-import { AgentCapacityError, isAgentCapacityError, runWithAgentCapacityContext, agentCapacityPins } from '../src/agents/agentCapacity.js';
+import { AgentCapacityError, agentAliasHasCapacity, isAgentCapacityError, runWithAgentCapacityContext, agentCapacityPins } from '../src/agents/agentCapacity.js';
+import { AgentAdmissionNestingError, runWithAgentAdmissionParent } from '../src/agents/agentRunNesting.js';
 import type { Agent, AgentConfig, AgentExecutionResult, AgentTaskOptions, AnalysisResult } from '../src/agents/types.js';
 import { db as globalDatabase } from '../src/db/connection.js';
 import { up as createSyntheticRoutingCursors } from '../src/db/migrations/20260830000000_create_synthetic_routing_cursors.js';
@@ -85,6 +87,60 @@ afterEach(async () => { await Promise.all(databases.map(value => value.destroy()
 after(async () => { await globalDatabase.destroy(); });
 
 describe('synthetic selection with per-agent capacity', () => {
+    // Exercise the production capacity callback with an occupancy snapshot: beta
+    // is saturated and inspected first; alpha is either the parent or a free peer.
+    function nestedRouter(db: Knex, parentAlias: string, alphaFull: boolean, strategy: 'round_robin' | 'usage_based') {
+        const config = pool(strategy);
+        config.models[0].members.reverse();
+        const agents = new Map(['alpha', 'beta', 'gamma'].map(alias => [alias, direct(alias)]));
+        const capacityChecks: string[] = [];
+        const client = { eval: async () => [0, parentAlias, 'beta', 1, 0, 'alpha', Number(alphaFull), 0] } as unknown as Redis;
+        const service = new SyntheticRoutingService({
+            database: db, loadSyntheticConfigs: async () => [config], getDirectAgent: alias => agents.get(alias),
+            usageSnapshotProvider: { getSnapshot: async () => null },
+            aliasCapacity: async alias => {
+                capacityChecks.push(alias);
+                return agentAliasHasCapacity(alias, { client, config: { instance: 'nested-selection', limit: 3, aliasLimits: { alpha: 1, beta: 1, gamma: 1 } } });
+            },
+        });
+        return { service, capacityChecks };
+    }
+
+    for (const strategy of ['round_robin', 'usage_based'] as const) {
+        test(`${strategy}: nesting skips a refused member for the parent alias or a free same-tier peer`, async () => {
+            for (const parentAlias of ['alpha', 'gamma']) {
+                for (const deferOnCapacity of [false, true]) {
+                    for (const pinnedMemberId of [undefined, MEMBER_A, MEMBER_B]) {
+                        const db = await database();
+                        const { service, capacityChecks } = nestedRouter(db, parentAlias, parentAlias === 'alpha', strategy);
+                        const session = service.begin({ requestedAgentAlias: 'pool', requestedModel: 'smart', deferOnCapacity, pinnedMemberId });
+                        const selection = await runWithAgentAdmissionParent('goal:parent', () => session.select());
+                        assert.equal(selection.physicalAgentAlias, 'alpha');
+                        assert.deepEqual(capacityChecks, ['beta', 'alpha'], 'checks the rest of the tier after the nesting refusal');
+                        assert.equal(await cursor(db), !pinnedMemberId && strategy === 'round_robin' ? 1 : 0);
+                        assert.equal(session.failureReason(MEMBER_B), undefined, 'unavailability is not a failed attempt');
+                        assert.deepEqual(await db('task_history'), []);
+                    }
+                }
+            }
+        });
+
+        test(`${strategy}: an entirely saturated cross-alias tier refuses nesting without deferral or a lower-tier route`, async () => {
+            for (const deferOnCapacity of [false, true]) {
+                for (const pinnedMemberId of [undefined, MEMBER_A, MEMBER_B]) {
+                    const db = await database();
+                    const { service, capacityChecks } = nestedRouter(db, 'gamma', true, strategy);
+                    const session = service.begin({ requestedAgentAlias: 'pool', requestedModel: 'smart', deferOnCapacity, pinnedMemberId });
+                    await assert.rejects(runWithAgentAdmissionParent('goal:parent', () => session.select()),
+                        (error: unknown) => error instanceof AgentAdmissionNestingError && error.reason === 'alias');
+                    assert.deepEqual(capacityChecks, ['beta', 'alpha'], 'never checks the free parent in a lower tier');
+                    assert.equal(await cursor(db), 0);
+                    assert.deepEqual(await db('task_history'), []);
+                }
+            }
+        });
+    }
+
     test('a saturated member is skipped for another member of the same tier, without a failed attempt', async () => {
         const db = await database();
         const { service } = router(db, new Set(['alpha']));

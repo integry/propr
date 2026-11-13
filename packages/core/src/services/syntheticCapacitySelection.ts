@@ -1,5 +1,6 @@
 import type { SyntheticModelMember } from '@propr/shared';
 import { AgentCapacityError } from '../agents/agentCapacity.js';
+import type { AgentAdmissionNestingError } from '../agents/agentRunNesting.js';
 
 export interface CapacityCandidate {
   member: SyntheticModelMember;
@@ -12,7 +13,9 @@ export interface CapacityCandidate {
  * whose direct alias is at its per-agent ceiling is only skipped for another
  * member of the same tier with room. With no such member a deferrable
  * selection throws AgentCapacityError; otherwise the usual choice is kept and
- * waits at admission. A pinned member (an earlier pre-check's choice) is
+ * waits at admission. A cross-alias nesting refusal only excludes that member;
+ * if no member has room, the nesting refusal is propagated without deferral.
+ * A pinned member (an earlier pre-check's choice) is
  * reused without advancing the round-robin cursor.
  */
 export async function chooseMemberWithCapacity<T extends CapacityCandidate>(options: {
@@ -27,9 +30,20 @@ export async function chooseMemberWithCapacity<T extends CapacityCandidate>(opti
 }): Promise<{ chosen: T; selectionReason: string }> {
   const { eligible, tier, highestPriority } = options;
   const capacity = new Map<string, boolean>();
+  let nestingRefusal: AgentAdmissionNestingError | undefined;
   const hasCapacity = async (item: T) => {
     const alias = item.member.directAgentAlias;
-    if (!capacity.has(alias)) capacity.set(alias, await options.aliasCapacity(alias));
+    if (!capacity.has(alias)) {
+      try {
+        capacity.set(alias, await options.aliasCapacity(alias));
+      } catch (error) {
+        // Match by name across module graphs, as the capacity pre-check does.
+        const refusal = error as AgentAdmissionNestingError | null;
+        if (refusal?.name !== 'AgentAdmissionNestingError' || refusal.reason !== 'alias') throw error;
+        nestingRefusal ??= refusal;
+        capacity.set(alias, false);
+      }
+    }
     return capacity.get(alias)!;
   };
   const refusal = (members: T[]) => new AgentCapacityError([...new Set(members.map(item => item.member.directAgentAlias))]);
@@ -37,6 +51,7 @@ export async function chooseMemberWithCapacity<T extends CapacityCandidate>(opti
   const pinnedTier = pinned ? eligible.filter(item => item.member.priority === pinned.member.priority) : tier;
   const withRoom: T[] = [];
   for (const item of pinnedTier) if (await hasCapacity(item)) withRoom.push(item);
+  if (withRoom.length === 0 && nestingRefusal) throw nestingRefusal;
   if (pinned) {
     const reason = `pinned: member selected before deferral (priority ${pinned.member.priority})`;
     if (withRoom.includes(pinned)) return { chosen: pinned, selectionReason: reason };
