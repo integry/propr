@@ -15,14 +15,36 @@ export const PLUGIN_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export type PluginSettingValue = string | number | boolean | string[] | Record<string, string>;
 export type PluginSettingValues = Record<string, PluginSettingValue>;
 
-/** `connected` once a token or signing secret is stored. OAuth connections report `not_connected` until OAuth sign-in for plugins lands. */
-export type PluginConnectionState = 'connected' | 'not_connected';
+/**
+ * `connected` once a token or signing secret is stored. An `oauth` connection
+ * is `connected` once every managed server that uses it is signed in through
+ * the extension OAuth sign-in, and `needs_sign_in` when a refresh failed.
+ */
+export type PluginConnectionState = 'connected' | 'not_connected' | 'needs_sign_in';
 export interface PluginConnectionStatus {
   name: string; type: PluginConnectionType; label: string;
   state: PluginConnectionState;
   /** A `token` connection a contributed MCP server uses; enabling waits for it. */
   required: boolean;
+  /** Who set the value and when; for an `oauth` connection, who configured its pre-registered client. */
   setBy?: string; setAt?: number;
+}
+
+/** The extension library route that lists and edits managed items. */
+export const PLUGIN_LIBRARY_HREF = '/api/instance/extensions/v1' as const;
+/** The automation template catalog route. */
+export const PLUGIN_TEMPLATE_CATALOG_HREF = '/api/automation-definitions/templates' as const;
+/**
+ * What an installed plugin added: its managed library items (with their
+ * library reference) and its automation templates. `active` is true while
+ * the item can apply to runs as far as the plugin is concerned (the plugin is
+ * enabled and nothing awaits an acknowledgement); the item's own enabled
+ * switch and limits still apply.
+ */
+export interface PluginContributionViews {
+  mcpServers: { name: string; kind: 'https' | 'package'; managed: { kind: 'server'; name: string; enabled: boolean; active: boolean } | null; href: string }[];
+  skills: { name: string; managed: { kind: 'skill'; bundleId: string; enabled: boolean; active: boolean } | null; href: string }[];
+  automationTemplates: { id: string; catalogId: string; available: boolean; href: string }[];
 }
 
 /** The administrator's acknowledgement that a package server's secret variables are readable inside the task container. */
@@ -56,9 +78,11 @@ export interface PluginView {
   pendingAcknowledgements: PluginPendingAcknowledgement[];
   /** Why enabling is refused right now; empty when the plugin can be enabled. */
   enableBlockers: string[];
+  /** Managed library items and templates; items are null until the plugin is installed. */
+  contributions?: PluginContributionViews;
 }
 export interface PluginAuditEvent { action: PluginAuditAction; actor: string; at: number; detail: Record<string, unknown> }
-export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall'] as const;
+export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client'] as const;
 export type PluginAuditAction = typeof PLUGIN_AUDIT_ACTIONS[number];
 export interface PluginDetail extends PluginView { audit: PluginAuditEvent[] }
 

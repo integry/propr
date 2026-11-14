@@ -45,7 +45,7 @@ export function ExtensionServersList({ state }: { state: ExtensionLibraryState }
             <ExtensionServerForm initial={editing.opened} servers={servers} catalog={state.catalog} secrets={library.secrets} acknowledgements={library.acknowledgements} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />
           </li>
         ) : (
-          <ExtensionItemRow key={server.name} testId="extension-server" name={server.name}
+          <ExtensionItemRow key={server.name} testId="extension-server" managedBy={server.managedBy} name={server.name}
             kind={serverKindLabel(server)} capability={server.capability}
             item={server} enabled={state.shownEnabled(serverRef(server), server.enabled)} pending={state.isPending(serverRef(server))}
             busy={editing !== null} notes={itemNotes(server, { usage: state.usage, choices: state.choices, secrets: library.secrets })}

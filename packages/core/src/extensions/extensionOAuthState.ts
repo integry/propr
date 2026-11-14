@@ -74,6 +74,25 @@ export async function discardStaleOAuthConnections(trx: Knex.Transaction, instan
   return stale;
 }
 
+/**
+ * Inside a change that replaces the OAuth client of `serverNames` (a client
+ * secret rotation keeps everything `connectionBelongsTo` compares): delete
+ * their pending sign-ins, then their connections. The pending rows go first:
+ * a callback still exchanging a code under the old client then finds its
+ * sign-in cancelled, and one that already committed has its connection
+ * deleted by the second statement.
+ */
+export async function discardOAuthConnectionsOf(trx: Knex.Transaction, instanceId: string, serverNames: readonly string[], actor: string): Promise<string[]> {
+  if (!serverNames.length || !await hasOAuthTables(trx)) return [];
+  await trx(OAUTH_PENDING).where({ instance_id: instanceId }).whereIn('server_name', serverNames).delete();
+  const discarded = (await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId }).whereIn('server_name', serverNames).select('server_name')).map(row => row.server_name as string);
+  if (!discarded.length) return [];
+  await trx(OAUTH_CONNECTIONS).where({ instance_id: instanceId }).whereIn('server_name', discarded).delete();
+  const now = Date.now();
+  await trx(OAUTH_AUDIT).insert(discarded.map(name => ({ instance_id: instanceId, server_name: name, action: 'discarded', actor, at: now })));
+  return discarded;
+}
+
 /** The library view with the current connection state of its enabled OAuth servers, for resolution. */
 export async function withOAuthStates<T extends { instanceId: string; servers: ExtensionLibraryServer[] }>(database: Knex, snapshot: T): Promise<T & { oauth: Record<string, ExtensionOAuthConnectionState> }> {
   return { ...snapshot, oauth: await oauthConnectionStates(database, snapshot.instanceId, snapshot.servers.filter(s => s.enabled)) };

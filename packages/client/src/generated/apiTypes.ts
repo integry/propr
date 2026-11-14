@@ -371,7 +371,7 @@ export interface ExtensionItemEnabledRequest {
   enabled: boolean;
 }
 
-/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
+/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active, and for OAuth servers the client registration methods the plugin permits at sign-in); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
 export interface ExtensionLibraryInput {
   version: 1;
   servers: Array<{
@@ -387,6 +387,12 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
   } | {
     kind: "catalog";
     name: string;
@@ -398,6 +404,12 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
   } | {
     name: string;
     enabled: boolean;
@@ -418,14 +430,26 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
   }>;
-  skills: {
+  skills: Array<{
     bundleId: string;
     enabled: boolean;
     repositories: string[];
     agents: string[];
     autoApply: boolean;
-  }[];
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
+  }>;
 }
 
 export interface ExtensionLibraryRead {
@@ -923,10 +947,11 @@ export interface PluginDetailResponse {
       name: string;
       type: "oauth" | "token" | "signing_secret";
       label: string;
-      /** `oauth` connections report not_connected until OAuth sign-in for plugins is available. */
-      state: "connected" | "not_connected";
+      /** An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh. */
+      state: "connected" | "not_connected" | "needs_sign_in";
       /** A `token` connection a contributed MCP server uses; enabling waits for it. */
       required: boolean;
+      /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
       setBy?: string;
       setAt?: number;
     }>;
@@ -941,9 +966,48 @@ export interface PluginDetailResponse {
     }[];
     /** Why enabling is refused right now; empty when it can be enabled. */
     enableBlockers: string[];
+    /** The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed. */
+    contributions?: {
+      mcpServers: Array<{
+        /** The server name in the manifest. */
+        name: string;
+        kind: "https" | "package";
+        managed: {
+          kind: "server";
+          /** The library item name; prefixed with the plugin id after a name collision. */
+          name: string;
+          /** The library item's own enabled switch. */
+          enabled: boolean;
+          /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+          active: boolean;
+        } | null;
+        /** The extension library route that lists and edits the item. */
+        href: string;
+      }>;
+      skills: Array<{
+        name: string;
+        managed: {
+          kind: "skill";
+          bundleId: string;
+          /** The library item's own enabled switch. */
+          enabled: boolean;
+          /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+          active: boolean;
+        } | null;
+        href: string;
+      }>;
+      automationTemplates: {
+        id: string;
+        /** The template id in the automation template catalog. */
+        catalogId: string;
+        /** Listed in the catalog: the plugin is enabled. */
+        available: boolean;
+        href: string;
+      }[];
+    };
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client";
       actor: string;
       at: number;
       detail: {
@@ -953,12 +1017,39 @@ export interface PluginDetailResponse {
   };
 }
 
+export type PluginEmptyRequest = Record<string, never>;
+
 export interface PluginEnabledRequest {
   enabled: boolean;
 }
 
 export interface PluginList {
   plugins: PluginView[];
+}
+
+export interface PluginOAuthClientRequest {
+  /** The pre-registered client, or null to clear it. */
+  client: {
+    /** The client id registered with the provider for this instance. */
+    clientId: string;
+    /** The client secret (write-only); leave out for a public client. */
+    clientSecret?: string | null;
+  } | null;
+}
+
+export interface PluginOAuthCompleteRequest {
+  /** The `state` the provider returned to the redirect URI. */
+  state: string;
+  code?: string;
+  error?: string;
+  iss?: string;
+}
+
+export interface PluginOAuthStartResponse {
+  /** Open this URL to sign in; the provider redirects to the extension OAuth callback. */
+  authorizationUrl: string;
+  /** The managed library server being signed in. */
+  server: string;
 }
 
 export interface PluginRepositoriesRequest {
@@ -1070,10 +1161,11 @@ export interface PluginView {
     name: string;
     type: "oauth" | "token" | "signing_secret";
     label: string;
-    /** `oauth` connections report not_connected until OAuth sign-in for plugins is available. */
-    state: "connected" | "not_connected";
+    /** An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh. */
+    state: "connected" | "not_connected" | "needs_sign_in";
     /** A `token` connection a contributed MCP server uses; enabling waits for it. */
     required: boolean;
+    /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
     setBy?: string;
     setAt?: number;
   }>;
@@ -1088,6 +1180,45 @@ export interface PluginView {
   }[];
   /** Why enabling is refused right now; empty when it can be enabled. */
   enableBlockers: string[];
+  /** The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed. */
+  contributions?: {
+    mcpServers: Array<{
+      /** The server name in the manifest. */
+      name: string;
+      kind: "https" | "package";
+      managed: {
+        kind: "server";
+        /** The library item name; prefixed with the plugin id after a name collision. */
+        name: string;
+        /** The library item's own enabled switch. */
+        enabled: boolean;
+        /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+        active: boolean;
+      } | null;
+      /** The extension library route that lists and edits the item. */
+      href: string;
+    }>;
+    skills: Array<{
+      name: string;
+      managed: {
+        kind: "skill";
+        bundleId: string;
+        /** The library item's own enabled switch. */
+        enabled: boolean;
+        /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+        active: boolean;
+      } | null;
+      href: string;
+    }>;
+    automationTemplates: {
+      id: string;
+      /** The template id in the automation template catalog. */
+      catalogId: string;
+      /** Listed in the catalog: the plugin is enabled. */
+      available: boolean;
+      href: string;
+    }[];
+  };
 }
 
 /** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */

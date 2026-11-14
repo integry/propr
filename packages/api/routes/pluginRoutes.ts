@@ -3,15 +3,18 @@ import { db } from '@propr/core';
 import { PluginError, PluginStore } from '../../core/src/plugins/pluginStore.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
+import { extensionOAuthUrls } from './extensionOAuthRoutes.js';
 
 /**
  * Plugin installation state under `/api/instance/plugins/v1`. Every route,
  * reads included, needs a current durable administrator with
  * `instance.manage_settings`; mutations additionally need the
  * preflight-protected JSON contract (`X-ProPR-Plugins: 1`). Connection
- * secrets are write-only: no response carries them.
+ * secrets are write-only: no response carries them. `oauth` connections are
+ * signed in through the extension OAuth module: the provider redirects to the
+ * extension callback, which completes the sign-in as `oauth/complete` does.
  */
-export function createPluginRoutes(store = new PluginStore(db)) {
+export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env) {
   const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
     // Plugins hold sealed per-installation secrets; the demo explains instead of reading them.
     if (isDemoViewer(req.authorization)) return refuseDemoViewer(req, res, next);
@@ -32,6 +35,7 @@ export function createPluginRoutes(store = new PluginStore(db)) {
     return value as Record<string, unknown>;
   };
   const id = (req: Request) => String(req.params.pluginId);
+  const connection = (req: Request) => String(req.params.connectionName);
   return {
     list: handle(async (_req, actor) => ({ plugins: await store.list(actor) })),
     get: handle(async (req, actor) => ({ plugin: await store.get(actor, id(req)) })),
@@ -44,5 +48,15 @@ export function createPluginRoutes(store = new PluginStore(db)) {
     setEnabled: handle(async (req, actor) => ({ plugin: await store.setEnabled(actor, id(req), body(req, ['enabled']).enabled) })),
     approve: handle(async (req, actor) => ({ plugin: await store.approve(actor, id(req), body(req, ['acknowledgements'], []).acknowledgements) })),
     uninstall: handle(async (req, actor) => ({ plugin: await store.uninstall(actor, id(req), body(req, ['confirm']).confirm) })),
+    /** Start the sign-in of an `oauth` connection, bound to this browser session; returns the provider's authorization URL. */
+    startOAuth: handle(async (req, actor) => { body(req, [], []); return store.startOAuth(actor, id(req), connection(req), req.sessionID, extensionOAuthUrls(environment)); }),
+    /** Complete it with the `state` and `code` the provider returned, in the session that started it. */
+    completeOAuth: handle(async (req, actor) => {
+      const query = body(req, ['state', 'code', 'error', 'iss'], ['state']);
+      return { plugin: await store.completeOAuth(actor, id(req), connection(req), req.sessionID, query) };
+    }),
+    /** Configure (`{ clientId, clientSecret? }`) or clear (`null`) the pre-registered client of an `oauth` connection; the secret is write-only. */
+    setOAuthClient: handle(async (req, actor) => ({ plugin: await store.setOAuthClient(actor, id(req), connection(req), body(req, ['client']).client) })),
+    disconnectOAuth: handle(async (req, actor) => { body(req, [], []); return { plugin: await store.disconnectOAuth(actor, id(req), connection(req)) }; }),
   };
 }

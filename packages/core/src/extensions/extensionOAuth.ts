@@ -131,13 +131,22 @@ export async function discoverOAuth(transport: OAuthTransport, serverUrl: string
  * The registration method a sign-in uses. A client id the administrator
  * entered is explicit configuration and is used as given; otherwise a Client
  * ID Metadata Document when the server supports it and this instance has a
- * public URL, then Dynamic Client Registration. Null when none is possible.
+ * public URL, then Dynamic Client Registration. With `allowed` (a plugin
+ * connection's permitted methods) only those are considered, in that order,
+ * except that a configured client id always selects pre-registration (or
+ * nothing when pre-registration is not permitted). Null when none is possible.
  */
-export function chooseRegistration(metadata: AuthorizationServerMetadata, options: { clientId?: string; clientMetadataUrl: string | null }): ExtensionOAuthRegistration | null {
-  if (options.clientId) return 'preregistered';
-  if (metadata.client_id_metadata_document_supported && options.clientMetadataUrl) return 'metadata_document';
-  if (metadata.registration_endpoint) return 'dynamic';
-  return null;
+export function chooseRegistration(metadata: AuthorizationServerMetadata, options: { clientId?: string; clientMetadataUrl: string | null; allowed?: readonly ExtensionOAuthRegistration[] }): ExtensionOAuthRegistration | null {
+  // A configured client id binds the server's connection to that client (see connectionBelongsTo), so no automatic
+  // registration can produce a usable connection for it: pre-registration is the only method, whatever the order.
+  if (options.clientId) return !options.allowed || options.allowed.includes('preregistered') ? 'preregistered' : null;
+  const available: Record<ExtensionOAuthRegistration, boolean> = {
+    preregistered: false,
+    metadata_document: Boolean(metadata.client_id_metadata_document_supported && options.clientMetadataUrl),
+    dynamic: Boolean(metadata.registration_endpoint),
+  };
+  const order: readonly ExtensionOAuthRegistration[] = options.allowed ?? ['preregistered', 'metadata_document', 'dynamic'];
+  return order.find(method => available[method]) ?? null;
 }
 
 /** ProPR's own client metadata, served at `clientMetadataUrl`, which is also the client id. */

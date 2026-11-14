@@ -29,7 +29,7 @@ export function ExtensionSkillForm({ initial, bundle: initialBundle, available, 
     event.preventDefault();
     if (!bundle) { setError('Choose or import a skill bundle first.'); return; }
     setBusy(true); setError('');
-    try { await onSave({ bundleId: bundle.id, enabled: initial?.enabled ?? true, ...limits }); }
+    try { await onSave({ bundleId: bundle.id, enabled: initial?.enabled ?? true, ...limits, ...(initial?.managedBy ? { managedBy: initial.managedBy } : {}) }); }
     catch (e) { setError((e as Error).message); setBusy(false); }
   };
   const label = initial ? `Edit skill ${initialBundle?.name ?? initial.bundleId}` : 'Add skill';

@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import type { ExtensionOAuthConnectionState } from './extensionOAuth.js';
+import { EXTENSION_OAUTH_REGISTRATIONS, type ExtensionOAuthConnectionState } from './extensionOAuth.js';
 import {
   EXTENSION_LIMITS, EXTENSION_PROFILE_VERSION, catalogMcpSchema, extensionAgentAliasSchema, extensionRepositorySchema,
   extensionServerNameSchema, remoteMcpSchema, type ExtensionSecretStatus, type ExtensionSkillBundle,
 } from './extensionProfiles.js';
 import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServerFields, type ExtensionSecretAcknowledgement } from './extensionPackages.js';
+import { PLUGIN_REPOSITORY_LIMIT } from './pluginInstallations.js';
 
 /**
  * The instance extension library: one list of MCP servers and skill bundle
@@ -12,8 +13,30 @@ import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServe
  * `enabled` switch and `autoApply`. Automations add items explicitly on top.
  */
 export const EXTENSION_LIBRARY_VERSION = EXTENSION_PROFILE_VERSION;
-export const EXTENSION_LIBRARY_LIMITS = { servers: 32, bundles: 32, repositories: 64, agents: 64 } as const;
+/** An item holds as many repositories as a plugin's repository limit, which its managed items copy. */
+export const EXTENSION_LIBRARY_LIMITS = { servers: 32, bundles: 32, repositories: PLUGIN_REPOSITORY_LIMIT, agents: 64 } as const;
 export const EXTENSION_RUNTIMES = ['claude', 'codex'] as const;
+
+/** Plugin ids, as `pluginIdSchema` in plugins.ts (kept here to avoid an import cycle). */
+const managingPluginSchema = z.string().max(48).regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
+/**
+ * Marks a library item contributed by an installed plugin. Its definition
+ * comes from the plugin manifest and is read-only; only `enabled`, the limits
+ * and `autoApply` can be changed. `item` is the name the manifest gives the
+ * server or skill (the library name may carry the plugin id as a prefix after
+ * a name collision). `active` is false while the plugin is disabled or a
+ * required acknowledgement is pending: the item then never applies.
+ * `registrations` (OAuth servers only) are the client registration methods
+ * the plugin's connection permits, in the order sign-in tries them; sign-in
+ * uses no other method.
+ */
+export const extensionManagedBySchema = z.strictObject({
+  plugin: managingPluginSchema, item: z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/), active: z.boolean(),
+  registrations: z.array(z.enum(EXTENSION_OAUTH_REGISTRATIONS)).min(1).max(EXTENSION_OAUTH_REGISTRATIONS.length).optional(),
+});
+export type ExtensionManagedBy = z.infer<typeof extensionManagedBySchema>;
+/** Fields of a managed item an administrator may change through the library. */
+export const EXTENSION_MANAGED_EDITABLE_FIELDS = ['enabled', 'repositories', 'agents', 'autoApply'] as const;
 
 const itemLimits = {
   /** Empty means every repository. */
@@ -22,6 +45,8 @@ const itemLimits = {
   agents: z.array(extensionAgentAliasSchema).max(EXTENSION_LIBRARY_LIMITS.agents).default([]),
   /** When false the item applies only where it is added explicitly. */
   autoApply: z.boolean().default(true),
+  /** Set only by ProPR for items a plugin contributes. */
+  managedBy: extensionManagedBySchema.optional(),
 };
 export const libraryRemoteServerSchema = remoteMcpSchema.extend(itemLimits);
 export const libraryCatalogServerSchema = catalogMcpSchema.extend(itemLimits);
@@ -150,7 +175,8 @@ const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Why an item does not apply to a run, or null when it does (ignoring `autoApply` and per-run limits). */
 export function extensionItemSkipReason(library: LibraryView, item: ExtensionLibraryServer | ExtensionLibrarySkill, context: Omit<ExtensionResolutionContext, 'additional' | 'limits' | 'autoApply'>): ExtensionSkipReason | null {
-  if (!item.enabled) return 'disabled';
+  // A managed item of a disabled plugin, or one awaiting an acknowledgement, never applies.
+  if (!item.enabled || item.managedBy?.active === false) return 'disabled';
   if (!(EXTENSION_RUNTIMES as readonly string[]).includes(context.runtime)) return 'runtime';
   if (item.repositories.length) {
     const repositories = runRepositories(context.repository);
@@ -266,6 +292,7 @@ export const EXTENSION_LIBRARY_CONTRACT = {
   packageEcosystems: EXTENSION_PACKAGE_ECOSYSTEMS,
   skills: ['tar', 'tar.gz', 'github-exact-commit'], permission: 'instance.manage_settings',
   itemFields: ['enabled', 'repositories', 'agents', 'autoApply'],
+  managedItemFields: EXTENSION_MANAGED_EDITABLE_FIELDS,
   optOutLabels: EXTENSION_OPT_OUT_LABELS,
 } as const;
 
