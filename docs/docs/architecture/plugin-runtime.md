@@ -94,6 +94,11 @@ Every call is checked before it reaches the backend:
 - **Input.** `owner/repo` names, positive numbers, and bounded titles (256),
   bodies (64 KiB), labels (50 characters, at most 20) and event pages (at most
   100).
+- **Target kind.** GitHub's issue routes serve pull requests too, so the method
+  name alone does not establish what a number refers to. `getIssue` and
+  `commentOnIssue` read the number first and refuse a pull request;
+  `commentOnPullRequest` refuses an issue (`not_found`, nothing is posted). An
+  `issues.comment` grant cannot comment on a pull request, nor the reverse.
 
 A refused call throws `PluginSdkError` with code `permission_denied`,
 `repository_not_allowed`, `invalid_input` or `not_found`. It is logged as a
@@ -141,10 +146,19 @@ the request is sent and is injected as `Authorization: Bearer <secret>`. An
 `oauth` connection authenticates the plugin's MCP servers, and a
 `signing_secret` verifies inbound webhooks. Neither can be injected
 (`connection_unavailable`). The handler never receives the secret: it is not
-part of `ctx`, and the secret (plain, base64, base64url, hex, URL-encoded and as
-the full header value) is replaced with `[REDACTED]` in the response headers and
-body before the handler sees them. A careless upstream that echoes the
+part of `ctx`, and the secret (plain, JSON-escaped, base64, base64url, hex,
+URL-encoded and as the full header value) is replaced with `[REDACTED]` in the
+response headers and body before the handler sees them. A JSON body is also
+checked after decoding, so an escape such as `\u0041` or `\"` cannot spell the
+secret back; when a decoded string held it, `text()` and `json()` return the
+body re-serialized with the secret replaced. A careless upstream that echoes the
 `Authorization` header cannot hand the secret back.
+
+**Run lifetime.** The run's signal reaches the request: it is checked again
+after the DNS lookup and after the credential is read, and no request starts
+once the run has ended (`unavailable`). A request in flight when the run ends
+is cancelled. The default `ctx.propr` backend applies the same rule to its
+GitHub requests and queued tasks.
 
 Each request decision is a line in the run's log: `debug` when sent, `warn` when
 refused. The line names only the hostname, never the path or query.
@@ -171,7 +185,13 @@ Rewriting a key replaces its size rather than adding to it, so an existing key
 can be updated at the key limit. Values live in `plugin_state`
 (`plugin_id`, `state_key`, `value`, `bytes`, `updated_at`; migration
 `20261114180000_plugin_state.js`) and are deleted when the plugin is
-uninstalled. Disabling keeps them. The uninstall's audit entry records how many
+uninstalled. A write runs in a transaction that first requires the
+installation the run started with (the same `installed_at`) to still exist
+and holds it until commit; uninstall deletes the installation row before the
+state rows. A handler still running across an uninstall therefore cannot
+recreate state, nor hand it to a later installation with the same id: its
+write either commits first and is deleted with the rest, or throws
+`unavailable`. Disabling keeps them. The uninstall's audit entry records how many
 keys were deleted. Native exports keep the table, since it holds no
 credentials.
 

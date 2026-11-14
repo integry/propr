@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PLUGIN_PROPR_OPERATIONS, PLUGIN_PERMISSIONS, type PluginJsonValue } from '@propr/shared';
 import { runPluginHandler } from '../src/plugins/pluginHandlerRunner.js';
 import { githubPluginProprBackend } from '../src/plugins/pluginProprBackend.js';
-import { pluginAttributionMarker } from '../src/plugins/pluginProprClient.js';
+import { pluginAttributionMarker, scopedProprClient, type PluginProprCallRecord } from '../src/plugins/pluginProprClient.js';
 import type { IssueJobData } from '../src/queue/taskQueue.types.js';
 import { taskIntentIssueRef } from '../src/services/taskIntentIssueRef.js';
 import { FIXTURE_ID, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
@@ -141,11 +141,80 @@ test('the GitHub backend queues the task with the plugin as requester, which the
   const issue = await runPluginHandler(FIXTURE_ID, 'callPropr', { kind: 'invoke', payload: { operation: 'getIssue', args: ['owner/allowed', 5] } }, { ...f.options, backend });
   assert.deepEqual((issue.result as CallResult).value, { repository: 'owner/allowed', number: 5, title: 't', state: 'open', url: 'https://github.com/owner/allowed/issues/5', labels: ['bug'], author: 'octo', createdAt: 'c', updatedAt: 'u' });
   await runPluginHandler(FIXTURE_ID, 'callPropr', { kind: 'invoke', payload: { operation: 'commentOnIssue', args: ['owner/allowed', 5, 'hi'] } }, { ...f.options, backend });
-  assert.deepEqual(requests.map(r => r.route), ['GET /repos/{owner}/{repo}/issues/{issue_number}', 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments']);
-  assert.equal(requests[1].parameters.body, `hi\n\n${pluginAttributionMarker(FIXTURE_ID)}`);
+  // getIssue reads the number; commentOnIssue reads it again to confirm it is an issue before posting.
+  assert.deepEqual(requests.map(r => r.route), ['GET /repos/{owner}/{repo}/issues/{issue_number}', 'GET /repos/{owner}/{repo}/issues/{issue_number}', 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments']);
+  assert.equal(requests[2].parameters.body, `hi\n\n${pluginAttributionMarker(FIXTURE_ID)}`);
 
   // A backend failure reaches the handler without its details.
   const failing = githubPluginProprBackend({ database: f.database, github: async () => ({ request: async () => { throw new Error('HttpError: Bad credentials ghs_secretvalue'); } }) });
   const failed = await runPluginHandler(FIXTURE_ID, 'callPropr', { kind: 'invoke', payload: { operation: 'getIssue', args: ['owner/allowed', 5] } }, { ...f.options, backend: failing });
   assert.deepEqual((failed.result as CallResult), { ok: false, code: 'unavailable', message: 'ProPR could not complete getIssue' });
+});
+
+/** A GitHub where #5 is an issue and #7 is a pull request (the issue routes serve both), recording every request. */
+function issueOrPullGitHub() {
+  const requests: { route: string; parameters: Record<string, unknown> }[] = [];
+  const item = (number: number) => ({
+    number, id: 100 + number, html_url: `https://github.com/owner/allowed/${number === 7 ? 'pull' : 'issues'}/${number}`, title: 't', state: 'open', labels: [], user: { login: 'octo' }, created_at: 'c', updated_at: 'u',
+    ...(number === 7 ? { pull_request: { url: 'https://api.github.com/repos/owner/allowed/pulls/7' } } : {}),
+  });
+  const github = async () => ({ request: async (route: string, parameters: Record<string, unknown>) => {
+    requests.push({ route, parameters });
+    return { data: item(Number(parameters.issue_number)) };
+  } });
+  return { requests, github };
+}
+
+test('a comment permission covers only its own target kind: issues.comment cannot reach a pull request, nor the reverse', async t => {
+  const f = await pluginHandlerFixture(t);
+  const posts = (requests: { route: string; parameters: Record<string, unknown> }[]) => requests.filter(r => r.route.startsWith('POST'));
+  const client = (permissions: PluginProprCallRecord['permission'][]) => {
+    const gh = issueOrPullGitHub();
+    const records: PluginProprCallRecord[] = [];
+    const propr = scopedProprClient({ pluginId: FIXTURE_ID, grantedPermissions: permissions, repositories: ['owner/allowed'], backend: githubPluginProprBackend({ database: f.database, github: gh.github }), record: async call => { records.push(call); } });
+    return { propr, records, requests: gh.requests };
+  };
+
+  // issues.comment only: commentOnIssue with a pull request's number is refused and posts nothing.
+  const issueOnly = client(['issues.comment', 'issues.read']);
+  await assert.rejects(issueOnly.propr.commentOnIssue('owner/allowed', 7, 'sneaky'), { code: 'not_found' });
+  assert.deepEqual(posts(issueOnly.requests), []);
+  assert.deepEqual(issueOnly.records.map(r => [r.operation, r.allowed, r.reason]), [['commentOnIssue', false, 'not_found']]);
+  // getIssue (issues.read) cannot read a pull request through the issue route either.
+  await assert.rejects(issueOnly.propr.getIssue('owner/allowed', 7), { code: 'not_found' });
+  // The issue itself is still allowed.
+  assert.equal((await issueOnly.propr.commentOnIssue('owner/allowed', 5, 'ok')).id, 105);
+  assert.deepEqual(posts(issueOnly.requests).map(r => r.parameters.issue_number), [5]);
+
+  // pull_requests.comment only: commentOnPullRequest with an issue's number is refused and posts nothing.
+  const pullOnly = client(['pull_requests.comment']);
+  await assert.rejects(pullOnly.propr.commentOnPullRequest('owner/allowed', 5, 'sneaky'), { code: 'not_found' });
+  assert.deepEqual(posts(pullOnly.requests), []);
+  assert.equal((await pullOnly.propr.commentOnPullRequest('owner/allowed', 7, 'ok')).id, 107);
+  // Without the permission the method is refused before GitHub is asked anything.
+  await assert.rejects(pullOnly.propr.commentOnIssue('owner/allowed', 5, 'x'), { code: 'permission_denied' });
+
+  // Through a handler: the fixture has issues.comment but not pull_requests.comment.
+  const gh = issueOrPullGitHub();
+  const run = await runPluginHandler(FIXTURE_ID, 'callPropr', { kind: 'invoke', payload: { operation: 'commentOnIssue', args: ['owner/allowed', 7, 'sneaky'] } }, { ...f.options, backend: githubPluginProprBackend({ database: f.database, github: gh.github }) });
+  assert.equal((run.result as CallResult).code, 'not_found');
+  assert.deepEqual(posts(gh.requests), []);
+});
+
+test('the GitHub backend sends nothing once the handler run has ended, even when the App token arrives later', async () => {
+  const controller = new AbortController();
+  const requests: string[] = [];
+  let release!: () => void;
+  const token = new Promise<void>(resolve => { release = resolve; });
+  const backend = githubPluginProprBackend({
+    database: {} as never, signal: controller.signal,
+    enqueueIssueTask: async () => { requests.push('enqueue'); },
+    github: async () => { await token; return { request: async (route: string) => { requests.push(route); return { data: {} }; } }; },
+  });
+  const pending = backend.comment('owner/allowed', 5, 'late', 'issue');
+  controller.abort();
+  release();
+  await assert.rejects(pending, { code: 'unavailable' });
+  await assert.rejects(backend.createTask('owner/allowed', 5, { requestedBy: 'plugin:x' }), { code: 'unavailable' });
+  assert.deepEqual(requests, []);
 });

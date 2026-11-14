@@ -313,8 +313,9 @@ export class PluginStore {
       const row = PluginStore.installed(loaded);
       if (confirm !== pluginId) throw new PluginError(400, 'Confirm the uninstall by repeating the plugin id; settings and connections are deleted');
       await trx('plugin_secrets').where({ plugin_id: pluginId }).delete();
-      const state = await deletePluginState(trx, pluginId);
+      // The installation row first: a concurrent ctx.state write holds it until it commits (so its row is deleted below) or finds it gone.
       await trx('plugin_installations').where({ plugin_id: pluginId }).delete();
+      const state = await deletePluginState(trx, pluginId);
       return { action: 'uninstall', detail: { version: row.manifest_version, stateKeys: state } };
     });
   }

@@ -25,12 +25,36 @@ function serialize(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export interface PluginStateWriteGuard {
+  /** The installation the writes belong to (its `installed_at`); a write is refused once it is uninstalled or replaced. */
+  installedAt: number;
+  /** The handler run's signal: a write that has not committed when the run ends is refused. */
+  signal?: AbortSignal;
+}
+
+const isSqlite = (database: Knex) => ['better-sqlite3', 'sqlite3'].includes(String(database.client.config.client));
+
+/**
+ * Inside a state write's transaction: require the installation to still exist
+ * (the same one, not a reinstall) and keep it until commit. Uninstall deletes
+ * the installation row before the state rows, so a write either commits
+ * first and is deleted with the rest, or finds the installation gone.
+ * SQLite runs write transactions one at a time.
+ */
+async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<void> {
+  const query = trx('plugin_installations').where({ plugin_id: pluginId });
+  const row = await (isSqlite(trx) ? query : query.forShare()).first('installed_at') as { installed_at: number | string } | undefined;
+  if (!row || Number(row.installed_at) !== guard.installedAt) throw new PluginSdkError('unavailable', 'The plugin is no longer installed');
+  if (guard.signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
+}
+
 /**
  * `ctx.state`: JSON values per installation in `plugin_state`, with a key
  * count, a per-value size and a total size limit. A write that would exceed
- * a limit throws `state_limit` and changes nothing.
+ * a limit throws `state_limit` and changes nothing. With a `guard`, a write
+ * also requires its installation to still exist.
  */
-export function pluginStateStore(database: Knex, pluginId: string, now: () => number = Date.now): PluginStateStore {
+export function pluginStateStore(database: Knex, pluginId: string, now: () => number = Date.now, guard?: PluginStateWriteGuard): PluginStateStore {
   const rows = () => database(PLUGIN_STATE_TABLE).where({ plugin_id: pluginId });
   return {
     async get<T extends PluginJsonValue = PluginJsonValue>(key: string): Promise<T | undefined> {
@@ -43,6 +67,7 @@ export function pluginStateStore(database: Knex, pluginId: string, now: () => nu
       const bytes = Buffer.byteLength(text);
       if (bytes > PLUGIN_STATE_LIMITS.valueBytes) throw new PluginSdkError('state_limit', `A state value is at most ${PLUGIN_STATE_LIMITS.valueBytes} bytes; this one is ${bytes}`);
       await database.transaction(async trx => {
+        if (guard) await requireInstallation(trx, pluginId, guard);
         // The other keys' count and size: a rewrite of a key replaces its own bytes.
         const totals = await trx(PLUGIN_STATE_TABLE).where({ plugin_id: pluginId }).whereNot({ state_key: stateKey })
           .first(trx.raw('COUNT(*) AS count'), trx.raw('COALESCE(SUM(bytes), 0) AS total')) as { count: number | string; total: number | string } | undefined;

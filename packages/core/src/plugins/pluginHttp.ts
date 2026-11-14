@@ -12,6 +12,8 @@ export interface PluginHttpTransportRequest {
   url: URL; address: string; family: number;
   method: string; headers: Record<string, string>; body?: Buffer;
   timeoutMs: number; maxResponseBytes: number;
+  /** Aborted when the handler run ends; the transport stops sending and receiving then. */
+  signal?: AbortSignal;
 }
 export interface PluginHttpTransportResponse { status: number; headers: Record<string, string>; body: Buffer }
 /** Sends one vetted request. Throws `PluginSdkError` (`response_too_large`, `http_failed`). */
@@ -26,6 +28,8 @@ export interface PluginHttpOptions {
   transport?: PluginHttpTransport;
   /** Every request decision (`allowed` false when refused), for the handler log. */
   onDecision?: (decision: { host: string; allowed: boolean; reason?: string }) => void;
+  /** The handler run's signal: once aborted no request starts, and one in flight is cancelled. */
+  signal?: AbortSignal;
 }
 
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -38,11 +42,64 @@ const defaultLookup: ExtensionLookup = host => dns.lookup(host, { all: true, ver
 
 /** Every spelling of a credential (alone and as the header value sent) a response could echo back. */
 function credentialSpellings(secret: string): string[] {
-  const encodings = (value: string) => [value, Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url'), Buffer.from(value).toString('hex'), encodeURIComponent(value)];
+  const encodings = (value: string) => {
+    // Inside a JSON string: quotes, backslashes and control characters escaped, `/` optionally too.
+    const json = JSON.stringify(value).slice(1, -1);
+    return [value, json, json.split('/').join('\\/'), Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url'), Buffer.from(value).toString('hex'), encodeURIComponent(value)];
+  };
   // Longest first: the header value's encodings are not made of the secret's.
   return [...new Set([...encodings(`Bearer ${secret}`), ...encodings(secret)])].filter(Boolean).sort((a, b) => b.length - a.length);
 }
 const scrub = (text: string, spellings: readonly string[]) => spellings.reduce((value, spelling) => value.split(spelling).join('[REDACTED]'), text);
+
+/** Scrub every decoded string (keys included) of a parsed JSON value; `changed` when one held a credential. */
+function scrubJson(value: unknown, spellings: readonly string[]): { value: unknown; changed: boolean } {
+  let changed = false;
+  const clean = (text: string) => { const scrubbed = scrub(text, spellings); if (scrubbed !== text) changed = true; return scrubbed; };
+  const walk = (item: unknown): unknown => {
+    if (typeof item === 'string') return clean(item);
+    if (Array.isArray(item)) return item.map(walk);
+    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, entry]) => [clean(key), walk(entry)]));
+    return item;
+  };
+  const scrubbed = walk(value);
+  return { value: scrubbed, changed };
+}
+
+/**
+ * The response text with every credential spelling replaced. A JSON body is
+ * also checked after decoding (an escaped credential such as `a\"b` decodes
+ * to the credential) and re-serialized scrubbed when a decoded string held one.
+ */
+function scrubbedBody(raw: string, spellings: readonly string[]): string {
+  const text = scrub(raw, spellings);
+  if (!spellings.length) return text;
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return text; }
+  try {
+    const result = scrubJson(parsed, spellings);
+    return result.changed ? JSON.stringify(result.value) : text;
+  } catch {
+    // Too deeply nested to check: refuse rather than return what could decode to the credential.
+    throw new PluginSdkError('http_failed', 'The response could not be checked for credentials');
+  }
+}
+
+/** The error a request gets once the handler run has ended. */
+const ended = () => new PluginSdkError('unavailable', 'This handler run has ended');
+function checkLive(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw ended();
+}
+/** Settle with `work`, or reject as soon as the handler run ends. */
+function untilEnded<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  checkLive(signal);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(ended());
+    signal.addEventListener('abort', abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
 
 /** Check scheme, credentials in the URL, port and host against the policy. */
 function vetUrl(value: unknown, outboundHosts: readonly string[]): URL {
@@ -104,6 +161,7 @@ function requestBody(init: PluginHttpRequestInit, headers: Record<string, string
 export const httpsPluginTransport: PluginHttpTransport = request => new Promise((resolve, reject) => {
   const host = request.url.hostname;
   const failed = (message = `Request to ${host} failed`) => reject(new PluginSdkError('http_failed', message));
+  if (request.signal?.aborted) { reject(ended()); return; }
   const outgoing = https.request({
     host: request.address, family: request.family, port: 443, path: `${request.url.pathname}${request.url.search}`,
     method: request.method, agent: false, servername: host,
@@ -123,13 +181,16 @@ export const httpsPluginTransport: PluginHttpTransport = request => new Promise(
     });
   });
   const timer = setTimeout(() => { outgoing.destroy(); failed(`Request to ${host} timed out`); }, request.timeoutMs);
-  outgoing.on('close', () => clearTimeout(timer));
+  // The handler run ended: stop sending and receiving.
+  const abort = () => { outgoing.destroy(); reject(ended()); };
+  request.signal?.addEventListener('abort', abort, { once: true });
+  outgoing.on('close', () => { clearTimeout(timer); request.signal?.removeEventListener('abort', abort); });
   outgoing.on('error', () => failed());
   outgoing.end(request.body);
 });
 
 function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spellings: readonly string[]): PluginHttpResponse {
-  const text = scrub(response.body.toString('utf8'), spellings);
+  const text = scrubbedBody(response.body.toString('utf8'), spellings);
   const headers = Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name.toLowerCase(), scrub(value, spellings)]));
   return {
     status: response.status, ok: response.status >= 200 && response.status < 300, url: url.toString(), headers,
@@ -161,12 +222,17 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       if (!METHODS.has(method)) throw new PluginSdkError('invalid_input', `Method ${String(init.method).slice(0, 16)} is not allowed`);
       const headers = requestHeaders(init);
       const body = requestBody(init, headers);
-      const { address, family } = await resolvePublic(host, lookup);
+      const { signal } = options;
+      checkLive(signal);
+      const { address, family } = await untilEnded(resolvePublic(host, lookup), signal);
       credential ??= options.credential ? options.credential() : Promise.resolve(null);
-      const secret = await credential;
+      const secret = await untilEnded(credential, signal);
       if (secret) headers.authorization = `Bearer ${secret}`;
+      // The run may have ended during the lookups: nothing is sent for an ended handler.
+      checkLive(signal);
       options.onDecision?.({ host, allowed: true });
-      const response = await transport({ url, address, family, method, headers, body, timeoutMs: PLUGIN_HTTP_LIMITS.timeoutMs, maxResponseBytes: PLUGIN_HTTP_LIMITS.responseBytes });
+      const response = await untilEnded(transport({ url, address, family, method, headers, body, timeoutMs: PLUGIN_HTTP_LIMITS.timeoutMs, maxResponseBytes: PLUGIN_HTTP_LIMITS.responseBytes, signal }), signal);
+      checkLive(signal);
       return bufferedResponse(url, response, secret ? credentialSpellings(secret) : []);
     } catch (error) {
       const refused = error instanceof PluginSdkError ? error : new PluginSdkError('http_failed', `Request to ${host} failed`);

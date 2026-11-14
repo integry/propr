@@ -116,7 +116,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       };
     }
     return createPluginHttp({
-      outboundHosts: manifest.outboundHosts, credential, lookup: deps.lookup, transport: deps.transport,
+      outboundHosts: manifest.outboundHosts, credential, lookup: deps.lookup, transport: deps.transport, signal,
       onDecision: ({ host, allowed, reason }) => write(allowed ? 'debug' : 'warn', allowed ? `ctx.http request to ${host}` : `ctx.http request to ${host} refused: ${reason}`, { host, ...(connection ? { connection } : {}) }),
     });
   };
@@ -134,10 +134,11 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     repositories: record.repositories ? [...record.repositories] : null,
     propr: liveMethods(scopedProprClient({
       pluginId, grantedPermissions: effectivePluginPermissions(manifest, record), repositories: record.repositories,
-      backend: deps.backend ?? githubPluginProprBackend({ database: deps.database }), record: recordCall,
+      backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal }), record: recordCall,
     })),
     http: connection => live(http(connection)),
-    state: liveMethods(pluginStateStore(deps.database, pluginId, now)),
+    // Writes are tied to this installation: once it is uninstalled (or replaced by a reinstall) they are refused.
+    state: liveMethods(pluginStateStore(deps.database, pluginId, now, { installedAt: record.installedAt, signal })),
     log: Object.freeze(log),
     signal,
   };

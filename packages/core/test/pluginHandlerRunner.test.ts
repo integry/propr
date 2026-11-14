@@ -61,6 +61,8 @@ test('the official registry loads example-pack handlers through the plugin regis
   assert.equal(typeof handlers?.recordEvent, 'function');
   assert.equal(await loadPluginHandlers('example-pack', { includeDevelopment: false }), null, 'a development plugin is hidden without the flag');
   const record = { installedVersion: '0.1.0', enabled: true, settings: {}, repositories: null, grantedPermissions: example.manifest.permissions, acknowledgements: {}, installedBy: '1', installedAt: 0, updatedBy: '1', updatedAt: 0 };
+  // ctx.state writes need the installation to exist: the row the record describes.
+  await f.database('plugin_installations').insert({ plugin_id: 'example-pack', manifest_version: '0.1.0', enabled: true, granted_permissions: JSON.stringify(example.manifest.permissions), installed_by: '1', installed_at: 0, updated_by: '1', updated_at: 0 });
   const run = await runPluginHandler({ pluginId: 'example-pack', manifest: example.manifest, record }, 'recordEvent', {
     kind: 'event', event: { seq: 12, repository: 'owner/allowed', domain: 'task', type: 'completed', entityId: 'task-1', prNumber: null, issueNumber: 3, planId: null, headSha: null, payload: {}, occurredAt: '' },
   }, { ...f.options, handlers: async id => loadPluginHandlers(id, { includeDevelopment: true }) });

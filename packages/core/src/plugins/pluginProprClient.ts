@@ -19,10 +19,14 @@ export interface PluginProprBackend {
   createIssue(repository: string, issue: { title: string; body: string; labels: string[] }): Promise<PluginCreatedIssue>;
   /** Queue an ordinary task for an issue; `requestedBy` is recorded on the task. */
   createTask(repository: string, issueNumber: number, attribution: { requestedBy: string }): Promise<PluginCreatedTask>;
-  comment(repository: string, number: number, body: string): Promise<PluginCreatedComment>;
+  /** Comment on `number`, which must be of the `target` kind; otherwise throws `not_found` and posts nothing. */
+  comment(repository: string, number: number, body: string, target: PluginCommentTarget): Promise<PluginCreatedComment>;
   addLabel(repository: string, number: number, label: string): Promise<void>;
   removeLabel(repository: string, number: number, label: string): Promise<void>;
 }
+
+/** What a comment operation's permission covers: issues (`issues.comment`) or pull requests (`pull_requests.comment`). */
+export type PluginCommentTarget = 'issue' | 'pull_request';
 
 /** One `ctx.propr` call as recorded in the plugin audit trail. */
 export interface PluginProprCallRecord {
@@ -132,9 +136,9 @@ export function scopedProprClient(options: ScopedProprOptions): PluginProprClien
     createTask: (repo, issueNumber) => call('createTask', () => ({ repository: repository(repo), number: positive(issueNumber, 'issueNumber') }),
       t => backend.createTask(t.repository!, t.number!, { requestedBy: pluginActor(pluginId) })),
     commentOnPullRequest: (repo, number, body) => call('commentOnPullRequest', () => ({ repository: repository(repo), number: positive(number, 'number') }),
-      t => backend.comment(t.repository!, t.number!, withMarker(text(body, 'body', PLUGIN_PROPR_LIMITS.bodyChars)))),
+      t => backend.comment(t.repository!, t.number!, withMarker(text(body, 'body', PLUGIN_PROPR_LIMITS.bodyChars)), 'pull_request')),
     commentOnIssue: (repo, number, body) => call('commentOnIssue', () => ({ repository: repository(repo), number: positive(number, 'number') }),
-      t => backend.comment(t.repository!, t.number!, withMarker(text(body, 'body', PLUGIN_PROPR_LIMITS.bodyChars)))),
+      t => backend.comment(t.repository!, t.number!, withMarker(text(body, 'body', PLUGIN_PROPR_LIMITS.bodyChars)), 'issue')),
     addLabel: (repo, number, label) => call('addLabel', () => ({ repository: repository(repo), number: positive(number, 'number') }),
       t => backend.addLabel(t.repository!, t.number!, text(label, 'label', PLUGIN_PROPR_LIMITS.labelChars))),
     removeLabel: (repo, number, label) => call('removeLabel', () => ({ repository: repository(repo), number: positive(number, 'number') }),

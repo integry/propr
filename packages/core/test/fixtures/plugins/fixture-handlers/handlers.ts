@@ -48,6 +48,33 @@ export async function fetchUrl(input: PluginHandlerInput, ctx: PluginContext) {
   }
 }
 
+/**
+ * Fetch and report whether the handler could see `probe` (the test's credential) in any
+ * handler-visible form: the text, the text parsed by the handler, or `json()`.
+ */
+export async function fetchProbe(input: PluginHandlerInput, ctx: PluginContext) {
+  const { url, connection, probe } = payload(input) as { url: string; connection?: string; probe: string };
+  try {
+    const response = await ctx.http(connection)(url);
+    const text = await response.text();
+    const parsed = (() => { try { return JSON.parse(text) as PluginJsonValue; } catch { return null; } })();
+    const json = await response.json<PluginJsonValue>();
+    const decoded = (value: unknown): boolean => typeof value === 'string' ? value.includes(probe) : value !== null && typeof value === 'object' && Object.entries(value).some(([k, v]) => k.includes(probe) || decoded(v));
+    return { ok: true, textHasProbe: text.includes(probe), parsedHasProbe: decoded(parsed), jsonHasProbe: decoded(json), headersHaveProbe: Object.values(response.headers).some(v => v.includes(probe)) };
+  } catch (error) {
+    return { ok: false, code: (error as { code?: string }).code ?? null, message: (error as Error).message };
+  }
+}
+
+/** Wait on a ctx.propr read (the test holds it), then write state: a handler still running across an uninstall. */
+export async function suspendThenSet(input: PluginHandlerInput, ctx: PluginContext) {
+  const { key } = payload(input) as { key: string };
+  await ctx.propr.getIssue('owner/allowed', 3).catch(() => undefined);
+  try { await ctx.state.set(key, 'written after resuming'); return { ok: true }; } catch (error) {
+    return { ok: false, code: (error as { code?: string }).code ?? null, message: (error as Error).message };
+  }
+}
+
 export async function useState(input: PluginHandlerInput, ctx: PluginContext) {
   const { op, key, value, prefix } = payload(input) as { op: 'get' | 'set' | 'delete' | 'keys'; key: string; value?: PluginJsonValue; prefix?: string };
   try {

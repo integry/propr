@@ -1,9 +1,9 @@
 import type { Knex } from 'knex';
-import type { PluginIssueSummary, PluginPullRequestSummary, PluginTaskSummary, RepositoryEventDomain } from '@propr/shared';
+import { PluginSdkError, type PluginIssueSummary, type PluginPullRequestSummary, type PluginTaskSummary, type RepositoryEventDomain } from '@propr/shared';
 import { listRepositoryEvents } from '../services/repositoryEventJournal.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
-import type { PluginProprBackend } from './pluginProprClient.js';
+import type { PluginCommentTarget, PluginProprBackend } from './pluginProprClient.js';
 
 /** The part of an authenticated Octokit the backend uses. */
 export interface PluginGitHubClient {
@@ -15,11 +15,15 @@ export interface GitHubPluginBackendOptions {
   github?: () => Promise<PluginGitHubClient>;
   /** Queue an issue task job; defaults to the issue queue, as the task API does. */
   enqueueIssueTask?: (data: IssueJobData, jobId: string) => Promise<void>;
+  /** The handler run's signal: once aborted no further GitHub request or queued task starts, and requests in flight are cancelled. */
+  signal?: AbortSignal;
 }
 
 type GitHubIssue = {
   number: number; title: string; state: string; html_url: string; labels?: Array<string | { name?: string }>;
   user?: { login?: string } | null; created_at: string; updated_at: string;
+  /** Present when the number is a pull request: GitHub's issue routes serve pull requests too. */
+  pull_request?: unknown;
 };
 type GitHubPull = GitHubIssue & { draft?: boolean; merged?: boolean; merged_at?: string | null; head: { ref: string; sha: string }; base: { ref: string } };
 
@@ -56,10 +60,30 @@ export function githubPluginProprBackend(options: GitHubPluginBackendOptions): P
   const { database } = options;
   const github = options.github ?? defaultGitHub;
   const enqueue = options.enqueueIssueTask ?? defaultEnqueue;
-  const request = async <T>(route: string, parameters: Record<string, unknown>) => (await (await github()).request(route, parameters)).data as T;
+  const { signal } = options;
+  const live = () => { if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended'); };
+  const request = async <T>(route: string, parameters: Record<string, unknown>) => {
+    live();
+    const client = await github();
+    // The run may have ended while the App token was fetched: nothing is sent for an ended handler.
+    live();
+    return (await client.request(route, { ...parameters, ...(signal ? { request: { signal } } : {}) })).data as T;
+  };
+  /**
+   * The issue or pull request `number` names, required to be of the kind the
+   * operation's permission covers: the issue routes accept either, so the
+   * method alone does not establish the target.
+   */
+  const issueOfKind = async (repository: string, number: number, kind: PluginCommentTarget): Promise<GitHubIssue> => {
+    const issue = await request<GitHubIssue>('GET /repos/{owner}/{repo}/issues/{issue_number}', { ...split(repository), issue_number: number });
+    if (Boolean(issue.pull_request) !== (kind === 'pull_request')) {
+      throw new PluginSdkError('not_found', `${repository}#${number} is not ${kind === 'pull_request' ? 'a pull request' : 'an issue'}`);
+    }
+    return issue;
+  };
   return {
     async getIssue(repository, number) {
-      return issueSummary(repository, await request<GitHubIssue>('GET /repos/{owner}/{repo}/issues/{issue_number}', { ...split(repository), issue_number: number }));
+      return issueSummary(repository, await issueOfKind(repository, number, 'issue'));
     },
     async getPullRequest(repository, number): Promise<PluginPullRequestSummary> {
       const pull = await request<GitHubPull>('GET /repos/{owner}/{repo}/pulls/{pull_number}', { ...split(repository), pull_number: number });
@@ -83,10 +107,12 @@ export function githubPluginProprBackend(options: GitHubPluginBackendOptions): P
     async createTask(repository, issueNumber, attribution) {
       const { owner, repo } = split(repository);
       const jobId = `issue-${owner}-${repo}-${issueNumber}`;
+      live();
       await enqueue({ repoOwner: owner, repoName: repo, number: issueNumber, requestedBy: attribution.requestedBy, correlationId: generateCorrelationId() }, jobId);
       return { repository, issueNumber, jobId };
     },
-    async comment(repository, number, body) {
+    async comment(repository, number, body, target) {
+      await issueOfKind(repository, number, target);
       const created = await request<{ id: number; html_url: string }>('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { ...split(repository), issue_number: number, body });
       return { repository, number, id: created.id, url: created.html_url };
     },
