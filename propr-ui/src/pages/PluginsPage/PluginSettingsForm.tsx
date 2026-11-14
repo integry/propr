@@ -23,8 +23,8 @@ function unreadableNumberProblems(form: HTMLFormElement): Record<string, string>
  * The settings form ProPR generates from the manifest's settings schema. It is validated here with the API's own rules
  * before saving, and a number field holding text that is not a number is refused rather than saved as removed; a refusal
  * from the API is split into the field it names, next to that field. Fields left as they started save their saved
- * values unchanged. Keyed by the saved settings, so a successful save starts it afresh from
- * what the API returned.
+ * values unchanged. Keyed by the settings schema and the saved settings, so a successful save starts it afresh from
+ * what the API returned, and so does a refreshed manifest whose schema changed.
  */
 export function PluginSettingsForm({ view, busy, apiError, repositories, onSave }: {
   view: PluginView;

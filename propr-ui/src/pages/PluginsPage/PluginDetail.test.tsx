@@ -4,7 +4,7 @@ import {
   approvePlugin, disconnectPluginOAuth, getPlugin, installPlugin, PluginApiError, setPluginConnection, setPluginEnabled, setPluginRepositories, startPluginOAuth, uninstallPlugin,
   type PluginView,
 } from '../../api/pluginsApi';
-import { exampleAt, examplePlugin, renderPluginsPage } from './pluginFixtures.testUtils';
+import { EXAMPLE_SETTINGS, exampleAt, examplePlugin, renderPluginsPage } from './pluginFixtures.testUtils';
 
 vi.mock('../../api/pluginsApi', async importOriginal => ({
   ...(await importOriginal<object>()),
@@ -250,6 +250,28 @@ describe('Plugin detail', () => {
     await act(async () => { fireEvent.click(within(approval()).getByRole('button', { name: 'Approve' })); });
     expect(approvePlugin).toHaveBeenCalledTimes(1);
     expect(approvePlugin).toHaveBeenCalledWith('example-pack', ['example-local']);
+  });
+
+  it.each([
+    ['a list', 'owners', { type: 'array' as const, items: { type: 'string' as const }, label: 'Owners' }, 'Add entry to Owners'],
+    ['a repository map', 'teams', { type: 'object' as const, format: 'repository-map' as const, additionalProperties: { type: 'string' as const }, label: 'Team per repository' }, 'Add repository to Team per repository'],
+  ])('shows %s setting that a refresh after sign-in adds to the schema while the saved settings stay the same', async (_kind, key, setting, add) => {
+    vi.spyOn(window, 'open').mockReturnValue({ opener: {}, location: { href: '' }, close: vi.fn() } as unknown as Window);
+    await open(exampleAt('connected'));
+    fireEvent.change(within(step('Configure')).getByLabelText('Greeting'), { target: { value: 'hey' } });
+    vi.mocked(startPluginOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize', server: 'example-remote' });
+    const oauth = within(step('Connect')).getAllByTestId('plugin-connection')[0];
+    await act(async () => { fireEvent.click(await within(oauth).findByRole('button', { name: 'Reconnect' })); });
+    const upgraded = exampleAt('connected');
+    const schema = upgraded.manifest!.settings as unknown as typeof EXAMPLE_SETTINGS;
+    upgraded.manifest = { ...upgraded.manifest!, settings: { ...schema, properties: { ...schema.properties, [key]: setting } } as never };
+    vi.mocked(getPlugin).mockResolvedValueOnce(detail(upgraded));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    const field = within(step('Configure')).getAllByTestId('plugin-setting').find(element => element.dataset.setting === key)!;
+    expect(within(field).getByTestId('plugin-setting-state')).toHaveTextContent('Not set.');
+    expect(within(field).getByRole('button', { name: add })).toBeEnabled();
+    // The form starts afresh from the saved settings under the new schema.
+    expect(within(step('Configure')).getByLabelText('Greeting')).toHaveValue('hello');
   });
 
   it('clears a ticked install acknowledgement when the plugin read after a refusal changes that server', async () => {

@@ -61,7 +61,9 @@ export function PluginConfigureStep({ view, busy, settingsError, onSaveSettings,
         <>
           {missing.length > 0 && <p role="status" className="text-amber-800">Set {missing.join(', ')} to enable the plugin.</p>}
           {manifest && (
-            <PluginSettingsForm key={JSON.stringify(installation.settings)} view={view} busy={busy} apiError={settingsError}
+            // Keyed by the schema too: a refreshed manifest can add or retype a setting while the saved values stay the
+            // same, and drafts made for the old schema have no field state for it.
+            <PluginSettingsForm key={JSON.stringify([manifest.settings, installation.settings])} view={view} busy={busy} apiError={settingsError}
               repositories={choices.repositories} onSave={onSaveSettings} />
           )}
           <RepositoryLimit key={(installation.repositories ?? []).join(',')} view={view} busy={busy} repositories={choices.repositories}
