@@ -8,13 +8,15 @@ export interface TaskSubmission {
   error: string | null;
 }
 export interface TaskRequest {
-  extensionAllowWrite?: boolean;
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
   repository: string;
   instruction: string;
   agentAlias?: string;
   model?: string;
   todoIds?: string[];
+  /** Expose library write servers to this submission's initial task. */
+  extensionAllowWrite?: boolean;
+  /** Adds the `disable-extensions` label: no library servers or skills. */
+  disableExtensions?: boolean;
 }
 async function request(path: string, options?: RequestInit): Promise<TaskSubmission> {
   const response = await apiFetch(`${API_BASE_URL}/api/task-submissions${path}`, { credentials: 'include', ...options });
@@ -22,14 +24,49 @@ async function request(path: string, options?: RequestInit): Promise<TaskSubmiss
   catch (error) { throw Object.assign(error as Error, { status: response.status }); }
   return response.json();
 }
+/**
+ * Fields of drafts saved before extension profiles were replaced by the
+ * extension library. Such a draft is recognized by its profile selection; its
+ * write opt-in belonged to that selection and is dropped with it.
+ */
+const LEGACY_PAYLOAD_FIELDS = ['extensionProfile', 'extensionAllowWrite'];
+const resumeByKey = (key: string) => request(`/${encodeURIComponent(key)}/retry`, { method: 'POST' });
 export async function submitTask(key: string, payload: TaskRequest, files: File[]): Promise<TaskSubmission> {
+  const legacy = 'extensionProfile' in payload;
+  if (legacy) {
+    // A restored older draft may already have been accepted under this key, before
+    // or after its selection was dropped. Resume that submission by key rather than
+    // replay a payload whose identity no longer matches the stored one.
+    try { return await resumeByKey(key); }
+    catch (error) {
+      if ((error as { status?: number }).status !== 404) throw error;
+    }
+  }
   const form = new FormData();
-  form.append('payload', JSON.stringify(payload));
+  // A new submission from such a draft drops the profile selection the API no longer accepts.
+  const current = legacy ? Object.fromEntries(Object.entries(payload).filter(([field]) => !LEGACY_PAYLOAD_FIELDS.includes(field))) : payload;
+  form.append('payload', JSON.stringify(current));
   files.forEach(file => form.append('files', file));
-  return request('', { method: 'POST', headers: { 'Idempotency-Key': key, ...(payload.extensionProfile ? { 'X-ProPR-Extensions': '1' } : {}) }, body: form });
+  // The write opt-in is sealed authority, so it travels only on a preflight-protected request.
+  const headers: Record<string, string> = { 'Idempotency-Key': key, ...((current as TaskRequest).extensionAllowWrite ? { 'X-ProPR-Extensions': '1' } : {}) };
+  return request('', { method: 'POST', headers, body: form });
+}
+
+/** Library items that would apply automatically to a task for this repository and agent. */
+export interface TaskExtensionsPreview {
+  qualified: boolean;
+  revision: number;
+  servers: { name: string; capability: 'read' | 'write' }[];
+  skills: { name: string }[];
+}
+export async function getTaskExtensionsPreview(repository: string, agentAlias?: string, model?: string, signal?: AbortSignal): Promise<TaskExtensionsPreview> {
+  const query = new URLSearchParams({ repository, ...(agentAlias ? { agentAlias } : {}), ...(model ? { model } : {}) });
+  const response = await apiFetch(`${API_BASE_URL}/api/task-submission-extensions?${query}`, { credentials: 'include', signal });
+  await handleApiResponse(response);
+  return response.json();
 }
 export const getTaskSubmission = (key: string) => request(`/${encodeURIComponent(key)}`);
-export const retryTaskSubmission = (key: string) => request(`/${encodeURIComponent(key)}/retry`, { method: 'POST' });
+export const retryTaskSubmission = resumeByKey;
 
 export interface TaskSnapshot { key: string; payload: TaskRequest; files: File[] }
 /** Attachment bytes and metadata as persisted. Plain ArrayBuffers store in every engine; WebKit aborts File/Blob writes. */

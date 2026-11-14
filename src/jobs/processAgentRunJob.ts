@@ -20,7 +20,7 @@ import {
     type StoredAgentRun,
     type WorkerStateManager,
 } from '@propr/core';
-import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
+import { agentRunExecutionUpdate, agentTaskOptions, launchCarriesExtensions } from './agentRuns/agentTaskOptions.js';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
 import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
@@ -72,6 +72,8 @@ export interface AgentRunProcessorDeps extends ReportNoveltyStore {
     buildPrompt: typeof buildAgentReportPrompt;
     /** Runs the agent inside the instance spend cap (`default_max_cost_usd`). */
     withCostCap: <T>(target: { taskId: string; repoOwner: string; repoName: string; modelName?: string; logger: Logger }, operation: () => Promise<T>) => Promise<T>;
+    /** Whether this launch may receive extension library items, so it runs under the network-policy scope they need. */
+    extensionsApply?: (...args: Parameters<typeof launchCarriesExtensions>) => boolean | Promise<boolean>;
     advanceAfterReport: (run: StoredAgentRun) => Promise<StoredAgentRun | null>;
     /**
      * Enqueues the action phase again for a run an interrupted attempt moved to
@@ -522,7 +524,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, () => options.extensionProfile
+                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent }, options)
                     ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
                     : agent.executeTask(options))),
             );

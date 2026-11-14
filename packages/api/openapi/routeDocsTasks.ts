@@ -18,6 +18,8 @@ import {
   TaskPage,
   TaskSubmission,
   TaskSubmissionRequest,
+  TaskSubmissionExtensions,
+  TaskSubmissionExtensionsQuery,
 } from './schemas.js';
 import { RepositoryEventList, RepositoryEventWait, RepositoryEventsQuery, RepositoryEventsWaitQuery } from './schemasRepositoryEvents.js';
 import { TaskHistory } from './schemasTaskHistory.js';
@@ -215,6 +217,18 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
       400: { description: 'Missing key, invalid body, or the repository, agent or model cannot be used.' },
       403: { description: 'You lack write access to the repository, or the instance is in demo mode.' },
       409: { description: 'The key was already used with different content.' },
+    },
+  },
+  'GET /api/task-submission-extensions': {
+    operationId: 'getTaskSubmissionExtensions',
+    summary: 'Preview the extensions a task would use',
+    description: 'Names of the extension library MCP servers and skills that would apply automatically to a task in this repository for the chosen agent. Never includes URLs, credentials or item limits. Labels on the issue (`disable-mcps`, `disable-skills`, `disable-extensions`) can remove them at launch.',
+    tags: ['Task submissions'],
+    query: TaskSubmissionExtensionsQuery,
+    responses: {
+      200: { description: 'The items that would apply.', schema: TaskSubmissionExtensions },
+      400: { description: 'Missing repository, or the agent or model cannot be used.' },
+      403: { description: 'You lack write access to the repository.' },
     },
   },
   'GET /api/task-submissions/:key': {

@@ -8,6 +8,9 @@ import {
   nextCronOccurrence,
   type AutomationAutonomyMode,
   type AutomationCapability,
+  parseAutomationExtensions,
+  serializeAutomationExtensions,
+  type AutomationExtensions,
 } from '@propr/shared';
 import { db } from '../../db/connection.js';
 import type { Attachment } from '../attachmentService.js';
@@ -28,7 +31,8 @@ export const DEFAULT_AGENT_DEFINITION_PAGE_SIZE = 50;
 export const MAX_AGENT_DEFINITION_PAGE_SIZE = 200;
 
 export interface StoredAgentDefinition {
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+  /** Extension library items added on top of what applies automatically; absent from run snapshots recorded before the field. */
+  extensions?: AutomationExtensions;
   id: string;
   ownerId: string;
   name: string;
@@ -57,7 +61,9 @@ export interface StoredAgentDefinition {
 }
 
 export interface AgentDefinitionRow {
+  /** Pre-library profile selection; read only by the startup library migration. */
   extension_profile?: string | null;
+  extensions?: string | null;
   id: string; owner_id: string; name: string; description: string | null; repositories: string | null;
   prompt: string; attachments: string | null; agent_alias: string | null; model_name: string | null;
   capabilities: string | null; include_previous_reports: boolean | number; previous_reports_limit: number;
@@ -72,7 +78,7 @@ export interface AgentDefinitionRow {
 }
 
 export interface CreateAgentDefinitionInput {
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+  extensions?: AutomationExtensions | null;
   ownerId: string;
   name: string;
   prompt: string;
@@ -110,6 +116,14 @@ export interface AgentDefinitionStoreDependencies {
   now?: () => number;
 }
 
+/**
+ * Runs inside the transaction that writes the definition, before the write,
+ * with the stored definition it will change (null on create). Throwing aborts
+ * the write. Used to recheck state the write depends on under the same lock.
+ */
+export type AgentDefinitionWriteGuard = (trx: Knex.Transaction, current: StoredAgentDefinition | null) => Promise<void>;
+export interface AgentDefinitionWriteOptions extends AgentDefinitionStoreDependencies { guard?: AgentDefinitionWriteGuard }
+
 function statusError(message: string, status: number): Error & { status: number } {
   return Object.assign(new Error(message), { status });
 }
@@ -131,7 +145,7 @@ function isAttachment(value: unknown): value is Attachment {
 /** Pure row mapper; corrupt JSON columns fall back to empty arrays so list pages never crash. */
 export function rowToAgentDefinition(row: AgentDefinitionRow): StoredAgentDefinition {
   return {
-    extensionProfile: row.extension_profile ? JSON.parse(row.extension_profile) : null,
+    extensions: parseAutomationExtensions(row.extensions),
     id: row.id,
     ownerId: row.owner_id,
     name: row.name,
@@ -175,8 +189,10 @@ export function computeAgentDefinitionNextRunAt(
 
 export async function createAgentDefinition(
   input: CreateAgentDefinitionInput,
-  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
+  { database = db, now = Date.now, guard }: AgentDefinitionWriteOptions = {},
 ): Promise<StoredAgentDefinition> {
+  // With a guard, the guard and the insert share one transaction.
+  if (guard && !database.isTransaction) return database.transaction(trx => createAgentDefinition(input, { database: trx, now, guard }));
   const timestamp = now();
   const scheduleCron = input.scheduleCron ?? null;
   const scheduleEnabled = input.scheduleEnabled ?? false;
@@ -184,7 +200,7 @@ export async function createAgentDefinition(
   const row: AgentDefinitionRow = {
     id: randomUUID(),
     owner_id: input.ownerId,
-    extension_profile: input.extensionProfile ? JSON.stringify(input.extensionProfile) : null,
+    extensions: serializeAutomationExtensions(input.extensions),
     name: input.name,
     description: input.description ?? null,
     repositories: JSON.stringify(input.repositories ?? []),
@@ -206,6 +222,7 @@ export async function createAgentDefinition(
     created_at: timestamp,
     updated_at: timestamp,
   };
+  if (guard) await guard(database as Knex.Transaction, null);
   await database(TABLE).insert(row);
   return rowToAgentDefinition(row);
 }
@@ -234,7 +251,7 @@ export async function listAgentDefinitions(
   return { definitions: rows.map(rowToAgentDefinition), total: Number(countRow?.count ?? 0), limit, offset };
 }
 
-export interface UpdateAgentDefinitionOptions extends AgentDefinitionStoreDependencies {
+export interface UpdateAgentDefinitionOptions extends AgentDefinitionWriteOptions {
   /** When set, the update fails with a 409 unless the stored revision matches. */
   expectedRevision?: number;
 }
@@ -248,7 +265,7 @@ function patchToRowChanges(patch: AgentDefinitionPatch): Partial<AgentDefinition
   if (patch.repositories !== undefined) changes.repositories = JSON.stringify(patch.repositories);
   if (patch.agentAlias !== undefined) changes.agent_alias = patch.agentAlias;
   if (patch.modelName !== undefined) changes.model_name = patch.modelName;
-  if (patch.extensionProfile !== undefined) changes.extension_profile = patch.extensionProfile ? JSON.stringify(patch.extensionProfile) : null;
+  if (patch.extensions !== undefined) changes.extensions = serializeAutomationExtensions(patch.extensions);
   if (patch.capabilities !== undefined) changes.capabilities = JSON.stringify(patch.capabilities);
   if (patch.includePreviousReports !== undefined) changes.include_previous_reports = patch.includePreviousReports;
   if (patch.previousReportsLimit !== undefined) changes.previous_reports_limit = patch.previousReportsLimit;
@@ -286,20 +303,23 @@ function patchToScheduleChanges(
  * 409; the write itself is also conditional on the revision read, so two
  * concurrent updates cannot both succeed. `next_run_at` is recomputed whenever
  * the schedule or enablement changes. Returns undefined when the definition
- * does not exist for this owner.
+ * does not exist for this owner. With a `guard`, the read, the guard and the
+ * write share one transaction, and the guard sees the definition read there.
  */
 export async function updateAgentDefinition(
   id: string,
   ownerId: string,
   patch: AgentDefinitionPatch,
-  { expectedRevision, database = db, now = Date.now }: UpdateAgentDefinitionOptions = {},
+  { expectedRevision, database = db, now = Date.now, guard }: UpdateAgentDefinitionOptions = {},
 ): Promise<StoredAgentDefinition | undefined> {
+  if (guard && !database.isTransaction) return database.transaction(trx => updateAgentDefinition(id, ownerId, patch, { expectedRevision, database: trx, now, guard }));
   const row = await database(TABLE).where({ id, owner_id: ownerId }).first<AgentDefinitionRow | undefined>();
   if (!row) return undefined;
   const current = rowToAgentDefinition(row);
   if (expectedRevision !== undefined && expectedRevision !== current.revision) {
     throw statusError(`Automation definition was changed (revision ${current.revision}, expected ${expectedRevision}); reload and retry`, 409);
   }
+  if (guard) await guard(database as Knex.Transaction, current);
 
   const timestamp = now();
   const changes = { ...patchToRowChanges(patch), ...patchToScheduleChanges(patch, current, timestamp) };

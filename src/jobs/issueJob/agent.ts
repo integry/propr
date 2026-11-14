@@ -8,6 +8,7 @@ import {
   resolveAgentTerminationReason, repositoryWorkflowPrompt
 } from '@propr/core';
 import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@propr/core';
+import { taskRunExtensionRequest } from '@propr/shared';
 import type { ExecutionParams, JobContext } from './types.js';
 import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
@@ -137,7 +138,11 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   let agentResult;
   try {
     const extensionSubmission = await findIssueSubmission(issueRef);
-    const extensions = submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, issueNumber: issueRef.number });
+    const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+    const submitted = await submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository, issueNumber: issueRef.number });
+    // Library items that apply automatically, resolved at launch; the issue's labels
+    // (already loaded for the prompt) can only remove them.
+    const extensions = { extensions: taskRunExtensionRequest({ kind: 'issue', repository, labels: currentIssueData.data.labels, base: submitted.extensions }) };
     agentResult = await runRepositoryWorkflow({
       workflow: repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
       redisClient, taskId, stateManager, correlatedLogger,

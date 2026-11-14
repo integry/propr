@@ -17,6 +17,8 @@ additional.addSubnet('fec0::', 10, 'ipv6');
 additional.addSubnet('2002::', 16, 'ipv6');
 additional.addSubnet('2001::', 32, 'ipv6');
 additional.addAddress('168.63.129.16', 'ipv4');
+/** The upstream MCP server refused the credential (HTTP 401); an OAuth server may refresh and retry once. */
+export class ExtensionUpstreamUnauthorizedError extends Error { constructor() { super('MCP credential refused'); } }
 export function extensionPublicAddress(address: string): boolean {
   return !isNonPublicAddress(address) && !additional.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4');
 }
@@ -78,6 +80,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
       headers: { Host: url.host, 'Content-Type': 'application/json', Accept: 'application/json', 'MCP-Protocol-Version': '2025-03-26', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     }, response => {
       if (response.statusCode === 202 || response.statusCode === 204) { response.destroy(); resolve(null); return; }
+      if (response.statusCode === 401 && token) { response.destroy(); reject(new ExtensionUpstreamUnauthorizedError()); return; }
       if (response.statusCode !== 200 || !response.headers['content-type']?.startsWith('application/json')) { response.destroy(); unavailable(); return; }
       const chunks: Buffer[] = []; let bytes = 0;
       response.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > EXTENSION_LIMITS.responseBytes) { response.destroy(); unavailable(); } else chunks.push(chunk); });

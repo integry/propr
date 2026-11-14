@@ -14,7 +14,7 @@ import {
 import { DEMO_LIVE_DATA_UNAVAILABLE_CODE } from '../permissionGuards.js';
 import { DEMO_VIEWER_MANAGEMENT_READS } from '../demoViewerRoutes.js';
 import { createRequestRateLimiter } from '../requestRateLimits.js';
-import { createExtensionProfileRoutes } from '../routes/extensionProfileRoutes.js';
+import { createExtensionLibraryRoutes } from '../routes/extensionProfileRoutes.js';
 import { createManagementRouteEntries, registerRouteEntries, type RouteEntry } from '../routeRegistry.js';
 
 after(async () => closeConnection());
@@ -157,10 +157,10 @@ describe('demo viewer authorization', () => {
     });
   });
 
-  test('extension profiles, which hold sealed secrets, are explained rather than read by the demo', async () => {
+  test('the extension library, which holds sealed secrets, is explained rather than read by the demo', async () => {
     configureDemoMode(true);
-    const store = new Proxy({}, { get: () => () => { throw new Error('demo must not read extension profiles'); } });
-    const routes = createExtensionProfileRoutes(store as never);
+    const store = new Proxy({}, { get: () => () => { throw new Error('demo must not read the extension library'); } });
+    const routes = createExtensionLibraryRoutes(store as never);
     const app = express();
     app.use(fixtureRateLimiter());
     app.use((req, _res, next) => {

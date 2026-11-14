@@ -175,7 +175,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     validateAttachmentBaseUrlConfig();
 
     // No jobs may be claimed against a partially migrated schema.
-    await runMigrations();
+    // Then copy extension profiles into the extension library once (never blocks startup).
+    await runMigrations().then(async () => (await import('./extensionLibraryStartup.js')).migrateExtensionLibrary());
     // A malformed or mismatched per-agent admission policy must not leave an agent uncapped.
     await (await import('@propr/core')).validateAgentRunAdmissionPolicy();
 

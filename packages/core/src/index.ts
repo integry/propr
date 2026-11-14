@@ -509,6 +509,7 @@ export type {
     Agent,
     AgentConfig,
     AgentTaskOptions,
+    AgentExtensionRequest,
     AgentToolPolicy,
     AgentToolPolicyMcpServer,
     AgentExecutionResult,
@@ -690,6 +691,8 @@ export { generateManagedDependencies } from './storage/managedDependencies.js';
 export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storage/lifecycle.js';
 
 export * from './extensions/extensionProfileStore.js';
+export { extensionResolutionEvent, type ExtensionResolutionEvent } from './extensions/extensionRunResolution.js';
+export { migrateExtensionProfilesToLibrary, ensureExtensionLibraryMigrated, extensionLibraryMigrationSettled, legacyAutomationExtensionsPending, type ExtensionLibraryMigrationReport } from './extensions/extensionLibraryMigration.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';

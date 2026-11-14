@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { user } from './dashboard-sections.fixture';
 
@@ -259,30 +259,68 @@ test.describe('mobile creation sheet', () => {
 });
 
 
-test('demoted owner can clear a stored extension profile', async ({ page }) => {
-  const selection = { instanceId: 'c63a25da-fd5e-4a46-8fe1-566136e12289', profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: 1 };
-  await page.route('**/api/auth/user', route => route.fulfill({ json: { ...user, instanceRole: 'member', instancePermissions: [], authorization: { role: 'member', permissions: [], source: 'local' } } }));
+const libraryBundleId = '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e';
+const extensionLibrary = {
+  instanceId: 'c63a25da-fd5e-4a46-8fe1-566136e12289', revision: 2, version: 1, createdAt: now, updatedAt: now, auditActor: '1', secrets: {},
+  servers: [
+    { kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search'], capability: 'read', authentication: 'none', repositories: [], agents: [], autoApply: false },
+    { kind: 'https', name: 'retired-docs', url: 'https://old.example.com/mcp', enabled: false, tools: ['search'], capability: 'read', authentication: 'none', repositories: [], agents: [], autoApply: false },
+    { kind: 'https', name: 'other-repo', url: 'https://other.example.com/mcp', enabled: true, tools: ['search'], capability: 'read', authentication: 'none', repositories: ['example/other'], agents: [], autoApply: false },
+  ],
+  skills: [{ bundleId: libraryBundleId, enabled: true, repositories: [], agents: [], autoApply: true }],
+  skillBundles: [{ id: libraryBundleId, instanceId: 'c63a25da-fd5e-4a46-8fe1-566136e12289', name: 'Documentation review', digest: 'd'.repeat(64), files: 1, bytes: 512, source: { kind: 'archive', filename: 'review.tar' }, requirements: [], createdAt: now, auditActor: '1' }],
+};
+
+test('an administrator adds additional extensions to an automation and sees skipped and automatic items', async ({ page }) => {
+  await page.route('**/api/auth/user', route => route.fulfill({ json: { ...user, role: 'admin', permissions: ['instance.manage_settings'] } }));
+  await page.route('**/api/instance/extensions/v1', route => route.fulfill({ json: { instanceId: extensionLibrary.instanceId, library: extensionLibrary, bundles: [], catalog: [] } }));
+  let stored = { servers: ['retired-docs'], skills: [] as string[] };
   await page.route(`**/api/automation-definitions/${definition.id}`, route => {
     if (route.request().method() === 'PATCH') {
-      expect(route.request().postDataJSON().extensionProfile).toBeNull();
-      return route.fulfill({ json: { definition: { ...definition, extensionProfile: null, revision: 2 } } });
+      expect(route.request().headers()['x-propr-extensions']).toBe('1');
+      stored = route.request().postDataJSON().extensions;
+      return route.fulfill({ json: { definition: { ...definition, extensions: stored, revision: 2 } } });
     }
-    return route.fulfill({ json: { definition: { ...definition, extensionProfile: selection } } });
+    return route.fulfill({ json: { definition: { ...definition, extensions: stored } } });
   });
   await page.goto(`/automations/${definition.id}`);
   const form = page.getByTestId('agent-editor');
-  const selector = form.getByRole('combobox', { name: 'Agent extension profile' });
-  await expect(selector).toBeEnabled(); await selector.scrollIntoViewIfNeeded();
-  await expect(selector.locator('option')).toHaveCount(2);
-  await expect(selector.locator('option:checked')).toContainText('Selected revision unavailable');
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    await selector.locator('..').locator('..').screenshot({ path: path.join(directory, 'extension-profile-clear.png'), animations: 'disabled' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [{ path: '.propr/previews/extension-profile-clear.png', title: 'Clear unavailable extension profile', description: 'An automation owner who was demoted can select None to clear a stored profile.' }], toolSuggestions: [] }));
-  }
-  await selector.selectOption('');
-  await expect(selector).toHaveCount(0);
-  const save = form.getByRole('button', { name: 'Save changes' });
+  const items = form.getByRole('group', { name: 'Additional extensions' });
+  await items.scrollIntoViewIfNeeded();
+  await expect(form.getByText(/on top of the items that apply automatically/)).toBeVisible();
+  await expect(items.getByLabel(/Documentation review/)).toHaveAccessibleName(/already applies automatically/);
+  await expect(items.getByLabel(/retired-docs/)).toHaveAccessibleName(/skipped: switched off in the library/);
+  // An item limited to other repositories is not offered.
+  await expect(items.getByLabel(/other-repo/)).toHaveCount(0);
+  await items.getByLabel(/^docs/).check();
+  await expect(items.getByLabel(/Documentation review/)).not.toBeChecked();
+  await capture(items.locator('..'), 'automation-extension-items');
+  const saved = page.waitForRequest(request => request.url().endsWith(`/api/automation-definitions/${definition.id}`) && request.method() === 'PATCH');
+  await form.getByRole('button', { name: 'Save changes' }).click();
+  expect((await saved).postDataJSON().extensions).toEqual({ servers: ['retired-docs', 'docs'], skills: [] });
+  await page.reload();
+  await expect(form.getByRole('group', { name: 'Additional extensions' }).getByLabel(/^docs/)).toBeChecked();
+});
+
+test('a member sees additional extensions read-only and saves without changing them', async ({ page }) => {
+  await page.route('**/api/auth/user', route => route.fulfill({ json: { ...user, instanceRole: 'member', instancePermissions: [], authorization: { role: 'member', permissions: [], source: 'local' } } }));
+  let libraryRequests = 0;
+  await page.route('**/api/instance/extensions/v1', route => { libraryRequests++; return route.fulfill({ status: 403, json: { error: 'Instance settings administration is required' } }); });
+  await page.route(`**/api/automation-definitions/${definition.id}`, route => {
+    if (route.request().method() === 'PATCH') {
+      const body = route.request().postDataJSON();
+      expect(body).not.toHaveProperty('extensions');
+      expect(route.request().headers()['x-propr-extensions']).toBeUndefined();
+      return route.fulfill({ json: { definition: { ...definition, ...body, extensions: { servers: ['docs'], skills: [] }, revision: 2 } } });
+    }
+    return route.fulfill({ json: { definition: { ...definition, extensions: { servers: ['docs'], skills: [] } } } });
+  });
+  await page.goto(`/automations/${definition.id}`);
+  const form = page.getByTestId('agent-editor');
+  await expect(form.getByText('An instance administrator can change the extensions this automation adds.')).toBeVisible();
+  await expect(form.getByRole('group', { name: 'Additional extensions' })).toHaveCount(0);
+  await form.locator('#agent-description').fill('Hourly digest, edited by a member.');
   const saved = page.waitForResponse(response => response.url().endsWith(`/api/automation-definitions/${definition.id}`) && response.request().method() === 'PATCH');
-  await save.click(); expect((await saved).status()).toBe(200);
+  await form.getByRole('button', { name: 'Save changes' }).click(); expect((await saved).status()).toBe(200);
+  expect(libraryRequests).toBe(0);
 });
