@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { formatPluginManifestIssues, pluginIdSchema, pluginManifestSchema, type PluginManifest } from '@propr/shared';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { formatPluginManifestIssues, pluginIdSchema, pluginManifestSchema, type PluginHandlerModule, type PluginManifest } from '@propr/shared';
 
 /**
  * The official plugins shipped with ProPR. Each plugin is a folder
@@ -15,6 +15,8 @@ export const PLUGIN_REGISTRY_VERSION = 1;
 export const PLUGIN_DEVELOPMENT_FLAG = 'PROPR_PLUGINS_DEVELOPMENT';
 /** The registry package folder: the parent of `src/` and of `dist/`. */
 export const PLUGINS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** This module runs compiled (from `dist/`), where handlers are the compiled `dist/plugins/<id>/handlers.js`. */
+const COMPILED = import.meta.url.endsWith('.js');
 
 export interface PluginRegistryEntry {
   id: string;
@@ -29,6 +31,8 @@ export interface PluginAssets {
   icon: string;
   skills: { name: string; path: string }[];
   automationTemplates: { id: string; path: string }[];
+  /** The plugin's handlers module, when its folder has a `handlers.ts`: the compiled file when running compiled and it exists. */
+  handlers: string | null;
 }
 
 export interface OfficialPlugin {
@@ -65,7 +69,22 @@ export function resolvePluginAssets(directory: string, manifest: PluginManifest)
     icon: at(manifest.icon),
     skills: manifest.contributes.skills.map(skill => ({ name: skill.name, path: at(skill.path) })),
     automationTemplates: manifest.contributes.automationTemplates.map(template => ({ id: template.id, path: at(template.path) })),
+    handlers: resolvePluginHandlersModule(directory),
   };
+}
+
+/**
+ * The handlers module of a plugin folder: `handlers.ts` exporting named async
+ * functions. Compiled, the registry loads `dist/plugins/<id>/handlers.js` of
+ * this package, or a `handlers.js` next to the source in another root.
+ */
+export function resolvePluginHandlersModule(directory: string): string | null {
+  const source = path.join(directory, 'handlers.ts');
+  if (!existsSync(source)) return null;
+  if (!COMPILED) return source;
+  const root = path.dirname(directory);
+  const compiled = root === PLUGINS_ROOT ? path.join(PLUGINS_ROOT, 'dist', 'plugins', path.basename(directory), 'handlers.js') : path.join(directory, 'handlers.js');
+  return existsSync(compiled) ? compiled : source;
 }
 
 /** Read and validate one plugin folder. Throws with every manifest problem. */
@@ -108,4 +127,26 @@ export function officialPlugins(options: OfficialPluginOptions = {}): OfficialPl
 /** One official plugin by id, subject to the same development filter as the list. */
 export function getOfficialPlugin(id: string, options: OfficialPluginOptions = {}): OfficialPlugin | undefined {
   return officialPlugins(options).find(plugin => plugin.manifest.id === id);
+}
+
+const handlerModules = new Map<string, Promise<PluginHandlerModule | null>>();
+
+/**
+ * The handlers of one official plugin (named async functions of its
+ * `handlers.ts`), or null when it has none or is not in the registry. Only
+ * exported functions are handlers. Loaded once per module path.
+ */
+export async function loadPluginHandlers(id: string, options: OfficialPluginOptions = {}): Promise<PluginHandlerModule | null> {
+  const file = getOfficialPlugin(id, options)?.assets.handlers;
+  if (!file) return null;
+  let module = handlerModules.get(file);
+  if (!module) {
+    module = import(pathToFileURL(file).href).then((loaded: Record<string, unknown>) => Object.freeze(Object.fromEntries(
+      Object.entries(loaded).filter(([, value]) => typeof value === 'function'),
+    )) as PluginHandlerModule);
+    // A failed import is retried on the next call rather than cached.
+    module.catch(() => handlerModules.delete(file));
+    handlerModules.set(file, module);
+  }
+  return module;
 }

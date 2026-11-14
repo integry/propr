@@ -12660,6 +12660,7 @@ components:
                               - issues.comment
                               - pull_requests.read
                               - pull_requests.comment
+                              - labels.write
                               - repositories.read
                               - notifications.send
                           description:
@@ -12846,6 +12847,7 @@ components:
                           - issues.comment
                           - pull_requests.read
                           - pull_requests.comment
+                          - labels.write
                           - repositories.read
                           - notifications.send
                     acknowledgements:
@@ -12949,6 +12951,7 @@ components:
                   - issues.comment
                   - pull_requests.read
                   - pull_requests.comment
+                  - labels.write
                   - repositories.read
                   - notifications.send
             pendingAcknowledgements:
@@ -13110,6 +13113,8 @@ components:
                       - disconnect_oauth
                       - set_oauth_client
                       - clear_oauth_client
+                      - handler_call
+                      - handler_refused
                   actor:
                     type: string
                   at:
@@ -13320,6 +13325,7 @@ components:
                           - issues.comment
                           - pull_requests.read
                           - pull_requests.comment
+                          - labels.write
                           - repositories.read
                           - notifications.send
                       description:
@@ -13506,6 +13512,7 @@ components:
                       - issues.comment
                       - pull_requests.read
                       - pull_requests.comment
+                      - labels.write
                       - repositories.read
                       - notifications.send
                 acknowledgements:
@@ -13609,6 +13616,7 @@ components:
               - issues.comment
               - pull_requests.read
               - pull_requests.comment
+              - labels.write
               - repositories.read
               - notifications.send
         pendingAcknowledgements:

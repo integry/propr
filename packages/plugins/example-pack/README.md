@@ -17,5 +17,8 @@ It contributes:
   `--registry` points at the test registry.
 - **example-notes**: a skill that tells the agent how to write short notes.
 - **example-weekly-digest**: a report-only automation template.
+- **recordEvent** (`handlers.ts`): a handler that keeps the newest journal
+  event per repository as a cursor in `ctx.state` and logs a task event's task
+  state. `../test/testing.test.ts` tests it with the plugin test kit.
 
 See [Plugins](../../../docs/docs/features/plugins.md) for the manifest format.

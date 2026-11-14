@@ -3,7 +3,7 @@ import logger, { generateCorrelationId } from './logger.js';
 import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
-    TaskStates, isBookkeepingCancellation, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
+    TaskStates, isBookkeepingCancellation, taskCreationMetadata, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type TaskTerminalReason, type ResumableTaskInfo, type TaskStateExpectation,
     type NonTerminalTaskScanResult, type TaskStateUpdateResult, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
@@ -107,7 +107,7 @@ export class WorkerStateManager {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
             state: TaskStates.PENDING, createdAt: timestamp,
             updatedAt: timestamp, version: 1, attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
+            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created', ...taskCreationMetadata(issueRef) }]
         };
     }
 
@@ -142,7 +142,7 @@ export class WorkerStateManager {
             await db('tasks').insert(taskData).onConflict('task_id').ignore();
             const historyData = {
                 task_id: taskId, state: TaskStates.PENDING,
-                timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
+                timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify(taskCreationMetadata(issueRef).metadata ?? {})
             };
             await db('task_history').insert(historyData);
             correlatedLogger.debug({ taskId }, 'Task state persisted to database');

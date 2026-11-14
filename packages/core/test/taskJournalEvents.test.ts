@@ -285,3 +285,16 @@ test('the domain migration keeps rows, indexes and the seq high-water mark, and 
     await scratch.destroy();
   }
 });
+
+test('a task a plugin handler created names the plugin in its first task event and its job data', async () => {
+  await manager.createTaskStateIfAbsent('issue-61', issueRef({ number: 61, requestedBy: 'plugin:fixture-handlers' }) as never, null, 'job-issue-61');
+  const [first] = await database('task_history').where({ task_id: 'issue-61' }).orderBy('history_id');
+  assert.equal(first.state, 'pending');
+  assert.deepEqual(JSON.parse(first.metadata), { requestedBy: 'plugin:fixture-handlers' });
+  const task = await database('tasks').where({ task_id: 'issue-61' }).first();
+  assert.equal(JSON.parse(task.initial_job_data).requestedBy, 'plugin:fixture-handlers');
+  assert.deepEqual((await manager.getTaskState('issue-61'))?.history[0].metadata, { requestedBy: 'plugin:fixture-handlers' });
+  // A task with no plugin behind it keeps an empty first event.
+  await manager.createTaskStateIfAbsent('issue-62', issueRef({ number: 62 }) as never, null, 'job-issue-62');
+  assert.equal((await database('task_history').where({ task_id: 'issue-62' }).first()).metadata, '{}');
+});

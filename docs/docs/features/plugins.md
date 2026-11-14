@@ -14,9 +14,9 @@ integrity check as the [extension library's local package servers](./agent-exten
 
 :::note Work in progress
 This page describes the plugin **manifest**, the official plugin registry, the
-[Plugins page](#the-plugins-page) and the installation API. A plugin's
-generated settings form, handlers, webhooks and commands are added by later
-releases.
+[Plugins page](#the-plugins-page), the installation API and the
+[handler interface](#handlers). Delivering events to handlers, inbound webhooks
+and commands are added by later releases.
 :::
 
 ## Where plugins live
@@ -68,8 +68,10 @@ than silently ignored.
 
 `events.read`, `tasks.read`, `tasks.create`, `issues.read`, `issues.create`,
 `issues.comment`, `pull_requests.read`, `pull_requests.comment`,
-`repositories.read` and `notifications.send`. A command can only use
-permissions the plugin requests, and event subscriptions need `events.read`.
+`labels.write`, `repositories.read` and `notifications.send`. A command can only
+use permissions the plugin requests, and event subscriptions need `events.read`.
+[Handlers](#what-ctxpropr-can-do) show which `ctx.propr` operation needs which
+permission.
 
 ### Connections
 
@@ -501,3 +503,108 @@ it gets a `-2`, `-3`, … suffix, so catalog ids are always unique. Ids depend
 only on the registry, not on which plugins are enabled. Disabling or
 uninstalling the plugin hides its templates; automations created from them are
 ordinary automations and are not changed.
+
+## Handlers
+
+A plugin folder may contain a `handlers.ts` that exports named async functions.
+Each handler receives `(input, ctx)` and returns nothing or a small JSON result
+(at most 16 KiB). `ctx` is the only way a handler touches anything. Handlers of
+official plugins run in-process, but only through this interface, so the same
+plugin could later run out of process. How ProPR runs them is described in
+[Plugin runtime](../architecture/plugin-runtime.md).
+
+```ts
+// packages/plugins/my-plugin/handlers.ts
+import { definePluginHandler, type PluginEventInput } from '@propr/shared';
+
+export const onTaskEvent = definePluginHandler<PluginEventInput>(async (input, ctx) => {
+  const { event } = input;
+  const thread = await ctx.state.get<string>(`thread:${event.entityId}`);
+  const response = await ctx.http('chat-token')('https://api.chat.example/messages', {
+    method: 'POST', json: { thread, text: `Task ${event.entityId} is ${event.type}` },
+  });
+  if (!response.ok) ctx.log.warn('chat refused the message', { status: response.status });
+});
+```
+
+| `ctx` member | What it is |
+| --- | --- |
+| `ctx.settings` | The installation's settings, validated against the manifest, with its defaults. Read-only. |
+| `ctx.repositories` | The repository limit (`owner/repo` list), or `null` for all repositories. |
+| `ctx.propr` | ProPR, limited to the granted permissions and the repository limit (below). |
+| `ctx.http(connection?)` | `fetch`-like outbound HTTPS to the manifest's `outboundHosts` only. With a `token` connection name, its credential is injected. |
+| `ctx.state` | A small JSON key-value store for this installation: `get`, `set`, `delete`, `keys(prefix?)`. |
+| `ctx.log` | `debug`, `info`, `warn`, `error(message, fields?)`: structured lines returned with the run, redacted. |
+| `ctx.signal` | Aborted when the handler runs past its 30 second limit. |
+
+The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
+(a [repository journal event](../architecture/repository-event-journal.md)),
+`{ kind: 'webhook', webhook, headers, body, receivedAt }`,
+`{ kind: 'command', command, args, repository, actor }` or
+`{ kind: 'invoke', payload }`. Delivering events, webhooks and commands to
+handlers is added by later releases.
+
+A call `ctx` refuses throws a `PluginSdkError` with a `code` such as
+`permission_denied`, `repository_not_allowed`, `host_not_allowed`,
+`insecure_url`, `private_address`, `connection_unavailable` or `state_limit`.
+
+### What `ctx.propr` can do
+
+| Operation | Permission |
+| --- | --- |
+| `getPullRequest(repository, number)` | `pull_requests.read` |
+| `getIssue(repository, number)` | `issues.read` |
+| `getTask(taskId)` | `tasks.read` |
+| `listEvents({ repository, afterSeq?, domains?, limit? })` | `events.read` |
+| `createIssue(repository, { title, body?, labels? })` | `issues.create` |
+| `createTask(repository, issueNumber)`: an ordinary one-shot task | `tasks.create` |
+| `commentOnPullRequest(repository, number, body)` | `pull_requests.comment` |
+| `commentOnIssue(repository, number, body)` | `issues.comment` |
+| `addLabel(repository, number, label)`, `removeLabel(…)` | `labels.write` |
+
+A permission counts only when the administrator granted it and the current
+manifest still asks for it. Each call must also stay inside the plugin's
+repository limit.
+
+Every call, allowed or refused, is recorded in the plugin's audit trail. The
+actor is `plugin:<id>` and the action is `handler_call` or `handler_refused`.
+Issues and comments a plugin writes end with `<!-- propr-plugin:<id> -->`. A
+task it creates records `requestedBy: plugin:<id>` in its first task event.
+
+Handlers observe and create new work: they never interact with a running task.
+
+### Outbound HTTP and secrets
+
+`ctx.http` reaches only the hostnames in `outboundHosts`, over HTTPS, on the
+default port, and only when every address the name resolves to is public.
+Private, loopback and link-local addresses and local names are refused, and
+redirects are not followed. Requests are limited to 256 KiB and 10 seconds, and
+responses to 1 MiB.
+
+Handlers never receive raw secrets. `ctx.http('my-token')` opens the stored
+`token` connection only to send the request, as `Authorization: Bearer …`, and
+removes the credential from the response before the handler reads it. Log lines,
+error messages and results pass the secret redaction.
+
+### State
+
+`ctx.state` holds up to 256 keys and 256 KiB per installation, each value at
+most 16 KiB of JSON. It is meant for cursors and mappings, for example "this
+pull request maps to that chat thread". It is kept when the plugin is disabled
+and deleted when it is uninstalled.
+
+### Imports
+
+Handler code may import `@propr/shared` (the SDK types live there), Node
+built-ins and files of its own package, but nothing else from ProPR. A lint rule
+for `packages/plugins/**` enforces this. Run it with
+`npm run lint -w @propr/plugins`.
+
+### Testing handlers
+
+`packages/plugins/testing` provides `createTestPluginContext()`: a fake `ctx`
+with recorded `ctx.propr` calls, scripted `ctx.http` responses, in-memory state
+and captured logs. It applies the same permission, repository, host and state
+checks as the real one. `packages/plugins/test/testing.test.ts` uses it on the
+example plugin's `recordEvent` handler.
+

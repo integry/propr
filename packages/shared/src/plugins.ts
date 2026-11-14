@@ -23,6 +23,7 @@ export const PLUGIN_PERMISSIONS = [
   'tasks.read', 'tasks.create',
   'issues.read', 'issues.create', 'issues.comment',
   'pull_requests.read', 'pull_requests.comment',
+  'labels.write',
   'repositories.read',
   'notifications.send',
 ] as const;
@@ -36,6 +37,7 @@ export const PLUGIN_PERMISSION_DESCRIPTIONS: Record<PluginPermission, string> = 
   'issues.comment': 'Comment on issues',
   'pull_requests.read': 'Read pull requests',
   'pull_requests.comment': 'Comment on pull requests',
+  'labels.write': 'Add and remove labels on issues and pull requests',
   'repositories.read': 'List repositories ProPR manages',
   'notifications.send': 'Send ProPR notifications',
 };
@@ -51,7 +53,7 @@ export const PLUGIN_LIMITS = {
 } as const;
 
 /** Folders of the registry package that can never be plugin ids. */
-export const RESERVED_PLUGIN_IDS = ['src', 'dist', 'test', 'node_modules', 'propr'] as const;
+export const RESERVED_PLUGIN_IDS = ['src', 'dist', 'test', 'testing', 'node_modules', 'propr'] as const;
 export const pluginIdSchema = z.string().max(48).regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/, 'Plugin ids are lowercase slugs such as my-plugin')
   .refine(id => !(RESERVED_PLUGIN_IDS as readonly string[]).includes(id), 'This plugin id is reserved');
 /** Names of connections, settings, commands and webhooks inside one plugin. */

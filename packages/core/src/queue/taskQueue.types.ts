@@ -41,6 +41,8 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
     repositoryWorkflowDeferred?: boolean;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
+    /** Who asked for the task when it was not a GitHub user: `plugin:<id>` for a task a plugin handler created. */
+    requestedBy?: string;
     /** Authenticated user retrying failed submission-backed work; owns that retry instead of the submitter. */
     retryRequesterId?: string;
     /** Issue comment carrying a requested retry's instructions; posted by the app, so exempt from author filtering. */
