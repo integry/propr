@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import type { UltrafixOutcome } from '@propr/shared';
 import {
     generateCorrelationId,
+    parentScopeFromIssueBody,
     getIssueQueue,
     getPendingPrCommentsKey,
     withUltrafixLabelTransition,
@@ -62,6 +64,8 @@ export async function finishUltrafixLoop(input: {
 
     const goalReached = completedAction === 'review'
         && hasReviewReachedGoal(reviewStatus, latestScore, state.goal, isPartial);
+    const outcome: UltrafixOutcome = goalReached ? 'goal_reached' : blocked ? 'stopped' : styleFindingsOnly ? 'style_findings_only'
+        : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted';
     const finishResult = await withUltrafixLabelTransition(redisClient, identity, async () => {
         if (!await isUltrafixAutomaticWorkCurrent(redisClient, identity, workEpoch)) return false;
         const completedState = await completeLoop(redisClient, {
@@ -70,6 +74,7 @@ export async function finishUltrafixLoop(input: {
             completionReason: decisionReason,
             finalScore: latestScore,
             workEpoch,
+            outcome,
         });
         if (!completedState) return false;
         if (!goalReached) {
@@ -117,8 +122,7 @@ export async function finishUltrafixLoop(input: {
         reason: decisionReason,
         score: latestScore,
         cycleCount: state.cycleCount,
-        outcome: goalReached ? 'goal_reached' : blocked ? 'stopped' : styleFindingsOnly ? 'style_findings_only'
-            : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted',
+        outcome,
         goal: state.goal,
         maxCycles: state.maxCycles,
     };
@@ -149,6 +153,16 @@ export function getUltrafixStepJobId(
 function isDuplicateJobError(err: unknown): boolean {
     const error = err as { name?: string; message?: string } | null;
     return error?.name === 'JobAlreadyExistsError' || /already exists/i.test(error?.message ?? '');
+}
+
+/** Validate the durable original command, including for recovered synthetic steps. */
+function ultrafixAdmissionParent(params: UltrafixContinuationParams): string | undefined {
+    const { owner, repo, pullRequestNumber, ultrafixMeta } = params;
+    if (!ultrafixMeta?.sourceCommentId) return undefined;
+    return parentScopeFromIssueBody(ultrafixMeta.instructions, {
+        repoOwner: owner, repoName: repo, number: pullRequestNumber,
+        commentId: ultrafixMeta.sourceCommentId, commentType: ultrafixMeta.sourceCommentType,
+    });
 }
 
 /**
@@ -198,6 +212,7 @@ export async function enqueueNextStep(
         await issueQueue.add('processPullRequestComment', {
             ...(params.userId ? { userId: params.userId } : {}),
             pullRequestNumber,
+            agentAdmissionParent: ultrafixAdmissionParent(params),
             repoOwner: owner,
             repoName: repo,
             correlationId: nextCorrelationId,

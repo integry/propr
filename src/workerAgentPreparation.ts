@@ -80,3 +80,34 @@ export async function processAgentImagePreparationJob(job: Job<AgentImagePrepara
         throw new Error(status.error || `Unified agent image ${status.imageTag || job.data.imageTag} is unavailable`);
     }
 }
+
+/** Refreshes the registry after an agent/synthetic-agent config event and
+ * re-checks the per-agent admission policy against the new aliases. */
+export async function refreshAgentRegistryForConfigUpdate(subtype: string): Promise<void> {
+    logger.info({ subtype }, 'Refreshing AgentRegistry due to agent configuration update...');
+    try {
+        const registry = AgentRegistry.getInstance();
+        if (subtype === 'agents_update') {
+            await registry.prepareImagesAndRefresh();
+        } else {
+            await registry.refresh();
+        }
+        const imageStatus = registry.getOperationalStatus().unifiedAgentImage;
+        if (imageStatus.status !== 'ready') {
+            throw new Error(imageStatus.error || `Agent image ${imageStatus.imageTag || 'unknown'} is unavailable`);
+        }
+        const agents = registry.getAllAgents();
+        logger.info({
+            agentCount: agents.length,
+            agents: agents.map(agent => ({
+                alias: agent.config.alias,
+                type: agent.config.type,
+                enabled: agent.config.enabled,
+            })),
+        }, 'AgentRegistry refreshed successfully');
+    } catch (error) {
+        logger.error({ error: (error as Error).message }, 'Failed to refresh AgentRegistry');
+    }
+    // Aliases can change at runtime: report a stale policy clearly, never crash.
+    await (await import('@propr/core')).revalidateAgentRunAdmissionPolicy();
+}

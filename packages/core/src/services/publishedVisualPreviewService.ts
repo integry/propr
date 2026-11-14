@@ -1,6 +1,9 @@
 import { trustedGitHubAttachmentUrl, VISUAL_PREVIEW_MARKER } from './visualPreviewService.js';
+import { MANAGED_ORIGINAL_LINK_PREFIX } from './visualPreviewRendering.js';
 
 const MAX_PREVIEW_ASSETS = 8;
+/** The current link line, and the one published before it was shortened. */
+const MANAGED_ORIGINAL_LINK_PREFIXES = [MANAGED_ORIGINAL_LINK_PREFIX, '[View the full-resolution original in ProPR Connect]('];
 
 export type { PublishedVisualPreview } from '@propr/shared';
 import type { PublishedVisualPreview } from '@propr/shared';
@@ -35,7 +38,7 @@ export function parsePublishedVisualPreviews(body: unknown): PublishedVisualPrev
     let descriptionIndex = mediaIndex + 1;
     while (descriptionIndex < lines.length && !lines[descriptionIndex].startsWith('### ')) {
       const line = lines[descriptionIndex];
-      if (!line.startsWith('[View the full-resolution original in ProPR Connect](')
+      if (!MANAGED_ORIGINAL_LINK_PREFIXES.some(prefix => line.startsWith(prefix))
         && !line.startsWith('The GitHub inline attachment could not be published')
         && !line.startsWith('The preview could not be uploaded to GitHub')) descriptionLines.push(line);
       descriptionIndex += 1;

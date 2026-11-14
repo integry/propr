@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 308
-    documented: 69
-    undocumented: 239
+    total: 326
+    documented: 88
+    undocumented: 238
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -52,7 +52,7 @@ tags:
   - name: Planner
     description: Plan Studio drafts, revisions and generation.
   - name: Repositories
-    description: "Repository context: summaries, chat, to-dos, media and GitHub metadata."
+    description: "Repository context: summaries, chat, to-dos, media, GitHub metadata and the change-event journal."
   - name: Observability
     description: Dashboard, statistics, queue, activity and LLM metrics.
   - name: Notifications
@@ -974,6 +974,28 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/agent-run-admission:
+    get:
+      operationId: getAgentRunAdmission
+      summary: Report agent-run admission capacity per agent
+      description: Read-only. Whether physical agent-run admission is enabled, the global limit and its source, and globally and per direct agent the ceiling and the running, reserved, recovering, waiting (by reason) and deferred executions; nested executions are counted apart from holders. Also lists queue worker concurrency and repository workflow slots, each labelled. Subscription usage is not included. No tokens, container IDs or environment values; task IDs only for tasks the caller may see (none for the read-only demo viewer). With admission off, `admission.enabled` is false and the other limits are still returned. See docs/operations/agent-run-capacity.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The admission report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunAdmissionReport"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-auth: member
   /api/agent-runs/{runId}:
     get:
       operationId: getApiAgentRunsRunId
@@ -3781,23 +3803,61 @@ paths:
       x-undocumented: true
       x-legacy-error: true
     post:
-      operationId: postApiGoals
-      summary: POST /api/goals
-      description: This route is registered but not documented yet.
+      operationId: createGoal
+      summary: Create a goal
+      description: |-
+        Creates a goal and starts autonomous work on it. The request and response bodies are not described here yet; the MCP tool `create_goal` and `get_goal_capabilities` document the creation contract.
+
+        Creation is idempotent per user and `Idempotency-Key`: repeating a request with the same key and the same body returns the goal it created (`200`) instead of creating another one. Reusing a key with a different body, or a key already used for another goal operation, is rejected with `409`.
+
+        Send JSON, or `multipart/form-data` with the JSON in a `payload` field and up to 10 attachments in `files`.
       tags:
         - Goals
       security:
         - sessionCookie: []
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Client-chosen identity of this creation, for example a UUID. Required; a missing or longer key is rejected with `400`.
+          schema:
+            type: string
+            maxLength: 255
       responses:
         "200":
-          description: Success. The response body is not documented yet.
+          description: "A replay: the goal this key already created, as `{ goal }`."
+        "201":
+          description: The goal was created and its first attempt queued, as `{ goal }`.
+        "400":
+          description: Missing or invalid `Idempotency-Key`, or an invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: The repository is not accessible to this installation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The `Idempotency-Key` was already used with a different body or for a different goal operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: The goal was saved but its first attempt could not be queued; recovery retries it. The body carries `goalId`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
-      x-undocumented: true
       x-legacy-error: true
   /api/goals/attention:
     get:
@@ -4223,8 +4283,8 @@ paths:
       x-legacy-error: true
   /api/instance/extensions/v1:
     get:
-      operationId: listAgentExtensionProfiles
-      summary: List secret-free current extension revisions, the versioned contract and operator catalog identity/digest, tools/capability and opaque secret count/configuration status.
+      operationId: getAgentExtensionLibrary
+      summary: Read the current secret-free extension library revision, the imported skill bundles, the versioned contract and the operator catalog identity/digest, tools/capability and opaque secret count/configuration status, and where items are used (automations that add them, profiles migrated items came from) in one call.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4237,7 +4297,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JsonObject"
+                $ref: "#/components/schemas/ExtensionLibraryRead"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4247,26 +4307,19 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/delete:
-    post:
-      operationId: deleteAgentExtensionProfile
-      summary: Disable new launches without changing active snapshots.
+  /api/instance/extensions/v1/history:
+    get:
+      operationId: getAgentExtensionLibraryHistory
+      summary: Read recent immutable, secret-free library revisions, newest first.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
       security:
         - sessionCookie: []
         - bearerAuth: []
-      requestBody:
-        required: true
-        description: "selection: exact instanceId, profileId and revision."
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Profile tombstoned.
+          description: Revision history.
           content:
             application/json:
               schema:
@@ -4280,10 +4333,10 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/profiles:
+  /api/instance/extensions/v1/items/enabled:
     post:
-      operationId: saveAgentExtensionProfile
-      summary: Create an immutable revision with optional write-only secret replacements.
+      operationId: setAgentExtensionItemEnabled
+      summary: Enable or disable one library item. Only enabled changes; configuration, limits and the stored secret are kept. Disabling is never refused.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4299,14 +4352,79 @@ paths:
             type: string
       requestBody:
         required: true
-        description: input follows ExtensionProfileInput v1; expected is the exact instance/profile/revision selection for updates. secrets maps server names to replacement tokens or null; values are never returned.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ExtensionProfileSave"
+              $ref: "#/components/schemas/ExtensionItemEnabledRequest"
       responses:
         "200":
-          description: Secret-free revision.
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/library:
+    post:
+      operationId: saveAgentExtensionLibrary
+      summary: Save the library as a new revision with optional write-only secret replacements. Removing or renaming an item an automation adds explicitly is refused with the automations named.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: input follows ExtensionLibraryInput v1; expectedRevision is the revision the edit is based on (0 before the first save). secrets maps server names to replacement tokens or null; values are never returned.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionLibrarySave"
+      responses:
+        "200":
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/audit:
+    get:
+      operationId: getAgentExtensionOAuthAudit
+      summary: "Read the OAuth audit trail: connect, disconnect, discarded and Needs sign-in events with the actor and time, newest first."
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Audit events; never tokens.
           content:
             application/json:
               schema:
@@ -4320,10 +4438,32 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/profiles/{profileId}/history:
+  /api/instance/extensions/v1/oauth/callback:
     get:
-      operationId: getAgentExtensionProfileHistory
-      summary: Read immutable, secret-free revision history.
+      operationId: completeAgentExtensionOAuth
+      summary: OAuth redirect URI. Validates the single-use state (bound to the session, item and endpoint), the issuer, exchanges the code with the PKCE verifier and stores the tokens. Returns a small HTML page.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: HTML result page that tells the Settings tab to refresh.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/check:
+    post:
+      operationId: checkAgentExtensionOAuth
+      summary: Run OAuth discovery for an MCP server URL (401 challenge or well-known protected resource metadata, then authorization server metadata) and report which registration method a sign-in would use. Stores nothing and sends no credential.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4331,18 +4471,193 @@ paths:
         - sessionCookie: []
         - bearerAuth: []
       parameters:
-        - name: profileId
-          in: path
+        - name: X-ProPR-Extensions
+          in: header
           required: true
+          description: Must be 1. JSON requests only.
           schema:
             type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthCheckRequest"
       responses:
         "200":
-          description: Revision history.
+          description: Discovery result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionOAuthCheckResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/client-metadata.json:
+    get:
+      operationId: getAgentExtensionOAuthClientMetadata
+      summary: ProPR's public OAuth Client ID Metadata Document; its URL is the client id. Not found without a public HTTPS base URL.
+      tags:
+        - Configuration
+      security: []
+      responses:
+        "200":
+          description: "Client metadata: ProPR's name and this instance's redirect URI."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/JsonObject"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/disconnect:
+    post:
+      operationId: disconnectAgentExtensionOAuth
+      summary: Revoke the connection at the provider when it advertises revocation, then delete the stored tokens. Recorded in the OAuth audit trail; creates no library revision.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthItemRequest"
+      responses:
+        "200":
+          description: Whether the provider confirmed revocation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/start:
+    post:
+      operationId: startAgentExtensionOAuth
+      summary: Start the OAuth sign-in of an `oauth` library server for this administrator session. Requires a public HTTPS base URL.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthItemRequest"
+      responses:
+        "200":
+          description: Authorization URL to open in a new tab.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionOAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/packages/resolve:
+    post:
+      operationId: resolveAgentExtensionPackage
+      summary: "Check a local package server: look up an exact npm package version in the registry and report its integrity value and executable. Nothing is downloaded, installed or executed."
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: ecosystem (npm), package, exact version and optional executable name. Ranges and tags are rejected.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonObject"
+      responses:
+        "200":
+          description: Resolved version, SHA-512 integrity value, the executable that will run and every executable the package declares.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/secrets:
+    post:
+      operationId: replaceAgentExtensionSecret
+      summary: Replace or clear the write-only Bearer token of one library server as a new revision.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionSecretReplaceRequest"
+      responses:
+        "200":
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4487,7 +4802,7 @@ paths:
   /api/instance/extensions/v1/validate:
     post:
       operationId: validateAgentExtensionMcp
-      summary: Validate connectivity without disclosing any upstream response content.
+      summary: Validate connectivity of enabled library servers without disclosing any upstream response content.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4496,7 +4811,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
-        description: "selection: exact instanceId, profileId and revision."
+        description: Empty object.
         content:
           application/json:
             schema:
@@ -5841,6 +6156,183 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/blocked-events:
+    get:
+      operationId: listPlanExecutionBlockedEvents
+      summary: List the blocked events of a plan's epic execution
+      description: Every time an issue of the execution became blocked (with its reason kind and text), and every resolution of such a blocker, oldest first. A repeated observation of the same blocked state is recorded once. Page with `cursor`; poll with the last `nextCursor` to read only new events.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: executionId
+          in: query
+          required: false
+          description: Defaults to the plan's current execution.
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          description: "`nextCursor` of an earlier page; omit to read from the first event."
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Page size; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: A page of events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueBlockedEventPage"
+        "400":
+          description: The cursor or limit is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: EpicQueueBlockedEventsQuery
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/issues/{issueNumber}/retry:
+    post:
+      operationId: retryPlanExecutionIssue
+      summary: Retry a blocked issue of an epic execution
+      description: "Clears the blocker and dispatches the issue again under the queue's normal guards (a paused plan holds it; a graph starts it once ready within its limit). An issue closed without merge is reopened first; one whose run reported a blocker is put back to pending. A wait for a human merge or a label handoff keeps its claim and is re-evaluated. Works for issues started through MCP `implement_plan`. Idempotent: repeating it answers `already_retried`."
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: issueNumber
+          in: path
+          required: true
+          description: GitHub issue number of an issue in the execution.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpicQueueRetryRequest"
+      responses:
+        "200":
+          description: The blocker is cleared and the issue is dispatched under the normal guards.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionResult"
+        "400":
+          description: The body or issue number is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: The issue is not part of the execution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        "409":
+          description: "Refused: a stale execution (`STALE_EXECUTION`), an issue in flight (`IN_FLIGHT`) or already done (`ALREADY_DONE`), a changed state (`STATE_CHANGED`), or, for retry, an issue that is not blocked (`NOT_BLOCKED`) or waits for setup (`NOT_RETRYABLE`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/issues/{issueNumber}/skip:
+    post:
+      operationId: skipPlanExecutionIssue
+      summary: Skip a pending or blocked issue of an epic execution
+      description: "The queue treats the issue as finished for scheduling: a sequential execution moves on to the next issue; in a graph execution its dependents wait on the skipped prerequisite unless `satisfiesDependents` is true. The GitHub issue is never closed or edited. Idempotent: skipping a skipped issue answers `already_skipped`."
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: issueNumber
+          in: path
+          required: true
+          description: GitHub issue number of an issue in the execution.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpicQueueSkipRequest"
+      responses:
+        "200":
+          description: The issue is skipped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionResult"
+        "400":
+          description: The body or issue number is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: The issue is not part of the execution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        "409":
+          description: "Refused: a stale execution (`STALE_EXECUTION`), an issue in flight (`IN_FLIGHT`) or already done (`ALREADY_DONE`), a changed state (`STATE_CHANGED`), or, for retry, an issue that is not blocked (`NOT_BLOCKED`) or waits for setup (`NOT_RETRYABLE`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
   /api/planner/drafts/{id}/execution-settings:
     patch:
       operationId: patchApiPlannerDraftsIdExecutionSettings
@@ -6395,6 +6887,60 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/pull-requests/{number}/readiness:
+    get:
+      operationId: getPullRequestReadiness
+      summary: Get the readiness verdict of a pull request
+      description: "Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. The caller needs read access to the repository on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after it is proven. See the gate and reason-code tables in the API reference."
+      tags:
+        - Tasks
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: number
+          in: path
+          required: true
+          description: Pull request number.
+          schema:
+            type: string
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo` of the pull request."
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The readiness verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullRequestReadiness"
+        "400":
+          description: "`INVALID_INPUT`: the number or repository is malformed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the caller cannot read the repository on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "502":
+          description: "`GITHUB_UNAVAILABLE`: GitHub did not return the pull request, or could not be reached to check repository access; the read is safe to retry."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: PullRequestReadinessQuery
+      x-propr-auth: member
   /api/pull-requests/{number}/scores:
     get:
       operationId: getApiPullRequestsNumberScores
@@ -6850,6 +7396,328 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/repository-events:
+    get:
+      operationId: listRepositoryEvents
+      summary: List repository change events after a cursor
+      description: "Reads the durable change-event journal of one repository (pull request, epic queue and plan issue changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned."
+      tags:
+        - Repositories
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance."
+          schema:
+            type: string
+        - name: afterCursor
+          in: query
+          required: false
+          description: Opaque cursor from an earlier response for this repository. Only events after it are returned.
+          schema:
+            type: string
+            maxLength: 512
+        - name: fromStart
+          in: query
+          required: false
+          description: "Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - name: domains
+          in: query
+          required: false
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          schema:
+            type: string
+        - name: types
+          in: query
+          required: false
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          schema:
+            type: string
+        - name: pullRequest
+          in: query
+          required: false
+          description: Only events of this pull request number.
+          schema:
+            type: integer
+            minimum: 1
+        - name: planId
+          in: query
+          required: false
+          description: Only events of this plan.
+          schema:
+            type: string
+            maxLength: 255
+        - name: limit
+          in: query
+          required: false
+          description: Most events returned; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Matching events and the cursor to resume from.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepositoryEventList"
+        "400":
+          description: "`INVALID_INPUT` (a malformed parameter), `CURSOR_INVALID` (the cursor is malformed or was not issued here) or `CURSOR_WRONG_REPOSITORY` (the cursor belongs to another repository). The `hint` says how to recover."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: "`CURSOR_EXPIRED`: the cursor is older than the retained journal, so events after it may have been pruned. This is never reported as an empty result."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: RepositoryEventsQuery
+      x-propr-auth: member
+  /api/repository-events/wait:
+    get:
+      operationId: waitRepositoryEvents
+      summary: Wait for repository change events after a cursor
+      description: "Blocks for at most `timeoutSeconds` (default 15, max 30) until a matching event exists after the cursor, then returns it like the list read. Returns at once when matching events already exist. A timeout is an ordinary `200` with `outcome: timeout` and the starting cursor unchanged. Disconnecting only releases the waiter. Concurrent waits per owner are limited on each API process, counted together with MCP `wait_repository_events`."
+      tags:
+        - Repositories
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance."
+          schema:
+            type: string
+        - name: afterCursor
+          in: query
+          required: false
+          description: Opaque cursor from an earlier response for this repository. Only events after it are returned.
+          schema:
+            type: string
+            maxLength: 512
+        - name: fromStart
+          in: query
+          required: false
+          description: "Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - name: domains
+          in: query
+          required: false
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          schema:
+            type: string
+        - name: types
+          in: query
+          required: false
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          schema:
+            type: string
+        - name: pullRequest
+          in: query
+          required: false
+          description: Only events of this pull request number.
+          schema:
+            type: integer
+            minimum: 1
+        - name: planId
+          in: query
+          required: false
+          description: Only events of this plan.
+          schema:
+            type: string
+            maxLength: 255
+        - name: limit
+          in: query
+          required: false
+          description: Most events returned; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: timeoutSeconds
+          in: query
+          required: false
+          description: Seconds to block when no matching event exists yet; defaults to 15.
+          schema:
+            type: number
+            minimum: 0
+            maximum: 30
+      responses:
+        "200":
+          description: Matching events, or a timeout with the unchanged cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepositoryEventWait"
+        "400":
+          description: "`INVALID_INPUT`, `CURSOR_INVALID` or `CURSOR_WRONG_REPOSITORY`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/EnvelopeUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "410":
+          description: "`CURSOR_EXPIRED`: the cursor is older than the retained journal."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: "`WAIT_LIMIT`: too many repository event waits are open for this owner on this server."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/EnvelopeUnexpectedError"
+      x-propr-query-type: RepositoryEventsWaitQuery
+      x-propr-auth: member
+  /api/stats/cost:
+    get:
+      operationId: getCostExport
+      summary: Export LLM cost grouped by day, repository, agent, model, effort, execution type or outcome
+      description: One row per group of agent executions (`llm_executions`) started in the period. Repository comes from the execution's task; agent and execution type from the matching LLM log call. Executions without a task have no repository and are left out when filtering by repository.
+      tags:
+        - Observability
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: Bounds executions by when they started; omitted means all time.
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 30d
+              - 90d
+              - 1y
+              - all
+        - name: repository
+          in: query
+          required: false
+          description: "`owner/repo`, or `all` (default)."
+          schema:
+            type: string
+        - name: group_by
+          in: query
+          required: false
+          description: Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The grouped rows and their totals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CostExport"
+        "400":
+          description: "`period`, `repository` or `group_by` is invalid."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: CostExportQuery
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/stats/cost.csv:
+    get:
+      operationId: getCostExportCsv
+      summary: Export LLM cost as CSV
+      description: "One row per group of agent executions (`llm_executions`) started in the period. Repository comes from the execution's task; agent and execution type from the matching LLM log call. Executions without a task have no repository and are left out when filtering by repository. A header row, then one row per group: the grouped dimensions in column order, then executions, tasks, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd. Unknown values are empty cells."
+      tags:
+        - Observability
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: Bounds executions by when they started; omitted means all time.
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 30d
+              - 90d
+              - 1y
+              - all
+        - name: repository
+          in: query
+          required: false
+          description: "`owner/repo`, or `all` (default)."
+          schema:
+            type: string
+        - name: group_by
+          in: query
+          required: false
+          description: Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: RFC 4180 CSV attachment.
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          description: "`period`, `repository` or `group_by` is invalid."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: CostExportQuery
+      x-propr-auth: member
+      x-legacy-error: true
   /api/stats/dashboard:
     get:
       operationId: getApiStatsDashboard
@@ -7148,6 +8016,61 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-undocumented: true
+      x-legacy-error: true
+  /api/task-submission-extensions:
+    get:
+      operationId: getTaskSubmissionExtensions
+      summary: Preview the extensions a task would use
+      description: Names of the extension library MCP servers and skills that would apply automatically to a task in this repository for the chosen agent. Never includes URLs, credentials or item limits. Labels on the issue (`disable-mcps`, `disable-skills`, `disable-extensions`) can remove them at launch.
+      tags:
+        - Task submissions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/name` of an enabled repository you can push to."
+          schema:
+            type: string
+            pattern: ^[\w.-]+\/[\w.-]+$
+        - name: agentAlias
+          in: query
+          required: false
+          description: Agent the task would use. Omit for the instance default.
+          schema:
+            type: string
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The items that would apply.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSubmissionExtensions"
+        "400":
+          description: Missing repository, or the agent or model cannot be used.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: You lack write access to the repository.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: TaskSubmissionExtensionsQuery
+      x-propr-auth: member
       x-legacy-error: true
   /api/task-submissions:
     post:
@@ -8634,6 +9557,367 @@ paths:
       x-legacy-error: true
 components:
   schemas:
+    AgentRunAdmissionAgent:
+      type: object
+      properties:
+        alias:
+          type: string
+          description: Direct agent alias (never a synthetic alias).
+        ceiling:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0
+            - type: "null"
+          description: PROPR_AGENT_RUN_ALIAS_LIMITS entry; null = global limit only.
+        inUse:
+          type: integer
+          minimum: 0
+          description: "What the ceiling is compared with: holders plus nested executions counted against it."
+        holders:
+          $ref: "#/components/schemas/AgentRunAdmissionStateCounts"
+        nested:
+          type: object
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            chargedUnderParent:
+              type: integer
+              minimum: 0
+            countedAgainstCeiling:
+              type: integer
+              minimum: 0
+          required:
+            - total
+            - chargedUnderParent
+            - countedAgainstCeiling
+          additionalProperties: false
+        waiting:
+          $ref: "#/components/schemas/AgentRunAdmissionWaitingCounts"
+        deferred:
+          type: integer
+          minimum: 0
+          description: Queue jobs delayed until this agent has capacity.
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRunAdmissionTask"
+      required:
+        - alias
+        - ceiling
+        - inUse
+        - holders
+        - nested
+        - waiting
+        - deferred
+        - tasks
+      additionalProperties: false
+      description: Admission state of one direct agent.
+    AgentRunAdmissionConfiguration:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - current
+            - uninitialized
+            - pending_generation
+            - mismatch
+            - missing
+          description: 'current: compatible protocol; the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. pending_generation: compatible protocol and the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. mismatch: incompatible protocol, same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused. A higher generation resolves limit/generation mismatches only within a compatible protocol. For incompatible protocols, draining and raising the generation are insufficient: follow "Rolling restarts with mixed versions" in the agent-run capacity operations docs. Drain with the existing version, stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key; never clear holder records to force an upgrade. missing: nothing stored while holder records remain; every launch is refused.'
+        admitting:
+          type: boolean
+          description: "False when admission refuses every launch with the configured limit and generation: `limit` minus `inUse` is then not usable capacity."
+        stored:
+          anyOf:
+            - type: object
+              properties:
+                limit:
+                  type: integer
+                  exclusiveMinimum: 0
+                generation:
+                  type: integer
+                  minimum: 0
+              required:
+                - limit
+                - generation
+              additionalProperties: false
+            - type: "null"
+          description: Limit and generation of the stored admission configuration; null when none (or none readable) is stored.
+      required:
+        - status
+        - admitting
+        - stored
+      additionalProperties: false
+      description: The stored admission configuration compared with the configured global limit and generation. The admission protocol prefix is checked; the Docker daemon identity is neither shown nor compared.
+    AgentRunAdmissionReport:
+      type: object
+      properties:
+        asOf:
+          type: string
+          format: date-time
+        admission:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            agentCeilingsConfigured:
+              type: boolean
+            global:
+              anyOf:
+                - type: object
+                  properties:
+                    limit:
+                      type: integer
+                      exclusiveMinimum: 0
+                      description: Global limit configured on the answering process; enforced only while `configuration.admitting`.
+                    limitSource:
+                      type: string
+                      enum:
+                        - PROPR_AGENT_RUN_LIMIT
+                        - hosted_entitlement
+                    generation:
+                      type: integer
+                      minimum: 0
+                      description: Admission generation configured on the answering process (PROPR_AGENT_RUN_GENERATION, default 0).
+                    configuration:
+                      $ref: "#/components/schemas/AgentRunAdmissionConfiguration"
+                    nestedLimit:
+                      type: integer
+                      exclusiveMinimum: 0
+                    nestedLimitSource:
+                      type: string
+                      enum:
+                        - PROPR_AGENT_RUN_NESTED_LIMIT
+                        - default
+                    inUse:
+                      type: integer
+                      minimum: 0
+                      description: Top-level executions; each takes one global slot.
+                    holders:
+                      $ref: "#/components/schemas/AgentRunAdmissionStateCounts"
+                    unattributedHolders:
+                      type: integer
+                      minimum: 0
+                    nested:
+                      type: object
+                      properties:
+                        total:
+                          type: integer
+                          minimum: 0
+                        chargedUnderParent:
+                          type: integer
+                          minimum: 0
+                        countedAgainstOtherAgent:
+                          type: integer
+                          minimum: 0
+                      required:
+                        - total
+                        - chargedUnderParent
+                        - countedAgainstOtherAgent
+                      additionalProperties: false
+                    waiting:
+                      $ref: "#/components/schemas/AgentRunAdmissionWaitingCounts"
+                    deferred:
+                      type: integer
+                      minimum: 0
+                  required:
+                    - limit
+                    - limitSource
+                    - generation
+                    - configuration
+                    - nestedLimit
+                    - nestedLimitSource
+                    - inUse
+                    - holders
+                    - unattributedHolders
+                    - nested
+                    - waiting
+                    - deferred
+                  additionalProperties: false
+                - type: "null"
+              description: Null when admission is off or its state could not be read.
+            unavailable:
+              description: Why the admission state is missing although admission is enabled.
+              type: string
+          required:
+            - enabled
+            - agentCeilingsConfigured
+            - global
+          additionalProperties: false
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRunAdmissionAgent"
+        queueWorkers:
+          type: object
+          properties:
+            label:
+              type: string
+            inUse:
+              anyOf:
+                - type: integer
+                  minimum: 0
+                - type: "null"
+            total:
+              anyOf:
+                - type: integer
+                  minimum: 0
+                - type: "null"
+              description: Sum of the concurrency live workers report; null when unknown.
+            workers:
+              anyOf:
+                - type: integer
+                  minimum: 0
+                - type: "null"
+          required:
+            - label
+            - inUse
+            - total
+            - workers
+          additionalProperties: false
+        repositoryWorkflowSlots:
+          type: object
+          properties:
+            label:
+              type: string
+            repositories:
+              type: array
+              items:
+                type: object
+                properties:
+                  repository:
+                    type: string
+                  inUse:
+                    type: integer
+                    minimum: 0
+                  limit:
+                    type: integer
+                    exclusiveMinimum: 0
+                  waiting:
+                    type: integer
+                    minimum: 0
+                required:
+                  - repository
+                  - inUse
+                  - limit
+                  - waiting
+                additionalProperties: false
+              description: Every repository with a limit and running work that the caller may see; the list is complete, never truncated.
+            unavailable:
+              description: Why repository usage could not be read; `repositories` is then empty and means unknown, not idle.
+              type: string
+          required:
+            - label
+            - repositories
+          additionalProperties: false
+        subscriptionUsage:
+          type: string
+          description: Subscription usage is reported elsewhere; this says where.
+      required:
+        - asOf
+        - admission
+        - agents
+        - queueWorkers
+        - repositoryWorkflowSlots
+        - subscriptionUsage
+      additionalProperties: false
+      description: What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.
+    AgentRunAdmissionStateCounts:
+      type: object
+      properties:
+        reserved:
+          type: integer
+          minimum: 0
+          description: Admitted, container not started yet.
+        running:
+          type: integer
+          minimum: 0
+        draining:
+          type: integer
+          minimum: 0
+          description: Finished parents that keep their slot until their nested executions end.
+        recovering:
+          type: integer
+          minimum: 0
+          description: Holders whose removal is not confirmed yet, including expired leases; nothing else is admitted meanwhile.
+        total:
+          type: integer
+          minimum: 0
+      required:
+        - reserved
+        - running
+        - draining
+        - recovering
+        - total
+      additionalProperties: false
+      description: Admitted executions by state.
+    AgentRunAdmissionTask:
+      type: object
+      properties:
+        taskId:
+          type: string
+        alias:
+          type:
+            - string
+            - "null"
+        state:
+          type: string
+          enum:
+            - reserved
+            - running
+            - draining
+            - recovering
+            - waiting
+        waitReason:
+          type: string
+          enum:
+            - global_limit
+            - alias_limit
+            - recovering
+            - starting
+        nested:
+          type: boolean
+        since:
+          type: string
+          format: date-time
+      required:
+        - taskId
+        - alias
+        - state
+        - nested
+      additionalProperties: false
+      description: A task holding or waiting for a slot. Listed only when the caller may see the task.
+    AgentRunAdmissionWaitingCounts:
+      type: object
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        globalLimit:
+          type: integer
+          minimum: 0
+          description: Waiting because the instance-wide limit is full.
+        agentCeiling:
+          type: integer
+          minimum: 0
+          description: Waiting because the agent's own ceiling is full.
+        recovering:
+          type: integer
+          minimum: 0
+          description: Waiting until an unconfirmed holder is removed.
+        starting:
+          type: integer
+          minimum: 0
+          description: Registered; first admission reply still pending.
+      required:
+        - total
+        - globalLimit
+        - agentCeiling
+        - recovering
+        - starting
+      additionalProperties: false
+      description: Launches waiting at the admission boundary, by reason. Jobs deferred to the queue are counted separately.
     AssignableUsers:
       type: object
       properties:
@@ -8724,6 +10008,27 @@ components:
         - authorizationSource
       additionalProperties: false
       description: The signed-in GitHub user and their instance role.
+    AutomationExtensions:
+      type: object
+      properties:
+        servers:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+            pattern: ^[a-z][a-z0-9_-]{0,47}$
+        skills:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+      required:
+        - servers
+        - skills
+      additionalProperties: false
+      description: Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.
     Compatibility:
       type: object
       properties:
@@ -8745,6 +10050,172 @@ components:
         - desktopAuthentication
       additionalProperties: false
       description: Version and capability metadata used for client compatibility negotiation.
+    CostExport:
+      type: object
+      properties:
+        period:
+          anyOf:
+            - type: string
+              enum:
+                - 24h
+                - 7d
+                - 30d
+                - 90d
+                - 1y
+                - all
+            - type: "null"
+          description: The requested period; null for all time.
+        repository:
+          type: string
+          description: "`all` or `owner/repo`."
+        group_by:
+          type: array
+          items:
+            type: string
+            enum:
+              - day
+              - repository
+              - agent
+              - model
+              - reasoning_level
+              - execution_type
+              - outcome
+          description: The grouping dimensions, in column order.
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/CostRow"
+          description: Ascending by each dimension in column order; unrecorded values last.
+        totals:
+          $ref: "#/components/schemas/CostFigures"
+      required:
+        - period
+        - repository
+        - group_by
+        - rows
+        - totals
+      additionalProperties: false
+      description: Recorded LLM executions grouped by the requested dimensions.
+    CostFigures:
+      type: object
+      properties:
+        executions:
+          type: integer
+          minimum: 0
+          description: Agent executions in the row.
+        tasks:
+          type: integer
+          minimum: 0
+          description: Distinct tasks with at least one execution in the row.
+        input_tokens:
+          type: integer
+          minimum: 0
+          description: Input tokens, cache reads and writes included, as each execution was priced.
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_creation_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache writes.
+        cache_read_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache reads.
+        cost_usd:
+          anyOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+          description: Recorded cost in USD; null when no execution in the row recorded a cost.
+      required:
+        - executions
+        - tasks
+        - input_tokens
+        - output_tokens
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+        - cost_usd
+      additionalProperties: false
+      description: Execution, task, token and cost totals.
+    CostRow:
+      type: object
+      properties:
+        day:
+          description: UTC day the execution started, `YYYY-MM-DD`. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        repository:
+          description: "`owner/repo` of the execution's task. Present when grouped by it; null when unrecorded."
+          type:
+            - string
+            - "null"
+        agent:
+          description: Agent alias that ran the execution. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        model:
+          description: Model name. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        reasoning_level:
+          description: Effective reasoning level (effort). Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        execution_type:
+          description: Execution type, for example `implementation` or `review`. Present when grouped by it; null when unrecorded.
+          type:
+            - string
+            - "null"
+        outcome:
+          description: Present when grouped by outcome.
+          type: string
+          enum:
+            - success
+            - failed
+        executions:
+          type: integer
+          minimum: 0
+          description: Agent executions in the row.
+        tasks:
+          type: integer
+          minimum: 0
+          description: Distinct tasks with at least one execution in the row.
+        input_tokens:
+          type: integer
+          minimum: 0
+          description: Input tokens, cache reads and writes included, as each execution was priced.
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_creation_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache writes.
+        cache_read_input_tokens:
+          type: integer
+          minimum: 0
+          description: Of `input_tokens`, prompt-cache reads.
+        cost_usd:
+          anyOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+          description: Recorded cost in USD; null when no execution in the row recorded a cost.
+      required:
+        - executions
+        - tasks
+        - input_tokens
+        - output_tokens
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+        - cost_usd
+      additionalProperties: false
+      description: One group of recorded executions.
     DemoModeStatus:
       type: object
       properties:
@@ -9016,6 +10487,188 @@ components:
         - credentialGeneration
       additionalProperties: false
       description: Proof of a provisional pairing, used to activate or cancel it.
+    EpicQueueActionError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - NOT_FOUND
+            - STALE_EXECUTION
+            - IN_FLIGHT
+            - ALREADY_DONE
+            - STATE_CHANGED
+            - NOT_BLOCKED
+            - NOT_RETRYABLE
+      required:
+        - error
+        - code
+      additionalProperties: false
+      description: A refused queue action.
+    EpicQueueActionResult:
+      type: object
+      properties:
+        outcome:
+          type: string
+          enum:
+            - skipped
+            - already_skipped
+            - retried
+            - already_retried
+        executionId:
+          type: string
+        issueNumber:
+          type: integer
+          exclusiveMinimum: 0
+        queue:
+          anyOf:
+            - type: object
+              properties: {}
+              additionalProperties: {}
+            - type: "null"
+          description: The execution queue after the action.
+      required:
+        - outcome
+        - executionId
+        - issueNumber
+        - queue
+      additionalProperties: false
+    EpicQueueBlockedEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0
+          description: Monotonic event id; also the list cursor.
+        draftId:
+          type: string
+          description: The plan.
+        executionId:
+          type: string
+        issueNumber:
+          type: integer
+          exclusiveMinimum: 0
+        position:
+          type: integer
+          minimum: 0
+          description: "The occurrence: a requeued issue starts a new one at a new position."
+        type:
+          type: string
+          enum:
+            - blocked
+            - resolved
+        blockedKind:
+          type: string
+          enum:
+            - closed_unmerged
+            - missing_from_plan
+            - dispatch_failed
+            - agent_blocked
+            - awaiting_human_merge
+            - label_handoff
+            - setup_not_ready
+        reason:
+          type: string
+        blockedEventId:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0
+            - type: "null"
+          description: "For a resolved event: the blocked event it resolves."
+        resolution:
+          anyOf:
+            - type: string
+              enum:
+                - cleared
+                - replaced
+                - retried
+                - skipped
+                - settled
+            - type: "null"
+          description: "How the blocker ended: cleared by the queue, replaced by another blocker, retried or skipped by a person, or settled with the issue."
+        createdAt:
+          type: integer
+          description: Epoch milliseconds.
+      required:
+        - id
+        - draftId
+        - executionId
+        - issueNumber
+        - position
+        - type
+        - blockedKind
+        - reason
+        - blockedEventId
+        - resolution
+        - createdAt
+      additionalProperties: false
+      description: One blocked transition of an issue in an epic execution, or the resolution of one.
+    EpicQueueBlockedEventPage:
+      type: object
+      properties:
+        executionId:
+          description: The listed execution; null when the plan never queued work.
+          type:
+            - string
+            - "null"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EpicQueueBlockedEvent"
+        nextCursor:
+          description: Pass as `cursor` to read the events after this page; unchanged when the page is empty.
+          type:
+            - string
+            - "null"
+        hasMore:
+          type: boolean
+      required:
+        - executionId
+        - events
+        - nextCursor
+        - hasMore
+      additionalProperties: false
+    EpicQueueRetryRequest:
+      type: object
+      properties:
+        executionId:
+          type: string
+          description: The execution read from the execution queue; a newer or finished one refuses the retry.
+        expectedState:
+          description: Refuse with `STATE_CHANGED` unless the issue is still in this state.
+          type: string
+          enum:
+            - pending
+            - dispatched
+            - done
+            - blocked
+            - skipped
+      required:
+        - executionId
+      additionalProperties: false
+    EpicQueueSkipRequest:
+      type: object
+      properties:
+        executionId:
+          type: string
+          description: The execution read from the execution queue; a newer or finished one refuses the skip.
+        expectedState:
+          description: Refuse with `STATE_CHANGED` unless the issue is still in this state.
+          type: string
+          enum:
+            - pending
+            - dispatched
+            - done
+            - blocked
+            - skipped
+        satisfiesDependents:
+          description: "Graph executions: treat the skipped issue as a met prerequisite, so its dependents can start. Skipping again with the other value changes only this option."
+          type: boolean
+      required:
+        - executionId
+      additionalProperties: false
     ErrorEnvelope:
       type: object
       properties:
@@ -9033,32 +10686,49 @@ components:
         - message
       additionalProperties: false
       description: The common error envelope. New routes return it for every 4xx and 5xx response.
-    ExtensionProfileInput:
+    ExtensionItemEnabledRequest:
+      type: object
+      properties:
+        item:
+          anyOf:
+            - type: object
+              properties:
+                kind:
+                  type: string
+                  const: server
+                name:
+                  type: string
+              required:
+                - kind
+                - name
+              additionalProperties: false
+            - type: object
+              properties:
+                kind:
+                  type: string
+                  const: skill
+                bundleId:
+                  type: string
+                  format: uuid
+                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+              required:
+                - kind
+                - bundleId
+              additionalProperties: false
+        enabled:
+          type: boolean
+      required:
+        - item
+        - enabled
+      additionalProperties: false
+    ExtensionLibraryInput:
       type: object
       properties:
         version:
           type: number
           const: 1
-        name:
-          type: string
-          minLength: 1
-          maxLength: 100
-        enabled:
-          type: boolean
-        agentScope:
-          maxItems: 64
-          type: array
-          items:
-            type: string
-            pattern: ^[A-Za-z0-9_-]{1,100}$
-        repositoryScope:
-          maxItems: 64
-          type: array
-          items:
-            type: string
-            pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
-        mcpServers:
-          maxItems: 8
+        servers:
+          maxItems: 32
           type: array
           items:
             oneOf:
@@ -9091,6 +10761,33 @@ components:
                     enum:
                       - none
                       - bearer
+                      - oauth
+                  scopes:
+                    maxItems: 32
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[\x21\x23-\x5b\x5d-\x7e]{1,256}$
+                  clientId:
+                    type: string
+                    pattern: ^[\x21-\x7e]{1,512}$
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
                 required:
                   - kind
                   - name
@@ -9099,6 +10796,9 @@ components:
                   - tools
                   - capability
                   - authentication
+                  - repositories
+                  - agents
+                  - autoApply
                 additionalProperties: false
               - type: object
                 properties:
@@ -9127,6 +10827,23 @@ components:
                     enum:
                       - read
                       - write
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
                 required:
                   - kind
                   - name
@@ -9135,31 +10852,377 @@ components:
                   - enabled
                   - tools
                   - capability
+                  - repositories
+                  - agents
+                  - autoApply
                 additionalProperties: false
-        skillBundleIds:
-          maxItems: 8
+              - type: object
+                properties:
+                  name:
+                    type: string
+                    pattern: ^[a-z][a-z0-9_-]{0,47}$
+                  enabled:
+                    type: boolean
+                  tools:
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]{1,128}$
+                  capability:
+                    type: string
+                    enum:
+                      - read
+                      - write
+                  kind:
+                    type: string
+                    const: package
+                  ecosystem:
+                    type: string
+                    enum:
+                      - npm
+                  package:
+                    type: string
+                    maxLength: 214
+                    pattern: ^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$
+                  version:
+                    type: string
+                    maxLength: 256
+                    pattern: ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$
+                  integrity:
+                    type: string
+                    pattern: ^sha512-[A-Za-z0-9+/]{86}==$
+                  bin:
+                    type: string
+                    pattern: ^[A-Za-z0-9@._-]{1,128}$
+                  args:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      maxLength: 2048
+                      pattern: ^[^\x00\r\n]*$
+                  env:
+                    default: []
+                    maxItems: 32
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          pattern: ^[A-Z_][A-Z0-9_]{0,99}$
+                        value:
+                          type: string
+                          maxLength: 4096
+                          pattern: ^[^\x00\r\n]*$
+                      required:
+                        - name
+                        - value
+                      additionalProperties: false
+                  secretEnv:
+                    default: []
+                    maxItems: 16
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Z_][A-Z0-9_]{0,99}$
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
+                required:
+                  - name
+                  - enabled
+                  - tools
+                  - capability
+                  - kind
+                  - ecosystem
+                  - package
+                  - version
+                  - args
+                  - env
+                  - secretEnv
+                  - repositories
+                  - agents
+                  - autoApply
+                additionalProperties: false
+        skills:
+          maxItems: 32
           type: array
           items:
-            type: string
-            format: uuid
-            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+            type: object
+            properties:
+              bundleId:
+                type: string
+                format: uuid
+                pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+              enabled:
+                type: boolean
+              repositories:
+                default: []
+                maxItems: 64
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+              agents:
+                default: []
+                maxItems: 64
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{1,100}$
+              autoApply:
+                default: true
+                type: boolean
+            required:
+              - bundleId
+              - enabled
+              - repositories
+              - agents
+              - autoApply
+            additionalProperties: false
       required:
         - version
-        - name
-        - enabled
-        - agentScope
-        - repositoryScope
-        - mcpServers
-        - skillBundleIds
+        - servers
+        - skills
       additionalProperties: false
-      description: Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.
-    ExtensionProfileSave:
+      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
+    ExtensionLibraryRead:
+      type: object
+      properties:
+        contract:
+          type: object
+          properties: {}
+          additionalProperties: {}
+        instanceId:
+          type: string
+        library:
+          type: object
+          properties:
+            version:
+              type: number
+              const: 1
+            instanceId:
+              type: string
+            revision:
+              type: integer
+              description: 0 before the first save.
+            createdAt:
+              type: number
+            updatedAt:
+              type: number
+            auditActor:
+              type: string
+            servers:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            skills:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            secrets:
+              type: object
+              propertyNames:
+                type: string
+              additionalProperties:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                required:
+                  - configured
+                additionalProperties: {}
+              description: Presence markers only; secret values are never returned.
+            skillBundles:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+          required:
+            - version
+            - instanceId
+            - revision
+            - createdAt
+            - updatedAt
+            - auditActor
+            - servers
+            - skills
+            - secrets
+            - skillBundles
+          additionalProperties: {}
+        oauth:
+          $ref: "#/components/schemas/ExtensionOAuthInstanceInfo"
+        bundles:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties: {}
+        catalog:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties: {}
+        usage:
+          type: object
+          properties:
+            automations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  servers:
+                    type: array
+                    items:
+                      type: string
+                  skills:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - id
+                  - name
+                  - servers
+                  - skills
+                additionalProperties: false
+            importedFrom:
+              type: object
+              properties:
+                servers:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+                skills:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+              required:
+                - servers
+                - skills
+              additionalProperties: false
+          required:
+            - automations
+            - importedFrom
+          additionalProperties: false
+          description: Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from.
+      required:
+        - contract
+        - instanceId
+        - library
+        - oauth
+        - bundles
+        - catalog
+        - usage
+      additionalProperties: false
+    ExtensionLibraryRevisionResponse:
+      type: object
+      properties:
+        library:
+          type: object
+          properties:
+            version:
+              type: number
+              const: 1
+            instanceId:
+              type: string
+            revision:
+              type: integer
+              description: 0 before the first save.
+            createdAt:
+              type: number
+            updatedAt:
+              type: number
+            auditActor:
+              type: string
+            servers:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            skills:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            secrets:
+              type: object
+              propertyNames:
+                type: string
+              additionalProperties:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                required:
+                  - configured
+                additionalProperties: {}
+              description: Presence markers only; secret values are never returned.
+            skillBundles:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+          required:
+            - version
+            - instanceId
+            - revision
+            - createdAt
+            - updatedAt
+            - auditActor
+            - servers
+            - skills
+            - secrets
+            - skillBundles
+          additionalProperties: {}
+      required:
+        - library
+      additionalProperties: false
+    ExtensionLibrarySave:
       type: object
       properties:
         input:
-          $ref: "#/components/schemas/ExtensionProfileInput"
-        expected:
-          $ref: "#/components/schemas/ExtensionSelection"
+          $ref: "#/components/schemas/ExtensionLibraryInput"
+        expectedRevision:
+          type: integer
+          minimum: 0
         secrets:
           type: object
           propertyNames:
@@ -9168,8 +11231,158 @@ components:
             type:
               - string
               - "null"
+        acknowledgements:
+          description: Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed.
+          type: array
+          items:
+            type: string
       required:
         - input
+        - expectedRevision
+      additionalProperties: false
+    ExtensionOAuthCheckRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        clientId:
+          type: string
+        scopes:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+      required:
+        - url
+      additionalProperties: false
+    ExtensionOAuthCheckResponse:
+      type: object
+      properties:
+        check:
+          type: object
+          properties:
+            authorizationRequired:
+              type: boolean
+            discoveredFrom:
+              type: string
+              enum:
+                - challenge
+                - well_known
+            resource:
+              type: string
+            issuer:
+              type: string
+            scopes:
+              type: array
+              items:
+                type: string
+            registration:
+              anyOf:
+                - type: string
+                  enum:
+                    - metadata_document
+                    - dynamic
+                    - preregistered
+                - type: "null"
+            message:
+              type: string
+            redirectUri:
+              type:
+                - string
+                - "null"
+          required:
+            - authorizationRequired
+            - registration
+            - message
+            - redirectUri
+          additionalProperties: false
+      required:
+        - check
+      additionalProperties: false
+    ExtensionOAuthInstanceInfo:
+      type: object
+      properties:
+        redirectUri:
+          description: Redirect URI to register with a provider; null without a public HTTPS base URL, which disables Connect.
+          type:
+            - string
+            - "null"
+        clientMetadataUrl:
+          description: ProPR's Client ID Metadata Document URL, used as the client id where supported.
+          type:
+            - string
+            - "null"
+        connections:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties:
+            type: object
+            properties:
+              state:
+                type: string
+                enum:
+                  - not_connected
+                  - connected
+                  - needs_sign_in
+              connectedBy:
+                description: Actor id of the administrator who signed in.
+                type: string
+              connectedAt:
+                type: number
+              scopes:
+                description: Scopes the authorization server granted.
+                type: array
+                items:
+                  type: string
+              registration:
+                type: string
+                enum:
+                  - metadata_document
+                  - dynamic
+                  - preregistered
+            required:
+              - state
+            additionalProperties: false
+          description: Connection state by OAuth server name. Tokens are never returned.
+      required:
+        - redirectUri
+        - clientMetadataUrl
+        - connections
+      additionalProperties: false
+      description: OAuth sign-in facts of this instance and the connection state of its OAuth library servers.
+    ExtensionOAuthItemRequest:
+      type: object
+      properties:
+        name:
+          type: string
+      required:
+        - name
+      additionalProperties: false
+    ExtensionOAuthStartResponse:
+      type: object
+      properties:
+        authorizationUrl:
+          type: string
+          description: Provider authorization page to open in a new tab; carries a single-use state bound to this session, PKCE S256 and the resource indicator.
+      required:
+        - authorizationUrl
+      additionalProperties: false
+    ExtensionSecretReplaceRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        secret:
+          type:
+            - string
+            - "null"
+        expectedRevision:
+          type: integer
+          minimum: 0
+      required:
+        - name
+        - secret
       additionalProperties: false
     ExtensionSelection:
       type: object
@@ -9190,6 +11403,7 @@ components:
         - profileId
         - revision
       additionalProperties: false
+      description: Legacy profile selection; no longer accepted for new submissions.
     FollowupHandoffDetail:
       type: object
       properties:
@@ -10003,6 +12217,303 @@ components:
       required:
         - unreadCount
       additionalProperties: false
+    PullRequestReadiness:
+      type: object
+      properties:
+        repository:
+          type: string
+        number:
+          type: integer
+          exclusiveMinimum: 0
+        head:
+          type: string
+          description: Head SHA the verdict was evaluated for.
+        base:
+          type: string
+        state:
+          type: string
+          enum:
+            - open
+            - merged
+            - closed
+        draft:
+          type: boolean
+        verdict:
+          type: string
+          enum:
+            - ready
+            - waiting
+            - blocked
+            - merged
+            - closed
+            - unknown
+          description: "`merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`."
+        gates:
+          type: array
+          items:
+            type: object
+            properties:
+              gate:
+                type: string
+                enum:
+                  - open
+                  - not_draft
+                  - checks
+                  - mergeable
+                  - human_review
+                  - ai_review
+                  - ultrafix
+                  - active_work
+                  - policy
+              status:
+                type: string
+                enum:
+                  - pass
+                  - waiting
+                  - fail
+                  - unknown
+                  - not_applicable
+              reason:
+                type: string
+                description: "Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`."
+              detail:
+                type: string
+            required:
+              - gate
+              - status
+              - reason
+            additionalProperties: false
+          description: "Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy."
+        blockingReasons:
+          type: array
+          items:
+            type: string
+          description: Reason codes of gates with status `fail`.
+        waitingReasons:
+          type: array
+          items:
+            type: string
+          description: Reason codes of gates with status `waiting` or `unknown`.
+        review:
+          anyOf:
+            - type: object
+              properties:
+                score:
+                  type: number
+                goal:
+                  type: number
+                goalReached:
+                  type: boolean
+                reviewedHead:
+                  type:
+                    - string
+                    - "null"
+                matchesCurrentHead:
+                  type: boolean
+              required:
+                - score
+                - goal
+                - goalReached
+                - reviewedHead
+                - matchesCurrentHead
+              additionalProperties: false
+            - type: "null"
+          description: Latest persisted ProPR AI review; null when there is none.
+        ultrafix:
+          anyOf:
+            - type: object
+              properties:
+                active:
+                  type: boolean
+                completionStatus:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - succeeded
+                        - failed
+                    - type: "null"
+                labelPresent:
+                  type: boolean
+              required:
+                - active
+                - completionStatus
+                - labelPresent
+              additionalProperties: false
+            - type: "null"
+          description: Null when the Ultrafix state could not be read.
+        checks:
+          type: object
+          properties:
+            reason:
+              type: string
+              enum:
+                - checks_passing
+                - checks_not_passing
+                - no_ci
+                - waiting_for_ci
+                - unavailable
+            blockingFailed:
+              type: array
+              items:
+                type: string
+            blockingPending:
+              type: array
+              items:
+                type: string
+            nonBlockingCount:
+              type: integer
+              minimum: 0
+          required:
+            - reason
+            - blockingFailed
+            - blockingPending
+            - nonBlockingCount
+          additionalProperties: false
+        autoMerge:
+          type: object
+          properties:
+            eligible:
+              type: string
+              enum:
+                - eligible
+                - ineligible
+                - transient
+            reason:
+              type: string
+              description: Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`.
+            policy:
+              description: Auto-merge policy reason; null when auto-merge is not requested.
+              type:
+                - string
+                - "null"
+          required:
+            - eligible
+            - reason
+            - policy
+          additionalProperties: false
+        evaluatedAt:
+          type: string
+          format: date-time
+      required:
+        - repository
+        - number
+        - head
+        - base
+        - state
+        - draft
+        - verdict
+        - gates
+        - blockingReasons
+        - waitingReasons
+        - review
+        - ultrafix
+        - checks
+        - autoMerge
+        - evaluatedAt
+      additionalProperties: false
+      description: Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state.
+    RepositoryEvent:
+      type: object
+      properties:
+        cursor:
+          type: string
+          description: Resumes immediately after this event.
+        domain:
+          type: string
+          enum:
+            - pull_request
+            - epic_queue
+            - plan_issue
+        type:
+          type: string
+          description: Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`.
+        repository:
+          type: string
+        pullRequest:
+          type: integer
+        issueNumber:
+          type: integer
+        planId:
+          type: string
+        entityId:
+          type: string
+          description: PR number, epic execution id or plan issue id, as text.
+        head:
+          description: Head SHA the event was recorded for, when it concerns one.
+          type: string
+        payload:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties: {}
+          description: Identifiers and small scalars only; never PR bodies, comments, diffs or logs.
+        occurredAt:
+          type: string
+          format: date-time
+      required:
+        - cursor
+        - domain
+        - type
+        - repository
+        - entityId
+        - payload
+        - occurredAt
+      additionalProperties: false
+      description: One durable repository change event.
+    RepositoryEventList:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepositoryEvent"
+          description: Matching events after the cursor, in journal order.
+        cursor:
+          type: string
+          description: After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`.
+        truncated:
+          type: boolean
+          description: More matching events exist after `cursor`.
+      required:
+        - events
+        - cursor
+        - truncated
+      additionalProperties: false
+      description: Repository change events after a cursor. Delivery is at-least-once and ordered.
+    RepositoryEventWait:
+      type: object
+      properties:
+        outcome:
+          type: string
+          enum:
+            - events
+            - timeout
+          description: "`events` when matching events were found; `timeout` otherwise, with the starting cursor unchanged."
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepositoryEvent"
+          description: Matching events after the cursor, in journal order.
+        cursor:
+          type: string
+          description: After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`.
+        truncated:
+          type: boolean
+          description: More matching events exist after `cursor`.
+        waitedMs:
+          type: integer
+          minimum: 0
+        timeoutSeconds:
+          type: number
+      required:
+        - outcome
+        - events
+        - cursor
+        - truncated
+        - waitedMs
+        - timeoutSeconds
+      additionalProperties: false
+      description: Outcome of a bounded wait for repository change events.
     TaskAssignees:
       type: object
       properties:
@@ -10061,6 +12572,37 @@ components:
         - logins
       additionalProperties: false
       description: A change to a task's assignees.
+    TaskAttempt:
+      type: object
+      properties:
+        taskId:
+          type: string
+        attemptNumber:
+          type: integer
+          minimum: 1
+          description: 1 for the original run, then 2, 3, … for each automatic replacement.
+        replacementCause:
+          description: "Why this attempt was created: `infra_lost` or `provider_transient`. Null for the original run."
+          type:
+            - string
+            - "null"
+        state:
+          description: Latest lifecycle state of the attempt.
+          type:
+            - string
+            - "null"
+        createdAt:
+          type:
+            - string
+            - "null"
+      required:
+        - taskId
+        - attemptNumber
+        - replacementCause
+        - state
+        - createdAt
+      additionalProperties: false
+      description: One attempt of an automatic-replacement lineage.
     TaskEvent:
       type: object
       properties:
@@ -10199,11 +12741,8 @@ components:
           description: Lifecycle events, oldest first.
         taskInfo:
           anyOf:
-            - type: object
-              properties: {}
-              additionalProperties: {}
+            - $ref: "#/components/schemas/TaskInfo"
             - type: "null"
-          description: Repository, issue, pull request and agent details of the task.
         budget:
           description: Spend so far against the task's cost cap, when a cap applies.
           type: object
@@ -10215,6 +12754,98 @@ components:
         - taskInfo
       additionalProperties: {}
       description: A task together with its lifecycle events.
+    TaskInfo:
+      type: object
+      properties:
+        repoOwner:
+          type: string
+        repoName:
+          type: string
+        number:
+          description: Pull request number for follow-up tasks, otherwise the issue number.
+          anyOf:
+            - type: integer
+            - type: "null"
+        type:
+          description: "`issue`, `pr-comment`, `goal`, `agent-run` and other task types."
+          type: string
+        issueNumber:
+          description: The issue a pull request follow-up task belongs to.
+          type: integer
+        correlationId:
+          type:
+            - string
+            - "null"
+        title:
+          type:
+            - string
+            - "null"
+        subtitle:
+          type:
+            - string
+            - "null"
+        modelName:
+          type:
+            - string
+            - "null"
+        agentAlias:
+          type:
+            - string
+            - "null"
+        taskKind:
+          description: Automation task kind, for automation report and action tasks.
+          type: string
+        commandMode:
+          type: string
+        ultrafixCycle:
+          type: boolean
+          const: true
+        comments:
+          description: Comments a live or queued follow-up task carries.
+          type: array
+          items: {}
+        followupTarget:
+          description: Where `POST /api/task/{taskId}/followup` posts.
+          type: object
+          properties:
+            taskId:
+              type: string
+            repository:
+              type: string
+            kind:
+              type: string
+              enum:
+                - issue
+                - pull_request
+            number:
+              type: integer
+          required:
+            - taskId
+            - repository
+            - kind
+            - number
+          additionalProperties: false
+        attemptNumber:
+          description: Automatic-replacement attempt number; 1 for an original run. Present for every stored task.
+          type: integer
+          minimum: 1
+        replacesTaskId:
+          description: The earlier attempt this task replaced, or null. Present for every stored task.
+          type:
+            - string
+            - "null"
+        replacedByTaskId:
+          description: The newer attempt that replaced this task, or null. Present for every stored task.
+          type:
+            - string
+            - "null"
+        attemptLineage:
+          description: Every attempt of the lineage, oldest first; only when the task was replaced or is a replacement.
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskAttempt"
+      additionalProperties: false
+      description: Repository, issue, pull request, agent and replacement-lineage details of a task. Live and queued tasks without a stored row omit the lineage fields.
     TaskPage:
       type: object
       properties:
@@ -10342,6 +12973,17 @@ components:
             - string
             - "null"
         taskId:
+          description: The first execution, kept for compatibility; equals `firstTaskId`.
+          type:
+            - string
+            - "null"
+        firstTaskId:
+          description: The submission's first execution.
+          type:
+            - string
+            - "null"
+        latestTaskId:
+          description: "The newest execution of the submission's issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`."
           type:
             - string
             - "null"
@@ -10355,18 +12997,67 @@ components:
         - issueNumber
         - issueUrl
         - taskId
+        - firstTaskId
+        - latestTaskId
         - error
       additionalProperties: false
       description: Progress of a task submission. `queued` means the run was enqueued.
+    TaskSubmissionExtensions:
+      type: object
+      properties:
+        qualified:
+          type: boolean
+          description: False when the agent's runtime does not use extensions (only Claude and Codex do).
+        revision:
+          type: integer
+          description: Current library revision; tasks resolve the library again at launch.
+        servers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              capability:
+                type: string
+                enum:
+                  - read
+                  - write
+            required:
+              - name
+              - capability
+            additionalProperties: false
+          description: MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+            required:
+              - name
+            additionalProperties: false
+      required:
+        - qualified
+        - revision
+        - servers
+        - skills
+      additionalProperties: false
+      description: Library items that would apply automatically to a task for this repository and agent.
     TaskSubmissionRequest:
       type: object
       properties:
         extensionProfile:
+          description: "Removed: extension profiles were replaced by the instance extension library. A non-null value is refused."
           anyOf:
             - $ref: "#/components/schemas/ExtensionSelection"
             - type: "null"
         extensionAllowWrite:
-          description: Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries.
+          description: "Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission's initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`."
+          type: boolean
+        disableExtensions:
+          description: "Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply."
           type: boolean
         repository:
           type: string

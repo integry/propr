@@ -8,6 +8,7 @@ import {
     TaskStates,
     buildGoalPolicyEnvironment,
     cleanupPreparedVisualPreviewEvidence,
+    createGoalParentNonce,
     createWorktreeForIssue,
     db,
     ensureGitRepository,
@@ -16,6 +17,7 @@ import {
     getRepoUrl,
     getStateManager,
     goalAttemptLabel,
+    goalParentScope,
     goalTitleFallback,
     hasNativeGoalControl,
     logger,
@@ -24,6 +26,7 @@ import {
     publishGoalActivity,
     publishGoalTransition,
     recordLLMMetrics,
+    runAsAgentAdmissionParent,
     runWithExecutionAbortSignal,
     type AgentExecutionResult,
     type Agent,
@@ -58,6 +61,8 @@ import { publishGoalVisualPreviews } from './goalVisualPreviewPublisher.js';
 import { labelCompletedGoalPullRequest } from './goalPullRequestLabel.js';
 import { updateCompletedGoalPullRequest } from './goalPullRequestCompletion.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { checkGoalAgentCapacity } from './goalCapacity.js';
+import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
 
 function isRecoverableInterruption(result: AgentExecutionResult): boolean {
     if (result.terminationReason) return true;
@@ -265,7 +270,7 @@ async function recordGoalMetrics(goal: GoalRow, job: GoalJobData, result: AgentE
     if (!await fencedGoal(job)) throw new Error('Goal metrics write was fenced');
     const [repoOwner, repoName] = goal.repository.split('/');
     await recordLLMMetrics({
-        success: result.success, sessionId: result.sessionId, conversationId: result.conversationId,
+        executionId: result.executionId, success: result.success, sessionId: result.sessionId, conversationId: result.conversationId,
         executionTime: result.executionTimeMs, model: result.modelUsed,
         conversationLog: result.conversationLog, tokenUsage: result.tokenUsage, error: result.error,
     }, { number: 0, repoOwner, repoName }, {
@@ -435,10 +440,16 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             ?? GOAL_CONTINUE_INPUT;
     const control = createGoalExecutionControl(data);
     const executionController = new AbortController();
+    // An orchestrating goal waits for the tasks it starts: its session is their
+    // admission parent, so they never wait for the slot it holds (#3480).
+    const parentNonce = goal.launch_strategy === 'orchestrate' ? createGoalParentNonce(goal.goal_id) : undefined;
+    const asParent = <T>(operation: () => Promise<T>): Promise<T> => parentNonce
+        ? runAsAgentAdmissionParent(goalParentScope(parentNonce), operation)
+        : operation();
     return runWithExecutionAbortSignal(
         executionController.signal,
         // Goals follow the instance network policy; the repository workflow file is not read for goals.
-        () => runWithNetworkPolicy({ taskId: goal.current_task_id, correlatedLogger: logger }, () => agent.executeTask({
+        () => runWithNetworkPolicy({ taskId: goal.current_task_id, correlatedLogger: logger }, () => asParent(() => agent.executeTask({
             worktreePath: worktree.worktreePath,
             issueRef: { number: 0, repoOwner: data.repoOwner, repoName: data.repoName },
             prompt,
@@ -455,7 +466,7 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             initialGoalFeedback: liveControl ? checkpointFeedback : undefined,
             continueTerminalGoal: Boolean(goal.continue_requested),
             goalControl: control,
-            environment: buildGoalPolicyEnvironment(goal.launch_strategy),
+            environment: buildGoalPolicyEnvironment(goal.launch_strategy, parentNonce),
             onGoalRearmed: async () => {
                 if (goal.continue_requested && !await fencedGoalUpdate(data, { continue_requested: false })) {
                     throw new Error('Continued goal re-arm lost its attempt claim');
@@ -492,7 +503,7 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             onContainerId: createContainerIdCallback(
                 goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
             ),
-        })),
+        }))),
         goalAttemptLabel(data.generation, data.claimId),
     );
 }
@@ -764,6 +775,8 @@ const defaultGoalResultOperations: GoalResultOperations = {
 };
 
 export interface GoalJobProcessorDependencies {
+    /** The goal's direct agent must have capacity before the claim; throws AgentCapacityError when full. */
+    checkAgentCapacity?: (job: Job<GoalJobData>) => Promise<void>;
     claim: typeof claimGoalAttempt;
     withHeartbeat: typeof withAttemptHeartbeat;
     prepare: typeof prepareClaimedGoalAttempt;
@@ -772,6 +785,7 @@ export interface GoalJobProcessorDependencies {
 }
 
 const defaultGoalJobProcessorDependencies: GoalJobProcessorDependencies = {
+    checkAgentCapacity: checkGoalAgentCapacity,
     claim: claimGoalAttempt,
     withHeartbeat: withAttemptHeartbeat,
     prepare: prepareClaimedGoalAttempt,
@@ -783,12 +797,16 @@ export async function processGoalJob(
     job: Job<GoalJobData>,
     dependencies: GoalJobProcessorDependencies = defaultGoalJobProcessorDependencies,
 ) {
-    const claimed = await dependencies.claim(job.data);
-    if (!claimed) return { status: 'skipped', reason: 'goal_claim_fence' };
-    return dependencies.withHeartbeat(job.data, async () => {
-        const preparation = await dependencies.prepare(job.data, claimed);
-        if (!preparation.ready) return preparation.result;
-        const result = await dependencies.execute(job.data, preparation.value);
-        return handleGoalResult(job.data, preparation.value, result, dependencies.result);
+    // A saturated agent delays this same job before it claims the attempt.
+    return deferCapacityJob(job, async () => {
+        await dependencies.checkAgentCapacity?.(job);
+        const claimed = await dependencies.claim(job.data);
+        if (!claimed) return { status: 'skipped', reason: 'goal_claim_fence' };
+        return dependencies.withHeartbeat(job.data, async () => {
+            const preparation = await dependencies.prepare(job.data, claimed);
+            if (!preparation.ready) return preparation.result;
+            const result = await dependencies.execute(job.data, preparation.value);
+            return handleGoalResult(job.data, preparation.value, result, dependencies.result);
+        });
     });
 }

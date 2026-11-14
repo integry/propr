@@ -88,15 +88,42 @@ function goalWaitSummary(result: Args): string {
   return `Goal wait${condition} timed out after ${result.timeoutSeconds}s. The timeout itself is not a goal failure; the goal is currently ${state}. Retry with cursor ${result.cursor}.`;
 }
 
+/** A repository event read, with the cursor to resume from; a wait timeout is not an error. */
+function repositoryEventsSummary(result: Args): string {
+  const count = Array.isArray(result.events) ? result.events.length : 0;
+  if (result.outcome === 'timeout') return `No matching repository events within ${result.timeoutSeconds}s. Wait again with cursor ${result.cursor}.`;
+  const more = result.truncated ? ' More follow; read again with the cursor.' : '';
+  return `${count} repository events.${more} Resume with cursor ${result.cursor}.`;
+}
+
 /** Digest reads answer a whole-instance question, so they summarize by section. */
 const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   wait_goal: goalWaitSummary,
+  list_repository_events: repositoryEventsSummary,
+  wait_repository_events: repositoryEventsSummary,
   get_current_activity: result => `Across ${result.repositories.length} repositories: ${Object
     .entries(result.sections as Record<string, { count: number }>)
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
     .join(', ')}.`,
   get_recent_activity: result => `${result.events.length} events between ${result.window.since} and ${result.window.until}.`,
+  get_agent_run_admission: admissionSummary,
 };
+
+/** One line per limit the report labels; admission first, then each capped agent. */
+function admissionSummary(result: Args): string {
+  const { admission, agents = [] } = result;
+  if (!admission?.enabled) return 'Agent-run admission is off; queue worker and repository limits still apply.';
+  if (!admission.global) return `Agent-run admission is on, but its state is unavailable: ${admission.unavailable ?? 'unknown reason'}.`;
+  const { global } = admission;
+  const capped = (agents as Args[]).filter(agent => agent.ceiling !== null)
+    .map(agent => `${agent.alias} ${agent.inUse}/${agent.ceiling} (${agent.waiting.agentCeiling} waiting, ${agent.deferred} deferred)`);
+  const { configuration } = global;
+  if (configuration && !configuration.admitting) {
+    return `Agent-run admission refuses every launch: stored configuration ${configuration.status}${configuration.stored ? ` (limit ${configuration.stored.limit}, generation ${configuration.stored.generation})` : ''} vs configured limit ${global.limit}, generation ${global.generation}; ${global.inUse} holding, ${global.waiting.total} waiting, ${global.deferred} deferred.`;
+  }
+  const pending = configuration?.status === 'pending_generation' ? `; generation ${global.generation} pending: the next admission fences every older reservation first` : '';
+  return `Agent runs ${global.inUse}/${global.limit} in use, ${global.waiting.total} waiting (${global.waiting.globalLimit} on the global limit, ${global.waiting.agentCeiling} on an agent ceiling), ${global.deferred} deferred${pending}${capped.length ? `; ${capped.join('; ')}` : ''}.`;
+}
 
 function readSummary(tool: McpTool, args: Args, result: Args): string {
   if (tool.name === 'get_task') return `Task ${args.taskId}: ${result.latestEvent?.state || 'no execution state yet'}.`;

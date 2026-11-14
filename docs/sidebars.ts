@@ -122,6 +122,7 @@ const sidebars: SidebarsConfig = {
         'architecture/coding-agent-integration',
         'architecture/agent-runtime',
         'architecture/git-management',
+        'architecture/repository-event-journal',
         'operations/web-ui-integration',
         'features/cli-workflows',
         {
@@ -155,6 +156,7 @@ const sidebars: SidebarsConfig = {
         'operations/configuration-reference',
         'operations/settings-locations',
         'operations/metrics',
+        'operations/agent-run-capacity',
         'operations/api-reference',
         'operations/agent-tank',
         'operations/maintenance',

@@ -23,6 +23,13 @@ const shasumsUrl = 'https://github.com/electron/electron/releases/download/v44.0
 const interruptedFetch = 'TypeError: terminated\n'
   + 'at Fetch.onAborted (node:internal/deps/undici/undici:11473:53)\n'
   + '    at TLSSocket.onHttpSocketClose (/node_modules/undici/lib/dispatcher/client-h1.js:1004:10)\n';
+const nodeHeadersTimeout = [
+  'npm error gyp http GET https://nodejs.org/download/release/v22.23.2/node-v22.23.2-headers.tar.gz',
+  'npm error gyp WARN install got an error, rolling back install',
+  'npm error gyp ERR! configure error',
+  'npm error gyp ERR! stack ConnectTimeoutError: Connect Timeout Error (attempted address: nodejs.org:443, timeout: 10000ms)',
+  'npm error gyp ERR! stack at onConnectTimeout (/node_modules/node-gyp/node_modules/undici/lib/core/connect.js:237:24)',
+].join('\n');
 
 const scriptedSpawn = outcomes => {
   const invocations = [];
@@ -222,6 +229,25 @@ describe('transient download retries', () => {
     assert.equal(outOfSync.exitCode, 1);
     assert.equal(outOfSync.invocations.length, 1);
     assert.deepEqual(outOfSync.logs, ['Command failed without a transient download signature; not retrying.']);
+  });
+
+  test('retries npm ci when node-gyp reports a Node header connection timeout without an error code', async () => {
+    const install = { command: 'npm', arguments: ['ci'] };
+    const recovered = await run([
+      { exitCode: 1, stderr: nodeHeadersTimeout },
+      { exitCode: 0 },
+    ], install);
+    assert.equal(recovered.exitCode, 0);
+    assert.deepEqual(recovered.invocations, [install, install]);
+    assert.deepEqual(recovered.delays, [DEFAULT_BACKOFF_MS]);
+
+    const exhausted = await run(
+      Array.from({ length: DEFAULT_ATTEMPTS }, () => ({ exitCode: 1, stderr: nodeHeadersTimeout })),
+      install,
+    );
+    assert.equal(exhausted.exitCode, 1);
+    assert.equal(exhausted.invocations.length, DEFAULT_ATTEMPTS);
+    assert.deepEqual(exhausted.delays, [DEFAULT_BACKOFF_MS, 2 * DEFAULT_BACKOFF_MS]);
   });
 
   test('parses the command after the first separator and keeps nested separators', () => {

@@ -8,6 +8,7 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { buildAgentContainerResourceArgs, wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadSettings, AgentConfigPathUnavailableError } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
@@ -63,9 +64,8 @@ export class VibeAgent implements Agent {
         this.timeoutMs = parseInt(process.env.VIBE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
-    // eslint-disable-next-line complexity -- runtime admission, execution and cleanup share one task lifecycle
+     
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        if (options.extensionProfile) throw new Error('Extension profiles require Claude or Codex task execution');
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -108,7 +108,7 @@ export class VibeAgent implements Agent {
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
-                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, githubToken),
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, githubToken),
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
@@ -168,16 +168,12 @@ export class VibeAgent implements Agent {
                 usageMetricRecords: usage.records,
             }));
 
-            if (response.success) {
-                logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Vibe agent execution succeeded');
-                verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
-            } else {
-                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: response.error }, 'Vibe agent execution failed');
-            }
+            this.reportExecutionOutcome({ success: response.success, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: response.error, modelUsed, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
-            if (error instanceof UsageLimitError) throw error;
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias }, 'Error during Vibe agent execution');
@@ -187,6 +183,16 @@ export class VibeAgent implements Agent {
             cleanupTempFile(envFilePath);
             cleanupRuntimeHome(runtimeHomePath);
             retireProviderRuntime(this.config.id, runtimeHomePath);
+        }
+    }
+
+    private reportExecutionOutcome(params: { success: boolean; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): void {
+        const { success, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
+        if (success) {
+            logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'Vibe agent execution succeeded');
+            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
+        } else {
+            logger.error({ issueNumber, exitCode, stderr, agentAlias: this.config.alias, error }, 'Vibe agent execution failed');
         }
     }
 
@@ -233,7 +239,7 @@ export class VibeAgent implements Agent {
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
-                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, gitAccess.githubToken),
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, gitAccess.githubToken),
                     timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
                     taskId,
                     model: effectiveModel

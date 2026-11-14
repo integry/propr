@@ -112,15 +112,19 @@ currently accepts text instructions; file uploads remain available in the UI.
 
 ## Automations
 
-Automations are saved, reusable definitions that run on demand or on a schedule and
-produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
+Automations are saved, reusable definitions that run on demand, on a schedule or on a
+subscribed event and produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
 `repository` filter) and `get_automation_definition` show your automations, including the
-schedule, next run, capabilities and autonomy mode;
-`get_automation_definition_contract` returns the shared field contract, and
+schedule, next run, `eventTriggers`, capabilities and autonomy mode;
+`get_automation_definition_contract` returns the shared field contract, including
+`runTriggers` (with `event`) and `eventTriggers` (the events, here `plan.issue_blocked`,
+their reason kinds and `maxRunsPerIssue`, the loop bound of 3 runs per issue of a plan), and
 `list_automation_templates` returns the shipped template catalog (for example daily
 issue triage). A template creates nothing; it is a starting point for a new automation.
 `list_automation_runs` lists a definition's runs newest first without report bodies,
-and `get_automation_run` returns one run with its report. A report over 200 KB is
+and `get_automation_run` returns one run with its report. A run started by an event has
+`trigger: "event"` and `triggerEvent`: the repository, plan, execution, issue number,
+reason kind and text, and links to the plan and the issue. A report over 200 KB is
 truncated with `reportTruncated: true`; the full report is at the run's `url`.
 
 With execute scope, `trigger_automation_run` starts a run now:
@@ -365,6 +369,36 @@ read before publishing); `publish_plan` creates GitHub issues with the non-execu
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+Every plan item has a stable `id`, unique within the plan, and may list in
+`dependsOn` the ids of its direct prerequisites, other items in the same plan
+that must be implemented first. `create_plan` and `update_plan` (and the web UI's draft update) assign an
+id to items sent without one, never change an existing id, and reject with
+`PLAN_INVALID` a duplicate id or a `dependsOn` entry that names no item, the item
+itself, or closes a cycle; the message names the item, and `details.errors`
+lists every problem. Ids and `dependsOn` survive refinement, plan revisions and
+restore. Plans without `dependsOn` are valid and are the default. Plans sent
+through these tools are stored as written; only generated and refined plans have
+indirect prerequisites removed from `dependsOn`. On
+publication each issue in `get_plan.issues` records `plan_item_id` and
+`depends_on_issues`, its prerequisites as issue numbers; issues published
+before dependencies existed read `null` and `[]`. Scheduling does not use
+these edges yet: epic queues still follow plan order.
+
+Once every issue of the plan exists, `publish_plan` adds GitHub issue
+dependencies in a second pass: each issue is marked **blocked by** each of its
+prerequisite issues, with the caller's GitHub credential (the web UI's
+finalize uses the GitHub App installation). The links need the repository
+**Issues: write** permission. The step is best effort and idempotent: existing
+links are listed first and never duplicated, so a resumed or repeated
+publication is safe. A failed link (missing permission, GitHub API unavailable,
+issue dependencies not enabled for the repository) never fails the
+publication; the result's `dependencyLinks.links` lists each link with status
+`created`, `existing` or `failed` and its error, and `get_plan.dependencyLinks`
+shows the counts and the links that were not created. A plan without
+dependencies makes no extra GitHub calls and reports no `dependencyLinks`.
+Sub-issue links are not created, because plans have no parent tracking issue
+to attach them to.
+
 `generate_repository_improvements` answers "what should we work on next?"
 with the same generator as the web UI **Improve** tab. Pass `categories`
 (`code-quality`, `performance`, `security`, `testing`, `documentation`,
@@ -410,6 +444,37 @@ labels the epic PR for completion, like a sequential epic. A parallel epic is
 rejected while a non-epic queue runs for the plan. Non-epic calls keep fan-out and
 ignore these epic execution options.
 
+`epicExecution: "graph"` schedules the selected issues by the dependencies the
+plan recorded for them (`dependsOn`, stored on each published issue). An issue
+is ready when every prerequisite is merged into the epic branch; a prerequisite
+that is not part of the execution counts as satisfied only once it is merged.
+The first ready issue in publication order starts immediately and establishes
+the epic branch; the queue then starts every other ready issue, at most
+`maxParallel` (1–20, unbounded when omitted) in flight at once, in publication
+order, and starts more as issues merge. The limit is stored on the execution
+and enforced where the queue claims issues: each claim runs under a lock on the
+execution row and is a compare-and-set on the issue's own row, so concurrent
+advances, the reconcile sweep and a restart never exceed it or start an issue
+twice. An issue holds its slot from its claim until it merges (a blocked issue
+keeps its slot), and an issue someone started by hand also counts. Downstream
+issues branch from the epic branch, so they contain their prerequisites' merged
+work; stacked PRs are not used. A prerequisite that is blocked or closed without
+merge keeps its dependents pending, reported as waiting on it, while other
+branches keep running; reopening, fixing and merging it releases them. The
+execution completes, and finalizes the epic PR once, when every issue is done.
+Graph mode requires `useEpic: true` and one model, and advances only on merge;
+`maxParallel` is accepted only with `"graph"`. Other combinations, and a
+selection in which no issue is ready, are rejected before anything is claimed.
+So is a selection containing an issue whose prerequisite never got an issue
+because its creation failed at publication: that prerequisite can never merge,
+so leave the dependant out or run a sequential epic.
+Sequential and parallel are the two edge cases of the same scheduler: a chain
+with a limit of one, and a graph without edges and without a limit; their
+behaviour is unchanged. The repository-level `limits.max_parallel_tasks`
+admission stays an independent cap. An orchestrating goal's `maxParallelTasks`
+is not enforced through this queue yet (goals and plans are not linked); that
+is a planned follow-up.
+
 `epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
 successor. A closed head (including a failed task reconciled to closed) leaves
 the queue active and records a human-readable `blockedReason`. If the head was
@@ -436,12 +501,59 @@ Epic** for an epic).
 The implementation result includes `executionMode`, `advanceOn`, `started`
 and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
 expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
-(null when no queue exists). A parallel epic's queue also reports
-`executionMode: "parallel"` and has a null `head`. Sequential receipts remain `accepted` until the
+(null when no queue exists), plus `executionMode` (`sequential`, `parallel` or
+`graph`) and `maxParallel` (1 for sequential, null when unbounded). A parallel or
+graph queue has a null `head`. Each `issueStates` entry reports `schedule`
+(`waiting`, `ready`, `in_flight`, `done`, `skipped` or `blocked`), the issue's
+`dependsOn` (for sequential, the issue before it) and `waitingOn`, the
+prerequisites it still waits for. A graph result also reports `maxParallel`,
+and `started` lists every issue the queue started at once. Sequential receipts remain `accepted` until the
 queue is completed; dispatching the first issue or opening its PR does not
 complete the operation. Queue status is `active`, `completed` or `cancelled`.
 Both new arguments are optional, so omitting them preserves existing
 idempotency receipt hashes.
+
+**Blocked issues.** An issue of an execution that becomes blocked reports `blockedKind` and
+`blockedReason` in its `issueStates` entry. The kinds are `closed_unmerged`
+(closed without merge under the merged advance policy), `missing_from_plan`,
+`dispatch_failed`, `agent_blocked` (the run stopped on a blocker the agent
+reported), `awaiting_human_merge`, `label_handoff` (processing labels not
+released yet) and `setup_not_ready`. `epicQueue.executionId` names the
+execution; the actions below require it.
+
+Becoming blocked is recorded once as a durable event, in the same transaction
+as the state change, whichever process observed it. Repeated sweeps and
+repeated status notifications of the same blocked state (same kind and reason)
+record nothing more; a different blocker on the same issue resolves the old one
+as `replaced` and records a new event, and clearing a blocker records its
+resolution (`cleared`, `retried`, `skipped` or `settled`). `list_plan_blocked_events`
+lists an execution's events oldest first; poll it with the last `nextCursor` to
+read only new events instead of re-reading the whole plan. Each new blocker
+raises one Inbox notification of kind `plan`, linking to the plan, for the plan
+owner and the repository's recipients, deduplicated per blocked state; an
+`agent_blocked` blocker keeps only its existing task notification. Every event
+is also published as plan-domain realtime activity (`blocked`, or `progressed`
+for a resolution), so open views update without a refresh.
+
+`skip_plan_issue` marks a `pending` or `blocked` issue `skipped`, and the queue
+treats it as finished for scheduling: a sequential execution moves on to the
+next issue. In a graph execution its dependents stay `waiting` and report the
+skipped prerequisite in `waitingOnSkipped`; they start only after a skip with
+`satisfiesDependents: true` (skipping again with it releases them). Skipping
+never closes or edits the GitHub issue. `retry_plan_issue` clears a `blocked`
+issue's blocker and dispatches it again under the normal guards (a paused plan
+holds it; a graph starts it once ready within `maxParallel`): a
+`dispatch_failed` or `missing_from_plan` issue is dispatched (or re-checked)
+now, an `agent_blocked` issue goes back to pending first, a `closed_unmerged`
+issue is reopened first, and `awaiting_human_merge` and `label_handoff` keep
+their claim and are re-evaluated. `setup_not_ready` is refused with
+`NOT_RETRYABLE`. A retry works for issues started by `implement_plan`; the
+implementation receipt is not consulted. Both actions take `expectedState` to be
+refused with `STATE_CHANGED` after a change, are refused with `STALE_EXECUTION`
+for a newer or finished execution, `IN_FLIGHT` for an issue in flight and
+`ALREADY_DONE` for a done one, and are idempotent: repeating one returns
+`already_skipped` or `already_retried`. The REST API exposes the same three
+operations under `/api/planner/drafts/{id}/execution-queue`.
 
 Every mutation needs an 8–128 character `idempotencyKey`. Keep it unchanged
 across retries of the same action, and repeat the same arguments exactly.
@@ -637,7 +749,7 @@ Stable codes introduced by the observable operator surface are:
 | `GITHUB_*`: `GITHUB_AUTH_FAILED`, `GITHUB_FORBIDDEN`, `GITHUB_NOT_FOUND`, `GITHUB_RATE_LIMITED`, `GITHUB_REJECTED`, `GITHUB_UNAVAILABLE`, `GITHUB_RESPONSE_INVALID` | GitHub rejected, denied, could not find, throttled or could not serve the request, or returned a response the tool could not act on. |
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
-| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published. |
+| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published, or its item ids or `dependsOn` are invalid (duplicate id, unknown or self reference, cycle). |
 | `STALE_REVISION` | The supplied `expectedRevision` no longer matches the plan (a genuine optimistic-concurrency conflict). `details.currentRevision`, when present, is the revision a fresh read would return. |
 | `PLAN_NOT_DELETABLE` | `delete_plan` refused the plan because of its status, not its revision: it is generating, refining or executing published work. `details.status` is the blocking status. |
 | `PUBLISH_FAILED` | Publication failed before any issue was created; the plan claim was released. `details.currentRevision` is the revision to pass when retrying. |
@@ -732,6 +844,107 @@ and a separate current-focus value when available; raw provider reasoning, raw
 protocol envelopes, tool inputs, and tool results are excluded.
 `includeReasoningSummaries: true` opts in to Codex app-server reasoning summaries.
 
+`get_agent_run_admission` reports what agent-run admission enforces right now:
+`admission.enabled`, the global limit and its source, and globally and per
+direct agent the ceiling, the executions holding a slot by state, nested
+executions apart from those holders, launches waiting split by reason
+(`globalLimit`, `agentCeiling`, a recovering holder, or a first reply still
+pending) and queue jobs deferred until their agent has capacity. It also
+lists queue worker concurrency and repository workflow slots, each labelled.
+With admission off it says so and still returns those limits. `global.configuration`
+compares the stored limit and generation with the configured ones; when
+`admitting` is false (`mismatch` or `missing`) every launch is refused and the
+summary says so instead of showing free capacity. Task IDs and repositories appear
+only within the grant; tokens, container IDs and environment values never do.
+It is not subscription usage: provider quota comes from `get_provider_usage`
+and `get_provider_status`. See the operations guide "Agent-run capacity" for
+the fields and for changing ceilings safely.
+## Idempotency and retries
+
+Three idempotency key contracts exist. They differ in format and in whether a
+key is required:
+
+| Surface | Key | Format | Required |
+| --- | --- | --- | --- |
+| Every MCP mutation | `idempotencyKey` argument | 8–128 characters matching `[\w.-]` (letters, digits, underscore, dot, hyphen) | Yes; a missing or malformed key is rejected before anything runs |
+| REST `POST /api/task-submissions` and `POST /api/goals` | `Idempotency-Key` header | Any string up to 255 characters | Yes; a missing or longer key is `400` |
+| REST `POST /api/automation-definitions/{id}/runs` | `Idempotency-Key` header | Any string up to 255 characters | No; without a key every call creates a run |
+
+**Same key, same payload, replays. Same key, different payload, conflicts.** An
+MCP key is scoped to your user and grant. Repeating a mutation with the same
+key and exactly the same arguments returns the original durable receipt and
+does not act again; the same key with any other argument (including an omitted
+optional one) is `IDEMPOTENCY_CONFLICT` (409). A REST task submission or goal
+creation repeated with the same key and body returns the existing submission or
+goal (and resumes a submission that stopped part way); a different body is
+`409`. An automation run key is scoped to its definition: repeating it returns
+the existing run with `created: false`.
+
+**Uncertain outcomes are not replayed.** A receipt in state `unknown` with
+`error.code: "OUTCOME_UNKNOWN"` means an external effect may have happened (see
+[Errors](#errors)). Do not repeat the call with a new key until you have
+inspected the receipt's artifacts and the target. For a direct task submission,
+`retry_task_submission` reconciles uncertain issue creation without opening a
+second issue.
+
+**How an MCP key reaches REST.** Goal mutations pass your `idempotencyKey`
+through as the REST `Idempotency-Key`. `create_task` does not: it creates the
+REST submission with the key `mcp-{operationId}`, where `operationId` is the
+receipt's handle, so submission keys of different clients, grants and the web
+UI never collide. Read the submission with `get_task_submission` and its
+`submissionId`, not with your MCP key.
+
+**`implement_plan` claims each issue once.** Starting a plan issue records an
+execution claim for it. A second `implement_plan` with a new key that selects an
+issue an earlier receipt already owns is refused with
+`IMPLEMENTATION_ALREADY_REQUESTED` (409); inspect the plan and the earlier
+operation with `get_plan` and `get_operation` instead of retrying.
+
+### Following a submission through replacement attempts
+
+ProPR replaces an issue task automatically when its run is lost with its worker
+(cause `infra_lost`, one replacement per lineage) or ends with a transient
+provider error (cause `provider_transient`, up to the **Provider failure
+replacements** setting, default 2). Only issue tasks are replaced. Goal tasks
+are never replaced (goals use their own recovery), and neither are pull request
+follow-up, review or automation tasks. A replacement is a new task for the same
+issue, so it has a new task ID.
+
+A task submission therefore has two task pointers. `get_task_submission` and
+`list_task_submissions` return both:
+
+- `firstTaskId`: the submission's first execution. It never changes.
+- `latestTaskId`: the newest execution of the submission's issue, which is a
+  replacement attempt or a label retry.
+- `taskId` is kept for compatibility. Over MCP it is the task `progress.task`
+  follows, which is `latestTaskId`. In the REST response of
+  `GET /api/task-submissions/{key}` it is `firstTaskId`.
+
+A `get_operation` receipt stays bound to the execution it already resolved, so
+its `taskId` can lag behind; its `latestTaskId` still shows where the
+submission moved.
+
+`get_task` returns a `lineage` object for every task: `attemptNumber` (1 for
+the original run), `rootTaskId`, `replacesTaskId`, `replacedByTaskId`,
+`replacementCause` (why this attempt was created: `infra_lost`,
+`provider_transient`, or null for the original run) and `replacementState` (the
+replacement decision about this attempt: `pending`, `dispatched`, `skipped`,
+`exhausted`, or null). `lineage.attempts` lists every attempt oldest first, with
+`taskId`, `attemptNumber`, `replacementCause`, `state` and `createdAt`, only
+when the task was replaced or is a replacement. `list_tasks` rows of a
+replacement lineage add `attemptNumber`, `replacesTaskId` and
+`replacedByTaskId`; a first and only attempt omits them. To follow work to its
+end, read `latestTaskId`, or follow `replacedByTaskId` until it is null.
+
+When no replacement follows a failure, the task's events (`get_task_events`)
+contain an entry whose `metadata.event` is `replacement.skipped` and whose
+`metadata.reason` is one of
+`disabled`, `cap_reached`, `budget_exhausted`, `user_cancelled`,
+`issue_closed`, `watchdog_stop`, `cost_cap_stop`, `blocked_stop`, `goal_task`,
+`unsupported_task` or `replacement_not_started`. `replacement.exhausted`
+follows when `cap_reached` or `budget_exhausted` ends the lineage. A dispatched replacement is
+recorded as `replacement.dispatched`.
+
 ## Operating an instance from a chat client
 
 This is the flow the operator surface is built for: find out what is happening,
@@ -766,6 +979,21 @@ review and ultrafix state with one bounded GraphQL request per repository:
 Use `state: "recent"` with `sinceMinutes`, or `state: "all"`, when completed
 work belongs in the answer. `githubLookups` reports the requested/completed
 enrichment count and whether the bounded lookup was truncated.
+
+For spend rather than progress, `get_cost_breakdown` returns the same rows as
+`GET /api/stats/cost`: recorded agent executions grouped by any of `day`,
+`repository`, `agent`, `model`, `reasoning_level`, `execution_type` and
+`outcome`, each with `executions`, `tasks`, input/output/cache tokens and
+`cost_usd`, plus `totals`:
+
+```json
+{ "period": "30d", "groupBy": ["repository", "model", "outcome"] }
+```
+
+Without `repository` it covers the repositories in the grant (`repositories`
+lists them); executions with no task have no repository and are left out. A
+dimension that was never recorded, or a group with no recorded cost, is
+`null` rather than a guess or `0`.
 
 For what already finished, `get_recent_activity` merges one newest-first
 timeline — terminal tasks, opened and merged pull requests, finished goals,
@@ -881,6 +1109,78 @@ than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
 
+#### Waiting for repository changes
+
+A coordinator that needs to know when a pull request, an epic queue or a plan
+issue changed does not have to poll several reads and diff them. ProPR
+appends every such change to a durable per-repository journal, and two
+read-scope tools consume it:
+
+- `list_repository_events` returns the events after a cursor, in journal
+  order: `{events, cursor, truncated}`. `limit` is at most 100;
+  `truncated` means more matching events follow the returned cursor.
+- `wait_repository_events` takes the same arguments plus `timeoutSeconds`
+  (default 15, maximum 30). It returns at once when matching events already
+  exist after the cursor, and otherwise blocks until one is appended or the
+  timeout passes: `{outcome, events, cursor, waitedMs, timeoutSeconds}` with
+  `outcome` `events` or `timeout`. A timeout returns the cursor unchanged.
+
+Both filter with `domains` (`pull_request`, `epic_queue`, `plan_issue`),
+`types`, `pullRequest` and `planId`:
+
+| Domain | Types |
+| --- | --- |
+| `pull_request` | `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed` |
+| `epic_queue` | `started`, `advanced`, `blocked`, `completed` |
+| `plan_issue` | `status_changed` |
+
+Each event carries `cursor`, `domain`, `type`, `repository`, `entityId`,
+`payload` (identifiers and small scalars only, never PR bodies, comment text,
+diffs or logs) and `occurredAt`, plus `pullRequest`, `issueNumber`, `planId`
+and `head` when they apply. Events are hints: read the current state before
+acting on one.
+
+**The cursor contract.** A cursor is an opaque string bound to one
+repository. Delivery is at-least-once and ordered: keep the cursor of the
+last event you processed and pass it back as `afterCursor`, and you never
+miss an event. A call without `afterCursor` starts at the current end of the
+journal, so it returns the current cursor and no history, unless you pass
+`fromStart: true` to read the retained history (30 days). Page through that
+history with the returned cursor while `truncated` is true; a cursor issued
+inside retained history stays valid until retention next prunes the
+repository, after which it is `CURSOR_EXPIRED`. Cursor errors carry a recovery
+hint:
+
+| Code | Meaning |
+| --- | --- |
+| `CURSOR_INVALID` | Malformed, or not issued by this instance. Recover as for `CURSOR_EXPIRED`. |
+| `CURSOR_WRONG_REPOSITORY` | Issued for another repository. |
+| `CURSOR_EXPIRED` | Older than the retained journal, so events after it may be gone. Recover in this order: list once without `afterCursor` and save the returned cursor, then re-read the state (for example `get_pull_request_readiness`), then resume from the saved cursor. Taking the cursor first means a change made while you re-read is still delivered after it. An expired cursor is never reported as an empty result. |
+
+`WAIT_LIMIT` means too many repository event waits are open for you on this
+server (the limit counts CLI, REST and MCP waits together). `WAIT_ABORTED`
+means the call was cancelled; nothing changed. Your access to the repository
+is checked as for `list_pull_requests`, and events of other repositories are
+never returned.
+
+**Coordinator loop.** Wait for changes to a pull request, then read its
+readiness instead of re-reading everything:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42, "timeoutSeconds": 30 }
+```
+
+1. Call `wait_repository_events` with the arguments above (no cursor the
+   first time).
+2. On `outcome` `events`, call `get_pull_request_readiness` with
+   `{ "repository": "acme/web", "number": 42 }` and act on the verdict.
+3. Call `wait_repository_events` again with `afterCursor` set to the returned
+   `cursor`. On `timeout`, call it again with the same cursor.
+
+The same reads are `GET /api/repository-events` and
+`GET /api/repository-events/wait`, and `propr events list` / `propr events
+wait` (`--follow` keeps going on the cursor).
+
 #### Goals waiting on you
 
 `list_goal_attention` lists, bounded and newest goal first, only the goals that
@@ -974,6 +1274,61 @@ and returns image content plus dimensions and byte counts. Only
 `github.com/user-attachments` images are fetched; videos and non-image files
 are rejected with `PREVIEW_NOT_RENDERABLE` and should be opened on GitHub.
 Image content is untrusted, like comment prose.
+
+**Is it ready to integrate?** `get_pull_request_readiness` returns one
+verdict for a pull request, with a coded reason for every gate. It is a pure
+read: it does not comment, label, update the branch or merge, it does not
+arm or withdraw auto-merge, and it leaves ProPR's own state untouched,
+including the marker that records when ProPR first saw a head without CI.
+
+```json
+{ "repository": "acme/web", "number": 42 }
+```
+
+Your GitHub access to the repository is checked the same way as for
+`get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
+sees what the auto-merge path sees, including legacy commit statuses and the
+repository's non-blocking checks.
+
+The `verdict` is `merged` or `closed` when the PR state says so. Otherwise it
+is `blocked` if any gate has status `fail`, else `waiting` if any gate is
+`waiting`, else `unknown` if any gate is `unknown`, else `ready`.
+`blockingReasons` lists the reason codes of failed gates, and `waitingReasons`
+lists those of waiting or unknown gates. `gates` lists every gate, in the order
+of the table below, with `gate`, `status` (`pass`, `waiting`, `fail`, `unknown`
+or `not_applicable`), `reason` and an optional `detail`:
+
+| Gate | Reason codes, by status |
+| --- | --- |
+| `open` | pass: `pull_request_open`. fail: `pull_request_merged`, `pull_request_closed` |
+| `not_draft` | pass: `not_draft`. fail: `draft` |
+| `checks` | pass: `checks_passing`, or `no_ci` once ProPR has seen the head without any CI for two minutes. waiting: `waiting_for_ci` before that, and `checks_not_passing` while blocking checks still run. fail: `checks_not_passing` when a blocking check failed. unknown: `unavailable` (check runs or commit statuses could not be read) |
+| `mergeable` | pass: `mergeable`. fail: `merge_conflict`, `branch_behind_base`. `branch_protection_blocked` waits while checks or a required review are still pending, and fails otherwise. unknown: `merge_state_unknown` |
+| `human_review` | pass: `approved`, `no_changes_requested`. fail: `changes_requested`. waiting: `review_required`. unknown: `review_state_unavailable` |
+| `ai_review` | pass: `goal_reached`. fail: `score_below_goal`. waiting: `review_stale_head` (the latest review is of another head). `no_review` is not applicable, or waiting when the PR has the `ultrafix` label. unknown: `review_scores_unavailable` |
+| `ultrafix` | pass: `ultrafix_succeeded`. fail: `ultrafix_failed`. waiting: `ultrafix_active`, `ultrafix_pending` (label present, no loop has completed). unknown: `ultrafix_state_unavailable`. not applicable: `ultrafix_not_requested` |
+| `active_work` | pass: `no_active_work`. waiting: `propr_work_active`. unknown: `active_work_unavailable`. An unreadable queue is never reported as idle |
+| `policy` | The auto-merge policy reason. pass: `armed`. fail: `skipped_protected_path`, `skipped_disabled`, `skipped_empty_diff`. unknown: `skipped_policy_invalid`, `skipped_diff_unavailable`, `auto_merge_request_unavailable` (no direct label and the linked issue could not be read), `pull_request_changed` (the head or base moved while the policy was evaluated). not applicable: `auto_merge_not_requested` |
+
+`ai_review` never holds a PR that ProPR is not reviewing. The newest score of
+the latest review job counts. `review` reports its `score`, its `goal` (the
+cycle's Ultrafix goal, or `ultrafix_rating_goal` for a plain `/review`),
+`goalReached`, `reviewedHead` and `matchesCurrentHead`, and is null when there
+is no review. `ultrafix` reports `active`, `completionStatus` and
+`labelPresent`, and is null when the loop state could not be read.
+
+The policy is read only when the PR or its linked issue carries the
+`auto-merge` label. Otherwise the gate is not applicable and cannot change the
+verdict. `autoMerge` reports eligibility as `eligible`, `ineligible` or
+`transient`, with a reason: `pr_label`, `linked_issue_label`,
+`no_auto_merge_label`, `epic_without_label`, `ultrafix_active`,
+`ultrafix_failed`, `ultrafix_not_succeeded`, `ultrafix_state_unavailable` or
+`linked_issue_unavailable`. Its `policy` field is null when auto-merge was not
+requested. `checks` repeats the CI reason, with the names in `blockingFailed`
+and `blockingPending` and the `nonBlockingCount`. The same verdict is served
+at `GET /api/pull-requests/{number}/readiness?repository=owner/repo` and by
+`propr pr readiness <number> --json`. A pull request that does not exist, or
+that the App cannot see, fails with `PULL_REQUEST_NOT_FOUND`.
 
 **4. Act on it at a known head.** The append-only
 `review_pull_request`, `fix_review_findings`, `run_ultrafix` and

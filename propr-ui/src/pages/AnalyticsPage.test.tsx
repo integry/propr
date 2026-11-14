@@ -99,6 +99,25 @@ describe('AnalyticsPage', () => {
     await waitFor(() => expect(pageStatus).toBeEmptyDOMElement());
   });
 
+  it('shows the period\'s spend on failed attempts under the total, and nothing from a server without the split', async () => {
+    vi.mocked(getTaskStats).mockResolvedValue(taskStats);
+    vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [] } as unknown as RepositoryStats);
+    vi.mocked(getStatsOverview).mockResolvedValue({
+      ...overview, usage: { ...overview.usage, successful_cost_usd: 9.17, failed_cost_usd: 3.25 },
+    } as Overview);
+
+    const { unmount } = renderPage('/analytics?period=7d');
+    await waitFor(() => expect(screen.getByTestId('metric-spend')).toHaveTextContent('$12.42'));
+    expect(screen.getByTestId('metric-spend-detail')).toHaveTextContent('$3.25 on failed attempts');
+    expect(getStatsOverview).toHaveBeenCalledWith('7d');
+    unmount();
+
+    vi.mocked(getStatsOverview).mockResolvedValue(overview);
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('metric-spend')).toHaveTextContent('$12.42'));
+    expect(screen.queryByTestId('metric-spend-detail')).not.toBeInTheDocument();
+  });
+
   it('lays the page out as one console: a totals band over a split pane, with no cards', async () => {
     vi.mocked(getTaskStats).mockResolvedValue({
       ...taskStats,

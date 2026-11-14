@@ -48,6 +48,18 @@ export interface BeginSyntheticRoutingOptions {
   callId?: string;
   /** Reject physical agents that cannot satisfy call-specific runtime constraints. */
   physicalAgentEligibility?: (agent: Agent) => boolean;
+  /**
+   * A member chosen by an earlier capacity pre-check (possibly before a job
+   * deferral). The first selection reuses it without advancing the round-robin
+   * cursor while it stays eligible.
+   */
+  pinnedMemberId?: string;
+  /**
+   * Selection for a deferrable job: when no member of the chosen priority tier
+   * (or the direct agent) has room under its per-agent ceiling, throw
+   * AgentCapacityError instead of picking one that will wait at admission.
+   */
+  deferOnCapacity?: boolean;
 }
 
 export interface SyntheticRoutingServiceOptions {
@@ -56,6 +68,8 @@ export interface SyntheticRoutingServiceOptions {
   getDirectAgent: (alias: string) => Agent | undefined;
   usageSnapshotProvider?: SyntheticUsageSnapshotProvider;
   now?: () => Date;
+  /** Whether a direct agent alias has room under its per-agent ceiling (advisory). */
+  aliasCapacity?: (directAgentAlias: string) => Promise<boolean>;
 }
 
 export class SyntheticPoolExhaustedError extends Error {
@@ -71,6 +85,12 @@ export class SyntheticPoolExhaustedError extends Error {
     super(`Synthetic pool exhausted for '${virtualAgentAlias}:${virtualModel}' [call ${callId}]: ${details}`);
     this.name = 'SyntheticPoolExhaustedError';
   }
+}
+
+/** A capacity wait never consumes a member: no failover, no failed attempt. */
+function isCapacityWait(names: Array<string | undefined>, texts: unknown[]): boolean {
+  if (names.some(name => name === 'AgentCapacityError' || name === 'AgentCapacityWaitTimeoutError')) return true;
+  return texts.some(text => typeof text === 'string' && /waiting for agent capacity/i.test(text));
 }
 
 export function isNonRetryableSyntheticFailure(error: unknown): boolean {
@@ -95,10 +115,11 @@ export function isNonRetryableSyntheticFailure(error: unknown): boolean {
   // Generic abort names/codes are also emitted for provider timeouts and
   // interrupted transports. Only explicit task-cancellation errors stop
   // failover; an unqualified AbortError/ABORT_ERR/ERR_CANCELED remains retryable.
-  if (names.some(name => name && ['ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name))) return true;
+  if (isCapacityWait(names, [value?.message, value?.error])) return true;
+  if (names.some(name => name && ['AgentAdmissionNestingError', 'ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name))) return true;
   if (codes.some(code => code && ['SECURITY_POLICY_VIOLATION', 'INVALID_CONFIGURATION', 'PROMPT_TOO_LARGE'].includes(code))) return true;
   if (terminationReason && ['user_cancelled', 'user_canceled'].includes(terminationReason)) return true;
   const explicitCancellation = /\btask\s+(?:was\s+)?(?:aborted|cancelled|canceled)\b|\b(?:execution|request|operation|call)\s+(?:was\s+)?(?:aborted|cancelled|canceled)\s+by\s+(?:the\s+)?(?:user|operator)\b|\b(?:aborted|cancelled|canceled)\s+by\s+(?:the\s+)?(?:user|operator)\b|\b(?:user|operator)\s+(?:requested\s+)?(?:aborted|cancelled|canceled|cancell?ation)\b|\b(?:user|task)[-_\s]+cancell?ation\b|\bcancell?ation\s+(?:was\s+)?requested\s+by\s+(?:the\s+)?(?:user|operator)\b/i;
   if (explicitCancellation.test(message)) return true;
-  return /security[- ]policy|security violation|invalid (?:user )?configuration|prompt (?:is )?too (?:large|long)|exceeds (?:the )?(?:model )?context window|context token limit/i.test(message);
+  return /nested agent execution refused|security[- ]policy|security violation|invalid (?:user )?configuration|prompt (?:is )?too (?:large|long)|exceeds (?:the )?(?:model )?context window|context token limit/i.test(message);
 }

@@ -1,3 +1,4 @@
+import * as admissionNesting from '../packages/core/src/agents/agentRunNesting.js';
 import { beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createUltrafixRedis } from './fixtures/ultrafixRedisDouble.js';
@@ -39,6 +40,7 @@ let escalationEnabled = false;
 
 await mock.module('@propr/core', {
     namedExports: {
+        ...admissionNesting,
         reevaluatePRAutoMerge: async () => undefined,
         AgentRegistry: {},
         logger: { info: () => {} },

@@ -6,12 +6,11 @@ import type { createTaskSubmissionRoutes } from './routes/taskSubmissionRoutes.j
 import type { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summaryPathUtils.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
+import { createEpicQueueRouteEntries } from './epicQueueRouteRegistry.js';
 import {
-  requireAgentTankUsageAccess,
-  requireManageAgents,
-  requireManageMembers,
-  requireManageRuntime,
-  requireManageSettings,
+  requireAgentTankUsageAccess, requireManageAgents, requireManageMembers,
+  requireManageRuntime, requireManageSettings,
 } from './permissionGuards.js';
 import { withDemoViewerBoundary } from './demoViewerRoutes.js';
 import { timeApiRouteHandler } from './apiPerformanceTiming.js';
@@ -34,8 +33,10 @@ interface ManagementRouteDeps {
   visualPreviewAuthRoutes: ReturnType<typeof routes.createVisualPreviewAuthRoutes>;
 }
 
-interface OperationalRouteDeps {
+/** Integration signal routes (readiness, repository events) are typed in their own registry. */
+interface OperationalRouteDeps extends IntegrationSignalRouteDeps {
   activeWorkRoutes: ReturnType<typeof routes.createActiveWorkRoutes>;
+  agentRunAdmissionRoutes: ReturnType<typeof routes.createAgentRunAdmissionRoutes>;
   automationDefinitionRoutes: ReturnType<typeof routes.createAutomationDefinitionRoutes>;
   dashboardRoutes: ReturnType<typeof routes.createDashboardRoutes>;
   dockerRoutes: ReturnType<typeof routes.createDockerRoutes>;
@@ -56,6 +57,7 @@ interface OperationalRouteDeps {
   repoTodoRoutes: ReturnType<typeof routes.createRepoTodoRoutes>;
   repositoryMediaRoutes: ReturnType<typeof createRepositoryMediaRoutes>;
   reviewScoreRoutes: ReturnType<typeof routes.createReviewScoreRoutes>;
+  costExportRoutes: ReturnType<typeof routes.createCostExportRoutes>;
   statsRoutes: ReturnType<typeof routes.createStatsRoutes>;
   statusRoutes: ReturnType<typeof routes.createStatusRoutes>;
   summaryBrowserRoutes: ReturnType<typeof routes.createSummaryBrowserRoutes>;
@@ -178,6 +180,7 @@ export function createManagementRouteEntries({
 export function createOperationalRouteEntries(deps: OperationalRouteDeps): RouteEntry[] {
   const {
     activeWorkRoutes,
+    agentRunAdmissionRoutes,
     automationDefinitionRoutes,
     dashboardRoutes,
     dockerRoutes,
@@ -198,6 +201,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     repoTodoRoutes,
     repositoryMediaRoutes,
     reviewScoreRoutes,
+    costExportRoutes,
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,
@@ -210,12 +214,12 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     voiceRoutes,
     taskSubmissionUpload,
     goalAttachmentUpload,
-    attachmentUpload,
-    automationDefinitionAttachmentUpload,
+    attachmentUpload, automationDefinitionAttachmentUpload,
   } = deps;
   return [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
     ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit],
+    ['get', '/api/task-submission-extensions', taskSubmissionRoutes.extensions],
     ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get],
     ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
     ['get', '/api/goals/capabilities', goalRoutes.capabilities],
@@ -296,6 +300,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['put', '/api/task/:taskId/assignees', taskAssignmentRoutes.putAssignees],
     ['get', '/api/task/:taskId/assignable-users', taskAssignmentRoutes.getAssignableUsers],
     ['get', '/api/queue/stats', queueRoutes.getQueueStats],
+    ['get', '/api/agent-run-admission', agentRunAdmissionRoutes.getAgentRunAdmission],
     ['get', '/api/activity', queueRoutes.getActivity],
     ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary],
@@ -325,8 +330,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
     ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue],
     ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue],
-    ['get', '/api/planner/drafts/:id/execution-queue', plannerRoutes.getExecutionQueue],
-    ['post', '/api/planner/drafts/:id/execution-queue', plannerRoutes.queueRemaining],
+    ...createEpicQueueRouteEntries(deps),
     ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
     ['post', '/api/planner/preview', plannerRoutes.previewContext],
     ['post', '/api/planner/preview/context', plannerRoutes.downloadContext],
@@ -352,7 +356,10 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
     ['get', '/api/stats/review-scores', reviewScoreRoutes.getSummary],
     ['get', '/api/stats/review-scores.csv', reviewScoreRoutes.getCsv],
+    ['get', '/api/stats/cost', costExportRoutes.getCost],
+    ['get', '/api/stats/cost.csv', costExportRoutes.getCostCsv],
     ['get', '/api/pull-requests/:number/scores', reviewScoreRoutes.getPullRequestScores],
+    ...createIntegrationSignalRouteEntries(deps),
     ['get', '/api/usage-tips', usageTipsRoutes.get],
     ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
     ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative],
@@ -405,9 +412,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
   ];
 }
 
-export function createMemberCatalogRouteEntries({
-  instanceCatalogRoutes,
-}: MemberCatalogRouteDeps): RouteEntry[] {
+export function createMemberCatalogRouteEntries({ instanceCatalogRoutes }: MemberCatalogRouteDeps): RouteEntry[] {
   return [
     ['get', '/api/catalog', instanceCatalogRoutes.getLegacyCatalog],
     ['get', '/api/instance/catalog', instanceCatalogRoutes.getCatalog],

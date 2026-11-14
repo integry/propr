@@ -6,6 +6,7 @@ export { createFileChangesRoutes } from './fileChangesRoutes.js';
 export { createTaskAssignmentRoutes } from './taskAssignmentRoutes.js';
 export { createConfigRoutes } from './configRoutes.js';
 export { createQueueRoutes } from './queueRoutes.js';
+export { createAgentRunAdmissionRoutes } from './agentRunAdmissionRoutes.js';
 export { createExecutionRoutes } from './executionRoutes.js';
 export { createDockerRoutes } from './dockerRoutes.js';
 export { createGitHubRoutes } from './githubRoutes.js';
@@ -19,6 +20,9 @@ export { createAgentLoginRoutes } from './agentLoginRoutes.js';
 export { createAgentVersionRoutes } from './agentVersionRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
 export { createReviewScoreRoutes } from './reviewScoreStats.js';
+export { createPullRequestReadinessRoutes } from './pullRequestReadinessRoutes.js';
+export { createRepositoryEventRoutes } from './repositoryEventRoutes.js';
+export { createCostExportRoutes } from './costExport.js';
 export { createAnalyticsCache } from './analyticsCache.js';
 export { createDashboardRoutes } from './dashboardRoutes.js';
 export {

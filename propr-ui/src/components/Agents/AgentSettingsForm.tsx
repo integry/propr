@@ -1,13 +1,14 @@
-import { ExtensionProfileSelector } from '../Extensions/ExtensionProfileSelector';
+import { AdditionalExtensionsSelector } from '../Extensions/AdditionalExtensionsSelector';
 import React from 'react';
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react';
-import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH } from '@propr/shared';
+import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH, EMPTY_AUTOMATION_EXTENSIONS, type AutomationExtensions } from '@propr/shared';
 import { AgentModelSelector } from '../TaskPlanner/AgentModelSelector';
 import { AGENT_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
 import { AgentScopeSection } from './AgentScopeSection';
 import { AgentPromptSection } from './AgentPromptSection';
 import { AgentCapabilitiesSection } from './AgentCapabilitiesSection';
 import { AgentScheduleSection } from './AgentScheduleSection';
+import { AgentEventTriggerSection } from './AgentEventTriggerSection';
 import { AgentAutonomySection } from './AgentAutonomySection';
 import { AgentTemplatePicker, AgentTemplateReview } from './AgentTemplates';
 import { BUTTON_CLASSES } from './AgentEditorHeader';
@@ -37,6 +38,17 @@ const AgentSaveFooter: React.FC<{ isNew: boolean; saving: boolean; disabled: boo
       </button>
     </div>
   );
+};
+
+const sameExtensions = (left: AutomationExtensions, right: AutomationExtensions | undefined) => {
+  const key = (value: AutomationExtensions | undefined) => JSON.stringify([[...(value?.servers ?? [])].sort(), [...(value?.skills ?? [])].sort()]);
+  return key(left) === key(right);
+};
+
+/** The repositories and agent an automation runs with, for the additional-extensions limits. */
+const extensionTarget = (editor: ReturnType<typeof useAgentEditor>) => {
+  const agentAlias = editor.form.agentId ?? editor.defaultAgentAlias;
+  return { repositories: editor.form.repositories, agentAlias, agentType: editor.agents.find(agent => agent.alias === agentAlias)?.type ?? null };
 };
 
 /** The agent's settings: scope, prompt and files, model, capabilities, schedule and autonomy. */
@@ -75,7 +87,14 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           />
         </AgentFormRow>
 
-        <div className="px-4 py-4 empty:hidden"><ExtensionProfileSelector value={form.extensionProfile} onChange={extensionProfile => update({ extensionProfile })} disabled={readOnly} /></div>
+        <div className="px-4 py-4 empty:hidden">
+          <AdditionalExtensionsSelector
+            value={form.extensions ?? definition?.extensions ?? EMPTY_AUTOMATION_EXTENSIONS}
+            target={extensionTarget(editor)}
+            onChange={extensions => update({ extensions: sameExtensions(extensions, definition?.extensions) ? undefined : extensions })}
+            disabled={readOnly}
+          />
+        </div>
         <AgentScopeSection repositories={form.repositories} onChange={repositories => update({ repositories })} disabled={readOnly} />
 
         <AgentPromptSection
@@ -116,6 +135,15 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           enabled={form.scheduleEnabled}
           expression={form.schedule}
           pauseWhenUnproductive={form.pauseWhenUnproductive}
+          onChange={update}
+          disabled={readOnly}
+        />
+
+        <AgentEventTriggerSection
+          enabled={form.blockedTrigger}
+          repositories={form.blockedTriggerRepositories}
+          reasonKinds={form.blockedTriggerReasonKinds}
+          automationRepositories={form.repositories}
           onChange={update}
           disabled={readOnly}
         />

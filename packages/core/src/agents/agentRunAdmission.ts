@@ -1,19 +1,43 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { setTimeout as delay } from 'node:timers/promises';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { checkAbortSignal, plannerAbortSignalKeyForTask } from '../claude/docker/dockerAbortController.js';
 import { ExecutionAbortedError, getExecutionAbortError } from '../claude/docker/dockerExecutionOwnership.js';
 import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
+import { AGENT_RUN_ALIAS_LIMITS_ENV, agentRunAliasCeiling, parseAgentRunAliasLimits, type AgentRunAliasLimits } from './agentRunAliasLimits.js';
+import { aliasCapacityWait, isAgentCapacityError, wakeAgentCapacityWaiters } from './agentCapacity.js';
+import { ADMISSION_SCRIPT as SCRIPT } from './agentRunAdmissionScript.js';
+import { ADMISSION_DAEMON_PREFIX } from './agentRunAdmissionConfigState.js';
+import { admissionDetailWriter, admissionWaitTracker, type AgentAdmissionWaitReason } from './agentRunAdmissionWait.js';
+import {
+    AGENT_ADMISSION_MAX_NESTING_DEPTH, AGENT_RUN_NESTED_LIMIT_ENV, AgentAdmissionNestingError, DEFAULT_AGENT_RUN_NESTED_LIMIT,
+    currentAgentAdmissionNesting, parseAgentRunNestedLimit, type AgentAdmissionNesting,
+} from './agentRunNesting.js';
 
 /** Fleet's existing server-side activation boundary is PROPR_FLEET_CONTROL_SECRET.
  * WORKER_CONCURRENCY is provisioned by Fleet, not the persisted UI setting.
  * Deliberately separate from #2989's per-worker CONFIG_REPO resolver. */
-export interface AdmissionConfig { instance: string; limit: number; generation?: number }
+export interface AdmissionConfig {
+    instance: string; limit: number; generation?: number;
+    /** Per-direct-agent ceilings. Deliberately outside the fenced identity:
+     * each acquire passes the current value, so changes need no drain. */
+    aliasLimits?: AgentRunAliasLimits;
+    /** Running nested executions one parent may carry (`PROPR_AGENT_RUN_NESTED_LIMIT`); absent = the default. */
+    nestedLimit?: number;
+}
 
 export function resolveAgentRunAdmission(env: NodeJS.ProcessEnv = process.env): AdmissionConfig | null {
+    const config = resolveGlobalAgentRunAdmission(env);
+    const aliasLimits = parseAgentRunAliasLimits(env[AGENT_RUN_ALIAS_LIMITS_ENV], config?.limit ?? null);
+    const nestedLimit = parseAgentRunNestedLimit(env[AGENT_RUN_NESTED_LIMIT_ENV]);
+    if (nestedLimit !== undefined && !config) throw new Error(`${AGENT_RUN_NESTED_LIMIT_ENV} requires agent-run admission (PROPR_AGENT_RUN_LIMIT or the Hosted entitlement)`);
+    if (!config) return null;
+    return { ...config, ...(aliasLimits ? { aliasLimits } : {}), ...(nestedLimit !== undefined ? { nestedLimit } : {}) };
+}
+
+function resolveGlobalAgentRunAdmission(env: NodeJS.ProcessEnv): AdmissionConfig | null {
     const hosted = Boolean(env.PROPR_FLEET_CONTROL_SECRET);
     if (!hosted && env.PROPR_AGENT_RUN_LIMIT === undefined) return null;
     const raw = hosted ? env.WORKER_CONCURRENCY : env.PROPR_AGENT_RUN_LIMIT;
@@ -30,77 +54,6 @@ export function resolveAgentRunAdmission(env: NodeJS.ProcessEnv = process.env): 
     return generation ? { instance, limit, generation } : { instance, limit };
 }
 
-// Records NEVER expire. Expiry permits fencing and Docker removal, not reuse.
-// All clock comparisons use Redis TIME. Each reservation has a unique token.
-const SCRIPT = `
-local t = redis.call('TIME')
-local now = t[1] * 1000 + math.floor(t[2] / 1000)
-local op, token = ARGV[1], ARGV[2]
-if op == 'acquire' then
-  local config = redis.call('GET', KEYS[2])
-  if not config then return -1 end
-  if config ~= ARGV[4] then return redis.error_reply('Agent admission configuration/daemon mismatch; drain before reconfiguration') end
-  local all = redis.call('HVALS', KEYS[1])
-  for _,value in ipairs(all) do
-    if cjson.decode(value).state == 'recovering' then return 0 end
-  end
-  if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[5]) then return 0 end
-  redis.call('HSET', KEYS[1], token, cjson.encode({deadline=now+tonumber(ARGV[3]), state='reserved'}))
-  return 1
-end
-if op == 'initialize' then
-  return redis.call('SET', KEYS[2], ARGV[4], 'NX')
-end
-if op == 'expired' then
-  local config = redis.call('GET', KEYS[2])
-  if config and config ~= ARGV[4] then
-    local old, next = cjson.decode(config), cjson.decode(ARGV[4])
-    if old.daemon ~= next.daemon or (next.generation or 0) <= (old.generation or 0) then
-      return redis.error_reply('Agent admission configuration/daemon mismatch; stale generation or unsupported daemon change')
-    end
-    -- The new operator generation fences every reservation atomically with the
-    -- config change. No capacity is reusable until removal is confirmed below.
-    local all = redis.call('HGETALL', KEYS[1])
-    for i=1,#all,2 do
-      local r = cjson.decode(all[i+1]); r.state = 'recovering'
-      redis.call('HSET', KEYS[1], all[i], cjson.encode(r))
-    end
-    redis.call('SET', KEYS[2], ARGV[4])
-  end
-  if not config and redis.call('HLEN', KEYS[1]) > 0 then return redis.error_reply('Agent admission configuration missing; drain before recovery') end
-  local result = {}
-  local all = redis.call('HGETALL', KEYS[1])
-  for i=1,#all,2 do
-    local r = cjson.decode(all[i+1])
-    if r.deadline <= now or r.state == 'recovering' then
-      r.state = 'recovering'
-      redis.call('HSET', KEYS[1], all[i], cjson.encode(r))
-      table.insert(result, all[i]); table.insert(result, r.id or '')
-    end
-  end
-  return result
-end
-local value = redis.call('HGET', KEYS[1], token)
-if not value then return 0 end
-local r = cjson.decode(value)
-if op == 'release' then
-  if r.state ~= 'recovering' then return 0 end
-  return redis.call('HDEL', KEYS[1], token)
-end
-if op == 'fence' then
-  r.state = 'recovering'
-elseif r.state == 'recovering' or r.deadline <= now then
-  return 0
-elseif op == 'attach' then
-  if r.id then return 0 end
-  r.id = ARGV[4]; r.state = 'running'
-elseif op ~= 'renew' then
-  return redis.error_reply('Unknown admission operation')
-end
-r.deadline = now + tonumber(ARGV[3])
-redis.call('HSET', KEYS[1], token, cjson.encode(r))
-return 1
-`;
 
 export interface AdmissionRedis {
     get(key: string): Promise<string | null>;
@@ -153,20 +106,96 @@ function admissionDocker(env: NodeJS.ProcessEnv, cwd?: string): AdmissionDocker 
     };
 }
 
-export function agentAdmissionKeys(instance: string): [string, string, string] {
+export function agentAdmissionKeys(instance: string): [string, string, string, string] {
     const scope = createHash('sha256').update(instance).digest('hex');
-    return [`propr:agent-admission:{${scope}}:holders`, `propr:agent-admission:{${scope}}:config`, `propr:agent-admission:{${scope}}:waiting`];
+    return [`propr:agent-admission:{${scope}}:holders`, `propr:agent-admission:{${scope}}:config`, `propr:agent-admission:{${scope}}:waiting`, `propr:agent-admission:{${scope}}:parents`];
 }
 
+/** Hash of `token -> JSON detail` beside the admission keys (same hash tag): the
+ * alias, task and wait reason of each waiting or admitted token, which the bare
+ * waiting-set members and the holder records do not carry. Read by
+ * `readAgentRunAdmissionSnapshot`, which also removes entries of tokens that are
+ * gone. Never read by the admission decision itself. */
+export function agentAdmissionDetailsKey(instance: string): string {
+    return `${agentAdmissionKeys(instance)[0].replace(/:holders$/, '')}:details`;
+}
+
+interface HolderRecord { state: 'reserved' | 'running' | 'draining' | 'recovering'; alias?: string; id?: string; parent?: string; depth?: number; shared?: boolean; scope?: string }
+async function holderRecords(client: AdmissionRedis, instance: string): Promise<Array<[string, HolderRecord]>> {
+    return Object.entries(await client.hgetall(agentAdmissionKeys(instance)[0])).map(([token, value]) => [token, JSON.parse(value) as HolderRecord]);
+}
+
+/** `nested` counts executions charged under a parent's reservation; each is
+ * also counted in its own state. `draining` parents finished but keep their
+ * slot until their nested executions end. */
 export async function agentAdmissionMetrics(client: AdmissionRedis, instance: string) {
-    const [holders, , waiting] = agentAdmissionKeys(instance);
+    const [, , waiting] = agentAdmissionKeys(instance);
     await client.zremrangebyscore(waiting, '-inf', Date.now());
-    const counts = { waiting: await client.zcard(waiting), reserved: 0, running: 0, recovering: 0 };
-    for (const value of Object.values(await client.hgetall(holders))) {
-        const record = JSON.parse(value) as { state: 'reserved' | 'running' | 'recovering' };
+    const counts = { waiting: await client.zcard(waiting), reserved: 0, running: 0, draining: 0, recovering: 0, nested: 0 };
+    for (const [, record] of await holderRecords(client, instance)) {
         counts[record.state]++;
+        if (record.parent) counts.nested++;
     }
     return counts;
+}
+
+/** Holder count per direct agent alias, every state included: a recovering
+ * holder occupies its alias until removal is confirmed. Holders without an
+ * alias (pre-upgrade records, exempt launches) appear under no alias. A nested
+ * execution on its parent's alias is charged under the parent's slot and is
+ * not counted here; see agentAdmissionNestedHolders. */
+export async function agentAdmissionAliasHolders(client: AdmissionRedis, instance: string): Promise<Record<string, number>> {
+    // A Map, so an alias such as `constructor` never reads an inherited property.
+    const counts = new Map<string, number>();
+    for (const [, { alias, shared }] of await holderRecords(client, instance)) {
+        if (alias && !shared) counts.set(alias, (counts.get(alias) ?? 0) + 1);
+    }
+    return Object.fromEntries(counts);
+}
+
+export interface AgentAdmissionNestedHolder {
+    /** First 8 characters of the parent's holder token (never the full token). */
+    parent: string;
+    parentAlias?: string;
+    parentState: HolderRecord['state'] | 'missing';
+    nested: Array<{ alias?: string; state: HolderRecord['state']; chargedUnderParent: boolean; containerId?: string }>;
+}
+
+/** Each parent holder with the nested executions charged under it, for diagnostics. */
+export async function agentAdmissionNestedHolders(client: AdmissionRedis, instance: string): Promise<AgentAdmissionNestedHolder[]> {
+    const records = new Map(await holderRecords(client, instance));
+    const parents = new Map<string, AgentAdmissionNestedHolder>();
+    for (const record of records.values()) {
+        if (!record.parent) continue;
+        const parent = records.get(record.parent);
+        const entry = parents.get(record.parent) ?? { parent: record.parent.slice(0, 8), ...(parent?.alias ? { parentAlias: parent.alias } : {}), parentState: parent?.state ?? 'missing', nested: [] };
+        parents.set(record.parent, entry);
+        entry.nested.push({ ...(record.alias ? { alias: record.alias } : {}), state: record.state, chargedUnderParent: Boolean(record.shared), ...(record.id ? { containerId: record.id } : {}) });
+    }
+    return [...parents.values()];
+}
+
+/** Launches that have no registered direct agent and are deliberately
+ * charged to the global limit only. Listed in the architecture doc. */
+export type AgentAdmissionExemption = 'legacy-claude-analysis';
+
+export type { AgentAdmissionWaitReason } from './agentRunAdmissionWait.js';
+
+export class AgentAdmissionIdentityError extends Error {
+    constructor() {
+        super('Agent admission cannot identify the direct agent for this launch; PROPR_AGENT_RUN_ALIAS_LIMITS requires every admitted launch to carry its agent alias');
+        this.name = 'AgentAdmissionIdentityError';
+    }
+}
+
+/** The alias charged for a launch ('' = global limit only) and its ceiling. */
+export function resolveAdmissionAlias(config: AdmissionConfig, identity: { agentAlias?: string; exemption?: AgentAdmissionExemption }): { alias: string; ceiling: string; log: Record<string, string | number | null> } {
+    const alias = identity.agentAlias?.trim() ?? '';
+    if (!alias && !identity.exemption && config.aliasLimits) throw new AgentAdmissionIdentityError();
+    const ceiling = agentRunAliasCeiling(config.aliasLimits, alias);
+    // Every admission log line names the alias it is charged to (null: global limit only).
+    const log = { agentAlias: alias || null, ...(ceiling === undefined ? {} : { aliasLimit: ceiling }) };
+    return { alias, ceiling: ceiling === undefined ? '' : String(ceiling), log };
 }
 
 export interface AdmissionOptions {
@@ -174,6 +203,20 @@ export interface AdmissionOptions {
     createArgs?: () => string[] | Promise<string[]>;
     signal?: AbortSignal;
     taskId?: string;
+    /** Alias of the direct agent that runs (never a synthetic alias). */
+    agentAlias?: string;
+    /** A documented launch without a registered agent: global limit only. */
+    exemption?: AgentAdmissionExemption;
+    /** Observes each change of the reason an acquire is still waiting. */
+    onWaiting?: (reason: AgentAdmissionWaitReason) => void;
+    /**
+     * A queue job that can defer: an alias-ceiling wait longer than this throws
+     * AgentCapacityError instead of holding the worker. Defaults to the job's
+     * capacity context (`runWithAgentCapacityContext`); unset keeps waiting.
+     */
+    capacityRaceWaitMs?: number;
+    /** The abort reason that means the caller's own timeout expired (not a cancellation). */
+    timeoutReason?: unknown;
     extraEnvVars?: Record<string, string>;
     cwd?: string;
     /** Infrastructure injection for real Redis tests; never sourced from request data. */
@@ -182,6 +225,8 @@ export interface AdmissionOptions {
     config?: AdmissionConfig;
     leaseMs?: number;
     pollMs?: number;
+    /** Parent link for a nested execution. Defaults to the async context (`runWithAgentAdmissionParent`). */
+    nesting?: AgentAdmissionNesting;
 }
 export interface AdmittedAgent {
     args: string[];
@@ -189,6 +234,11 @@ export interface AdmittedAgent {
     id: string;
     signal: AbortSignal;
     finish(): Promise<void>;
+}
+
+/** A capacity refusal is reported as itself; anything else as the cancellation that caused it, if any. */
+function admissionFailure(error: unknown, signal: AbortSignal): unknown {
+    return isAgentCapacityError(error) ? error : getExecutionAbortError(signal) ?? error;
 }
 
 function checkAdmissionAbort(signal: AbortSignal): void {
@@ -206,6 +256,24 @@ function createAdmissionClient(): Redis {
     return client;
 }
 
+/** The nesting arguments of the admission script, and their log fields (scope kinds only: a goal nonce is never logged). */
+function admissionNesting(options: AdmissionOptions, config: AdmissionConfig) {
+    const nesting: AgentAdmissionNesting = options.nesting ?? currentAgentAdmissionNesting() ?? {};
+    const nestedLimit = config.nestedLimit ?? DEFAULT_AGENT_RUN_NESTED_LIMIT;
+    const kind = (scope: string | undefined) => scope?.split(':')[0];
+    const log = Object.fromEntries(Object.entries({ parentScope: kind(nesting.parent), registersScope: kind(nesting.register) }).filter(([, value]) => value));
+    return { args: [nesting.parent ?? '', nesting.register ?? '', String(AGENT_ADMISSION_MAX_NESTING_DEPTH), String(nestedLimit)], log, nestedLimit };
+}
+
+/** 'top' or 'nested' for an admitting acquire reply; throws beyond the nesting bounds (refused at once, never waited for). */
+function admittedReply(result: unknown, nestedLimit: number): 'top' | 'nested' | null {
+    if (result === 5) throw new AgentAdmissionNestingError('depth', AGENT_ADMISSION_MAX_NESTING_DEPTH);
+    if (result === 7) throw new AgentAdmissionNestingError('alias');
+    if (result === 6) throw new AgentAdmissionNestingError('count', nestedLimit);
+    return result === 1 ? 'top' : result === 4 ? 'nested' : null;
+}
+const ADMITTED_MESSAGES: Record<string, string> = { true: 'Physical agent admitted as nested under its parent', false: 'Physical agent admitted' };
+
 /** Acquire exactly once, at the physical Docker boundary, never at logical wrappers.
  * create -> fenced ID registration -> start ID makes crash recovery safe even
  * when a process resumes after its lease expired. Recovery removes that exact
@@ -214,22 +282,46 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     assertNativeLogAdmission(args);
     const config = options.config ?? resolveAgentRunAdmission();
     if (!config) return null;
+    const { alias, ceiling, log } = resolveAdmissionAlias(config, options);
     const ownedClient = options.client ? undefined : createAdmissionClient();
     const client = options.client ?? ownedClient!;
     const environment = { ...process.env, ...options.extraEnvVars };
     const runtime = options.docker ?? admissionDocker(environment, options.cwd);
-    const [holders, configKey, waiting] = agentAdmissionKeys(config.instance);
+    const [holders, configKey, waiting, parents] = agentAdmissionKeys(config.instance);
+    const { args: nestingArgs, log: nestingLog, nestedLimit } = admissionNesting(options, config);
     const token: string = randomUUID();
     const leaseMs = options.leaseMs ?? 30_000;
     const controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     let id: string | undefined;
     let acquired = false;
+    let nested = false;
     let timer: NodeJS.Timeout | undefined;
     let renewal: Promise<void> = Promise.resolve();
     let closed = false;
     const call = (op: string, owner = token, extra = '', limit = '') =>
-        client.eval(SCRIPT, 2, holders, configKey, op, owner, String(leaseMs), extra, limit);
+        client.eval(SCRIPT, 3, holders, configKey, parents, op, owner, String(leaseMs), extra, limit, alias, ceiling,
+            ...nestingArgs);
+    // Report-only detail of a token (see agentAdmissionDetailsKey); a failed write never affects admission.
+    const writeDetail = admissionDetailWriter(client, agentAdmissionDetailsKey(config.instance));
+    const wake = (target: string) => {
+        if (agentRunAliasCeiling(config.aliasLimits, target) === undefined) return;
+        void wakeAgentCapacityWaiters(target, { config })
+            .catch(error => logger.debug({ alias: target, error: String(error) }, 'Could not wake agent capacity waiters'));
+    };
+    // The last nested execution of a finished (draining) parent also hands the
+    // parent's slot back: the reply names it, and it is removed and released here.
+    const release = async (owner: string) => {
+        let reply = await call('release', owner);
+        if (reply) await writeDetail(owner);
+        while (Array.isArray(reply)) {
+            const [, parentToken, parentId, parentAlias] = reply as [number, string, string, string];
+            if (parentId) await runtime.remove(parentId);
+            reply = await call('release', parentToken);
+            if (reply) await writeDetail(parentToken);
+            if (parentAlias) wake(parentAlias);
+        }
+    };
     const checkCancelled = async () => {
         checkAdmissionAbort(signal);
         if (options.taskId && await checkAbortSignal(options.taskId, plannerAbortSignalKeyForTask(options.taskId))) {
@@ -241,8 +333,23 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         const expired = await call('expired', token, identity) as string[];
         for (let i = 0; i < expired.length; i += 2) {
             if (expired[i + 1]) await runtime.remove(expired[i + 1]);
-            await call('release', expired[i]);
+            await release(expired[i]);
         }
+    };
+    // Fence this owner, and with it every nested execution charged under it
+    // (unless it finished normally while they run: then it is `draining`).
+    // Containers are removed child first: physical nested work never outlives
+    // its fenced parent, on local cleanup as on external recovery.
+    const fenceAndStop = async () => {
+        let coordinationError: unknown;
+        let fenced: unknown;
+        try { fenced = await call('fence'); } catch (error) { coordinationError = error; }
+        const nestedHolders = Array.isArray(fenced) ? (fenced as string[]).slice(1) : [];
+        for (let i = 0; i < nestedHolders.length; i += 2) {
+            if (nestedHolders[i + 1]) await runtime.remove(nestedHolders[i + 1]);
+        }
+        if (id) await runtime.remove(id);
+        return { draining: fenced === 2, nestedHolders, coordinationError };
     };
     const finish = async () => {
         if (closed) return;
@@ -251,23 +358,38 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await renewal;
         try {
             // Fence before removal: no future attach/renew can resurrect this owner.
-            let coordinationError: unknown;
-            if (acquired) {
-                try { await call('fence'); } catch (error) { coordinationError = error; }
-            }
             // Stop physical work even while Redis is unavailable. Retain the
             // reservation if either coordination or Docker removal failed.
-            if (id) await runtime.remove(id);
+            const { draining, nestedHolders, coordinationError } = acquired
+                ? await fenceAndStop()
+                : { draining: false, nestedHolders: [], coordinationError: undefined };
+            if (!acquired && id) await runtime.remove(id);
             if (coordinationError) throw coordinationError;
-            if (acquired) await call('release');
+            // Fenced nested executions are released before the parent they are charged under.
+            if (acquired && !draining) {
+                for (let i = 0; i < nestedHolders.length; i += 2) await release(nestedHolders[i]);
+                await release(token);
+            }
             await client.zrem(waiting, token);
+            // A draining parent stays a holder: its detail stays with it until its release.
+            if (!draining) await writeDetail(token);
+            if (draining) logger.info({ instance: config.instance, containerId: id, ...log }, 'Physical agent finished; its reservation stays charged until its nested executions end');
+            // Released capacity goes to the oldest job deferred for this alias.
+            else if (acquired && ceiling) wake(alias);
         } finally { ownedClient?.disconnect(); }
     };
     const renew = () => {
         timer = setTimeout(() => {
             renewal = (async () => {
                 try {
-                    if (await call('renew') !== 1) throw new Error('Agent admission ownership lost');
+                    if (await call('renew') !== 1) {
+                        const error = new Error('Agent admission ownership lost');
+                        controller.abort(error);
+                        // A lost lease fences this owner's nested executions too: stop
+                        // them before this container even if the caller is suspended.
+                        await fenceAndStop().catch(failure => logger.error({ error: String(failure) }, 'Agent admission stop failed'));
+                        return;
+                    }
                     if (!closed) renew();
                 } catch (error) {
                     controller.abort(error);
@@ -290,21 +412,30 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     };
     try {
         await checkCancelled();
-        const identity = JSON.stringify({ limit: config.limit, daemon: await runtime.daemon(), ...(config.generation ? { generation: config.generation } : {}) });
+        const identity = JSON.stringify({ limit: config.limit, daemon: `${ADMISSION_DAEMON_PREFIX}${await runtime.daemon()}`, ...(config.generation ? { generation: config.generation } : {}) });
         await checkCancelled();
-        logger.info({ instance: config.instance, limit: config.limit }, 'Waiting for physical agent admission');
-        while (true) {
-            await client.zadd(waiting, Date.now() + 30_000, token);
-            await recover(identity);
-            await checkCancelled();
-            const result = await call('acquire', token, identity, String(config.limit));
-            if (result === 1) { acquired = true; break; }
-            if (result === -1) {
-                await initialize(identity);
-                continue;
+        logger.info({ instance: config.instance, limit: config.limit, ...log, ...nestingLog }, 'Waiting for physical agent admission');
+        const wait = admissionWaitTracker({ token, alias, taskId: options.taskId, fields: { instance: config.instance, limit: config.limit, ...log }, write: writeDetail, onWaiting: options.onWaiting });
+        const aliasWait = aliasCapacityWait(alias, ceiling, options);
+        try {
+            while (true) {
+                await client.zadd(waiting, Date.now() + 30_000, token);
+                await wait.joined();
+                await recover(identity);
+                await checkCancelled();
+                const result = await call('acquire', token, identity, String(config.limit));
+                const admitted = admittedReply(result, nestedLimit);
+                if (admitted) { acquired = true; nested = admitted === 'nested'; break; }
+                if (result === -1) {
+                    await initialize(identity);
+                    continue;
+                }
+                await wait.observe(result);
+                aliasWait.observe(result);
+                await aliasWait.pause(options.pollMs ?? 250, signal);
             }
-            await delay(options.pollMs ?? 250, undefined, { signal });
-        }
+        } catch (error) { throw aliasWait.failure(error, signal); }
+        await wait.admitted();
         await client.zrem(waiting, token);
         renew();
         await checkCancelled();
@@ -318,12 +449,15 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         await checkCancelled();
         if (await call('attach', token, id) !== 1) throw new Error('Agent admission lost before container start');
         checkAdmissionAbort(signal);
-        logger.info({ instance: config.instance, containerId: id, ...await agentAdmissionMetrics(client, config.instance) }, 'Physical agent admitted');
+        logger.info({
+            instance: config.instance, containerId: id, ...log, ...nestingLog, nestedUnderParent: nested,
+            ...wait.summary(), ...await agentAdmissionMetrics(client, config.instance),
+        }, ADMITTED_MESSAGES[String(nested)]);
         return { id, args: ['start', '--attach', '--interactive', id], environment, signal, finish };
     } catch (error) {
         try { await finish(); }
         catch (cleanupError) { logger.error({ error: String(cleanupError) }, 'Agent admission retained for recovery'); }
-        throw getExecutionAbortError(signal) ?? error;
+        throw admissionFailure(error, signal);
     }
 }
 
@@ -334,10 +468,12 @@ export interface SpawnedAgentLaunch { createArgs: readonly string[]; environment
 
 /** Native goal sessions use the same admission, retaining it until child close
  * and confirmed container removal. Network-policy setup remains outside this. */
-export async function spawnAdmittedAgent(args: string[], spawnChild: (args: string[], launch: SpawnedAgentLaunch) => ChildProcess): Promise<ChildProcess> {
+export interface AgentAdmissionIdentity { agentAlias?: string; exemption?: AgentAdmissionExemption }
+
+export async function spawnAdmittedAgent(args: string[], spawnChild: (args: string[], launch: SpawnedAgentLaunch) => ChildProcess, identity: AgentAdmissionIdentity = {}): Promise<ChildProcess> {
     const { getExecutionOwnershipContext } = await import('../claude/docker/dockerExecutionOwnership.js');
     const taskLabel = args.find(arg => arg.startsWith('propr.task.id='));
-    const admission = await prepareAdmittedAgent(args, { signal: getExecutionOwnershipContext()?.signal, taskId: taskLabel?.slice('propr.task.id='.length) });
+    const admission = await prepareAdmittedAgent(args, { signal: getExecutionOwnershipContext()?.signal, taskId: taskLabel?.slice('propr.task.id='.length), ...identity });
     if (!admission) return spawnChild(args, { createArgs: args });
     let child: ChildProcess;
     try { checkAdmissionAbort(admission.signal); child = spawnChild(admission.args, { createArgs: args, environment: admission.environment }); }

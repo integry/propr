@@ -11,7 +11,8 @@ import { AgentRunApprovalPanel } from './AgentRunApprovalPanel';
 import { AgentRunNoChangeBadge } from './AgentRunNoChangeBadge';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import { AUTONOMY_BADGE_CLASSES, AUTONOMY_LABELS } from './agentPresentation';
-import { CANCELLABLE_RUN_STATES, RUN_TRIGGER_LABELS, formatTimestamp, isTerminalRunState } from './agentRunPresentation';
+import { CANCELLABLE_RUN_STATES, formatTimestamp, isTerminalRunState, runTriggerLabel } from './agentRunPresentation';
+import { AgentRunTriggerEvent } from './AgentRunTriggerEvent';
 import { useAgentRun } from './useAgentRun';
 
 interface AgentRunDetailProps {
@@ -96,7 +97,7 @@ const AgentRunHeader: React.FC<{ run: AutomationRunRecord; actions?: React.React
         <AgentRunStateBadge state={run.state} data-testid="agent-run-state" />
         <AgentRunNoChangeBadge run={run} />
         <span className="text-sm text-slate-700" title={run.triggerSource ?? undefined}>
-          {RUN_TRIGGER_LABELS[run.trigger]}
+          {runTriggerLabel(run)}
           {run.triggerSource && <span className="text-slate-500"> · {run.triggerSource}</span>}
         </span>
         <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${AUTONOMY_BADGE_CLASSES[run.autonomyMode]}`} title="Autonomy mode used by this run">
@@ -208,6 +209,8 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
         </SystemAlert>
       )}
       {actionError && <SystemAlert>{actionError}</SystemAlert>}
+
+      <AgentRunTriggerEvent run={run} />
 
       {run.state === 'awaiting_approval' && (
         <AgentRunApprovalPanel

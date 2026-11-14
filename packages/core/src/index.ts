@@ -12,7 +12,7 @@ export * from './utils/constants.js';
 export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, recordAgentWatchdogTrip, agentWatchdogMetricKey, AGENT_WATCHDOG_METRIC_RULES } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
-export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
+export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
 export { WorkerStateManager, getStateManager, closeStateManager, TaskStates, isBookkeepingCancellation } from './utils/workerStateManager.js';
 export { taskStateExpectation } from './utils/workerStateTransition.js';
 export { hashTaskAttemptToken } from './utils/taskAttemptGeneration.js';
@@ -48,6 +48,8 @@ export * from './config/configManager.js';
 // Note: loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel
 // are re-exported via configManager.ts (which re-exports from configManagerUltrafix.ts).
 // Do NOT add explicit re-exports here — they would conflict with the wildcard export above.
+export { recordPlanIssueDependencies } from './config/planIssueDependencies.js';
+export * from './services/planDependencyLinks.js';
 export {
     createPlanIssue,
     getPlanIssuesByDraft,
@@ -139,6 +141,7 @@ export {
 } from './queue/taskQueue.js';
 export type {
     IssueJobData,
+    AgentCapacityDeferralData,
     CommentJobData,
     TaskImportJobData,
     SystemTaskJobData,
@@ -158,9 +161,10 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, getCiMergeReadiness, NO_CI_GRACE_MS, type CiMergeReadiness, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, readActiveTasksForPR, readCiMergeReadiness, classifyCiMergeReadiness, readPRHeadObservation, getUltrafixLoopState, type CiMergeClassification, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type AutoMergeReevaluationOptions, type StatusEventPayload } from './webhook/checkRunHandler.js';
-export type { AutoMergeEvaluationOutcome } from './webhook/autoMergeEvaluation.js';
+export { evaluateAutoMergeEligibilityWithReason, type AutoMergeEvaluationOutcome, type AutoMergeEligibility, type AutoMergeEligibilityReason, type AutoMergeEligibilityResult } from './webhook/autoMergeEvaluation.js';
+export * from './webhook/pullRequestReadiness.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';
@@ -507,6 +511,7 @@ export type {
     Agent,
     AgentConfig,
     AgentTaskOptions,
+    AgentExtensionRequest,
     AgentToolPolicy,
     AgentToolPolicyMcpServer,
     AgentExecutionResult,
@@ -655,12 +660,23 @@ export * from './services/agents/agentRunNovelty.js';
 export * from './services/agents/agentRunProductivity.js';
 export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
+export * from './config/tokenOutlierSettings.js';
+export {
+    recordTokenUsageSample, evaluateTokenOutlier, medianTokens, readTokenBaseline, countRecentTokenOutlierAlerts,
+    loadTokenOutlierAutomationPause, describeTokenOutlierAlert, notifyTokenOutlier, formatTokenCount, TOKEN_SAMPLES_TABLE,
+} from './utils/tokenOutlierAlert.js';
+export type { TokenUsageSample, TokenBaselineKey, TokenOutlierEvaluation, TokenOutlierAlert, TokenOutlierDependencies, TokenOutlierResult, TokenOutlierPause, TokenOutlierNotificationOutcome } from './utils/tokenOutlierAlert.js';
 export * from './services/agents/agentRunDeferredRetry.js';
+export * from './services/agents/agentEventTriggerStore.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
+export * from './services/taskPlanning/epicQueueActions.js';
+export { deliverEpicQueueBlockedEvents, blockedNotificationKey } from './services/taskPlanning/epicQueueBlockedNotify.js';
 export * from './services/reviewScoreStore.js';
 // The one pull request status computation, its PR body block and its sync.
 export * from './services/pullRequestStatus/index.js';
+// Durable repository change-event journal (pull requests, epic queues, plan issues).
+export * from './services/repositoryEventJournal.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.
@@ -682,6 +698,28 @@ export { generateManagedDependencies } from './storage/managedDependencies.js';
 export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storage/lifecycle.js';
 
 export * from './extensions/extensionProfileStore.js';
+export { extensionResolutionEvent, type ExtensionResolutionEvent } from './extensions/extensionRunResolution.js';
+export { migrateExtensionProfilesToLibrary, ensureExtensionLibraryMigrated, extensionLibraryMigrationSettled, legacyAutomationExtensionsPending, type ExtensionLibraryMigrationReport } from './extensions/extensionLibraryMigration.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';
+
+export { validateAgentRunAdmissionPolicy, revalidateAgentRunAdmissionPolicy } from './agents/agentRunAdmissionPolicy.js';
+export {
+    readAgentRunAdmissionSnapshot, type AgentRunAdmissionSnapshot, type AgentAdmissionAgentReport, type AgentAdmissionTaskRef,
+    type AgentAdmissionStateCounts, type AgentAdmissionWaitingCounts,
+} from './agents/agentRunAdmissionSnapshot.js';
+export type { AgentAdmissionConfigurationState, AgentAdmissionConfigurationStatus } from './agents/agentRunAdmissionConfigState.js';
+export type { RepositoryWorkflowSlotUsage } from './workflow/workflowSlotUsage.js';
+export {
+    AgentCapacityError, AgentCapacityWaitTimeoutError, isAgentCapacityError, agentAliasHasCapacity, assertAgentAliasCapacity,
+    agentCapacityPolicyConfigured, registerAgentCapacityWaiter, forgetAgentCapacityWaiter, wakeAgentCapacityWaiters, agentCapacityWaitersKey,
+    configureAgentCapacityRedis, runWithAgentCapacityContext, reserveAgentCapacity, agentCapacityPins, agentAliasCeiling,
+    type AgentCapacityReservation, type AgentCapacityJobContext,
+} from './agents/agentCapacity.js';
+export { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, agentRunAliasLimitProblems } from './agents/agentRunAliasLimits.js';
+export {
+    AGENT_ADMISSION_MAX_NESTING_DEPTH, AGENT_ADMISSION_PARENT_ENV, AGENT_RUN_NESTED_LIMIT_ENV, DEFAULT_AGENT_RUN_NESTED_LIMIT, AgentAdmissionNestingError,
+    AGENT_ADMISSION_PARENT_KEY_ENV, goalParentSigningKey, agentAdmissionChildIdentity, agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody, parentScopeFromCommentJob,
+    runAsAgentAdmissionParent, runWithAgentAdmissionParent, type AgentAdmissionNesting,
+} from './agents/agentRunNesting.js';

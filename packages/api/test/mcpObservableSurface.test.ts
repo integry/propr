@@ -326,8 +326,43 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Plan issue fields recording the plan item and its prerequisite issues.
+    'plan_item_id', 'depends_on_issues',
+    // Statuses of the blocked-by links publish_plan records in dependencyLinks.
+    'existing',
+    // Epic execution modes and the per-issue schedule states reported in epicQueue.
+    'sequential', 'parallel', 'graph', 'schedule', 'waiting', 'ready', 'in_flight', 'done', 'blocked',
+    // Blocked reason kinds, event resolutions and action outcomes of the blocked-issue tools.
+    'closed_unmerged', 'missing_from_plan', 'dispatch_failed', 'agent_blocked', 'awaiting_human_merge', 'label_handoff',
+    'setup_not_ready', 'replaced', 'cleared', 'retried', 'settled', 'progressed', 'already_skipped', 'already_retried',
+    // Grouping dimensions and figures of get_cost_breakdown rows.
+    'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
+    // Stored-configuration check fields and states returned by get_agent_run_admission.
+    'admitting', 'mismatch', 'missing',
+    // Verdicts, gates, statuses and reason codes returned by get_pull_request_readiness.
+    'verdict', 'ready', 'waiting', 'blocked', 'closed', 'gate', 'gates', 'detail', 'pass', 'fail', 'not_applicable', 'checks', 'score',
+    'open', 'not_draft', 'mergeable', 'human_review', 'ai_review', 'active_work', 'policy',
+    'pull_request_open', 'pull_request_merged', 'pull_request_closed',
+    'checks_passing', 'checks_not_passing', 'no_ci', 'waiting_for_ci',
+    'merge_conflict', 'branch_behind_base', 'branch_protection_blocked', 'merge_state_unknown',
+    'no_changes_requested', 'changes_requested', 'review_required', 'review_state_unavailable',
+    'no_review', 'review_stale_head', 'score_below_goal', 'review_scores_unavailable',
+    'ultrafix_active', 'ultrafix_pending', 'ultrafix_failed', 'ultrafix_succeeded', 'ultrafix_state_unavailable', 'ultrafix_not_requested',
+    'no_active_work', 'propr_work_active', 'active_work_unavailable',
+    'armed', 'skipped_protected_path', 'skipped_disabled', 'skipped_empty_diff', 'skipped_policy_invalid', 'skipped_diff_unavailable', 'auto_merge_not_requested', 'auto_merge_request_unavailable', 'pull_request_changed',
+    'eligible', 'ineligible', 'transient', 'pr_label', 'linked_issue_label', 'no_auto_merge_label', 'epic_without_label',
+    'ultrafix_not_succeeded', 'linked_issue_unavailable',
+    // Outcomes, filters, domains and event types of list_repository_events and wait_repository_events.
+    'events', 'timeout', 'domains', 'types', 'domain', 'type', 'payload',
+    'pull_request', 'epic_queue', 'plan_issue',
+    'opened', 'head_changed', 'review_scored', 'ultrafix_started', 'ultrafix_ended', 'auto_merge_decision',
+    'advanced', 'status_changed',
+    // Replacement lineage of get_task: the lineage object, causes, decision states and skip reasons.
+    'lineage', 'infra_lost', 'provider_transient', 'dispatched', 'exhausted',
+    'cap_reached', 'budget_exhausted', 'user_cancelled', 'issue_closed', 'watchdog_stop', 'cost_cap_stop',
+    'blocked_stop', 'goal_task', 'unsupported_task', 'replacement_not_started',
     // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.
     'ask_operator', 'goal_question_max_wait_ms',
   ]);

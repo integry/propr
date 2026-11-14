@@ -3,7 +3,6 @@ import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { AutomationRunState } from '@propr/shared';
 import {
-    AgentRegistry,
     enqueueAgentRunActionOrFail,
     getAgentRunById,
     getAuthenticatedOctokit,
@@ -14,7 +13,6 @@ import {
     UsageLimitError,
     validateAgentDefinitionRuntime,
     TaskStates,
-    type Agent,
     type AgentRunJobData,
     type IssueRef,
     type JobResult,
@@ -22,18 +20,21 @@ import {
     type StoredAgentRun,
     type WorkerStateManager,
 } from '@propr/core';
-import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
+import { agentRunExecutionUpdate, agentTaskOptions, launchCarriesExtensions } from './agentRuns/agentTaskOptions.js';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
-import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
+import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
 import { defaultReportNoveltyLookups, storeReportWithNovelty, type ReportNoveltyStore } from './agentRuns/reportNovelty.js';
 import { evaluateUnproductiveStreakQuietly } from './agentRuns/unproductiveStreak.js';
 import { definitionReadsRepositories, prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import type { GitHubToken } from './githubTypes.js';
 import { agentReportRecap } from './agentRuns/reportRecap.js';
-import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { defaultRunCostCapDeps, withRunCostCap, writeTimelineEvent } from './runCostCap.js';
+import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
+import { runWithJobAgentCapacity } from './agentCapacityDeferral.js';
+import { checkAgentRunCapacity, checkAgentRunCapacityBeforeClaim, type AgentRunCapacityCheck } from './agentRuns/capacity.js';
+import { defaultResolveAgent, type ResolvedAgentRunAgent } from './agentRuns/resolveAgent.js';
 
 /**
  * Report-run executor for ProPR Agents.
@@ -51,11 +52,7 @@ export { agentRunToolPolicy, type AgentRunMcpGrant, type AgentRunPhase } from '.
 export const AGENT_RUN_USAGE_LIMIT_REASON = 'provider usage limit reached; trigger again later';
 export const AGENT_RUN_ABANDONED_REASON = 'The worker running this report stopped before it finished; trigger the agent again';
 
-export interface ResolvedAgentRunAgent {
-    agent: Pick<Agent, 'executeTask'>;
-    alias: string;
-    model: string | undefined;
-}
+export type { ResolvedAgentRunAgent } from './agentRuns/resolveAgent.js';
 
 /** The run and report task one delivery is working on. */
 interface RunContext { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger }
@@ -75,6 +72,8 @@ export interface AgentRunProcessorDeps extends ReportNoveltyStore {
     buildPrompt: typeof buildAgentReportPrompt;
     /** Runs the agent inside the instance spend cap (`default_max_cost_usd`). */
     withCostCap: <T>(target: { taskId: string; repoOwner: string; repoName: string; modelName?: string; logger: Logger }, operation: () => Promise<T>) => Promise<T>;
+    /** Whether this launch may receive extension library items, so it runs under the network-policy scope they need. */
+    extensionsApply?: (...args: Parameters<typeof launchCarriesExtensions>) => boolean | Promise<boolean>;
     advanceAfterReport: (run: StoredAgentRun) => Promise<StoredAgentRun | null>;
     /**
      * Enqueues the action phase again for a run an interrupted attempt moved to
@@ -83,22 +82,10 @@ export interface AgentRunProcessorDeps extends ReportNoveltyStore {
     resumeActing: (run: StoredAgentRun) => Promise<StoredAgentRun>;
     /** Run-scoped ProPR MCP grant for the agent container, revoked when the phase ends. */
     mcpGrants: { request: typeof requestAgentRunMcpGrant; revoke: typeof revokeAgentRunMcpGrant };
+    /** The direct agent's per-agent ceiling, checked before the claim; throws AgentCapacityError when full. */
+    checkAgentCapacity: AgentRunCapacityCheck;
     /** Unproductive-streak check once a run's flags are final; never throws. */
     evaluateStreak: (run: StoredAgentRun | null) => Promise<void>;
-}
-
-async function defaultResolveAgent(definition: StoredAgentDefinition, log: Logger): Promise<ResolvedAgentRunAgent> {
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-    if (definition.agentAlias === null) {
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, log);
-        const agent = registry.getAgentByAlias(resolvedAlias);
-        if (!agent) throw new Error(`Configured default agent not found: ${resolvedAlias}`);
-        return { agent, alias: resolvedAlias, model: resolvedModel };
-    }
-    const agent = registry.getAgentByAlias(definition.agentAlias);
-    if (!agent) throw new Error(`Agent not found: ${definition.agentAlias}`);
-    return { agent, alias: definition.agentAlias, model: definition.modelName ?? agent.config.defaultModel ?? undefined };
 }
 
 export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
@@ -126,6 +113,7 @@ export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
     advanceAfterReport: run => advanceAfterReport(run),
     resumeActing: run => enqueueAgentRunActionOrFail(run),
     mcpGrants: { request: requestAgentRunMcpGrant, revoke: revokeAgentRunMcpGrant },
+    checkAgentCapacity: checkAgentRunCapacity,
     evaluateStreak: run => evaluateUnproductiveStreakQuietly(run),
 };
 
@@ -141,7 +129,7 @@ export function agentRunIssueRef(definition: StoredAgentDefinition): IssueRef {
         repoOwner: owner,
         repoName: repo,
         type: 'agent-run',
-        title: `Agent: ${definition.name}`,
+        title: definition.name,
         subtitle: 'Report run',
     };
 }
@@ -465,7 +453,10 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         return definitionReadsRepositories(definition) ? deps.getGitHubAccess() : { token: '', octokit: undefined };
     }
 
-    return async function processAgentRun(job: Job<AgentRunJobData>): Promise<JobResult> {
+    // A saturated agent delays this same job (no attempt consumed) with the run still queued.
+    return (job: Job<AgentRunJobData>): Promise<JobResult> => deferCapacityJob(job, () => processAgentRun(job));
+
+    async function processAgentRun(job: Job<AgentRunJobData>): Promise<JobResult> {
         const { runId, correlationId } = job.data;
         const log: Logger = logger.withCorrelation(correlationId);
 
@@ -492,6 +483,11 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         const stateManager = deps.stateManager();
         await stateManager.createTaskStateIfAbsent(taskId, issueRef, correlationId, job.id === undefined ? null : String(job.id));
 
+        // 3b. The direct agent must have capacity before the claim: a claimed run cannot go back to the queue.
+        const agentCapacity = await checkAgentRunCapacityBeforeClaim({
+            job, definition, taskId, log, stateManager, resolveAgent: deps.resolveAgent, check: deps.checkAgentCapacity,
+        });
+
         // 4. Claim the run; null means another writer moved it first.
         const running = await deps.transitionRun(runId, ['queued'], 'running', { reportTaskId: taskId });
         if (!running) return claimLost({ runId, taskId, stateManager, log }, correlationId);
@@ -512,7 +508,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             const previousReports = await previousReportsFor(definition, run);
             const prompt = deps.buildPrompt({
                 definition,
-                run: { id: run.id, trigger: run.trigger, triggerSource: run.triggerSource, createdAt: run.createdAt },
+                run: { id: run.id, trigger: run.trigger, triggerSource: run.triggerSource, triggerEvent: run.triggerEvent, createdAt: run.createdAt },
                 previousReports,
                 attachments: workspace.attachments,
                 workspace: workspace.promptWorkspace,
@@ -528,9 +524,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => options.extensionProfile
+                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent }, options)
                     ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
-                    : agent.executeTask(options),
+                    : agent.executeTask(options))),
             );
 
             // 8. A task stopped directly during execution discards the result.
@@ -568,7 +564,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             await revokeGrantQuietly(deps.mcpGrants.revoke, runId, mcpGrant, log);
             await workspace?.cleanup(runSucceeded);
         }
-    };
+    }
 }
 
 export const processAgentRunJob = createAgentRunProcessor();

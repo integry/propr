@@ -278,13 +278,14 @@ async function handlePlanIssueTracking(
     payload: unknown,
     eventType: WebhookEventType,
     correlationId: string,
-    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+    deliveryId?: string,
 ): Promise<void> {
+    const correlatedLogger = logger.withCorrelation(correlationId);
     try {
         if (eventType === 'issues' && isIssuesEvent(payload)) {
             await handlePlanIssueStatusUpdate(payload, correlationId);
         } else if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
-            await handlePlanPRUpdate(payload, correlationId);
+            await handlePlanPRUpdate(payload, correlationId, deliveryId);
         } else if (eventType === 'issue_comment' && isIssueCommentEvent(payload)) {
             await handlePlanPRCommentTracking(payload, 'issue_comment', correlationId);
         } else if (eventType === 'pull_request_review_comment' && isPullRequestReviewCommentEvent(payload)) {
@@ -401,10 +402,16 @@ function startConflictDetection(payload: unknown, eventType: WebhookEventType, c
     });
 }
 
+/**
+ * @param deliveryId - GitHub's `X-GitHub-Delivery` id. A redelivery carries the
+ * same id, so the change journal uses it to tell a redelivered event from a new
+ * occurrence of the same change.
+ */
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
     correlationId: string,
+    deliveryId?: string,
 ): Promise<DeliveryDisposition> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -451,7 +458,7 @@ export async function processWebhookEvent(
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
     // Plan Issue Tracking (runs before standard processing to update status)
-    await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
+    await handlePlanIssueTracking(payload, eventType, correlationId, deliveryId);
 
     // 5. CI events (check_run, check_suite, legacy status) drive auto-merge and Ultrafix continuation
     await handleCiEvent(payload, eventType, correlationId, correlatedLogger);

@@ -72,6 +72,12 @@ export interface ClaudeCodeResponse {
     conversationLog?: ConversationLogEntry[];
     sessionId?: string | null;
     conversationId?: string;
+    /**
+     * Identifies this one agent execution for metrics: `recordLLMMetrics` records
+     * an execution id at most once, so a failure path that records the same
+     * result again does not count it twice.
+     */
+    executionId?: string;
     model?: string;
     /** Effective reasoning level passed to the agent runtime, when configured. */
     reasoningLevel?: ReasoningLevel;
@@ -144,7 +150,10 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
                 worktreePath,
                 stdinData: prompt, // Always pass prompt via stdin
                 preserveOutputOnTimeout: true,
-                model: modelName
+                model: modelName,
+                // No registered direct agent runs here (ENV-configured Claude, used only
+                // when the requested alias is not registered): global admission limit only.
+                agentAdmissionExemption: 'legacy-claude-analysis',
             })
         );
 

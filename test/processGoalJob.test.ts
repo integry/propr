@@ -302,6 +302,38 @@ test('goal execution keeps initial prompt identity separate from FIFO continuati
   assert.equal(captured[1].resumeSessionId, 'session-1');
 });
 
+test('an orchestrating goal session is the admission parent of the tasks it starts; a direct goal is not (#3480)', async () => {
+  // The same module instance processGoalJob uses, so the async context is shared.
+  const core = await import('@propr/core');
+  const data: GoalJobData = {
+    goalId: 'goal-orchestrating', taskId: 'goal-task-orchestrating', repoOwner: 'acme', repoName: 'repo',
+    generation: 0, claimId: 'claim-orchestrating',
+  };
+  const captured: Array<{ environment?: Record<string, string>; nesting: ReturnType<typeof core.currentAgentAdmissionNesting> }> = [];
+  const agent = {
+    executeTask: async (options: AgentTaskOptions) => {
+      captured.push({ environment: options.environment, nesting: core.currentAgentAdmissionNesting() });
+      return { success: false, modelUsed: 'test-model', executionTimeMs: 1, logs: '', modifiedFiles: [] };
+    },
+  };
+  const goal = {
+    goal_id: data.goalId, initial_prompt: '/goal Ship it', session_id: null, conversation_id: null,
+    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'codex', launch_strategy: 'orchestrate',
+  };
+  const prepared = { goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' }, pendingInput: null };
+  await executePreparedGoal(data, prepared as never);
+  // A later attempt of the same goal keeps the same parent, so earlier issues still link to it.
+  await executePreparedGoal({ ...data, generation: 1 }, { ...prepared, goal: { ...goal, session_id: 'session-1' } } as never);
+  await executePreparedGoal(data, { ...prepared, goal: { ...goal, launch_strategy: 'direct' } } as never);
+  const nonce = core.createGoalParentNonce(data.goalId);
+  for (const attempt of captured.slice(0, 2)) {
+    assert.equal(attempt.environment?.PROPR_PARENT_EXECUTION, nonce);
+    assert.deepEqual(attempt.nesting, { register: core.goalParentScope(nonce) });
+  }
+  assert.equal(captured[2].environment?.PROPR_PARENT_EXECUTION, undefined);
+  assert.equal(captured[2].nesting, undefined);
+});
+
 test('fresh whole-session providers receive the durable context with the first prompt before FIFO input', async () => {
   const data: GoalJobData = {
     goalId: 'goal-whole-session', taskId: 'goal-task-whole-session', repoOwner: 'acme', repoName: 'repo',
@@ -563,6 +595,81 @@ for (const failure of ['missing but already registered', 'fetch failed: connecti
       assert.equal(rebuilds, failure.startsWith('fetch failed') ? 2 : 1);
     } finally {
       failed.mock.restore();
+      await db('goals').where({ goal_id: data.goalId }).delete();
+    }
+  });
+}
+
+test('a goal whose agent is at its ceiling is deferred before the attempt claim', async () => {
+  const { DelayedError } = await import('bullmq');
+  const { AgentCapacityError } = await import('../packages/core/src/agents/agentCapacity.ts');
+  const data: GoalJobData = { goalId: 'goal-1', taskId: 'goal-task-1', repoOwner: 'acme', repoName: 'repo', generation: 2, claimId: 'claim-2' };
+  const claim = mock.fn(async () => null);
+  let delayed = 0;
+  const job = { data, token: 't', moveToDelayed: async () => { delayed++; } };
+  await assert.rejects(processGoalJob(job as never, {
+    checkAgentCapacity: async () => { throw new AgentCapacityError(['codex'], { codex: 1 }); },
+    claim, withHeartbeat: async () => assert.fail('no attempt'), prepare: async () => assert.fail('no attempt'), execute: async () => assert.fail('no attempt'), result: {},
+  } as never), DelayedError);
+  assert.equal(claim.mock.callCount(), 0, 'no goal claim is held while it waits');
+  assert.equal(delayed, 1);
+  // With capacity the attempt proceeds to its claim as before.
+  assert.deepEqual(await processGoalJob(job as never, { checkAgentCapacity: async () => {}, claim } as never), { status: 'skipped', reason: 'goal_claim_fence' });
+  assert.equal(claim.mock.callCount(), 1);
+});
+
+// A delivery the claim would reject must reach that fence while its agent is still
+// full, leave the waiting lists it joined, and not be delayed again.
+for (const stop of ['paused', 'cancelled', 'superseded', 'already claimed'] as const) {
+  test(`a deferred goal delivery that becomes ${stop} retires at the claim fence while its agent stays full`, async () => {
+    const { DelayedError } = await import('bullmq');
+    const { AgentRegistry, configureAgentCapacityRedis, db, getStateManager } = await import('@propr/core');
+    const { checkGoalAgentCapacity } = await import('../src/jobs/goalCapacity.ts');
+    const { claimGoalAttempt } = await import('../src/jobs/goalAttemptState.ts');
+    const data: GoalJobData = { goalId: `capacity-${stop}`, taskId: `capacity-task-${stop}`, repoOwner: 'acme', repoName: 'repo', generation: 1, claimId: 'claim-1' };
+    await db('goals').insert({ goal_id: data.goalId, owner_id: 'owner', owner_login: 'alice', repository: 'acme/repo',
+      objective: 'Ship it', launch_strategy: 'direct', initial_prompt: 'Ship it', agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'test',
+      current_task_id: data.taskId, desired_state: 'running', run_generation: data.generation, run_claim: data.claimId });
+    const env = { ...process.env };
+    Object.assign(process.env, { PROPR_AGENT_RUN_LIMIT: '2', PROPR_INSTANCE_ID: 'goal-capacity', PROPR_AGENT_RUN_ALIAS_LIMITS: 'codex=1' });
+    const waiters = new Map<string, Set<string>>();
+    // The only holder of codex is live for the whole test: the agent never frees up.
+    configureAgentCapacityRedis({
+      eval: async () => [0, 'codex', 1, 0],
+      zadd: async (key: string, _nx: string, _score: number, member: string) => { waiters.set(key, (waiters.get(key) ?? new Set()).add(member)); return 1; },
+      zrem: async (key: string, member: string) => { waiters.get(key)?.delete(member); return 1; },
+    } as never);
+    const registry = mock.method(AgentRegistry, 'getInstance', () => ({
+      ensureInitialized: async () => {},
+      getAgentById: () => ({ config: { alias: 'codex' } }),
+      getAgentByAlias: () => ({ config: { alias: 'codex' } }),
+      beginRoutingSession: () => ({ select: async () => ({ synthetic: false, physicalAgentAlias: 'codex' }) }),
+    }) as never);
+    const timeline = mock.method(getStateManager(), 'getTaskState', async () => null);
+    let delayed = 0;
+    const job = { data: data as GoalJobData & Record<string, unknown>, token: 't', queueName: 'goals', id: `job-${stop}`,
+      moveToDelayed: async () => { delayed++; }, updateData: async (next: never) => { job.data = next; } };
+    const dependencies = { checkAgentCapacity: checkGoalAgentCapacity, claim: claimGoalAttempt,
+      withHeartbeat: async () => assert.fail('a fenced delivery never runs') } as never;
+    const waiting = () => [...waiters.values()].reduce((count, members) => count + members.size, 0);
+    try {
+      await assert.rejects(processGoalJob(job as never, dependencies), DelayedError);
+      assert.equal(delayed, 1);
+      assert.equal(waiting(), 1, 'the first delivery waits on the codex list');
+      if (stop === 'paused' || stop === 'cancelled') await db('goals').where({ goal_id: data.goalId }).update({ desired_state: stop });
+      if (stop === 'superseded') await db('goals').where({ goal_id: data.goalId }).update({ run_generation: 2, run_claim: 'claim-2' });
+      if (stop === 'already claimed') await db('goals').where({ goal_id: data.goalId }).update({ claimed_at: db.fn.now() });
+
+      assert.deepEqual(await processGoalJob(job as never, dependencies), { status: 'skipped', reason: 'goal_claim_fence' });
+      assert.equal(delayed, 1, 'the retired delivery is not delayed again');
+      assert.equal(waiting(), 0, 'the retired delivery leaves the codex waiting list');
+      assert.equal(job.data.agentCapacityAliases, undefined);
+      assert.equal(job.data.agentCapacityDeferrals, undefined);
+    } finally {
+      timeline.mock.restore();
+      registry.mock.restore();
+      configureAgentCapacityRedis(undefined);
+      process.env = env;
       await db('goals').where({ goal_id: data.goalId }).delete();
     }
   });

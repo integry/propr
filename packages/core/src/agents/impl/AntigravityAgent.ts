@@ -8,6 +8,7 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
@@ -85,7 +86,6 @@ export class AntigravityAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        if (options.extensionProfile) throw new Error('Extension profiles require Claude or Codex task execution');
         const { worktreePath, issueRef, prompt: rawCustomPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, environment, taskId, prNumber, metadata } = options;
         // No native web switch: the restriction is best effort through the prompt.
         const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
@@ -111,7 +111,7 @@ export class AntigravityAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
                     taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
                 }),
@@ -142,6 +142,7 @@ export class AntigravityAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const reasoningLevel = await this.resolveReasoningLevel(options.reasoningLevel, model);
             const response = await executeAntigravityNativeGoal(options, {
+                agentAlias: this.config.alias,
                 diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
                 buildDockerArgs: async ({ conversationId, launch }) => {
                     const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
@@ -353,7 +354,8 @@ export class AntigravityAgent implements Agent {
     }
 
     private handleExecutionError(error: unknown, executionTime: number, issueRef: { number: number; repoOwner: string; repoName: string }, effectiveModel: string | undefined): AgentExecutionResult {
-        if (error instanceof UsageLimitError) throw error;
+        // A capacity wait is not a provider failure: the job defers or reports the wait.
+        if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
         const err = error as Error;
         logger.error({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during Antigravity agent execution');
         return {
@@ -385,7 +387,7 @@ export class AntigravityAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars }, timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars }, timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
                 { timeoutMs: ANALYSIS_AGENT_TANK_TIMEOUT_MS, alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking }
             );
             const executionTimeMs = Date.now() - startTime;

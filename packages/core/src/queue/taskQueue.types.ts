@@ -17,7 +17,26 @@ export interface RepositoryWorkflowDeferralData {
     repositoryWorkflowRetryAt?: number;
 }
 
-export interface IssueJobData extends RepositoryWorkflowDeferralData {
+/**
+ * Retained only while the same job waits for its direct agent's per-agent
+ * ceiling (`PROPR_AGENT_RUN_ALIAS_LIMITS`); cleared once the job proceeds.
+ */
+export interface AgentCapacityDeferralData {
+    agentCapacityDeferrals?: number;
+    /** Epoch milliseconds of the next capacity check, shared by the delayed job and the task timeline. */
+    agentCapacityRetryAt?: number;
+    /** When this wait began; orders the alias's waiters oldest first. */
+    agentCapacityWaitingSince?: number;
+    /** Direct agent aliases the job is waiting for. */
+    agentCapacityAliases?: string[];
+    /**
+     * Synthetic members chosen by the capacity pre-check, reused after a deferral
+     * so the job does not select (or advance the round-robin cursor) twice.
+     */
+    agentCapacitySelections?: Array<{ requestedAlias: string; requestedModel?: string; directAlias: string; memberId?: string }>;
+}
+
+export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapacityDeferralData {
     /** Same task waiting for repository capacity, rather than a failed execution retry. */
     repositoryWorkflowDeferred?: boolean;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
@@ -69,6 +88,13 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     maxCostUsd?: number;
     /** Task IDs of earlier attempts (replaced runs) whose spend counts toward this run's cap. */
     costBudgetTaskIds?: string[];
+    /**
+     * Verified admission parent scope (`goal:<nonce>`) from the issue body's
+     * signed, resource-bound `propr-parent-execution` marker. The processor
+     * validates the durable proof again; this scope alone grants no authority.
+     * While that goal session runs, admission charges the task under it.
+     */
+    agentAdmissionParent?: string;
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';
@@ -81,7 +107,9 @@ export interface AutoResolveContext {
     triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment' | 'sweep';
 }
 
-export interface CommentJobData extends RepositoryWorkflowDeferralData {
+export interface CommentJobData extends RepositoryWorkflowDeferralData, AgentCapacityDeferralData {
+    /** Verified goal parent from the triggering comment; scope alone grants no authority. */
+    agentAdmissionParent?: string;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
     /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
@@ -133,6 +161,10 @@ export interface CommentJobData extends RepositoryWorkflowDeferralData {
 }
 
 export interface UnprocessedComment {
+    /** Original body retaining the signed resource proof before trigger keywords are stripped. */
+    agentAdmissionParentProof?: string;
+    /** Verified parent hint; the selected comment body is validated again before admission. */
+    agentAdmissionParent?: string;
     id: number;
     /** GitHub creation time used to order issue and review comments together. */
     createdAt?: string;
@@ -157,7 +189,7 @@ export interface UnprocessedComment {
     acceptedBodySha256?: string;
 }
 
-export interface TaskImportJobData {
+export interface TaskImportJobData extends AgentCapacityDeferralData {
     taskDescription: string;
     repository: string;
     correlationId: string;
@@ -167,7 +199,7 @@ export interface TaskImportJobData {
 }
 
 /** One continuation of the same native provider goal task/session. */
-export interface GoalJobData {
+export interface GoalJobData extends AgentCapacityDeferralData {
     goalId: string;
     taskId: string;
     repoOwner: string;
@@ -214,7 +246,7 @@ export interface IndexingJobData {
     ignoreCooldown?: boolean; // Manual/admin indexing override for summarization cooldowns
 }
 
-export interface MergeConflictJobData {
+export interface MergeConflictJobData extends AgentCapacityDeferralData {
     /** Stable GitHub user ID for comment-triggered jobs; absent for system detection. */
     userId?: string;
     pullRequestNumber: number;
@@ -235,7 +267,7 @@ export interface MergeConflictJobData {
 export type AgentRunPhase = 'report' | 'action';
 
 /** One phase of an agent run: `processAgentRun` (report) or `processAgentAction` (action). */
-export interface AgentRunJobData {
+export interface AgentRunJobData extends AgentCapacityDeferralData {
     runId: string;
     definitionId: string;
     ownerId: string;
@@ -267,6 +299,8 @@ export interface ClaudeOutputResult {
 
 export interface ClaudeResult {
     success: boolean;
+    /** Identifies the agent execution for metrics; see `AgentExecutionResult.executionId`. */
+    executionId?: string;
     sessionId?: string | null;
     conversationId?: string;
     executionTime?: number;

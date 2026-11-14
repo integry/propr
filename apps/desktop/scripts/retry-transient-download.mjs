@@ -22,6 +22,9 @@ export const TRANSIENT_DOWNLOAD_PATTERNS = [
   /TypeError: terminated\r?\n\s*at Fetch\.onAborted \(node:internal\/deps\/undici\//,
   /socket hang up/i,
   /network (?:timeout|error)/i,
+  // node-gyp can print Undici's connection timeout stack without its
+  // UND_ERR_CONNECT_TIMEOUT code when downloading Node headers during npm ci.
+  /\bConnectTimeoutError: Connect Timeout Error\b/,
   /(?:failed|unable) to download/i,
   /\b(?:ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ETIMEDOUT|EPIPE|UND_ERR_(?:CONNECT_TIMEOUT|SOCKET|HEADERS_TIMEOUT))\b/,
   // `@electron/get` surfaces release-endpoint outages as `HTTPError: Response code 500 (...)`,

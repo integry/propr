@@ -13,17 +13,13 @@ import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { hasOnlyStyleFindings, type ReviewFindingCategory } from './reviewFindingCategory.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
 import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
+import type { UltrafixOutcome } from '@propr/shared';
+import { ultrafixEndedEvent, ultrafixOutcomeFromCompletion, ultrafixStartedEvent, writeUltrafixJournalEvent as journal } from './ultrafixJournal.js';
 export {
-    clearDeferredContinuationIfCurrent,
-    clearUltrafixStateIfCurrent,
-    getUltrafixAutomaticWorkEpoch,
-    getUltrafixAutomaticWorkEpochKey,
-    getUltrafixDeferredKey,
-    hasUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWorkForComment,
-    isUltrafixAutomaticWorkCurrent,
-    saveUltrafixStateIfCurrent,
+    clearDeferredContinuationIfCurrent, clearUltrafixStateIfCurrent, getUltrafixAutomaticWorkEpoch,
+    getUltrafixAutomaticWorkEpochKey, getUltrafixDeferredKey, hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork, invalidateUltrafixAutomaticWorkForComment,
+    isUltrafixAutomaticWorkCurrent, saveUltrafixStateIfCurrent,
 } from './ultrafixAutomaticWorkEpoch.js';
 export {
     claimDeferredContinuation,
@@ -45,11 +41,7 @@ export {
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixClaimedStep, UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
 export {
-    areChecksReadyForUltrafix,
-    checkReadiness,
-    hasFollowUpJobsForPR,
-    hasPendingBatchedComments,
-    isCooldownElapsed,
+    areChecksReadyForUltrafix, checkReadiness, hasFollowUpJobsForPR, hasPendingBatchedComments, isCooldownElapsed,
 } from './ultrafixReadinessPolicy.js';
 
 // --- Interfaces ---
@@ -87,6 +79,7 @@ export interface UltrafixLoopState {
     workEpoch: number;
     /** GitHub comment ID of the `/ultrafix` command that started this loop. */
     sourceCommentId?: number;
+    sourceCommentType?: 'issue' | 'review';
     /** Lines written beneath `/ultrafix`; applied to every review and fix cycle. */
     instructions?: string;
     /** GitHub user who started the loop, for attribution of its later steps. */
@@ -153,6 +146,7 @@ export interface StartLoopOptions {
     workEpoch?: number;
     /** GitHub comment ID of the `/ultrafix` command starting this loop. */
     sourceCommentId?: number;
+    sourceCommentType?: 'issue' | 'review';
     /** Lines written beneath `/ultrafix`, kept so a recovered loop still applies them. */
     instructions?: string;
     /** GitHub user who started the loop. */
@@ -209,6 +203,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastActionTimestamp: null,
         active: true,
         workEpoch: options.workEpoch ?? 0, ...(options.sourceCommentId !== undefined ? { sourceCommentId: options.sourceCommentId } : {}),
+        ...(options.sourceCommentType ? { sourceCommentType: options.sourceCommentType } : {}),
         ...(options.instructions ? { instructions: options.instructions } : {}),
         ...(options.userId ? { userId: options.userId } : {}),
         completionStatus: null,
@@ -393,6 +388,7 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
             { key: getUltrafixStateKey(state.owner, state.repo, state.pr), serialized: JSON.stringify(state) },
         );
     if (!saved) throw new Error('Ultrafix startup was superseded before state commit');
+    await journal(ultrafixStartedEvent(state));
     signalPullRequestStatus(`${state.owner}/${state.repo}`, state.pr);
     return { state, initialAction };
 }
@@ -505,8 +501,11 @@ export async function stopLoop(redis: Redis, owner: string, repo: string, pr: nu
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
 
+    const wasRunning = state.active && state.completionStatus === null;
     state.active = false;
     await saveState(redis, state);
+    // Only a running loop ends here; one that already completed has its event.
+    if (wasRunning) await journal(ultrafixEndedEvent(state, { outcome: 'stopped', finalScore: state.finalScore, reason: 'Ultrafix was stopped' }));
     return state;
 }
 
@@ -520,6 +519,8 @@ export async function completeLoop(
         completionReason: string;
         finalScore: number | null;
         workEpoch?: number;
+        /** Coded outcome; derived from the status and reason when omitted. */
+        outcome?: UltrafixOutcome;
     },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadOwnedState(redis, params, params.workEpoch);
@@ -531,5 +532,8 @@ export async function completeLoop(
     state.finalScore = params.finalScore;
     state.completedAt = new Date().toISOString();
 
-    return await saveOwnedState(redis, state, params.workEpoch) ? state : null;
+    if (!await saveOwnedState(redis, state, params.workEpoch)) return null;
+    await journal(ultrafixEndedEvent(state, { finalScore: params.finalScore, reason: params.completionReason,
+        outcome: params.outcome ?? ultrafixOutcomeFromCompletion(params.completionStatus, params.completionReason) }));
+    return state;
 }

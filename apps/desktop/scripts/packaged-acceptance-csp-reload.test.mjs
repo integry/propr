@@ -681,6 +681,40 @@ test('a pairing reload that replaces the document before its Audits issue explai
   }
 });
 
+// Linux x64 packaged shape: current-user was natively denied, but the pairing
+// reload replaced the old document before the Audits issue for its single
+// demo-mode fetch arrived.
+test('a pairing reload that replaces the document before its demo-mode Audits issue explains that denial', async () => {
+  const demoUrl = `${origin}/api/auth/demo-mode`;
+  for (const lifecycle of ['clear', 'destroy']) {
+    const f = await requestObserverFixture();
+    f.attempt(currentUserUrl);
+    f.issue(currentUserUrl);
+    f.attempt(demoUrl);
+    f[lifecycle]();
+    f.document(2, 'main', 'replacement');
+    assert.deepEqual(f.records.map(item => sanitizedCspReloadRequestFailure(item, origin)), [
+      { request: 'current-user', ownedFixtureOrigin: true, failureClass: 'csp-blocked' },
+      { request: 'demo-mode', ownedFixtureOrigin: true, failureClass: 'document-replaced' },
+    ], lifecycle);
+    const [policy, header, fetchDenied, demoMode, demoHeader] = transitionErrors();
+    const records = [policy, header, fetchDenied, demoMode];
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records, origin,
+      evidence: convergedEvidence, deniedRequests: f.records }), records, lifecycle);
+    // Header and meta diagnostics for the replaced fetch remain bounded.
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: [...records, demoHeader], origin,
+      evidence: convergedEvidence, deniedRequests: f.records }), [...records, demoHeader], lifecycle);
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: [...records, demoHeader, { ...demoMode }],
+      origin, evidence: convergedEvidence, deniedRequests: f.records }), [], lifecycle);
+    const context = { ...diagnosticContext(records), cspDeniedRequests: f.records };
+    const summary = runInNewContext(`${runnerDiagnosticFunctions}; sanitizedRendererErrorDiagnostics()`, context);
+    assert.equal(summary.unexpectedErrors, 0, lifecycle);
+    assert.equal(summary.errorCategoryCounts.other, 0, lifecycle);
+    context.consoleRecords.push({ type: 'error', journey: 'csp-reload-pairing', text: 'Unexpected error' });
+    assert.equal(runInNewContext('rendererErrorAcceptanceSummary()', context).unexpectedErrors, 1, lifecycle);
+  }
+});
+
 test('a late native issue after document replacement still supplies the single denial', async () => {
   const f = await replacedBeforeAudit();
   f.issue(currentUserUrl, { sourceCodeLocation: { scriptId: 'script-document-1', lineNumber: 1 } });
@@ -701,12 +735,15 @@ test('document replacement never exempts other requests, diagnostics, phases or 
     assert.deepEqual(correlate([record], f.records), [], JSON.stringify(options));
   }
   const replaced = (await replacedBeforeAudit()).records;
-  // Only current-user's connect-src diagnostic may use replacement evidence.
-  const [, , fetchDenied, demoMode] = transitionErrors();
+  // Only a connect-src diagnostic may use replacement evidence, and only for
+  // the exact replaced request: "Fetch API cannot load" needs a native issue.
+  const [, , fetchDenied, demoMode, , demoFetchDenied] = transitionErrors();
   assert.deepEqual(correlate([{ ...fetchDenied, text: fetchDenied.text }], replaced), []);
   const demo = (await replacedBeforeAudit({ path: '/api/auth/demo-mode' })).records;
   assert.equal(demo.length, 1);
-  assert.deepEqual(correlate([demoMode], demo), []);
+  assert.deepEqual(correlate([demoFetchDenied], demo), []);
+  assert.deepEqual(correlate([demoMode], replaced), []);
+  assert.deepEqual(correlate([record], demo), []);
   // The console diagnostic must match the replaced fetch exactly.
   for (const transform of [
     item => ({ ...item, pageId: 2 }),

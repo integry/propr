@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extensionProfileInputSchema, extensionSelectionSchema, INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
+import { automationExtensionsSchema, extensionLibraryInputSchema, extensionSelectionSchema, INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
 
 /**
  * Request and response schemas for the dashboard HTTP API reference.
@@ -15,7 +15,7 @@ import { extensionProfileInputSchema, extensionSelectionSchema, INSTANCE_PERMISS
  */
 export const apiSchemas = z.registry<{ id: string }>();
 
-function component<T extends z.ZodType>(id: string, schema: T, description?: string): T {
+export function component<T extends z.ZodType>(id: string, schema: T, description?: string): T {
   const described = (description ? schema.describe(description) : schema) as T;
   apiSchemas.add(described, { id });
   return described;
@@ -185,29 +185,25 @@ export const TaskPage = component('TaskPage', z.object({
   totalRuns: z.number().int().optional().describe('With `groupBy=task`: matching runs across all tasks.'),
 }), 'A page of task runs.');
 
-export const TaskEvent = component('TaskEvent', z.object({
-  state: z.string().describe('Lifecycle state entered at this point.'),
-  timestamp: z.string().describe('When the state was entered (ISO 8601).'),
-  reason: z.string().nullable().optional(),
-  message: z.string().optional(),
-  metadata: z.object({}).loose().nullable().optional(),
-}).loose(), 'One entry of a task\'s lifecycle history.');
+export const ExtensionLibraryInput = component('ExtensionLibraryInput', extensionLibraryInputSchema as unknown as z.ZodType, 'Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
+export const ExtensionLibrarySave = component('ExtensionLibrarySave', z.strictObject({ input: ExtensionLibraryInput, expectedRevision: z.number().int().min(0), secrets: z.record(z.string(), z.string().nullable()).optional(), acknowledgements: z.array(z.string()).optional().describe('Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed.') }));
+export const ExtensionItemEnabledRequest = component('ExtensionItemEnabledRequest', z.strictObject({ item: z.union([z.strictObject({ kind: z.literal('server'), name: z.string() }), z.strictObject({ kind: z.literal('skill'), bundleId: z.uuid() })]), enabled: z.boolean() }));
+export const ExtensionSecretReplaceRequest = component('ExtensionSecretReplaceRequest', z.strictObject({ name: z.string(), secret: z.string().nullable(), expectedRevision: z.number().int().min(0).optional() }));
+export const ExtensionLibraryRevisionSchema = z.object({
+  version: z.literal(1), instanceId: z.string(), revision: z.number().int().describe('0 before the first save.'),
+  createdAt: z.number(), updatedAt: z.number(), auditActor: z.string(), servers: z.array(z.object({}).loose()), skills: z.array(z.object({}).loose()),
+  secrets: z.record(z.string(), z.object({ configured: z.boolean() }).loose()).describe('Presence markers only; secret values are never returned.'), skillBundles: z.array(z.object({}).loose()),
+}).loose();
+export const ExtensionLibraryRevisionResponse = component('ExtensionLibraryRevisionResponse', z.object({ library: ExtensionLibraryRevisionSchema }));
+export const AutomationExtensions = component('AutomationExtensions', automationExtensionsSchema as unknown as z.ZodType, 'Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.');
+export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType, 'Legacy profile selection; no longer accepted for new submissions.');
 
-export const TaskHistory = component('TaskHistory', z.object({
-  taskId: z.string(),
-  history: z.array(TaskEvent).describe('Lifecycle events, oldest first.'),
-  taskInfo: z.object({}).loose().nullable().describe('Repository, issue, pull request and agent details of the task.'),
-  budget: z.object({}).loose().optional().describe('Spend so far against the task\'s cost cap, when a cap applies.'),
-}).loose(), 'A task together with its lifecycle events.');
-
-export const ExtensionProfileInput = component('ExtensionProfileInput', extensionProfileInputSchema as unknown as z.ZodType, 'Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
-export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType);
-export const ExtensionProfileSave = component('ExtensionProfileSave', z.strictObject({ input: ExtensionProfileInput, expected: ExtensionSelection.optional(), secrets: z.record(z.string(), z.string().nullable()).optional() }));
-
+const repositoryName = z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.');
 export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object({
-  extensionProfile: ExtensionSelection.nullable().optional(),
-  extensionAllowWrite: z.boolean().optional().describe('Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries.'),
-  repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.'),
+  extensionProfile: ExtensionSelection.nullable().optional().describe('Removed: extension profiles were replaced by the instance extension library. A non-null value is refused.'),
+  extensionAllowWrite: z.boolean().optional().describe('Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission\'s initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`.'),
+  disableExtensions: z.boolean().optional().describe('Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply.'),
+  repository: repositoryName,
   instruction: z.string().min(1).max(50_000).regex(/\S/).describe('What the agent should do; becomes the GitHub issue body. Must not be only whitespace.'),
   agentAlias: z.string().optional().describe('Agent to route to. Omit to use the instance default.'),
   model: z.string().optional().describe('Model of the agent. Omit to use the agent default.'),
@@ -227,12 +223,16 @@ export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object
   }])),
 }), 'A request to open a GitHub issue and start an implementation run for it.');
 
+export const TaskSubmissionExtensions = component('TaskSubmissionExtensions', z.object({ qualified: z.boolean().describe('False when the agent\'s runtime does not use extensions (only Claude and Codex do).'), revision: z.number().int().describe('Current library revision; tasks resolve the library again at launch.'),
+  servers: z.array(z.object({ name: z.string(), capability: z.enum(['read', 'write']) })).describe('MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.'), skills: z.array(z.object({ name: z.string() })) }), 'Library items that would apply automatically to a task for this repository and agent.');
 export const TaskSubmission = component('TaskSubmission', z.object({
   id: z.string(),
   state: z.enum(['prepared', 'creating', 'issue_created', 'queued', 'failed']),
   issueNumber: z.number().int().nullable(),
   issueUrl: z.string().nullable(),
-  taskId: z.string().nullable(),
+  taskId: z.string().nullable().describe('The first execution, kept for compatibility; equals `firstTaskId`.'),
+  firstTaskId: z.string().nullable().describe('The submission\'s first execution.'),
+  latestTaskId: z.string().nullable().describe('The newest execution of the submission\'s issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`.'),
   error: z.string().nullable(),
 }), 'Progress of a task submission. `queued` means the run was enqueued.');
 
@@ -315,7 +315,7 @@ export const JsonObject = component('JsonObject', z.object({}).loose(), 'A JSON 
  */
 export const apiQuerySets = z.registry<{ id: string }>();
 
-function querySet<T extends z.ZodObject>(id: string, schema: T): T {
+export function querySet<T extends z.ZodObject>(id: string, schema: T): T {
   apiQuerySets.add(schema, { id });
   return schema;
 }
@@ -342,6 +342,7 @@ export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
   force: z.enum(['true', 'false']).optional().describe('Delete even when the task is still active.'),
 }));
 
+export const TaskSubmissionExtensionsQuery = querySet('TaskSubmissionExtensionsQuery', z.object({ repository: repositoryName, agentAlias: z.string().optional().describe('Agent the task would use. Omit for the instance default.'), model: z.string().optional() }));
 export const TaskFollowupRunsQuery = querySet('TaskFollowupRunsQuery', z.object({
   commentId: z.string().regex(/^[1-9]\d{0,15}$/).describe('The `commentId` the follow-up\'s receipt returned.'),
 }));
@@ -451,3 +452,24 @@ export const FollowupHandoffReleaseResult = component('FollowupHandoffReleaseRes
   released: z.boolean(),
   reason: z.string().optional().describe('Refusal code when `released` is false, for example `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered` (a Git worktree registration still holds the branch, even after a forced detach), `worktree_registrations_unavailable` or `cancelled_claims_withdrawal_failed` (the claimed comments of a cancelled request could not be withdrawn from the pending list, so releasing could let them run).'),
 }), 'Outcome of a release request; refusals answer `409` with `released: false`.');
+
+const readinessGateStatus = z.enum(['pass', 'waiting', 'fail', 'unknown', 'not_applicable']);
+export const PullRequestReadinessQuery = querySet('PullRequestReadinessQuery', z.object({ repository: z.string().describe('`owner/repo` of the pull request.') }));
+export const PullRequestReadiness = component('PullRequestReadiness', z.object({
+  repository: z.string(), number: z.number().int().positive(), head: z.string().describe('Head SHA the verdict was evaluated for.'), base: z.string(),
+  state: z.enum(['open', 'merged', 'closed']), draft: z.boolean(),
+  verdict: z.enum(['ready', 'waiting', 'blocked', 'merged', 'closed', 'unknown']).describe('`merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`.'),
+  gates: z.array(z.object({
+    gate: z.enum(['open', 'not_draft', 'checks', 'mergeable', 'human_review', 'ai_review', 'ultrafix', 'active_work', 'policy']),
+    status: readinessGateStatus,
+    reason: z.string().describe('Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`.'),
+    detail: z.string().optional(),
+  })).describe('Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy.'),
+  blockingReasons: z.array(z.string()).describe('Reason codes of gates with status `fail`.'),
+  waitingReasons: z.array(z.string()).describe('Reason codes of gates with status `waiting` or `unknown`.'),
+  review: z.object({ score: z.number(), goal: z.number(), goalReached: z.boolean(), reviewedHead: z.string().nullable(), matchesCurrentHead: z.boolean() }).nullable().describe('Latest persisted ProPR AI review; null when there is none.'),
+  ultrafix: z.object({ active: z.boolean(), completionStatus: z.enum(['succeeded', 'failed']).nullable(), labelPresent: z.boolean() }).nullable().describe('Null when the Ultrafix state could not be read.'),
+  checks: z.object({ reason: z.enum(['checks_passing', 'checks_not_passing', 'no_ci', 'waiting_for_ci', 'unavailable']), blockingFailed: z.array(z.string()), blockingPending: z.array(z.string()), nonBlockingCount: z.number().int().nonnegative() }),
+  autoMerge: z.object({ eligible: z.enum(['eligible', 'ineligible', 'transient']), reason: z.string().describe('Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`.'), policy: z.string().nullable().describe('Auto-merge policy reason; null when auto-merge is not requested.') }),
+  evaluatedAt: isoDateTime,
+}), 'Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state.');

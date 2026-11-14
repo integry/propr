@@ -527,7 +527,12 @@ propr log list --agent my-claude --draft <draft-id> --page 2 -l 100
 
 propr remote-status     # Backend health check (daemon, workers, Redis, GitHub auth)
 propr queue             # Queue statistics
-propr stats review-scores --period 30d [--repository owner/repo] [--json]  # Review quality per implementer model
+propr admission [--json]  # Agent-run admission: global limit, per-agent ceilings, running/waiting/deferred work (not subscription usage)
+propr stats review-scores --period 30d [--repository owner/repo] [--json]  # Review quality per implementer model and effort
+propr stats cost --period 30d [--repository owner/repo] [--group-by day,model] [--json|--csv]  # Recorded LLM cost export
+propr pr readiness <number> [-p owner/repo] [--json]  # Read-only readiness verdict with a reason code per gate
+propr events list [-p owner/repo] [--after-cursor <c>] [--from-start] [--domain d] [--type t] [--pr n] [--plan id] [--json] [--follow]  # Repository change events after a cursor
+propr events wait [same filters] [--timeout 15] [--json] [--follow]  # Wait (max 30s per request) for a matching event; exit 2 on timeout
 ```
 
 Settings keys:

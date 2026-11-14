@@ -7,6 +7,129 @@
  */
 /* eslint-disable */
 
+/** Admission state of one direct agent. */
+export interface AgentRunAdmissionAgent {
+  /** Direct agent alias (never a synthetic alias). */
+  alias: string;
+  /** PROPR_AGENT_RUN_ALIAS_LIMITS entry; null = global limit only. */
+  ceiling: number | null;
+  /** What the ceiling is compared with: holders plus nested executions counted against it. */
+  inUse: number;
+  holders: AgentRunAdmissionStateCounts;
+  nested: {
+    total: number;
+    chargedUnderParent: number;
+    countedAgainstCeiling: number;
+  };
+  waiting: AgentRunAdmissionWaitingCounts;
+  /** Queue jobs delayed until this agent has capacity. */
+  deferred: number;
+  tasks: AgentRunAdmissionTask[];
+}
+
+/** The stored admission configuration compared with the configured global limit and generation. The admission protocol prefix is checked; the Docker daemon identity is neither shown nor compared. */
+export interface AgentRunAdmissionConfiguration {
+  /** current: compatible protocol; the stored limit and generation equal the configured ones. uninitialized: nothing stored yet; the first admission stores the configured ones. pending_generation: compatible protocol and the configured generation is higher; the next admission attempt fences and removes every older reservation, then switches. mismatch: incompatible protocol, same generation with another limit, a lower generation, or an unreadable stored record; every launch is refused. A higher generation resolves limit/generation mismatches only within a compatible protocol. For incompatible protocols, draining and raising the generation are insufficient: follow "Rolling restarts with mixed versions" in the agent-run capacity operations docs. Drain with the existing version, stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key; never clear holder records to force an upgrade. missing: nothing stored while holder records remain; every launch is refused. */
+  status: "current" | "uninitialized" | "pending_generation" | "mismatch" | "missing";
+  /** False when admission refuses every launch with the configured limit and generation: `limit` minus `inUse` is then not usable capacity. */
+  admitting: boolean;
+  /** Limit and generation of the stored admission configuration; null when none (or none readable) is stored. */
+  stored: {
+    limit: number;
+    generation: number;
+  } | null;
+}
+
+/** What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect. */
+export interface AgentRunAdmissionReport {
+  asOf: string;
+  admission: {
+    enabled: boolean;
+    agentCeilingsConfigured: boolean;
+    /** Null when admission is off or its state could not be read. */
+    global: {
+      /** Global limit configured on the answering process; enforced only while `configuration.admitting`. */
+      limit: number;
+      limitSource: "PROPR_AGENT_RUN_LIMIT" | "hosted_entitlement";
+      /** Admission generation configured on the answering process (PROPR_AGENT_RUN_GENERATION, default 0). */
+      generation: number;
+      configuration: AgentRunAdmissionConfiguration;
+      nestedLimit: number;
+      nestedLimitSource: "PROPR_AGENT_RUN_NESTED_LIMIT" | "default";
+      /** Top-level executions; each takes one global slot. */
+      inUse: number;
+      holders: AgentRunAdmissionStateCounts;
+      unattributedHolders: number;
+      nested: {
+        total: number;
+        chargedUnderParent: number;
+        countedAgainstOtherAgent: number;
+      };
+      waiting: AgentRunAdmissionWaitingCounts;
+      deferred: number;
+    } | null;
+    /** Why the admission state is missing although admission is enabled. */
+    unavailable?: string;
+  };
+  agents: AgentRunAdmissionAgent[];
+  queueWorkers: {
+    label: string;
+    inUse: number | null;
+    /** Sum of the concurrency live workers report; null when unknown. */
+    total: number | null;
+    workers: number | null;
+  };
+  repositoryWorkflowSlots: {
+    label: string;
+    /** Every repository with a limit and running work that the caller may see; the list is complete, never truncated. */
+    repositories: {
+      repository: string;
+      inUse: number;
+      limit: number;
+      waiting: number;
+    }[];
+    /** Why repository usage could not be read; `repositories` is then empty and means unknown, not idle. */
+    unavailable?: string;
+  };
+  /** Subscription usage is reported elsewhere; this says where. */
+  subscriptionUsage: string;
+}
+
+/** Admitted executions by state. */
+export interface AgentRunAdmissionStateCounts {
+  /** Admitted, container not started yet. */
+  reserved: number;
+  running: number;
+  /** Finished parents that keep their slot until their nested executions end. */
+  draining: number;
+  /** Holders whose removal is not confirmed yet, including expired leases; nothing else is admitted meanwhile. */
+  recovering: number;
+  total: number;
+}
+
+/** A task holding or waiting for a slot. Listed only when the caller may see the task. */
+export interface AgentRunAdmissionTask {
+  taskId: string;
+  alias: string | null;
+  state: "reserved" | "running" | "draining" | "recovering" | "waiting";
+  waitReason?: "global_limit" | "alias_limit" | "recovering" | "starting";
+  nested: boolean;
+  since?: string;
+}
+
+/** Launches waiting at the admission boundary, by reason. Jobs deferred to the queue are counted separately. */
+export interface AgentRunAdmissionWaitingCounts {
+  total: number;
+  /** Waiting because the instance-wide limit is full. */
+  globalLimit: number;
+  /** Waiting because the agent's own ceiling is full. */
+  agentCeiling: number;
+  /** Waiting until an unconfirmed holder is removed. */
+  recovering: number;
+  /** Registered; first admission reply still pending. */
+  starting: number;
+}
+
 /** Users that can be assigned to issues and pull requests of a repository. */
 export interface AssignableUsers {
   users: AttributedUser[];
@@ -36,6 +159,12 @@ export interface AuthenticatedUser {
   authorizationSource: "bootstrap" | "local" | "managed" | "implicit" | "demo";
 }
 
+/** Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings. */
+export interface AutomationExtensions {
+  servers: string[];
+  skills: string[];
+}
+
 /** Version and capability metadata used for client compatibility negotiation. */
 export interface Compatibility {
   /** ProPR release version of the API server. */
@@ -45,6 +174,67 @@ export interface Compatibility {
   /** Oldest web UI compatibility date the API accepts. */
   uiCompatibility: string;
   desktopAuthentication: DesktopAuthenticationCapabilities;
+}
+
+/** Recorded LLM executions grouped by the requested dimensions. */
+export interface CostExport {
+  /** The requested period; null for all time. */
+  period: "24h" | "7d" | "30d" | "90d" | "1y" | "all" | null;
+  /** `all` or `owner/repo`. */
+  repository: string;
+  /** The grouping dimensions, in column order. */
+  group_by: Array<"day" | "repository" | "agent" | "model" | "reasoning_level" | "execution_type" | "outcome">;
+  /** Ascending by each dimension in column order; unrecorded values last. */
+  rows: CostRow[];
+  totals: CostFigures;
+}
+
+/** Execution, task, token and cost totals. */
+export interface CostFigures {
+  /** Agent executions in the row. */
+  executions: number;
+  /** Distinct tasks with at least one execution in the row. */
+  tasks: number;
+  /** Input tokens, cache reads and writes included, as each execution was priced. */
+  input_tokens: number;
+  output_tokens: number;
+  /** Of `input_tokens`, prompt-cache writes. */
+  cache_creation_input_tokens: number;
+  /** Of `input_tokens`, prompt-cache reads. */
+  cache_read_input_tokens: number;
+  /** Recorded cost in USD; null when no execution in the row recorded a cost. */
+  cost_usd: number | null;
+}
+
+/** One group of recorded executions. */
+export interface CostRow {
+  /** UTC day the execution started, `YYYY-MM-DD`. Present when grouped by it; null when unrecorded. */
+  day?: string | null;
+  /** `owner/repo` of the execution's task. Present when grouped by it; null when unrecorded. */
+  repository?: string | null;
+  /** Agent alias that ran the execution. Present when grouped by it; null when unrecorded. */
+  agent?: string | null;
+  /** Model name. Present when grouped by it; null when unrecorded. */
+  model?: string | null;
+  /** Effective reasoning level (effort). Present when grouped by it; null when unrecorded. */
+  reasoning_level?: string | null;
+  /** Execution type, for example `implementation` or `review`. Present when grouped by it; null when unrecorded. */
+  execution_type?: string | null;
+  /** Present when grouped by outcome. */
+  outcome?: "success" | "failed";
+  /** Agent executions in the row. */
+  executions: number;
+  /** Distinct tasks with at least one execution in the row. */
+  tasks: number;
+  /** Input tokens, cache reads and writes included, as each execution was priced. */
+  input_tokens: number;
+  output_tokens: number;
+  /** Of `input_tokens`, prompt-cache writes. */
+  cache_creation_input_tokens: number;
+  /** Of `input_tokens`, prompt-cache reads. */
+  cache_read_input_tokens: number;
+  /** Recorded cost in USD; null when no execution in the row recorded a cost. */
+  cost_usd: number | null;
 }
 
 export interface DemoModeStatus {
@@ -160,6 +350,68 @@ export interface DesktopPairingTicket {
   credentialGeneration: string;
 }
 
+/** A refused queue action. */
+export interface EpicQueueActionError {
+  error: string;
+  code: "NOT_FOUND" | "STALE_EXECUTION" | "IN_FLIGHT" | "ALREADY_DONE" | "STATE_CHANGED" | "NOT_BLOCKED" | "NOT_RETRYABLE";
+}
+
+export interface EpicQueueActionResult {
+  outcome: "skipped" | "already_skipped" | "retried" | "already_retried";
+  executionId: string;
+  issueNumber: number;
+  /** The execution queue after the action. */
+  queue: {
+    [key: string]: unknown;
+  } | null;
+}
+
+/** One blocked transition of an issue in an epic execution, or the resolution of one. */
+export interface EpicQueueBlockedEvent {
+  /** Monotonic event id; also the list cursor. */
+  id: number;
+  /** The plan. */
+  draftId: string;
+  executionId: string;
+  issueNumber: number;
+  /** The occurrence: a requeued issue starts a new one at a new position. */
+  position: number;
+  type: "blocked" | "resolved";
+  blockedKind: "closed_unmerged" | "missing_from_plan" | "dispatch_failed" | "agent_blocked" | "awaiting_human_merge" | "label_handoff" | "setup_not_ready";
+  reason: string;
+  /** For a resolved event: the blocked event it resolves. */
+  blockedEventId: number | null;
+  /** How the blocker ended: cleared by the queue, replaced by another blocker, retried or skipped by a person, or settled with the issue. */
+  resolution: "cleared" | "replaced" | "retried" | "skipped" | "settled" | null;
+  /** Epoch milliseconds. */
+  createdAt: number;
+}
+
+export interface EpicQueueBlockedEventPage {
+  /** The listed execution; null when the plan never queued work. */
+  executionId: string | null;
+  events: EpicQueueBlockedEvent[];
+  /** Pass as `cursor` to read the events after this page; unchanged when the page is empty. */
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface EpicQueueRetryRequest {
+  /** The execution read from the execution queue; a newer or finished one refuses the retry. */
+  executionId: string;
+  /** Refuse with `STATE_CHANGED` unless the issue is still in this state. */
+  expectedState?: "pending" | "dispatched" | "done" | "blocked" | "skipped";
+}
+
+export interface EpicQueueSkipRequest {
+  /** The execution read from the execution queue; a newer or finished one refuses the skip. */
+  executionId: string;
+  /** Refuse with `STATE_CHANGED` unless the issue is still in this state. */
+  expectedState?: "pending" | "dispatched" | "done" | "blocked" | "skipped";
+  /** Graph executions: treat the skipped issue as a met prerequisite, so its dependents can start. Skipping again with the other value changes only this option. */
+  satisfiesDependents?: boolean;
+}
+
 /** The common error envelope. New routes return it for every 4xx and 5xx response. */
 export interface ErrorEnvelope {
   /** Stable, machine-readable error code, for example `TASK_NOT_FOUND`. */
@@ -170,21 +422,33 @@ export interface ErrorEnvelope {
   hint?: string;
 }
 
-/** Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
-export interface ExtensionProfileInput {
-  version: 1;
-  name: string;
+export interface ExtensionItemEnabledRequest {
+  item: {
+    kind: "server";
+    name: string;
+  } | {
+    kind: "skill";
+    bundleId: string;
+  };
   enabled: boolean;
-  agentScope: string[];
-  repositoryScope: string[];
-  mcpServers: Array<{
+}
+
+/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
+export interface ExtensionLibraryInput {
+  version: 1;
+  servers: Array<{
     kind: "https";
     name: string;
     url: string;
     enabled: boolean;
     tools: string[];
     capability: "read" | "write";
-    authentication: "none" | "bearer";
+    authentication: "none" | "bearer" | "oauth";
+    scopes?: string[];
+    clientId?: string;
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   } | {
     kind: "catalog";
     name: string;
@@ -193,18 +457,190 @@ export interface ExtensionProfileInput {
     enabled: boolean;
     tools: string[];
     capability: "read" | "write";
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
+  } | {
+    name: string;
+    enabled: boolean;
+    tools: string[];
+    capability: "read" | "write";
+    kind: "package";
+    ecosystem: "npm";
+    package: string;
+    version: string;
+    integrity?: string;
+    bin?: string;
+    args: string[];
+    env: {
+      name: string;
+      value: string;
+    }[];
+    secretEnv: string[];
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   }>;
-  skillBundleIds: string[];
+  skills: {
+    bundleId: string;
+    enabled: boolean;
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
+  }[];
 }
 
-export interface ExtensionProfileSave {
-  input: ExtensionProfileInput;
-  expected?: ExtensionSelection;
-  secrets?: {
-    [key: string]: string | null;
+export interface ExtensionLibraryRead {
+  contract: {
+    [key: string]: unknown;
+  };
+  instanceId: string;
+  library: {
+    version: 1;
+    instanceId: string;
+    /** 0 before the first save. */
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+    auditActor: string;
+    servers: {
+      [key: string]: unknown;
+    }[];
+    skills: {
+      [key: string]: unknown;
+    }[];
+    /** Presence markers only; secret values are never returned. */
+    secrets: {
+      [key: string]: {
+        configured: boolean;
+        [key: string]: unknown;
+      };
+    };
+    skillBundles: {
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+  oauth: ExtensionOAuthInstanceInfo;
+  bundles: {
+    [key: string]: unknown;
+  }[];
+  catalog: {
+    [key: string]: unknown;
+  }[];
+  /** Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from. */
+  usage: {
+    automations: {
+      id: string;
+      name: string;
+      servers: string[];
+      skills: string[];
+    }[];
+    importedFrom: {
+      servers: {
+        [key: string]: string[];
+      };
+      skills: {
+        [key: string]: string[];
+      };
+    };
   };
 }
 
+export interface ExtensionLibraryRevisionResponse {
+  library: {
+    version: 1;
+    instanceId: string;
+    /** 0 before the first save. */
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+    auditActor: string;
+    servers: {
+      [key: string]: unknown;
+    }[];
+    skills: {
+      [key: string]: unknown;
+    }[];
+    /** Presence markers only; secret values are never returned. */
+    secrets: {
+      [key: string]: {
+        configured: boolean;
+        [key: string]: unknown;
+      };
+    };
+    skillBundles: {
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+}
+
+export interface ExtensionLibrarySave {
+  input: ExtensionLibraryInput;
+  expectedRevision: number;
+  secrets?: {
+    [key: string]: string | null;
+  };
+  /** Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed. */
+  acknowledgements?: string[];
+}
+
+export interface ExtensionOAuthCheckRequest {
+  url: string;
+  clientId?: string;
+  scopes?: string[];
+}
+
+export interface ExtensionOAuthCheckResponse {
+  check: {
+    authorizationRequired: boolean;
+    discoveredFrom?: "challenge" | "well_known";
+    resource?: string;
+    issuer?: string;
+    scopes?: string[];
+    registration: "metadata_document" | "dynamic" | "preregistered" | null;
+    message: string;
+    redirectUri: string | null;
+  };
+}
+
+/** OAuth sign-in facts of this instance and the connection state of its OAuth library servers. */
+export interface ExtensionOAuthInstanceInfo {
+  /** Redirect URI to register with a provider; null without a public HTTPS base URL, which disables Connect. */
+  redirectUri: string | null;
+  /** ProPR's Client ID Metadata Document URL, used as the client id where supported. */
+  clientMetadataUrl: string | null;
+  /** Connection state by OAuth server name. Tokens are never returned. */
+  connections: {
+    [key: string]: {
+      state: "not_connected" | "connected" | "needs_sign_in";
+      /** Actor id of the administrator who signed in. */
+      connectedBy?: string;
+      connectedAt?: number;
+      /** Scopes the authorization server granted. */
+      scopes?: string[];
+      registration?: "metadata_document" | "dynamic" | "preregistered";
+    };
+  };
+}
+
+export interface ExtensionOAuthItemRequest {
+  name: string;
+}
+
+export interface ExtensionOAuthStartResponse {
+  /** Provider authorization page to open in a new tab; carries a single-use state bound to this session, PKCE S256 and the resource indicator. */
+  authorizationUrl: string;
+}
+
+export interface ExtensionSecretReplaceRequest {
+  name: string;
+  secret: string | null;
+  expectedRevision?: number;
+}
+
+/** Legacy profile selection; no longer accepted for new submissions. */
 export interface ExtensionSelection {
   instanceId: string;
   profileId: string;
@@ -453,6 +889,105 @@ export interface NotificationUnreadCount {
   unreadCount: number;
 }
 
+/** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */
+export interface PullRequestReadiness {
+  repository: string;
+  number: number;
+  /** Head SHA the verdict was evaluated for. */
+  head: string;
+  base: string;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** `merged`/`closed` from the PR state; otherwise `blocked` if any gate fails, else `waiting` if any gate waits, else `unknown` if any gate is unknown, else `ready`. */
+  verdict: "ready" | "waiting" | "blocked" | "merged" | "closed" | "unknown";
+  /** Every gate, in this order: open, not_draft, checks, mergeable, human_review, ai_review, ultrafix, active_work, policy. */
+  gates: Array<{
+    gate: "open" | "not_draft" | "checks" | "mergeable" | "human_review" | "ai_review" | "ultrafix" | "active_work" | "policy";
+    status: "pass" | "waiting" | "fail" | "unknown" | "not_applicable";
+    /** Stable reason code. open: `pull_request_open`, `pull_request_merged`, `pull_request_closed`; not_draft: `not_draft`, `draft`; checks: `checks_passing`, `checks_not_passing`, `no_ci`, `waiting_for_ci`, `unavailable`; mergeable: `mergeable`, `merge_conflict`, `branch_behind_base`, `branch_protection_blocked`, `merge_state_unknown`; human_review: `approved`, `no_changes_requested`, `changes_requested`, `review_required`, `review_state_unavailable`; ai_review: `goal_reached`, `no_review`, `review_stale_head`, `score_below_goal`, `review_scores_unavailable`; ultrafix: `ultrafix_succeeded`, `ultrafix_active`, `ultrafix_pending`, `ultrafix_failed`, `ultrafix_state_unavailable`, `ultrafix_not_requested`; active_work: `no_active_work`, `propr_work_active`, `active_work_unavailable`; policy: an auto-merge policy reason (`armed`, `skipped_*`), `auto_merge_not_requested`, `auto_merge_request_unavailable` or `pull_request_changed`. */
+    reason: string;
+    detail?: string;
+  }>;
+  /** Reason codes of gates with status `fail`. */
+  blockingReasons: string[];
+  /** Reason codes of gates with status `waiting` or `unknown`. */
+  waitingReasons: string[];
+  /** Latest persisted ProPR AI review; null when there is none. */
+  review: {
+    score: number;
+    goal: number;
+    goalReached: boolean;
+    reviewedHead: string | null;
+    matchesCurrentHead: boolean;
+  } | null;
+  /** Null when the Ultrafix state could not be read. */
+  ultrafix: {
+    active: boolean;
+    completionStatus: "succeeded" | "failed" | null;
+    labelPresent: boolean;
+  } | null;
+  checks: {
+    reason: "checks_passing" | "checks_not_passing" | "no_ci" | "waiting_for_ci" | "unavailable";
+    blockingFailed: string[];
+    blockingPending: string[];
+    nonBlockingCount: number;
+  };
+  autoMerge: {
+    eligible: "eligible" | "ineligible" | "transient";
+    /** Eligibility reason code, for example `pr_label`, `linked_issue_label`, `no_auto_merge_label`, `ultrafix_active`. */
+    reason: string;
+    /** Auto-merge policy reason; null when auto-merge is not requested. */
+    policy: string | null;
+  };
+  evaluatedAt: string;
+}
+
+/** One durable repository change event. */
+export interface RepositoryEvent {
+  /** Resumes immediately after this event. */
+  cursor: string;
+  domain: "pull_request" | "epic_queue" | "plan_issue";
+  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`. */
+  type: string;
+  repository: string;
+  pullRequest?: number;
+  issueNumber?: number;
+  planId?: string;
+  /** PR number, epic execution id or plan issue id, as text. */
+  entityId: string;
+  /** Head SHA the event was recorded for, when it concerns one. */
+  head?: string;
+  /** Identifiers and small scalars only; never PR bodies, comments, diffs or logs. */
+  payload: {
+    [key: string]: unknown;
+  };
+  occurredAt: string;
+}
+
+/** Repository change events after a cursor. Delivery is at-least-once and ordered. */
+export interface RepositoryEventList {
+  /** Matching events after the cursor, in journal order. */
+  events: RepositoryEvent[];
+  /** After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`. */
+  cursor: string;
+  /** More matching events exist after `cursor`. */
+  truncated: boolean;
+}
+
+/** Outcome of a bounded wait for repository change events. */
+export interface RepositoryEventWait {
+  /** `events` when matching events were found; `timeout` otherwise, with the starting cursor unchanged. */
+  outcome: "events" | "timeout";
+  /** Matching events after the cursor, in journal order. */
+  events: RepositoryEvent[];
+  /** After the last returned event, or the starting position when none was returned. Pass it back as `afterCursor`. */
+  cursor: string;
+  /** More matching events exist after `cursor`. */
+  truncated: boolean;
+  waitedMs: number;
+  timeoutSeconds: number;
+}
+
 /** The assignees of a task's GitHub issue or pull request. */
 export interface TaskAssignees {
   subject: TaskSubject;
@@ -476,6 +1011,18 @@ export interface TaskAssigneesUpdate {
   logins: string[];
   /** `replace` (default) makes `logins` the whole set; `add` keeps current assignees. */
   mode?: "add" | "replace";
+}
+
+/** One attempt of an automatic-replacement lineage. */
+export interface TaskAttempt {
+  taskId: string;
+  /** 1 for the original run, then 2, 3, … for each automatic replacement. */
+  attemptNumber: number;
+  /** Why this attempt was created: `infra_lost` or `provider_transient`. Null for the original run. */
+  replacementCause: string | null;
+  /** Latest lifecycle state of the attempt. */
+  state: string | null;
+  createdAt: string | null;
 }
 
 /** One entry of a task's lifecycle history. */
@@ -538,15 +1085,50 @@ export interface TaskHistory {
   taskId: string;
   /** Lifecycle events, oldest first. */
   history: TaskEvent[];
-  /** Repository, issue, pull request and agent details of the task. */
-  taskInfo: {
-    [key: string]: unknown;
-  } | null;
+  taskInfo: TaskInfo | null;
   /** Spend so far against the task's cost cap, when a cap applies. */
   budget?: {
     [key: string]: unknown;
   };
   [key: string]: unknown;
+}
+
+/** Repository, issue, pull request, agent and replacement-lineage details of a task. Live and queued tasks without a stored row omit the lineage fields. */
+export interface TaskInfo {
+  repoOwner?: string;
+  repoName?: string;
+  /** Pull request number for follow-up tasks, otherwise the issue number. */
+  number?: number | null;
+  /** `issue`, `pr-comment`, `goal`, `agent-run` and other task types. */
+  type?: string;
+  /** The issue a pull request follow-up task belongs to. */
+  issueNumber?: number;
+  correlationId?: string | null;
+  title?: string | null;
+  subtitle?: string | null;
+  modelName?: string | null;
+  agentAlias?: string | null;
+  /** Automation task kind, for automation report and action tasks. */
+  taskKind?: string;
+  commandMode?: string;
+  ultrafixCycle?: true;
+  /** Comments a live or queued follow-up task carries. */
+  comments?: unknown[];
+  /** Where `POST /api/task/{taskId}/followup` posts. */
+  followupTarget?: {
+    taskId: string;
+    repository: string;
+    kind: "issue" | "pull_request";
+    number: number;
+  };
+  /** Automatic-replacement attempt number; 1 for an original run. Present for every stored task. */
+  attemptNumber?: number;
+  /** The earlier attempt this task replaced, or null. Present for every stored task. */
+  replacesTaskId?: string | null;
+  /** The newer attempt that replaced this task, or null. Present for every stored task. */
+  replacedByTaskId?: string | null;
+  /** Every attempt of the lineage, oldest first; only when the task was replaced or is a replacement. */
+  attemptLineage?: TaskAttempt[];
 }
 
 /** A page of task runs. */
@@ -598,15 +1180,39 @@ export interface TaskSubmission {
   state: "prepared" | "creating" | "issue_created" | "queued" | "failed";
   issueNumber: number | null;
   issueUrl: string | null;
+  /** The first execution, kept for compatibility; equals `firstTaskId`. */
   taskId: string | null;
+  /** The submission's first execution. */
+  firstTaskId: string | null;
+  /** The newest execution of the submission's issue: a label retry or an automatic replacement attempt. Follow it, then `GET /api/task/{taskId}/history` for its `attemptLineage`. */
+  latestTaskId: string | null;
   error: string | null;
+}
+
+/** Library items that would apply automatically to a task for this repository and agent. */
+export interface TaskSubmissionExtensions {
+  /** False when the agent's runtime does not use extensions (only Claude and Codex do). */
+  qualified: boolean;
+  /** Current library revision; tasks resolve the library again at launch. */
+  revision: number;
+  /** MCP servers that would apply. Write servers apply only with `extensionAllowWrite`. */
+  servers: Array<{
+    name: string;
+    capability: "read" | "write";
+  }>;
+  skills: {
+    name: string;
+  }[];
 }
 
 /** A request to open a GitHub issue and start an implementation run for it. */
 export interface TaskSubmissionRequest {
+  /** Removed: extension profiles were replaced by the instance extension library. A non-null value is refused. */
   extensionProfile?: ExtensionSelection | null;
-  /** Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries. */
+  /** Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission's initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`. */
   extensionAllowWrite?: boolean;
+  /** Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply. */
+  disableExtensions?: boolean;
   /** `owner/name` of an enabled repository you can push to. */
   repository: string;
   /** What the agent should do; becomes the GitHub issue body. Must not be only whitespace. */
@@ -672,6 +1278,16 @@ export interface DeleteTaskQuery {
   force?: "true" | "false";
 }
 
+/** Query parameters of `getCostExport`, `getCostExportCsv`. */
+export interface CostExportQuery {
+  /** Bounds executions by when they started; omitted means all time. */
+  period?: "24h" | "7d" | "30d" | "90d" | "1y" | "all";
+  /** `owner/repo`, or `all` (default). */
+  repository?: string;
+  /** Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`. */
+  group_by?: string;
+}
+
 /** Query parameters of `getInstanceDatabaseExport`. */
 export interface InstanceDatabaseExportQuery {
   instanceId: string;
@@ -681,6 +1297,12 @@ export interface InstanceDatabaseExportQuery {
 /** Query parameters of `getInstanceStorageCleanupResult`. */
 export interface InstanceStorageResultQuery {
   instanceId: string;
+}
+
+/** Query parameters of `getPullRequestReadiness`. */
+export interface PullRequestReadinessQuery {
+  /** `owner/repo` of the pull request. */
+  repository: string;
 }
 
 /** Query parameters of `getTaskAssignees`. */
@@ -693,6 +1315,45 @@ export interface TaskAssigneesQuery {
 export interface TaskFollowupRunsQuery {
   /** The `commentId` the follow-up's receipt returned. */
   commentId: string;
+}
+
+/** Query parameters of `getTaskSubmissionExtensions`. */
+export interface TaskSubmissionExtensionsQuery {
+  /** `owner/name` of an enabled repository you can push to. */
+  repository: string;
+  /** Agent the task would use. Omit for the instance default. */
+  agentAlias?: string;
+  model?: string;
+}
+
+/** Query parameters of `listPlanExecutionBlockedEvents`. */
+export interface EpicQueueBlockedEventsQuery {
+  /** Defaults to the plan's current execution. */
+  executionId?: string;
+  /** `nextCursor` of an earlier page; omit to read from the first event. */
+  cursor?: string;
+  /** Page size; defaults to 50. */
+  limit?: number;
+}
+
+/** Query parameters of `listRepositoryEvents`. */
+export interface RepositoryEventsQuery {
+  /** `owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance. */
+  repository: string;
+  /** Opaque cursor from an earlier response for this repository. Only events after it are returned. */
+  afterCursor?: string;
+  /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
+  fromStart?: "true" | "false";
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  domains?: string;
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  types?: string;
+  /** Only events of this pull request number. */
+  pullRequest?: number;
+  /** Only events of this plan. */
+  planId?: string;
+  /** Most events returned; defaults to 50. */
+  limit?: number;
 }
 
 /** Query parameters of `listTasks`. */
@@ -716,4 +1377,26 @@ export interface ListTasksQuery {
   assignee?: string;
   /** With `task`: refresh that run's assignees from GitHub first. */
   syncAssignees?: "true" | "false";
+}
+
+/** Query parameters of `waitRepositoryEvents`. */
+export interface RepositoryEventsWaitQuery {
+  /** `owner/repo`. The caller must be able to read it on GitHub, and it must be configured and enabled on this instance. */
+  repository: string;
+  /** Opaque cursor from an earlier response for this repository. Only events after it are returned. */
+  afterCursor?: string;
+  /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
+  fromStart?: "true" | "false";
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  domains?: string;
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  types?: string;
+  /** Only events of this pull request number. */
+  pullRequest?: number;
+  /** Only events of this plan. */
+  planId?: string;
+  /** Most events returned; defaults to 50. */
+  limit?: number;
+  /** Seconds to block when no matching event exists yet; defaults to 15. */
+  timeoutSeconds?: number;
 }

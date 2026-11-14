@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { runWithNetworkPolicy } from './networkEgress.js';
 import { runRepositoryWorkflow } from './repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '@propr/core';
 import type { Logger } from 'pino';
 import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
-import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
+import type { AgentExtensionRequest, AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './prCommentJobHelpers.js';
@@ -266,6 +267,18 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
     return modelName;
 }
 
+/** The requested agent (direct or synthetic) and model a PR follow-up runs. */
+export async function resolvePRCommentAgent(llm: string | null | undefined, correlatedLogger: Logger): Promise<{ agentAlias: string; model: string }> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    if (llm) {
+        const resolution = await resolveLlmLabel(llm);
+        return { agentAlias: resolution.agentAlias, model: resolution.model };
+    }
+    const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
+    return { agentAlias: resolvedAlias, model: resolvedModel };
+}
+
 export interface AgentExecutionParams {
     llm: string | null | undefined;
     worktreePath: string;
@@ -285,27 +298,15 @@ export interface AgentExecutionParams {
     applyRepositoryWorkflow?: boolean;
     /** Extra durable sink for the started container's identity, beyond task state. */
     onContainerInfo?: (containerId: string, containerName: string) => Promise<void>;
+    /** Library items for an implementation follow-up, resolved at launch. */
+    extensions?: AgentExtensionRequest;
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
     const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
 
     const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    let agentAlias: string;
-    let modelToUse: string;
-
-    if (llm) {
-        const resolution = await resolveLlmLabel(llm);
-        agentAlias = resolution.agentAlias;
-        modelToUse = resolution.model;
-    } else {
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        agentAlias = resolvedAlias;
-        modelToUse = resolvedModel;
-    }
-
+    const { agentAlias, model: modelToUse } = await resolvePRCommentAgent(llm, correlatedLogger);
     const agent = registry.getAgentByAlias(agentAlias);
 
     if (!agent) {
@@ -343,12 +344,15 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
             taskId,
             prNumber: pullRequestNumber,
             reasoningLevel,
+            ...(params.extensions ? { extensions: params.extensions } : {}),
         });
     };
     const agentResult = await (params.applyRepositoryWorkflow ? runRepositoryWorkflow({
         workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
     // Outside the workflow the agent still runs under the run's network policy (and its timeline record).
     }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
+    // One id for this execution, so the success path and a later failure handler record it once.
+    agentResult.executionId ??= randomUUID();
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
 }

@@ -33,8 +33,11 @@ function sourceStatus(spool: ManagedLogSpool, relative: string) {
 }
 const pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
 const collect = (f: ReturnType<typeof fixture>) => collectProvider(f.spool, { provider: 'claude', agent: 'agent-a', root: f.home, credentials: [], credentialContextComplete: true });
+// No --input-type: the logger's pino-pretty worker inherits execArgv and dies on
+// it (ERR_INPUT_TYPE_NOT_ALLOWED), stalling exit for pino's 10s flush and failing
+// the child whenever the worker's error lands first. Node detects ESM in -e input.
 function run(script: string, env: Record<string, string | undefined>) {
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script],
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '-e', script],
         { cwd: repository, encoding: 'utf8', env: { ...process.env, PROPR_DEMO_MODE: 'true', ...env } });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout;

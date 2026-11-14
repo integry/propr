@@ -36,6 +36,9 @@ import {
     buildPrTaskTitleContextHistoryMetadata,
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
+import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
+import { runWithJobAgentCapacity } from './agentCapacityDeferral.js';
+import { checkMergeConflictAgentCapacity } from './mergeConflictCapacity.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 type MergeTaskPrInfo = { prTitle: string; linkedIssueNumber: number | null };
@@ -316,7 +319,10 @@ async function releaseMergeJobResources(options: {
  *    check no markers remain, create the merge commit and push it
  * 3. Posts GitHub comments about the outcome
  */
-export async function processMergeConflictJob(job: Job<MergeConflictJobData>): Promise<JobResult> {
+/** A saturated default agent delays this same job (no attempt consumed) without its PR lock. */
+export const processMergeConflictJob = (job: Job<MergeConflictJobData>): Promise<JobResult> => deferCapacityJob(job, () => processAdmittedMergeConflictJob(job));
+
+async function processAdmittedMergeConflictJob(job: Job<MergeConflictJobData>): Promise<JobResult> {
     const { pullRequestNumber, repoOwner, repoName, headBranch, baseBranch, headSha, baseSha, triggerSource, commandCommentId, correlationId } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -350,6 +356,8 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state');
         }
 
+        // Before the starting comment: a saturated agent defers and the lock is released below.
+        const agentCapacity = await checkMergeConflictAgentCapacity(job, { taskId, stateManager, correlatedLogger });
         let localRepoPath: string | undefined;
         let worktreeInfo: WorktreeInfo | undefined;
         let octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null = null;
@@ -407,7 +415,8 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
 
             const mergeTarget = target;
             const preparedWorktree = worktreeInfo;
-            const result = await handleMergeWithAgent({
+            const [mergePublication, mergeOctokit, mergeCommentId] = [publication, octokit, startingCommentId];
+            const result = await runWithJobAgentCapacity(agentCapacity, () => handleMergeWithAgent({
                 mergeOptions: buildBaseMergeOptions({ target: mergeTarget, repoOwner, repoName, githubToken }),
                 onMerged: async ({ conflictedFiles, baseCommit }) => {
                     if (conflictedFiles.length === 0 && !prInfo) return;
@@ -429,11 +438,11 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
                         correlatedLogger,
                     });
                 },
-                worktreeInfo, publication, baseBranch,
+                worktreeInfo: preparedWorktree, publication: mergePublication, baseBranch,
                 pullRequestNumber, repoOwner, repoName,
-                githubToken, octokit, startingCommentId,
+                githubToken, octokit: mergeOctokit, startingCommentId: mergeCommentId,
                 stateManager, taskId, correlationId, correlatedLogger, redisClient,
-            });
+            }));
             jobSucceeded = result.status === 'complete';
             return result;
 

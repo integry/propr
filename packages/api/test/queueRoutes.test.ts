@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Request, Response as ExpressResponse } from 'express';
-import { createQueueRoutes } from '../routes/queueRoutes.js';
+import { countCapacityDeferredJobs, createQueueRoutes } from '../routes/queueRoutes.js';
 
 function createJsonResponse(): {
   response: ExpressResponse;
@@ -186,4 +186,37 @@ test('/api/queue/stats fails read-only when active-job lookup fails', async () =
   } finally {
     console.error = errorLog;
   }
+});
+
+test('capacity-deferred count covers the whole delayed set, past any page or scan bound', async () => {
+  // 10,000 ordinary scheduled or retry-delayed jobs ahead of one capacity-deferred job:
+  // Fleet must never read a definitive zero while that job is pending.
+  const ids = [...Array.from({ length: 10_000 }, (_, index) => `retry-${index}`), 'deferred-agent'];
+  const loaded = new Set<string>();
+  const job = (id: string) => ({ data: id === 'deferred-agent' ? { agentCapacityDeferrals: 1 } : { attemptsMade: 1 } });
+  const queue = {
+    // Paged reads are served too, so a bounded page-by-page scan would show its undercount here.
+    getJobs: async (_types: string[], start: number, end: number) => ids.slice(start, end + 1).map(job),
+    getRanges: async (types: string[], start: number, end: number) => {
+      assert.deepEqual([types, start, end], [['delayed'], 0, -1], 'one read of every delayed ID');
+      return ids;
+    },
+    getJob: async (id: string) => {
+      loaded.add(id);
+      return job(id);
+    },
+  };
+  assert.equal(await countCapacityDeferredJobs(queue as never), 1, 'never a definitive zero while a deferred job is pending');
+  assert.equal(loaded.size, ids.length);
+});
+
+test('capacity-deferred count is not thrown off by jobs leaving the delayed set while it reads', async () => {
+  // A job promoted (or removed) after the ID read is no longer delayed and is skipped,
+  // without shifting later jobs past a page boundary.
+  const ids = [...Array.from({ length: 1_000 }, (_, index) => `gone-${index}`), 'deferred-repository'];
+  const queue = {
+    getRanges: async () => ids,
+    getJob: async (id: string) => id.startsWith('gone-') ? undefined : { data: { repositoryWorkflowDeferrals: 2 } },
+  };
+  assert.equal(await countCapacityDeferredJobs(queue as never), 1);
 });

@@ -19,6 +19,7 @@ import { routeReviewAssignments, runReviewRoutingOutcomes, type ReviewResult, ty
 import { recordReviewMetrics } from './reviewResultMetrics.js';
 import { persistReviewScores } from './reviewScorePersistence.js';
 import { generateSummaryTitle } from './prCommentAgentUtils.js';
+import { admitAgentCapacity } from './agentCapacityDeferral.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, retainOriginalScope, type UltrafixAction } from './ultrafixOrchestrationService.js';
@@ -236,7 +237,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     // later fitted to its own capacity from the shared, untrimmed inputs.
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
+    // A reviewer whose direct agent is at its ceiling defers the whole job here, before the starting comment.
     const routingOutcomes = await routeReviewAssignments(registry, assignments, pullRequestNumber, correlatedLogger);
+    await admitAgentCapacity(job);
     const routedAssignments = routingOutcomes.flatMap(outcome =>
         outcome.status === 'routed' ? [outcome.assignment] : []
     );

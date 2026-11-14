@@ -27,6 +27,7 @@ describe('splitWorkTitle', () => {
     expect(splitWorkTitle('New Issue: Add retries', 'issue')).toEqual({ type: 'Implement', title: 'Add retries' });
     expect(splitWorkTitle('[870 by Claude Opus] Update checkout', 'issue')).toEqual({ type: 'Implement', title: 'Update checkout' });
     expect(splitWorkTitle('Continue #12: Finish the migration', null)).toEqual({ type: 'Continue', title: 'Finish the migration' });
+    expect(splitWorkTitle('Agent: Weekly report', null)).toEqual({ type: 'Automation', title: 'Weekly report' });
   });
 
   it('keeps ordinary bracketed text that is not a generated model tag', () => {

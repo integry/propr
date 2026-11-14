@@ -15,6 +15,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { checkAndMigrateRepositoryFromWebhook } from './planIssueTrackingHelpers.js';
 import { notificationService } from '../services/notificationService.js';
+import { journalPullRequestWebhook } from './pullRequestJournalEvents.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -261,7 +262,8 @@ async function recordPullRequestOutcomeForScores(
  */
 export async function handlePlanPRUpdate(
     payload: PullRequestEvent,
-    correlationId: string
+    correlationId: string,
+    deliveryId?: string,
 ): Promise<void> {
     const log = logger.withCorrelation(correlationId);
     const repository = payload.repository.full_name;
@@ -269,6 +271,7 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
+        await journalPullRequestWebhook(payload, { deliveryId });
         if (action === 'closed' && payload.pull_request.merged === true) {
             try {
                 await notificationService.markPullRequestMergedAndDismissNotifications(

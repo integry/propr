@@ -62,7 +62,7 @@ const SUCCESS = {
 };
 
 /** In-memory run and task stores honouring compare-and-set and terminal task states. */
-function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; task?: string | null; grantScopes?: string[]; mutatingOperations?: number | null | Error } = {}) {
+function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskOptions) => Promise<unknown>; extensionsApply?: () => Promise<boolean>; task?: string | null; grantScopes?: string[]; mutatingOperations?: number | null | Error } = {}) {
   let current = options.run ?? actingRun();
   let task: string | null = options.task ?? null;
   const transitions: Array<{ from: readonly AutomationRunState[]; to: AutomationRunState; patch: Record<string, unknown> }> = [];
@@ -119,6 +119,7 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
     resolveAgent: async () => ({ agent: { executeTask } as never, alias: 'claude', model: 'opus' }),
     buildPrompt: buildPrompt as unknown as AgentActionProcessorDeps['buildPrompt'],
     withCostCap: async (_target, operation) => operation(),
+    extensionsApply: options.extensionsApply ?? (async () => false),
     mcpGrants: {
       request: async (_runId, phase) => {
         grants.requested.push(phase);
@@ -170,7 +171,7 @@ describe('processAgentActionJob', () => {
     const [create] = h.stateCalls;
     assert.deepEqual(create.slice(0, 2), ['create', TASK_ID]);
     assert.deepEqual(create[2], {
-      number: 0, repoOwner: 'acme', repoName: 'web', type: 'agent-run', title: 'Agent: Dependency watch', subtitle: 'Acting on report',
+      number: 0, repoOwner: 'acme', repoName: 'web', type: 'agent-run', title: 'Dependency watch', subtitle: 'Acting on report',
     });
 
     const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
@@ -464,13 +465,44 @@ describe('buildAgentActionPrompt', () => {
 });
 
 
+test('an item enabled after the processor chose its scope still launches under the instance restriction', async t => {
+  const { extensionLaunchIntegrationFixture } = await import('./fixtures/extensionLaunchIntegration.js');
+  const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
+  // Nothing applies when the processor decides: the only item is disabled and the automation adds none.
+  const { enable } = await fixture.lateEnabledAutoApply();
+  const execute = async (options: AgentTaskOptions) => { await enable(); return fixture.execute(options); };
+  const h = harness({ run: actingRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1' }) }) });
+  // The real predicate, with an agent whose runtime resolves library items.
+  h.deps.extensionsApply = undefined;
+  h.deps.resolveAgent = async () => ({ agent: { config: { type: 'claude', alias: 'claude' }, executeTask: execute } as never, alias: 'claude', model: 'opus' });
+  const result = await createAgentActionProcessor(h.deps)(actionJob());
+  assert.equal(result.status, 'complete');
+  // The fixture asserts the grant carries the restricted instance policy.
+  assert.equal(fixture.captures(), 1);
+});
+
 test('extension automation captures instance restriction before agent.executeTask', async t => {
   const { extensionLaunchIntegrationFixture } = await import('./fixtures/extensionLaunchIntegration.js');
   const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
-  const h = harness({ run: actingRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensionProfile: fixture.selection }) }), execute: fixture.execute });
+  const h = harness({ run: actingRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensions: fixture.extensions }) }), execute: fixture.execute, extensionsApply: async () => true });
   const result = await createAgentActionProcessor(h.deps)(actionJob());
   assert.equal(result.status, 'complete');
   assert.equal(fixture.captures(), 1);
+});
+
+test('a saturated agent defers the acting step before its claim; nothing executes and the run stays unclaimed', async () => {
+  const { DelayedError } = await import('bullmq');
+  const { AgentCapacityError } = await import('../packages/core/src/agents/agentCapacity.ts');
+  const h = harness();
+  let delayed = false;
+  const job = { ...actionJob(), queueName: 'issues', token: 't', updateData: async (data: AgentRunJobData) => { job.data = data; }, moveToDelayed: async () => { delayed = true; } };
+  await assert.rejects(createAgentActionProcessor({
+    ...h.deps, checkAgentCapacity: async () => { throw new AgentCapacityError(['claude'], { claude: 1 }); },
+  })(job as never), DelayedError);
+  assert.equal(delayed, true);
+  assert.equal(h.run().actionTaskId, null, 'the acting step is not claimed');
+  assert.equal(h.executeTask.mock.callCount(), 0);
+  assert.equal((job.data as { agentCapacityDeferrals?: number }).agentCapacityDeferrals, 1);
 });
 
 describe('acting-step mutation count', () => {

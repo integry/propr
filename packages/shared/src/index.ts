@@ -588,8 +588,29 @@ export * from './instanceStorage.js';
 export * from './fleetData.js';
 
 export * from './extensionProfiles.js';
+export * from './extensionLibrary.js';
+export * from './extensionPackages.js';
+export * from './extensionOAuth.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+export * from './planItemGraph.js';
+export {
+  TOKEN_OUTLIER_MIN_HISTORY,
+  TOKEN_OUTLIER_SETTING_DEFINITIONS,
+  TOKEN_OUTLIER_SETTING_NAMES,
+  DEFAULT_TOKEN_OUTLIER_SETTINGS,
+  isTokenOutlierSettingName,
+  describeTokenOutlierSettingRange,
+  parseTokenOutlierSetting,
+  type TokenOutlierSettingDefinition,
+  type TokenOutlierSettingName,
+  type TokenOutlierSettings,
+} from './tokenOutlierSettings.js';
 export * from './acceptanceCriteria.js';
 export * from './prTitleStatusSlot.js';
+
+// The durable repository change-event journal: domains, event types and payloads.
+export * from './repositoryEvents.js';
+// Reading and waiting on the repository change-event journal: cursor codec, limits and errors.
+export * from './repositoryEventWait.js';

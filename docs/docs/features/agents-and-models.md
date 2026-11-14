@@ -131,7 +131,7 @@ Anthropic retires Claude Sonnet 4.5 on 2026-11-30. Until then it runs as selecte
 
 {/* GPT-6.1 Sol capability/cost wording verified 2026-10-01: https://developers.openai.com/api/docs/models/gpt-6.1-sol */}
 {/* GPT-6.1 Terra wording and pricing verified 2026-11-12: https://developers.openai.com/api/docs/models/gpt-6.1-terra */}
-GPT-6 Astra is the recommended default for the most demanding implementation, research, and security work. GPT-6.1 Sol offers near-Astra capability at a lower cost, GPT-6.1 Terra is a fast, efficient option at half of Sol's price, GPT-6 Sol remains available for existing workflows, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6.1 Sol requires Codex CLI >= 0.153.0, GPT-6 Sol and GPT-6 Luna require Codex CLI >= 0.155.0, and GPT-6.1 Terra requires Codex CLI >= 0.165.0. The bundled Codex CLI is pinned to 0.167.2.
+GPT-6 Astra is the recommended default for the most demanding implementation, research, and security work. GPT-6.1 Sol offers near-Astra capability at a lower cost, GPT-6.1 Terra is a fast, efficient option at half of Sol's price, GPT-6 Sol remains available for existing workflows, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6.1 Sol requires Codex CLI >= 0.153.0, GPT-6 Sol and GPT-6 Luna require Codex CLI >= 0.155.0, and GPT-6.1 Terra requires Codex CLI >= 0.165.0. The bundled Codex CLI is pinned to 0.168.0.
 
 | Model | Label | Context |
 |-------|-------|---------|
@@ -163,18 +163,22 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 |-------|-------|
 | Gemini 3.8 Flash | `llm-antigravity-flash38` |
 | Gemini 4 Argon | `llm-antigravity-argon` |
+| Gemini 4 Hydrogen | `llm-antigravity-hydrogen` |
 | Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
 | Claude Opus 5.5 | `llm-antigravity-opus55` |
 | GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
 
-Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5, Gemini 4 Argon, and Gemini Flash support low, medium, and high; GPT-OSS always uses medium.
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5, Gemini 4 Argon, and Gemini Flash support low, medium, and high; Gemini 4 Hydrogen also supports xhigh (`level-xhigh`); GPT-OSS always uses medium. A higher level than a model supports runs at the closest supported level below it.
 
 Antigravity CLI 1.4.0 no longer offers Gemini 3.1 Pro and runs Gemini 4 Argon in its place. ProPR does the same: agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, and the old Pro label and `pro` alias select Gemini 4 Argon.
 
-Gemini 4 Carbon is not in the catalog. Antigravity CLI 1.5.6 offers it only to accounts signed in with Application Default Credentials (`AGY_ADC_AUTH`), and the setup above signs in with `agy login`.
+{/* Gemini 4 Hydrogen IDs from the agy 1.5.8 binary; pricing from OpenRouter google/gemini-4-hydrogen, checked 2026-11-13. */}
+Gemini 4 Hydrogen, the fast member of the Gemini 4 family, needs Antigravity CLI 1.5.8 or later. It is a new model and replaces none of the others; ProPR prices it at $1.50 per million input tokens and $7.50 per million output tokens. The 1.5.8 release notes list it for Gemini API key (`GEMINI_API_KEY`), Application Default Credentials and enterprise gateway sign-ins; Google AI Pro and Ultra subscriptions are reported to include it, but this hasn't been confirmed for an `agy login` account. If `agy models` on your account does not list `gemini-4-hydrogen-*`, remove Gemini 4 Hydrogen from the agent's models.
+
+Gemini 4 Carbon is not in the catalog. Antigravity CLI 1.5.8 offers it only to accounts that connect with a Gemini API key (`GEMINI_API_KEY`) or sign in with Application Default Credentials (`AGY_ADC_AUTH`), and the setup above signs in with `agy login`.
 
 :::note[Gemini Enterprise review policy]
-ProPR runs Antigravity tasks with `--dangerously-skip-permissions`. From Antigravity CLI 1.5.2, when a Gemini Enterprise admin requires review of agent actions, that flag no longer approves actions outside the workspace in headless runs: the CLI denies them. Work inside the task's worktree is unaffected, but a step that needs a path outside it fails instead of running. Ask the admin to relax the review requirement for the account ProPR uses if tasks need such actions.
+ProPR runs Antigravity tasks with `--dangerously-skip-permissions` and repository inspection with `--sandbox`, so the Auto Agent Mode that Antigravity CLI 1.5.7 made the default for headless runs does not change how ProPR runs approve actions. From Antigravity CLI 1.5.2, when a Gemini Enterprise admin requires review of agent actions, that flag no longer approves actions outside the workspace in headless runs: the CLI denies them. Work inside the task's worktree is unaffected, but a step that needs a path outside it fails instead of running. Ask the admin to relax the review requirement for the account ProPR uses if tasks need such actions.
 :::
 
 ## OpenCode Models

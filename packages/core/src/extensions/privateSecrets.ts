@@ -1,11 +1,19 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 
 // Same private credential trust root as visual-preview OAuth custody. Domain
 // separation and authenticated associated data prohibit profile/revision swaps.
-function key(environment: NodeJS.ProcessEnv): Buffer {
+function key(environment: NodeJS.ProcessEnv, domain = 'propr.extension-profiles.v1'): Buffer {
   const root = environment.PROPR_CREDENTIAL_ENCRYPTION_KEY?.trim() || environment.SYSTEM_TASK_SECRET?.trim() || environment.SESSION_SECRET?.trim();
   if (!root) throw new Error('Private credential encryption is not configured');
-  return createHash('sha256').update('propr.extension-profiles.v1\0').update(root).digest();
+  return createHash('sha256').update(`${domain}\0`).update(root).digest();
+}
+/**
+ * Authenticates an installed package's manifest: the cache directory is
+ * writable on the host, but a changed tree or manifest cannot carry a valid
+ * tag without the private credential root.
+ */
+export function extensionPackageManifestTag(value: string, environment: NodeJS.ProcessEnv): string {
+  return createHmac('sha256', key(environment, 'propr.extension-packages.v1')).update(value).digest('hex');
 }
 export function sealExtensionSecrets(value: Record<string, string>, identity: string, environment: NodeJS.ProcessEnv): string {
   const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', key(environment), iv);

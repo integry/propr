@@ -366,6 +366,15 @@ describe('file-based plan generation', () => {
     assert.match(prompt, /Do not put the plan in your reply/);
   });
 
+  test('every planner instruction that describes dependsOn asks for direct prerequisites only', async () => {
+    const { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT } = await import('../packages/core/src/claude/prompts/plannerPrompts.js');
+    for (const prompt of [PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, buildPlanFilePrompt('<context/>')]) {
+      assert.match(prompt, /"dependsOn" lists direct prerequisites only/);
+      assert.match(prompt, /For a chain A → B → C, C lists only B/);
+      assert.match(prompt, /a task with no "dependsOn" is independent/);
+    }
+  });
+
   test('returns null in reply mode without running an agent', async () => {
     process.env.PROPR_PLAN_GENERATION_MODE = 'response';
     const agent = fakeAgent(() => { throw new Error('must not run'); });
