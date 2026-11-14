@@ -488,7 +488,7 @@ describe('Full Test Suite job selection', () => {
         assert.match(classify, /fetch-depth: 0\n/);
         assert.match(classify, /persist-credentials: false\n/);
         assert.match(classify, /permissions:\n\s+contents: read\n\s+outputs:/);
-        assert.match(classify, /\n {4}runs-on: ubuntu-latest\n/);
+        assert.match(classify, /\n {4}runs-on: ubuntu-24.04\n/);
     });
 });
 
