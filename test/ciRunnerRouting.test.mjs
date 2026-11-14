@@ -586,7 +586,7 @@ describe('PR check routing', () => {
         ];
         for (const [vars, context, needs, selfHosted] of [...cases.map(([vars, context, selfHosted]) => [vars, context, {}, selfHosted]), ...overflowCases]) {
             assert.deepEqual(evaluate(vars, context, needs, JSON.parse, (pattern, value) => pattern.replace('{0}', value)),
-                selfHosted ? ['self-hosted', 'Linux', 'X64', 'propr-rootless'] : ['ubuntu-latest'], JSON.stringify({ vars, context, needs }));
+                selfHosted ? ['self-hosted', 'Linux', 'X64', 'propr-rootless'] : ['ubuntu-24.04'], JSON.stringify({ vars, context, needs }));
         }
     });
 
@@ -597,7 +597,7 @@ describe('PR check routing', () => {
             const workflow = readWorkflow(file);
             const route = jobBlock(workflow, 'route');
             assert.match(route, /\n {4}if: \$\{\{ vars\.PROPR_ROOTLESS_PR_CHECKS == 'overflow' \}\}\n/, `${file} checks capacity only in overflow mode`);
-            assert.match(route, /\n {4}runs-on: ubuntu-latest\n/, file);
+            assert.match(route, /\n {4}runs-on: ubuntu-24.04\n/, file);
             assert.match(route, /permissions:\n\s+contents: read\n\s+actions: read\n\s+outputs:/, `${file} reads Actions data only`);
             assert.match(route, /persist-credentials: false/, file);
             assert.match(route, /run: node scripts\/ci-hosted-capacity\.mjs\n/, file);
@@ -627,7 +627,7 @@ describe('PR check routing', () => {
         // gated on the shared classifier; test/ciFullSuiteSelection.test.mjs
         // evaluates the full condition.
         assert.match(jobBlock(fullSuite, 'docs'), /\n {10}\(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\) &&\n/);
-        for (const job of ['classify', 'route', 'native-electron', 'test', 'comment']) assert.match(jobBlock(fullSuite, job), /\n {4}runs-on: ubuntu-latest\n/);
+        for (const job of ['classify', 'route', 'native-electron', 'test', 'comment']) assert.match(jobBlock(fullSuite, job), /\n {4}runs-on: ubuntu-24.04\n/);
         assert.doesNotMatch(fullSuite, /run-local-shards|LOCAL_SHARD/, 'no nested local shard coordinator');
         assert.ok(!existsSync(join(REPOSITORY, 'scripts', 'run-local-shards.mjs')));
         assert.doesNotMatch(fullSuite, /pull_request_target/);
@@ -847,15 +847,15 @@ describe('PR check routing', () => {
             assert.match(container, /--network none --memory 1g --memory-swap 1g --cpus 1 --pids-limit 256/, 'tool containers retain individual limits in addition to the per-user cap');
         }
         const expected = {
-            'cli-agent-skill-glibc-231': 'ubuntu-latest',
+            'cli-agent-skill-glibc-231': 'ubuntu-24.04',
             'cli-agent-skill-darwin': 'macos-15',
             'windows-connect-discovery': 'windows-2025',
             'connect-authority-darwin': 'macos-15',
-            comment: 'ubuntu-latest',
+            comment: 'ubuntu-24.04',
             // Selection and its fail-closed aggregate are cheap hosted jobs.
-            classify: 'ubuntu-latest',
-            route: 'ubuntu-latest',
-            'compatibility-guard': 'ubuntu-latest',
+            classify: 'ubuntu-24.04',
+            route: 'ubuntu-24.04',
+            'compatibility-guard': 'ubuntu-24.04',
         };
         assert.deepEqual(jobNames(buildCheck).sort(), [...Object.keys(expected), 'validate', 'cli-node-matrix'].sort());
         for (const [job, runner] of Object.entries(expected)) {

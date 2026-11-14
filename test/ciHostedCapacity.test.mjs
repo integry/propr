@@ -10,7 +10,7 @@ import { decideOverflow } from '../scripts/ci-hosted-capacity.mjs';
 const SCRIPT = fileURLToPath(new URL('../scripts/ci-hosted-capacity.mjs', import.meta.url));
 const now = Date.parse('2026-09-28T12:00:00Z');
 const ago = seconds => new Date(now - seconds * 1000).toISOString();
-const running = (count, labels = ['ubuntu-latest']) => Array.from({ length: count }, () => ({ status: 'in_progress', labels, created_at: ago(300) }));
+const running = (count, labels = ['ubuntu-24.04']) => Array.from({ length: count }, () => ({ status: 'in_progress', labels, created_at: ago(300) }));
 
 describe('hosted capacity overflow decision', () => {
     test('stays hosted while running and planned jobs fit below the limit minus the reserve', () => {
@@ -28,7 +28,7 @@ describe('hosted capacity overflow decision', () => {
     });
 
     test('overflows as soon as a hosted Linux job has waited for a runner', () => {
-        const waiting = { status: 'queued', labels: ['ubuntu-latest'], created_at: ago(90) };
+        const waiting = { status: 'queued', labels: ['ubuntu-24.04'], created_at: ago(90) };
         assert.equal(decideOverflow({ jobs: [waiting], now, planned: 1 }).overflow, true);
         assert.equal(decideOverflow({ jobs: [{ ...waiting, created_at: ago(10) }], now, planned: 1 }).overflow, false, 'a job that was just queued is normal');
         assert.equal(decideOverflow({ jobs: [{ ...waiting, labels: ['macos-15'] }], now, planned: 1 }).overflow, false, 'macOS has its own limit');
