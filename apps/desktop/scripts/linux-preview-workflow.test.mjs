@@ -151,7 +151,7 @@ test('regular desktop PR validation requires disposable-key and real RPM tests',
   const block = guard.slice(start, guard.indexOf('\n  renderer-axe-boundary:', start));
   assert.match(block, /github.event_name != 'push'/);
   assert.match(block, /needs.classify.outputs.desktop != 'false'/);
-  assert.match(block, /runs-on: ubuntu-latest/);
+  assert.match(block, /runs-on: ubuntu-24.04/);
   assert.match(block, /sudo apt-get install --yes rpm gnupg cpio/);
   assert.match(block, /PROPR_REQUIRE_RPM_TESTS: '1'/);
   assert.match(block, /node --test apps\/desktop\/scripts\/rpm-signing.test.mjs/);

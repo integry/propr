@@ -253,7 +253,7 @@ jobs:
   native-electron:
     name: Nightly Native Electron (hosted)
     # The self-hosted runner does not provide the native sandbox/session contract.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -320,7 +320,7 @@ jobs:
     name: Nightly desktop download
     needs: [full-tests, e2e-tests, native-electron, desktop-package, desktop-connect]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -412,7 +412,7 @@ jobs:
     name: Nightly test health
     needs: [full-tests, e2e-tests, native-electron, desktop-package, desktop-connect, desktop-nightly-download]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
