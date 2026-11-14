@@ -5,10 +5,12 @@ import {
     buildEpicProgressComment, renderEpicProgressActivity, syncOpenEpicProgressComment, type EpicProgressActivity,
 } from '../../webhook/epicMergeProgress.js';
 import { withEpicProgressLeaseIfFree } from '../../webhook/epicMergeProgressRetry.js';
-import type { EpicStatusFacts } from './pullRequestStatus.js';
-import { describeChildStatus, extractPullRequestStatusBlock } from './pullRequestStatusBlock.js';
+import { PR_BODY_MAX_LENGTH, readStatusSlot } from '@propr/shared';
+import type { EpicStatusFacts, PullRequestStatus } from './pullRequestStatus.js';
+import { applyPullRequestStatusBlock, describeChildStatus, extractPullRequestStatusBlock } from './pullRequestStatusBlock.js';
 import { paginatingGitHub } from './pullRequestStatusEpicFacts.js';
 import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullRequestStatusFacts.js';
+import type { PullRequestTitleDecision } from './pullRequestStatusTitle.js';
 import {
     requestEpicPullRequestStatusSync, setPullRequestStatusEpicSyncRunner, type PullRequestStatusEpicSyncRunner,
 } from './pullRequestStatusSignal.js';
@@ -149,17 +151,56 @@ export interface EpicSyncNotes {
     statusChanged: boolean;
 }
 
+/** How long after an update that left sub-PRs unread the next one reads them (pullRequestStatusEpicChildReads). */
+const DEFAULT_EPIC_CHILD_READ_CONTINUE_MS = 5_000;
+let epicChildReadContinueMs = DEFAULT_EPIC_CHILD_READ_CONTINUE_MS;
+
+/** Test hook: shortens the wait before unread sub-PRs are read; null restores it. */
+export function setEpicChildReadContinueMsForTests(ms: number | null): void {
+    epicChildReadContinueMs = ms ?? DEFAULT_EPIC_CHILD_READ_CONTINUE_MS;
+}
+
+const TITLE_SLOT_STATE: Array<[RegExp, PullRequestStatus['state']]> = [[/^\u{1F528}/u, 'working'], [/^⚠/u, 'needs_attention'], [/^✅/u, 'ready']];
+const BLOCK_COUNT_PATTERN = /^(\*\*ProPR\*\* (?:\u{1F528}|⚠️?|✅) )\d+ of \d+( issues merged)/mu;
+const BLOCK_STAMP_PATTERN = / · updated \d{2}:\d{2} UTC/;
+
+function utcTime(now: Date): string {
+    return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
+}
+
 /**
  * The update of an epic whose status is undetermined (isUndeterminedPullRequestStatus):
- * none: unread sub-PRs may be working, so the published block and title stay rather
- * than claim the epic waits on a person, until enough sub-PR statuses are read.
+ * unread sub-PRs may be working, so no state is claimed and the published one
+ * stays, but the merged count, known without them, is brought up to date: in
+ * the published block's headline, and in the title slot with the state it
+ * already shows (left alone when the title has no slot). The sub-PRs left
+ * unread are read by an update scheduled soon (the title decision's
+ * settleInMs), not left to the next transition.
  */
-export function undeterminedEpicSyncOutcome(pull: PullRequestStatusPull) {
-    logger.debug({ baseRef: pull.base?.ref }, 'The epic status is undetermined (sub-PRs unread); the status is left as published');
-    return {
-        result: extractPullRequestStatusBlock(pull.body ?? '') !== null ? 'unchanged' as const : 'skipped' as const,
-        awaitingMergeability: false, open: true, baseSha: pull.base?.sha ?? null, titleSettleInMs: null,
-    };
+export async function undeterminedEpicUpdate(
+    target: { pull: PullRequestStatusPull; status: PullRequestStatus; epic: EpicStatusFacts | null }, now: Date,
+    decideTitle: (status: PullRequestStatus) => Promise<PullRequestTitleDecision>,
+): Promise<{ body: string; title: PullRequestTitleDecision }> {
+    const { pull, status } = target;
+    const epic = status.detail.epic;
+    const current = pull.body ?? '';
+    logger.debug({ baseRef: pull.base?.ref }, 'The epic status is undetermined (sub-PRs unread); only the merged count of the published status is updated');
+    let body = current;
+    const block = extractPullRequestStatusBlock(current);
+    if (epic && block && BLOCK_COUNT_PATTERN.test(block)) {
+        const recounted = block.replace(BLOCK_COUNT_PATTERN, `$1${epic.merged} of ${epic.total}$2`);
+        const stamped = recounted === block ? block : recounted.replace(BLOCK_STAMP_PATTERN, ` · updated ${utcTime(now)}`);
+        const next = applyPullRequestStatusBlock(current, stamped);
+        if (next.length <= PR_BODY_MAX_LENGTH) body = next;
+    }
+    const slot = readStatusSlot(pull.title);
+    const state = slot ? TITLE_SLOT_STATE.find(([pattern]) => pattern.test(slot))?.[1] : undefined;
+    const title = epic && state
+        ? await decideTitle({ state, detail: { ...status.detail, reason: null, epic: { merged: epic.merged, total: epic.total, focus: null } } })
+        : { title: null, settleInMs: null };
+    const continueInMs = target.epic?.continueChildReads ? epicChildReadContinueMs : null;
+    const settleInMs = title.settleInMs === null ? continueInMs : continueInMs === null ? title.settleInMs : Math.min(title.settleInMs, continueInMs);
+    return { body, title: { title: title.title, settleInMs } };
 }
 
 /**

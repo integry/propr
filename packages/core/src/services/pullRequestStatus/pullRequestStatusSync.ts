@@ -10,7 +10,7 @@ import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus, isUndeterminedPullRequestStatus, type EpicStatusFacts, type PullRequestStatus } from './pullRequestStatus.js';
-import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicSyncOutcome, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
+import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
@@ -208,7 +208,10 @@ interface SyncOutcome {
     baseSha: string | null;
     /** The written status says the checks could not be read because a GitHub read rejected, not because of the page budget. */
     checksReadFailed: boolean;
-    /** The title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle): update again after this many milliseconds. */
+    /**
+     * Update again after this many milliseconds: the title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle),
+     * or an epic has sub-PRs still to read (epicChildReadContinuation).
+     */
     titleSettleInMs: number | null;
 }
 
@@ -286,13 +289,14 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
         const desired = await statusForLatestPull(deps, repository, prNumber);
         const { status, pull, checksReadFailed } = desired;
-        // Sub-PRs left unread may be working (undeterminedEpicSyncOutcome).
-        if (isUndeterminedPullRequestStatus(status)) return { ...undeterminedEpicSyncOutcome(pull), checksReadFailed, notes: epicSyncNotes(desired, false) };
-        const title = await decidePullRequestTitleForSync({
-            repository, prNumber, pull, status, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
-        });
         const current = pull.body ?? '';
-        const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
+        const decideTitle = async (titleStatus: PullRequestStatus | null) => await decidePullRequestTitleForSync({
+            repository, prNumber, pull, status: titleStatus, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
+        });
+        // Sub-PRs left unread may be working: the published state stays, with its merged count updated (undeterminedEpicUpdate).
+        const { body: next, title } = isUndeterminedPullRequestStatus(status)
+            ? await undeterminedEpicUpdate({ pull, status: status!, epic: desired.epic }, deps.now(), decideTitle)
+            : { body: bodyWithStatus(current, status, deps.now(), { repository, prNumber }), title: await decideTitle(status) };
         const written = extractPullRequestStatusBlock(next) !== null;
         const bodyChanged = !(next === current || sameRenderedStatus(next, current));
         const read = {

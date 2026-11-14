@@ -94,7 +94,7 @@ An epic pull request collects the sub-PRs of a plan: its own branch only receive
 
 A sub-PR that is `ready` but not merged yet makes the epic `needs_attention`, so the list of pull requests shows that a merge is waiting on you. An issue whose run stopped on a reported blocker is not in progress, although it stays started until a person acts: the line reads `#3476 stopped on a blocker`, unless other work of the epic is running. An epic shows no review score.
 
-ProPR reads the status of up to 10 of an epic's open sub-PRs per update. When none of the work it read is running but more sub-PRs are open, one it did not read could be: the line and the title are then left as they were, rather than say the epic waits on you.
+ProPR reads the status of up to 10 of an epic's open sub-PRs per update, and keeps each status it read until that sub-PR changes (or 10 minutes pass). An epic with more open sub-PRs is read over several updates: each one reads the sub-PRs the last one could not, starting with those it has no current status for. When none of the work known is running but some sub-PRs are still unread, one of them could be: the line and the title then keep their state, rather than say the epic waits on you, but their merged count is still updated, and ProPR schedules another update a few seconds later to read the rest.
 
 The body line leads with the progress, then says what is running or what waits on you:
 
@@ -146,4 +146,4 @@ Titles come from the epic PR's issue list. The comment is updated in the same up
 }
 ```
 
-The status is computed the same way for the body line and the MCP tools. For an epic pull request, `detail.epic` holds `merged`, `total` and `focus` (the sub-PR or issue the line names, with the sub-PR's own status), and the epic reasons are `epic_child_needs_attention`, `epic_issue_blocked`, `epic_child_ready`, `epic_queue_paused`, `epic_idle` and `epic_children_unread` (no work read is running, but sub-PRs beyond the read budget were not read; `detail.epic.unreadChildren` counts them, and the body line and title keep their previous state). Reading an epic's status also reads the status of up to 10 of its open sub-PRs.
+The status is computed the same way for the body line and the MCP tools. For an epic pull request, `detail.epic` holds `merged`, `total` and `focus` (the sub-PR or issue the line names, with the sub-PR's own status), and the epic reasons are `epic_child_needs_attention`, `epic_issue_blocked`, `epic_child_ready`, `epic_queue_paused`, `epic_idle` and `epic_children_unread` (no work known is running, but sub-PRs beyond the read budget have no current status yet; `detail.epic.unreadChildren` counts them, and the body line and title keep their previous state with an updated merged count). Reading an epic's status also reads the status of up to 10 of its open sub-PRs, and uses the statuses earlier reads kept for the rest.

@@ -24,6 +24,8 @@ export interface EpicChildPullRequest {
     title?: string;
     /** The branch the child PR comes from. */
     headRef?: string;
+    /** Open child PRs: the head commit and GitHub's last update, which any status write to the child changes. */
+    headSha?: string; updatedAt?: string;
 }
 
 export interface EpicMergeProgress {
@@ -215,6 +217,8 @@ export async function listChildPullRequests(octokit: EpicProgressOctokit, owner:
             ...(open ? { open } : {}),
             ...(open && typeof pr.title === 'string' ? { title: pr.title } : {}),
             ...(open && isRecord(pr.head) && typeof pr.head.ref === 'string' ? { headRef: pr.head.ref } : {}),
+            ...(open && isRecord(pr.head) && typeof pr.head.sha === 'string' ? { headSha: pr.head.sha } : {}),
+            ...(open && typeof pr.updated_at === 'string' ? { updatedAt: pr.updated_at } : {}),
         }];
     });
 }

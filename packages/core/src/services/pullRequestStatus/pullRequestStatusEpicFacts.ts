@@ -7,6 +7,8 @@ import {
     computeEpicMergeProgress, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
 } from '../../webhook/epicMergeProgress.js';
 import type { EpicProgressOctokit } from '../../webhook/epicMergeEvidence.js';
+import { pullRequestBodyKey } from './pullRequestBodyLock.js';
+import { noteEpicChildReadPass, planEpicChildReads, retainEpicChildStatus } from './pullRequestStatusEpicChildReads.js';
 import type { EpicChildStatus, EpicIssueRef, EpicStatusFacts, PullRequestStatus } from './pullRequestStatus.js';
 import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullRequestStatusFacts.js';
 
@@ -21,8 +23,7 @@ import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullReque
 /** Pages read of one GitHub list; more is an unusual epic. */
 const MAX_LIST_PAGES = 10;
 const PAGE_SIZE = 100;
-/** Open sub-PRs whose status is read for one epic update; the rest are listed without it. */
-export const MAX_EPIC_CHILD_STATUSES = 10;
+export { MAX_EPIC_CHILD_STATUSES } from './pullRequestStatusEpicChildReads.js';
 
 const STARTED = new Set(['processing', 'under_review', 'in_refinement', 'refinement_processing']);
 const RUNNING = new Set(['processing', 'refinement_processing']);
@@ -136,9 +137,9 @@ function upNextIssues(plan: EpicPlan, excluded: Set<number>, titles: Map<number,
 }
 
 async function childStatuses(
-    sources: EpicStatusSources, target: { owner: string; repo: string }, open: EpicChildPullRequest[],
+    sources: EpicStatusSources, target: { owner: string; repo: string; epicKey: string }, open: EpicChildPullRequest[],
     context: { plan: EpicPlan; titles: Map<number, string> },
-): Promise<EpicChildStatus[]> {
+): Promise<{ children: EpicChildStatus[]; continueChildReads: boolean }> {
     const planIssueNumbers = new Set(context.plan.issues.map(issue => issue.issue_number));
     const issueOf = (child: EpicChildPullRequest): number | null => {
         const linked = context.plan.issues.find(issue => issue.pr_number === child.number);
@@ -146,16 +147,27 @@ async function childStatuses(
         const fromBranch = Number(child.headRef?.match(/^(\d+)[/-]/)?.[1]);
         return planIssueNumbers.has(fromBranch) ? fromBranch : null;
     };
-    return await Promise.all(open.map(async (child, index) => {
+    // A pull request from another epic branch into this one is not a sub-PR whose status is read (no epic reads another).
+    const readable = open.filter(child => !EPIC_BRANCH_PATTERN.test(child.headRef ?? ''));
+    const readAt = Date.now();
+    const plan = planEpicChildReads(target.epicKey, readable, readAt);
+    const children = await Promise.all(open.map(async (child): Promise<EpicChildStatus> => {
         const issueNumber = issueOf(child);
         const title = (issueNumber !== null ? context.titles.get(issueNumber) : undefined) ?? childTitle(child.title);
-        // A pull request from another epic branch into this one is not a sub-PR whose status is read (no epic reads another).
-        if (EPIC_BRANCH_PATTERN.test(child.headRef ?? '')) return { prNumber: child.number, issueNumber, title, status: null };
+        const kept = plan.kept.get(child.number);
+        if (kept) return { prNumber: child.number, issueNumber, title, status: kept };
         // Beyond the read budget the status is unknown, which is not the same as no ProPR status (computeEpicStatus).
-        if (index >= MAX_EPIC_CHILD_STATUSES) return { prNumber: child.number, issueNumber, title, status: null, statusUnread: true };
-        const pull = (await sources.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { ...target, pull_number: child.number })).data as PullRequestStatusPull;
-        return { prNumber: child.number, issueNumber, title, status: await sources.loadChildStatus(child.number, pull) };
+        if (!plan.read.has(child.number)) {
+            const unread = readable.includes(child);
+            return { prNumber: child.number, issueNumber, title, status: null, ...(unread ? { statusUnread: true } : {}) };
+        }
+        const pull = (await sources.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner: target.owner, repo: target.repo, pull_number: child.number })).data as PullRequestStatusPull;
+        const status = await sources.loadChildStatus(child.number, pull);
+        retainEpicChildStatus(target.epicKey, child, status, readAt);
+        return { prNumber: child.number, issueNumber, title, status };
     }));
+    const continueChildReads = noteEpicChildReadPass(target.epicKey, children.filter(child => child.statusUnread).length);
+    return { children, continueChildReads };
 }
 
 /**
@@ -194,10 +206,13 @@ export async function loadEpicStatusFacts(
         });
     const excluded = new Set(plan.issues.filter(issue => !issues.includes(issue)).map(issue => issue.issue_number));
     const pending = new Set(issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number));
+    const { children: childStatusList, continueChildReads } = await childStatuses(
+        sources, { owner, repo, epicKey: pullRequestBodyKey(repository, prNumber) }, open, { plan, titles });
     return {
         merged: progress.merged,
         total: progress.total,
-        children: await childStatuses(sources, { owner, repo }, open, { plan, titles }),
+        children: childStatusList,
+        ...(continueChildReads ? { continueChildReads } : {}),
         startedIssues,
         upNext: upNextIssues(plan, excluded, titles),
         nextIssueQueued: nextIssueQueued(plan, pending),

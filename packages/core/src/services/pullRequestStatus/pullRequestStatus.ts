@@ -100,7 +100,7 @@ export interface EpicChildStatus {
     title: string | null;
     /** The sub-PR's own status, from this computation; null when it is not a ProPR pull request, or was not read. */
     status: PullRequestStatus | null;
-    /** The status was not read (the read budget): null `status` then says nothing about the sub-PR. */
+    /** The status was not read in this update nor kept from an earlier one (the read budget): null `status` then says nothing about the sub-PR. */
     statusUnread?: boolean;
 }
 
@@ -135,6 +135,8 @@ export interface EpicStatusFacts {
     planName?: string | null;
     /** The epic branch, for the epic progress lease. */
     epicBranch?: string;
+    /** Sub-PRs were left unread (the read budget): another update should read them (pullRequestStatusEpicChildReads). */
+    continueChildReads?: boolean;
 }
 
 /** What the status block says an epic is doing or waits on. */
