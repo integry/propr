@@ -2,10 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
   DEFAULT_AUTOMATION_AUTONOMY_MODE,
-  DEFAULT_AUTOMATION_CAPABILITIES,
   isAutomationAutonomyMode,
   isAutomationCapability,
-  nextCronOccurrence,
   normalizeAutomationEventTriggers,
   type AutomationAutonomyMode,
   type AutomationCapability,
@@ -17,6 +15,9 @@ import {
 import { db } from '../../db/connection.js';
 import type { Attachment } from '../attachmentService.js';
 import { eventCursorResetNeeded, resetAgentDefinitionEventCursors } from './agentEventTriggerStore.js';
+import { computeAgentDefinitionNextRunAt, newAgentDefinitionRow, SCHEDULE_TIMEZONE, statusError } from './agentDefinitionNewRow.js';
+
+export { computeAgentDefinitionNextRunAt };
 
 /**
  * Saved agent definitions. Definitions are private to their owner in v1: every
@@ -28,8 +29,6 @@ const TABLE = 'agent_definitions';
 const RUNS_TABLE = 'agent_runs';
 /** Conditional attachment writes retry this many times when another write keeps landing first. */
 const MAX_ATTACHMENT_WRITE_ATTEMPTS = 5;
-/** Schedules are evaluated in UTC in v1. */
-const SCHEDULE_TIMEZONE = 'UTC';
 export const DEFAULT_AGENT_DEFINITION_PAGE_SIZE = 50;
 export const MAX_AGENT_DEFINITION_PAGE_SIZE = 200;
 
@@ -130,10 +129,6 @@ export interface AgentDefinitionStoreDependencies {
 export type AgentDefinitionWriteGuard = (trx: Knex.Transaction, current: StoredAgentDefinition | null) => Promise<void>;
 export interface AgentDefinitionWriteOptions extends AgentDefinitionStoreDependencies { guard?: AgentDefinitionWriteGuard }
 
-function statusError(message: string, status: number): Error & { status: number } {
-  return Object.assign(new Error(message), { status });
-}
-
 function parseJsonArray(value: string | null | undefined): unknown[] {
   if (!value) return [];
   try {
@@ -178,22 +173,6 @@ export function rowToAgentDefinition(row: AgentDefinitionRow): StoredAgentDefini
   };
 }
 
-/**
- * Next UTC fire time for a definition, or null when it cannot fire on its own.
- * An unparseable cron is a client error (400).
- */
-export function computeAgentDefinitionNextRunAt(
-  schedule: { scheduleCron: string | null; scheduleEnabled: boolean; enabled: boolean },
-  now: number,
-): number | null {
-  if (!schedule.enabled || !schedule.scheduleEnabled || !schedule.scheduleCron) return null;
-  try {
-    return nextCronOccurrence(schedule.scheduleCron, new Date(now)).getTime();
-  } catch (error) {
-    throw statusError(error instanceof Error ? error.message : 'Invalid schedule', 400);
-  }
-}
-
 export async function createAgentDefinition(
   input: CreateAgentDefinitionInput,
   { database = db, now = Date.now, guard }: AgentDefinitionWriteOptions = {},
@@ -201,32 +180,7 @@ export async function createAgentDefinition(
   // With a guard, the guard and the insert share one transaction.
   if (guard && !database.isTransaction) return database.transaction(trx => createAgentDefinition(input, { database: trx, now, guard }));
   const timestamp = now();
-  const scheduleCron = input.scheduleCron ?? null;
-  const scheduleEnabled = input.scheduleEnabled ?? false;
-  const enabled = input.enabled ?? true;
-  const row: AgentDefinitionRow = {
-    id: randomUUID(),
-    owner_id: input.ownerId,
-    extensions: serializeAutomationExtensions(input.extensions),
-    name: input.name,
-    description: input.description ?? null,
-    repositories: JSON.stringify(input.repositories ?? []),
-    prompt: input.prompt,
-    attachments: JSON.stringify(input.attachments ?? []),
-    agent_alias: input.agentAlias ?? null,
-    model_name: input.modelName ?? null,
-    capabilities: JSON.stringify(input.capabilities ?? DEFAULT_AUTOMATION_CAPABILITIES),
-    include_previous_reports: input.includePreviousReports ?? true,
-    previous_reports_limit: input.previousReportsLimit ?? 1,
-    schedule_cron: scheduleCron,
-    schedule_timezone: SCHEDULE_TIMEZONE,
-    schedule_enabled: scheduleEnabled,
-    next_run_at: computeAgentDefinitionNextRunAt({ scheduleCron, scheduleEnabled, enabled }, timestamp),
-    autonomy_mode: input.autonomyMode ?? DEFAULT_AUTOMATION_AUTONOMY_MODE,
-    event_triggers: JSON.stringify(normalizeAutomationEventTriggers(input.eventTriggers ?? [])),
-    pause_when_unproductive: input.pauseWhenUnproductive ?? false,
-    enabled, revision: 0, created_at: timestamp, updated_at: timestamp,
-  };
+  const row = newAgentDefinitionRow(input, randomUUID(), timestamp);
   if (guard) await guard(database as Knex.Transaction, null);
   const definition = rowToAgentDefinition(row);
   // Subscribing starts at the newest event: nothing that happened before is run.
