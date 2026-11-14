@@ -127,12 +127,7 @@ export class OpenCodeAgent implements Agent {
 
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata });
 
-            if (!response.success) {
-                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: parsedOutput.error }, 'OpenCode agent execution failed');
-            } else {
-                logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'OpenCode agent execution succeeded');
-                verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
-            }
+            this.reportExecutionOutcome({ success: response.success, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: parsedOutput.error, modelUsed, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
@@ -145,6 +140,16 @@ export class OpenCodeAgent implements Agent {
             const response = buildFailedExecutionResult(err, executionTime, effectiveModel, persistedPrompt);
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason, metadata });
             return response;
+        }
+    }
+
+    private reportExecutionOutcome(params: { success: boolean; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): void {
+        const { success, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
+        if (!success) {
+            logger.error({ issueNumber, exitCode, stderr, agentAlias: this.config.alias, error }, 'OpenCode agent execution failed');
+        } else {
+            logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'OpenCode agent execution succeeded');
+            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
         }
     }
 
