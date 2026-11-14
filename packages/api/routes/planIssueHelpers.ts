@@ -50,6 +50,8 @@ export interface EpicPRParams {
   planName: string;
   issueNumber: number;
   baseBranch?: string;
+  /** Issues in the plan, for the new epic PR's `🔨 0/N` title slot. */
+  issueCount?: number;
   correlationId: string;
   labelLogger: ReturnType<typeof logger.withCorrelation>;
 }
@@ -298,7 +300,7 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
 }
 
 export async function handleEpicPRCreation(params: EpicPRParams): Promise<string> {
-  const { owner, repo, planName, issueNumber, baseBranch, correlationId, labelLogger } = params;
+  const { owner, repo, planName, issueNumber, baseBranch, issueCount, correlationId, labelLogger } = params;
 
   labelLogger.info({ owner, repo, planName, issueNumber, baseBranch }, 'Creating Epic PR for implementation');
 
@@ -314,6 +316,7 @@ export async function handleEpicPRCreation(params: EpicPRParams): Promise<string
         firstIssueId: issueNumber,
         planName,
         baseBranch,
+        issueCount,
         correlationId
       });
       if (!result.success || !result.labelName) {
@@ -341,6 +344,20 @@ export interface GetOrCreateEpicLabelParams {
   db: typeof import('@propr/core').db;
 }
 
+/** Issues of the plan an epic counts (issues closed without a merge are not counted); undefined when unknown. */
+async function countPlannedIssues(
+  database: GetOrCreateEpicLabelParams['db'], draftId: string, labelLogger: ReturnType<typeof logger.withCorrelation>,
+): Promise<number | undefined> {
+  if (!database) return undefined;
+  try {
+    const rows: Array<{ status: string }> = await database('plan_issues').where({ draft_id: draftId }).select('status');
+    return rows.filter(row => row.status !== 'closed').length || undefined;
+  } catch (error) {
+    labelLogger.debug({ draftId, error: (error as Error).message }, 'Could not count the plan issues for the epic title');
+    return undefined;
+  }
+}
+
 /**
  * Gets the existing epic label from context_config or creates a new one if needed.
  * Stores the epic label back to context_config for reuse by subsequent issues.
@@ -366,6 +383,7 @@ export async function getOrCreateEpicLabel(params: GetOrCreateEpicLabelParams): 
     planName,
     issueNumber: firstIssueNumber,
     baseBranch: configuredBaseBranch,
+    issueCount: await countPlannedIssues(db, draftId, labelLogger),
     correlationId,
     labelLogger
   });

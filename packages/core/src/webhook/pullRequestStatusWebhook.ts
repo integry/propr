@@ -4,15 +4,15 @@ import { isStatusBlockOnlyEdit } from '../services/pullRequestStatus/pullRequest
 import { isRecordedPullRequestStatusWrite } from '../services/pullRequestStatus/pullRequestStatusProvenance.js';
 import { isRecordedPullRequestTitleSlot } from '../services/pullRequestStatus/pullRequestStatusTitle.js';
 import {
-    pullRequestStatusRedis, requestPullRequestStatusSync, requestPullRequestStatusSyncForBase, requestPullRequestStatusSyncForCommit,
+    pullRequestStatusRedis, requestEpicPullRequestStatusSync, requestPullRequestStatusSync, requestPullRequestStatusSyncForBase, requestPullRequestStatusSyncForCommit,
 } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 import { isBranchUpdatePush, PUSH_BRANCH_REF_PREFIX } from './webhookEventGates.js';
 
 type Payload = Record<string, unknown> & {
     action?: string;
     repository?: { full_name?: string };
-    pull_request?: { number?: number; body?: string | null; title?: string | null };
-    changes?: Record<string, unknown> & { body?: { from?: string | null }; title?: { from?: string | null } };
+    pull_request?: { number?: number; body?: string | null; title?: string | null; base?: { ref?: string } };
+    changes?: Record<string, unknown> & { body?: { from?: string | null }; title?: { from?: string | null }; base?: { ref?: { from?: string } } };
     check_run?: { pull_requests?: Array<{ number?: number }> };
     check_suite?: { pull_requests?: Array<{ number?: number }> };
     /** `status` events name the commit; its pull requests are resolved later. */
@@ -82,12 +82,26 @@ function signalBasePush(event: Payload): void {
     requestPullRequestStatusSyncForBase(event.repository?.full_name, ref.slice(PUSH_BRANCH_REF_PREFIX.length), event.after);
 }
 
+/** Actions on a pull request into an epic branch that change its epic: a sub-PR opened, merged, closed or retargeted. */
+const EPIC_CHILD_ACTIONS = new Set(['opened', 'reopened', 'closed', 'edited', 'ready_for_review', 'converted_to_draft']);
+
+/**
+ * A sub-PR's own event also concerns its epic PR, whose status and progress
+ * comment list it. Retargeting a pull request concerns the epic it left too.
+ */
+function signalEpicOfPullRequest(event: Payload, repository: string | undefined): void {
+    if (!event.action || !EPIC_CHILD_ACTIONS.has(event.action)) return;
+    requestEpicPullRequestStatusSync(repository, event.pull_request?.base?.ref);
+    if (event.action === 'edited') requestEpicPullRequestStatusSync(repository, event.changes?.base?.ref?.from);
+}
+
 /** Signals a status update for the pull requests a webhook event concerns. */
 export function signalPullRequestStatusFromWebhook(payload: unknown, eventType: string): void {
     const event = payload as Payload;
     const repository = event?.repository?.full_name;
     if (eventType === 'pull_request') {
         if (event.action && STATUS_PULL_REQUEST_ACTIONS.has(event.action)) requestPullRequestStatusSync(repository, event.pull_request?.number);
+        signalEpicOfPullRequest(event, repository);
         return;
     }
     if (eventType === 'status') {

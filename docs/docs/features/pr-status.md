@@ -20,7 +20,7 @@ ProPR computes one status for every pull request it created: is it being worked 
 
 A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; as soon as one of those checks fails, it becomes `needs_attention`, even while the others are still running. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR. ProPR reads up to 300 check runs and up to 300 commit statuses on the head; if a commit has more, the ones it read keep their counts, the rest are never counted as passed, and since it can't confirm that they all passed the status is `needs_attention` with "checks could not be read" rather than `ready`. The same goes for ProPR's own records: if the review score, the Ultrafix state or the queued work can't be read, no status is computed. The body keeps its previous line, and MCP returns `proprStatus: null`.
 
-Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI, checking for conflicts), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged.
+Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI, checking for conflicts), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged and which sub-PR or issue the line names (see [Epic pull requests](#epic-pull-requests)).
 
 ## The status line in the pull request body
 
@@ -82,6 +82,51 @@ The repository setting **Show the PR state as a leading emoji in the pull reques
 | CLI | `propr repo toggle owner/repo --pr-title-status off` (or `--pr-title-status <on\|off>` on `propr repo add`) |
 | REST | `prTitleStatus` on the repository entries of `POST /api/config/repos` |
 
+## Epic pull requests
+
+An epic pull request collects the sub-PRs of a plan: its own branch only receives merges. Its status follows the epic instead of a single PR's work, and shows how many of the plan's issues are merged into the epic branch. The counts are the ones the epic progress comment uses: every open or merged sub-PR into the epic branch, plus planned issues without a sub-PR yet; issues closed without a merge are left out.
+
+| State | When |
+| --- | --- |
+| `working` | Not every issue is merged, and a sub-PR or an issue of the epic is being worked on (a sub-PR whose own status is `working`, or an issue that started and has no sub-PR yet), ProPR is working on the epic PR itself, or the plan's queue is about to start its next issue (a queue that has not finished setting up starts nothing, so it does not count). |
+| `needs_attention` | Not every issue is merged and nothing is running: a sub-PR needs you, an issue's run stopped on a blocker the agent reported, a sub-PR is `ready` and waits to be merged into the epic branch, the plan's queue is paused, the epic PR conflicts with its base, or nothing is left to start. Also when every issue is merged but a check on the epic PR's head failed or it conflicts with its base. |
+| `ready` | Every issue is merged into the epic branch, every check on the epic PR's current head completed and passed, and it does not conflict with its base. |
+
+A sub-PR that is `ready` but not merged yet makes the epic `needs_attention`, so the list of pull requests shows that a merge is waiting on you. An issue whose run stopped on a reported blocker is not in progress, although it stays started until a person acts: the line reads `#3476 stopped on a blocker`, unless other work of the epic is running. An epic shows no review score.
+
+ProPR reads the status of up to 10 of an epic's open sub-PRs per update, and keeps each status it read until that sub-PR or its status changes (or 10 minutes pass). An epic with more open sub-PRs is read over several updates: each one reads the sub-PRs the last one could not, starting with those it has no current status for. When none of the work known is running but some sub-PRs are still unread, one of them could be: the line and the title then keep their state, rather than say the epic waits on you, but their merged count is still updated, and ProPR schedules another update a few seconds later to read the rest. It keeps scheduling them as long as each one reads sub-PRs not read yet, however large the epic; only sub-PRs that keep changing as fast as they are read end it, after 20 updates in a row that read nothing new.
+
+The body line leads with the progress, then says what is running or what waits on you:
+
+> **ProPR** 🔨 3 of 5 issues merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10) · updated 09:41 UTC
+
+> **ProPR** ⚠️ 3 of 5 issues merged · #3523 (issue #3475) waits to be merged into the epic branch · updated 09:41 UTC
+
+> **ProPR** ✅ 5 of 5 issues merged · checks: 12 passed · updated 10:02 UTC
+
+With `prTitleStatus` on, the title slot is followed by `merged/total`, for example `🔨 3/5 [Epic] Scheduler primitives` or `✅ 5/5 [Epic] Scheduler primitives`. A new epic PR is created with `🔨 0/N` (or the count its first merge reached) and with the line already in its body. The title is renamed when a sub-PR merges into the epic branch (the count changes) and when the state changes, never for activity inside a state, and the 30-second hold before ⚠️ or ✅ applies as for any pull request: while the queue is about to start the next issue, the epic stays `🔨` and is not renamed. With the setting off, epic titles stay exactly as they are; the line in the body is still written. `[Epic]` detection reads the title without the slot and count.
+
+When ProPR rewrites the epic body (its issue list and `Fixes #` lines), it keeps the status line. The epic PR's status is updated when a sub-PR into the epic branch opens, changes status, merges or closes, and when an issue of the plan starts or finishes. A sub-PR's status change counts even when nothing on the sub-PR can show it, for example with `prTitleStatus` off and a description too full for its status line.
+
+### What the epic progress comment says now
+
+Independently of `prTitleStatus`, the epic progress comment ("N out of M PRs merged", the progress bar and "Merged child PRs") also says what is happening, below "Merged child PRs":
+
+```
+Merged child PRs: #3490, #3504, #3507, #3515, #3518
+
+In progress: #3523 (issue #3475, Let an automation run when a plan issue is blocked) - review 6/10, Ultrafix cycle 5 of 10
+
+Up next: none
+```
+
+- **In progress** lists every open sub-PR into the epic branch as `#PR (issue #N, title)`, followed by its status in a few words (for example "review 6/10, Ultrafix cycle 3 of 10" or "ready to merge"), and every plan issue that started but has no sub-PR yet as `#issue (title)` (followed by "stopped on a blocker" when its run did). It is left out when nothing is in progress.
+- **Up next** lists the plan issues that have not started, in queue order. Once the last issue is in progress it reads "none"; when nothing is in progress or up next, both lines are left out.
+
+GitHub accepts comments of at most 65,536 characters. An epic with more activity than that lists as many entries as fit, in order, and counts the rest at the end of the line (for example `…; and 538 more`); the "In progress" line takes the space the "Up next" line leaves. Both updates of the comment keep it within the limit, so its counts and merged child PRs are always written.
+
+Titles come from the epic PR's issue list. The comment is updated in the same update as the epic's status line: when a sub-PR into the epic branch opens, changes status or merges, and when an issue starts. Nothing is sent to GitHub when the rendered comment is unchanged. The comment itself is still created by the first merge into the epic branch, as before, and its counts and "Merged child PRs" are still written only by the merge progress update; the status update changes only the two lines above. The two updates take turns on the same per-epic lock, and the status update reads the epic again once it holds it: once the epic PR has merged, it leaves the comment and its final report alone. Status updates are also ordered among themselves: one that waited for the lock while a later update already wrote newer activity drops its own, older lines instead of writing them over it.
+
 ## Read the status through MCP
 
 `get_pull_request` returns `proprStatus` for the pull request. `list_pull_requests` adds `proprStatus` to each result, and `get_work_overview` adds it to each item's `pullRequest`. Closed and merged pull requests read `{ "state": "none" }` without a GitHub lookup. To keep GitHub traffic bounded, each list call computes the status for at most 20 open pull requests: the rest read `null`, and `statusTruncated` is `true`. `proprStatus` is also `null` when the status could not be computed. The pull request itself is still returned.
@@ -103,4 +148,4 @@ The repository setting **Show the PR state as a leading emoji in the pull reques
 }
 ```
 
-The status is computed the same way for the body line and the MCP tools.
+The status is computed the same way for the body line and the MCP tools. For an epic pull request, `detail.epic` holds `merged`, `total` and `focus` (the sub-PR or issue the line names, with the sub-PR's own status), and the epic reasons are `epic_child_needs_attention`, `epic_issue_blocked`, `epic_child_ready`, `epic_queue_paused`, `epic_idle` and `epic_children_unread` (no work known is running, but sub-PRs beyond the read budget have no current status yet; `detail.epic.unreadChildren` counts them, and the body line and title keep their previous state with an updated merged count). Reading an epic's status also reads the status of up to 10 of its open sub-PRs, and uses the statuses earlier reads kept for the rest.

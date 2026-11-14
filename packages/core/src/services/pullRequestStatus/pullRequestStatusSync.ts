@@ -9,7 +9,10 @@ import { db } from '../../db/connection.js';
 import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
-import { computePullRequestStatus, type PullRequestStatus } from './pullRequestStatus.js';
+import { computePullRequestStatus, isUndeterminedPullRequestStatus, type EpicStatusFacts, type PullRequestStatus } from './pullRequestStatus.js';
+import {
+    epicSyncNotes, startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, withEpicChildReadContinuation, type EpicSyncNotes,
+} from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
@@ -89,6 +92,10 @@ export function enablePullRequestStatusSync(deps: Partial<PullRequestStatusSyncD
     setPullRequestStatusCommitSyncRunner(schedulePullRequestStatusSyncForCommit);
     setPullRequestStatusBaseSyncRunner(schedulePullRequestStatusSyncForBase);
     setPullRequestStatusRedisProvider(() => resolveDeps({}).redis);
+    startEpicSyncRunner({
+        github: () => resolveDeps({}).github(), db: resolveDeps({}).sources.db, schedule: (repository, prNumber) => schedulePullRequestStatusSync(repository, prNumber),
+        enabled: () => runtimeEnabled,
+    });
     if (options.backfill && !backfillStarted) {
         backfillStarted = true;
         startPullRequestStatusBackfillRun(reconcileRunner);
@@ -104,6 +111,7 @@ export function disablePullRequestStatusSync(): void {
     setPullRequestStatusCommitSyncRunner(null);
     setPullRequestStatusBaseSyncRunner(null);
     setPullRequestStatusRedisProvider(null);
+    stopEpicSyncRunner();
     for (const entry of scheduled.values()) if (entry.timer) clearTimeout(entry.timer);
     scheduled.clear();
     for (const timer of commitLookups.values()) clearTimeout(timer);
@@ -157,7 +165,7 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
  * were read (PullRequestStatusChecks.readFailed), and whether ProPR created the
  * pull request (only its title is ever changed).
  */
-interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean }
+interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null }
 
 async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
@@ -166,10 +174,12 @@ async function desiredStatus(
     if (pull.state !== 'open' || pull.merged) {
         // Ownership decides only whether a slot left in the title is removed; a title without one is never read for it.
         const isPropr = hasStatusSlot(pull.title) && await isProprCreatedPullRequest(deps.sources.db, repository, { number: prNumber, head: pull.head });
-        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr };
+        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null };
     }
     const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
-    return { status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest };
+    return {
+        status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest, epic: facts.epic,
+    };
 }
 
 /**
@@ -200,9 +210,13 @@ interface SyncOutcome {
     baseSha: string | null;
     /** The written status says the checks could not be read because a GitHub read rejected, not because of the page budget. */
     checksReadFailed: boolean;
-    /** The title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle): update again after this many milliseconds. */
+    /**
+     * Update again after this many milliseconds: the title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle),
+     * or an epic has sub-PRs still to read (withEpicChildReadContinuation).
+     */
     titleSettleInMs: number | null;
 }
+
 
 /** Times the facts are read again because the pull request changed (sameStatusSubject) while they were read. */
 const MAX_STATUS_READS = 3;
@@ -258,25 +272,37 @@ async function statusForLatestPull(
     throw new PullRequestChangedDuringStatusSyncError();
 }
 
+
 async function syncPullRequestStatusOnce(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps>,
 ): Promise<SyncOutcome> {
     const resolved = resolveDeps(overrides);
     const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
+    const { notes, ...outcome } = await syncUnderBodyLock(deps, repository, prNumber);
+    await syncEpicSideOfStatus(deps.github, deps.redis, { repository, prNumber }, notes);
+    return outcome;
+}
+
+async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: string, prNumber: number): Promise<SyncOutcome & { notes: EpicSyncNotes }> {
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
         const desired = await statusForLatestPull(deps, repository, prNumber);
         const { status, pull, checksReadFailed } = desired;
-        const title = await decidePullRequestTitleForSync({
-            repository, prNumber, pull, status, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
-        });
-        const read = {
-            awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
-            titleSettleInMs: title.settleInMs,
-        };
         const current = pull.body ?? '';
-        const next = bodyWithStatus(current, status, deps.now(), { repository, prNumber });
+        const decideTitle = async (titleStatus: PullRequestStatus | null) => await decidePullRequestTitleForSync({
+            repository, prNumber, pull, status: titleStatus, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
+        });
+        // Sub-PRs left unread may be working: the published state stays, with its merged count updated (undeterminedEpicUpdate).
+        // Whatever the state, they are read soon: a working epic has no settle that would read them.
+        const { body: next, title } = isUndeterminedPullRequestStatus(status)
+            ? await undeterminedEpicUpdate({ pull, status: status! }, deps.now(), decideTitle)
+            : { body: bodyWithStatus(current, status, deps.now(), { repository, prNumber }), title: await decideTitle(status) };
         const written = extractPullRequestStatusBlock(next) !== null;
         const bodyChanged = !(next === current || sameRenderedStatus(next, current));
+        const read = {
+            awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
+            titleSettleInMs: withEpicChildReadContinuation(title.settleInMs, desired),
+            notes: await epicSyncNotes(deps.redis, { repository, prNumber, lease }, desired, bodyChanged || title.title !== null),
+        };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };
         // The facts read can outlast the lease; a writer that took the lock
         // since may have changed the body, so this read must not be written.
@@ -539,24 +565,4 @@ export async function updatePullRequestBody<T = { data: { body?: string | null }
     });
 }
 
-/**
- * The block a new ProPR pull request is created with, so the status is in the
- * body from the first moment: the creating task is still running. Null only
- * when this process does not maintain the status (library use and tests).
- */
-export async function initialPullRequestStatusBlock(
-    repository: string,
-    options: { activity?: 'implementing' | 'follow_up'; now?: () => Date } = {},
-): Promise<string | null> {
-    if (!runtimeEnabled) return null;
-    const type = options.activity === 'follow_up' ? 'pr-comment' : 'issue';
-    const status = computePullRequestStatus({
-        pullRequest: { state: 'open', merged: false, headSha: '', mergeable: null },
-        isProprPullRequest: true,
-        tasks: [{ type, mode: type === 'pr-comment' ? 'follow_up' : null, state: 'post_processing', createdAt: new Date().toISOString() }],
-        queuedJobs: 0, ultrafix: null,
-        checks: { complete: true, passed: 0, failed: 0, pending: 0, failedNames: [] },
-        latestReviewScore: null, ratingGoal: 0, epic: null,
-    });
-    return renderPullRequestStatusBlock(status, (options.now ?? (() => new Date()))());
-}
+export { initialPullRequestStatusBlock } from './pullRequestStatusInitialBlock.js';

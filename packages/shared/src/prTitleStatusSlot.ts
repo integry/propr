@@ -7,6 +7,11 @@
  *     ⚠️⑥ [3475 by Claude Opus 5.5] …
  *     ✅⑧ [3510 by Claude Opus 5.5] Apply library extensions automatically …
  *
+ * An epic pull request follows its emoji with how many of its issues are
+ * merged into the epic branch, and shows no score:
+ *
+ *     🔨 3/5 [Epic] Scheduler primitives
+ *
  * The API, the worker and the UI share these helpers: the slot is recognised
  * only by the strict pattern below, anchored at the start of the title, and
  * only that slot is ever replaced or removed.
@@ -20,6 +25,8 @@ export interface TitleStatus {
     state: TitleStatusState;
     /** Latest review score; shown beside ⚠️ and ✅ when it is a whole number from 1 to 10. */
     score?: number | null;
+    /** Epic pull requests: issues merged into the epic branch out of all of them, shown as ` merged/total` after the emoji. */
+    progress?: { merged: number; total: number } | null;
 }
 
 const WORKING = '\u{1F528}';
@@ -32,9 +39,9 @@ const CIRCLED_ONE = 0x2460;
 /**
  * The slot, anchored at the start of the title and followed by exactly one
  * space. ⚠ is accepted with and without its variation selector. The score is
- * only recognised beside ⚠️ and ✅.
+ * only recognised beside ⚠️ and ✅. An epic's ` merged/total` may follow.
  */
-export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:\u{1F528}|(?:⚠️?|✅)[①-⑩]?) /u;
+export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:\u{1F528}|(?:⚠️?|✅)[①-⑩]?)(?: \d{1,6}\/\d{1,6})? /u;
 
 function circledScore(score: number | null | undefined): string {
     if (typeof score !== 'number' || !Number.isFinite(score)) return '';
@@ -43,12 +50,24 @@ function circledScore(score: number | null | undefined): string {
     return String.fromCodePoint(CIRCLED_ONE + rounded - 1);
 }
 
+const MAX_COUNT = 999_999;
+
+/** ` merged/total` for an epic, or nothing when the counts are not whole numbers the slot pattern reads back. */
+function progressText(progress: TitleStatus['progress']): string {
+    if (!progress) return '';
+    const { merged, total } = progress;
+    const valid = (count: number) => Number.isSafeInteger(count) && count >= 0 && count <= MAX_COUNT;
+    return valid(merged) && valid(total) && total > 0 ? ` ${merged}/${total}` : '';
+}
+
 /** The slot for a status, without the trailing space; null for no slot. */
 export function renderStatusSlot(status: TitleStatus | null | undefined): string | null {
     if (!status) return null;
-    if (status.state === 'working') return WORKING;
+    const progress = progressText(status.progress);
+    if (status.state === 'working') return `${WORKING}${progress}`;
     const emoji = status.state === 'ready' ? READY : NEEDS_ATTENTION;
-    return `${emoji}${circledScore(status.score)}`;
+    // An epic shows its progress and no review score.
+    return progress ? `${emoji}${progress}` : `${emoji}${circledScore(status.score)}`;
 }
 
 /** The slot at the start of `title` (without its trailing space), or null when it has none. */

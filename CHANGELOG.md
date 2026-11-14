@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Epic progress in the epic PR's title, status line and progress comment**:
+  an open epic pull request now shows how many of its issues are merged into
+  the epic branch. Its status line reads, for example, `🔨 3 of 5 issues
+  merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10)`,
+  and with `prTitleStatus` on its title slot is followed by the count
+  (`🔨 3/5 [Epic] Scheduler primitives`); new epic PRs are created with
+  `🔨 0/N` and the line in their body. The epic is `working` while a sub-PR
+  or issue is being worked on or the next issue is about to start,
+  `needs_attention` when nothing runs and a sub-PR needs you or is ready and
+  waits to be merged into the epic branch, the queue is paused or the epic
+  conflicts with its base, and `ready` once every issue is merged and its
+  own checks pass; an epic shows no review score. The title is renamed only
+  when a sub-PR merges or the state changes. Independently of the setting,
+  the epic progress comment now lists what is **In progress** (open sub-PRs
+  with their state, issues started without a PR) and what is **Up next**,
+  and it is updated when a sub-PR opens, changes status or merges and when
+  an issue starts, without a GitHub write when nothing changed. The counts
+  come from the existing epic merge progress computation.
 - **PR state in the pull request title**: with the repository setting
   `prTitleStatus` on (the default), each open pull request ProPR created
   starts its title with one status slot: `🔨` while it is being worked on,

@@ -130,9 +130,16 @@ export async function isRecordedPullRequestTitleSlot(
     return recorded !== null && recorded.slot === normalizeSlot(readStatusSlot(title));
 }
 
-/** The slot a status shows in the title: the state, and beside ⚠️ and ✅ the latest review score. */
+/**
+ * The slot a status shows in the title: the state, and beside ⚠️ and ✅ the
+ * latest review score. An epic shows `merged/total` after the emoji instead,
+ * so the title is renamed when a sub-PR merges or the state changes, never
+ * for activity inside a state.
+ */
 export function titleStatusOf(status: PullRequestStatus): TitleStatus | null {
     if (status.state === 'none') return null;
+    const epic = status.detail.epic;
+    if (epic && epic.total > 0) return { state: status.state, progress: { merged: epic.merged, total: epic.total } };
     if (status.state === 'working') return { state: 'working' };
     return { state: status.state, score: status.detail.reviewScore };
 }
@@ -248,10 +255,13 @@ export async function decidePullRequestTitleForSync(input: {
 /**
  * The title a new ProPR pull request is created with: `🔨 ` first when this
  * process maintains the status and the repository shows it in the title, so
- * creation costs no rename. Otherwise, or when the setting cannot be read,
- * the title is returned exactly as given.
+ * creation costs no rename. A new epic passes its progress and starts with
+ * `🔨 0/N `. Otherwise, or when the setting cannot be read, the title is
+ * returned exactly as given.
  */
-export async function initialPullRequestTitle(repository: string, title: string): Promise<string> {
+export async function initialPullRequestTitle(
+    repository: string, title: string, progress?: { merged: number; total: number } | null,
+): Promise<string> {
     if (!isPullRequestStatusMaintained()) return title;
     try {
         // Loaded only here: the configuration store opens the database, which modules creating pull requests must not do on import.
@@ -261,7 +271,7 @@ export async function initialPullRequestTitle(repository: string, title: string)
         logger.debug({ repository, error: (error as Error).message }, 'Could not read prTitleStatus; the pull request is created without the title slot');
         return title;
     }
-    return withStatusSlot(title, { state: 'working' });
+    return withStatusSlot(title, { state: 'working', progress });
 }
 
 /** Test hook: forgets the recorded slots and pending settles of this process. */

@@ -60,3 +60,20 @@ test('merge commit titles carry no slot', () => {
     assert.deepEqual(mergeCommitTitleFields({ number: 7, title: `🔨 ${TITLE}` }, 'rebase'), {});
     assert.deepEqual(mergeCommitTitleFields({ number: 7 }, 'squash'), {}, 'no title read: GitHub\'s default');
 });
+
+test('an epic slot carries merged/total after the emoji and no score', () => {
+    const EPIC = '[Epic] Scheduler primitives';
+    assert.equal(renderStatusSlot({ state: 'working', progress: { merged: 3, total: 5 } }), '🔨 3/5');
+    assert.equal(renderStatusSlot({ state: 'ready', score: 8, progress: { merged: 5, total: 5 } }), '✅ 5/5', 'no score beside an epic count');
+    assert.equal(renderStatusSlot({ state: 'needs_attention', progress: { merged: 0, total: 0 } }), '⚠️', 'no count for an epic without issues');
+    assert.equal(withStatusSlot(EPIC, { state: 'working', progress: { merged: 0, total: 5 } }), `🔨 0/5 ${EPIC}`);
+    assert.equal(withStatusSlot(`🔨 3/5 ${EPIC}`, { state: 'needs_attention', progress: { merged: 4, total: 5 } }), `⚠️ 4/5 ${EPIC}`);
+    assert.equal(readStatusSlot(`⚠️ 4/5 ${EPIC}`), '⚠️ 4/5');
+    assert.equal(readStatusSlot(`⚠ 4/5 ${EPIC}`), '⚠ 4/5');
+    assert.equal(stripStatusSlot(`✅ 5/5 ${EPIC}`), EPIC);
+    assert.equal(stripStatusSlot(`🔨 3/5 ${EPIC}`), EPIC);
+    assert.equal(withStatusSlot(`✅ 5/5 ${EPIC}`, null), EPIC);
+    for (const title of [`🔨3/5 ${EPIC}`, `3/5 ${EPIC}`]) assert.equal(stripStatusSlot(title), title, title);
+    assert.equal(stripStatusSlot(`🔨 3/ ${EPIC}`), `3/ ${EPIC}`, "a malformed count is the title's, not the slot's");
+    assert.deepEqual(mergeCommitTitleFields({ number: 9, title: `✅ 5/5 ${EPIC}` }, 'squash'), { commit_title: `${EPIC} (#9)` });
+});
