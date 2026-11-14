@@ -133,7 +133,7 @@ export async function checkPackageIntegrity(plugins, { registry = DEFAULT_NPM_RE
     for (const server of plugin.manifest.contributes.mcpServers) {
       if (server.kind !== 'package') continue;
       const label = `${plugin.id}: server ${server.name} (${server.package}@${server.version})`;
-      const url = `${registry.replace(/\/+$/, '')}/${server.package.replace('/', '%2f')}/${encodeURIComponent(server.version)}`;
+      const url = `${registry.replace(/\/+$/, '')}/${server.package.replaceAll('/', '%2f')}/${encodeURIComponent(server.version)}`;
       try {
         const response = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
         if (response.status === 404) { errors.push(`${label}: not found on ${registry}`); continue; }
