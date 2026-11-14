@@ -32,7 +32,7 @@ const PluginConnectionStatus = z.object({
   name: z.string(), type: z.enum(PLUGIN_CONNECTION_TYPES), label: z.string(),
   state: z.enum(['connected', 'not_connected', 'needs_sign_in']).describe('An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh.'),
   required: z.boolean().describe('A `token` connection a contributed MCP server uses; enabling waits for it.'),
-  setBy: z.string().optional(), setAt: z.number().optional(),
+  setBy: z.string().optional().describe('Who set the value; for an `oauth` connection, who configured its pre-registered client.'), setAt: z.number().optional(),
 });
 const managedState = { enabled: z.boolean().describe('The library item\'s own enabled switch.'), active: z.boolean().describe('False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies.') };
 const PluginContributions = z.object({
@@ -69,6 +69,12 @@ export const PluginAcknowledgementRequest = component('PluginAcknowledgementRequ
 }));
 export const PluginSettingsRequest = component('PluginSettingsRequest', z.strictObject({ settings: z.record(z.string(), settingValue.nullable()).describe('The complete settings; validated against the manifest\'s settings schema. Null values are removed.') }));
 export const PluginRepositoriesRequest = component('PluginRepositoriesRequest', z.strictObject({ repositories: z.array(z.string()).max(256).nullable().describe('owner/repo names; null or an empty list for all repositories.') }));
+export const PluginOAuthClientRequest = component('PluginOAuthClientRequest', z.strictObject({
+  client: z.strictObject({
+    clientId: z.string().regex(/^[\x21-\x7e]{1,512}$/).describe('The client id registered with the provider for this instance.'),
+    clientSecret: z.string().max(4096).nullable().optional().describe('The client secret (write-only); leave out for a public client.'),
+  }).nullable().describe('The pre-registered client, or null to clear it.'),
+}));
 export const PluginConnectionRequest = component('PluginConnectionRequest', z.strictObject({ value: z.string().max(4096).nullable().describe('The secret to store (write-only), or null to clear it.') }));
 export const PluginEnabledRequest = component('PluginEnabledRequest', z.strictObject({ enabled: z.boolean() }));
 export const PluginUninstallRequest = component('PluginUninstallRequest', z.strictObject({ confirm: z.string().describe('Must repeat the plugin id.') }));

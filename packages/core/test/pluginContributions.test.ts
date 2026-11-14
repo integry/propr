@@ -19,14 +19,15 @@ import { PluginContributions } from '../src/plugins/pluginContributions.js';
 import { officialPluginAssets, type PluginAssetSource } from '../src/plugins/pluginAssets.js';
 import { ExtensionLibraryStore } from '../src/extensions/extensionProfileStore.js';
 import { extensionOAuth } from '../src/extensions/extensionOAuthStore.js';
-import { automationTemplateCatalog } from '../src/plugins/pluginTemplates.js';
+import { automationTemplateCatalog, pluginTemplateIds } from '../src/plugins/pluginTemplates.js';
+import { AUTOMATION_TEMPLATE_CATALOG } from '@propr/shared';
 import { ExtensionOAuthStore, setExtensionOAuth } from '../src/extensions/extensionOAuthStore.js';
 import { executeWithExtensions, currentExtensionLaunch } from '../src/extensions/extensionLaunch.js';
 import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolution.js';
 import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/packageCache.js';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
 import logger from '../src/utils/logger.js';
-import { OAUTH_MCP_URL, OAUTH_URLS, syntheticOAuthProvider, type SyntheticOAuthOptions } from '../../../test/fixtures/extensionOAuthFixture.js';
+import { OAUTH_MCP_URL, OAUTH_URLS, PREREGISTERED_CLIENT, syntheticOAuthProvider, type SyntheticOAuthOptions } from '../../../test/fixtures/extensionOAuthFixture.js';
 
 const ID = 'example-pack';
 const TOKEN_SENTINEL = 'PLUGIN_PACKAGE_TOKEN_SENTINEL_7c41e9_DO_NOT_DISCLOSE';
@@ -124,7 +125,7 @@ async function fixture(t: TestContext, options: { advertise?: SyntheticOAuthOpti
     const current = await head();
     return library.saveLibrary('1', mutate({ version: 1, servers: current.servers, skills: current.skills }), secrets, current.revision);
   };
-  return { database, plugins, library, cache, registry, synthetic, run, connect, enable, head, save, catalog, installs: () => installs, setCatalog: (next: PluginManifest[]) => { manifests = next; }, setSkillAssets: (next: typeof skillAssets) => { skillAssets = next; } };
+  return { environment, assets, database, plugins, library, cache, registry, synthetic, run, connect, enable, head, save, catalog, installs: () => installs, setCatalog: (next: PluginManifest[]) => { manifests = next; }, setSkillAssets: (next: typeof skillAssets) => { skillAssets = next; } };
 }
 
 /** A refusal with this status: plugin refusals are PluginError, library refusals ExtensionError. */
@@ -377,4 +378,95 @@ test('a plugin OAuth connection signs in only through the registration methods i
   assert.equal(connected.connections[0].state, 'connected');
   assert.equal(g.synthetic.state.registrations, 0);
   assert.equal((await g.database('extension_oauth_connections').first('registration')).registration, 'metadata_document');
+});
+
+test('disabling works when the stored credentials cannot be decrypted, and carries them over sealed', async t => {
+  const f = await fixture(t);
+  await f.enable();
+  await f.connect();
+  // As after a raw restore under another encryption root: neither plugin connections nor library credentials open.
+  const restored = new PluginStore(f.database, { ...f.environment, SYSTEM_TASK_SECRET: 'another-encryption-root' }, f.catalog, Date.now, new PluginContributions(new ExtensionLibraryStore(f.database, { ...f.environment, SYSTEM_TASK_SECRET: 'another-encryption-root' }), f.assets));
+  await assert.rejects(restored.updateSettings('1', ID, { verbosity: 'quiet' }), 'applying the manifest needs the credentials');
+  const before = await f.database('extension_library_revisions').orderBy('revision', 'desc').first('revision', 'secrets_encrypted');
+  const disabled = await restored.setEnabled('1', ID, false);
+  assert.equal(disabled.state, 'installed');
+  const after = await f.head();
+  assert.deepEqual([...after.servers, ...after.skills].map(item => item.managedBy?.active), [false, false, false], 'every managed item is deactivated');
+  assert.deepEqual(after.secrets['example-local'], { count: 1, configured: true, configuredEnv: ['FIXTURE_TOKEN'] }, 'credential statuses carry over');
+  const latest = await f.database('extension_library_revisions').orderBy('revision', 'desc').first('revision', 'secrets_encrypted');
+  assert.equal(latest.revision, before.revision + 1);
+  assert.equal(latest.secrets_encrypted, `${before.revision}:${before.secrets_encrypted}`, 'the sealed bytes carry over undecrypted');
+  assert.equal((await f.run()).launched.toolPolicy, undefined);
+  // Under the original root, re-enabling restores the items with their credentials and OAuth connection.
+  const again = await f.plugins.setEnabled('1', ID, true);
+  assert.deepEqual(again.connections.map(c => c.state), ['connected', 'connected']);
+  const back = await f.run();
+  assert.deepEqual([back.remote, back.local], [['example-remote'], ['example-local']]);
+  assert.equal(back.launched.toolPolicy!.localMcpServers![0].env?.PROPR_EXTENSION_STDIO_0_0_SECRET, TOKEN_SENTINEL);
+});
+
+test('a plugin OAuth connection that permits only pre-registration signs in with the client configured on the plugin', async t => {
+  // The provider offers neither dynamic registration nor client metadata documents.
+  const f = await fixture(t, { advertise: {} });
+  f.setCatalog([exampleManifest(input => { input.connections.find((c: { name: string }) => c.name === 'example-account').registrations = ['preregistered']; })]);
+  await f.enable();
+  await assert.rejects(f.plugins.startOAuth('1', ID, 'example-account', 'session-a', OAUTH_URLS), refused(409), 'no client configured yet');
+  // Validation of the configuration route.
+  await assert.rejects(f.plugins.setOAuthClient('2', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id }), refused(403));
+  await assert.rejects(f.plugins.setOAuthClient('1', ID, 'example-token', { clientId: PREREGISTERED_CLIENT.id }), refused(404));
+  for (const invalid of [{}, { clientId: 'has space' }, { clientId: PREREGISTERED_CLIENT.id, extra: 1 }, { clientId: PREREGISTERED_CLIENT.id, clientSecret: '' }, 'client']) {
+    await assert.rejects(f.plugins.setOAuthClient('1', ID, 'example-account', invalid), refused(400), JSON.stringify(invalid));
+  }
+
+  const configured = await f.plugins.setOAuthClient('1', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id, clientSecret: PREREGISTERED_CLIENT.secret });
+  assert.deepEqual([configured.connections[0].state, configured.connections[0].setBy], ['not_connected', '1']);
+  let library = await f.head();
+  const remote = library.servers.find(s => s.name === 'example-remote')!;
+  assert.equal(remote.kind === 'https' && remote.clientId, PREREGISTERED_CLIENT.id, 'the client id is projected into the managed server');
+  assert.deepEqual(library.secrets['example-remote'], { fields: ['clientSecret'], configured: true });
+  // The client stays plugin-owned: the library cannot replace its secret.
+  await assert.rejects(f.library.replaceSecret('1', 'example-remote', 'other-secret'), refused(409, /plugin/));
+  const connected = await f.connect();
+  assert.equal(connected.connections[0].state, 'connected');
+  assert.equal((await f.database('extension_oauth_connections').first('registration', 'client_id')).client_id, PREREGISTERED_CLIENT.id);
+  assert.deepEqual((await f.run()).remote, ['example-remote']);
+  const visible = JSON.stringify([connected, await f.plugins.get('1', ID), await f.head(), await f.database('extension_library_revisions').select('snapshot'), await f.database('plugin_audit').select()]);
+  assert.ok(!visible.includes(PREREGISTERED_CLIENT.secret), 'the client secret is never returned');
+
+  // Clearing the client removes it from the managed server and discards the connection made with it.
+  const cleared = await f.plugins.setOAuthClient('1', ID, 'example-account', null);
+  assert.equal(cleared.connections[0].state, 'not_connected');
+  library = await f.head();
+  const plain = library.servers.find(s => s.name === 'example-remote')!;
+  assert.equal(plain.kind === 'https' && plain.clientId, undefined);
+  assert.equal(library.secrets['example-remote'], undefined);
+  assert.equal((await f.database('extension_oauth_connections').select()).length, 0);
+  assert.deepEqual((await f.plugins.get('1', ID)).audit.slice(0, 1).map(a => a.action), ['clear_oauth_client']);
+
+  // A connection that does not permit pre-registration refuses a client.
+  f.setCatalog([exampleManifest(input => { input.connections.find((c: { name: string }) => c.name === 'example-account').registrations = ['metadata_document']; })]);
+  await assert.rejects(f.plugins.setOAuthClient('1', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id }), refused(409, /does not permit a pre-registered client/));
+});
+
+test('plugin template ids stay unique when a prefixed id equals another template id', () => {
+  const manifest = (id: string, templates: string[]) => exampleManifest(input => {
+    input.id = id; input.name = id;
+    input.contributes.automationTemplates = templates.map(t => ({ id: t, path: 'templates/example-weekly-digest' }));
+  });
+  const shipped = AUTOMATION_TEMPLATE_CATALOG.templates[0].id;
+  const manifests = [
+    manifest('alpha', ['digest', 'digest-x']), manifest('beta', ['digest', 'digest-x', 'x']), manifest('gamma', ['alpha-digest', shipped]),
+    manifest('delta', ['alpha-digest-2']), manifest('alpha-digest', ['x']),
+  ];
+  const ids = pluginTemplateIds(manifests);
+  const all = [...AUTOMATION_TEMPLATE_CATALOG.templates.map(t => t.id), ...[...ids.values()].flatMap(m => [...m.values()])];
+  assert.equal(new Set(all).size, all.length, `catalog ids are unique: ${all.join(', ')}`);
+  assert.equal(ids.get('gamma')!.get('alpha-digest'), 'alpha-digest', 'a template whose id nobody else uses keeps it');
+  assert.equal(ids.get('delta')!.get('alpha-digest-2'), 'alpha-digest-2');
+  assert.equal(ids.get('alpha')!.get('digest'), 'alpha-digest-3', 'a generated id never takes another template\'s own id');
+  assert.equal(ids.get('beta')!.get('digest'), 'beta-digest');
+  assert.equal(ids.get('gamma')!.get(shipped), `gamma-${shipped}`);
+  assert.equal(ids.get('alpha')!.get('digest-x'), 'alpha-digest-x');
+  assert.equal(ids.get('alpha-digest')!.get('x'), 'alpha-digest-x-2', 'a generated id never takes another generated id');
+  assert.deepEqual(pluginTemplateIds(manifests), ids, 'the allocation is deterministic');
 });

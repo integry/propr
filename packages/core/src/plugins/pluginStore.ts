@@ -11,7 +11,7 @@ import { officialPluginCatalog, type PluginCatalogSource } from './pluginCatalog
 import { ExtensionError, ExtensionLibraryStore } from '../extensions/extensionProfileStore.js';
 import { extensionOAuth, type ExtensionOAuthUrls } from '../extensions/extensionOAuthStore.js';
 import { OAUTH_PENDING, hasOAuthTables, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
-import { PluginContributions, oauthServersOf, pluginContributionViews } from './pluginContributions.js';
+import { PluginContributions, oauthServersOf, pluginContributionViews, type PluginOAuthClient } from './pluginContributions.js';
 import { pluginTemplateIds } from './pluginTemplates.js';
 import {
   PluginError, enableBlockers, installationRecord, nextAcknowledgements, parseAcknowledgements, pendingAcknowledgements, pendingPermissions, pluginView,
@@ -24,6 +24,8 @@ export { PluginError } from './pluginState.js';
 export const pluginSecretIdentity = (instanceId: string, pluginId: string, connection: string) => `plugin/${instanceId}/${pluginId}/${connection}`;
 const AUDIT_LIMIT = 50;
 const SECRET_COLUMNS = ['plugin_id', 'connection_name', 'set_by', 'set_at'] as const;
+/** A pre-registered OAuth client id, as the extension library accepts it. */
+const CLIENT_ID_PATTERN = /^[\x21-\x7e]{1,512}$/;
 
 interface Loaded { manifest: PluginManifest | null; row: PluginInstallationRow | undefined; secrets: PluginSecretRow[] }
 type Change = { action: PluginAuditAction; detail?: Record<string, unknown>; resetRepositories?: boolean; deactivateOnly?: boolean };
@@ -103,13 +105,22 @@ export class PluginStore {
   /** Sync the plugin's managed library items with its installation as it is now inside `trx`. */
   private async applyContributions(trx: Knex.Transaction, pluginId: string, actor: string, options: { resetRepositories?: boolean; deactivateOnly?: boolean } = {}): Promise<void> {
     const loaded = await this.load(pluginId, trx, true);
-    const connections: Record<string, string> = {};
-    const tokens = loaded.manifest?.connections.filter(c => c.type === 'token').map(c => c.name) ?? [];
-    for (const secret of loaded.secrets.filter(s => tokens.includes(s.connection_name))) {
-      const value = await this.connectionSecret(pluginId, secret.connection_name, trx);
-      if (value) connections[secret.connection_name] = value;
+    const connections: Record<string, string> = {}; const oauthClients: Record<string, PluginOAuthClient> = {};
+    // A disable keeps the managed items' credentials as they are and decrypts nothing, so it works under a mismatched encryption root.
+    if (!options.deactivateOnly) {
+      const types = new Map(loaded.manifest?.connections.map(c => [c.name, c.type]) ?? []);
+      for (const secret of loaded.secrets) {
+        const type = types.get(secret.connection_name);
+        if (type === 'token') {
+          const value = await this.connectionSecret(pluginId, secret.connection_name, trx);
+          if (value) connections[secret.connection_name] = value;
+        } else if (type === 'oauth') {
+          const client = await this.oauthClient(pluginId, secret.connection_name, trx);
+          if (client) oauthClients[secret.connection_name] = client;
+        }
+      }
     }
-    await viaLibrary(() => this.contributions.sync(trx, { pluginId, manifest: loaded.manifest, record: loaded.row ? installationRecord(loaded.row) : null, connections, actor, resetRepositories: options.resetRepositories ?? false, deactivateOnly: options.deactivateOnly ?? false }));
+    await viaLibrary(() => this.contributions.sync(trx, { pluginId, manifest: loaded.manifest, record: loaded.row ? installationRecord(loaded.row) : null, connections, oauthClients, actor, resetRepositories: options.resetRepositories ?? false, deactivateOnly: options.deactivateOnly ?? false }));
   }
   /** The state view with OAuth connection states and the managed items and templates the plugin contributes. */
   private async view(pluginId: string, loaded: Loaded, library?: Awaited<ReturnType<ExtensionLibraryStore['head']>>['snapshot'], templateIds?: Map<string, Map<string, string>>): Promise<PluginView> {
@@ -230,6 +241,34 @@ export class PluginStore {
     });
   }
 
+  /**
+   * Configure (`{ clientId, clientSecret? }`) or clear (`null`) the
+   * pre-registered OAuth client of an `oauth` connection whose `registrations`
+   * permit `preregistered`. The client id becomes the managed servers'
+   * `clientId`, the secret their sealed client secret; both are sealed here
+   * and never returned. Changing the client discards the servers' OAuth
+   * connections, as a library client change does.
+   */
+  async setOAuthClient(actor: string, id: unknown, name: unknown, client: unknown): Promise<PluginView> {
+    const parsed = parseOAuthClient(client);
+    return this.write(actor, id, async (trx, loaded, pluginId) => {
+      PluginStore.installed(loaded); const manifest = PluginStore.current(loaded);
+      const connection = manifest.connections.find(c => c.name === name && c.type === 'oauth');
+      if (!connection || connection.type !== 'oauth') throw new PluginError(404, 'OAuth connection not found');
+      if (parsed === null) {
+        await trx('plugin_secrets').where({ plugin_id: pluginId, connection_name: connection.name }).delete();
+        await trx('plugin_installations').where({ plugin_id: pluginId }).update(this.touched(actor, loaded));
+        return { action: 'clear_oauth_client', detail: { connection: connection.name } };
+      }
+      if (!connection.registrations.includes('preregistered')) throw new PluginError(409, `Connection ${connection.name} does not permit a pre-registered client`);
+      const sealed = sealExtensionSecrets({ clientId: parsed.clientId, ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}) }, pluginSecretIdentity(await this.instanceId(trx), pluginId, connection.name), this.environment);
+      await trx('plugin_secrets').insert({ plugin_id: pluginId, connection_name: connection.name, sealed, set_by: actor, set_at: this.now() })
+        .onConflict(['plugin_id', 'connection_name']).merge();
+      await trx('plugin_installations').where({ plugin_id: pluginId }).update(this.touched(actor, loaded));
+      return { action: 'set_oauth_client', detail: { connection: connection.name, clientSecret: Boolean(parsed.clientSecret) } };
+    });
+  }
+
   /** Enable (refused, with the reasons, while something required is missing) or disable. Disabling keeps settings and connections. */
   async setEnabled(actor: string, id: unknown, enabled: unknown): Promise<PluginView> {
     if (typeof enabled !== 'boolean') throw new PluginError(400, 'enabled must be true or false');
@@ -277,6 +316,14 @@ export class PluginStore {
     const row = await database('plugin_secrets').where({ plugin_id: pluginId, connection_name: connection }).first('sealed');
     if (!row) return null;
     return unsealExtensionSecrets(row.sealed, pluginSecretIdentity(await this.instanceId(database), pluginId, connection), this.environment).value ?? null;
+  }
+
+  /** Core-internal: the pre-registered client configured for an `oauth` connection, for applying contributions. Never exposed through the API. */
+  private async oauthClient(pluginId: string, connection: string, database: Knex): Promise<PluginOAuthClient | null> {
+    const row = await database('plugin_secrets').where({ plugin_id: pluginId, connection_name: connection }).first('sealed');
+    if (!row) return null;
+    const { clientId, clientSecret } = unsealExtensionSecrets(row.sealed, pluginSecretIdentity(await this.instanceId(database), pluginId, connection), this.environment);
+    return clientId ? { clientId, ...(clientSecret ? { clientSecret } : {}) } : null;
   }
 
   /** The installed plugin, its current manifest and the managed servers using one of its `oauth` connections. */
@@ -329,6 +376,16 @@ export class PluginStore {
     await this.auditOnly(target.pluginId, 'disconnect_oauth', actor, { connection: target.connection, servers: target.servers.map(s => s.name) });
     return this.view(target.pluginId, await this.load(target.pluginId, this.database, true));
   }
+}
+
+function parseOAuthClient(value: unknown): PluginOAuthClient | null {
+  if (value === null) return null;
+  const invalid = () => new PluginError(400, 'client must be null or { clientId, clientSecret? }: a client id of 1 to 512 printable characters without spaces and an optional secret of 1 to 4096');
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => key !== 'clientId' && key !== 'clientSecret')) throw invalid();
+  const { clientId, clientSecret } = value as Record<string, unknown>;
+  if (typeof clientId !== 'string' || !CLIENT_ID_PATTERN.test(clientId)) throw invalid();
+  if (clientSecret !== undefined && clientSecret !== null && (typeof clientSecret !== 'string' || !PLUGIN_SECRET_PATTERN.test(clientSecret))) throw invalid();
+  return { clientId, ...(typeof clientSecret === 'string' ? { clientSecret } : {}) };
 }
 
 function parseRepositories(value: unknown): string[] | null {

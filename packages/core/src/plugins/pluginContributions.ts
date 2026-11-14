@@ -5,7 +5,7 @@ import {
   type ExtensionLibraryItems, type ExtensionLibraryRevision, type ExtensionLibraryServer, type ExtensionLibrarySkill, type ExtensionManagedBy,
   type ExtensionSkillBundle, type PluginContributionViews, type PluginInstallationRecord, type PluginManifest, type PluginMcpServer,
 } from '@propr/shared';
-import { ExtensionError, type ExtensionLibraryStore } from '../extensions/extensionProfileStore.js';
+import { ExtensionError, UNCHANGED_CREDENTIALS, type ExtensionLibraryStore } from '../extensions/extensionProfileStore.js';
 import { credentialOwner } from '../extensions/extensionCredentials.js';
 import { discardStaleOAuthConnections } from '../extensions/extensionOAuthState.js';
 import type { ManagedAcknowledgements } from '../extensions/extensionPackageLibrary.js';
@@ -20,6 +20,8 @@ export interface PluginSyncInput {
   record: PluginInstallationRecord | null;
   /** Stored `token` connection values by connection name. Core-internal; never returned. */
   connections: Record<string, string>;
+  /** Pre-registered OAuth clients by `oauth` connection name. The secret is core-internal; never returned. */
+  oauthClients?: Record<string, PluginOAuthClient>;
   actor: string;
   /** The plugin's repository limit changed: managed items take it as their repository limit. */
   resetRepositories?: boolean;
@@ -30,6 +32,9 @@ export interface PluginSyncInput {
    */
   deactivateOnly?: boolean;
 }
+
+/** The pre-registered client an administrator configured for a plugin's `oauth` connection. */
+export interface PluginOAuthClient { clientId: string; clientSecret?: string }
 
 type Item = ExtensionLibraryServer | ExtensionLibrarySkill;
 const ownedBy = (pluginId: string) => (item: Item): boolean => item.managedBy?.plugin === pluginId;
@@ -68,9 +73,18 @@ export class PluginContributions {
       : input.record ? { servers: previous.servers.map(deactivate), skills: previous.skills.map(deactivate), secrets: null, acknowledgements: {} } : { servers: [], skills: [], secrets: {}, acknowledgements: {} };
     await this.refuseReferencedRemoval(trx, input, previous, desired);
     const items = composeItems(snapshot, input.pluginId, desired);
-    const stored = this.library.unseal(head);
-    const secrets = desired.secrets === null ? stored : { ...withoutManaged(stored, previous.servers), ...desired.secrets };
-    if (unchanged(snapshot, items, stored, secrets, desired.acknowledgements)) return;
+    let secrets: Record<string, string> | typeof UNCHANGED_CREDENTIALS;
+    if (desired.secrets === null) {
+      // Deactivating keeps every credential: the sealed bytes carry over without
+      // decryption, so a disable works even when they cannot be decrypted (a raw
+      // restore under another encryption root).
+      if (unchanged(snapshot, items)) return;
+      secrets = UNCHANGED_CREDENTIALS;
+    } else {
+      const stored = this.library.unseal(head);
+      secrets = { ...withoutManaged(stored, previous.servers), ...desired.secrets };
+      if (unchanged(snapshot, items, { stored, secrets }, desired.acknowledgements)) return;
+    }
     let written: ExtensionLibraryRevision;
     try { written = await this.library.writeRevision(trx, input.actor, head, items, secrets, new Map(), 'carry', desired.acknowledgements); }
     catch (error) { throw error instanceof ExtensionError ? new PluginError(error.status, error.message) : error; }
@@ -93,8 +107,10 @@ export class PluginContributions {
       const name = existing?.name ?? names.allocate(server.name);
       const active = record.enabled && !pending.has(server.name);
       const managedBy: ExtensionManagedBy = { plugin: pluginId, item: server.name, active };
-      servers.push(libraryServer(manifest, server, name, { ...limits(existing), managedBy: { ...managedBy, ...oauthRegistrations(manifest, server) } }));
+      const client = preregisteredClient(manifest, server, input.oauthClients ?? {});
+      servers.push(libraryServer(manifest, server, name, { ...limits(existing), managedBy: { ...managedBy, ...oauthRegistrations(manifest, server) } }, client));
       for (const [key, connection] of credentialConnections(server, name)) if (input.connections[connection]) secrets[key] = input.connections[connection];
+      if (client?.clientSecret) secrets[name] = client.clientSecret;
       if (server.kind === 'package' && server.secretEnv.length) {
         const recorded = Object.hasOwn(record.acknowledgements, server.name) && !pending.has(server.name) ? record.acknowledgements[server.name] : undefined;
         acknowledgements[name] = recorded ? { actor: recorded.actor, at: recorded.at, package: recorded.package, version: recorded.version, secretEnv: [...recorded.secretEnv] } : undefined;
@@ -151,12 +167,13 @@ class ManagedNames {
 }
 
 type Limits = Pick<ExtensionLibraryServer, 'enabled' | 'repositories' | 'agents' | 'autoApply'> & { managedBy: ExtensionManagedBy };
-/** The library item of a manifest server under its library name. */
-function libraryServer(manifest: PluginManifest, server: PluginMcpServer, name: string, limits: Limits): ExtensionLibraryServer {
+/** The library item of a manifest server under its library name, with the pre-registered OAuth client configured for its connection. */
+// eslint-disable-next-line max-params -- the manifest, server, library name, limits and configured client are explicit inputs
+function libraryServer(manifest: PluginManifest, server: PluginMcpServer, name: string, limits: Limits, client: PluginOAuthClient | null): ExtensionLibraryServer {
   if (server.kind === 'https') {
     const connection = server.authentication === 'oauth' ? manifest.connections.find(c => c.name === server.connection) : undefined;
     const scopes = connection?.type === 'oauth' ? connection.scopes : undefined;
-    return { kind: 'https', name, url: server.url, enabled: limits.enabled, tools: [...server.tools], capability: server.capability, authentication: server.authentication, ...(scopes ? { scopes: [...scopes] } : {}), repositories: limits.repositories, agents: limits.agents, autoApply: limits.autoApply, managedBy: limits.managedBy };
+    return { kind: 'https', name, url: server.url, enabled: limits.enabled, tools: [...server.tools], capability: server.capability, authentication: server.authentication, ...(scopes ? { scopes: [...scopes] } : {}), ...(client ? { clientId: client.clientId } : {}), repositories: limits.repositories, agents: limits.agents, autoApply: limits.autoApply, managedBy: limits.managedBy };
   }
   return {
     name, enabled: limits.enabled, tools: [...server.tools], capability: server.capability, kind: 'package', ecosystem: server.ecosystem, package: server.package, version: server.version,
@@ -169,6 +186,13 @@ function libraryServer(manifest: PluginManifest, server: PluginMcpServer, name: 
 function credentialConnections(server: PluginMcpServer, name: string): [string, string][] {
   if (server.kind === 'package') return server.secretEnv.map(secret => [extensionPackageSecretKey(name, secret.name), secret.connection]);
   return server.authentication === 'bearer' && server.connection ? [[name, server.connection]] : [];
+}
+
+/** The pre-registered client of an `oauth` server's connection, when one is configured and the connection permits pre-registration. */
+function preregisteredClient(manifest: PluginManifest, server: PluginMcpServer, clients: Record<string, PluginOAuthClient>): PluginOAuthClient | null {
+  if (server.kind !== 'https' || server.authentication !== 'oauth' || !server.connection || !Object.hasOwn(clients, server.connection)) return null;
+  const connection = manifest.connections.find(c => c.name === server.connection);
+  return connection?.type === 'oauth' && connection.registrations.includes('preregistered') ? clients[server.connection] : null;
 }
 
 /** The registration methods an `oauth` server's plugin connection permits, carried on its marker for sign-in. */
@@ -202,11 +226,11 @@ function composeItems(snapshot: ExtensionLibraryRevision, pluginId: string, desi
   return parsed.data;
 }
 
-// eslint-disable-next-line max-params -- the base revision, next items, stored and next credentials and acknowledgements are compared together
-function unchanged(snapshot: ExtensionLibraryRevision, items: ExtensionLibraryItems, stored: Record<string, string>, secrets: Record<string, string>, acknowledgements: ManagedAcknowledgements): boolean {
+/** Whether the next items, and the next credentials when they are compared, equal the base revision's. */
+function unchanged(snapshot: ExtensionLibraryRevision, items: ExtensionLibraryItems, credentials?: { stored: Record<string, string>; secrets: Record<string, string> }, acknowledgements: ManagedAcknowledgements = {}): boolean {
   const sorted = (value: Record<string, string>) => JSON.stringify(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
   if (JSON.stringify({ servers: snapshot.servers, skills: snapshot.skills }) !== JSON.stringify({ servers: items.servers, skills: items.skills })) return false;
-  if (sorted(stored) !== sorted(secrets)) return false;
+  if (credentials && sorted(credentials.stored) !== sorted(credentials.secrets)) return false;
   return Object.entries(acknowledgements).every(([name, value]) => JSON.stringify(value) === JSON.stringify(snapshot.acknowledgements?.[name]));
 }
 

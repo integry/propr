@@ -73,10 +73,11 @@ export function pendingPermissions(manifest: PluginManifest, granted: readonly s
 export function connectionStatuses(manifest: PluginManifest, secrets: readonly PluginSecretRow[]): PluginConnectionStatus[] {
   const required = requiredPluginConnections(manifest);
   return manifest.connections.map(connection => {
-    const row = connection.type === 'oauth' ? undefined : secrets.find(s => s.connection_name === connection.name);
+    // An `oauth` connection's row is its pre-registered client: configuration, not the connection itself.
+    const row = secrets.find(s => s.connection_name === connection.name);
     return {
       name: connection.name, type: connection.type, label: connection.label, required: required.includes(connection.name),
-      state: row ? 'connected' : 'not_connected', ...(row ? { setBy: row.set_by, setAt: Number(row.set_at) } : {}),
+      state: row && connection.type !== 'oauth' ? 'connected' : 'not_connected', ...(row ? { setBy: row.set_by, setAt: Number(row.set_at) } : {}),
     };
   });
 }

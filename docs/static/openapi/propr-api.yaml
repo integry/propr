@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 335
-    documented: 97
+    total: 336
+    documented: 98
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4983,6 +4983,60 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/PluginConnectionRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/client:
+    put:
+      operationId: setPluginOAuthClient
+      summary: Configure or clear the pre-registered OAuth client of an `oauth` connection whose `registrations` permit `preregistered` (409 otherwise). The client id becomes the managed MCP servers' client id and the secret is sealed and write-only; changing the client discards their OAuth connections.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginOAuthClientRequest"
       responses:
         "200":
           description: The plugin's new state.
@@ -12868,6 +12922,7 @@ components:
                     type: boolean
                     description: A `token` connection a contributed MCP server uses; enabling waits for it.
                   setBy:
+                    description: Who set the value; for an `oauth` connection, who configured its pre-registered client.
                     type: string
                   setAt:
                     type: number
@@ -13053,6 +13108,8 @@ components:
                       - start_oauth
                       - complete_oauth
                       - disconnect_oauth
+                      - set_oauth_client
+                      - clear_oauth_client
                   actor:
                     type: string
                   at:
@@ -13105,6 +13162,31 @@ components:
             $ref: "#/components/schemas/PluginView"
       required:
         - plugins
+      additionalProperties: false
+    PluginOAuthClientRequest:
+      type: object
+      properties:
+        client:
+          anyOf:
+            - type: object
+              properties:
+                clientId:
+                  type: string
+                  pattern: ^[\x21-\x7e]{1,512}$
+                  description: The client id registered with the provider for this instance.
+                clientSecret:
+                  description: The client secret (write-only); leave out for a public client.
+                  anyOf:
+                    - type: string
+                      maxLength: 4096
+                    - type: "null"
+              required:
+                - clientId
+              additionalProperties: false
+            - type: "null"
+          description: The pre-registered client, or null to clear it.
+      required:
+        - client
       additionalProperties: false
     PluginOAuthCompleteRequest:
       type: object
@@ -13500,6 +13582,7 @@ components:
                 type: boolean
                 description: A `token` connection a contributed MCP server uses; enabling waits for it.
               setBy:
+                description: Who set the value; for an `oauth` connection, who configured its pre-registered client.
                 type: string
               setAt:
                 type: number

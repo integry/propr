@@ -951,6 +951,7 @@ export interface PluginDetailResponse {
       state: "connected" | "not_connected" | "needs_sign_in";
       /** A `token` connection a contributed MCP server uses; enabling waits for it. */
       required: boolean;
+      /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
       setBy?: string;
       setAt?: number;
     }>;
@@ -1006,7 +1007,7 @@ export interface PluginDetailResponse {
     };
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client";
       actor: string;
       at: number;
       detail: {
@@ -1024,6 +1025,16 @@ export interface PluginEnabledRequest {
 
 export interface PluginList {
   plugins: PluginView[];
+}
+
+export interface PluginOAuthClientRequest {
+  /** The pre-registered client, or null to clear it. */
+  client: {
+    /** The client id registered with the provider for this instance. */
+    clientId: string;
+    /** The client secret (write-only); leave out for a public client. */
+    clientSecret?: string | null;
+  } | null;
 }
 
 export interface PluginOAuthCompleteRequest {
@@ -1154,6 +1165,7 @@ export interface PluginView {
     state: "connected" | "not_connected" | "needs_sign_in";
     /** A `token` connection a contributed MCP server uses; enabling waits for it. */
     required: boolean;
+    /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
     setBy?: string;
     setAt?: number;
   }>;

@@ -137,6 +137,16 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   assert.equal(oauthDone.body.plugin.connections.find((c: { name: string }) => c.name === 'example-account').state, 'connected');
   const oauthOff = await call('POST', `/${ID}/connections/example-account/oauth/disconnect`, {});
   assert.equal(oauthOff.body.plugin.connections.find((c: { name: string }) => c.name === 'example-account').state, 'not_connected');
+  // A pre-registered client of the OAuth connection: configured and cleared through the plugin; the secret is write-only.
+  assert.equal((await call('PUT', `/${ID}/connections/example-account/oauth/client`, { client: { clientId: 'propr-client', extra: 1 } })).status, 400);
+  assert.equal((await call('PUT', `/${ID}/connections/example-token/oauth/client`, { client: { clientId: 'propr-client' } })).status, 404);
+  const client = await call('PUT', `/${ID}/connections/example-account/oauth/client`, { client: { clientId: 'propr-client', clientSecret: SENTINEL } });
+  assert.equal(client.status, 200, JSON.stringify(client.body));
+  assertConforms(schemas.PluginResponse, client.body, 'set OAuth client');
+  assert.equal(client.body.plugin.connections.find((c: { name: string }) => c.name === 'example-account').setBy, '1');
+  const remote = (await store.library.readLibrary('1')).servers.find(s => s.name === 'example-remote');
+  assert.equal(remote?.kind === 'https' && remote.clientId, 'propr-client');
+  assert.equal((await call('PUT', `/${ID}/connections/example-account/oauth/client`, { client: null })).status, 200);
 
   const disabled = await call('PUT', `/${ID}/enabled`, { enabled: false });
   assert.equal(disabled.body.plugin.state, 'installed');
@@ -201,7 +211,7 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   bodies.push(JSON.stringify(await store.library.history('1')));
   const audit = await call('GET', `/${ID}`);
   assert.deepEqual(audit.body.plugin.audit.map((e: { action: string }) => e.action).reverse(), [
-    'install', 'update_settings', 'set_repositories', 'set_connection', 'enable', 'start_oauth', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'disable', 'enable', 'approve', 'uninstall',
+    'install', 'update_settings', 'set_repositories', 'set_connection', 'enable', 'start_oauth', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'disable', 'enable', 'approve', 'uninstall',
   ]);
 
   for (const text of bodies) assert.ok(!text.includes(SENTINEL), 'no response carries a connection secret');

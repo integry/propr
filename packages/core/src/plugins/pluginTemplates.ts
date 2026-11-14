@@ -8,14 +8,25 @@ import { officialPluginCatalog, type PluginCatalogSource } from './pluginCatalog
  * Catalog ids of plugin automation templates, by plugin and template id. A
  * template keeps its own id unless a shipped template or a template of
  * another plugin in the registry uses it; then it is prefixed with its plugin
- * id. The rule depends on the registry only, so an id stays stable whichever
- * plugins are enabled.
+ * id, and a prefixed id that is itself a shipped or plugin template id, or
+ * an id already allocated, gets a `-2`, `-3`, … suffix. Allocated ids are
+ * unique across the shipped templates and every plugin template. The rule
+ * depends on the registry (and its order) only, so an id stays stable
+ * whichever plugins are enabled.
  */
 export function pluginTemplateIds(manifests: readonly PluginManifest[]): Map<string, Map<string, string>> {
   const counts = new Map<string, number>();
   for (const template of AUTOMATION_TEMPLATE_CATALOG.templates) counts.set(template.id, 2);
   for (const manifest of manifests) for (const template of manifest.contributes.automationTemplates) counts.set(template.id, (counts.get(template.id) ?? 0) + 1);
-  return new Map(manifests.map(manifest => [manifest.id, new Map(manifest.contributes.automationTemplates.map(t => [t.id, (counts.get(t.id) ?? 0) > 1 ? `${manifest.id}-${t.id}` : t.id]))]));
+  // Every original id is reserved: a generated id never equals a shipped or plugin template's own id.
+  const taken = new Set(counts.keys());
+  const allocate = (base: string) => {
+    let candidate = base;
+    for (let n = 2; taken.has(candidate); n++) candidate = `${base}-${n}`;
+    taken.add(candidate);
+    return candidate;
+  };
+  return new Map(manifests.map(manifest => [manifest.id, new Map(manifest.contributes.automationTemplates.map(t => [t.id, counts.get(t.id) === 1 ? t.id : allocate(`${manifest.id}-${t.id}`)]))]));
 }
 
 /** Ids of the installed plugins that are enabled. */

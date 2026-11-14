@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import {
   PluginAcknowledgementRequest, PluginConnectionRequest, PluginDetailResponse, PluginEnabledRequest, PluginList, PluginRepositoriesRequest, PluginResponse,
-  PluginSettingsRequest, PluginUninstallRequest, PluginEmptyRequest, PluginOAuthCompleteRequest, PluginOAuthStartResponse,
+  PluginSettingsRequest, PluginUninstallRequest, PluginEmptyRequest, PluginOAuthClientRequest, PluginOAuthCompleteRequest, PluginOAuthStartResponse,
 } from './schemasPlugins.js';
 import type { RouteDoc } from './types.js';
 
@@ -34,6 +34,7 @@ export const PLUGIN_ROUTE_DOCS: Record<string, RouteDoc> = {
   [`PUT ${BASE}/:pluginId/enabled`]: mutation('setPluginEnabled', 'Enable or disable. Enabling is refused (409, with the reasons) while a required setting, a required token connection or a secret acknowledgement is missing. Enabling activates the plugin\'s managed extension library items and lists its automation templates; disabling deactivates and hides them and keeps settings and connections.', PluginEnabledRequest),
   [`POST ${BASE}/:pluginId/approve`]: mutation('approvePlugin', 'Approve the permission set of the current manifest after an upgrade, with the secret acknowledgements it needs again.', PluginAcknowledgementRequest),
   [`POST ${BASE}/:pluginId/uninstall`]: mutation('uninstallPlugin', 'Uninstall: deletes the installation, its settings, its connections and its managed extension library items. Refused (409, naming them) while an automation adds a managed item explicitly. The audit trail stays.', PluginUninstallRequest),
+  [`PUT ${BASE}/:pluginId/connections/:connectionName/oauth/client`]: mutation('setPluginOAuthClient', 'Configure or clear the pre-registered OAuth client of an `oauth` connection whose `registrations` permit `preregistered` (409 otherwise). The client id becomes the managed MCP servers\' client id and the secret is sealed and write-only; changing the client discards their OAuth connections.', PluginOAuthClientRequest, { pathParams: oauthParams }),
   [`POST ${BASE}/:pluginId/connections/:connectionName/oauth/start`]: mutation('startPluginOAuth', 'Start the extension OAuth sign-in of an `oauth` connection for its managed MCP server, bound to this browser session. ProPR identifies itself as it does for library servers.', PluginEmptyRequest, {
     pathParams: oauthParams, responses: { 200: { description: 'The authorization URL to open.', schema: PluginOAuthStartResponse } },
   }),

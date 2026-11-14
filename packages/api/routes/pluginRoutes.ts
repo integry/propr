@@ -55,6 +55,8 @@ export function createPluginRoutes(store = new PluginStore(db), environment: Nod
       const query = body(req, ['state', 'code', 'error', 'iss'], ['state']);
       return { plugin: await store.completeOAuth(actor, id(req), connection(req), req.sessionID, query) };
     }),
+    /** Configure (`{ clientId, clientSecret? }`) or clear (`null`) the pre-registered client of an `oauth` connection; the secret is write-only. */
+    setOAuthClient: handle(async (req, actor) => ({ plugin: await store.setOAuthClient(actor, id(req), connection(req), body(req, ['client']).client) })),
     disconnectOAuth: handle(async (req, actor) => { body(req, [], []); return { plugin: await store.disconnectOAuth(actor, id(req), connection(req)) }; }),
   };
 }

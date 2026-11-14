@@ -16,6 +16,7 @@ export function createPluginRouteEntries(plugins: ReturnType<typeof createPlugin
     ['put', `${base}/:pluginId/enabled`, requireManageSettings, plugins.setEnabled],
     ['post', `${base}/:pluginId/approve`, requireManageSettings, plugins.approve],
     ['post', `${base}/:pluginId/uninstall`, requireManageSettings, plugins.uninstall],
+    ['put', `${base}/:pluginId/connections/:connectionName/oauth/client`, requireManageSettings, plugins.setOAuthClient],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/start`, requireManageSettings, plugins.startOAuth],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/complete`, requireManageSettings, plugins.completeOAuth],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/disconnect`, requireManageSettings, plugins.disconnectOAuth],

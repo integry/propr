@@ -42,7 +42,7 @@ export function unsealLibrarySecrets(encrypted: string, instanceId: string, revi
 /** A revision's sealed credentials as a later revision carries them, naming the revision that sealed them. */
 const carriedSecrets = (head: Head) => (head.secretsEncrypted === '' || carriedSecretsPattern.test(head.secretsEncrypted) ? head.secretsEncrypted : `${head.snapshot.revision}:${head.secretsEncrypted}`);
 /** Passed instead of credentials by a change that alters none: the base revision's sealed credentials carry over. */
-const UNCHANGED_CREDENTIALS = Symbol('unchanged library credentials');
+export const UNCHANGED_CREDENTIALS = Symbol('unchanged library credentials');
 const legacyIdentity = (s: { instanceId: string; profileId: string; revision: number }) => `${s.instanceId}/${s.profileId}/${s.revision}`;
 const tokenPattern = /^[\x21-\x7e]{1,4096}$/;
 

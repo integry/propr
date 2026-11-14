@@ -178,7 +178,8 @@ them. What an enabled plugin adds to runs is described in
 
 Only durable instance administrators with `instance.manage_settings` can read
 or change plugin state, and every change (install, settings, repository limit,
-connection set or cleared, enable, disable, approve, uninstall) is recorded in
+connection set or cleared, OAuth client configured or cleared, enable,
+disable, approve, uninstall) is recorded in
 the plugin audit trail with who and when. The audit trail stays after an
 uninstall. Changes need `Content-Type: application/json` and the header
 `X-ProPR-Plugins: 1`.
@@ -194,6 +195,7 @@ uninstall. Changes need `Content-Type: application/json` and the header
 | Enable or disable | `PUT /api/instance/plugins/v1/<id>/enabled` with `{ "enabled": true }` |
 | Approve after an upgrade | `POST /api/instance/plugins/v1/<id>/approve` with `{ "acknowledgements": [ … ] }` when needed |
 | Uninstall | `POST /api/instance/plugins/v1/<id>/uninstall` with `{ "confirm": "<id>" }` |
+| Configure a pre-registered OAuth client | `PUT /api/instance/plugins/v1/<id>/connections/<name>/oauth/client` with `{ "client": { "clientId": "…", "clientSecret": "…" } }` (`clientSecret` optional) or `{ "client": null }` |
 | Start an OAuth sign-in | `POST /api/instance/plugins/v1/<id>/connections/<name>/oauth/start` with `{}`: returns `authorizationUrl` |
 | Complete it | `POST /api/instance/plugins/v1/<id>/connections/<name>/oauth/complete` with the `state` and `code` the provider returned (the extension OAuth callback completes it too) |
 | Disconnect it | `POST /api/instance/plugins/v1/<id>/connections/<name>/oauth/disconnect` with `{}` |
@@ -246,7 +248,14 @@ the returned `authorizationUrl` in the same browser session, and sign in at the
 provider. ProPR identifies itself as it does for library servers (Client ID
 Metadata Document, then dynamic registration), but only through the methods the
 connection's `registrations` permit, in that order; when the provider supports
-none of them, the sign-in is refused with HTTP 409. The managed server carries
+none of them, the sign-in is refused with HTTP 409. When `registrations`
+permits `preregistered`, an administrator can configure the client registered
+with the provider for this instance on the connection (`oauth/client`): the
+client id becomes the managed servers' client id and the optional client
+secret is sealed like a `token` connection and never returned; a read reports
+who configured it in `setBy` and `setAt`. Changing or clearing the client
+discards the connection made with the previous one. A connection that does not
+permit `preregistered` refuses a client with HTTP 409. The managed server carries
 the permitted methods in its `managedBy.registrations`, so a sign-in started
 from the extension library is limited the same way. The provider redirects to
 the extension OAuth callback, which completes the sign-in. The connection
@@ -299,8 +308,10 @@ and launch checks.
   already has a server of that name; it is then named `<plugin id>-<name>`.
 - **Disabling** the plugin deactivates its managed items: they stay in the
   library as they are, with their settings and connections, and apply to no
-  run. A disable never applies an upgraded manifest or reads skill folders, so
-  it succeeds even when the next plugin change would be refused. Re-enabling
+  run. A disable never applies an upgraded manifest, reads skill folders or
+  decrypts credentials (the library's sealed credentials carry over unchanged),
+  so it succeeds even when the next plugin change would be refused, including
+  after a restore under another encryption root. Re-enabling
   restores them, applying any upgrade.
 - **Uninstalling** removes the managed items and their OAuth connections. It is
   refused, naming the automations, while an automation adds one of them
@@ -354,6 +365,9 @@ An enabled plugin's automation templates appear in the template catalog
 (`GET /api/automation-definitions/templates` and the `list_automation_templates`
 MCP tool) after the shipped templates, with `plugin` naming the plugin's id and
 name. A template keeps its id unless a shipped template or another plugin uses
-it; it is then `<plugin id>-<id>` (`catalogId` in the plugin read). Disabling or
+it; it is then `<plugin id>-<id>` (`catalogId` in the plugin read). When that
+id is itself another template's id or was already given to another template,
+it gets a `-2`, `-3`, … suffix, so catalog ids are always unique. Ids depend
+only on the registry, not on which plugins are enabled. Disabling or
 uninstalling the plugin hides its templates; automations created from them are
 ordinary automations and are not changed.
