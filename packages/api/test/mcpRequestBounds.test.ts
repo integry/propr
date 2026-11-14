@@ -64,9 +64,9 @@ test('tool arguments over the element budget are rejected before the tool runs o
   const counts = async () => Promise.all(tables.map(async table => Number((await h.db(table).count({ count: '*' }).first())?.count)));
   const initial = await counts();
 
-  // 2,600 four-key plan tasks: about 13,000 elements in a ~120 KiB body, well
+  // 4,000 four-key plan tasks: about 20,000 elements in a ~185 KiB body, well
   // under the size bound, so only the element budget can stop it here.
-  const plan = Array.from({ length: 2_600 }, (_, index) => ({ title: `t${index}`, body: 'b', implementation: 'i' }));
+  const plan = Array.from({ length: 4_000 }, (_, index) => ({ title: `t${index}`, body: 'b', implementation: 'i' }));
   const body = call(3, 'create_plan', { repository: 'acme/alpha', name: 'Oversized plan', prompt: 'Fixture prompt', plan, idempotencyKey: 'element-budget-fixture' });
   assert.ok(Buffer.byteLength(JSON.stringify(body)) < 256 * 1024);
   const response = await h.post(h.alpha.token, body);
