@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Connected apps page shows a full page of apps**: `/mcp/apps` counted
+  revoked and expired grants towards each page of 50 and hid them afterwards,
+  so an account that had reconnected apps many times saw one or two apps per
+  page. Pages now hold 50 active apps.
+- **Consent shows that it is working**: after **Allow selected access** or
+  **Deny** the MCP consent page shows a progress message, relabels the button
+  and ignores a second click, instead of looking unchanged until the app
+  takes over.
 - **CI runs on Ubuntu 24.04 again**: hosted Linux jobs name `ubuntu-24.04`
   instead of `ubuntu-latest`, which GitHub moved to Ubuntu 26.04. The desktop
   RPM build fails under that image's `rpmbuild`, so two desktop tests failed
