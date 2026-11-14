@@ -168,12 +168,7 @@ export class VibeAgent implements Agent {
                 usageMetricRecords: usage.records,
             }));
 
-            if (response.success) {
-                logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Vibe agent execution succeeded');
-                verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
-            } else {
-                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: response.error }, 'Vibe agent execution failed');
-            }
+            this.reportExecutionOutcome({ success: response.success, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: response.error, modelUsed, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
@@ -188,6 +183,16 @@ export class VibeAgent implements Agent {
             cleanupTempFile(envFilePath);
             cleanupRuntimeHome(runtimeHomePath);
             retireProviderRuntime(this.config.id, runtimeHomePath);
+        }
+    }
+
+    private reportExecutionOutcome(params: { success: boolean; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): void {
+        const { success, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
+        if (success) {
+            logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'Vibe agent execution succeeded');
+            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
+        } else {
+            logger.error({ issueNumber, exitCode, stderr, agentAlias: this.config.alias, error }, 'Vibe agent execution failed');
         }
     }
 
