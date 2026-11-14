@@ -1,7 +1,7 @@
 import type { Knex } from 'knex';
 import logger from '../../utils/logger.js';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
-import type { EpicExecutionQueue, EpicQueueStatus } from './epicExecutionQueue.js';
+import type { EpicExecutionQueue, EpicQueueStatus } from './epicQueueState.js';
 
 /**
  * Dispatch can create the epic and label its children even though saving the selector failed.

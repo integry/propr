@@ -2,9 +2,11 @@ import type {
   AutomationAutonomyMode,
   AutomationCapability,
   AutomationDefinitionInput,
+  AutomationEventTrigger,
   AutomationReportNovelty,
   AutomationRunNoChangeReason,
   AutomationRunState,
+  AutomationTriggerEvent,
   AutomationRunTrigger,
   AUTOMATION_DEFINITION_CONTRACT,
   AttributedUser,
@@ -46,6 +48,8 @@ export interface AutomationDefinitionRecord {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Event subscriptions; empty means the automation reacts to no event. */
+  eventTriggers?: AutomationEventTrigger[];
   /** Turn the schedule off when the unproductive-run notification fires. */
   pauseWhenUnproductive?: boolean;
   enabled: boolean;
@@ -63,6 +67,8 @@ export interface AutomationRunRecord {
   ownerId: string;
   trigger: AutomationRunTrigger;
   triggerSource: string | null;
+  /** For an `event` run: the event that started it. */
+  triggerEvent?: AutomationTriggerEvent | null;
   idempotencyKey: string | null;
   state: AutomationRunState;
   autonomyMode: AutomationAutonomyMode;

@@ -340,10 +340,13 @@ test('a restore breaks coalescing when the outgoing plan is already the newest s
   assert.deepEqual((await listPlanRevisions(db, draftId)).map(revision => revision.titles[0]), ['A1', 'Refined', 'A1']);
 });
 
-test('MCP publication after recent edits preserves the complete pre-publication plan', async t => {
+// A draft without item ids gets them when publication claims it; the first
+// issue-link write then snapshots that plan with ids once.
+for (const legacy of [false, true]) test(`MCP publication after recent edits preserves the complete pre-publication plan${legacy ? ' without item ids' : ''}`, async t => {
   const db = await setup(t);
-  await setDraft(db, { plan_json: plan('First edit', 'Second task') });
-  await setDraft(db, { plan_json: plan('Ready to publish', 'Second task') });
+  const withIds = (json: string) => legacy ? json : JSON.stringify(JSON.parse(json).map((item: object, index: number) => ({ id: `item-${index}`, ...item })));
+  await setDraft(db, { plan_json: withIds(plan('First edit', 'Second task')) });
+  await setDraft(db, { plan_json: withIds(plan('Ready to publish', 'Second task')) });
   const before = await draft(db);
   assert.equal((await listPlanRevisions(db, draftId)).length, 1);
   let issueNumber = 0;
@@ -360,8 +363,14 @@ test('MCP publication after recent edits preserves the complete pre-publication 
   assert.equal((await draft(db)).status, 'executed');
   assert.equal(issueNumber, 2);
   const revisions = await listPlanRevisions(db, draftId);
-  assert.equal(revisions.length, 2, 'issue-link writes coalesce only within the publishing status');
-  assert.deepEqual((await getPlanRevision(db, draftId, revisions[0].revision_id))!.plan, JSON.parse(before.plan_json));
+  assert.equal(revisions.length, legacy ? 3 : 2, 'issue-link writes coalesce only within the publishing status');
+  const prePublication = revisions[legacy ? 1 : 0];
+  assert.deepEqual((await getPlanRevision(db, draftId, prePublication.revision_id))!.plan, JSON.parse(before.plan_json));
+  if (legacy) {
+    const assigned = (await getPlanRevision(db, draftId, revisions[0].revision_id))!.plan as Array<Record<string, unknown>>;
+    assert.ok(assigned.every(item => item.id), 'the snapshot after the claim carries the assigned ids');
+    assert.deepEqual(assigned.map(item => Object.fromEntries(Object.entries(item).filter(([key]) => key !== 'id'))), JSON.parse(before.plan_json));
+  }
 });
 
 test('MCP tools list, read and restore plan revisions at an exact revision', async t => {

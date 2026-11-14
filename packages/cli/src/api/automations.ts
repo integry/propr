@@ -13,11 +13,13 @@
 import type {
   AutomationAutonomyMode,
   AutomationCapability,
+  AutomationEventTrigger,
   AutomationReportNovelty,
   AutomationRunNoChangeReason,
   AutomationRunState,
   AutomationRunTrigger,
   AutomationTemplateCatalog,
+  AutomationTriggerEvent,
 } from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { mutate } from "./goals.js";
@@ -50,6 +52,8 @@ export interface Automation {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Event subscriptions; absent from servers that predate event triggers. */
+  eventTriggers?: AutomationEventTrigger[];
   /** Turn the schedule off when the unproductive-run notification fires; absent from older servers. */
   pauseWhenUnproductive?: boolean;
   /** Extension library servers (names) and skill bundles (ids) the automation adds explicitly; absent from older servers. */
@@ -67,6 +71,8 @@ export interface AutomationRun {
   ownerId: string;
   trigger: AutomationRunTrigger;
   triggerSource: string | null;
+  /** For an `event` run: the event that started it. */
+  triggerEvent?: AutomationTriggerEvent | null;
   idempotencyKey: string | null;
   state: AutomationRunState;
   autonomyMode: AutomationAutonomyMode;

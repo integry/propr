@@ -146,6 +146,8 @@ export interface PlanTask {
   implementation: string;
   notes?: string;
   attachments?: PlannerAttachment[];
+  /** Ids of other tasks in this plan that must be implemented first. */
+  dependsOn?: string[];
   issue_number?: number;
   issue_url?: string;
 }

@@ -6,8 +6,7 @@ import type { PlanIssueStatus } from './planIssueManager.js';
 
 export async function notifyEpicQueue(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
     try {
-        const { isTerminalStatus } = await import('../webhook/statusMachine.js');
-        if (!isTerminalStatus(status)) return;
+        // Every status, also an in-progress one: a graph execution counts an issue a person started.
         const { onPlanIssueStatusChanged } = await import('../services/taskPlanning/epicExecutionQueue.js');
         await onPlanIssueStatusChanged(draftId, issueNumber, status);
     } catch (error) {

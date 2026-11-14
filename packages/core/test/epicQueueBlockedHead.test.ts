@@ -1,3 +1,5 @@
+import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
+import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
@@ -61,6 +63,8 @@ await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
 await epicQueueParallel(database);
 await epicQueueRecovery(database);
+await epicQueueIssueStates(database);
+await blockedEvents(database);
 after(async () => database.destroy());
 
 const repository = 'acme/repo';
@@ -221,4 +225,68 @@ test('clearing a parallel child ignores siblings that are merged or whose latest
   await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 50 });
   assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 50 }), true);
   assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null);
+});
+
+function issueState(queue: Awaited<ReturnType<typeof getEpicExecutionQueue>>, issueNumber: number) {
+  return summarizeEpicQueue(queue)?.issueStates.find(state => state.issue === issueNumber);
+}
+
+for (const restart of ['status hook', 'lost status hook'] as const) {
+  test(`a closed parallel child that restarts and reports a blocker is tracked again (${restart})`, async () => {
+    await createEpicExecutionQueue({ draftId: 'draft', repository, issues: [10, 30], parallel: true });
+    await finishHeadRun(30, NO_PR_HISTORY);
+    await database('plan_issues').where({ issue_number: 30 }).update({ pr_number: 31, status: S.UNDER_REVIEW });
+    await updatePlanIssueStatus(repository, 10, S.CLOSED);
+    assert.equal(issueState(await getEpicExecutionQueue('draft'), 10)?.state, 'done');
+
+    // #10 is reopened and processed again while #30 still runs.
+    if (restart === 'status hook') await updatePlanIssueStatus(repository, 10, S.PROCESSING);
+    else await database('plan_issues').where({ issue_number: 10 }).update({ status: S.PROCESSING });
+    await database('plan_issues').where({ issue_number: 10 }).update({ task_id: 'task-10b' });
+    await database('task_history').insert({ task_id: 'task-10b', state: 'completed', timestamp: 2, metadata: JSON.stringify(BLOCKED_HISTORY) });
+    assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), true);
+    let queue = await getEpicExecutionQueue('draft');
+    assert.deepEqual(issueState(queue, 10), { issue: 10, state: 'blocked', blockedKind: 'agent_blocked', blockedReason: agentBlockedHeadReason(10),
+      schedule: 'blocked', dependsOn: [], waitingOn: [] });
+    assert.equal(queue?.blockedReason, agentBlockedHeadReason(10));
+
+    // Recovery and the sibling's merge keep the blocked child and the execution active.
+    await reconcileEpicExecutionQueues({ ...deps, now: () => LATER });
+    await updatePlanIssueStatus(repository, 30, S.MERGED);
+    queue = await getEpicExecutionQueue('draft');
+    assert.equal(queue?.status, 'active');
+    assert.equal(issueState(queue, 10)?.state, 'blocked');
+    assert.equal(await planStatus(10), S.PROCESSING, 'the blocked run is not closed by recovery');
+    assert.deepEqual(finalizations, []);
+
+    // A later run settles normally and merges: the execution completes.
+    assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), true);
+    await updatePlanIssueStatus(repository, 10, S.MERGED);
+    queue = await getEpicExecutionQueue('draft');
+    assert.equal(queue?.status, 'completed');
+    assert.deepEqual(finalizations, ['draft']);
+  });
+}
+
+test('recovery reconciles a reopened parallel child even while its row is still done', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository, issues: [10, 30], parallel: true });
+  await finishHeadRun(30, BLOCKED_HISTORY);
+  await updatePlanIssueStatus(repository, 10, S.CLOSED);
+  // #10 is processed again (its status hook was lost) and finishes without a PR.
+  await database('plan_issues').where({ issue_number: 10 }).update({ status: S.PROCESSING, task_id: 'task-10b' });
+  await database('task_history').insert({ task_id: 'task-10b', state: 'completed', timestamp: 2, metadata: JSON.stringify(NO_PR_HISTORY) });
+  await reconcileEpicExecutionQueues({ ...deps, now: () => LATER });
+  assert.equal(await planStatus(10), S.CLOSED, 'the stale in-progress run of the done child is reconciled');
+  assert.equal(issueState(await getEpicExecutionQueue('draft'), 10)?.state, 'done');
+});
+
+test('a late blocker report for a parallel child that is still terminal does not reopen it', async () => {
+  await createEpicExecutionQueue({ draftId: 'draft', repository, issues: [10, 30], parallel: true });
+  await finishHeadRun(30, BLOCKED_HISTORY);
+  await updatePlanIssueStatus(repository, 10, S.MERGED);
+  assert.equal(await markEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), false);
+  assert.equal(await clearEpicQueueHeadBlocked({ draftId: 'draft', issueNumber: 10 }), false);
+  const queue = await getEpicExecutionQueue('draft');
+  assert.equal(issueState(queue, 10)?.state, 'done');
+  assert.equal(queue?.blockedReason, null);
 });

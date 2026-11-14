@@ -1,3 +1,5 @@
+import { up as blockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
+import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
 import { up as epicQueueRecovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
@@ -55,6 +57,8 @@ await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
 await epicQueueParallel(database);
 await epicQueueRecovery(database);
+await epicQueueIssueStates(database);
+await blockedEvents(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('task_drafts').delete();
@@ -109,12 +113,16 @@ test('closed head blocks merged-only queue, and a later merge unblocks it', asyn
 });
 
 test('terminal policy skips closed and merged entries and finalizes after last entry', async () => {
-  await createEpicExecutionQueue({ ...input, advanceOn: 'terminal' });
+  const created = await createEpicExecutionQueue({ ...input, advanceOn: 'terminal' });
   await status(10, 'closed'); await status(30, 'merged'); await status(40, 'closed');
   await startEpicQueueHead('draft');
   assert.deepEqual(starts, []);
-  assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), {
+  assert.deepEqual(summarizeEpicQueue(await getEpicExecutionQueue('draft')), { executionId: created.executionId,
     issues: [10, 30, 40], cursor: 3, head: null, status: 'completed', advanceOn: 'terminal', blockedReason: null,
+    // Sequential is a chain with a limit of one: each issue depends on the one before it.
+    executionMode: 'sequential', maxParallel: 1,
+    issueStates: [[10, []], [30, [10]], [40, [30]]].map(([issue, dependsOn]) => ({ issue, state: 'done', blockedKind: null, blockedReason: null,
+      schedule: 'done', dependsOn, waitingOn: [] })),
   });
   assert.deepEqual(finalizations, ['draft']);
 });
@@ -333,6 +341,8 @@ test('finalization migration preserves existing queues and rolls back without de
     await oldDatabase('epic_execution_queues').insert({ draft_id: 'old', execution_id: 'execution',
       repository: 'acme/repo', issues: '[10]', cursor: 1, status: 'completed', created_at: 100, updated_at: 100 });
     await epicQueueFinalization(oldDatabase);
+    await epicQueueIssueStates(oldDatabase);
+    await blockedEvents(oldDatabase);
     const upgraded = await getEpicExecutionQueue('old', { database: oldDatabase });
     assert.equal(upgraded?.status, 'completed');
     assert.equal(upgraded?.finalizedAt, null);
@@ -367,6 +377,8 @@ test('use_epic migration keeps existing queues on the epic branch and rolls back
     await oldDatabase('epic_execution_queues').insert({ draft_id: 'old', execution_id: 'execution',
       repository: 'acme/repo', issues: '[10]', cursor: 0, status: 'active', created_at: 100, updated_at: 100 });
     await epicQueueUseEpic(oldDatabase);
+    await epicQueueIssueStates(oldDatabase);
+    await blockedEvents(oldDatabase);
     assert.equal((await getEpicExecutionQueue('old', { database: oldDatabase }))?.useEpic, true);
     await removeEpicQueueUseEpic(oldDatabase);
     assert.equal(Object.hasOwn(await oldDatabase('epic_execution_queues').where({ draft_id: 'old' }).first(), 'use_epic'), false);

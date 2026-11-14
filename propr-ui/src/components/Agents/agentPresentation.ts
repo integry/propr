@@ -108,12 +108,16 @@ export const nextScheduledRun = (expression: string, now: Date): Date | null => 
 };
 
 /**
- * "Daily 09:00 UTC · next in 3h", or "Manual" when the agent has no active schedule.
+ * "Daily 09:00 UTC · next in 3h", "On blocked issue" for an automation that only runs on its
+ * event trigger, or "Manual" when it has neither.
  * The stored next run is read when the list loads, so once a page left open
  * passes it, the next occurrence is worked out from the schedule instead.
  */
-export const scheduleSummary = (definition: Pick<AutomationDefinitionRecord, 'scheduleCron' | 'scheduleEnabled' | 'nextRunAt' | 'enabled'>, now: number): string => {
-  if (!definition.scheduleCron || !definition.scheduleEnabled) return 'Manual';
+export const scheduleSummary = (definition: Pick<AutomationDefinitionRecord, 'scheduleCron' | 'scheduleEnabled' | 'nextRunAt' | 'enabled' | 'eventTriggers'>, now: number): string => {
+  if (!definition.scheduleCron || !definition.scheduleEnabled) {
+    if (!definition.eventTriggers?.length) return 'Manual';
+    return definition.enabled ? 'On blocked issue' : 'On blocked issue · paused';
+  }
   const name = describeCron(definition.scheduleCron);
   if (!definition.enabled) return `${name} · paused`;
   const stored = definition.nextRunAt !== null && definition.nextRunAt > now ? definition.nextRunAt : null;

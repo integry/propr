@@ -13,7 +13,7 @@ import {
   type MulterFile,
   type StoredAgentRun,
 } from '@propr/core';
-import { AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG } from '@propr/shared';
+import { AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG, validateAutomationEventTriggerScope, type AutomationEventTrigger } from '@propr/shared';
 import {
   createAutomationDefinitionRoutes,
   type AutomationDefinitionRouteServices,
@@ -429,10 +429,112 @@ describe('automation definition routes', () => {
     const cli = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger: 'cli' } }));
     assert.equal(cli.body.run.trigger, 'cli');
 
-    for (const trigger of ['schedule', 'mcp', 'bogus']) {
+    for (const trigger of ['schedule', 'mcp', 'event', 'bogus']) {
       const refused = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger } }));
       assert.equal(refused.status, 400);
     }
+  });
+
+  test('event triggers are opt-in, validated and never reach beyond the definition repositories', async () => {
+    const plain = await createDefinition('alice');
+    assert.deepEqual(plain.eventTriggers, []);
+
+    const subscribed = await createDefinition('alice', {
+      repositories: ['acme/app', 'acme/lib'],
+      eventTriggers: [{ event: 'plan.issue_blocked', repositories: ['acme/lib'], reasonKinds: ['agent_blocked'] }],
+    });
+    assert.deepEqual(subscribed.eventTriggers, [{ event: 'plan.issue_blocked', repositories: ['acme/lib'], reasonKinds: ['agent_blocked'] }]);
+    const cursor = await database('agent_definition_event_cursors').where({ definition_id: subscribed.id }).first();
+    assert.equal(cursor?.event, 'plan.issue_blocked');
+
+    const invalid: Array<[Record<string, unknown>, RegExp]> = [
+      [{ eventTriggers: [{ event: 'plan.issue_done' }] }, /event must be one of: plan.issue_blocked/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked', reasonKinds: ['tired'] }] }, /reasonKinds must be one of/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked' }, { event: 'plan.issue_blocked' }] }, /same event twice/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked', repositories: ['acme/other'] }] }, /must be repositories of the automation: acme\/other/],
+      [{ repositories: [], eventTriggers: [{ event: 'plan.issue_blocked' }] }, /must name the repositories/],
+    ];
+    for (const [body, message] of invalid) {
+      const created = await call(routes.create, request('alice', { body: { name: 'Recover', prompt: 'Unblock', repositories: ['acme/app'], ...body } }));
+      assert.equal(created.status, 400, JSON.stringify(body));
+      assert.match(created.body.error, message);
+    }
+
+    // An update cannot drop a repository the trigger is limited to, nor subscribe without repositories.
+    const narrowed = await call(routes.update, request('alice', { params: { id: subscribed.id }, body: { repositories: ['acme/app'] } }));
+    assert.equal(narrowed.status, 400);
+    assert.match(narrowed.body.error, /acme\/lib/);
+    const cleared = await call(routes.update, request('alice', { params: { id: plain.id }, body: { repositories: [], eventTriggers: [{ event: 'plan.issue_blocked' }] } }));
+    assert.equal(cleared.status, 400);
+    const opted = await call(routes.update, request('alice', { params: { id: plain.id }, body: { eventTriggers: [{ event: 'plan.issue_blocked' }] } }));
+    assert.equal(opted.status, 200, JSON.stringify(opted.body));
+    assert.deepEqual(opted.body.definition.eventTriggers, [{ event: 'plan.issue_blocked', repositories: [], reasonKinds: [] }]);
+    assert.deepEqual(AUTOMATION_DEFINITION_CONTRACT.eventTriggers.events, ['plan.issue_blocked']);
+    assert.ok((AUTOMATION_DEFINITION_CONTRACT.runTriggers as readonly string[]).includes('event'));
+  });
+
+  describe('an update is written only onto the revision its scope checks read', () => {
+    const blocked = (repositories?: string[]) => ({ event: 'plan.issue_blocked', ...(repositories ? { repositories } : {}) });
+
+    /** Routes whose runtime check lets `edit` commit first: the await between the route's checks and its write. */
+    function racing(edit: () => Promise<{ status: number; body: unknown }>) {
+      const edits: Array<{ status: number; body: unknown }> = [];
+      const raced = createAutomationDefinitionRoutes({ db: database, services: {
+        ...services(),
+        validateRuntime: async () => { edits.push(await edit()); return null; },
+      } });
+      return { raced, edits };
+    }
+
+    async function storedScope(id: string) {
+      const read = await call(routes.get, request('alice', { params: { id } }));
+      const { repositories, eventTriggers } = read.body.definition as { repositories: string[]; eventTriggers: AutomationEventTrigger[] };
+      return { repositories, eventTriggers };
+    }
+
+    const cases: Array<{ name: string; slow: Record<string, unknown>; concurrent: Record<string, unknown>; expected: { repositories: string[]; filters: string[][] } }> = [
+      // Without a fence, the subscription to acme/app would be kept beside repositories that no longer include it.
+      { name: 'retargeting the repositories while a subscription is added', slow: { repositories: ['acme/lib'] }, concurrent: { eventTriggers: [blocked(['acme/app'])] }, expected: { repositories: ['acme/app'], filters: [['acme/app']] } },
+      { name: 'clearing the repositories while a subscription is added', slow: { repositories: [] }, concurrent: { eventTriggers: [blocked()] }, expected: { repositories: ['acme/app'], filters: [[]] } },
+      { name: 'subscribing while the repositories are retargeted', slow: { enabled: true, eventTriggers: [blocked(['acme/app'])] }, concurrent: { repositories: ['acme/lib'] }, expected: { repositories: ['acme/lib'], filters: [] } },
+    ];
+    for (const { name, slow, concurrent, expected } of cases) {
+      test(`${name}: the update that checked the older revision gets a 409`, async () => {
+        const definition = await createDefinition('alice');
+        const { raced, edits } = racing(() => call(routes.update, request('alice', { params: { id: definition.id }, body: concurrent })));
+
+        const stale = await call(raced.update, request('alice', { params: { id: definition.id }, body: slow }));
+
+        assert.deepEqual(edits.map(edit => edit.status), [200], JSON.stringify(edits));
+        assert.equal(stale.status, 409, JSON.stringify(stale.body));
+        assert.match(stale.body.error, /reload and retry/);
+        const stored = await storedScope(definition.id);
+        assert.deepEqual(stored.repositories, expected.repositories);
+        assert.deepEqual(stored.eventTriggers.map(trigger => trigger.repositories), expected.filters);
+        assert.equal(validateAutomationEventTriggerScope(stored.eventTriggers, stored.repositories), null);
+      });
+    }
+
+    test('a caller revision other than the one the route checked is refused before any check awaits', async () => {
+      const definition = await createDefinition('alice');
+      const { raced, edits } = racing(() => call(routes.update, request('alice', { params: { id: definition.id }, body: { eventTriggers: [blocked(['acme/app'])] } })));
+
+      // The concurrent edit would make the stored revision equal this one, so only the route can refuse it.
+      const ahead = await call(raced.update, request('alice', {
+        params: { id: definition.id }, body: { repositories: ['acme/lib'], expectedRevision: definition.revision + 1 },
+      }));
+
+      assert.equal(ahead.status, 409, JSON.stringify(ahead.body));
+      assert.deepEqual(edits, []);
+      assert.deepEqual(await storedScope(definition.id), { repositories: ['acme/app'], eventTriggers: [] });
+    });
+
+    test('an update without an expected revision still succeeds when nothing changed meanwhile', async () => {
+      const definition = await createDefinition('alice');
+      const updated = await call(routes.update, request('alice', { params: { id: definition.id }, body: { repositories: ['acme/lib'], eventTriggers: [blocked(['acme/lib'])] } }));
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+      assert.equal(updated.body.definition.revision, definition.revision + 1);
+    });
   });
 
   test('the trigger applies the cost gate and records a held run without enqueueing', async () => {

@@ -40,7 +40,7 @@ const octokit = {
 
 await mock.module('@propr/core', {
     namedExports: {
-        getEpicExecutionQueue: mock.fn(async () => ({ status: 'active', issues: [10, 20] })),
+        getEpicExecutionQueue: mock.fn(async () => ({ status: 'active', issues: [10, 20], items: [{ issueNumber: 10, state: 'dispatched' }, { issueNumber: 20, state: 'pending' }] })),
         findPlanIssueByRepoAndNumber: mock.fn(async () => ({ draft_id: 'draft', issue_number: 10, status: 'processing' })),
         getAuthenticatedOctokit: mock.fn(async () => octokit),
         logger: { debug() {}, info() {}, warn() {}, error() {} },

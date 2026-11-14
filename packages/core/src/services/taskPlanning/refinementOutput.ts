@@ -1,3 +1,4 @@
+import { duplicatePlanItemIdErrors } from '@propr/shared';
 import type { Plan, PlanItem } from './types.js';
 
 export const REFINEMENT_OUTPUT_INVALID = 'REFINEMENT_OUTPUT_INVALID' as const;
@@ -7,16 +8,25 @@ export type RefinementOutputFailureReason =
   | 'unknown_operation'
   | 'unknown_target'
   | 'mixed_shape'
-  | 'empty_plan';
+  | 'empty_plan'
+  | 'duplicate_id';
 
 export interface IncompleteRefinedTask {
   index: number;
   missing: string[];
 }
 
+/** A refined task whose id an earlier task of the refined plan already carries. */
+export interface DuplicateRefinedTaskId {
+  index: number;
+  id: string;
+  title?: string;
+}
+
 export interface RefinementOutputDetails {
   reason: RefinementOutputFailureReason;
   incomplete?: IncompleteRefinedTask[];
+  duplicates?: DuplicateRefinedTaskId[];
   operations?: number;
 }
 
@@ -64,6 +74,18 @@ function failure(reason: RefinementOutputFailureReason, message: string, extra: 
   return { ok: false, code: REFINEMENT_OUTPUT_INVALID, message, details: { reason, ...extra } };
 }
 
+/**
+ * Rejects a refined plan in which two tasks carry the same id. Which task the
+ * id belongs to is ambiguous, so neither identity recovery nor storage-time
+ * repair may guess: renaming one copy would detach its dependents.
+ */
+function duplicateIdFailure(plan: unknown[], extra: Omit<RefinementOutputDetails, 'reason'> = {}): NormalizedRefinedPlan | undefined {
+  const errors = duplicatePlanItemIdErrors(plan);
+  if (!errors.length) return undefined;
+  const duplicates = errors.map(error => ({ index: error.index, id: error.itemId!, ...(error.title !== undefined ? { title: error.title } : {}) }));
+  return failure('duplicate_id', `The refinement returned duplicate task ids. ${errors[0].message}`, { ...extra, duplicates });
+}
+
 function operationName(item: TaskRecord): unknown {
   if (Object.hasOwn(item, 'action') && Object.hasOwn(item, 'op') && item.action !== item.op) return undefined;
   return Object.hasOwn(item, 'action') ? item.action : item.op;
@@ -97,6 +119,70 @@ function appendText(existing: unknown, addition: string): string {
   return typeof existing === 'string' && existing.length > 0 ? `${existing}\n\n${addition}` : addition;
 }
 
+function itemId(item: TaskRecord | undefined): string | undefined {
+  return typeof item?.id === 'string' && item.id.trim() ? item.id : undefined;
+}
+
+function omitsDependencies(item: TaskRecord): boolean {
+  return !Object.hasOwn(item, 'dependsOn') || item.dependsOn === undefined || item.dependsOn === null;
+}
+
+/**
+ * The current task a refined item stands for when the model dropped or
+ * changed its id: the one current task with the same title, provided no
+ * refined item already carries its id. A changed id is reconciled only when
+ * no other refined item has the same title either, so an ambiguous match keeps
+ * the returned id (a new task) instead of guessing.
+ */
+function matchedCurrentId(item: TaskRecord, current: TaskRecord[], refined: TaskRecord[], used: ReadonlySet<string>): string | undefined {
+  if (typeof item.title !== 'string') return undefined;
+  if (itemId(item) !== undefined && refined.filter(other => other.title === item.title).length !== 1) return undefined;
+  const matches = current.filter(task => task.title === item.title);
+  const id = matches.length === 1 ? itemId(matches[0]) : undefined;
+  return id !== undefined && !used.has(id) ? id : undefined;
+}
+
+/**
+ * A complete refined plan should copy every item id and dependsOn, but a model
+ * may drop or rewrite them. An item without an id, or with an id no current
+ * task has, takes the id of the one current task with the same title when no
+ * other refined item carries that id, so a task the model rewrote in full
+ * keeps its identity and its dependents; references to a replaced id follow
+ * it back. An item matched to a current task that omits dependsOn keeps that
+ * task's prerequisites; only an explicit list (empty to remove them all)
+ * changes them. References to tasks the refinement removed are pruned when
+ * the plan is stored.
+ */
+function restoreOmittedIdentity(currentPlan: Plan, refined: TaskRecord[]): TaskRecord[] {
+  const current = currentPlan as unknown as TaskRecord[];
+  const currentIds = new Set(current.map(itemId).filter((id): id is string => id !== undefined));
+  const used = new Set(refined.map(itemId).filter((id): id is string => id !== undefined));
+  const replaced = new Map<string, string>();
+  const identified = refined.map(item => {
+    const returned = itemId(item);
+    if (returned !== undefined && currentIds.has(returned)) return item;
+    const id = matchedCurrentId(item, current, refined, used);
+    if (id === undefined) return item;
+    used.add(id);
+    // A replacement id that more than one refined item uses is not renamed for references.
+    if (returned !== undefined) replaced.set(returned, refined.filter(other => itemId(other) === returned).length === 1 ? id : returned);
+    // The model may return an explicit null or empty id; the recovered id must win over it.
+    if (returned !== undefined || 'id' in item) return { ...item, id };
+    return { id, ...item };
+  });
+  return identified.map(item => {
+    let restored = item;
+    if (!omitsDependencies(item) && Array.isArray(item.dependsOn) && replaced.size > 0) {
+      restored = { ...item, dependsOn: item.dependsOn.map(entry => typeof entry === 'string' ? replaced.get(entry) ?? entry : entry) };
+    }
+    const id = itemId(restored);
+    if (id === undefined || !omitsDependencies(restored)) return restored;
+    const matches = current.filter(task => itemId(task) === id);
+    const previous = matches.length === 1 ? matches[0].dependsOn : undefined;
+    return Array.isArray(previous) && previous.length > 0 ? { ...restored, dependsOn: [...previous] } : restored;
+  });
+}
+
 /**
  * Accept a complete refined plan, or deterministically apply an edit-style
  * model response to the plan it was asked to refine. Ambiguous output fails
@@ -116,9 +202,9 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
   const operationCount = hasDiscriminator.filter(Boolean).length;
   if (operationCount === 0) {
     const incomplete = incompleteTasks(refined);
-    return incomplete.length
-      ? failure('incomplete_tasks', 'The refinement returned incomplete plan tasks.', { incomplete })
-      : { ok: true, plan: refined as Plan, merged: false };
+    if (incomplete.length) return failure('incomplete_tasks', 'The refinement returned incomplete plan tasks.', { incomplete });
+    return duplicateIdFailure(refined)
+      ?? { ok: true, plan: restoreOmittedIdentity(currentPlan, refined as TaskRecord[]) as unknown as Plan, merged: false };
   }
   if (operationCount !== refined.length || records.some(item => !item)) {
     return failure('mixed_shape', 'The refinement mixed complete tasks with edit operations.', { operations: operationCount });
@@ -167,7 +253,9 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
     if (name === 'remove' || name === 'delete') {
       removed.add(index);
     } else if (name === 'update' || name === 'replace') {
-      current[index] = { ...current[index], ...editableFields(edit) };
+      // An edit changes a task's content, never its identity.
+      const id = itemId(current[index]);
+      current[index] = { ...current[index], ...editableFields(edit), ...(id !== undefined ? { id } : {}) };
     } else if (name === 'extend') {
       for (const field of ['body', 'implementation', 'notes'] as const) {
         if (!Object.hasOwn(edit, field)) continue;
@@ -199,5 +287,7 @@ export function normalizeRefinedPlan(currentPlan: Plan, refined: unknown): Norma
       incomplete,
     });
   }
+  const duplicate = duplicateIdFailure(merged, { operations: edits.length });
+  if (duplicate) return duplicate;
   return { ok: true, plan: merged as unknown as PlanItem[], merged: true, operations: edits.length };
 }

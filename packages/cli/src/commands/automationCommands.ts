@@ -122,6 +122,17 @@ function scheduleLabel(automation: Automation): string {
   return `${automation.scheduleCron}${automation.scheduleEnabled ? "" : " (off)"}`;
 }
 
+/** `plan.issue_blocked (repos: acme/app; reasons: agent_blocked)`, one subscription per line. */
+export function eventTriggerLabels(automation: Pick<Automation, "eventTriggers">): string[] {
+  return (automation.eventTriggers ?? []).map((trigger) => {
+    const filters = [
+      trigger.repositories.length ? `repos: ${trigger.repositories.join(", ")}` : null,
+      trigger.reasonKinds.length ? `reasons: ${trigger.reasonKinds.join(", ")}` : null,
+    ].filter(Boolean);
+    return `${trigger.event}${filters.length ? ` (${filters.join("; ")})` : ""}`;
+  });
+}
+
 function printAutomation(automation: Automation): void {
   console.log(`Automation:   ${automation.id}`);
   console.log(`Name:         ${automation.name}`);
@@ -133,6 +144,7 @@ function printAutomation(automation: Automation): void {
   console.log(`Capabilities: ${automation.capabilities.join(", ") || "-"}`);
   console.log(`Schedule:     ${automation.scheduleCron ? `${automation.scheduleCron} ${automation.scheduleTimezone}${automation.scheduleEnabled ? "" : " (disabled)"}` : "-"}`);
   if (automation.nextRunAt) console.log(`Next run:     ${formatTimestamp(automation.nextRunAt)}`);
+  console.log(`Events:       ${eventTriggerLabels(automation).join(" | ") || "-"}`);
   console.log(`Previous reports: ${automation.includePreviousReports ? automation.previousReportsLimit : 0}`);
   if (automation.pauseWhenUnproductive) console.log("Pause when unproductive: yes");
   const extensions = automation.extensions;
@@ -169,6 +181,11 @@ function printRunMetadata(run: AutomationRun, write: (line: string) => void): vo
   write(`automation: ${run.definitionId}`);
   write(`state: ${run.state}`);
   write(`trigger: ${run.trigger}${run.triggerSource ? ` (${run.triggerSource})` : ""}`);
+  if (run.triggerEvent) {
+    const event = run.triggerEvent;
+    write(`event: ${event.type} #${event.eventId}: ${event.repository}#${event.issueNumber} ${event.reasonKind}${event.reason ? ` (${event.reason.replace(/\s+/g, " ").slice(0, 200)})` : ""}`);
+    write(`plan: ${event.planUrl}`);
+  }
   write(`created at: ${formatTimestamp(run.createdAt)}`);
   if (run.reportedAt) write(`reported at: ${formatTimestamp(run.reportedAt)}`);
   if (run.finishedAt) write(`finished at: ${formatTimestamp(run.finishedAt)}`);
@@ -474,7 +491,7 @@ Examples:
 
   automation
     .command("show <id>")
-    .description("Show an automation's prompt, schedule, autonomy and repositories")
+    .description("Show an automation's prompt, schedule, event triggers, autonomy and repositories")
     .option("-j, --json", "Output the version 1 automation JSON document")
     .action(async (id: string, options: { json?: boolean }) => {
       try {
