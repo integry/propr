@@ -1,4 +1,4 @@
-import { DelayedError, Job, Queue, UnrecoverableError } from 'bullmq';
+import { Job, Queue, UnrecoverableError } from 'bullmq';
 import {
     loadRepositoryWorkflow, loadSettings, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, TaskStates,
@@ -10,6 +10,7 @@ import type { Logger } from 'pino';
 import { runWithNetworkPolicy } from './networkEgress.js';
 import { recordRepositoryValidationEvent } from './repositoryValidationEvent.js';
 import { resolveWorkerConcurrency } from '../workerConcurrency.js';
+import { capacityDeferralDelayMs, deferOnCapacityRefusal, nextCapacityDeferral, recordCapacityDeferral } from './capacityDeferral.js';
 
 type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 type RepositoryWorkflowDeferralData = Pick<IssueJobData, 'repositoryWorkflow' | 'repositoryWorkflowBaseBranch' | 'repositoryWorkflowDeferrals' | 'repositoryWorkflowRetryAt'>;
@@ -162,9 +163,9 @@ export function repositoryWorkflowDeferralData(
     data: RepositoryWorkflowDeferralData, workflow: ResolvedRepositoryWorkflow | undefined, baseBranch: string | null | undefined,
     { now = Date.now(), random = Math.random }: { now?: number; random?: () => number } = {},
 ): RepositoryWorkflowDeferral {
-    const deferrals = (data.repositoryWorkflowDeferrals ?? 0) + 1;
+    const { deferrals, retryAt } = nextCapacityDeferral(data.repositoryWorkflowDeferrals, { now, random });
     return { repositoryWorkflow: workflow ?? null, repositoryWorkflowBaseBranch: baseBranch ?? workflow?.baseBranch ?? null,
-        repositoryWorkflowDeferrals: deferrals, repositoryWorkflowRetryAt: now + repositoryWorkflowDeferralDelayMs(deferrals, random) };
+        repositoryWorkflowDeferrals: deferrals, repositoryWorkflowRetryAt: retryAt };
 }
 
 /** Admission ends the wait; ordinary retries must read the base branch policy again. */
@@ -172,38 +173,19 @@ export const CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: RepositoryWorkflowDeferralDat
     repositoryWorkflow: undefined, repositoryWorkflowBaseBranch: undefined, repositoryWorkflowDeferrals: undefined, repositoryWorkflowRetryAt: undefined,
 };
 
-/**
- * Explain a silent capacity wait on the task timeline without changing its state.
- * Best effort: a timeline write must never prevent the job from being delayed, and
- * a task that changed meanwhile (cancelled, admitted elsewhere) is left untouched.
- */
+/** Explain a silent repository capacity wait on the task timeline (see recordCapacityDeferral). */
 export async function recordRepositoryWorkflowDeferral(options: {
     stateManager: WorkerStateManager; taskId: string; correlatedLogger: Logger;
     deferral: Pick<RepositoryWorkflowDeferral, 'repositoryWorkflowDeferrals' | 'repositoryWorkflowRetryAt'>;
     workflow?: ResolvedRepositoryWorkflow;
 }): Promise<void> {
-    const { stateManager, taskId, correlatedLogger, deferral, workflow } = options;
-    try {
-        const current = await stateManager.getTaskState(taskId);
-        if (!current || ([TaskStates.CANCELLED, TaskStates.FAILED, TaskStates.COMPLETED] as string[]).includes(current.state)) return;
-        const limit = workflow?.maxParallelTasks ? ` (limit ${workflow.maxParallelTasks})` : '';
-        const historyMetadata = {
-            repositoryWorkflowDeferrals: deferral.repositoryWorkflowDeferrals,
-            repositoryWorkflowRetryAt: new Date(deferral.repositoryWorkflowRetryAt).toISOString(),
-        };
-        // One waiting row per wait: a later refusal updates its count and retry time
-        // instead of appending another row for every backoff cycle.
-        const latest = current.history?.at(-1);
-        if (latest?.state === current.state && latest.metadata?.repositoryWorkflowDeferrals) {
-            await stateManager.updateHistoryMetadata(taskId, current.state, historyMetadata);
-            return;
-        }
-        await stateManager.updateTaskStateIfCurrent(taskId, {
-            state: current.state, createdAt: current.createdAt, updatedAt: current.updatedAt, correlationId: current.correlationId, version: current.version,
-        }, current.state, { reason: `Waiting for repository workflow capacity${limit}`, historyMetadata });
-    } catch (error) {
-        correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Failed to record repository workflow capacity wait');
-    }
+    const { deferral, workflow } = options;
+    const limit = workflow?.maxParallelTasks ? ` (limit ${workflow.maxParallelTasks})` : '';
+    await recordCapacityDeferral({
+        kind: 'repository', stateManager: options.stateManager, taskId: options.taskId, correlatedLogger: options.correlatedLogger,
+        deferrals: deferral.repositoryWorkflowDeferrals, retryAt: deferral.repositoryWorkflowRetryAt,
+        reason: `Waiting for repository workflow capacity${limit}`,
+    });
 }
 
 /**
@@ -228,13 +210,9 @@ export async function persistRepositoryWorkflowDeferral<T extends RepositoryWork
     await recordRepositoryWorkflowDeferral({ stateManager, taskId, correlatedLogger, deferral, workflow });
 }
 
-const DEFERRAL_BASE_MS = 10_000;
-const DEFERRAL_MAX_MS = 300_000;
-
 /** Exponential backoff with jitter so waiting jobs do not re-enter in lockstep. */
 export function repositoryWorkflowDeferralDelayMs(deferrals: number, random: () => number = Math.random): number {
-    const ceiling = Math.min(DEFERRAL_BASE_MS * 2 ** Math.max(0, Math.min(deferrals, 16) - 1), DEFERRAL_MAX_MS);
-    return Math.round(ceiling / 2 + random() * ceiling / 2);
+    return capacityDeferralDelayMs(deferrals, random);
 }
 
 async function checkWorkflowTaskActive(options: { taskId: string; stateManager: WorkerStateManager }): Promise<void> {
@@ -322,18 +300,17 @@ export function isUserCancellationError(error: unknown): boolean {
     return !!message?.includes('aborted by user') || name === 'ExecutionAbortedError';
 }
 
-/** Delay only after the processor has unwound its locks and durable claims. */
-export async function deferRepositoryWorkflowJob<T>(job: Pick<Job<RepositoryWorkflowDeferralData>, 'moveToDelayed' | 'token'> & { data?: RepositoryWorkflowDeferralData }, execute: () => Promise<T>): Promise<T> {
-    try {
-        return await execute();
-    } catch (error) {
-        if (!(error instanceof RepositoryWorkflowCapacityError)) throw error;
-        // Processors persist the incremented deferral count and retry time before unwinding.
-        const retryAt = job.data?.repositoryWorkflowRetryAt;
-        await job.moveToDelayed(retryAt && retryAt > Date.now() ? retryAt : Date.now() + repositoryWorkflowDeferralDelayMs(job.data?.repositoryWorkflowDeferrals ?? 1), job.token);
-        throw new DelayedError();
-    }
+/**
+ * Delay only after the processor has unwound its locks and durable claims.
+ * Covers every capacity kind: repository workflow capacity and per-agent
+ * capacity (AgentCapacityError) share this one path.
+ */
+export function deferCapacityJob<T>(job: Pick<Job, 'moveToDelayed' | 'token'> & { data?: object }, execute: () => Promise<T>): Promise<T> {
+    return deferOnCapacityRefusal(job, execute, error => error instanceof RepositoryWorkflowCapacityError);
 }
+
+/** The original name of deferCapacityJob. */
+export const deferRepositoryWorkflowJob = deferCapacityJob;
 
 export async function runRepositoryWorkflow(options: {
     workflow?: ResolvedRepositoryWorkflow; repoOwner: string; repoName: string;

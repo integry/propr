@@ -1,3 +1,4 @@
+import { parentScopeFromCommentJob, parentScopeFromIssueBody } from '../agents/agentRunNesting.js';
 import { antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
 /* eslint-disable max-lines */
 import logger, { generateCorrelationId } from '../utils/logger.js';
@@ -30,7 +31,7 @@ export interface UltrafixDeps {
     loadUltrafixMaxCycles: () => Promise<number>;
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
-    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number; sourceCommentId?: number; instructions?: string; userId?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
+    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number; sourceCommentId?: number; sourceCommentType?: 'issue' | 'review'; instructions?: string; userId?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearStateIfCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, workEpoch: number) => Promise<boolean>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
     reserveAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
@@ -509,7 +510,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<Comm
             // Snapshot live or deferred work before reservation invalidates it.
             const hadAutomaticWork = await deps.hasAutomaticWork(redisClient, owner, repo, prNumber);
             workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
-            loopMeta = { ...commandMeta, workEpoch };
+            loopMeta = { ...commandMeta, workEpoch, sourceCommentId: comment.id, sourceCommentType: isReviewComment(comment, eventContext.eventType) ? 'review' : 'issue' };
             // Close the gap between the first queue snapshot and reservation. Work
             // that appeared in that interval must settle before this loop reviews it.
             olderPrWorkExists = Boolean(hadAutomaticWork || existingJob || await checkExistingJob(prNumber, owner, repo));
@@ -538,6 +539,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<Comm
                 reviewModel: effectiveReviewModel,
                 workEpoch,
                 sourceCommentId: comment.id,
+                sourceCommentType: isReviewComment(comment, eventContext.eventType) ? 'review' : 'issue',
                 instructions: commandMeta.instructions,
                 ...(payload.sender?.id === undefined ? {} : { userId: String(payload.sender.id) }),
             }, startWithPendingReview);
@@ -840,6 +842,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (!eventDetails) return { status: 'ignored', reason: 'not_pull_request_comment' };
 
     const { prNumber, comment: rawComment } = eventDetails;
+    // A goal creates this inert resource before GitHub assigns the ID it signs.
+    if (rawComment.body.trim() === '<!-- propr-parent-execution-pending -->') {
+        return { status: 'ignored', reason: 'admission_parent_pending' };
+    }
 
     const commentAuthor = rawComment.user.login;
     const parsedCommand = parseSlashCommand(rawComment.body);
@@ -982,6 +988,8 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         id: comment.id,
         createdAt: comment.created_at,
         body: pendingCommentBody,
+        agentAdmissionParentProof: comment.body,
+        agentAdmissionParent: parentScopeFromIssueBody(comment.body, { repoOwner: owner, repoName: repo, number: prNumber, commentId: comment.id, commentType: reviewComment ? 'review' : 'issue' }),
         author: commentAuthor,
         type: reviewComment ? 'review' : 'issue',
         hasCodeContext: reviewComment && !!comment.diff_hunk,
@@ -1027,7 +1035,7 @@ function prepareComment(comment: { id: number; created_at: string; body: string;
     }
 
     const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
-    const unprocessedComment: UnprocessedComment = { id: comment.id, createdAt: comment.created_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
+    const unprocessedComment: UnprocessedComment = { agentAdmissionParentProof: comment.body, id: comment.id, createdAt: comment.created_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
     return { enhancedBody, unprocessedComment, llmFromKeywords };
 }
 
@@ -1104,6 +1112,7 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
         } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
+    jobData.agentAdmissionParent = parentScopeFromCommentJob(jobData, jobData.comments);
     const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
     const commentRevisionSlug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
     const jobId = options.jobId ?? (manualCommand

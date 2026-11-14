@@ -10,6 +10,7 @@ import 'dotenv/config';
 // Re-export types for backward compatibility
 export type {
     IssueJobData,
+    AgentCapacityDeferralData,
     CommentJobData,
     UnprocessedComment,
     TaskImportJobData,

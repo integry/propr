@@ -141,6 +141,7 @@ export {
 } from './queue/taskQueue.js';
 export type {
     IssueJobData,
+    AgentCapacityDeferralData,
     CommentJobData,
     TaskImportJobData,
     SystemTaskJobData,
@@ -697,3 +698,23 @@ export * from './extensions/extensionProfileStore.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';
+
+export { validateAgentRunAdmissionPolicy, revalidateAgentRunAdmissionPolicy } from './agents/agentRunAdmissionPolicy.js';
+export {
+    readAgentRunAdmissionSnapshot, type AgentRunAdmissionSnapshot, type AgentAdmissionAgentReport, type AgentAdmissionTaskRef,
+    type AgentAdmissionStateCounts, type AgentAdmissionWaitingCounts,
+} from './agents/agentRunAdmissionSnapshot.js';
+export type { AgentAdmissionConfigurationState, AgentAdmissionConfigurationStatus } from './agents/agentRunAdmissionConfigState.js';
+export type { RepositoryWorkflowSlotUsage } from './workflow/workflowSlotUsage.js';
+export {
+    AgentCapacityError, AgentCapacityWaitTimeoutError, isAgentCapacityError, agentAliasHasCapacity, assertAgentAliasCapacity,
+    agentCapacityPolicyConfigured, registerAgentCapacityWaiter, forgetAgentCapacityWaiter, wakeAgentCapacityWaiters, agentCapacityWaitersKey,
+    configureAgentCapacityRedis, runWithAgentCapacityContext, reserveAgentCapacity, agentCapacityPins, agentAliasCeiling,
+    type AgentCapacityReservation, type AgentCapacityJobContext,
+} from './agents/agentCapacity.js';
+export { AGENT_RUN_ALIAS_LIMITS_ENV, parseAgentRunAliasLimits, agentRunAliasLimitProblems } from './agents/agentRunAliasLimits.js';
+export {
+    AGENT_ADMISSION_MAX_NESTING_DEPTH, AGENT_ADMISSION_PARENT_ENV, AGENT_RUN_NESTED_LIMIT_ENV, DEFAULT_AGENT_RUN_NESTED_LIMIT, AgentAdmissionNestingError,
+    AGENT_ADMISSION_PARENT_KEY_ENV, goalParentSigningKey, agentAdmissionChildIdentity, agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody, parentScopeFromCommentJob,
+    runAsAgentAdmissionParent, runWithAgentAdmissionParent, type AgentAdmissionNesting,
+} from './agents/agentRunNesting.js';

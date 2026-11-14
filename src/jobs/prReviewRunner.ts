@@ -209,12 +209,22 @@ export async function runSingleReview(
 type ReviewRoutingOutcome = { status: 'routed'; assignment: ReviewAssignment }
     | { status: 'failed'; result: ReviewResult };
 
+/**
+ * Selects every reviewer's physical route before any review is posted. Routing
+ * is capacity-aware: a synthetic reviewer skips members whose direct agent is at
+ * its per-agent ceiling for another member of the same tier, and when a
+ * reviewer's direct agent (or every member of its tier) is saturated the whole
+ * review job is deferred with one AgentCapacityError naming each saturated
+ * alias, rather than holding the worker while that reviewer waits. Without a
+ * per-agent policy nothing is ever saturated here.
+ */
 export async function routeReviewAssignments(
     registry: AgentRegistry, assignments: ReviewAssignment[], pullRequestNumber: number, correlatedLogger: Logger,
 ): Promise<ReviewRoutingOutcome[]> {
-    return Promise.all(assignments.map(async assignment => {
+    const saturated: Array<{ aliases: string[]; ceilings: Record<string, number> }> = [];
+    const outcomes = await Promise.all(assignments.map(async (assignment): Promise<ReviewRoutingOutcome | null> => {
         try {
-            const routingSession = registry.beginRoutingSession({ requestedAgentAlias: assignment.agentAlias, requestedModel: assignment.model });
+            const routingSession = registry.beginRoutingSession({ requestedAgentAlias: assignment.agentAlias, requestedModel: assignment.model, deferOnCapacity: true });
             const selection = await routingSession.select();
             return {
                 status: 'routed' as const,
@@ -223,6 +233,10 @@ export async function routeReviewAssignments(
                     physicalModel: selection.physicalModel },
             };
         } catch (routingError) {
+            if ((routingError as Error).name === 'AgentCapacityError') {
+                saturated.push(routingError as unknown as { aliases: string[]; ceilings: Record<string, number> });
+                return null;
+            }
             const error = `Failed to route review assignment '${assignment.label}': ${(routingError as Error).message}`;
             correlatedLogger.warn({ pullRequestNumber, agentAlias: assignment.agentAlias,
                 model: assignment.model, error: (routingError as Error).message,
@@ -235,6 +249,15 @@ export async function routeReviewAssignments(
             };
         }
     }));
+    if (saturated.length) throw reviewCapacityRefusal(saturated);
+    return outcomes.filter((outcome): outcome is ReviewRoutingOutcome => outcome !== null);
+}
+
+/** One refusal naming every saturated reviewer alias; matched by name like core's AgentCapacityError. */
+function reviewCapacityRefusal(refusals: Array<{ aliases: string[]; ceilings: Record<string, number> }>): Error {
+    const aliases = [...new Set(refusals.flatMap(refusal => refusal.aliases ?? []))];
+    const ceilings = Object.assign({}, ...refusals.map(refusal => refusal.ceilings ?? {})) as Record<string, number>;
+    return Object.assign(new Error(`Waiting for agent capacity: ${aliases.map(alias => `'${alias}'`).join(', ')} at its ceiling`), { name: 'AgentCapacityError', aliases, ceilings });
 }
 
 export async function runReviewRoutingOutcomes(

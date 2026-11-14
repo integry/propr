@@ -21,13 +21,16 @@ interface QueueRoutesDeps {
 export function createQueueRoutes(deps: QueueRoutesDeps) {
   const { redisClient, taskQueue } = deps;
 
-  // Fleet health and drain decisions consume only waiting and active counts.
-  async function collectQueueStats(): Promise<{ waiting: number; active: number }> {
-    const [waiting, active] = await Promise.all([
+  // Fleet health and drain decisions consume waiting, active and deferred counts.
+  // A job deferred for repository or agent capacity sits in BullMQ's delayed
+  // state and comes back by itself: it is pending work, not idle capacity.
+  async function collectQueueStats(): Promise<{ waiting: number; active: number; deferred: number }> {
+    const [waiting, active, deferred] = await Promise.all([
       taskQueue.getWaitingCount(),
-      taskQueue.getActiveCount()
+      taskQueue.getActiveCount(),
+      countCapacityDeferredJobs(taskQueue),
     ]);
-    return { waiting, active };
+    return { waiting, active, deferred };
   }
 
   async function getQueueStats(_req: Request, res: Response): Promise<void> {
@@ -101,6 +104,32 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
   }
 
   return { collectQueueStats, getQueueStats, getActivity, getMetrics };
+}
+
+const DEFERRED_PAGE = 500;
+
+/** Whether a delayed job is waiting for capacity (rather than a retry backoff or a scheduled start). */
+export function isCapacityDeferredJob(data: unknown): boolean {
+  if (!isRecord(data)) return false;
+  return [data.agentCapacityDeferrals, data.repositoryWorkflowDeferrals]
+    .some(value => typeof value === 'number' && value > 0);
+}
+
+/**
+ * Delayed jobs deferred for capacity, over the whole delayed set. A drain
+ * reads zero as "nothing pending", so the count is never cut short: the IDs
+ * come from one read of the set (so jobs promoted meanwhile cannot shift later
+ * ones past a page boundary), then the jobs are loaded page by page. A job gone
+ * by the time it is loaded has left the delayed state and is not counted here.
+ */
+export async function countCapacityDeferredJobs(queue: Pick<Queue, 'getRanges' | 'getJob'>): Promise<number> {
+  const ids = await queue.getRanges(['delayed'], 0, -1);
+  let deferred = 0;
+  for (let start = 0; start < ids.length; start += DEFERRED_PAGE) {
+    const jobs = await Promise.all(ids.slice(start, start + DEFERRED_PAGE).map(id => queue.getJob(id)));
+    for (const job of jobs) if (job && isCapacityDeferredJob(job.data)) deferred++;
+  }
+  return deferred;
 }
 
 function serializeLiveJobs(jobs: Job[]): LiveQueueJob[] {

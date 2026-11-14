@@ -9,11 +9,8 @@ import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
 import { createEpicQueueRouteEntries } from './epicQueueRouteRegistry.js';
 import {
-  requireAgentTankUsageAccess,
-  requireManageAgents,
-  requireManageMembers,
-  requireManageRuntime,
-  requireManageSettings,
+  requireAgentTankUsageAccess, requireManageAgents, requireManageMembers,
+  requireManageRuntime, requireManageSettings,
 } from './permissionGuards.js';
 import { withDemoViewerBoundary } from './demoViewerRoutes.js';
 import { timeApiRouteHandler } from './apiPerformanceTiming.js';
@@ -39,6 +36,7 @@ interface ManagementRouteDeps {
 /** Integration signal routes (readiness, repository events) are typed in their own registry. */
 interface OperationalRouteDeps extends IntegrationSignalRouteDeps {
   activeWorkRoutes: ReturnType<typeof routes.createActiveWorkRoutes>;
+  agentRunAdmissionRoutes: ReturnType<typeof routes.createAgentRunAdmissionRoutes>;
   automationDefinitionRoutes: ReturnType<typeof routes.createAutomationDefinitionRoutes>;
   dashboardRoutes: ReturnType<typeof routes.createDashboardRoutes>;
   dockerRoutes: ReturnType<typeof routes.createDockerRoutes>;
@@ -182,6 +180,7 @@ export function createManagementRouteEntries({
 export function createOperationalRouteEntries(deps: OperationalRouteDeps): RouteEntry[] {
   const {
     activeWorkRoutes,
+    agentRunAdmissionRoutes,
     automationDefinitionRoutes,
     dashboardRoutes,
     dockerRoutes,
@@ -301,6 +300,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['put', '/api/task/:taskId/assignees', taskAssignmentRoutes.putAssignees],
     ['get', '/api/task/:taskId/assignable-users', taskAssignmentRoutes.getAssignableUsers],
     ['get', '/api/queue/stats', queueRoutes.getQueueStats],
+    ['get', '/api/agent-run-admission', agentRunAdmissionRoutes.getAgentRunAdmission],
     ['get', '/api/activity', queueRoutes.getActivity],
     ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary],
@@ -412,9 +412,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
   ];
 }
 
-export function createMemberCatalogRouteEntries({
-  instanceCatalogRoutes,
-}: MemberCatalogRouteDeps): RouteEntry[] {
+export function createMemberCatalogRouteEntries({ instanceCatalogRoutes }: MemberCatalogRouteDeps): RouteEntry[] {
   return [
     ['get', '/api/catalog', instanceCatalogRoutes.getLegacyCatalog],
     ['get', '/api/instance/catalog', instanceCatalogRoutes.getCatalog],

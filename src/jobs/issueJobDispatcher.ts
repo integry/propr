@@ -7,7 +7,7 @@ import {
     type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type RetryRunReceipt, type SubmissionRetry,
     type RunReceiptFence, type TriggerLabelEvent,
 } from '@propr/core';
-import { generateCorrelationId } from '@propr/core';
+import { generateCorrelationId, parentScopeFromIssueBody } from '@propr/core';
 import { resolveCurrentRun, receiptFence, recordAcceptedRun } from './issueRetryRunSelection.js';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
@@ -407,6 +407,12 @@ async function firstDispatchLabels(job: Job<IssueJobData>, storedData: IssueJobD
     return dispatchIssueLabels;
 }
 
+/** The orchestrating goal named by the issue body's parent marker, as child job data (#3480). */
+function admissionParentLink(issue: CurrentIssueData, target: IssueJobData): Pick<IssueJobData, 'agentAdmissionParent'> {
+    const scope = parentScopeFromIssueBody((issue.data as { body?: unknown }).body, target);
+    return { agentAdmissionParent: scope };
+}
+
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const { submission, run, trigger } = await resolveCurrentRun(issueRef, deps);
@@ -455,6 +461,8 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
 
         issueRef.dispatchIssueLabels = await firstDispatchLabels(job, storedData, currentIssueData, deps);
         const children: RetryRunChild[] = [];
+        // Explicit parent link from an orchestrating goal (#3480); never inferred from timing.
+        const parentLink = admissionParentLink(currentIssueData, issueRef);
         for (const base of basesToProcess) {
             for (const agentModel of agentModelsToProcess) {
                 const newJobData: IssueJobData = {
@@ -468,7 +476,8 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
                     isChildJob: true,
                     dispatchId: dispatchIdOf(job, correlationId),
                     issuePayload: currentIssueData.data as unknown as Record<string, unknown>,
-                    repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
+                    repoPayload: repoValidation.repoData as unknown as Record<string, unknown>,
+                    ...parentLink,
                 };
 
                 // Deterministic jobId for deduplication - prevents duplicate child jobs

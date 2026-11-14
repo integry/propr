@@ -1,0 +1,202 @@
+import assert from 'node:assert/strict';
+import { after, afterEach, test } from 'node:test';
+import type { Request, Response } from 'express';
+import { closeConnection, type AgentRunAdmissionSnapshot } from '@propr/core';
+import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
+import { McpError } from '../mcp/config.js';
+import { presentResult } from '../mcp/presentation.js';
+import { addAdmissionTools, AGENT_RUN_ADMISSION_TOOL } from '../mcp/toolsAdmission.js';
+import type { McpPrincipal } from '../mcp/policy.js';
+import type { McpTool, ToolDeps } from '../mcp/tools.js';
+import { AgentRunAdmissionConfiguration, AgentRunAdmissionReport } from '../openapi/schemasAdmission.js';
+import { createAgentRunAdmissionRoutes } from '../routes/agentRunAdmissionRoutes.js';
+
+after(() => closeConnection());
+afterEach(() => resetConfiguredDemoMode());
+
+const counts = (running: number) => ({ reserved: 0, running, draining: 0, recovering: 0, total: running });
+const noWait = () => ({ total: 0, globalLimit: 0, agentCeiling: 0, recovering: 0, starting: 0 });
+
+function enabledSnapshot(): AgentRunAdmissionSnapshot {
+  return {
+    enabled: true, asOf: '2026-11-13T10:00:00.000Z', agentCeilingsConfigured: true,
+    global: {
+      limit: 2, limitSource: 'PROPR_AGENT_RUN_LIMIT', generation: 0, configuration: { status: 'current', admitting: true, stored: { limit: 2, generation: 0 } },
+      nestedLimit: 4, nestedLimitSource: 'default',
+      inUse: 2, holders: counts(2), unattributedHolders: 0, nested: { total: 0, chargedUnderParent: 0, countedAgainstOtherAgent: 0 },
+      waiting: { total: 1, globalLimit: 0, agentCeiling: 1, recovering: 0, starting: 0 }, deferred: 1,
+    },
+    agents: [{
+      alias: 'local', ceiling: 1, inUse: 1, holders: counts(1), nested: { total: 0, chargedUnderParent: 0, countedAgainstCeiling: 0 },
+      waiting: { total: 1, globalLimit: 0, agentCeiling: 1, recovering: 0, starting: 0 }, deferred: 1,
+      tasks: [
+        { taskId: 'public-task', alias: 'local', state: 'running', nested: false },
+        { taskId: 'private-task', alias: 'local', state: 'waiting', waitReason: 'alias_limit', nested: false },
+        { taskId: 'unknown-task', alias: 'local', state: 'waiting', waitReason: 'starting', nested: false },
+      ],
+    }, {
+      alias: 'cloud', ceiling: null, inUse: 1, holders: counts(1), nested: { total: 0, chargedUnderParent: 0, countedAgainstCeiling: 0 },
+      waiting: noWait(), deferred: 0, tasks: [],
+    }],
+    repositoryWorkflowSlots: [
+      { repository: 'acme/public', inUse: 1, limit: 2, waiting: 0 },
+      { repository: 'acme/private', inUse: 1, limit: 1, waiting: 1 },
+    ],
+  };
+}
+
+const TASKS = [{ task_id: 'public-task', repository: 'acme/public' }, { task_id: 'private-task', repository: 'acme/private' }];
+const db = ((table: string) => {
+  assert.equal(table, 'tasks');
+  return { whereIn: (_column: string, ids: string[]) => ({ select: async () => TASKS.filter(row => ids.includes(row.task_id)) }) };
+}) as never;
+const taskQueue = { getActiveCount: async () => 3 } as never;
+const redisClient = {
+  sMembers: async () => ['worker-a', 'worker-b'],
+  hGetAll: async () => ({ 'worker-a': '2', 'worker-b': '3' }),
+} as never;
+
+function recorder() {
+  const record: { status: number; body?: unknown; headers: Record<string, string> } = { status: 200, headers: {} };
+  const response = {
+    setHeader(name: string, value: string) { record.headers[name.toLowerCase()] = value; },
+    status(code: number) { record.status = code; return response; },
+    json(body: unknown) { record.body = body; return response; },
+  } as unknown as Response;
+  return { record, response };
+}
+const member = { authorization: { role: 'member', permissions: [], source: 'local' } } as unknown as Request;
+const demo = { authorization: { role: 'member', permissions: [], source: 'demo' } } as unknown as Request;
+type Report = ReturnType<typeof AgentRunAdmissionReport.parse>;
+
+test('REST returns the report with task IDs of existing tasks and every limit labelled', async () => {
+  const routes = createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot() });
+  const { record, response } = recorder();
+  await routes.getAgentRunAdmission(member, response);
+  assert.equal(record.status, 200);
+  assert.equal(record.headers['cache-control'], 'no-store');
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.deepEqual(body.agents[0].tasks.map(task => task.taskId), ['public-task', 'private-task'], 'an unknown task ID is never echoed');
+  assert.equal(body.agents[0].waiting.agentCeiling, 1);
+  assert.deepEqual({ inUse: body.queueWorkers.inUse, total: body.queueWorkers.total, workers: body.queueWorkers.workers }, { inUse: 3, total: 5, workers: 2 });
+  assert.match(body.queueWorkers.label, /^Queue worker concurrency/);
+  assert.match(body.repositoryWorkflowSlots.label, /^Repository workflow slots/);
+  assert.equal(body.repositoryWorkflowSlots.repositories.length, 2);
+  assert.match(body.subscriptionUsage, /get_provider_usage/);
+});
+
+test('REST gives the read-only demo viewer counts only', async () => {
+  configureDemoMode(true);
+  const routes = createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot() });
+  const { record, response } = recorder();
+  await routes.getAgentRunAdmission(demo, response);
+  const body = record.body as Report;
+  assert.deepEqual(body.agents.flatMap(agent => agent.tasks), []);
+  assert.deepEqual(body.repositoryWorkflowSlots.repositories, []);
+  assert.equal(body.admission.global!.inUse, 2, 'counts cover everything');
+});
+
+test('REST with admission off says so and returns the remaining limits', async () => {
+  const routes = createAgentRunAdmissionRoutes({
+    db, taskQueue, redisClient,
+    readSnapshot: async () => ({ enabled: false, asOf: '2026-11-13T10:00:00.000Z', agentCeilingsConfigured: false, agents: [], repositoryWorkflowSlots: [{ repository: 'acme/public', inUse: 1, limit: 1, waiting: 0 }] }),
+  });
+  const { record, response } = recorder();
+  await routes.getAgentRunAdmission(member, response);
+  assert.equal(record.status, 200);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.deepEqual(body.admission, { enabled: false, agentCeilingsConfigured: false, global: null });
+  assert.equal(body.queueWorkers.total, 5);
+  assert.equal(body.repositoryWorkflowSlots.repositories.length, 1);
+});
+
+test('REST says repository usage is unavailable instead of reporting it empty', async () => {
+  const routes = createAgentRunAdmissionRoutes({
+    db, taskQueue, redisClient,
+    readSnapshot: async () => ({
+      enabled: false, asOf: '2026-11-13T10:00:00.000Z', agentCeilingsConfigured: false, agents: [],
+      repositoryWorkflowSlots: [], repositoryWorkflowSlotsUnavailable: 'Repository workflow slots could not be read from Redis',
+    }),
+  });
+  const { record, response } = recorder();
+  await routes.getAgentRunAdmission(member, response);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.deepEqual(body.repositoryWorkflowSlots.repositories, []);
+  assert.equal(body.repositoryWorkflowSlots.unavailable, 'Repository workflow slots could not be read from Redis');
+  const read = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => ({ ...enabledSnapshot(), repositoryWorkflowSlots: [] }) })
+    .getAgentRunAdmission(member, read.response);
+  assert.equal((read.record.body as Report).repositoryWorkflowSlots.unavailable, undefined, 'a successful empty read is not marked unavailable');
+});
+
+test('REST failures use the error envelope without internal detail', async () => {
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    const routes = createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => { throw new Error('redis://secret@host'); } });
+    const { record, response } = recorder();
+    await routes.getAgentRunAdmission(member, response);
+    assert.equal(record.status, 500);
+    assert.deepEqual(record.body, { code: 'AGENT_RUN_ADMISSION_UNAVAILABLE', message: 'Agent-run admission state could not be read.' });
+  } finally { console.error = originalError; }
+});
+
+test('MCP shows task IDs and repositories only within the grant the policy allows', async () => {
+  const tools: McpTool[] = [];
+  const policy = {
+    repository: async (_principal: McpPrincipal, repository: string) => {
+      if (repository.toLowerCase() === 'acme/private') throw new McpError('REPOSITORY_FORBIDDEN', 'No access.', 403);
+    },
+  };
+  addAdmissionTools(tools, { db, taskQueue, redisClient, policy, agentRunAdmissionSnapshot: async () => enabledSnapshot() } as unknown as ToolDeps);
+  const tool = tools.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  assert.equal(tool.scope, 'read');
+  assert.equal(tool.readOnly, true);
+  const principal = { user: { id: 'u' }, grant: { repositories: ['acme/public', 'acme/private'] } } as unknown as McpPrincipal;
+  const result = await tool.run({ principal, args: {} } as never);
+  const body = AgentRunAdmissionReport.parse(result.data) as Report;
+  assert.deepEqual(body.agents[0].tasks.map(task => task.taskId), ['public-task'], 'a task in a repository the policy refuses stays hidden');
+  assert.deepEqual(body.repositoryWorkflowSlots.repositories.map(slot => slot.repository), ['acme/public']);
+  const narrow = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
+  const hidden = (await tool.run({ principal: narrow, args: {} } as never)).data as Report;
+  assert.deepEqual(hidden.agents.flatMap(agent => agent.tasks), []);
+  assert.equal(hidden.admission.global!.waiting.agentCeiling, 1);
+});
+
+test('a stored configuration admission refuses is reported as refusing, in REST and in the MCP summary', async () => {
+  const refusing = (): AgentRunAdmissionSnapshot => {
+    const snapshot = enabledSnapshot();
+    return { ...snapshot, global: { ...snapshot.global!, limit: 5, inUse: 0, configuration: { status: 'mismatch', admitting: false, stored: { limit: 3, generation: 0 } } } };
+  };
+  const { record, response } = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => refusing() }).getAgentRunAdmission(member, response);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.deepEqual(body.admission.global!.configuration, { status: 'mismatch', admitting: false, stored: { limit: 3, generation: 0 } });
+
+  const tools: McpTool[] = [];
+  addAdmissionTools(tools, { db, taskQueue, redisClient, policy: { repository: async () => undefined }, agentRunAdmissionSnapshot: async () => refusing() } as unknown as ToolDeps);
+  const tool = tools.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  const principal = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
+  const config = { instanceId: 'example', origin: 'https://propr.example' };
+  const summary = presentResult(tool, {}, (await tool.run({ principal, args: {} } as never)).data as never, config).summary;
+  assert.match(summary, /^Agent-run admission refuses every launch: stored configuration mismatch \(limit 3, generation 0\) vs configured limit 5, generation 0/);
+  assert.doesNotMatch(summary, /0\/5 in use/, 'refused capacity is not presented as available');
+
+  const pending = enabledSnapshot();
+  pending.global = { ...pending.global!, generation: 1, configuration: { status: 'pending_generation', admitting: true, stored: { limit: 2, generation: 0 } } };
+  addAdmissionTools(tools, { db, taskQueue, redisClient, policy: { repository: async () => undefined }, agentRunAdmissionSnapshot: async () => pending } as unknown as ToolDeps);
+  const pendingTool = tools.at(-1)!;
+  const pendingSummary = presentResult(pendingTool, {}, (await pendingTool.run({ principal, args: {} } as never)).data as never, config).summary;
+  assert.match(pendingSummary, /^Agent runs 2\/2 in use, .*generation 1 pending: the next admission fences every older reservation first/);
+});
+
+test('admission contract qualifies generation recovery by protocol compatibility', () => {
+  const guidance = AgentRunAdmissionConfiguration.shape.status.description!;
+  assert.match(guidance, /pending_generation: compatible protocol/);
+  assert.match(guidance, /mismatch: incompatible protocol/);
+  assert.match(guidance, /A higher generation resolves limit\/generation mismatches only within a compatible protocol/);
+  assert.match(guidance, /For incompatible protocols, draining and raising the generation are insufficient/);
+  assert.match(guidance, /Rolling restarts with mixed versions/);
+  assert.match(guidance, /stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key/);
+  assert.match(guidance, /never clear holder records/);
+});

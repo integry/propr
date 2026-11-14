@@ -78,6 +78,7 @@ export interface UltrafixLoopState {
     workEpoch: number;
     /** GitHub comment ID of the `/ultrafix` command that started this loop. */
     sourceCommentId?: number;
+    sourceCommentType?: 'issue' | 'review';
     /** Lines written beneath `/ultrafix`; applied to every review and fix cycle. */
     instructions?: string;
     /** GitHub user who started the loop, for attribution of its later steps. */
@@ -144,6 +145,7 @@ export interface StartLoopOptions {
     workEpoch?: number;
     /** GitHub comment ID of the `/ultrafix` command starting this loop. */
     sourceCommentId?: number;
+    sourceCommentType?: 'issue' | 'review';
     /** Lines written beneath `/ultrafix`, kept so a recovered loop still applies them. */
     instructions?: string;
     /** GitHub user who started the loop. */
@@ -200,6 +202,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastActionTimestamp: null,
         active: true,
         workEpoch: options.workEpoch ?? 0, ...(options.sourceCommentId !== undefined ? { sourceCommentId: options.sourceCommentId } : {}),
+        ...(options.sourceCommentType ? { sourceCommentType: options.sourceCommentType } : {}),
         ...(options.instructions ? { instructions: options.instructions } : {}),
         ...(options.userId ? { userId: options.userId } : {}),
         completionStatus: null,

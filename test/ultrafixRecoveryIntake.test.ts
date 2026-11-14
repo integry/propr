@@ -8,6 +8,7 @@ import { after, beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createUltrafixRedis } from './fixtures/ultrafixRedisDouble.js';
 import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
+import { parentScopeFromCommentJob, parentScopeFromIssueBody } from '../packages/core/src/agents/agentRunNesting.js';
 
 const OWNER = 'acme';
 const REPO = 'web';
@@ -131,6 +132,8 @@ const mockGetCurrentPRHead = mock.fn(async () => prHead);
 
 await mock.module('@propr/core', {
     namedExports: {
+        parentScopeFromCommentJob,
+        parentScopeFromIssueBody,
         reevaluatePRAutoMerge: async () => undefined,
         AgentRegistry: {},
         logger: coreLogger,

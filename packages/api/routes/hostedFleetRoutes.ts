@@ -25,6 +25,8 @@ interface FleetOperationalStatus {
 interface FleetQueueStatus {
     waiting: number;
     active: number;
+    /** Delayed jobs deferred for repository or agent capacity: pending work that re-enters by itself. */
+    deferred?: number;
 }
 
 const MAX_GITHUB_USER_ID_DIGITS = 20;
@@ -84,18 +86,13 @@ function parseOperationalStatus(value: unknown): FleetOperationalStatus | undefi
 
 function parseQueueStatus(value: unknown): FleetQueueStatus | undefined {
     if (!isRecord(value)) return undefined;
-    const { waiting, active } = value;
-    if (
-        typeof waiting !== 'number'
-        || !Number.isSafeInteger(waiting)
-        || waiting < 0
-        || typeof active !== 'number'
-        || !Number.isSafeInteger(active)
-        || active < 0
-    ) {
+    const { waiting, active, deferred } = value;
+    const count = (candidate: unknown): candidate is number =>
+        typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0;
+    if (!count(waiting) || !count(active) || (deferred !== undefined && !count(deferred))) {
         return undefined;
     }
-    return { waiting, active };
+    return deferred === undefined ? { waiting, active } : { waiting, active, deferred };
 }
 
 export function createHostedFleetRoutes({

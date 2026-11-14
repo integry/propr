@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createWebhookIssueCommentCreatedEvent } from './testHelpers.js';
+import { parentExecutionMarker, parentScopeFromCommentJob, parentScopeFromIssueBody } from '../packages/core/src/agents/agentRunNesting.js';
 
 const root = await mkdtemp(path.join(tmpdir(), 'followup-gate-'));
 process.env.DATA_DIR = root;
@@ -194,6 +195,8 @@ const { buildCiFailureFollowupMarker } = await import('../packages/core/src/webh
 await mock.module('../src/jobs/ultrafixResumeClaim.js', { namedExports: { hasUltrafixResumeCandidate: async () => false } });
 await mock.module('@propr/core', {
     namedExports: {
+        parentScopeFromCommentJob,
+        parentScopeFromIssueBody,
         logger: mockLogger,
         generateCorrelationId: () => 'poll-correlation-id',
         handleError: (error: unknown) => { throw error; },
@@ -663,6 +666,23 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         });
         const jobs = mockQueueAdd.mock.calls.map(call => (call.arguments as unknown[])[1] as { comments: Array<{ id: number }> });
         return jobs.flatMap(job => job.comments.map(comment => comment.id));
+    }
+
+    test('polling leaves a goal resource placeholder inert on an opted-in PR', async () => {
+        assert.deepEqual(await poll(createMockRedis(), [{ id: 1, body: '<!-- propr-parent-execution-pending -->', user: ALICE, created_at: '2026-10-09T10:00:00Z' }]), []);
+    });
+
+    for (const copied of [false, true]) {
+        test(`polling ${copied ? 'rejects a copied' : 'retains a valid'} signed parent association`, async () => {
+            process.env.SYSTEM_TASK_SECRET = 'polling-parent-regression-root';
+            const nonce = 'c'.repeat(40);
+            const marker = parentExecutionMarker(nonce, { repoOwner: OWNER, repoName: REPO, number: PR, commentId: 1 });
+            const id = copied ? 2 : 1;
+            assert.deepEqual(await poll(createMockRedis(), [{ id, body: `please fix\n${marker}`, user: ALICE, created_at: '2026-10-09T10:00:00Z' }]), [id]);
+            const queued = mockQueueAdd.mock.calls[0].arguments[1] as Parameters<typeof parentScopeFromCommentJob>[0] & { comments: Parameters<typeof parentScopeFromCommentJob>[1] };
+            assert.equal(queued.agentAdmissionParent, copied ? undefined : `goal:${nonce}`);
+            assert.equal(parentScopeFromCommentJob(queued, queued.comments), copied ? undefined : `goal:${nonce}`);
+        });
     }
 
     test('gate off: queues every comment and adds no assignee read', async () => {

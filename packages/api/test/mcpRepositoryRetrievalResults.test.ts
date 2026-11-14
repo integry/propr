@@ -10,6 +10,8 @@ let readFailure: Error | null = null;
 let readResult: unknown = null;
 let moduleMock: ReturnType<typeof mock.module>;
 let read: McpTool;
+let search: McpTool;
+const searchNestings: unknown[] = [];
 let McpError: typeof import('../mcp/config.js').McpError;
 let RepositoryRetrievalError: typeof import('@propr/core').RepositoryRetrievalError;
 
@@ -20,12 +22,18 @@ before(async () => {
     ...actual,
     loadMonitoredReposRaw: async () => [{ name: repository, enabled: true, baseBranch: 'main' }],
     readRepositoryFileContent: async () => { if (readFailure) throw readFailure; return readResult; },
+    searchRepositoryFiles: async () => {
+      searchNestings.push(actual.currentAgentAdmissionNesting());
+      // Only the admission context matters here, not the result.
+      throw new actual.RepositoryRetrievalError('not indexed', 404, 'file_not_found');
+    },
   } });
   ({ McpError } = await import('../mcp/config.js'));
   const { addContextTools } = await import('../mcp/toolsContext.js');
   const tools: McpTool[] = [];
   addContextTools(tools, { db: {} as never, policy: {} as never } as never);
   read = tools.find(tool => tool.name === 'read_repository_file')!;
+  search = tools.find(tool => tool.name === 'search_repository_files')!;
 });
 
 after(async () => {
@@ -108,4 +116,13 @@ test('read_repository_file holds a masked read to the requested maxBytes', async
   const principal = { user: { accessToken: null } };
   const { data: result } = await read.run({ principal, args: read.schema.parse({ repository, path: 'secrets.txt', maxBytes: 10 }) } as never) as { data: Record<string, unknown> };
   assert.deepEqual([result.content, result.returnedBytes, result.endLine, result.truncated, result.nextStartLine], ['[redacted]', 10, 1, true, 2]);
+});
+
+test('a search for an automation run is charged under that run\'s admission; any other caller is top-level (#3480)', async () => {
+  const { agentRunGrantParentScope } = await import('@propr/core');
+  const args = search.schema.parse({ repository, query: 'token validation' });
+  const caller = (clientId: string) => ({ user: { accessToken: null }, grant: { id: 'grant-run-1', clientId } });
+  await assert.rejects(search.run({ principal: caller('propr-agent-runs'), args } as never), McpError);
+  await assert.rejects(search.run({ principal: caller('browser-client'), args } as never), McpError);
+  assert.deepEqual(searchNestings, [{ parent: agentRunGrantParentScope('grant-run-1') }, undefined]);
 });

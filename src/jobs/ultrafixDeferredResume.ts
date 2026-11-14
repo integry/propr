@@ -367,6 +367,8 @@ async function resumeClaimedDeferredStep(
         pauseSeconds: state.pauseSeconds,
         reviewModel: state.reviewModel || undefined,
         instructions: state.instructions ?? '',
+        sourceCommentId: state.sourceCommentId,
+        sourceCommentType: state.sourceCommentType,
         }),
         workEpoch,
     };

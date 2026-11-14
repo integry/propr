@@ -3,6 +3,7 @@ import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAcce
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import {
     Agent,
     AgentConfig,
@@ -161,7 +162,7 @@ export class ClaudeAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
-                async () => executeDockerCommand('docker', dockerArgs, { extensionAgentLaunch: !!options.extensionProfile, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensionProfile, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
                     streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
@@ -199,6 +200,8 @@ export class ClaudeAgent implements Agent {
             if (usageMetrics) response.usageMetrics = usageMetrics;
             return response;
         } catch (error) {
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (isAgentCapacityError(error)) throw error;
             const executionTime = Date.now() - startTime;
             const level = effectiveReasoningLevel || undefined;
             if (error instanceof UsageLimitError) {
@@ -277,7 +280,7 @@ export class ClaudeAgent implements Agent {
             };
             const response = await executeClaudeNativeGoal(
                 { ...options, resumeSessionId: resumable ? sessionId : undefined },
-                { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs, operatorQuestions },
+                { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars }, buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs, operatorQuestions },
             ).finally(() => operatorQuestions && removeOperatorQuestionExchange(operatorQuestions));
             if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
@@ -286,6 +289,8 @@ export class ClaudeAgent implements Agent {
             }, 'Claude native goal attempt finished');
             return response;
         } catch (error) {
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (isAgentCapacityError(error)) throw error;
             const executionTimeMs = Date.now() - startTime;
             if (error instanceof UsageLimitError) {
                 await recordUnreturnedFailedExecution(usageLimitExecutionResult(error, { model, executionTimeMs }), options, this.config.alias);
@@ -331,7 +336,7 @@ export class ClaudeAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
-                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, model: effectiveModel
                 }),
                 { timeoutMs: ANALYSIS_AGENT_TANK_TIMEOUT_MS, alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking }

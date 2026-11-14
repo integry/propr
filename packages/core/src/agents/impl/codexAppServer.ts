@@ -98,7 +98,7 @@ export async function executeCodexAppServerGoal(
         const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
         attachProviderCapture(spawned, capture);
         return spawned;
-    });
+    }, { agentAlias: config.alias });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
     const connection = new AppServerConnection(child, options.taskId, records => control.appendOutput(records));

@@ -30,6 +30,7 @@ import {
   createQueueCommand,
   createBackendCommand,
   createStatsCommand,
+  createAdmissionCommand,
   createPrCommand,
   createEventsCommand,
   createInitCommand,
@@ -257,7 +258,7 @@ Command Groups:
   Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
-  Backend:        backend [status|queue], remote-status, queue
+  Backend:        backend [status|queue], remote-status, queue, admission
   Agent Skills:   skill [install|status|remove]
   Shell:          completion [bash|zsh|fish]
 
@@ -450,6 +451,7 @@ program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
 program.addCommand(createStatsCommand());
+program.addCommand(createAdmissionCommand());
 program.addCommand(createPrCommand());
 program.addCommand(createEventsCommand());
 

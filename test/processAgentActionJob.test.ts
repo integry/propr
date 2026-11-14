@@ -473,6 +473,21 @@ test('extension automation captures instance restriction before agent.executeTas
   assert.equal(fixture.captures(), 1);
 });
 
+test('a saturated agent defers the acting step before its claim; nothing executes and the run stays unclaimed', async () => {
+  const { DelayedError } = await import('bullmq');
+  const { AgentCapacityError } = await import('../packages/core/src/agents/agentCapacity.ts');
+  const h = harness();
+  let delayed = false;
+  const job = { ...actionJob(), queueName: 'issues', token: 't', updateData: async (data: AgentRunJobData) => { job.data = data; }, moveToDelayed: async () => { delayed = true; } };
+  await assert.rejects(createAgentActionProcessor({
+    ...h.deps, checkAgentCapacity: async () => { throw new AgentCapacityError(['claude'], { claude: 1 }); },
+  })(job as never), DelayedError);
+  assert.equal(delayed, true);
+  assert.equal(h.run().actionTaskId, null, 'the acting step is not claimed');
+  assert.equal(h.executeTask.mock.callCount(), 0);
+  assert.equal((job.data as { agentCapacityDeferrals?: number }).agentCapacityDeferrals, 1);
+});
+
 describe('acting-step mutation count', () => {
   test('the grant is revoked before the run completes, and its mutation count is stored on the run', async () => {
     const h = harness({ mutatingOperations: 2 });

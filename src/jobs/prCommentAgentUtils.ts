@@ -266,6 +266,18 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
     return modelName;
 }
 
+/** The requested agent (direct or synthetic) and model a PR follow-up runs. */
+export async function resolvePRCommentAgent(llm: string | null | undefined, correlatedLogger: Logger): Promise<{ agentAlias: string; model: string }> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    if (llm) {
+        const resolution = await resolveLlmLabel(llm);
+        return { agentAlias: resolution.agentAlias, model: resolution.model };
+    }
+    const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
+    return { agentAlias: resolvedAlias, model: resolvedModel };
+}
+
 export interface AgentExecutionParams {
     llm: string | null | undefined;
     worktreePath: string;
@@ -291,21 +303,7 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
     const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
 
     const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    let agentAlias: string;
-    let modelToUse: string;
-
-    if (llm) {
-        const resolution = await resolveLlmLabel(llm);
-        agentAlias = resolution.agentAlias;
-        modelToUse = resolution.model;
-    } else {
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        agentAlias = resolvedAlias;
-        modelToUse = resolvedModel;
-    }
-
+    const { agentAlias, model: modelToUse } = await resolvePRCommentAgent(llm, correlatedLogger);
     const agent = registry.getAgentByAlias(agentAlias);
 
     if (!agent) {
