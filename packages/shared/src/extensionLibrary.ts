@@ -5,6 +5,7 @@ import {
   extensionServerNameSchema, remoteMcpSchema, type ExtensionSecretStatus, type ExtensionSkillBundle,
 } from './extensionProfiles.js';
 import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServerFields, type ExtensionSecretAcknowledgement } from './extensionPackages.js';
+import { PLUGIN_REPOSITORY_LIMIT } from './pluginInstallations.js';
 
 /**
  * The instance extension library: one list of MCP servers and skill bundle
@@ -12,7 +13,8 @@ import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServe
  * `enabled` switch and `autoApply`. Automations add items explicitly on top.
  */
 export const EXTENSION_LIBRARY_VERSION = EXTENSION_PROFILE_VERSION;
-export const EXTENSION_LIBRARY_LIMITS = { servers: 32, bundles: 32, repositories: 64, agents: 64 } as const;
+/** An item holds as many repositories as a plugin's repository limit, which its managed items copy. */
+export const EXTENSION_LIBRARY_LIMITS = { servers: 32, bundles: 32, repositories: PLUGIN_REPOSITORY_LIMIT, agents: 64 } as const;
 export const EXTENSION_RUNTIMES = ['claude', 'codex'] as const;
 
 /** Plugin ids, as `pluginIdSchema` in plugins.ts (kept here to avoid an import cycle). */

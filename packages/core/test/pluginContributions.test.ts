@@ -22,6 +22,7 @@ import { extensionOAuth } from '../src/extensions/extensionOAuthStore.js';
 import { automationTemplateCatalog, pluginTemplateIds } from '../src/plugins/pluginTemplates.js';
 import { AUTOMATION_TEMPLATE_CATALOG } from '@propr/shared';
 import { ExtensionOAuthStore, setExtensionOAuth } from '../src/extensions/extensionOAuthStore.js';
+import { chooseRegistration, type AuthorizationServerMetadata } from '../src/extensions/extensionOAuth.js';
 import { executeWithExtensions, currentExtensionLaunch } from '../src/extensions/extensionLaunch.js';
 import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolution.js';
 import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/packageCache.js';
@@ -446,6 +447,56 @@ test('a plugin OAuth connection that permits only pre-registration signs in with
   // A connection that does not permit pre-registration refuses a client.
   f.setCatalog([exampleManifest(input => { input.connections.find((c: { name: string }) => c.name === 'example-account').registrations = ['metadata_document']; })]);
   await assert.rejects(f.plugins.setOAuthClient('1', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id }), refused(409, /does not permit a pre-registered client/));
+});
+
+test('a configured client signs in with pre-registration even when the connection lists automatic methods first and the provider offers them', async t => {
+  // The example connection permits metadata_document, dynamic, preregistered in that order; the provider offers both automatic methods.
+  const f = await fixture(t, { advertise: { metadataDocument: true, dynamic: true } });
+  await f.enable();
+  assert.deepEqual((await f.head()).servers.find(s => s.name === 'example-remote')!.managedBy?.registrations, ['metadata_document', 'dynamic', 'preregistered']);
+  await f.plugins.setOAuthClient('1', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id, clientSecret: PREREGISTERED_CLIENT.secret });
+  const connected = await f.connect();
+  assert.equal(connected.connections[0].state, 'connected');
+  const row = await f.database('extension_oauth_connections').first('registration', 'client_id');
+  assert.deepEqual([row.registration, row.client_id], ['preregistered', PREREGISTERED_CLIENT.id]);
+  assert.equal(f.synthetic.state.registrations, 0, 'no client was registered dynamically');
+  assert.equal((await f.plugins.get('1', ID)).connections[0].state, 'connected', 'reads keep reporting it connected');
+  assert.deepEqual((await f.run()).remote, ['example-remote'], 'runs include the server');
+  // The extension route chooses the same way.
+  const { authorizationUrl } = await extensionOAuth(f.library).startSignIn('1', 'session-b', 'example-remote', OAUTH_URLS);
+  assert.equal(new URL(authorizationUrl).searchParams.get('client_id'), PREREGISTERED_CLIENT.id);
+});
+
+test('a configured client id selects only pre-registration, and nothing when the allowed methods exclude it', () => {
+  const metadata = { issuer: 'https://issuer.example', authorization_endpoint: 'https://issuer.example/a', token_endpoint: 'https://issuer.example/t', registration_endpoint: 'https://issuer.example/r', client_id_metadata_document_supported: true } as AuthorizationServerMetadata;
+  const clientMetadataUrl = 'https://propr.example/client.json';
+  assert.equal(chooseRegistration(metadata, { clientId: 'configured', clientMetadataUrl, allowed: ['metadata_document', 'dynamic', 'preregistered'] }), 'preregistered');
+  assert.equal(chooseRegistration(metadata, { clientId: 'configured', clientMetadataUrl }), 'preregistered');
+  assert.equal(chooseRegistration(metadata, { clientId: 'configured', clientMetadataUrl, allowed: ['metadata_document', 'dynamic'] }), null);
+  assert.equal(chooseRegistration(metadata, { clientMetadataUrl, allowed: ['dynamic', 'metadata_document', 'preregistered'] }), 'dynamic');
+});
+
+test('a plugin repository limit up to the plugin maximum is copied onto its managed items; a larger one is refused as a plugin limit', async t => {
+  const f = await fixture(t);
+  await f.enable();
+  const repositories = Array.from({ length: 65 }, (_, i) => `team/repo-${i}`);
+  const limited = await f.plugins.setRepositories('1', ID, repositories);
+  assert.deepEqual(limited.installation?.repositories, repositories);
+  let library = await f.head();
+  assert.deepEqual([...library.servers, ...library.skills].filter(item => item.managedBy).map(item => item.repositories.length), [65, 65, 65]);
+  // The administrator can still save the library with those items, and keep editing their limits.
+  await f.save(input => ({ ...input, servers: input.servers.map(s => (s.name === 'example-local' ? { ...s, repositories: [...repositories.slice(1), 'team/repo'] } : s)) }));
+  const inside = await f.run(); const outside = await f.run(issueTask('team/repo-0'));
+  assert.deepEqual([inside.local, outside.local], [['example-local'], []], 'the edited limit applies to runs');
+
+  const maximum = Array.from({ length: 256 }, (_, i) => `team/repo-${i}`);
+  await f.plugins.setRepositories('1', ID, maximum);
+  library = await f.head();
+  assert.deepEqual([...library.servers, ...library.skills].filter(item => item.managedBy).map(item => item.repositories.length), [256, 256, 256]);
+  const before = library.revision;
+  await assert.rejects(f.plugins.setRepositories('1', ID, [...maximum, 'team/one-more']), refused(400, /up to 256 owner\/repo names/));
+  assert.equal((await f.head()).revision, before, 'a refused limit leaves the library unchanged');
+  assert.equal((await f.plugins.get('1', ID)).installation?.repositories?.length, 256);
 });
 
 test('plugin template ids stay unique when a prefixed id equals another template id', () => {

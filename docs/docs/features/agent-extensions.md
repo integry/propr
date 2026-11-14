@@ -612,7 +612,7 @@ safe to re-run, and never blocks startup):
   marked not configured and logs a warning; replace it in Settings.
 
 The library holds at most 32 servers and 32 skill bundles, and an item at most
-64 repositories and 64 agents. If the previous configuration does not fit (for
+256 repositories and 64 agents. If the previous configuration does not fit (for
 example five bundles of eight distinct servers each), nothing is dropped: the
 copy is not committed, the startup log lists the items that do not fit, and
 it retries at the next start. Until it completes, automations that selected a

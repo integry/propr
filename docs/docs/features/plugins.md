@@ -253,7 +253,8 @@ permits `preregistered`, an administrator can configure the client registered
 with the provider for this instance on the connection (`oauth/client`): the
 client id becomes the managed servers' client id and the optional client
 secret is sealed like a `token` connection and never returned; a read reports
-who configured it in `setBy` and `setAt`. Changing or clearing the client
+who configured it in `setBy` and `setAt`. While a client is configured, sign-in
+always uses it, wherever `preregistered` appears in `registrations`. Changing or clearing the client
 discards the connection made with the previous one. A connection that does not
 permit `preregistered` refuses a client with HTTP 409. The managed server carries
 the permitted methods in its `managedBy.registrations`, so a sign-in started

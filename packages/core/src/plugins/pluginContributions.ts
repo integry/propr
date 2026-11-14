@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
-  EXTENSION_LIBRARY_VERSION, extensionLibraryInputSchema, extensionPackageSecretKey, PLUGIN_LIBRARY_HREF, PLUGIN_TEMPLATE_CATALOG_HREF,
+  EXTENSION_LIBRARY_LIMITS, EXTENSION_LIBRARY_VERSION, extensionLibraryInputSchema, extensionPackageSecretKey, PLUGIN_LIBRARY_HREF, PLUGIN_TEMPLATE_CATALOG_HREF,
   type ExtensionLibraryItems, type ExtensionLibraryRevision, type ExtensionLibraryServer, type ExtensionLibrarySkill, type ExtensionManagedBy,
   type ExtensionSkillBundle, type PluginContributionViews, type PluginInstallationRecord, type PluginManifest, type PluginMcpServer,
 } from '@propr/shared';
@@ -222,8 +222,15 @@ function composeItems(snapshot: ExtensionLibraryRevision, pluginId: string, desi
     servers: place(snapshot.servers, desired.servers, (a, b) => a.managedBy?.item === b.managedBy?.item),
     skills: place(snapshot.skills, desired.skills, (a, b) => a.managedBy?.item === b.managedBy?.item),
   });
-  if (!parsed.success) throw new PluginError(409, 'The extension library cannot hold this plugin\'s items; it holds at most 32 servers and 32 skills with unique names');
+  if (!parsed.success) throw new PluginError(409, libraryProblem(parsed.error.issues));
   return parsed.data;
+}
+
+/** Why the next library items do not validate: the failing item field, or the library's capacity. */
+function libraryProblem(issues: readonly { path: readonly PropertyKey[]; message: string }[]): string {
+  const item = issues.find(issue => issue.path.length > 2);
+  if (item) return `The extension library cannot hold this plugin's items: ${item.path.map(String).join('.')}: ${item.message}`;
+  return `The extension library cannot hold this plugin's items; it holds at most ${EXTENSION_LIBRARY_LIMITS.servers} servers and ${EXTENSION_LIBRARY_LIMITS.bundles} skills with unique names`;
 }
 
 /** Whether the next items, and the next credentials when they are compared, equal the base revision's. */

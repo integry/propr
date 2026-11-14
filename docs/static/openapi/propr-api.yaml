@@ -11037,7 +11037,7 @@ components:
                     pattern: ^[\x21-\x7e]{1,512}$
                   repositories:
                     default: []
-                    maxItems: 64
+                    maxItems: 256
                     type: array
                     items:
                       type: string
@@ -11120,7 +11120,7 @@ components:
                       - write
                   repositories:
                     default: []
-                    maxItems: 64
+                    maxItems: 256
                     type: array
                     items:
                       type: string
@@ -11248,7 +11248,7 @@ components:
                       pattern: ^[A-Z_][A-Z0-9_]{0,99}$
                   repositories:
                     default: []
-                    maxItems: 64
+                    maxItems: 256
                     type: array
                     items:
                       type: string
@@ -11320,7 +11320,7 @@ components:
                 type: boolean
               repositories:
                 default: []
-                maxItems: 64
+                maxItems: 256
                 type: array
                 items:
                   type: string
