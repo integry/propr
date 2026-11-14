@@ -88,17 +88,12 @@ export function assertRpmSignatures(stdout, fingerprint) {
   // header+payload signatures, with no missing key or digest/signature failure.
   const id = fingerprint.slice(-8).toLowerCase();
   // Parse key IDs with fixed patterns, then compare them as literal strings.
-  const verified = (pattern, expected) => [...statuses.matchAll(pattern)].some(match => match[1].toLowerCase() === expected);
-  // RPM 4.x reports the 8-digit key ID and must show header and header+payload signatures.
-  const rpm4 = verified(/^\s*Header V[34] RSA\/SHA256 Signature, key ID ([a-f0-9]{8}): OK$/gmi, id)
-    && verified(/^\s*V[34] RSA\/SHA256 Signature, key ID ([a-f0-9]{8}): OK$/gmi, id);
-  // RPM 6 reports the full fingerprint and signs only the header, which carries
-  // the payload digests, so also require a verified payload digest.
-  const rpm6 = verified(/^\s*Header OpenPGP V4 RSA\/SHA256 signature, key fingerprint: ([a-f0-9]{40}): OK$/gmi,
-    fingerprint.toLowerCase())
-    && /^\s*Payload (?:SHA256|SHA512|SHA3-256) digest: OK$/mi.test(statuses);
+  const header = [...statuses.matchAll(/^\s*Header V[34] RSA\/SHA256 Signature, key ID ([a-f0-9]{8}): OK$/gmi)]
+    .some(match => match[1].toLowerCase() === id);
+  const packageSignature = [...statuses.matchAll(/^\s*V[34] RSA\/SHA256 Signature, key ID ([a-f0-9]{8}): OK$/gmi)]
+    .some(match => match[1].toLowerCase() === id);
   // Failure words must be result values, not substrings of hexadecimal key IDs.
-  if ((!rpm4 && !rpm6)
+  if (!header || !packageSignature
     || /:[ \t]*(?:NOT OK|NOKEY|NOTTRUSTED|BAD|UNKNOWN)\b/i.test(statuses)) {
     throw new Error('RPM must have verified header and package signatures from the pinned identity');
   }
