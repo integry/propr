@@ -1,3 +1,4 @@
+import { writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import {
     appendVisualPreviewSection,
     getAuthenticatedOctokit,
@@ -76,10 +77,10 @@ export async function publishGoalVisualPreviews(
 
     if (evidence.assets.length === 0) {
         try {
-            await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+            await writePullRequestBody(octokit, {
                 owner,
                 repo,
-                pull_number: pull.number,
+                pullNumber: pull.number,
                 body: appendVisualPreviewSection(baseBody, renderVisualPreviewSection(evidence, {})),
             });
         } catch (error) {
@@ -103,10 +104,10 @@ export async function publishGoalVisualPreviews(
     } catch (error) {
         logger.warn({ goalId: goal.goal_id, pullRequestNumber: pull.number, error: (error as Error).message }, 'Could not upload goal visual previews; publishing a text-only explanation');
         try {
-            await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+            await writePullRequestBody(octokit, {
                 owner,
                 repo,
-                pull_number: pull.number,
+                pullNumber: pull.number,
                 body: appendVisualPreviewSection(baseBody, renderVisualPreviewUploadFailureSection(
                     evidence,
                     { authenticationFailure: isVisualPreviewUploadAuthenticationError(error) },

@@ -10,7 +10,7 @@ export * from './types.js';
 export { checkDbAndAuth, withAuthCheck, checkAuth, sendCheckError, verifyDraftOwnership, getRepoAuthToken } from './auth.js';
 
 // Validation utilities
-export { VALID_GRANULARITIES, validateContextRepositories, validatePreviewInput, validateRefineInput } from './validation.js';
+export { VALID_GRANULARITIES, validateContextRepositories, validatePreviewInput, validateRefineInput, preparePlanForStorage, planStorageUpdates, type PreparedPlan } from './validation.js';
 
 // Repository setup utilities
 export { setupRepoContext, getRefineRepoContext } from './repoSetup.js';

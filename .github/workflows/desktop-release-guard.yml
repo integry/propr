@@ -108,6 +108,8 @@ jobs:
     if: >-
       ${{ !cancelled() && github.event_name != 'push'
           && needs.classify.outputs.desktop != 'false' }}
+    # Same rpm/GnuPG toolchain as the signed preview workflow: ubuntu-latest moved
+    # to 26.04 (rpm 6), whose key IDs and checksig output differ from rpm 4.
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}

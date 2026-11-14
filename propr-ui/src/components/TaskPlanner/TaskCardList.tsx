@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
+import { resolveTaskPrerequisites } from './taskPrerequisiteSteps';
 import TaskTimeline from './TaskTimeline';
 import { CollapsedOutlineRail, OUTLINE_RAIL_MIN_TASKS, TaskTabBar } from './TaskTabBar';
 import { MobileTaskJumper } from './MobileTaskJumper';
@@ -148,6 +149,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   const showOutlineRail = showNavigation && tasks.length >= OUTLINE_RAIL_MIN_TASKS;
   const showTabBar = showNavigation && !showOutlineRail;
   const taskTitles = tasks.map(t => t.title);
+  const prerequisitesByTask = resolveTaskPrerequisites(tasks);
   const taskIds = tasks.map(t => t.id);
 
   return (
@@ -248,6 +250,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                       draftId={draftId}
                       hideNotes={hideNotes}
                       isMobile={isMobile}
+                      prerequisites={prerequisitesByTask.get(task.id)}
                       onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
                       onDelete={() => {
                         // Explicitly capture and log the task.id for debugging

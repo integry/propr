@@ -12,6 +12,8 @@ export interface PlanTask {
   implementation: string;
   notes?: string;
   attachments?: PlanTaskAttachment[];
+  /** Ids of other tasks in the same plan that must be implemented first. */
+  dependsOn?: string[];
   issue_number?: number;
   issue_url?: string;
 }
@@ -20,6 +22,8 @@ export interface CreatedIssue {
   number: number;
   url: string;
   title: string;
+  /** GitHub's REST id of the issue; the dependency API identifies a blocking issue by it. */
+  id?: number;
 }
 
 export interface CreateIssueOptions {
@@ -100,7 +104,8 @@ export async function createGitHubIssue(options: CreateIssueOptions): Promise<Cr
   return {
     number: response.data.number,
     url: response.data.html_url,
-    title: response.data.title
+    title: response.data.title,
+    ...(typeof response.data.id === 'number' ? { id: response.data.id } : {})
   };
 }
 

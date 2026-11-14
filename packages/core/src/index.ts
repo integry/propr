@@ -48,6 +48,8 @@ export * from './config/configManager.js';
 // Note: loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel
 // are re-exported via configManager.ts (which re-exports from configManagerUltrafix.ts).
 // Do NOT add explicit re-exports here — they would conflict with the wildcard export above.
+export { recordPlanIssueDependencies } from './config/planIssueDependencies.js';
+export * from './services/planDependencyLinks.js';
 export {
     createPlanIssue,
     getPlanIssuesByDraft,
@@ -665,9 +667,14 @@ export {
 } from './utils/tokenOutlierAlert.js';
 export type { TokenUsageSample, TokenBaselineKey, TokenOutlierEvaluation, TokenOutlierAlert, TokenOutlierDependencies, TokenOutlierResult, TokenOutlierPause, TokenOutlierNotificationOutcome } from './utils/tokenOutlierAlert.js';
 export * from './services/agents/agentRunDeferredRetry.js';
+export * from './services/agents/agentEventTriggerStore.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
+export * from './services/taskPlanning/epicQueueActions.js';
+export { deliverEpicQueueBlockedEvents, blockedNotificationKey } from './services/taskPlanning/epicQueueBlockedNotify.js';
 export * from './services/reviewScoreStore.js';
+// The one pull request status computation, its PR body block and its sync.
+export * from './services/pullRequestStatus/index.js';
 // Durable repository change-event journal (pull requests, epic queues, plan issues).
 export * from './services/repositoryEventJournal.js';
 

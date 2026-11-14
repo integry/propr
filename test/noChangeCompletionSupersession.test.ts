@@ -40,7 +40,7 @@ await mock.module('@propr/core', {
     namedExports: {
         getEpicExecutionQueue: mock.fn(async () => {
             await duringPlanLookup?.('queue');
-            return { status: 'active', issues: [10, 20] };
+            return { status: 'active', issues: [10, 20], items: [{ issueNumber: 10, state: 'dispatched' }, { issueNumber: 20, state: 'pending' }] };
         }),
         findPlanIssueByRepoAndNumber: mock.fn(async () => {
             await duringPlanLookup?.('plan-issue');

@@ -371,6 +371,29 @@ test('planIssueHandlers follow-up fixes', async (t) => {
     assert.deepStrictEqual(res.body, { error: 'Issue not found in this plan' });
   });
 
+  for (const [label, stored, expected] of [
+    ['stored prerequisite JSON', { plan_item_id: 'api', depends_on_issues: '[42]' }, { plan_item_id: 'api', depends_on_issues: [42] }],
+    ['a row published before dependencies existed', { plan_item_id: null, depends_on_issues: null }, { plan_item_id: null, depends_on_issues: [] }],
+  ] as const) {
+    await t.test(`updateIssueHandler returns depends_on_issues as issue numbers for ${label}`, async () => {
+      resetMocks();
+      const handler = createUpdateIssueHandler({
+        verifyOwnership: async () => ({ authorized: true, draft: { repository: 'owner/repo' } }),
+      });
+      const row = { issue_number: 43, agent_alias: 'codex', model_name: 'gpt-5.4', status: 'pending', ...stored };
+      mockGetPlanIssue.mock.mockImplementationOnce(async () => row);
+      mockUpdatePlanIssue.mock.mockImplementationOnce(async (_draftId, _issueNumber, updates) => ({ ...row, ...updates }));
+      const res = createResponse();
+
+      await handler({ params: { id: 'draft-deps', issueNumber: '43' }, user: { id: 'user-1' }, body: { status: 'under_review' } } as never, res as never);
+
+      assert.strictEqual(res.statusCode, 200);
+      const body = res.body as Record<string, unknown>;
+      assert.strictEqual(body.status, 'under_review');
+      assert.deepStrictEqual({ plan_item_id: body.plan_item_id, depends_on_issues: body.depends_on_issues }, expected);
+    });
+  }
+
   await t.test('updateIssueHandler preserves stored ultrafix disablement for partial PATCH updates', async () => {
     resetMocks();
     const handler = createUpdateIssueHandler({

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
 import multer from 'multer';
+import { createListBlockedEventsHandler, createRetryQueueIssueHandler, createSkipQueueIssueHandler } from './planExecutionQueueActionHandlers.js';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
@@ -29,6 +30,8 @@ import {
   createListPlanRevisionsHandler,
   createGetPlanRevisionHandler,
   createRestorePlanRevisionHandler,
+  preparePlanForStorage,
+  planStorageUpdates,
 } from './plannerHelpers/index.js';
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
@@ -240,13 +243,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const { plan_json, context_config, status, name, chat_history, initial_prompt } = req.body;
       const updateData: Record<string, unknown> = { updated_at: db!.fn.now() };
-      if (plan_json !== undefined) {
-        const serializedPlan = JSON.stringify(plan_json);
-        updateData.plan_json = serializedPlan;
-        updateData.plan_cause = db!.raw(
-          'CASE WHEN ?? = ? THEN ?? ELSE ? END',
-          ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']
-        );
+      if (Array.isArray(plan_json)) {
+        const prepared = preparePlanForStorage(plan_json);
+        if (!prepared.valid) { res.status(400).json({ error: prepared.error, code: 'PLAN_INVALID', details: { errors: prepared.errors } }); return; }
+        Object.assign(updateData, planStorageUpdates(db!, prepared, 'manual_edit'));
+      } else if (plan_json === null) {
+        updateData.plan_json = null;
+      } else if (plan_json !== undefined) {
+        res.status(400).json({ error: 'plan_json must be an array of plan items' }); return;
       }
       if (context_config !== undefined) updateData.context_config = JSON.stringify(context_config);
       if (status !== undefined) updateData.status = status;
@@ -318,6 +322,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
   const getExecutionQueue = withAuthCheck(db, createGetExecutionQueueHandler({ verifyOwnership: ownershipVerifier }));
   const queueRemaining = withAuthCheck(db, createQueueRemainingHandler({ verifyOwnership: ownershipVerifier }));
+  const listBlockedEvents = withAuthCheck(db, createListBlockedEventsHandler({ verifyOwnership: ownershipVerifier }));
+  const skipQueueIssue = withAuthCheck(db, createSkipQueueIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const retryQueueIssue = withAuthCheck(db, createRetryQueueIssueHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
   const generate = createGenerateHandler(db);
@@ -378,6 +385,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     uploadAttachment, deleteAttachment, getAttachmentContent, getRepositoryInfo,
     getContextStats, previewContext, downloadContext, generate, refine, finalize,
     resetDraftToSetup, getIssues, implementIssue, updateIssue, getExecutionQueue, queueRemaining,
+    listBlockedEvents, skipQueueIssue, retryQueueIssue,
     validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
     pauseDraftExecution, resumeDraftExecution, updateExecutionSettings,
     listPlanRevisions, getPlanRevision, restorePlanRevision,

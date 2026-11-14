@@ -50,7 +50,7 @@ async function markNoChangePlanIssueMerged(
         }
 
         const queue = await getEpicExecutionQueue(planIssue.draft_id);
-        const queued = queue?.status === 'active' && queue.issues.includes(issueRef.number);
+        const queued = queue?.status === 'active' && queue.items.some(item => item.issueNumber === issueRef.number);
         if (!labels.includes('auto-merge') && !queued) {
             log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping plan status update');
             return 'settled';

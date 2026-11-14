@@ -57,6 +57,10 @@ export interface RepoToMonitor {
     autoAssignDefaultAssignee?: string | null;
     // Also request a GitHub review from the assigned user. Defaults to false.
     autoAssignRequestReview?: boolean;
+    // Show the PR state as a leading emoji in the pull request title,
+    // repository-wide across branch entries. Controls the title only; the
+    // status block in the body is always written. Defaults to true.
+    prTitleStatus?: boolean;
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata

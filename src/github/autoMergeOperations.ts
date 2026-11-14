@@ -1,4 +1,5 @@
 import { getAuthenticatedOctokit, logger, handleError } from '@propr/core';
+import { mergeCommitTitleFields, type PullRequestMergeMethod } from '@propr/shared';
 import { isAutoMergeUnavailableError } from './autoMergeAvailability.js';
 
 /**
@@ -68,6 +69,18 @@ interface DisableAutoMergeGraphQLResponse {
             } | null;
         };
     };
+}
+
+/**
+ * The commit headline (and body, for merge commits) auto-merge is armed with
+ * when the caller gives none. Without one GitHub takes the PR title at merge
+ * time, status slot (prTitleStatus) included.
+ */
+function defaultCommitFields(
+    pull: { title?: unknown; head: { label?: string } }, prNumber: number, mergeMethod: AutoMergeMethod,
+): { commit_title?: string; commit_message?: string } {
+    if (typeof pull.title !== 'string') return {};
+    return mergeCommitTitleFields({ number: prNumber, title: pull.title, headLabel: pull.head.label }, mergeMethod.toLowerCase() as PullRequestMergeMethod);
 }
 
 /**
@@ -150,12 +163,14 @@ export async function enableAutoMerge(options: EnableAutoMergeOptions): Promise<
             }
         `;
 
+        const derived = commitHeadline ? {} : defaultCommitFields(prResponse.data, prNumber, mergeMethod);
+
         // Execute the GraphQL mutation
         const result = await octokit.graphql<AutoMergeGraphQLResponse>(mutation, {
             pullRequestId,
             mergeMethod,
-            commitHeadline: commitHeadline || null,
-            commitBody: commitBody || null,
+            commitHeadline: commitHeadline || derived.commit_title || null,
+            commitBody: commitBody || derived.commit_message || null,
             expectedHeadOid: expectedHead?.headSha ?? null
         });
 

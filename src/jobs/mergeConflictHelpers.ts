@@ -1,3 +1,4 @@
+import { stripStatusSlot } from '@propr/shared';
 import type { Logger } from 'pino';
 import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
@@ -278,7 +279,7 @@ export async function fetchMergeTaskPRInfo(options: {
         }
     `, { owner: repoOwner, repo: repoName, prNumber: pullRequestNumber });
 
-    const prTitle = graphqlResponse.repository.pullRequest.title;
+    const prTitle = stripStatusSlot(graphqlResponse.repository.pullRequest.title);
     const linkedIssues = graphqlResponse.repository.pullRequest.closingIssuesReferences.nodes;
     const linkedIssueNumber = linkedIssues.length > 0 ? linkedIssues[0].number : null;
     return { prTitle, linkedIssueNumber };

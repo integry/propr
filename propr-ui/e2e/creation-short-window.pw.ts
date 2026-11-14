@@ -15,6 +15,10 @@ const zoomed = { width: 370, height: 345 };
 const zoomedScale = 2.3779921531677246;
 const draft = Array.from({ length: 30 }, (_, line) => `Unsent draft line ${line + 1}`).join('\n');
 
+// By far the longest file of the browser suite (real wheel, touch and keyboard input for every window and form).
+// Each test opens its own page and shares nothing, so its tests may be spread over the available workers.
+test.describe.configure({ mode: 'parallel' });
+
 const forms = [
   { name: 'New task', path: '/tasks/new', close: 'Close task creation', field: 'Prompt', actions: ['Cancel', 'Plan first', 'Run task'] },
   { name: 'Start a goal', path: '/goals?new=1', close: 'Close goal creation', field: 'Prompt', actions: ['Cancel', 'Start goal'] },

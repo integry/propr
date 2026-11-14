@@ -50,11 +50,23 @@ async function expectReadableScope(page: Page, width: number, level: number, typ
   await expect(page.getByPlaceholder(/Describe the feature/)).toHaveValue(typed);
 }
 
+const sliderSave = /^PUT \/api\/planner\/drafts\/plan-setup (.+)$/s;
+const unchangedSettings = { baseBranch: 'main', granularity: 'granular', compress: false, contextRepositories: [], generationModel: null, manualFiles: [], excludedFiles: [] };
+function isSliderSave(write: string, levels: number[]) {
+  const body = sliderSave.exec(write)?.[1];
+  if (!body) return false;
+  const parsed = JSON.parse(body) as { context_config?: { contextLevel?: number } & Record<string, unknown> };
+  if (Object.keys(parsed).join() !== 'context_config' || !parsed.context_config) return false;
+  const { contextLevel, ...rest } = parsed.context_config;
+  return levels.includes(contextLevel!) && JSON.stringify(rest) === JSON.stringify(unchangedSettings);
+}
+
 for (const mode of modes) {
   test(`the ${mode.name}-plan scope estimate stays inside the canvas at every width`, async ({ page }) => {
     const writes = await routeSetup(page);
     await openSetup(page, mode);
     let level = mode.level;
+    const levels = [level];
     for (const viewport of viewports) {
       await page.setViewportSize(viewport);
       await expectReadableScope(page, viewport.width, level, mode.typed);
@@ -63,9 +75,13 @@ for (const mode of modes) {
       await page.getByRole('slider').focus();
       await page.keyboard.press(level > 10 ? 'ArrowLeft' : 'ArrowRight');
       level += level > 10 ? -10 : 10;
+      levels.push(level);
       await expectReadableScope(page, viewport.width, level, mode.typed);
     }
-    expect(writes).toEqual([]);
+    // An existing draft saves its slider level a second after the last step (SETTINGS_SAVE_DEBOUNCE). Whether that
+    // second passes between two steps depends only on how fast the runner is, so such a save is allowed here, as long
+    // as it carries a level the slider really stepped to and leaves every other setting as it was. Nothing else may write.
+    expect(writes.filter(write => !isSliderSave(write, levels))).toEqual([]);
   });
 
   for (const scale of [150, 200]) {

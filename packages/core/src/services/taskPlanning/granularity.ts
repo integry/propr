@@ -48,7 +48,11 @@ export function enforceGranularity(plan: Plan, granularity: Granularity, correla
   );
 
   // Merge all tasks into a single comprehensive task
+  // The merged task keeps the first item id; every dependsOn pointed inside the
+  // merged set, so none remains.
+  const firstId = plan.find(task => typeof task.id === 'string' && task.id)?.id;
   const mergedTask: PlanItem = {
+    ...(firstId ? { id: firstId } : {}),
     title: generateMergedTitle(plan),
     body: mergeBodies(plan),
     implementation: mergeImplementations(plan)

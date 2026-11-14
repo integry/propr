@@ -31,6 +31,10 @@ export const TRANSIENT_DOWNLOAD_PATTERNS = [
   // where `HTTP` carries no trailing word boundary, so match the reported code phrase too.
   /\b(?:status|statusCode|HTTP|response code)\b[^\n]{0,20}\b5\d{2}\b/i,
   /getaddrinfo/i,
+  // node-gyp fetches Node headers with its own Undici and prints the error class and message
+  // (`ConnectTimeoutError: Connect Timeout Error (attempted address: nodejs.org:443, ...)`)
+  // without the `UND_ERR_CONNECT_TIMEOUT` code.
+  /\bConnectTimeoutError\b|\bConnect Timeout Error\b/,
 ];
 
 export const isTransientDownloadFailure = output =>

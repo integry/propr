@@ -2,6 +2,8 @@
  * Input validation utilities.
  */
 
+import type { Knex } from 'knex';
+import { normalizePlanItems, type PlanItemGraphError } from '@propr/shared';
 import type { ContextRepositoryInput } from './types.js';
 
 export const VALID_GRANULARITIES = ['single', 'balanced', 'granular'] as const;
@@ -72,4 +74,33 @@ export function validatePreviewInput(body: Record<string, unknown>): { valid: bo
   }
 
   return { valid: true };
+}
+
+export type PreparedPlan =
+  | { valid: true; plan: unknown[]; submitted: string; serialized: string }
+  | { valid: false; error: string; errors: PlanItemGraphError[] };
+
+/**
+ * Checks a plan before it is stored, for REST and MCP alike: items without an
+ * id get one, existing ids are kept, and duplicate ids or `dependsOn` entries
+ * that name no item, the item itself, or form a cycle are rejected with an
+ * error naming the item.
+ */
+export function preparePlanForStorage(plan: unknown[]): PreparedPlan {
+  const normalized = normalizePlanItems(plan);
+  if (!normalized.ok) return { valid: false, error: normalized.message, errors: normalized.errors };
+  return { valid: true, plan: normalized.plan, submitted: JSON.stringify(plan), serialized: JSON.stringify(normalized.plan) };
+}
+
+/**
+ * Columns that store a prepared plan with `cause` as its provenance. A
+ * submission identical to the stored plan, as submitted, changes nothing:
+ * neither its provenance, nor its history, nor (by assigning ids) its bytes.
+ */
+export function planStorageUpdates(db: Knex, prepared: Extract<PreparedPlan, { valid: true }>, cause: string): Record<string, unknown> {
+  return {
+    plan_json: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', prepared.submitted, 'plan_json', prepared.serialized]),
+    plan_cause: db.raw('CASE WHEN ?? IN (?, ?) THEN ?? ELSE ? END',
+      ['plan_json', prepared.submitted, prepared.serialized, 'plan_cause', cause]),
+  };
 }

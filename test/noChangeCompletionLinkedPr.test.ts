@@ -43,7 +43,7 @@ let failStatusWrite = false;
 /** Runs after the writer's final ownership check, immediately before its update. */
 let beforeUpdate: (() => Promise<void>) | undefined;
 await mock.module('@propr/core', { namedExports: {
-    getEpicExecutionQueue: async () => ({ status: 'active', issues: [10, 20], cursor: 0 }),
+    getEpicExecutionQueue: async () => ({ status: 'active', issues: [10, 20], cursor: 0, items: [{ issueNumber: 10, state: 'dispatched' }, { issueNumber: 20, state: 'pending' }] }),
     findPlanIssueByRepoAndNumber: plan.findPlanIssueByRepoAndNumber,
     getAuthenticatedOctokit: async () => octokit,
     logger: quiet,

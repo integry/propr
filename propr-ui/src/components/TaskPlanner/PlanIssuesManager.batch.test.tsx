@@ -23,7 +23,7 @@ vi.mock('./usePlanIssuesManager', () => ({
       error: null,
       clearError: vi.fn(),
       implementingIssue: null,
-      queuedIssueNumbers: state.queued,
+      queuedIssueNumbers: state.queued, queueRowProps: () => ({}),
       queueingRemaining: false,
       handleQueueRemaining: state.handleQueueRemaining,
       issueTitles: {},

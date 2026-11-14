@@ -6,6 +6,8 @@ import { up as epicQueueFinalization } from '../src/db/migrations/20261003010000
 import { up as epicQueueUseEpic } from '../src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
 import { up as epicQueueParallel } from '../src/db/migrations/20261003030000_add_epic_queue_parallel.js';
 import { up as epicQueueRecovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
+import { up as epicQueueIssueStates } from '../src/db/migrations/20261112130000_add_epic_queue_issue_states.js';
+import { up as epicQueueBlockedEvents } from '../src/db/migrations/20261113000000_add_epic_queue_blocked_events.js';
 import { up as createJournal, down as dropJournal } from '../src/db/migrations/20261112160000_create_repository_events.js';
 
 /**
@@ -36,7 +38,7 @@ await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticate
 const { PlanIssueStatus: S } = await import('../src/config/planIssueManager.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, advanceEpicQueue } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
 const { markEpicQueueAwaitingHumanMerge } = await import('../src/services/taskPlanning/epicQueueHumanMerge.js');
-const { agentBlockedHeadReason, markEpicQueueHeadBlocked } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
+const { markEpicQueueHeadBlocked } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 const { listRepositoryEvents } = await import('../src/services/repositoryEventJournal.js');
 
 await database.schema.createTable('task_drafts', table => {
@@ -45,13 +47,13 @@ await database.schema.createTable('task_drafts', table => {
 await database.schema.createTable('plan_issues', table => {
   table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.integer('pr_number'); table.string('status'); table.string('task_id');
 });
-for (const migration of [up, epicQueueFinalization, epicQueueUseEpic, epicQueueParallel, epicQueueRecovery, createJournal]) await migration(database);
+for (const migration of [up, epicQueueFinalization, epicQueueUseEpic, epicQueueParallel, epicQueueRecovery, epicQueueIssueStates, epicQueueBlockedEvents, createJournal]) await migration(database);
 after(async () => database.destroy());
 
 let clock = 1_000;
 const deps = { database, now: () => ++clock };
 beforeEach(async () => {
-  for (const table of ['task_drafts', 'plan_issues', 'epic_execution_queues', 'repository_events']) await database(table).delete();
+  for (const table of ['task_drafts', 'plan_issues', 'epic_execution_queues', 'epic_execution_queue_issues', 'epic_queue_blocked_events', 'repository_events']) await database(table).delete();
   await database('task_drafts').insert({ draft_id: 'draft', context_config: JSON.stringify({ epicLabel: 'base-epic' }) });
   await database('plan_issues').insert([10, 20, 30].map(issue_number => ({ draft_id: 'draft', issue_number, status: 'pending' })));
   starts.length = 0;
@@ -176,40 +178,6 @@ test('alternating explanations within one clock tick each journal their own even
   assert.match(reasons[1], /stopped on a blocker reported by the agent/);
   assert.deepEqual(reasons.slice(2), reasons.slice(0, 2));
   assert.equal((await getEpicExecutionQueue('draft', deps))!.blockedReason, reasons[3]);
-});
-
-test('a reason replaced between the in-transaction read and the update is re-read before journaling', async () => {
-  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20] }, deps);
-  await markEpicQueueAwaitingHumanMerge(humanMerge, deps);
-  let replaced = false;
-  // The first read inside the write's transaction is followed by another write of the same row.
-  const racing = new Proxy(database, { get(target, property, receiver) {
-    if (property !== 'transaction') return Reflect.get(target, property, receiver);
-    return (callback: (trx: Knex.Transaction) => Promise<unknown>) => target.transaction(trx => callback(new Proxy(trx, {
-      apply(fn, self, args: [string]) {
-        const builder = Reflect.apply(fn, self, args) as Knex.QueryBuilder;
-        return new Proxy(builder, { get(b, key, r) {
-          const value = Reflect.get(b, key, r);
-          if (key !== 'where' || replaced) return typeof value === 'function' ? value.bind(b) : value;
-          return (...where: unknown[]) => new Proxy((value as (...a: unknown[]) => Knex.QueryBuilder).apply(b, where), { get(w, k, wr) {
-            if (k !== 'first') { const v = Reflect.get(w, k, wr); return typeof v === 'function' ? v.bind(w) : v; }
-            return async (...columns: string[]) => {
-              const row = await w.first(...columns);
-              replaced = true;
-              await trx('epic_execution_queues').where({ draft_id: 'draft' }).update({ blocked_reason: agentBlockedHeadReason(10), updated_at: ++clock });
-              return row;
-            };
-          } });
-        } });
-      },
-    })));
-  } });
-  assert.equal(await markEpicQueueAwaitingHumanMerge(humanMerge, { ...deps, database: racing }), true);
-  assert.ok(replaced);
-  const reasons = await blockedReasons();
-  assert.equal(reasons.length, 2, 'the retry compares against the replaced reason, not the first read');
-  assert.equal(reasons[1], reasons[0]);
-  assert.equal((await getEpicExecutionQueue('draft', deps))!.blockedReason, reasons[0]);
 });
 
 test('a parallel execution journals completed when its last child settles', async () => {

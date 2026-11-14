@@ -3,13 +3,14 @@
  * This maintains backwards compatibility with existing imports.
  */
 
+import { duplicatePlanItemIdErrors, preparePlanItemsFromModel } from '@propr/shared';
 import { db } from '../db/connection.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import type { Knex } from 'knex';
 import {
-  updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences, PlanningFailedError
 } from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
@@ -179,7 +180,10 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
-  const validatedPlan = await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId });
+  // Repeated ids are ambiguous (either copy could own the dependents), so they fail generation instead of being repaired.
+  const duplicateIds = duplicatePlanItemIdErrors(plan);
+  if (duplicateIds.length) throw new PlanningFailedError(`The generated plan has duplicate task ids, so nothing was saved. ${duplicateIds[0].message} Regenerate the plan.`);
+  const validatedPlan = preparePlanItemsFromModel(await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId }));
   correlatedLogger.info({ taskCount: validatedPlan.length }, 'Plan generated successfully');
 
   // Add trace step for granularity enforcement if tasks were merged

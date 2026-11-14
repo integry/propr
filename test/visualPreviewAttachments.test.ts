@@ -98,6 +98,43 @@ test('publishes a private-safe hybrid image from GitHub and authenticated finali
   assert.equal(publishedBody.includes(fixturePath), false);
 });
 
+test('a visual preview publication keeps the live PR status block, once', async () => {
+  const { applyPullRequestStatusBlock, disablePullRequestStatusSync, enablePullRequestStatusSync, extractPullRequestStatusBlock, stripPullRequestStatusBlock } = await import('@propr/core');
+  const block = '<!-- propr:pr-status -->\n**ProPR** 🔨 Implementing · updated 09:41 UTC\n<!-- /propr:pr-status -->';
+  let body = applyPullRequestStatusBlock('Implementation summary\n\nA human edit.', block);
+  const locks = new Map<string, string>();
+  const redis = {
+    get: async (key: string) => locks.get(key) ?? null,
+    set: async (key: string, value: string) => { if (locks.has(key)) return null; locks.set(key, value); return 'OK'; },
+    del: async (key: string) => Number(locks.delete(key)),
+    eval: async (_script: string, _keys: number, key: string) => Number(locks.delete(key)),
+  };
+  enablePullRequestStatusSync({ redis: redis as never });
+  try {
+    await publishPullRequestVisualPreviews({
+      owner: 'integry', repo: 'propr', pullRequestNumber: 42,
+      body: 'Implementation summary\n\nA human edit.',
+      evidence, authToken: 'installation-token', worktreePath: '/worktree',
+      storeOriginals: async () => [],
+      octokit: {
+        request: async <T>(endpoint: string, options: Record<string, unknown>) => {
+          if (endpoint === 'GET /repos/{owner}/{repo}') return { data: { id: 987 } } as T;
+          if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: { body } } as T;
+          body = String(options.body);
+          return { data: { body } } as T;
+        }
+      },
+      uploadAsset: async () => 'https://github.com/user-attachments/assets/asset-id',
+    });
+  } finally {
+    disablePullRequestStatusSync();
+  }
+  assert.equal(extractPullRequestStatusBlock(body), block);
+  assert.equal(body.split('<!-- propr:pr-status -->').length, 2);
+  assert.match(stripPullRequestStatusBlock(body), /^Implementation summary\n\nA human edit\.[\s\S]*user-attachments\/assets\/asset-id/);
+  assert.equal(locks.size, 0, 'the body lock is released');
+});
+
 test('rejects a pull request upload when GitHub leaves a local path in the body', async () => {
   await assert.rejects(() => publishPullRequestVisualPreviews({
     owner: 'integry',

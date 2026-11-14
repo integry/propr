@@ -366,6 +366,53 @@ describe('planner background abort reconciliation', () => {
     });
   });
 
+  for (const merged of [undefined, false]) {
+    test(`rejects a refinement that gives two tasks one existing id and keeps the stored plan (merged ${merged})`, async t => {
+      t.mock.method(console, 'error', () => undefined);
+      const draftId = `refinement-duplicate-ids-${merged}`;
+      const runId = `refinement-run-duplicate-ids-${merged}`;
+      const stored = [
+        { id: 'schema', title: 'Schema', body: 'Schema body', implementation: 'Schema steps' },
+        { id: 'api', title: 'API', body: 'API body', implementation: 'API steps', dependsOn: ['schema'] },
+        { id: 'ui', title: 'UI', body: 'UI body', implementation: 'UI steps', dependsOn: ['api'] },
+      ];
+      const originalPlan = JSON.stringify(stored);
+      await database('task_drafts').insert({
+        draft_id: draftId, status: 'refining', plan_json: originalPlan, plan_cause: 'generation',
+        refinement_result: JSON.stringify({ status: 'in_progress', runId }), generated_context: 'context',
+      });
+
+      await runBackgroundRefinement({
+        db: database, draftId, currentPlan: stored, instruction: 'tighten the bodies',
+        generationModel: 'test-model', correlationId: runId, accessToken: 'token', runId,
+      }, {
+        checkAborted: async () => false,
+        getRepoContext: async () => ({ worktreePath: '/tmp/worktree', repository: 'owner/repo', authToken: 'token' }),
+        refine: async () => ({
+          action: 'modified', summary: 'Tightened bodies', model: 'test-model',
+          ...(merged === undefined ? {} : { merged }),
+          plan: [
+            { id: 'schema', title: 'Schema', body: 'Schema body v2', implementation: 'Schema steps' },
+            { id: 'schema', title: 'API', body: 'API body v2', implementation: 'API steps', dependsOn: ['schema'] },
+            { id: 'ui', title: 'UI', body: 'UI body', implementation: 'UI steps', dependsOn: ['api'] },
+          ],
+        }) as never,
+      });
+
+      const current = await database('task_drafts').where({ draft_id: draftId }).first();
+      const failure = JSON.parse(current.refinement_result);
+      assert.equal(current.status, 'review');
+      assert.equal(current.plan_json, originalPlan);
+      assert.equal(current.plan_cause, 'generation');
+      assert.equal(failure.status, 'failed');
+      assert.match(failure.error, /Task 2 "API" \(id "schema"\) reuses the id "schema" of task 1/);
+      if (merged === undefined) {
+        assert.equal(failure.code, 'REFINEMENT_OUTPUT_INVALID');
+        assert.deepEqual(failure.details, { reason: 'duplicate_id', duplicates: [{ index: 1, id: 'schema', title: 'API' }] });
+      }
+    });
+  }
+
   test('persists merged edit output with an explicit merge summary', async t => {
     t.mock.method(console, 'log', () => undefined);
     t.mock.method(console, 'error', () => undefined);
@@ -418,11 +465,11 @@ describe('planner background abort reconciliation', () => {
     t.mock.method(console, 'log', () => undefined);
     const draftId = 'refinement-core-normalised';
     const runId = 'refinement-run-core-normalised';
-    const currentPlan = [{ title: 'First', body: 'First body', implementation: 'First implementation' }];
+    const currentPlan = [{ id: 'first', title: 'First', body: 'First body', implementation: 'First implementation' }];
     // An edit-shaped task title proves the handler does not normalise again.
     const refinedPlan = [
-      { title: 'First', body: 'First body\n\nMore', implementation: 'First implementation' },
-      { title: 'action', body: 'Second body', implementation: 'Second implementation' },
+      { id: 'first', title: 'First', body: 'First body\n\nMore', implementation: 'First implementation' },
+      { id: 'second', title: 'action', body: 'Second body', implementation: 'Second implementation' },
     ];
     await database('task_drafts').insert({
       draft_id: draftId, status: 'refining', plan_json: JSON.stringify(currentPlan), plan_cause: 'generation',
@@ -626,8 +673,8 @@ for (const action of ['answered', 'clarify'] as const) {
 test('modified in the legacy handler records refinement provenance for the saved plan', async t => {
   t.mock.method(console, 'log', () => undefined);
   const draftId = 'legacy-modified';
-  const currentPlan = [{ title: 'Add metrics', body: 'Emit counters', implementation: 'Use the registry' }];
-  const refinedPlan = [{ title: 'Add metrics', body: 'Emit counters and gauges', implementation: 'Use the registry' }];
+  const currentPlan = [{ id: 'metrics', title: 'Add metrics', body: 'Emit counters', implementation: 'Use the registry' }];
+  const refinedPlan = [{ id: 'metrics', title: 'Add metrics', body: 'Emit counters and gauges', implementation: 'Use the registry' }];
   await database('task_drafts').insert({ draft_id: draftId, status: 'review', plan_cause: 'generation',
     plan_json: JSON.stringify(currentPlan) });
   const handler = createRefineHandler({ db: database, verifyOwnership: async () => ({ authorized: true }),

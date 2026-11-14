@@ -3,11 +3,13 @@ import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { appendRepositoryEvent } from '../services/repositoryEventJournal.js';
 import type { PlanIssueStatus } from './planIssueManager.js';
+import { requestEpicPullRequestStatusSyncForPlan } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 
 export async function notifyEpicQueue(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
+    // Every status change (an issue starting, finishing) changes what the epic PR's status and progress comment say.
+    requestEpicPullRequestStatusSyncForPlan(draftId);
     try {
-        const { isTerminalStatus } = await import('../webhook/statusMachine.js');
-        if (!isTerminalStatus(status)) return;
+        // Every status, also an in-progress one: a graph execution counts an issue a person started.
         const { onPlanIssueStatusChanged } = await import('../services/taskPlanning/epicExecutionQueue.js');
         await onPlanIssueStatusChanged(draftId, issueNumber, status);
     } catch (error) {

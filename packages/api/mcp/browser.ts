@@ -66,6 +66,35 @@ if (filter) {
   window.addEventListener('pageshow', updateFilter);
   filter.parentElement.hidden = false;
   updateFilter();
+}
+const consentForm = document.querySelector('[data-consent-form]');
+if (consentForm) {
+  const status = consentForm.querySelector('[data-consent-status]');
+  const buttons = Array.from(consentForm.querySelectorAll('button[name="decision"]'));
+  const labels = buttons.map(button => button.textContent);
+  let slow;
+  consentForm.addEventListener('submit', event => {
+    if (consentForm.dataset.submitting) { event.preventDefault(); return; }
+    consentForm.dataset.submitting = 'true';
+    consentForm.setAttribute('aria-busy', 'true');
+    const denying = event.submitter && event.submitter.value === 'deny';
+    // aria-disabled and not disabled: a disabled submitter drops its decision from the form data.
+    buttons.forEach(button => button.setAttribute('aria-disabled', 'true'));
+    if (event.submitter) event.submitter.textContent = denying ? 'Denying…' : 'Allowing…';
+    status.textContent = denying ? 'Cancelling the request…' : 'Connecting… You will be returned to the app in a moment.';
+    status.hidden = false;
+    slow = setTimeout(() => {
+      status.textContent = 'Still working. If the app already shows the result, you can close this tab.';
+    }, 8000);
+  });
+  // A page restored from the back/forward cache must be usable again.
+  window.addEventListener('pageshow', () => {
+    clearTimeout(slow);
+    delete consentForm.dataset.submitting;
+    consentForm.removeAttribute('aria-busy');
+    buttons.forEach((button, index) => { button.removeAttribute('aria-disabled'); button.textContent = labels[index]; });
+    status.hidden = true;
+  });
 }`;
 
 function selectionControls(group: string): string {
@@ -84,7 +113,40 @@ const appsStyle = `body.flat{background:#fff}body.flat main{max-width:760px;marg
 const consentRepositoryStyle = `.repository-filter{display:block;margin-bottom:12px}.repository-filter input{box-sizing:border-box;width:100%;margin:0;padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font:inherit;font-size:14px;line-height:20px}.repository-list{border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}.repository-list [hidden],.repository-filter[hidden]{display:none}.repository-filter-label{display:block;font-size:12px;color:#64748b;margin-bottom:4px}`;
 
 export function renderMcpPage(title: string, body: string, nonce?: string, options: { flat?: boolean; repositories?: boolean } = {}): string {
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · ProPR</title><style${nonce ? ` nonce="${escape(nonce)}"` : ''}>body{font:16px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:#F8F9FA;color:#1F2937;margin:0;padding:24px}main{max-width:640px;margin:5vh auto;padding:32px;border:1px solid #E2E8F0;border-radius:8px;background:#fff;box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1)}.brand{display:flex;align-items:center;gap:10px;padding-bottom:16px;border-bottom:1px solid #E2E8F0}.brand-name{font-size:22px;font-weight:700;color:#1F2937;letter-spacing:-.02em}.brand-name b{color:#24A3A3;font-weight:700}.brand small{margin-left:auto}h1{font-size:24px;font-weight:600;color:#111827}h2{font-size:16px;font-weight:600;color:#111827}p,li{line-height:1.6;overflow-wrap:anywhere}p{color:#4B5563}label{display:block;padding:12px;border:1px solid #E2E8F0;border-radius:6px;margin:8px 0;color:#1F2937;overflow-wrap:anywhere}label:hover{background:#F8F9FA}input{margin-right:10px;accent-color:#1D8A8A}button,a{font:inherit}button{background:#1D8A8A;color:#fff;border:1px solid transparent;border-radius:6px;padding:12px 18px;margin:12px 12px 0 0;font-weight:500;cursor:pointer}button:hover:not(:disabled){background:#167575}a{color:#1D8A8A}.secondary{background:#fff;color:#374151;border-color:#D1D5DB}.secondary:hover:not(:disabled){background:#F8F9FA}small{color:#64748B}.selection-tools:not([hidden]){display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:12px}.selection-tools button{width:auto;margin:0 8px 0 0;min-height:44px}.selection-tools small{display:block}button:disabled{opacity:.55;cursor:default}button:focus-visible,input:focus-visible{outline:3px solid #24A3A3;outline-offset:3px}article{border-top:1px solid #E2E8F0;margin-top:24px;padding-top:8px}@media(max-width:480px){body{padding:12px}main{margin:12px auto;padding:20px}button{width:100%}}${options.flat ? appsStyle : ''}${options.repositories ? repositoryListStyles + consentRepositoryStyle : ''}</style>${options.flat ? '<body class="flat">' : ''}<main>${brandHeader}<h1>${escape(title)}</h1>${body}</main></html>`;
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · ProPR</title><style${nonce ? ` nonce="${escape(nonce)}"` : ''}>body{font:16px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:#F8F9FA;color:#1F2937;margin:0;padding:24px}main{max-width:640px;margin:5vh auto;padding:32px;border:1px solid #E2E8F0;border-radius:8px;background:#fff;box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1)}.brand{display:flex;align-items:center;gap:10px;padding-bottom:16px;border-bottom:1px solid #E2E8F0}.brand-name{font-size:22px;font-weight:700;color:#1F2937;letter-spacing:-.02em}.brand-name b{color:#24A3A3;font-weight:700}.brand small{margin-left:auto}h1{font-size:24px;font-weight:600;color:#111827}h2{font-size:16px;font-weight:600;color:#111827}p,li{line-height:1.6;overflow-wrap:anywhere}p{color:#4B5563}label{display:block;padding:12px;border:1px solid #E2E8F0;border-radius:6px;margin:8px 0;color:#1F2937;overflow-wrap:anywhere}label:hover{background:#F8F9FA}input{margin-right:10px;accent-color:#1D8A8A}button,a{font:inherit}button{background:#1D8A8A;color:#fff;border:1px solid transparent;border-radius:6px;padding:12px 18px;margin:12px 12px 0 0;font-weight:500;cursor:pointer}button:hover:not(:disabled){background:#167575}a{color:#1D8A8A}.secondary{background:#fff;color:#374151;border-color:#D1D5DB}.secondary:hover:not(:disabled){background:#F8F9FA}small{color:#64748B}.selection-tools:not([hidden]){display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:12px}.selection-tools button{width:auto;margin:0 8px 0 0;min-height:44px}.selection-tools small{display:block}button:disabled{opacity:.55;cursor:default}button[aria-disabled="true"]{opacity:.55;cursor:progress}.consent-status:not([hidden]){display:flex;align-items:center;gap:10px;margin:16px 0 0;color:#1F2937}.consent-status::before{content:"";flex:none;width:16px;height:16px;border:2px solid #CBD5E1;border-top-color:#1D8A8A;border-radius:50%;animation:consent-spin .8s linear infinite}@keyframes consent-spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.consent-status::before{animation:none}}button:focus-visible,input:focus-visible{outline:3px solid #24A3A3;outline-offset:3px}article{border-top:1px solid #E2E8F0;margin-top:24px;padding-top:8px}@media(max-width:480px){body{padding:12px}main{margin:12px auto;padding:20px}button{width:100%}}${options.flat ? appsStyle : ''}${options.repositories ? repositoryListStyles + consentRepositoryStyle : ''}</style>${options.flat ? '<body class="flat">' : ''}<main>${brandHeader}<h1>${escape(title)}</h1>${body}</main></html>`;
+}
+
+/** Connected apps listed on one /mcp/apps page. */
+export const CONNECTED_APPS_PAGE_SIZE = 50;
+const GRANT_SCAN_BATCH = 200;
+/** Grant records one page request reads at most, so a long history of revoked grants cannot hold a request open. */
+const GRANT_SCAN_LIMIT = 5_000;
+
+/**
+ * One page of the user's active grants after `cursor`. Revoked and expired
+ * grants stay stored and their state is sealed, so they are skipped while
+ * reading and never count towards the page: a page is short only when it is
+ * the last one, or when the scan limit was reached (then `next` continues it).
+ */
+export async function loadConnectedAppsPage(oauth: Pick<McpOAuthProvider, 'store'>, ownerId: string, cursor: string, now = Date.now()): Promise<{ grants: McpGrant[]; next: string | null }> {
+  const grants: McpGrant[] = [];
+  let after = cursor;
+  let lastListed = cursor;
+  for (let scanned = 0; scanned < GRANT_SCAN_LIMIT;) {
+    const rows: Array<{ id: string; value: string }> = await oauth.store.db('mcp_records').where({ kind: 'grant', owner_id: ownerId }).where('id', '>', after).orderBy('id').limit(GRANT_SCAN_BATCH).select('id', 'value');
+    for (const row of rows) {
+      const grant = oauth.store.unseal<McpGrant>(row.value);
+      if (grant.ownerId !== ownerId || grant.revoked || grant.expiresAt <= now) continue;
+      // One more active grant than the page holds proves another page exists.
+      if (grants.length === CONNECTED_APPS_PAGE_SIZE) return { grants, next: lastListed };
+      grants.push(grant);
+      lastListed = row.id;
+    }
+    if (rows.length < GRANT_SCAN_BATCH) return { grants, next: null };
+    scanned += rows.length;
+    after = rows[rows.length - 1].id;
+  }
+  return { grants, next: after };
 }
 
 /** Repository chips shown before the rest collapse behind a "+ N more" toggle. */
@@ -201,7 +263,7 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
       <p>Instance: ${escape(oauth.config.instanceId)}</p>
       <p>Choose permissions below. Read is required; leave optional permissions unchecked for read-only access. Execute can start work; publish creates GitHub issues; merge can merge reviewed changes; manage changes instance configuration.</p>
       <p>Choose repositories. Access always remains limited by your current permissions. You can revoke this connection at any time.</p>
-      <form method="post">${csrf(req)}<input type="hidden" name="request" value="${escape(id)}">
+      <form method="post" data-consent-form>${csrf(req)}<input type="hidden" name="request" value="${escape(id)}">
         <section role="group" aria-labelledby="permissions-heading" data-selection-group="permissions">
           <h2 id="permissions-heading">Permissions</h2>${selectionControls('permissions')}
           ${pending.params.scopes?.map(scope => `<label><input type="checkbox" name="scopes" value="${escape(scope)}"${scope === 'read' ? ' checked disabled' : ''}>${escape(scope)}${scope === 'read' ? ' (required)' : ''}</label>`).join('')}
@@ -215,6 +277,7 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
         </section>
         <p><small>Return address: ${escape(pending.params.redirectUri)}</small></p>
         <button name="decision" value="approve"${repos.length ? '' : ' disabled'}>Allow selected access</button><button class="secondary" name="decision" value="deny">Deny</button>
+        <p class="consent-status" role="status" data-consent-status hidden></p>
       </form><script nonce="${nonce}">${consentScript}</script>`, nonce, { repositories: true }));
   });
 
@@ -243,11 +306,7 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
   });
 
   app.get('/mcp/apps', async (req, res) => {
-    const cursor = typeof req.query.after === 'string' ? req.query.after : '';
-    const rows = await oauth.store.db('mcp_records').where({ kind: 'grant', owner_id: req.user!.id }).where('id', '>', cursor).orderBy('id').limit(51).select('id', 'value');
-    const next = rows.length > 50 ? rows[49].id : null;
-    rows.splice(50);
-    const grants = rows.map(row => oauth.store.unseal<McpGrant>(row.value)).filter(grant => grant.ownerId === req.user!.id && !grant.revoked && grant.expiresAt > Date.now());
+    const { grants, next } = await loadConnectedAppsPage(oauth, req.user!.id, typeof req.query.after === 'string' ? req.query.after : '');
     const activity = await loadMcpGrantActivity(oauth.store.db, grants.map(grant => grant.id));
     res.type('html').send(renderMcpPage('Your connected apps', `<p>These apps can act with your ProPR permissions. Revoking an app immediately invalidates its access and refresh tokens.</p>${grants.length ? `<ul class="apps">${grants.map(grant => renderConnectedApp(grant, csrf(req), activity ? activity.get(grant.id) : null)).join('')}</ul>` : '<p class="empty" role="status">No connected apps.</p>'}${next ? `<p><a href="/mcp/apps?after=${encodeURIComponent(next)}">Next page</a></p>` : ''}`, undefined, { flat: true }));
   });

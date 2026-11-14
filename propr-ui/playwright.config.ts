@@ -3,8 +3,11 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.pw.ts',
+  // Spec files run side by side, one worker each; tests inside a file stay in
+  // order unless the file opts in with `test.describe.configure`. One worker
+  // by default; CI sets PROPR_BROWSER_TEST_WORKERS to the runner's CPU count.
   fullyParallel: false,
-  workers: 1,
+  workers: Math.max(1, Number.parseInt(process.env.PROPR_BROWSER_TEST_WORKERS ?? '', 10) || 1),
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: {

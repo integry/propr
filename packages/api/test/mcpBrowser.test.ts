@@ -289,8 +289,32 @@ test('real consent and connected-app routes work at desktop/mobile widths and en
     assert.equal((await context.request.post(`${origin}/mcp/consent`, { form: forgedForm, headers: { Origin: origin } })).status(), 400);
     accessibleRepositories = ['acme/web-app', 'acme/api-service'];
     await page.route('https://client.example/callback*', route => route.fulfill({ body: 'OAuth test callback' }));
+    // Record, from inside the page, what the form shows once it has been submitted:
+    // the page cannot be read from here while its navigation is pending.
+    type SubmitState = { label: string | null; allowDisabled: string | null; denyDisabled: string | null; busy: string | null; status: string; statusHidden: boolean; secondSubmitPrevented: boolean };
+    let submitting: SubmitState | undefined;
+    await page.exposeFunction('reportConsentSubmit', (state: SubmitState) => { submitting ??= state; });
+    await page.evaluate(() => {
+      const form = document.querySelector('form[data-consent-form]')!;
+      let reported = false;
+      // Registered after the page's own listener, so it sees the state that listener left.
+      form.addEventListener('submit', () => {
+        if (reported) return;
+        reported = true;
+        const [allow, deny] = Array.from(form.querySelectorAll('button[name="decision"]'));
+        const status = form.querySelector<HTMLElement>('[data-consent-status]')!;
+        const second = new SubmitEvent('submit', { cancelable: true, submitter: allow as HTMLElement });
+        form.dispatchEvent(second);
+        (window as unknown as { reportConsentSubmit: (state: unknown) => void }).reportConsentSubmit({
+          label: allow.textContent, allowDisabled: allow.getAttribute('aria-disabled'), denyDisabled: deny.getAttribute('aria-disabled'),
+          busy: form.getAttribute('aria-busy'), status: status.textContent ?? '', statusHidden: status.hidden, secondSubmitPrevented: second.defaultPrevented });
+      });
+    });
     await page.getByRole('button', { name: 'Allow selected access' }).click();
     await page.waitForURL('https://client.example/callback*', { timeout: 3000 }).catch(async () => { throw new Error(`Consent navigation failed: ${await page.locator('body').innerText()}`); });
+    // The form showed that the approval was in progress and refused a second submission.
+    assert.deepEqual(submitting, { label: 'Allowing…', allowDisabled: 'true', denyDisabled: 'true', busy: 'true',
+      status: 'Connecting… You will be returned to the app in a moment.', statusHidden: false, secondSubmitPrevented: true });
     const code = new URL(page.url()).searchParams.get('code')!;
     const token = await oauth.exchangeAuthorizationCode(client, code, verifier, client.redirect_uris[0], new URL(`${origin}/api/mcp`));
     assert.equal(consentPosts, 1);

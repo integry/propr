@@ -233,6 +233,38 @@ test('assigns finished pull requests with a shared, validated default assignee',
   ]);
 });
 
+test('turns the PR title status off and on for every branch of the repository', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page, true, [
+    { id: 'propr-main', name: 'integry/propr', baseBranch: 'main', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'propr-release', name: 'integry/propr', baseBranch: 'release', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'sdk', name: 'integry/integration-sdk', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+  ]);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).nth(1).click();
+  const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
+  const titleStatus = settings.getByRole('checkbox', { name: 'Show the PR state in pull request titles for integry/propr', exact: true });
+  const label = 'Show the PR state as a leading emoji in the pull request title';
+  const titleStatusWrites = () => api.writes.at(-1)?.map(repo => [repo.id, repo.prTitleStatus]);
+
+  await expect(titleStatus).toBeChecked();
+  // Clicking scrolls outer containers too; show the Automation section in the settings panel only.
+  await settings.evaluate(panel => {
+    for (const element of [document.scrollingElement, ...document.querySelectorAll('*')]) if (element && element !== panel) element.scrollTop = 0;
+    const control = panel.querySelector('input[aria-label^="Show the PR state in pull request titles"]')?.closest('label');
+    if (control) panel.scrollTop = (control as HTMLElement).getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop - 420;
+  });
+  await capturePreview(page, 'repository-pr-title-status-on');
+
+  await settings.getByText(label, { exact: true }).click();
+  await expect(titleStatus).not.toBeChecked();
+  await expect.poll(titleStatusWrites).toEqual([['propr-main', false], ['propr-release', false], ['sdk', true]]);
+
+  await settings.getByText(label, { exact: true }).click();
+  await expect(titleStatus).toBeChecked();
+  await expect.poll(titleStatusWrites).toEqual([['propr-main', true], ['propr-release', true], ['sdk', true]]);
+});
+
 test('shows the whole repository-wide selection the worker may cancel', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   // Two valid branch entries, each with a selection of its own: the worker cancels

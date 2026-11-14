@@ -237,6 +237,15 @@ release-candidate metadata, workflow lint, release shell lint and the
 changed-area lint/typecheck/build gate are likewise unique and unchanged, and
 `Validate Changes` still fails closed on the changed-area result.
 
+The changed-area gate (`Run Checks`) runs before the browser smoke test, and a
+failed gate skips the browser run: a lint or type error fails the job in a few
+minutes instead of after the browser specs, which are the longest stage. The
+browser specs run one file per Playwright worker, four workers on a hosted
+runner and two on a rootless worker (`PROPR_BROWSER_TEST_WORKERS`); a local
+`npm run test:browser` keeps one worker unless that variable is set. A file
+whose tests share nothing may opt in to spreading its own tests over the
+workers with `test.describe.configure({ mode: 'parallel' })`.
+
 ### One Linux CLI job per Node version
 
 `CLI init JSON (Node 22)` and `CLI init JSON (Node 24)` ran a second `npm ci`

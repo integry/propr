@@ -1,3 +1,4 @@
+import { stripStatusSlot } from '@propr/shared';
 // Utility functions for header components
 // Separated to allow React Fast Refresh to work properly
 
@@ -38,3 +39,12 @@ export const formatRelativeTime = (dateString: string): string => {
   if (diffDays < 7) return `${diffDays}d ago`;
   return date.toLocaleDateString();
 };
+
+/**
+ * A task title for the header's task list: without the `Followup:` prefix, a
+ * PR status slot (`🔨 `, `✅⑧ `) or the leading `[N by Model]` tag.
+ */
+export function cleanHeaderTaskTitle(title?: string): string {
+  if (!title) return '';
+  return stripStatusSlot(stripStatusSlot(title).replace(/^Followup:\s*/i, '')).replace(/^\[.*?\]\s*/g, '').trim();
+}

@@ -115,6 +115,7 @@ test('no-change completion without auto-merge leaves plan status to other observ
 test('with on_blocker: report, a genuine no-change completion of a queue head that was blocked earlier is still marked merged', async () => {
     // A previous run stopped on a blocker; this rerun succeeded without a diff or a blocker marker.
     queue = { status: 'active', issues: [10, 30], cursor: 0,
+        items: [{ issueNumber: 10, state: 'blocked', blockedKind: 'agent_blocked' }, { issueNumber: 30, state: 'pending' }],
         blockedReason: 'Issue #10 stopped on a blocker reported by the agent; resolve the blocker and request processing again to continue this epic.' };
     const result = await completeWithoutChanges(['AI']);
     assert.equal(result.success, true);

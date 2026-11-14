@@ -6,6 +6,8 @@ export interface PublishedIssue {
   index: number;
   number: number;
   url: string;
+  /** GitHub REST id, when this attempt saw it; dependency links look it up otherwise. */
+  id?: number;
 }
 
 export interface PartialPublication {
@@ -102,7 +104,7 @@ export async function withinPublicationLease<T>(leaseDeadline: number, send: (si
   finally { clearTimeout(timer); }
 }
 
-export type MarkerLookup = { state: 'found'; issue: { number: number; url: string; title: string } }
+export type MarkerLookup = { state: 'found'; issue: { number: number; url: string; title: string; id?: number } }
   | { state: 'absent' }
   | { state: 'incomplete' };
 
@@ -174,7 +176,7 @@ export async function findMarkedIssue(
       owner, repo, state: 'all', sort: 'created', direction: 'desc', per_page: MARKER_LOOKUP_PAGE_SIZE, page,
     });
     const issue = response.data.find(candidate => typeof candidate.body === 'string' && candidate.body.includes(marker));
-    if (issue) return { state: 'found', issue: { number: issue.number, url: issue.html_url, title: issue.title } };
+    if (issue) return { state: 'found', issue: { number: issue.number, url: issue.html_url, title: issue.title, ...(typeof issue.id === 'number' ? { id: issue.id } : {}) } };
     if (response.data.length < MARKER_LOOKUP_PAGE_SIZE
       || (afterIssueNumber !== undefined && response.data.some(candidate => candidate.number <= afterIssueNumber))) {
       return { state: 'absent' };

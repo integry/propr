@@ -28,6 +28,10 @@ export interface PlanIssue {
   /** Review scores the PR received, oldest first; one per review run. */
   review_scores?: number[];
   task_id: string | null;
+  /** Id of the plan item this issue was published from; null for issues published before item ids. */
+  plan_item_id?: string | null;
+  /** Issue numbers of the plan issues this one depends on. */
+  depends_on_issues?: number[];
   run_ultrafix?: boolean | null;
   ultrafix_goal?: number | null;
   ultrafix_max_cycles?: number | null;
@@ -55,6 +59,10 @@ export interface ImplementIssueOptions {
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */
   autoMerge?: boolean;
+  /** Epic scheduling: a chain in publication order (default) or the plan's dependsOn graph. */
+  epicExecution?: 'sequential' | 'graph';
+  /** A graph epic's in-flight limit (1-20); omitted is unbounded. */
+  maxParallel?: number;
 }
 
 /**
@@ -152,13 +160,48 @@ export const implementIssue = async (
 };
 
 /** Summary of the plan's sequential execution queue: `issues[cursor]` is in flight, later entries wait their turn. */
+export type PlanExecutionQueueIssueState = 'pending' | 'dispatched' | 'done' | 'blocked' | 'skipped';
+export type PlanExecutionQueueBlockedKind = 'closed_unmerged' | 'missing_from_plan' | 'dispatch_failed' | 'agent_blocked'
+  | 'awaiting_human_merge' | 'label_handoff' | 'setup_not_ready';
+
+export type PlanExecutionMode = 'sequential' | 'parallel' | 'graph';
+export type PlanExecutionScheduleState = 'waiting' | 'ready' | 'in_flight' | 'done' | 'skipped' | 'blocked';
+
 export interface PlanExecutionQueue {
+  /** The execution these states belong to; skip and retry name it so a newer execution refuses a stale action. */
+  executionId?: string;
   issues: number[];
   cursor: number;
   head: number | null;
   status: 'active' | 'completed' | 'cancelled';
+  advanceOn?: 'merged' | 'terminal';
   blockedReason: string | null;
+  /** sequential: a chain with a limit of one; parallel: no edges; graph: the plan's dependsOn edges. Older servers omit it for sequential. */
+  executionMode?: PlanExecutionMode;
+  /** Most issues in flight at once (1 for sequential, null when unbounded). */
+  maxParallel?: number | null;
+  /** Per-issue state in queue order; blocked issues carry a structured reason kind. */
+  issueStates?: Array<{
+    issue: number;
+    state: PlanExecutionQueueIssueState;
+    blockedKind: PlanExecutionQueueBlockedKind | null;
+    blockedReason: string | null;
+    /** How the issue stands in the schedule; `waitingOn` lists the prerequisites it still waits for. */
+    schedule?: PlanExecutionScheduleState;
+    dependsOn?: number[];
+    waitingOn?: number[];
+    /** Prerequisites skipped without releasing their dependents: this issue starts once they are skipped as satisfied. */
+    waitingOnSkipped?: number[];
+    /** A skipped graph issue: whether its dependents may start. */
+    skipSatisfiesDependents?: boolean;
+  }>;
 }
+
+export type PlanExecutionQueueIssue = NonNullable<PlanExecutionQueue['issueStates']>[number];
+
+/** Only a sequential execution is a chain; the other modes have no "first unmerged issue" ordering. */
+export const isChainExecution = (queue: PlanExecutionQueue | null | undefined): boolean =>
+  queue?.status !== 'active' || (queue.executionMode ?? 'sequential') === 'sequential';
 
 /** Fetches the plan's execution queue, or null when the plan never queued work. */
 export const getPlanExecutionQueue = async (draftId: string): Promise<PlanExecutionQueue | null> => {
@@ -184,6 +227,37 @@ export const queueRemainingIssues = async (
   await handleApiResponse(response);
   return response.json();
 };
+
+export interface PlanQueueActionResult {
+  outcome: 'skipped' | 'already_skipped' | 'retried' | 'already_retried';
+  executionId: string;
+  issueNumber: number;
+  queue: PlanExecutionQueue | null;
+}
+
+const queueAction = async (draftId: string, issueNumber: number, action: 'skip' | 'retry', body: Record<string, unknown>): Promise<PlanQueueActionResult> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-queue/issues/${issueNumber}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+/**
+ * Skips a pending or blocked issue of the execution: the queue treats it as finished for scheduling.
+ * In a graph, `satisfiesDependents` lets the issues that depend on it start. The GitHub issue is not touched.
+ */
+export const skipPlanQueueIssue = (draftId: string, issueNumber: number,
+  options: { executionId: string; expectedState?: PlanExecutionQueueIssueState; satisfiesDependents?: boolean }) =>
+  queueAction(draftId, issueNumber, 'skip', options);
+
+/** Clears a blocked issue's blocker and dispatches it again under the queue's normal guards. */
+export const retryPlanQueueIssue = (draftId: string, issueNumber: number,
+  options: { executionId: string; expectedState?: PlanExecutionQueueIssueState }) =>
+  queueAction(draftId, issueNumber, 'retry', options);
 
 /**
  * Updates a plan issue's agent/model configuration or status.

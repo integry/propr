@@ -596,6 +596,7 @@ export * from './pluginInstallations.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+export * from './planItemGraph.js';
 export {
   TOKEN_OUTLIER_MIN_HISTORY,
   TOKEN_OUTLIER_SETTING_DEFINITIONS,
@@ -609,6 +610,7 @@ export {
   type TokenOutlierSettings,
 } from './tokenOutlierSettings.js';
 export * from './acceptanceCriteria.js';
+export * from './prTitleStatusSlot.js';
 
 // The durable repository change-event journal: domains, event types and payloads.
 export * from './repositoryEvents.js';

@@ -44,6 +44,8 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Run a saved [automation](./agents.md) and read its report | `list_automation_definitions`, `trigger_automation_run`, then `get_operation` or `get_automation_run`; `approve_automation_run`/`reject_automation_run` for runs awaiting approval (preview runs, and auto runs the cost gate paused) |
 | Find what you started and whether it finished | `list_operations`, then `get_operation` |
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
+| Whether a ProPR pull request is working, needs you, or is ready ([PR status](./pr-status.md)) | `proprStatus` on `get_pull_request`, `list_pull_requests` and `get_work_overview` |
+| Show the PR state as a leading emoji in a repository's pull request titles ([title setting](./pr-status.md#the-title-setting); controls the title only, the body status line is always written) | `update_repository_configuration` with `prTitleStatus` (default `true`); `get_repository_configuration` reads it |
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |
 | Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
 | Turn on the [assignment gate](./assignment.md#the-assignment-gate) | `update_execution_settings` with `followup_requires_assignment: true` (default `false`); `get_execution_settings` reads it |
@@ -114,10 +116,25 @@ models) and labels the epic PR once every issue finishes; non-epic calls keep th
 is the default: closed or failed heads record a `blockedReason` and wait until
 fixed and merged. `epicAdvanceOn: "terminal"` advances on any core terminal
 issue state. `pause_plan` holds the successor and `resume_plan` starts it.
+`epicExecution: "graph"` (epics, one model, advancing on merge) starts each
+issue once its `dependsOn` prerequisites are merged into the epic branch, at most
+`maxParallel` at once, in publication order; `maxParallel` is valid only with
+graph mode. The REST implement route accepts the same `epicExecution` and
+`maxParallel`.
 `get_plan` and `get_operation` expose the queue's issues, cursor, head, status,
-advanceOn and blockedReason. The result reports executionMode, started and
+advanceOn and blockedReason, its execution mode and limit, and for each issue
+whether it is waiting on prerequisites (and which), ready, in flight, done or blocked. The result reports executionMode, started and
 queued; a sequential receipt remains accepted until the queue completes.
 Unselected pending issues never start through the queue.
+
+When an issue of the queue becomes blocked, ProPR records one event for that
+blocked state, raises one Inbox notification for the plan and updates open
+Planner Studio views, which show the blocker and its reason on the issue's row.
+`list_plan_blocked_events` reads those events with a cursor. `skip_plan_issue`
+moves the queue past a pending or blocked issue without touching the GitHub
+issue (in a graph, its dependents wait unless `satisfiesDependents` is true), and
+`retry_plan_issue` clears a blocker and dispatches the issue again. Planner
+Studio offers the same **Retry** and **Skip** controls on the issue row.
 
 Mutations require their corresponding scopes and repository access, and return durable receipts. Queue acceptance is not completion. Keep idempotency keys stable when retrying the same request, and repeat its arguments exactly. Failures return a structured error with a stable `code`, the `stage` where it failed and whether it is `retryable`. See the [full operator/setup reference](https://github.com/integry/propr/blob/main/docs/mcp.md) and [tool coverage](https://github.com/integry/propr/blob/main/docs/mcp-coverage.md) for schemas, Connect registration and deployment requirements.
 
