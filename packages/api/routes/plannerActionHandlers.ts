@@ -1,6 +1,7 @@
 /**
  * Action handlers for planner routes (generate, refine, finalize, abort)
  */
+import { validatePlanItemGraph } from '@propr/shared';
 import type { Request, Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
@@ -294,6 +295,17 @@ export function createRefineHandler(db: Knex, deps: PlannerActionAuthorizationDe
   };
 }
 
+/** The first id or dependsOn error of a stored plan, or null when it has none (ids may still be missing). */
+function invalidPlanDependencies(planJson: unknown): string | null {
+  let plan: unknown = planJson;
+  if (typeof planJson === 'string') {
+    try { plan = JSON.parse(planJson); } catch { return null; }
+  }
+  if (!Array.isArray(plan)) return null;
+  const result = validatePlanItemGraph(plan, { requireIds: false });
+  return result.valid ? null : result.message;
+}
+
 export function createFinalizeHandler(db: Knex) {
   return async function finalize(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
@@ -309,6 +321,10 @@ export function createFinalizeHandler(db: Knex) {
     // This prevents race conditions from duplicate finalize requests
     const RE_FINALIZABLE_STATUSES = ['review', 'approved', 'executed', 'pr_created', 'merged', 'failed'];
     try {
+      // Refuse invalid dependencies before claiming, so the draft keeps its status.
+      const stored = await db('task_drafts').where({ draft_id: draftId, user_id: userId }).first('plan_json');
+      const invalid = stored ? invalidPlanDependencies(stored.plan_json) : null;
+      if (invalid) { res.status(400).json({ error: invalid, code: 'PLAN_INVALID' }); return; }
       const updated = await db('task_drafts')
         .where({ draft_id: draftId, user_id: userId })
         .whereIn('status', RE_FINALIZABLE_STATUSES)

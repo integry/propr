@@ -12,10 +12,11 @@ const redact = value => {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [redact(k), redact(v)]));
   return value;
 };
-// Executables are operator-fixed and must already exist in the image.
+// Executables are operator-fixed and must already exist in the image. Package
+// servers run the image's Node with their read-only mounted executable.
 let executable;
 try { executable = await realpath(config.executable); if (!(await lstat(executable)).isFile()) process.exit(1); } catch { process.exit(1); }
-const child = spawn(executable, config.args, { shell: false, env: { PATH: '/usr/local/bin:/usr/bin:/bin', ...Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'].filter(k => process.env[k]).map(k => [k, process.env[k]])), ...Object.fromEntries(Object.entries(config.secretEnv).map(([field, key]) => [field, process.env[key]])) }, stdio: ['pipe', 'pipe', 'ignore'] });
+const child = spawn(executable, config.args, { shell: false, env: { PATH: '/usr/local/bin:/usr/bin:/bin', ...Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'].filter(k => process.env[k]).map(k => [k, process.env[k]])), ...Object.fromEntries(Object.entries(config.env ?? {}).filter(([name, value]) => /^[A-Z_][A-Z0-9_]{0,99}$/.test(name) && !/^(PATH|HOME|NODE_OPTIONS|NODE_PATH|LD_.*)$/.test(name) && typeof value === 'string')), ...Object.fromEntries(Object.entries(config.secretEnv).map(([field, key]) => [field, process.env[key]])) }, stdio: ['pipe', 'pipe', 'ignore'] });
 let calls = 0, bytes = 0, sequence = 0;
 const pending = new Map();
 const send = value => { const line = JSON.stringify(redact(value)); bytes += Buffer.byteLength(line); if (bytes > 16 * 1024 * 1024) stop(); else process.stdout.write(line + '\n'); };

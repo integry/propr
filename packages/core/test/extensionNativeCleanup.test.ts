@@ -21,7 +21,7 @@ test('the native extension suite exits normally in a fresh process', async () =>
   ], { cwd: root, env: childEnv, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
   assert.match(stdout, /# fail 0\b/);
   assert.match(stdout, /# skipped 0\b/);
-  assert.match(stdout, /native durable instance-admin CRUD/);
+  assert.match(stdout, /native durable instance-admin library management/);
   assert.match(stdout, /synthetic HTTPS MCP enforces TLS/);
   assert.doesNotMatch(stderr, /Assertion failed|RemoveEnvironmentCleanupHook/);
 });

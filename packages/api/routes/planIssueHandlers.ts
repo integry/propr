@@ -37,7 +37,7 @@ import {
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
 import { withRecordedPullRequestActivity } from './planIssuePullRequestActivity.js';
-import { enqueueAutoMergeImplementation, enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors } from './planIssueEpicQueue.js';
+import { enqueueAutoMergeImplementation, enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors, parseEpicScheduling } from './planIssueEpicQueue.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
@@ -340,11 +340,12 @@ export function createImplementIssueHandler(deps: PlanIssueDeps, { enqueueEpics 
       const { useEpic, autoMerge } = resolveImplementationSettings(target.implementationSettings, target.contextConfig);
       const implement = () => implementLoadedIssue({ ...target, draftId, issueNumber });
       const selectedHead = target.models?.[0] ?? buildEffectivePlanIssue(target.planIssue, target.body);
-      const queued = { draftId, issueNumber, repository: `${target.owner}/${target.repo}`, contextConfig: target.contextConfig,
-        headSelection: selectedHead.agent_alias && selectedHead.model_name
-          ? { agent_alias: selectedHead.agent_alias, model_name: selectedHead.model_name } : undefined, implement };
+      // epicExecution: sequential (default) or graph; maxParallel: a graph's in-flight limit.
+      const scheduling = parseEpicScheduling(target.body as Record<string, unknown>, Boolean(useEpic), target.models?.length ?? 0);
+      const queued = { draftId, issueNumber, repository: `${target.owner}/${target.repo}`, contextConfig: target.contextConfig, implement,
+        headSelection: selectedHead.agent_alias && selectedHead.model_name ? { agent_alias: selectedHead.agent_alias, model_name: selectedHead.model_name } : undefined };
       let result: unknown;
-      if (enqueueEpics && useEpic) result = await enqueueEpicImplementation({ ...queued, autoMerge });
+      if (enqueueEpics && useEpic) result = await enqueueEpicImplementation({ ...queued, autoMerge, scheduling });
       else if (enqueueEpics && autoMerge) result = await enqueueAutoMergeImplementation(queued);
       else result = await implement();
       res.json(result);

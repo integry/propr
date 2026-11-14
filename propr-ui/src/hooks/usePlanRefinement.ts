@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
 import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/proprApi';
+import { restoreDeletedTask, type DetachedDependency } from './planTaskDependencies';
 
 const REFINEMENT_POLL_INTERVAL_MS = 1000;
 // The API recovers an abandoned refinement after 35 minutes. This is a final
@@ -12,6 +13,8 @@ export type SaveStatus = 'saved' | 'saving' | 'error';
 export interface DeletedTask {
   task: PlanTask;
   index: number;
+  /** Ids of tasks whose dependsOn named the deleted task; restoring adds it back to them. */
+  dependents?: string[];
 }
 
 /**
@@ -19,6 +22,9 @@ export interface DeletedTask {
  * - Generates IDs for tasks missing them
  * - Handles duplicate IDs by appending unique suffixes
  * - Ensures no empty or undefined IDs exist
+ * Existing unique IDs are never changed: dependsOn edges refer to them. The
+ * server stores plans with unique ids, so the duplicate rename only guards
+ * React keys against a malformed plan.
  */
 const ensureTaskIds = (tasks: PlanTask[]): PlanTask[] => {
   const seenIds = new Set<string>();
@@ -58,6 +64,13 @@ const ensureTaskIds = (tasks: PlanTask[]): PlanTask[] => {
     }
     return task;
   });
+};
+
+const withoutDependency = (task: PlanTask, dependencyId: string): PlanTask => {
+  const dependsOn = (task.dependsOn ?? []).filter(id => id !== dependencyId);
+  const updated: PlanTask = { ...task, dependsOn };
+  if (dependsOn.length === 0) delete updated.dependsOn;
+  return updated;
 };
 
 /**
@@ -137,6 +150,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
   const [refinementProgress, setRefinementProgress] = useState<RefinementProgress>({ isRefining: false });
   const saveRef = useRef<ReturnType<typeof debounce> | null>(null);
+  const detachedDependenciesRef = useRef<DetachedDependency[]>([]);
 
   const currentPlan = history[pointer];
 
@@ -234,8 +248,11 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
     const task = currentPlan[index];
 
-    // Defensive check: ensure we're only removing one task
-    const newPlan = currentPlan.filter(t => t.id !== taskId);
+    // Defensive check: ensure we're only removing one task. Tasks that depended
+    // on the deleted one drop that entry, since the server rejects references
+    // to items that no longer exist.
+    const dependents = currentPlan.filter(t => t.id !== taskId && t.dependsOn?.includes(taskId)).map(t => t.id);
+    const newPlan = currentPlan.filter(t => t.id !== taskId).map(t => dependents.includes(t.id) ? withoutDependency(t, taskId) : t);
 
     // Safety check: verify we only removed one task
     if (newPlan.length !== currentPlan.length - 1) {
@@ -249,15 +266,15 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
     updatePlan(newPlan, 'user');
 
-    return { task, index };
+    return dependents.length ? { task, index, dependents } : { task, index };
   }, [currentPlan, updatePlan]);
 
   const restoreTask = useCallback((deleted: DeletedTask) => {
-    const newPlan = [...currentPlan];
-    // Insert at the original index, or at the end if the index is out of bounds
-    const insertIndex = Math.min(deleted.index, newPlan.length);
-    newPlan.splice(insertIndex, 0, deleted.task);
-    updatePlan(newPlan, 'user');
+    // The deletion record holds the task as it was; tasks deleted since then
+    // must not come back as references, but are reconnected on their restore.
+    const restored = restoreDeletedTask(currentPlan, deleted, detachedDependenciesRef.current);
+    detachedDependenciesRef.current = restored.detached;
+    updatePlan(restored.plan, 'user');
   }, [currentPlan, updatePlan]);
 
   const reorderTasks = useCallback((activeId: string, overId: string) => {

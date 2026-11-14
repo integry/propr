@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extensionProfileInputSchema, extensionSelectionSchema, INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
+import { automationExtensionsSchema, extensionLibraryInputSchema, extensionSelectionSchema, INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
 
 /**
  * Request and response schemas for the dashboard HTTP API reference.
@@ -185,14 +185,25 @@ export const TaskPage = component('TaskPage', z.object({
   totalRuns: z.number().int().optional().describe('With `groupBy=task`: matching runs across all tasks.'),
 }), 'A page of task runs.');
 
-export const ExtensionProfileInput = component('ExtensionProfileInput', extensionProfileInputSchema as unknown as z.ZodType, 'Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
-export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType);
-export const ExtensionProfileSave = component('ExtensionProfileSave', z.strictObject({ input: ExtensionProfileInput, expected: ExtensionSelection.optional(), secrets: z.record(z.string(), z.string().nullable()).optional() }));
+export const ExtensionLibraryInput = component('ExtensionLibraryInput', extensionLibraryInputSchema as unknown as z.ZodType, 'Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.');
+export const ExtensionLibrarySave = component('ExtensionLibrarySave', z.strictObject({ input: ExtensionLibraryInput, expectedRevision: z.number().int().min(0), secrets: z.record(z.string(), z.string().nullable()).optional(), acknowledgements: z.array(z.string()).optional().describe('Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed.') }));
+export const ExtensionItemEnabledRequest = component('ExtensionItemEnabledRequest', z.strictObject({ item: z.union([z.strictObject({ kind: z.literal('server'), name: z.string() }), z.strictObject({ kind: z.literal('skill'), bundleId: z.uuid() })]), enabled: z.boolean() }));
+export const ExtensionSecretReplaceRequest = component('ExtensionSecretReplaceRequest', z.strictObject({ name: z.string(), secret: z.string().nullable(), expectedRevision: z.number().int().min(0).optional() }));
+export const ExtensionLibraryRevisionSchema = z.object({
+  version: z.literal(1), instanceId: z.string(), revision: z.number().int().describe('0 before the first save.'),
+  createdAt: z.number(), updatedAt: z.number(), auditActor: z.string(), servers: z.array(z.object({}).loose()), skills: z.array(z.object({}).loose()),
+  secrets: z.record(z.string(), z.object({ configured: z.boolean() }).loose()).describe('Presence markers only; secret values are never returned.'), skillBundles: z.array(z.object({}).loose()),
+}).loose();
+export const ExtensionLibraryRevisionResponse = component('ExtensionLibraryRevisionResponse', z.object({ library: ExtensionLibraryRevisionSchema }));
+export const AutomationExtensions = component('AutomationExtensions', automationExtensionsSchema as unknown as z.ZodType, 'Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.');
+export const ExtensionSelection = component('ExtensionSelection', extensionSelectionSchema as unknown as z.ZodType, 'Legacy profile selection; no longer accepted for new submissions.');
 
+const repositoryName = z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.');
 export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object({
-  extensionProfile: ExtensionSelection.nullable().optional(),
-  extensionAllowWrite: z.boolean().optional().describe('Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries.'),
-  repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/).describe('`owner/name` of an enabled repository you can push to.'),
+  extensionProfile: ExtensionSelection.nullable().optional().describe('Removed: extension profiles were replaced by the instance extension library. A non-null value is refused.'),
+  extensionAllowWrite: z.boolean().optional().describe('Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission\'s initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`.'),
+  disableExtensions: z.boolean().optional().describe('Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply.'),
+  repository: repositoryName,
   instruction: z.string().min(1).max(50_000).regex(/\S/).describe('What the agent should do; becomes the GitHub issue body. Must not be only whitespace.'),
   agentAlias: z.string().optional().describe('Agent to route to. Omit to use the instance default.'),
   model: z.string().optional().describe('Model of the agent. Omit to use the agent default.'),
@@ -212,6 +223,8 @@ export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object
   }])),
 }), 'A request to open a GitHub issue and start an implementation run for it.');
 
+export const TaskSubmissionExtensions = component('TaskSubmissionExtensions', z.object({ qualified: z.boolean().describe('False when the agent\'s runtime does not use extensions (only Claude and Codex do).'), revision: z.number().int().describe('Current library revision; tasks resolve the library again at launch.'),
+  servers: z.array(z.object({ name: z.string(), capability: z.enum(['read', 'write']) })).describe('MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.'), skills: z.array(z.object({ name: z.string() })) }), 'Library items that would apply automatically to a task for this repository and agent.');
 export const TaskSubmission = component('TaskSubmission', z.object({
   id: z.string(),
   state: z.enum(['prepared', 'creating', 'issue_created', 'queued', 'failed']),
@@ -329,6 +342,7 @@ export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
   force: z.enum(['true', 'false']).optional().describe('Delete even when the task is still active.'),
 }));
 
+export const TaskSubmissionExtensionsQuery = querySet('TaskSubmissionExtensionsQuery', z.object({ repository: repositoryName, agentAlias: z.string().optional().describe('Agent the task would use. Omit for the instance default.'), model: z.string().optional() }));
 export const TaskFollowupRunsQuery = querySet('TaskFollowupRunsQuery', z.object({
   commentId: z.string().regex(/^[1-9]\d{0,15}$/).describe('The `commentId` the follow-up\'s receipt returned.'),
 }));

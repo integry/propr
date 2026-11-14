@@ -1,9 +1,60 @@
 import * as core from '@propr/core';
+import { parseDependsOnIssues, parseUnresolvedDependsOn } from '@propr/shared';
 import { getLlmLabel } from './planIssueHelpers.js';
 import { persistEffectiveUltrafixSettings } from './planIssueConfigSync.js';
 
 export class EpicQueueRequestError extends Error {
-  readonly status = 409;
+  readonly status: number = 409;
+}
+
+/** How a REST epic request schedules its issues: a chain (the default) or the plan's dependency graph. */
+export interface EpicScheduling { mode: 'sequential' | 'graph'; maxParallel?: number }
+
+/** An invalid combination of epic scheduling options in a REST implement request. */
+export class EpicSchedulingError extends EpicQueueRequestError {
+  override readonly status = 400;
+}
+
+const MAX_EPIC_PARALLEL = 20;
+/** Rejects scheduling options that do not combine; the default stays a sequential epic. */
+export function parseEpicScheduling(body: { epicExecution?: unknown; maxParallel?: unknown }, useEpic: boolean, modelCount: number): EpicScheduling {
+  const { epicExecution, maxParallel } = body;
+  if (epicExecution !== undefined && epicExecution !== 'sequential' && epicExecution !== 'graph') {
+    throw new EpicSchedulingError('epicExecution must be "sequential" or "graph"');
+  }
+  const mode = epicExecution ?? 'sequential';
+  if (mode === 'graph' && !useEpic) throw new EpicSchedulingError('epicExecution "graph" requires useEpic: true');
+  if (mode === 'graph' && modelCount > 1) {
+    throw new EpicSchedulingError('Graph epics require one model per issue: comparing models would create multiple PRs into the same epic branch');
+  }
+  if (maxParallel === undefined) return { mode };
+  if (mode !== 'graph') throw new EpicSchedulingError('maxParallel applies only to epicExecution "graph"');
+  if (typeof maxParallel !== 'number' || !Number.isInteger(maxParallel) || maxParallel < 1 || maxParallel > MAX_EPIC_PARALLEL) {
+    throw new EpicSchedulingError(`maxParallel must be an integer from 1 to ${MAX_EPIC_PARALLEL}`);
+  }
+  return { mode, maxParallel };
+}
+
+/**
+ * A graph epic starts with the first pending issue whose prerequisites are merged; the others
+ * keep publication order and start as their prerequisites merge, within the limit.
+ */
+function graphExecutionOrder(issues: core.PlanIssue[], pending: core.PlanIssue[], issueNumber: number) {
+  // A prerequisite whose publication failed can never merge, so its dependant is not independent.
+  const unpublished = pending.flatMap(issue => {
+    const ids = parseUnresolvedDependsOn((issue as core.PlanIssue & { depends_on_issues?: unknown }).depends_on_issues);
+    return ids.length ? [`#${issue.issue_number} depends on ${ids.map(id => `"${id}"`).join(', ')}`] : [];
+  });
+  if (unpublished.length) {
+    throw new EpicQueueRequestError(`A graph epic needs every prerequisite published, but ${unpublished.join('; ')}, which has no issue because its publication failed. Run the remaining issues as a sequential epic.`);
+  }
+  const dependsOn = new Map(issues.map(issue => [issue.issue_number,
+    parseDependsOnIssues((issue as core.PlanIssue & { depends_on_issues?: unknown }).depends_on_issues)]));
+  const merged = new Set(issues.filter(issue => issue.status === core.PlanIssueStatus.MERGED).map(issue => issue.issue_number));
+  const graph = core.orderGraphExecution({ issues: pending.map(issue => issue.issue_number), dependsOn, mergedOutside: merged });
+  if (graph.order === null) throw new EpicQueueRequestError('No pending issue is ready: every one waits for a prerequisite that is not merged.');
+  if (graph.head !== issueNumber) throw new EpicQueueRequestError(`Implement issue #${graph.head}, the first pending issue whose prerequisites are merged, to start the epic.`);
+  return { order: graph.order, dependsOn };
 }
 
 /** UI/API epic requests claim the remaining published issues before dispatching the head. */
@@ -14,6 +65,7 @@ export async function enqueueEpicImplementation(params: {
   autoMerge: boolean;
   contextConfig: Record<string, unknown> | null;
   headSelection?: { agent_alias: string; model_name: string };
+  scheduling?: EpicScheduling;
   implement: () => Promise<unknown>;
 }): Promise<unknown> {
   const {
@@ -32,15 +84,19 @@ export async function enqueueEpicImplementation(params: {
   if (issues.some(issue => isInProgressStatus(issue.status))) {
     throw new EpicQueueRequestError('Wait for the running plan issues to finish before implementing the remaining epic.');
   }
-  const pending = issues.filter(issue => issue.status === PlanIssueStatus.PENDING).sort((left, right) => left.id - right.id);
+  const published = issues.filter(issue => issue.status === PlanIssueStatus.PENDING).sort((left, right) => left.id - right.id);
+  const graph = params.scheduling?.mode === 'graph' ? graphExecutionOrder(issues, published, issueNumber) : null;
+  const pending = graph ? graph.order.map(number => published.find(issue => issue.issue_number === number)!) : published;
   if (pending[0]?.issue_number !== issueNumber) {
     throw new EpicQueueRequestError('Implement the first pending issue to start the epic.');
   }
   let queue: core.EpicExecutionQueue;
   try {
-    // Like the retired UI chain, a closed or failed issue does not hold the remaining epic.
+    // Like the retired UI chain, a closed or failed issue does not hold the remaining sequential epic.
+    // A graph waits for merged prerequisites, so it advances on merge only.
     queue = await createEpicExecutionQueue({ draftId, repository, issues: pending.map(issue => issue.issue_number),
-      advanceOn: 'terminal', autoMerge, headSelection: params.headSelection, ready: false, headStartedAt: Date.now() });
+      advanceOn: graph ? 'merged' : 'terminal', autoMerge, headSelection: params.headSelection, ready: false, headStartedAt: Date.now(),
+      ...(graph ? { mode: 'graph' as const, maxParallel: params.scheduling?.maxParallel ?? null, dependsOn: graph.dependsOn } : {}) });
   } catch (error) {
     if ((error as Error).message.includes('active epic execution queue')) throw new EpicQueueRequestError((error as Error).message);
     throw error;
@@ -179,8 +235,9 @@ export async function enqueueRemainingBehindRunning(params: {
 
   const existing = await getEpicExecutionQueue(draftId);
   if (existing?.status === 'active') {
+    if (existing.mode === 'graph') throw new EpicQueueRequestError('A dependency-graph execution already owns this plan\'s issues; it starts each one as its prerequisites merge.');
     if (existing.parallel || !existing.ready) throw new EpicQueueRequestError('An execution is already being set up for this plan.');
-    const owned = new Set(existing.issues.slice(existing.cursor));
+    const owned = new Set(existing.items.filter(item => item.state !== 'done' && item.state !== 'skipped').map(item => item.issueNumber));
     const missing = pending.filter(issue => !owned.has(issue.issue_number));
     if (!missing.length) return { queued: pending.map(issue => issue.issue_number), alreadyQueued: true };
     await appendToActiveQueue({ queue: existing, issues: missing, epicLabel: existing.useEpic ? epicLabel : undefined, contextConfig });
@@ -228,9 +285,7 @@ async function appendToActiveQueue(params: {
     await syncQueuedEpicIssueSelectors({ draftId: queue.draftId, repository: queue.repository, issueNumber: issue.issue_number,
       epicLabel, autoMerge: queue.autoMerge, selection, octokit, canConfigure: owned });
   }
-  // Compare-and-swap on the issue list so a concurrent advance or completion is not overwritten.
-  const appended = await core.db('epic_execution_queues')
-    .where({ draft_id: queue.draftId, execution_id: queue.executionId, status: 'active', issues: JSON.stringify(queue.issues) })
-    .update({ issues: JSON.stringify([...queue.issues, ...params.issues.map(issue => issue.issue_number)]), updated_at: Date.now() });
+  // Compare-and-swap on the per-issue rows so a concurrent advance or completion is not overwritten.
+  const appended = await core.appendEpicQueueIssues(queue, params.issues.map(issue => issue.issue_number));
   if (!appended) throw new EpicQueueRequestError('The plan execution changed; refresh and queue again.');
 }

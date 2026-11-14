@@ -1,178 +1,300 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { installSettingsFixture } from './settings-layout.fixture';
 
-test('instance extension editor describes skills and MCP servers, shows immutable provenance and write-only authentication', async ({ page }) => {
-  await installSettingsFixture(page);
-  const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289'; const profileId = '5b14d6d6-9357-4b56-9eb3-31e5f921d125';
-  const profile = {
-    version: 1, instanceId, profileId, revision: 3, name: 'Documentation assistant', enabled: true,
-    agentScope: ['claude-main', 'codex-main'], repositoryScope: ['example/docs'],
-    mcpServers: [{ kind: 'https', name: 'documentation', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'bearer' }],
-    skillBundleIds: ['075bb20e-4156-4f6c-a7e2-20fd6c8ba84e'],
-    secrets: { documentation: { fields: ['bearerToken'], configured: true } },
-    skillBundles: [{ id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId, name: 'documentation-review', digest: 'd853bea9e15d14bc3881f84dd19a2cb940624fda943e677e6b6ac9cc31ff1009', files: 3, bytes: 8120, requirements: ['documentation.search'], source: { kind: 'github', repository: 'example/skills', commit: 'd66d0ad62a789374f81f7e1c4f5dbcc43319e1a6', directory: 'skills/documentation-review' }, createdAt: 1791907200000, auditActor: '1' }],
-    createdAt: 1791907200000, updatedAt: 1791907200000, auditActor: '1',
-  };
+const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289';
+const allowAll = { repositories: [] as string[], agents: [] as string[], autoApply: true };
+const emptyLibrary = { version: 1, instanceId, revision: 0, servers: [], skills: [], secrets: {}, skillBundles: [], createdAt: 0, updatedAt: 0, auditActor: '' };
+const bundleId = '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e';
+const reviewBundle = { id: bundleId, instanceId, name: 'documentation-review', digest: 'd853bea9e15d14bc3881f84dd19a2cb940624fda943e677e6b6ac9cc31ff1009', files: 3, bytes: 8120, requirements: ['documentation.search'], source: { kind: 'github', repository: 'example/skills', commit: 'd66d0ad62a789374f81f7e1c4f5dbcc43319e1a6', directory: 'skills/documentation-review' }, createdAt: 1791907200000, auditActor: '1' };
+const catalogAgents = {
+  agents: [{ alias: 'claude-main', kind: 'direct', type: 'claude', enabled: true, supportedModels: [] }, { alias: 'codex-main', kind: 'direct', type: 'codex', enabled: true, supportedModels: [] }],
+  repositories: [{ name: 'example/docs', enabled: true }, { name: 'example/app', enabled: true }],
+};
+type Library = Omit<typeof emptyLibrary, 'servers' | 'skills' | 'secrets' | 'skillBundles'> & { servers: Record<string, unknown>[]; skills: Record<string, unknown>[]; secrets: Record<string, unknown>; skillBundles: unknown[] };
+
+/**
+ * A stateful library API: reads return the last saved revision, saves and the
+ * single-item enable switch create the next one, so a reload shows what was saved.
+ */
+async function libraryApi(page: Page, initial: Library, extra: { bundles?: unknown[]; catalog?: unknown[]; usage?: unknown } = {}) {
+  const state = { library: initial, saves: [] as Record<string, unknown>[], toggles: [] as Record<string, unknown>[] };
   await page.route('**/api/instance/extensions/v1**', route => {
     const request = route.request(); const url = new URL(request.url());
-    if (url.pathname.endsWith('/history')) return route.fulfill({ json: { revisions: [profile] } });
-    if (url.pathname.endsWith('/validate')) return route.fulfill({ json: { results: [{ name: 'documentation', reachable: true, status: 'reachable' }, { name: 'operator-documentation', reachable: null, status: 'not_validated' }] } });
+    if (url.pathname.endsWith('/history')) return route.fulfill({ json: { revisions: [state.library] } });
+    if (url.pathname.endsWith('/validate')) return route.fulfill({ json: { results: [{ name: 'documentation', reachable: true, status: 'reachable' }] } });
     if (request.method() === 'POST') {
       expect(request.headers()['x-propr-extensions']).toBe('1');
-      return route.fulfill({ json: { profile: { ...profile, ...request.postDataJSON().input, revision: 4 } } });
+      const body = request.postDataJSON();
+      if (url.pathname.endsWith('/items/enabled')) {
+        state.toggles.push(body);
+        const flip = (item: Record<string, unknown>) => ((body.item.kind === 'server' ? item.name === body.item.name : item.bundleId === body.item.bundleId) ? { ...item, enabled: body.enabled } : item);
+        state.library = { ...state.library, revision: state.library.revision + 1, servers: state.library.servers.map(flip), skills: state.library.skills.map(flip) };
+        return route.fulfill({ json: { library: state.library } });
+      }
+      if (url.pathname.endsWith('/library')) {
+        state.saves.push(body);
+        expect(body.expectedRevision).toBe(state.library.revision);
+        const secrets = { ...state.library.secrets };
+        // Package secret variables are keyed server/VARIABLE; their status belongs to the server.
+        for (const [server, variable] of Object.keys(body.secrets).map(name => name.split('/'))) secrets[server] = variable ? { count: 1, configured: true, configuredEnv: [variable] } : { fields: ['bearerToken'], configured: true };
+        const skillBundles = body.input.skills.map((skill: { bundleId: string }) => [reviewBundle, ...(extra.bundles ?? [])].find(b => (b as { id: string }).id === skill.bundleId));
+        state.library = { ...state.library, ...body.input, secrets, skillBundles, revision: state.library.revision + 1, updatedAt: 1791907200000, auditActor: '1' };
+        return route.fulfill({ json: { library: state.library } });
+      }
+      return route.fallback();
     }
-    return route.fulfill({ json: { instanceId, profiles: [profile], catalog: [{ id: 'operator-documentation', digest: 'a'.repeat(64), tools: ['lookup', 'update_document'], capability: 'write', secrets: { count: 1, configured: true } }] } });
+    return route.fulfill({ json: { instanceId, library: state.library, bundles: extra.bundles ?? [], catalog: extra.catalog ?? [], usage: extra.usage } });
+  });
+  return state;
+}
+const sectionOf = (page: Page) => page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
+
+test('the library lists servers and skills as rows with provenance, write-only authentication, validation and history', async ({ page }) => {
+  await installSettingsFixture(page);
+  await page.route('**/api/instance/catalog', route => route.fulfill({ json: catalogAgents }));
+  const library = {
+    ...emptyLibrary, revision: 3, createdAt: 1791907200000, updatedAt: 1791907200000, auditActor: '1',
+    servers: [{ kind: 'https', name: 'documentation', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'bearer', repositories: ['example/docs'], agents: ['claude-main'], autoApply: true }],
+    skills: [{ bundleId, enabled: true, ...allowAll, autoApply: false }],
+    secrets: { documentation: { fields: ['bearerToken'], configured: true } },
+    skillBundles: [reviewBundle],
+  };
+  const api = await libraryApi(page, library, {
+    catalog: [{ id: 'operator-documentation', digest: 'a'.repeat(64), tools: ['lookup', 'update_document'], capability: 'write', secrets: { count: 1, configured: true } }],
+    usage: { automations: [{ id: 'a1', name: 'Weekly docs audit', servers: ['documentation'], skills: [] }], importedFrom: { servers: {}, skills: { [bundleId]: ['Docs profile'] } } },
   });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/settings?tab=agent-extensions');
-  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await expect(section).toBeVisible();
-  await expect(section.getByText(/Give agents extra tools for a task/)).toContainText('Only Claude and Codex task runs can use profiles.');
-  await section.getByRole('button', { name: 'Edit profile' }).click();
-  const password = section.getByLabel(/Replace bearer token/);
-  await expect(password).toHaveValue('');
-  await expect(section.getByText('(configured; write-only)', { exact: true })).toBeVisible();
-  await expect(section.getByText(/SHA-256 d853bea/)).toBeVisible();
+  const section = sectionOf(page);
+  await expect(section.getByText(/Give agents extra tools for a task/)).toContainText('Only Claude and Codex runs can use extensions.');
+  await expect(section.getByRole('list', { name: 'How extensions apply' })).toContainText('disable-extensions');
+  await expect(section.getByText(/Revision 3 · updated/)).toBeVisible();
+  const server = section.getByTestId('extension-server');
+  await expect(server).toContainText('documentation');
+  await expect(server).toContainText('example/docs · Applies automatically · Agents: claude-main');
+  await expect(server).toContainText('Added by automation “Weekly docs audit”.');
+  const skill = section.getByTestId('extension-skill');
+  await expect(skill).toContainText('Imported from profile “Docs profile”; not applied automatically.');
+  await expect(skill).toContainText('Applies to Codex');
+  await server.getByRole('button', { name: 'Edit' }).click();
+  const form = section.getByTestId('extension-server-form');
+  await expect(form.getByLabel(/^Bearer token/)).toHaveValue('');
+  await expect(form.getByText('(configured; write-only)', { exact: true })).toBeVisible();
+  await form.getByRole('button', { name: 'Cancel' }).click();
+  await skill.getByRole('button', { name: 'Edit' }).click();
+  await expect(section.getByTestId('extension-skill-form').getByText(/SHA-256 d853bea/)).toBeVisible();
+  await section.getByTestId('extension-skill-form').getByRole('button', { name: 'Cancel' }).click();
   await section.getByRole('button', { name: 'Validate saved MCP connectivity' }).click();
-  await expect(section.getByRole('status')).toHaveText('documentation: reachable · operator-documentation: not validated');
+  await expect(section.getByRole('status')).toHaveText('documentation: reachable');
   await section.getByRole('button', { name: 'Revision history' }).click();
   await expect(section.getByText(/Revision 3.*administrator 1/)).toBeVisible();
-  await section.getByLabel('Add operator catalog entry').selectOption('operator-documentation');
-  await expect(section.getByText('Operator catalog entry: operator-documentation')).toBeVisible();
-  await expect(section.getByText('Operator secrets: configured', { exact: true })).toBeVisible();
-  const catalogServer = section.getByText('Operator catalog entry: operator-documentation').locator('..').locator('..').locator('..');
-  await expect(catalogServer.getByLabel('lookup', { exact: true })).toBeChecked();
-  await expect(catalogServer.getByLabel('update_document', { exact: true })).toBeChecked();
-  await expect(catalogServer.getByLabel(/^Capability/)).toHaveValue('write');
-  await expect(catalogServer.getByLabel(/^Capability/)).toBeDisabled();
-  await catalogServer.getByLabel('update_document', { exact: true }).uncheck();
-  const saveRequest = page.waitForRequest(r => r.method() === 'POST' && r.url().includes('/api/instance/extensions/v1'));
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  const descriptor = (await saveRequest).postDataJSON().input.mcpServers[1];
-  expect(descriptor).toEqual({ kind: 'catalog', name: 'server-1', catalogId: 'operator-documentation', digest: 'a'.repeat(64), enabled: true, tools: ['lookup'], capability: 'write' });
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
+  // An operator catalog server is added in one form.
+  await section.getByRole('button', { name: 'Add server' }).click();
+  const add = section.getByTestId('extension-server-form');
+  await add.getByLabel('Server type').selectOption('operator-documentation');
+  await expect(add.locator('p', { hasText: 'Operator catalog entry: operator-documentation' })).toBeVisible();
+  await expect(add.getByText('Operator secrets: configured', { exact: true })).toBeVisible();
+  await expect(add.getByRole('checkbox', { name: /Apply automatically/ })).toBeChecked();
+  await expect(add.getByLabel('lookup', { exact: true })).toBeChecked();
+  await expect(add.getByLabel(/^Capability/)).toHaveValue('write');
+  await expect(add.getByLabel(/^Capability/)).toBeDisabled();
+  await add.getByLabel('update_document', { exact: true }).uncheck();
+  await add.getByRole('button', { name: 'Add server' }).click();
+  await expect(section.getByRole('status')).toHaveText('Server server-1 added.');
+  expect(api.saves[0].input).toMatchObject({ servers: [library.servers[0], { kind: 'catalog', name: 'server-1', catalogId: 'operator-documentation', digest: 'a'.repeat(64), enabled: true, tools: ['lookup'], capability: 'write', ...allowAll }] });
+  await expect(section.getByText(/Revision 4 · updated/)).toBeVisible();
+  await expect(section.getByTestId('extension-server').nth(1)).toContainText('Write');
   expect(await section.textContent()).not.toMatch(/API_KEY|OPERATOR_DOCS_KEY|UNMISTAKABLE|CATALOG_ARGUMENT_SENTINEL|CATALOG_PATH_SENTINEL|\/usr\/bin\/env/);
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await page.setViewportSize({ width: 1280, height: 1900 });
-    await section.scrollIntoViewIfNeeded();
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    await section.getByRole('button', { name: 'Validate saved MCP connectivity' }).click();
-    await expect(section.getByRole('status')).toContainText('operator-documentation: not validated');
-    await section.getByRole('status').screenshot({ path: path.join(directory, 'extension-validation-status.png'), animations: 'disabled' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
-      { path: '.propr/previews/extension-validation-status.png', title: 'Catalog validation status', description: 'Saved MCP validation distinguishes catalog entries that have not been validated from unavailable endpoints.' },
-    ], toolSuggestions: [] }));
-  }
 });
 
-
-test('New Task makes write authority an explicit per-run choice and resets it on reselection', async ({ page }) => {
+test('New Task shows the library items that apply, offers the write opt-in and the disable switch, and never reads the admin library', async ({ page }) => {
   await installSettingsFixture(page);
-  const selection = { instanceId: 'c63a25da-fd5e-4a46-8fe1-566136e12289', profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: 3 };
+  let libraryRequests = 0;
+  const previews: string[] = [];
+  const submissions: { payload: Record<string, unknown>; header?: string }[] = [];
   await page.route('**/api/instance/catalog', route => route.fulfill({ json: { agents: [{ id: 'claude', kind: 'direct', alias: 'claude', enabled: true, supportedModels: ['claude-sonnet-5-5'], defaultModel: 'claude-sonnet-5-5' }], repositories: [{ name: 'example/docs', enabled: true }] } }));
-  await page.route('**/api/instance/extensions/v1', route => route.fulfill({ json: { profiles: [{ ...selection, name: 'Documentation tools', enabled: true }] } }));
-  await page.goto('/tasks/new');
-  await page.getByRole('button', { name: 'Select a repository' }).click();
-  await page.getByRole('button', { name: 'example/docs' }).click();
-  await page.getByLabel('Prompt').fill('Review and update the selected documentation.');
-  await page.getByLabel('Agent extension profile').selectOption(selection.profileId);
-  const grant = page.getByLabel('Allow selected MCP write capabilities for this run');
-  await expect(grant).not.toBeChecked();
-  await grant.check(); await expect(grant).toBeChecked();
-  await page.getByLabel('Agent extension profile').selectOption(''); await expect(grant).toHaveCount(0);
-  await page.getByLabel('Agent extension profile').selectOption(selection.profileId); await expect(grant).not.toBeChecked();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    await page.getByRole('dialog', { name: 'New task' }).screenshot({ path: path.join(directory, 'extension-write-grant.png'), animations: 'disabled' });
-    const { readFile } = await import('node:fs/promises');
-    const manifest = JSON.parse(await readFile(path.join(directory, 'manifest.json'), 'utf8'));
-    manifest.previews.push({ path: '.propr/previews/extension-write-grant.png', title: 'Explicit write grant', description: 'Selected extension profile with write capability opt-in unchecked by default and reset on reselection.' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
-  }
-});
-
-
-test('extension profile configuration uses selections and keeps unlisted values editable', async ({ page }) => {
-  await installSettingsFixture(page);
-  await page.route('**/api/instance/catalog', route => route.fulfill({ json: {
-    agents: [{ alias: 'claude-main', kind: 'direct', type: 'claude', enabled: true, supportedModels: [] }, { alias: 'codex-main', kind: 'direct', type: 'codex', enabled: true, supportedModels: [] }],
-    repositories: [{ name: 'example/docs', enabled: true }, { name: 'example/app', enabled: true }],
-  } }));
-  const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289';
-  const bundle = { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId, name: 'Documentation review', digest: 'd'.repeat(64), files: 3, bytes: 8120, requirements: [], source: { kind: 'archive', filename: 'review.tar.gz' }, createdAt: 1791907200000, auditActor: '1' };
-  const profile = {
-    version: 1, instanceId, profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: 1,
-    name: 'Documentation assistant', enabled: true, agentScope: ['claude-main', 'retired-agent'], repositoryScope: ['example/docs'],
-    mcpServers: [{ kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search', 'read_document'], capability: 'read', authentication: 'none' }],
-    skillBundleIds: [bundle.id], skillBundles: [bundle], secrets: {}, createdAt: 1791907200000, updatedAt: 1791907200000, auditActor: '1',
-  };
-  let saved: typeof profile;
-  await page.route('**/api/instance/extensions/v1**', route => {
-    if (route.request().url().endsWith('/skills/github-source')) return route.fulfill({ json: { refs: [] } });
-    if (route.request().method() === 'POST') {
-      saved = { ...profile, ...route.request().postDataJSON().input };
-      return route.fulfill({ json: { profile: saved } });
-    }
-    return route.fulfill({ json: { profiles: [profile], catalog: [] } });
+  await page.route('**/api/instance/extensions/v1**', route => { libraryRequests++; return route.fulfill({ json: { instanceId, library: emptyLibrary } }); });
+  await page.route('**/api/task-submission-extensions?**', route => {
+    previews.push(new URL(route.request().url()).searchParams.get('repository') ?? '');
+    return route.fulfill({ json: { qualified: true, revision: 7, servers: [{ name: 'documentation', capability: 'read' }, { name: 'tracker', capability: 'write' }], skills: [{ name: 'documentation-review' }] } });
+  });
+  await page.route('**/api/task-submissions', async route => {
+    const body = route.request().postData() ?? '';
+    submissions.push({ payload: JSON.parse(/name="payload"\r\n\r\n([^\r]*)/.exec(body)![1]), header: route.request().headers()['x-propr-extensions'] });
+    return route.fulfill({ status: 400, json: { error: 'Synthetic stop' } });
   });
   await page.setViewportSize({ width: 1280, height: 1000 });
-  await page.goto('/settings?tab=agent-extensions');
-  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await section.getByRole('button', { name: 'Edit profile' }).click();
-  await expect(section.getByLabel('retired-agent', { exact: true })).toBeChecked();
-  await section.getByLabel('retired-agent', { exact: true }).uncheck();
-  await section.getByLabel('codex-main', { exact: true }).check();
-  await section.getByLabel('example/app', { exact: true }).check();
-  await section.getByLabel('read_document', { exact: true }).uncheck();
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
-  expect(saved!.agentScope).toEqual(['claude-main', 'codex-main']);
-  expect(saved!.repositoryScope).toEqual(['example/docs', 'example/app']);
-  expect(saved!.mcpServers[0].tools).toEqual(['search']);
-  await section.getByRole('button', { name: 'New profile' }).click();
-  await section.getByLabel('Profile name', { exact: true }).fill('Selected tools and skills');
-  await section.getByLabel('claude-main', { exact: true }).check();
-  await section.getByLabel('example/docs', { exact: true }).check();
-  await section.getByLabel('Add an existing validated skill').selectOption(bundle.id);
-  await expect(section.getByText('Documentation review · 3 files · 7.9 KiB')).toBeVisible();
-  await expect(section.getByText('7.9 KiB', { exact: true })).toHaveAttribute('title', '8120 bytes');
-  await expect(section.getByLabel('Add an existing validated skill')).toBeDisabled();
-  await section.getByRole('button', { name: 'Add HTTPS server' }).click();
-  await section.getByLabel('Use a saved HTTPS endpoint').selectOption('https://tools.example.com/mcp');
-  await expect(section.getByLabel('search', { exact: true })).not.toBeChecked();
-  await section.getByLabel('search', { exact: true }).check();
-  const tools = section.getByRole('group', { name: 'Allowed tools', exact: true });
-  await tools.getByText('Advanced: add an unlisted item', { exact: true }).click();
-  await tools.getByLabel('Unlisted allowed tools item').fill('read_document');
-  await tools.getByRole('button', { name: 'Add item' }).click();
-  await expect(section.getByLabel('read_document', { exact: true })).toBeChecked();
-  await tools.getByText('Advanced: add an unlisted item', { exact: true }).click();
-  await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
-  await section.getByLabel('Repository', { exact: true }).selectOption('example/docs');
-  await expect(section.getByLabel('Repository', { exact: true })).toHaveValue('example/docs');
-  await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    const scopes = section.getByRole('group', { name: 'Agents', exact: true }).locator('..');
-    await scopes.screenshot({ path: path.join(directory, 'extension-scope-selections.png'), animations: 'disabled' });
-    await tools.screenshot({ path: path.join(directory, 'extension-tool-selections.png'), animations: 'disabled' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
-      { path: '.propr/previews/extension-scope-selections.png', title: 'Select profile scope', description: 'Agent and repository scopes can be configured with checkboxes, with manual entry available under Advanced.' },
-      { path: '.propr/previews/extension-tool-selections.png', title: 'Select allowed tools', description: 'Known HTTPS tool names can be selected with checkboxes rather than entered as a comma-separated list.' },
-    ], toolSuggestions: [] }));
-  }
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
-  expect(saved!.skillBundleIds).toEqual([bundle.id]);
-  expect(saved!.mcpServers[0].tools).toEqual(['search', 'read_document']);
+  await page.goto('/tasks/new');
+  const dialog = page.getByRole('dialog', { name: 'New task' });
+  await dialog.getByText('Select a repository', { exact: true }).click();
+  await page.getByRole('button', { name: /example.*docs/ }).click();
+  await dialog.getByLabel('Prompt', { exact: true }).fill('Check the documentation links.');
+  await dialog.locator('summary', { hasText: 'Advanced Options' }).click();
+  const applied = dialog.getByTestId('task-extensions-applied');
+  await expect(applied).toContainText('MCP servers: documentation');
+  await expect(applied).toContainText('Write MCP servers (opt-in): tracker');
+  await expect(applied).toContainText('Skills: documentation-review');
+  expect(previews).toContain('example/docs');
+  await dialog.getByLabel(/Allow write servers/).check();
+  await dialog.getByRole('button', { name: 'Run task', exact: true }).click();
+  await expect.poll(() => submissions.length).toBe(1);
+  expect(submissions[0]).toMatchObject({ payload: { extensionAllowWrite: true }, header: '1' });
+  // The refused request is discarded; the form keeps its choices for another attempt.
+  await dialog.getByRole('switch', { name: /Run without extensions/ }).check();
+  await expect(dialog.getByLabel(/Allow write servers/)).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Run task', exact: true }).click();
+  await expect.poll(() => submissions.length).toBe(2);
+  expect(submissions[1].payload).toMatchObject({ disableExtensions: true });
+  expect(submissions[1].payload).not.toHaveProperty('extensionAllowWrite');
+  expect(submissions[1].header).toBeUndefined();
+  expect(libraryRequests).toBe(0);
 });
 
-
-test('extension editor keeps server names and pending tokens attached to rows and offers eligible agents and unused skills', async ({ page }) => {
+test('a server and a skill are added in one flow each, switched off and on with one click, and survive a reload', async ({ page }) => {
   test.setTimeout(60_000);
-  await page.setViewportSize({ width: 1280, height: 1600 });
+  await installSettingsFixture(page);
+  await page.route('**/api/instance/catalog', route => route.fulfill({ json: catalogAgents }));
+  const api = await libraryApi(page, { ...emptyLibrary, servers: [], skills: [], skillBundles: [] }, { bundles: [reviewBundle] });
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.goto('/settings?tab=agent-extensions');
+  const section = sectionOf(page);
+  await expect(section.getByText('Nothing saved yet.', { exact: false })).toBeVisible();
+  await section.getByRole('button', { name: 'Add server' }).click();
+  const form = section.getByTestId('extension-server-form');
+  await form.getByLabel(/^Server name/).fill('tracker');
+  await form.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tracker.example.com/mcp');
+  const tools = form.getByRole('group', { name: 'Allowed tools', exact: true });
+  await tools.getByText('Add an unlisted value', { exact: true }).click();
+  await tools.getByLabel('Unlisted tool name').fill('create_issue');
+  await tools.getByRole('button', { name: 'Add' }).click();
+  await form.getByLabel(/^Capability/).selectOption('write');
+  await form.getByLabel('Authentication').selectOption('bearer');
+  await form.getByLabel(/^Bearer token/).fill('synthetic-test-token');
+  await form.getByRole('group', { name: 'Limit to repositories' }).getByLabel('example/docs', { exact: true }).check();
+  await form.getByText('Advanced', { exact: true }).click();
+  await form.getByRole('group', { name: 'Limit to agents' }).getByLabel('claude-main', { exact: true }).check();
+  await form.getByRole('button', { name: 'Add server' }).click();
+  await expect(section.getByRole('status')).toHaveText('Server tracker added.');
+  expect(api.saves[0]).toEqual({ expectedRevision: 0, secrets: { tracker: 'synthetic-test-token' }, input: { version: 1, skills: [], servers: [{
+    kind: 'https', name: 'tracker', url: 'https://tracker.example.com/mcp', enabled: true, tools: ['create_issue'], capability: 'write', authentication: 'bearer',
+    repositories: ['example/docs'], agents: ['claude-main'], autoApply: true,
+  }] } });
+
+  await section.getByRole('button', { name: 'Add skill' }).click();
+  const skillForm = section.getByTestId('extension-skill-form');
+  await skillForm.getByLabel('Use an imported skill').selectOption(bundleId);
+  await expect(skillForm.getByText('3 files · 7.9 KiB')).toBeVisible();
+  await skillForm.getByRole('checkbox', { name: /Apply automatically/ }).uncheck();
+  await skillForm.getByRole('group', { name: 'Limit to repositories' }).getByLabel('example/app', { exact: true }).check();
+  await skillForm.getByRole('button', { name: 'Add skill' }).click();
+  await expect(section.getByRole('status')).toHaveText('Skill documentation-review added.');
+  expect(api.saves[1].input).toMatchObject({ skills: [{ bundleId, enabled: true, repositories: ['example/app'], agents: [], autoApply: false }] });
+
+  // One click switches an item off through the single-item endpoint; no form, no save step.
+  const server = section.getByTestId('extension-server');
+  await server.getByRole('checkbox', { name: 'Enabled: tracker' }).uncheck();
+  await expect(server).toHaveAttribute('data-enabled', 'false');
+  await expect(server).toContainText('Off');
+  expect(api.toggles).toEqual([{ item: { kind: 'server', name: 'tracker' }, enabled: false }]);
+  expect(api.saves).toHaveLength(2);
+  const skill = section.getByTestId('extension-skill');
+  await skill.getByRole('checkbox', { name: 'Enabled: documentation-review' }).uncheck();
+  await expect(skill).toHaveAttribute('data-enabled', 'false');
+
+  await page.reload();
+  await expect(section.getByText(/Revision 4 · updated/)).toBeVisible();
+  await expect(section.getByRole('checkbox', { name: 'Enabled: tracker' })).not.toBeChecked();
+  await expect(section.getByTestId('extension-server')).toContainText('example/docs · Applies automatically · Agents: claude-main');
+  await expect(section.getByTestId('extension-skill')).toContainText('example/app · Only where an automation adds it');
+  await section.getByRole('checkbox', { name: 'Enabled: tracker' }).check();
+  await expect(section.getByRole('checkbox', { name: 'Enabled: tracker' })).toBeChecked();
+  await page.reload();
+  await expect(section.getByRole('checkbox', { name: 'Enabled: tracker' })).toBeChecked();
+  // Settings, limits and the secret presence marker are unchanged after the round trip.
+  await section.getByTestId('extension-server').getByRole('button', { name: 'Edit' }).click();
+  const edit = section.getByTestId('extension-server-form');
+  await expect(edit.getByText('(configured; write-only)', { exact: true })).toBeVisible();
+  await expect(edit.getByLabel(/^Bearer token/)).toHaveValue('');
+  await expect(edit.getByRole('group', { name: 'Limit to repositories' }).getByLabel('example/docs', { exact: true })).toBeChecked();
+  await expect(edit.getByRole('group', { name: 'Limit to agents' }).getByLabel('claude-main', { exact: true })).toBeChecked();
+  await expect(edit.getByLabel('create_issue', { exact: true })).toBeChecked();
+  await edit.getByRole('button', { name: 'Cancel' }).click();
+  expect(await section.textContent()).not.toContain('synthetic-test-token');
+
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
+    await section.getByTestId('extension-skill').getByRole('checkbox').check();
+    await expect(section.getByTestId('extension-skill')).toHaveAttribute('data-enabled', 'true');
+    await section.getByRole('checkbox', { name: 'Enabled: tracker' }).uncheck();
+    await expect(section.getByTestId('extension-server')).toHaveAttribute('data-enabled', 'false');
+    await page.setViewportSize({ width: 1280, height: 1300 });
+    await section.screenshot({ path: path.join(directory, 'extension-library-lists.png'), animations: 'disabled' });
+    await section.getByRole('button', { name: 'Add server' }).click();
+    await section.getByTestId('extension-server-form').getByText('Advanced', { exact: true }).click();
+    await section.getByTestId('extension-server-form').screenshot({ path: path.join(directory, 'extension-server-form.png'), animations: 'disabled' });
+    await section.getByTestId('extension-server-form').getByRole('button', { name: 'Cancel' }).click();
+    await page.setViewportSize({ width: 390, height: 1400 });
+    await section.getByRole('heading', { name: 'MCP servers', exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(directory, 'extension-library-phone.png'), animations: 'disabled' });
+    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
+      { path: '.propr/previews/extension-library-lists.png', title: 'Skills & MCP servers lists', description: 'Flat MCP server and skill lists with enabled checkboxes; a switched-off server stays dimmed with an Off status.' },
+      { path: '.propr/previews/extension-server-form.png', title: 'Add server form', description: 'One form for an HTTPS or catalog server with tools, capability, write-only token, repository limit, Apply automatically and the agent limit under Advanced.' },
+      { path: '.propr/previews/extension-library-phone.png', title: 'Phone width', description: 'The lists at 390 px width.' },
+    ], toolSuggestions: [] }));
+  }
+});
+
+test('a local package server is checked, acknowledged and saved with an exact version, and listed as Local with its version', async ({ page }) => {
+  await installSettingsFixture(page);
+  await page.route('**/api/instance/catalog', route => route.fulfill({ json: catalogAgents }));
+  const api = await libraryApi(page, { ...emptyLibrary, servers: [], skills: [], skillBundles: [] });
+  const integrity = `sha512-${'Lq3'.repeat(28)}Aw==`; const checks: Record<string, unknown>[] = [];
+  await page.route('**/api/instance/extensions/v1/packages/resolve', route => {
+    const body = route.request().postDataJSON(); checks.push(body);
+    return route.fulfill({ json: { package: { ecosystem: 'npm', package: body.package, version: body.version, integrity, bin: 'browser-mcp', bins: ['browser-mcp'] } } });
+  });
+  await page.setViewportSize({ width: 1280, height: 1600 }); await page.goto('/settings?tab=agent-extensions');
+  const section = sectionOf(page); const previews = process.env.PROPR_CAPTURE_PREVIEWS ? path.resolve('../.propr/previews') : null;
+  await section.getByRole('button', { name: 'Add server' }).click(); const form = section.getByTestId('extension-server-form');
+  await form.getByLabel('Server type').selectOption({ label: 'Local package (npm)' });
+  await expect(form.getByLabel('HTTPS endpoint', { exact: true })).toHaveCount(0);
+  await form.getByLabel(/^Server name/).fill('browser'); await form.getByLabel('Package', { exact: true }).fill('@example/browser-mcp');
+  await form.getByLabel(/^Exact version/).fill('latest'); // A tag or range is refused before anything is sent.
+  await expect(form.getByRole('button', { name: 'Check' })).toBeDisabled();
+  await expect(form.getByText(/Ranges and tags \(latest, \^1.2\) are not accepted/)).toBeVisible();
+  await form.getByLabel(/^Exact version/).fill('1.4.2');
+  await form.getByRole('button', { name: 'Check' }).click();
+  for (const text of ['@example/browser-mcp@1.4.2', 'browser-mcp', integrity]) await expect(form.getByTestId('extension-package-check')).toContainText(text);
+  expect(checks).toEqual([{ ecosystem: 'npm', package: '@example/browser-mcp', version: '1.4.2' }]);
+  for (const [label, value] of [[/^Arguments/, '--headless'], [/^Variables/, 'LOG_LEVEL=info'], ['Tool name', 'navigate']] as const) await form.getByLabel(label).fill(value);
+  await form.getByRole('group', { name: 'Allowed tools', exact: true }).getByRole('button', { name: 'Add' }).click();
+  await form.getByLabel('New secret variable name').fill('BROWSER_TOKEN'); await form.getByRole('button', { name: 'Add secret variable' }).click();
+  await form.getByLabel(/^BROWSER_TOKEN/).fill('synthetic-browser-token');
+  await expect(form.getByText(/same container as the agent/)).toContainText('narrowly scoped credential');
+  await form.getByRole('button', { name: 'Add server' }).click(); expect(api.saves).toHaveLength(0);
+  await expect(form.getByRole('alert')).toContainText('Confirm that the secret values are readable inside the task container');
+  if (previews) {
+    await mkdir(previews, { recursive: true }); await page.setViewportSize({ width: 1280, height: 2600 }); await page.evaluate(() => window.scrollTo(0, 0));
+    await form.screenshot({ path: path.join(previews, 'local-package-server-form.png'), animations: 'disabled' });
+  }
+  await form.getByRole('checkbox', { name: /readable inside the task container/ }).check(); await form.getByRole('button', { name: 'Add server' }).click();
+  await expect(section.getByRole('status')).toHaveText('Server browser added.');
+  expect(api.saves[0]).toEqual({ expectedRevision: 0, secrets: { 'browser/BROWSER_TOKEN': 'synthetic-browser-token' }, acknowledgements: ['browser'], input: { version: 1, skills: [], servers: [{
+    kind: 'package', name: 'browser', ecosystem: 'npm', package: '@example/browser-mcp', version: '1.4.2', enabled: true, tools: ['navigate'], capability: 'read',
+    args: ['--headless'], env: [{ name: 'LOG_LEVEL', value: 'info' }], secretEnv: ['BROWSER_TOKEN'], ...allowAll,
+  }] } });
+  const row = section.getByTestId('extension-server'); await expect(row).toContainText('Local · @example/browser-mcp@1.4.2');
+  await expect(row).not.toContainText('Secret variables not configured');
+  expect(await section.textContent()).not.toContain('synthetic-browser-token');
+  if (previews) {
+    await row.screenshot({ path: path.join(previews, 'local-package-server-row.png'), animations: 'disabled' });
+    await writeFile(path.join(previews, 'manifest.json'), JSON.stringify({ toolSuggestions: [], previews: [{ path: '.propr/previews/local-package-server-form.png', title: 'Add a local package server', description: 'The Local package (npm) form after Check: resolved version, executable and integrity value, arguments, variables, a secret variable with the task-container warning and its acknowledgement, which is required before saving.' }, { path: '.propr/previews/local-package-server-row.png', title: 'Local server row', description: 'The saved server listed as Local with its package and pinned version.' }] }));
+  }
+});
+
+test('the agent limit offers eligible agents and a rename or endpoint change never moves a stored token', async ({ page }) => {
   await installSettingsFixture(page);
   await page.route('**/api/instance/catalog', route => route.fulfill({ json: {
     agents: [
@@ -184,77 +306,57 @@ test('extension editor keeps server names and pending tokens attached to rows an
       { alias: 'invalid.alias', kind: 'direct', type: 'codex', enabled: true, supportedModels: [] },
     ], repositories: [],
   } }));
-  const instanceId = 'c63a25da-fd5e-4a46-8fe1-566136e12289';
-  const bundle = { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId, name: 'Previously imported review', digest: 'd'.repeat(64), files: 1, bytes: 120, requirements: [], source: { kind: 'archive', filename: 'review.tar' }, createdAt: 1791907200000, auditActor: '1' };
-  const saves: Array<{ input: { mcpServers: Array<{ name: string }>; skillBundleIds: string[] }; secrets: Record<string, string> }> = [];
+  const docs = { kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search'], capability: 'read', authentication: 'bearer', ...allowAll };
+  const api = await libraryApi(page, { ...emptyLibrary, revision: 1, servers: [docs], skills: [], secrets: { docs: { fields: ['bearerToken'], configured: true } }, skillBundles: [] });
+  await page.setViewportSize({ width: 1280, height: 1400 });
+  await page.goto('/settings?tab=agent-extensions');
+  const section = sectionOf(page);
+  await section.getByTestId('extension-server').getByRole('button', { name: 'Edit' }).click();
+  const form = section.getByTestId('extension-server-form');
+  await form.getByText('Advanced', { exact: true }).click();
+  const agents = form.getByRole('group', { name: 'Limit to agents', exact: true });
+  await expect(agents.getByRole('checkbox')).toHaveCount(2);
+  await expect(agents.getByLabel('codex-main', { exact: true })).toBeVisible();
+  await agents.getByLabel('claude-main', { exact: true }).check();
+  const token = form.getByLabel(/^Bearer token/);
+  // A replacement token typed for one endpoint never follows the server to another one.
+  await token.fill('token-for-original');
+  await form.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tools.example.com/changed');
+  await expect(token).toHaveValue('');
+  await expect(form.getByText('Changing the name or endpoint clears the stored token. Enter it again.')).toBeVisible();
+  await token.fill('token-for-changed');
+  await form.getByLabel('Use a saved HTTPS endpoint').selectOption('https://tools.example.com/mcp');
+  await expect(form.getByLabel('HTTPS endpoint', { exact: true })).toHaveValue('https://tools.example.com/mcp');
+  await expect(token).toHaveValue('');
+  await expect(form.getByText(/clears the stored token/)).toHaveCount(0);
+  // Switching authentication off drops the pending token too.
+  await token.fill('pending-token');
+  await form.getByLabel('Authentication').selectOption('none');
+  await form.getByLabel('Authentication').selectOption('bearer');
+  await expect(token).toHaveValue('');
+  await form.getByRole('button', { name: 'Save server' }).click();
+  await expect(section.getByRole('status')).toHaveText('Server docs saved.');
+  expect(api.saves[0]).toEqual({ expectedRevision: 1, secrets: {}, input: { version: 1, skills: [], servers: [{ ...docs, agents: ['claude-main'] }] } });
+  // A removal needs confirmation.
+  await section.getByTestId('extension-server').getByRole('button', { name: 'Remove' }).click();
+  await expect(section.getByText(/Remove docs from the library\?/)).toBeVisible();
+  await section.getByRole('button', { name: 'Keep' }).click();
+  expect(api.saves).toHaveLength(1);
+});
+
+test('a refused removal names the automations that add the item', async ({ page }) => {
+  await installSettingsFixture(page);
+  const docs = { kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search'], capability: 'read', authentication: 'none', ...allowAll };
   await page.route('**/api/instance/extensions/v1**', route => {
-    if (route.request().url().endsWith('/skills/archive')) return route.fulfill({ json: { bundle: { ...bundle, id: '175bb20e-4156-4f6c-a7e2-20fd6c8ba84e', name: 'Session import' } } });
-    if (route.request().method() === 'POST') {
-      const body = route.request().postDataJSON(); saves.push(body);
-      return route.fulfill({ json: { profile: { ...body.input, instanceId, profileId: '5b14d6d6-9357-4b56-9eb3-31e5f921d125', revision: saves.length, secrets: {}, skillBundles: [bundle] } } });
-    }
-    return route.fulfill({ json: { profiles: [], bundles: [bundle], catalog: [{ id: 'docs', digest: 'a'.repeat(64), tools: ['lookup'], capability: 'read', secrets: { count: 0, configured: true } }] } });
+    if (route.request().method() === 'POST') return route.fulfill({ status: 409, json: { error: 'Automations add these extensions explicitly; remove them from "Weekly docs audit" (docs) before removing or renaming them' } });
+    return route.fulfill({ json: { instanceId, library: { ...emptyLibrary, revision: 2, servers: [docs] }, bundles: [], catalog: [] } });
   });
   await page.goto('/settings?tab=agent-extensions');
-  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await section.getByRole('button', { name: 'New profile' }).click();
-  const agents = section.getByRole('group', { name: 'Agents', exact: true });
-  await expect(agents.getByRole('checkbox')).toHaveCount(2);
-  await agents.getByLabel('claude-main', { exact: true }).check();
-  await expect(agents.getByLabel('codex-main', { exact: true })).toBeVisible();
-  await section.getByLabel('Profile name', { exact: true }).fill('Documentation profile');
-  await section.getByLabel('Add an existing validated skill').selectOption(bundle.id);
-  await expect(section.getByText('Previously imported review · 1 files · 120 bytes')).toBeVisible();
-  for (let i = 0; i < 3; i++) await section.getByRole('button', { name: 'Add HTTPS server' }).click();
-  const names = section.getByLabel('Stable server name', { exact: true });
-  await section.getByRole('button', { name: 'Remove server' }).nth(1).click();
-  await section.getByRole('button', { name: 'Add HTTPS server' }).click();
-  await expect(names.nth(2)).toHaveValue('server-2');
-  await section.getByRole('button', { name: 'Remove server' }).nth(2).click();
-  await section.getByLabel('Add operator catalog entry').selectOption('docs');
-  await expect(names.nth(2)).toHaveValue('server-2');
-  await section.getByLabel('HTTPS endpoint', { exact: true }).nth(0).fill('https://tools.example.com/first');
-  await section.getByLabel('HTTPS endpoint', { exact: true }).nth(1).fill('https://tools.example.com/second');
-  await section.getByRole('combobox', { name: 'Authentication', exact: true }).nth(1).selectOption('bearer');
-  await section.getByLabel(/Replace bearer token/).fill('synthetic-test-token');
-  // Temporary duplicate names must not move pending tokens between rows.
-  await names.nth(1).fill('server-1');
-  await names.nth(1).fill('renamed');
-  await section.getByRole('button', { name: 'Remove server' }).nth(0).click();
-  await expect(section.getByLabel(/Replace bearer token/)).toHaveValue('synthetic-test-token');
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
-  expect(saves[0].secrets).toEqual({ renamed: 'synthetic-test-token' });
-  expect(saves[0].input.mcpServers.map(s => s.name)).toEqual(['renamed', 'server-2']);
-  expect(saves[0].input.skillBundleIds).toEqual([bundle.id]);
-  await section.getByLabel(/Replace bearer token/).fill('discarded-token');
-  await section.getByRole('combobox', { name: 'Authentication', exact: true }).selectOption('none');
-  await section.getByRole('combobox', { name: 'Authentication', exact: true }).selectOption('bearer');
-  await expect(section.getByLabel(/Replace bearer token/)).toHaveValue('');
-  await section.getByLabel(/Replace bearer token/).fill('endpoint-token');
-  await section.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tools.example.com/changed');
-  await expect(section.getByLabel(/Replace bearer token/)).toHaveValue('');
-  await section.getByRole('button', { name: 'Save revision' }).click();
-  await expect(section.getByRole('status')).toHaveText('Profile revision saved.');
-  expect(saves[1].secrets).toEqual({});
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await page.setViewportSize({ width: 1280, height: 1900 });
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    await agents.screenshot({ path: path.join(directory, 'extension-eligible-agents.png'), animations: 'disabled' });
-    await section.getByText('Previously imported review · 1 files · 120 bytes').locator('..').screenshot({ path: path.join(directory, 'extension-imported-skill.png'), animations: 'disabled' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
-      { path: '.propr/previews/extension-eligible-agents.png', title: 'Eligible profile agents', description: 'The scope picker offers enabled direct Claude and Codex agents with valid aliases.' },
-      { path: '.propr/previews/extension-imported-skill.png', title: 'Previously imported skill', description: 'A validated skill imported earlier without being attached to any profile is selected from the instance inventory.' },
-    ], toolSuggestions: [] }));
-  }
-  await section.locator('input[type="file"]').setInputFiles({ name: 'session.tar', mimeType: 'application/x-tar', buffer: Buffer.from('synthetic archive fixture') });
-  await expect(section.getByRole('status')).toHaveText('Validated skill bundle added. Save the profile to select it.');
-  await section.getByRole('button', { name: 'Close', exact: true }).click();
-  await section.getByRole('button', { name: 'New profile' }).click();
-  await section.getByLabel('Add an existing validated skill').selectOption('175bb20e-4156-4f6c-a7e2-20fd6c8ba84e');
-  await expect(section.getByText('Session import · 1 files · 120 bytes')).toBeVisible();
-  await section.getByLabel('Profile name', { exact: true }).fill('Imported skills');
-
+  const section = sectionOf(page);
+  await section.getByTestId('extension-server').getByRole('button', { name: 'Remove' }).click();
+  await section.getByRole('button', { name: 'Confirm removal' }).click();
+  await expect(section.getByRole('alert')).toContainText('"Weekly docs audit" (docs)');
+  await expect(section.getByTestId('extension-server')).toBeVisible();
 });
 
 test('new HTTPS tools and GitHub branch imports can be selected with immutable confirmation', async ({ page }) => {
@@ -280,16 +382,14 @@ test('new HTTPS tools and GitHub branch imports can be selected with immutable c
     }
     if (url.endsWith('/skills/github')) {
       imported = route.request().postDataJSON();
-      return route.fulfill({ json: { bundle: { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', name: 'Review skill', digest: 'd'.repeat(64), files: 1, bytes: 512, source: { kind: 'github', repository: 'example/docs', commit: sha, directory: 'skills/review' }, requirements: [] } } });
+      return route.fulfill({ json: { bundle: { id: bundleId, name: 'Review skill', digest: 'd'.repeat(64), files: 1, bytes: 512, source: { kind: 'github', repository: 'example/docs', commit: sha, directory: 'skills/review' }, requirements: [] } } });
     }
-    return route.fulfill({ json: { profiles: [], bundles: [], catalog: [] } });
+    return route.fulfill({ json: { instanceId, library: emptyLibrary, bundles: [], catalog: [] } });
   });
   await page.setViewportSize({ width: 1280, height: 1500 });
   await page.goto('/settings?tab=agent-extensions');
-  const section = page.getByRole('region', { name: 'Skills & MCP servers', exact: true });
-  await section.getByRole('button', { name: 'New profile' }).click();
-  await section.getByLabel('Profile name', { exact: true }).fill('Documentation assistant');
-  await section.getByRole('button', { name: 'Add HTTPS server' }).click();
+  const section = sectionOf(page);
+  await section.getByRole('button', { name: 'Add server' }).click();
   const endpoint = section.getByLabel('HTTPS endpoint', { exact: true });
   await endpoint.fill('https://tools.example.com/slow');
   const probeRequest = page.waitForRequest(r => r.url().endsWith('/tools/discover'));
@@ -301,22 +401,20 @@ test('new HTTPS tools and GitHub branch imports can be selected with immutable c
   releaseDiscovery!(); await staleReply;
   await expect(section.getByLabel('stale_tool', { exact: true })).toHaveCount(0);
   await expect(section.getByLabel('search_docs', { exact: true })).toBeVisible();
+  await section.getByTestId('extension-server-form').getByRole('button', { name: 'Cancel' }).click();
+  await section.getByRole('button', { name: 'Add skill' }).click();
   await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
   await section.getByLabel('Repository', { exact: true }).selectOption('example/docs');
   await section.getByRole('combobox', { name: 'Branch or tag', exact: true }).selectOption('refs/heads/main');
   await expect(section.getByText('Confirmed import commit:')).toContainText(sha);
   await section.getByLabel('Relative skill directory', { exact: true }).fill('skills/review');
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    const directory = path.resolve('../.propr/previews'); await mkdir(directory, { recursive: true });
-    await section.getByRole('group', { name: 'Allowed tools', exact: true }).locator('..').screenshot({ path: path.join(directory, 'extension-discovered-tools.png'), animations: 'disabled' });
-    await section.getByRole('combobox', { name: 'Branch or tag', exact: true }).locator('..').locator('..').screenshot({ path: path.join(directory, 'extension-github-ref.png'), animations: 'disabled' });
-    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ previews: [
-      { path: '.propr/previews/extension-discovered-tools.png', title: 'Discover HTTPS tools', description: 'A first-time HTTPS endpoint provides selectable tool names from a secret-free probe.' },
-      { path: '.propr/previews/extension-github-ref.png', title: 'Resolve branch to pinned commit', description: 'Select a GitHub branch or tag, confirm its exact commit and import an immutable skill bundle.' },
-    ], toolSuggestions: [] }));
-  }
   await section.getByRole('button', { name: 'Import pinned skill' }).click();
   expect(imported).toEqual({ repository: 'example/docs', commit: sha, directory: 'skills/review' });
+  const skillForm = section.getByTestId('extension-skill-form');
+  await expect(skillForm.getByText('Review skill', { exact: true })).toBeVisible();
+  await skillForm.getByRole('button', { name: 'Choose another bundle' }).click();
+  await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
+  await section.getByLabel('Repository', { exact: true }).selectOption('example/docs');
   const tagRequest = page.waitForRequest(r => r.url().endsWith('/skills/github-source') && r.postDataJSON().ref === 'refs/tags/v1');
   await section.getByRole('combobox', { name: 'Branch or tag', exact: true }).selectOption('refs/tags/v1'); await tagRequest;
   await section.getByLabel('Repository', { exact: true }).selectOption('example/app');

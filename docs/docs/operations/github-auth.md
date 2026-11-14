@@ -158,7 +158,7 @@ handler:
 | Repository permission | Access | Purpose |
 |---|---|---|
 | Contents | Write | Clone, branch, commit, push |
-| Issues | Write | Labeled issues, labels, comments |
+| Issues | Write | Labeled issues, labels, comments, "blocked by" links between published plan issues |
 | Pull requests | Write | Open/update PRs and review comments |
 | Metadata | Read | Required baseline |
 | Checks | Read | Check runs, output, annotations, CI readiness |

@@ -1,7 +1,9 @@
 import { ADMIN_ROUTE_DOCS } from './routeDocsAdmin.js';
 import { GOAL_ROUTE_DOCS } from './routeDocsGoals.js';
+import { PLAN_QUEUE_ROUTE_DOCS } from './routeDocsPlanQueue.js';
 import { STATS_ROUTE_DOCS } from './routeDocsStats.js';
 import { SYSTEM_ROUTE_DOCS } from './routeDocsSystem.js';
+import { EXTENSION_OAUTH_ROUTE_DOCS } from './routeDocsExtensionOAuth.js';
 import { TASK_ROUTE_DOCS } from './routeDocsTasks.js';
 import type { RouteDoc } from './types.js';
 
@@ -15,5 +17,7 @@ export const ROUTE_DOCS: Readonly<Record<string, RouteDoc>> = {
   ...GOAL_ROUTE_DOCS,
   ...STATS_ROUTE_DOCS,
   ...SYSTEM_ROUTE_DOCS,
+  ...EXTENSION_OAUTH_ROUTE_DOCS,
   ...TASK_ROUTE_DOCS,
+  ...PLAN_QUEUE_ROUTE_DOCS,
 };

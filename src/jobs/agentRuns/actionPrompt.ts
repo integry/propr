@@ -7,7 +7,8 @@
  */
 
 import { AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS, AUTOMATION_REPORT_PROMPT_MAX_CHARS } from '@propr/shared';
-import { AGENT_REPORT_TRUNCATED_MARKER, escapeAgentPromptFences } from './reportPrompt.js';
+import type { AutomationTriggerEvent } from '@propr/shared';
+import { AGENT_REPORT_TRUNCATED_MARKER, escapeAgentPromptFences, triggerEventSection } from './reportPrompt.js';
 
 export interface AgentActionPromptDefinition {
     name: string;
@@ -18,6 +19,8 @@ export interface AgentActionPromptDefinition {
 
 export interface AgentActionPromptRun {
     id: string;
+    /** The event an `event` run was started by. */
+    triggerEvent?: AutomationTriggerEvent | null;
 }
 
 export interface AgentActionPromptInput {
@@ -144,6 +147,7 @@ function assemble(input: AgentActionPromptInput, report: string): string {
         roleSection(),
         rulesSection(definition, run.id, input.mergeAllowed === true),
         taskSection(definition, run.id),
+        ...(run.triggerEvent ? [triggerEventSection(run.triggerEvent)] : []),
         reportSection(report),
         ...(note ? [operatorNoteSection(note)] : []),
         outputSection(),

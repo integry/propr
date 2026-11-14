@@ -21,6 +21,23 @@ const plan = JSON.stringify([task('A'), task('B'), task('C')], null, 2);
 const broken = plan.replace('\\"quotes\\"', '"quotes"').replace('},\n  {\n    "title": "C"', '}\n  {\n    "title": "C"');
 
 describe('plan validator', () => {
+  test('accepts optional item ids and dependsOn, and rejects unknown, self and cyclic references or repeated ids', async () => {
+    const item = (id: string, dependsOn?: string[]) => ({ ...task(id), id, ...(dependsOn ? { dependsOn } : {}) });
+    assert.equal((await validatePlanText(JSON.stringify([item('a'), item('b', ['a'])]))).valid, true);
+    const cases: Array<[unknown[], RegExp]> = [
+      [[item('a', ['missing'])], /task 1 depends on "missing", which is not the "id" of any task/],
+      [[item('a', ['a'])], /task 1 lists its own id "a" in "dependsOn"/],
+      [[item('a', ['b']), item('b', ['a'])], /task 1 is part of a "dependsOn" cycle: a -> b -> a/],
+      [[item('a'), item('a')], /task 2 reuses the id "a" of task 1/],
+      [[{ ...task('A'), dependsOn: 'a' }], /task 1 has a "dependsOn" that is not an array/],
+    ];
+    for (const [tasks, error] of cases) {
+      const report = await validatePlanText(JSON.stringify(tasks));
+      assert.equal(report.valid, false);
+      assert.match(report.errors.join('\n'), error);
+    }
+  });
+
   test('accepts a complete plan, alone or against its own original', async () => {
     assert.deepEqual(await validatePlanText(plan), { valid: true, taskCount: 3, errors: [] });
     assert.equal((await validatePlanText(plan, plan)).valid, true);

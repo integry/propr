@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 314
-    documented: 76
+    total: 326
+    documented: 88
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4283,8 +4283,8 @@ paths:
       x-legacy-error: true
   /api/instance/extensions/v1:
     get:
-      operationId: listAgentExtensionProfiles
-      summary: List secret-free current extension revisions, the versioned contract and operator catalog identity/digest, tools/capability and opaque secret count/configuration status.
+      operationId: getAgentExtensionLibrary
+      summary: Read the current secret-free extension library revision, the imported skill bundles, the versioned contract and the operator catalog identity/digest, tools/capability and opaque secret count/configuration status, and where items are used (automations that add them, profiles migrated items came from) in one call.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4297,7 +4297,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JsonObject"
+                $ref: "#/components/schemas/ExtensionLibraryRead"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4307,26 +4307,19 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/delete:
-    post:
-      operationId: deleteAgentExtensionProfile
-      summary: Disable new launches without changing active snapshots.
+  /api/instance/extensions/v1/history:
+    get:
+      operationId: getAgentExtensionLibraryHistory
+      summary: Read recent immutable, secret-free library revisions, newest first.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
       security:
         - sessionCookie: []
         - bearerAuth: []
-      requestBody:
-        required: true
-        description: "selection: exact instanceId, profileId and revision."
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Profile tombstoned.
+          description: Revision history.
           content:
             application/json:
               schema:
@@ -4340,10 +4333,10 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/profiles:
+  /api/instance/extensions/v1/items/enabled:
     post:
-      operationId: saveAgentExtensionProfile
-      summary: Create an immutable revision with optional write-only secret replacements.
+      operationId: setAgentExtensionItemEnabled
+      summary: Enable or disable one library item. Only enabled changes; configuration, limits and the stored secret are kept. Disabling is never refused.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4359,14 +4352,79 @@ paths:
             type: string
       requestBody:
         required: true
-        description: input follows ExtensionProfileInput v1; expected is the exact instance/profile/revision selection for updates. secrets maps server names to replacement tokens or null; values are never returned.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ExtensionProfileSave"
+              $ref: "#/components/schemas/ExtensionItemEnabledRequest"
       responses:
         "200":
-          description: Secret-free revision.
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/library:
+    post:
+      operationId: saveAgentExtensionLibrary
+      summary: Save the library as a new revision with optional write-only secret replacements. Removing or renaming an item an automation adds explicitly is refused with the automations named.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: input follows ExtensionLibraryInput v1; expectedRevision is the revision the edit is based on (0 before the first save). secrets maps server names to replacement tokens or null; values are never returned.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionLibrarySave"
+      responses:
+        "200":
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/audit:
+    get:
+      operationId: getAgentExtensionOAuthAudit
+      summary: "Read the OAuth audit trail: connect, disconnect, discarded and Needs sign-in events with the actor and time, newest first."
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Audit events; never tokens.
           content:
             application/json:
               schema:
@@ -4380,10 +4438,32 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
-  /api/instance/extensions/v1/profiles/{profileId}/history:
+  /api/instance/extensions/v1/oauth/callback:
     get:
-      operationId: getAgentExtensionProfileHistory
-      summary: Read immutable, secret-free revision history.
+      operationId: completeAgentExtensionOAuth
+      summary: OAuth redirect URI. Validates the single-use state (bound to the session, item and endpoint), the issuer, exchanges the code with the PKCE verifier and stores the tokens. Returns a small HTML page.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: HTML result page that tells the Settings tab to refresh.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/check:
+    post:
+      operationId: checkAgentExtensionOAuth
+      summary: Run OAuth discovery for an MCP server URL (401 challenge or well-known protected resource metadata, then authorization server metadata) and report which registration method a sign-in would use. Stores nothing and sends no credential.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4391,18 +4471,193 @@ paths:
         - sessionCookie: []
         - bearerAuth: []
       parameters:
-        - name: profileId
-          in: path
+        - name: X-ProPR-Extensions
+          in: header
           required: true
+          description: Must be 1. JSON requests only.
           schema:
             type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthCheckRequest"
       responses:
         "200":
-          description: Revision history.
+          description: Discovery result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionOAuthCheckResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/client-metadata.json:
+    get:
+      operationId: getAgentExtensionOAuthClientMetadata
+      summary: ProPR's public OAuth Client ID Metadata Document; its URL is the client id. Not found without a public HTTPS base URL.
+      tags:
+        - Configuration
+      security: []
+      responses:
+        "200":
+          description: "Client metadata: ProPR's name and this instance's redirect URI."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/JsonObject"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/disconnect:
+    post:
+      operationId: disconnectAgentExtensionOAuth
+      summary: Revoke the connection at the provider when it advertises revocation, then delete the stored tokens. Recorded in the OAuth audit trail; creates no library revision.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthItemRequest"
+      responses:
+        "200":
+          description: Whether the provider confirmed revocation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/oauth/start:
+    post:
+      operationId: startAgentExtensionOAuth
+      summary: Start the OAuth sign-in of an `oauth` library server for this administrator session. Requires a public HTTPS base URL.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionOAuthItemRequest"
+      responses:
+        "200":
+          description: Authorization URL to open in a new tab.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionOAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/packages/resolve:
+    post:
+      operationId: resolveAgentExtensionPackage
+      summary: "Check a local package server: look up an exact npm package version in the registry and report its integrity value and executable. Nothing is downloaded, installed or executed."
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: ecosystem (npm), package, exact version and optional executable name. Ranges and tags are rejected.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonObject"
+      responses:
+        "200":
+          description: Resolved version, SHA-512 integrity value, the executable that will run and every executable the package declares.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/extensions/v1/secrets:
+    post:
+      operationId: replaceAgentExtensionSecret
+      summary: Replace or clear the write-only Bearer token of one library server as a new revision.
+      description: Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Extensions
+          in: header
+          required: true
+          description: Must be 1. JSON requests only.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtensionSecretReplaceRequest"
+      responses:
+        "200":
+          description: Secret-free library revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtensionLibraryRevisionResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -4547,7 +4802,7 @@ paths:
   /api/instance/extensions/v1/validate:
     post:
       operationId: validateAgentExtensionMcp
-      summary: Validate connectivity without disclosing any upstream response content.
+      summary: Validate connectivity of enabled library servers without disclosing any upstream response content.
       description: Requires the `instance.manage_settings` instance permission.
       tags:
         - Configuration
@@ -4556,7 +4811,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
-        description: "selection: exact instanceId, profileId and revision."
+        description: Empty object.
         content:
           application/json:
             schema:
@@ -5900,6 +6155,183 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-undocumented: true
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/blocked-events:
+    get:
+      operationId: listPlanExecutionBlockedEvents
+      summary: List the blocked events of a plan's epic execution
+      description: Every time an issue of the execution became blocked (with its reason kind and text), and every resolution of such a blocker, oldest first. A repeated observation of the same blocked state is recorded once. Page with `cursor`; poll with the last `nextCursor` to read only new events.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: executionId
+          in: query
+          required: false
+          description: Defaults to the plan's current execution.
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          description: "`nextCursor` of an earlier page; omit to read from the first event."
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Page size; defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: A page of events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueBlockedEventPage"
+        "400":
+          description: The cursor or limit is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: EpicQueueBlockedEventsQuery
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/issues/{issueNumber}/retry:
+    post:
+      operationId: retryPlanExecutionIssue
+      summary: Retry a blocked issue of an epic execution
+      description: "Clears the blocker and dispatches the issue again under the queue's normal guards (a paused plan holds it; a graph starts it once ready within its limit). An issue closed without merge is reopened first; one whose run reported a blocker is put back to pending. A wait for a human merge or a label handoff keeps its claim and is re-evaluated. Works for issues started through MCP `implement_plan`. Idempotent: repeating it answers `already_retried`."
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: issueNumber
+          in: path
+          required: true
+          description: GitHub issue number of an issue in the execution.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpicQueueRetryRequest"
+      responses:
+        "200":
+          description: The blocker is cleared and the issue is dispatched under the normal guards.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionResult"
+        "400":
+          description: The body or issue number is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: The issue is not part of the execution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        "409":
+          description: "Refused: a stale execution (`STALE_EXECUTION`), an issue in flight (`IN_FLIGHT`) or already done (`ALREADY_DONE`), a changed state (`STATE_CHANGED`), or, for retry, an issue that is not blocked (`NOT_BLOCKED`) or waits for setup (`NOT_RETRYABLE`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue/issues/{issueNumber}/skip:
+    post:
+      operationId: skipPlanExecutionIssue
+      summary: Skip a pending or blocked issue of an epic execution
+      description: "The queue treats the issue as finished for scheduling: a sequential execution moves on to the next issue; in a graph execution its dependents wait on the skipped prerequisite unless `satisfiesDependents` is true. The GitHub issue is never closed or edited. Idempotent: skipping a skipped issue answers `already_skipped`."
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: issueNumber
+          in: path
+          required: true
+          description: GitHub issue number of an issue in the execution.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpicQueueSkipRequest"
+      responses:
+        "200":
+          description: The issue is skipped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionResult"
+        "400":
+          description: The body or issue number is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: The issue is not part of the execution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        "409":
+          description: "Refused: a stale execution (`STALE_EXECUTION`), an issue in flight (`IN_FLIGHT`) or already done (`ALREADY_DONE`), a changed state (`STATE_CHANGED`), or, for retry, an issue that is not blocked (`NOT_BLOCKED`) or waits for setup (`NOT_RETRYABLE`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicQueueActionError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
       x-legacy-error: true
   /api/planner/drafts/{id}/execution-settings:
     patch:
@@ -7584,6 +8016,61 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-undocumented: true
+      x-legacy-error: true
+  /api/task-submission-extensions:
+    get:
+      operationId: getTaskSubmissionExtensions
+      summary: Preview the extensions a task would use
+      description: Names of the extension library MCP servers and skills that would apply automatically to a task in this repository for the chosen agent. Never includes URLs, credentials or item limits. Labels on the issue (`disable-mcps`, `disable-skills`, `disable-extensions`) can remove them at launch.
+      tags:
+        - Task submissions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: repository
+          in: query
+          required: true
+          description: "`owner/name` of an enabled repository you can push to."
+          schema:
+            type: string
+            pattern: ^[\w.-]+\/[\w.-]+$
+        - name: agentAlias
+          in: query
+          required: false
+          description: Agent the task would use. Omit for the instance default.
+          schema:
+            type: string
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The items that would apply.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSubmissionExtensions"
+        "400":
+          description: Missing repository, or the agent or model cannot be used.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: You lack write access to the repository.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: TaskSubmissionExtensionsQuery
+      x-propr-auth: member
       x-legacy-error: true
   /api/task-submissions:
     post:
@@ -9521,6 +10008,27 @@ components:
         - authorizationSource
       additionalProperties: false
       description: The signed-in GitHub user and their instance role.
+    AutomationExtensions:
+      type: object
+      properties:
+        servers:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+            pattern: ^[a-z][a-z0-9_-]{0,47}$
+        skills:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+      required:
+        - servers
+        - skills
+      additionalProperties: false
+      description: Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings.
     Compatibility:
       type: object
       properties:
@@ -9979,6 +10487,188 @@ components:
         - credentialGeneration
       additionalProperties: false
       description: Proof of a provisional pairing, used to activate or cancel it.
+    EpicQueueActionError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - NOT_FOUND
+            - STALE_EXECUTION
+            - IN_FLIGHT
+            - ALREADY_DONE
+            - STATE_CHANGED
+            - NOT_BLOCKED
+            - NOT_RETRYABLE
+      required:
+        - error
+        - code
+      additionalProperties: false
+      description: A refused queue action.
+    EpicQueueActionResult:
+      type: object
+      properties:
+        outcome:
+          type: string
+          enum:
+            - skipped
+            - already_skipped
+            - retried
+            - already_retried
+        executionId:
+          type: string
+        issueNumber:
+          type: integer
+          exclusiveMinimum: 0
+        queue:
+          anyOf:
+            - type: object
+              properties: {}
+              additionalProperties: {}
+            - type: "null"
+          description: The execution queue after the action.
+      required:
+        - outcome
+        - executionId
+        - issueNumber
+        - queue
+      additionalProperties: false
+    EpicQueueBlockedEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0
+          description: Monotonic event id; also the list cursor.
+        draftId:
+          type: string
+          description: The plan.
+        executionId:
+          type: string
+        issueNumber:
+          type: integer
+          exclusiveMinimum: 0
+        position:
+          type: integer
+          minimum: 0
+          description: "The occurrence: a requeued issue starts a new one at a new position."
+        type:
+          type: string
+          enum:
+            - blocked
+            - resolved
+        blockedKind:
+          type: string
+          enum:
+            - closed_unmerged
+            - missing_from_plan
+            - dispatch_failed
+            - agent_blocked
+            - awaiting_human_merge
+            - label_handoff
+            - setup_not_ready
+        reason:
+          type: string
+        blockedEventId:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0
+            - type: "null"
+          description: "For a resolved event: the blocked event it resolves."
+        resolution:
+          anyOf:
+            - type: string
+              enum:
+                - cleared
+                - replaced
+                - retried
+                - skipped
+                - settled
+            - type: "null"
+          description: "How the blocker ended: cleared by the queue, replaced by another blocker, retried or skipped by a person, or settled with the issue."
+        createdAt:
+          type: integer
+          description: Epoch milliseconds.
+      required:
+        - id
+        - draftId
+        - executionId
+        - issueNumber
+        - position
+        - type
+        - blockedKind
+        - reason
+        - blockedEventId
+        - resolution
+        - createdAt
+      additionalProperties: false
+      description: One blocked transition of an issue in an epic execution, or the resolution of one.
+    EpicQueueBlockedEventPage:
+      type: object
+      properties:
+        executionId:
+          description: The listed execution; null when the plan never queued work.
+          type:
+            - string
+            - "null"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EpicQueueBlockedEvent"
+        nextCursor:
+          description: Pass as `cursor` to read the events after this page; unchanged when the page is empty.
+          type:
+            - string
+            - "null"
+        hasMore:
+          type: boolean
+      required:
+        - executionId
+        - events
+        - nextCursor
+        - hasMore
+      additionalProperties: false
+    EpicQueueRetryRequest:
+      type: object
+      properties:
+        executionId:
+          type: string
+          description: The execution read from the execution queue; a newer or finished one refuses the retry.
+        expectedState:
+          description: Refuse with `STATE_CHANGED` unless the issue is still in this state.
+          type: string
+          enum:
+            - pending
+            - dispatched
+            - done
+            - blocked
+            - skipped
+      required:
+        - executionId
+      additionalProperties: false
+    EpicQueueSkipRequest:
+      type: object
+      properties:
+        executionId:
+          type: string
+          description: The execution read from the execution queue; a newer or finished one refuses the skip.
+        expectedState:
+          description: Refuse with `STATE_CHANGED` unless the issue is still in this state.
+          type: string
+          enum:
+            - pending
+            - dispatched
+            - done
+            - blocked
+            - skipped
+        satisfiesDependents:
+          description: "Graph executions: treat the skipped issue as a met prerequisite, so its dependents can start. Skipping again with the other value changes only this option."
+          type: boolean
+      required:
+        - executionId
+      additionalProperties: false
     ErrorEnvelope:
       type: object
       properties:
@@ -9996,32 +10686,49 @@ components:
         - message
       additionalProperties: false
       description: The common error envelope. New routes return it for every 4xx and 5xx response.
-    ExtensionProfileInput:
+    ExtensionItemEnabledRequest:
+      type: object
+      properties:
+        item:
+          anyOf:
+            - type: object
+              properties:
+                kind:
+                  type: string
+                  const: server
+                name:
+                  type: string
+              required:
+                - kind
+                - name
+              additionalProperties: false
+            - type: object
+              properties:
+                kind:
+                  type: string
+                  const: skill
+                bundleId:
+                  type: string
+                  format: uuid
+                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+              required:
+                - kind
+                - bundleId
+              additionalProperties: false
+        enabled:
+          type: boolean
+      required:
+        - item
+        - enabled
+      additionalProperties: false
+    ExtensionLibraryInput:
       type: object
       properties:
         version:
           type: number
           const: 1
-        name:
-          type: string
-          minLength: 1
-          maxLength: 100
-        enabled:
-          type: boolean
-        agentScope:
-          maxItems: 64
-          type: array
-          items:
-            type: string
-            pattern: ^[A-Za-z0-9_-]{1,100}$
-        repositoryScope:
-          maxItems: 64
-          type: array
-          items:
-            type: string
-            pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
-        mcpServers:
-          maxItems: 8
+        servers:
+          maxItems: 32
           type: array
           items:
             oneOf:
@@ -10054,6 +10761,33 @@ components:
                     enum:
                       - none
                       - bearer
+                      - oauth
+                  scopes:
+                    maxItems: 32
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[\x21\x23-\x5b\x5d-\x7e]{1,256}$
+                  clientId:
+                    type: string
+                    pattern: ^[\x21-\x7e]{1,512}$
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
                 required:
                   - kind
                   - name
@@ -10062,6 +10796,9 @@ components:
                   - tools
                   - capability
                   - authentication
+                  - repositories
+                  - agents
+                  - autoApply
                 additionalProperties: false
               - type: object
                 properties:
@@ -10090,6 +10827,23 @@ components:
                     enum:
                       - read
                       - write
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
                 required:
                   - kind
                   - name
@@ -10098,31 +10852,377 @@ components:
                   - enabled
                   - tools
                   - capability
+                  - repositories
+                  - agents
+                  - autoApply
                 additionalProperties: false
-        skillBundleIds:
-          maxItems: 8
+              - type: object
+                properties:
+                  name:
+                    type: string
+                    pattern: ^[a-z][a-z0-9_-]{0,47}$
+                  enabled:
+                    type: boolean
+                  tools:
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]{1,128}$
+                  capability:
+                    type: string
+                    enum:
+                      - read
+                      - write
+                  kind:
+                    type: string
+                    const: package
+                  ecosystem:
+                    type: string
+                    enum:
+                      - npm
+                  package:
+                    type: string
+                    maxLength: 214
+                    pattern: ^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$
+                  version:
+                    type: string
+                    maxLength: 256
+                    pattern: ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$
+                  integrity:
+                    type: string
+                    pattern: ^sha512-[A-Za-z0-9+/]{86}==$
+                  bin:
+                    type: string
+                    pattern: ^[A-Za-z0-9@._-]{1,128}$
+                  args:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      maxLength: 2048
+                      pattern: ^[^\x00\r\n]*$
+                  env:
+                    default: []
+                    maxItems: 32
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          pattern: ^[A-Z_][A-Z0-9_]{0,99}$
+                        value:
+                          type: string
+                          maxLength: 4096
+                          pattern: ^[^\x00\r\n]*$
+                      required:
+                        - name
+                        - value
+                      additionalProperties: false
+                  secretEnv:
+                    default: []
+                    maxItems: 16
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Z_][A-Z0-9_]{0,99}$
+                  repositories:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+                  agents:
+                    default: []
+                    maxItems: 64
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^[A-Za-z0-9_-]{1,100}$
+                  autoApply:
+                    default: true
+                    type: boolean
+                required:
+                  - name
+                  - enabled
+                  - tools
+                  - capability
+                  - kind
+                  - ecosystem
+                  - package
+                  - version
+                  - args
+                  - env
+                  - secretEnv
+                  - repositories
+                  - agents
+                  - autoApply
+                additionalProperties: false
+        skills:
+          maxItems: 32
           type: array
           items:
-            type: string
-            format: uuid
-            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+            type: object
+            properties:
+              bundleId:
+                type: string
+                format: uuid
+                pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+              enabled:
+                type: boolean
+              repositories:
+                default: []
+                maxItems: 64
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$
+              agents:
+                default: []
+                maxItems: 64
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{1,100}$
+              autoApply:
+                default: true
+                type: boolean
+            required:
+              - bundleId
+              - enabled
+              - repositories
+              - agents
+              - autoApply
+            additionalProperties: false
       required:
         - version
-        - name
-        - enabled
-        - agentScope
-        - repositoryScope
-        - mcpServers
-        - skillBundleIds
+        - servers
+        - skills
       additionalProperties: false
-      description: Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected.
-    ExtensionProfileSave:
+      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
+    ExtensionLibraryRead:
+      type: object
+      properties:
+        contract:
+          type: object
+          properties: {}
+          additionalProperties: {}
+        instanceId:
+          type: string
+        library:
+          type: object
+          properties:
+            version:
+              type: number
+              const: 1
+            instanceId:
+              type: string
+            revision:
+              type: integer
+              description: 0 before the first save.
+            createdAt:
+              type: number
+            updatedAt:
+              type: number
+            auditActor:
+              type: string
+            servers:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            skills:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            secrets:
+              type: object
+              propertyNames:
+                type: string
+              additionalProperties:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                required:
+                  - configured
+                additionalProperties: {}
+              description: Presence markers only; secret values are never returned.
+            skillBundles:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+          required:
+            - version
+            - instanceId
+            - revision
+            - createdAt
+            - updatedAt
+            - auditActor
+            - servers
+            - skills
+            - secrets
+            - skillBundles
+          additionalProperties: {}
+        oauth:
+          $ref: "#/components/schemas/ExtensionOAuthInstanceInfo"
+        bundles:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties: {}
+        catalog:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties: {}
+        usage:
+          type: object
+          properties:
+            automations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  servers:
+                    type: array
+                    items:
+                      type: string
+                  skills:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - id
+                  - name
+                  - servers
+                  - skills
+                additionalProperties: false
+            importedFrom:
+              type: object
+              properties:
+                servers:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+                skills:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+              required:
+                - servers
+                - skills
+              additionalProperties: false
+          required:
+            - automations
+            - importedFrom
+          additionalProperties: false
+          description: Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from.
+      required:
+        - contract
+        - instanceId
+        - library
+        - oauth
+        - bundles
+        - catalog
+        - usage
+      additionalProperties: false
+    ExtensionLibraryRevisionResponse:
+      type: object
+      properties:
+        library:
+          type: object
+          properties:
+            version:
+              type: number
+              const: 1
+            instanceId:
+              type: string
+            revision:
+              type: integer
+              description: 0 before the first save.
+            createdAt:
+              type: number
+            updatedAt:
+              type: number
+            auditActor:
+              type: string
+            servers:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            skills:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+            secrets:
+              type: object
+              propertyNames:
+                type: string
+              additionalProperties:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                required:
+                  - configured
+                additionalProperties: {}
+              description: Presence markers only; secret values are never returned.
+            skillBundles:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties: {}
+          required:
+            - version
+            - instanceId
+            - revision
+            - createdAt
+            - updatedAt
+            - auditActor
+            - servers
+            - skills
+            - secrets
+            - skillBundles
+          additionalProperties: {}
+      required:
+        - library
+      additionalProperties: false
+    ExtensionLibrarySave:
       type: object
       properties:
         input:
-          $ref: "#/components/schemas/ExtensionProfileInput"
-        expected:
-          $ref: "#/components/schemas/ExtensionSelection"
+          $ref: "#/components/schemas/ExtensionLibraryInput"
+        expectedRevision:
+          type: integer
+          minimum: 0
         secrets:
           type: object
           propertyNames:
@@ -10131,8 +11231,158 @@ components:
             type:
               - string
               - "null"
+        acknowledgements:
+          description: Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed.
+          type: array
+          items:
+            type: string
       required:
         - input
+        - expectedRevision
+      additionalProperties: false
+    ExtensionOAuthCheckRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        clientId:
+          type: string
+        scopes:
+          maxItems: 32
+          type: array
+          items:
+            type: string
+      required:
+        - url
+      additionalProperties: false
+    ExtensionOAuthCheckResponse:
+      type: object
+      properties:
+        check:
+          type: object
+          properties:
+            authorizationRequired:
+              type: boolean
+            discoveredFrom:
+              type: string
+              enum:
+                - challenge
+                - well_known
+            resource:
+              type: string
+            issuer:
+              type: string
+            scopes:
+              type: array
+              items:
+                type: string
+            registration:
+              anyOf:
+                - type: string
+                  enum:
+                    - metadata_document
+                    - dynamic
+                    - preregistered
+                - type: "null"
+            message:
+              type: string
+            redirectUri:
+              type:
+                - string
+                - "null"
+          required:
+            - authorizationRequired
+            - registration
+            - message
+            - redirectUri
+          additionalProperties: false
+      required:
+        - check
+      additionalProperties: false
+    ExtensionOAuthInstanceInfo:
+      type: object
+      properties:
+        redirectUri:
+          description: Redirect URI to register with a provider; null without a public HTTPS base URL, which disables Connect.
+          type:
+            - string
+            - "null"
+        clientMetadataUrl:
+          description: ProPR's Client ID Metadata Document URL, used as the client id where supported.
+          type:
+            - string
+            - "null"
+        connections:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties:
+            type: object
+            properties:
+              state:
+                type: string
+                enum:
+                  - not_connected
+                  - connected
+                  - needs_sign_in
+              connectedBy:
+                description: Actor id of the administrator who signed in.
+                type: string
+              connectedAt:
+                type: number
+              scopes:
+                description: Scopes the authorization server granted.
+                type: array
+                items:
+                  type: string
+              registration:
+                type: string
+                enum:
+                  - metadata_document
+                  - dynamic
+                  - preregistered
+            required:
+              - state
+            additionalProperties: false
+          description: Connection state by OAuth server name. Tokens are never returned.
+      required:
+        - redirectUri
+        - clientMetadataUrl
+        - connections
+      additionalProperties: false
+      description: OAuth sign-in facts of this instance and the connection state of its OAuth library servers.
+    ExtensionOAuthItemRequest:
+      type: object
+      properties:
+        name:
+          type: string
+      required:
+        - name
+      additionalProperties: false
+    ExtensionOAuthStartResponse:
+      type: object
+      properties:
+        authorizationUrl:
+          type: string
+          description: Provider authorization page to open in a new tab; carries a single-use state bound to this session, PKCE S256 and the resource indicator.
+      required:
+        - authorizationUrl
+      additionalProperties: false
+    ExtensionSecretReplaceRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        secret:
+          type:
+            - string
+            - "null"
+        expectedRevision:
+          type: integer
+          minimum: 0
+      required:
+        - name
+        - secret
       additionalProperties: false
     ExtensionSelection:
       type: object
@@ -10153,6 +11403,7 @@ components:
         - profileId
         - revision
       additionalProperties: false
+      description: Legacy profile selection; no longer accepted for new submissions.
     FollowupHandoffDetail:
       type: object
       properties:
@@ -11751,15 +13002,62 @@ components:
         - error
       additionalProperties: false
       description: Progress of a task submission. `queued` means the run was enqueued.
+    TaskSubmissionExtensions:
+      type: object
+      properties:
+        qualified:
+          type: boolean
+          description: False when the agent's runtime does not use extensions (only Claude and Codex do).
+        revision:
+          type: integer
+          description: Current library revision; tasks resolve the library again at launch.
+        servers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              capability:
+                type: string
+                enum:
+                  - read
+                  - write
+            required:
+              - name
+              - capability
+            additionalProperties: false
+          description: MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+            required:
+              - name
+            additionalProperties: false
+      required:
+        - qualified
+        - revision
+        - servers
+        - skills
+      additionalProperties: false
+      description: Library items that would apply automatically to a task for this repository and agent.
     TaskSubmissionRequest:
       type: object
       properties:
         extensionProfile:
+          description: "Removed: extension profiles were replaced by the instance extension library. A non-null value is refused."
           anyOf:
             - $ref: "#/components/schemas/ExtensionSelection"
             - type: "null"
         extensionAllowWrite:
-          description: Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries.
+          description: "Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission's initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`."
+          type: boolean
+        disableExtensions:
+          description: "Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply."
           type: boolean
         repository:
           type: string

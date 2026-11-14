@@ -79,7 +79,7 @@ await mock.module('@propr/core', { namedExports: {
   loadSettings: async () => ({ worker_concurrency: 1 }),
   generateCompletionComment: async () => 'Completed.',
   findPlanIssueByRepoAndNumber: async () => ({ draft_id: 'draft', issue_number: 7, ...planRow }),
-  getEpicExecutionQueue: async () => ({ status: 'active', issues: [7, 8], cursor: 0 }),
+  getEpicExecutionQueue: async () => ({ status: 'active', issues: [7, 8], cursor: 0, items: [{ issueNumber: 7, state: 'dispatched' }, { issueNumber: 8, state: 'pending' }] }),
   updatePlanIssueStatus: async (repository: string, issueNumber: number, status: string, options?: { onLinkedReview?: () => void }) => {
     // The real writer logs and swallows a database failure, resolving false.
     if (failStatusWrite) return false;

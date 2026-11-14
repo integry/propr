@@ -1,4 +1,4 @@
-import { createExtensionProfileRoutes } from './routes/extensionProfileRoutes.js';
+import { createExtensionLibraryRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
 import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
@@ -377,8 +377,12 @@ export function setupRoutes(): void {
     operationalStatus: statusRoutes.readStatusSnapshot,
     queueStatus: queueRoutes.collectQueueStats
   });
-  const extensionRoutes = createExtensionProfileRoutes();
+  const extensionRoutes = createExtensionLibraryRoutes();
   app.post('/api/extensions/mcp/:serverName', extensionRoutes.gateway);
+  // INTENTIONALLY UNAUTHENTICATED: ProPR's public OAuth Client ID Metadata
+  // Document. Its URL is the client id authorization servers fetch; it holds
+  // only ProPR's name and this instance's redirect URI.
+  app.get('/api/instance/extensions/v1/oauth/client-metadata.json', extensionRoutes.clientMetadata);
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
   // Worker-only: run-scoped MCP grants for agent containers, authenticated by
@@ -525,14 +529,21 @@ export function setupRoutes(): void {
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
   app.get('/api/instance/extensions/v1', extensionRoutes.list);
-  app.post('/api/instance/extensions/v1/profiles', extensionRoutes.save);
-  app.get('/api/instance/extensions/v1/profiles/:profileId/history', extensionRoutes.history);
-  app.post('/api/instance/extensions/v1/delete', extensionRoutes.remove);
+  app.post('/api/instance/extensions/v1/library', extensionRoutes.save);
+  app.post('/api/instance/extensions/v1/items/enabled', extensionRoutes.setEnabled);
+  app.post('/api/instance/extensions/v1/secrets', extensionRoutes.replaceSecret);
+  app.get('/api/instance/extensions/v1/history', extensionRoutes.history);
   app.post('/api/instance/extensions/v1/validate', extensionRoutes.validate);
   app.post('/api/instance/extensions/v1/skills/archive', express.json({ limit: '7mb' }), extensionRoutes.importArchive);
   app.post('/api/instance/extensions/v1/skills/github', extensionRoutes.importGithub);
   app.post('/api/instance/extensions/v1/skills/github-source', extensionRoutes.githubSource);
   app.post('/api/instance/extensions/v1/tools/discover', extensionRoutes.discoverTools);
+  app.post('/api/instance/extensions/v1/packages/resolve', extensionRoutes.resolvePackage);
+  app.post('/api/instance/extensions/v1/oauth/check', extensionRoutes.oauthCheck);
+  app.post('/api/instance/extensions/v1/oauth/start', extensionRoutes.oauthStart);
+  app.post('/api/instance/extensions/v1/oauth/disconnect', extensionRoutes.oauthDisconnect);
+  app.get('/api/instance/extensions/v1/oauth/audit', extensionRoutes.oauthAudit);
+  app.get('/api/instance/extensions/v1/oauth/callback', extensionRoutes.oauthCallback);
 }
 
 function setupWebhookRoute(): void {
@@ -654,6 +665,13 @@ async function start(): Promise<void> {
     await runMigrations();
     // API chat and health checks launch agents: refuse a policy that would leave one uncapped.
     await (await import('@propr/core')).validateAgentRunAdmissionPolicy();
+    // Copy extension profiles into the extension library once; never blocks startup.
+    try {
+      const core = await import('@propr/core');
+      if (typeof core.migrateExtensionProfilesToLibrary === 'function') await core.migrateExtensionProfilesToLibrary(db);
+    } catch (error) {
+      console.warn('Extension library migration skipped; it will retry at the next start:', (error as Error).message);
+    }
     dashboardReads = await startDashboardReadService(db);
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();

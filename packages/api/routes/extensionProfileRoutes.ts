@@ -1,18 +1,22 @@
 import type { Request, RequestHandler } from 'express';
 import { Octokit } from '@octokit/core';
 import { db } from '@propr/core';
-import { EXTENSION_PROFILE_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle } from '@propr/shared';
-import { ExtensionError, ExtensionProfileStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { EXTENSION_LIBRARY_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle } from '@propr/shared';
+import { ExtensionError, ExtensionLibraryStore, type ExtensionLibraryItemRef } from '../../core/src/extensions/extensionProfileStore.js';
+import { extensionLibraryUsage } from '../../core/src/extensions/extensionLibraryUsage.js';
 import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
 import { requestExtensionMcp } from '../../core/src/extensions/endpointPolicy.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
 import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../githubMetadataAuth.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
+import { extensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
+import { resolveNpmPackage } from '../../core/src/extensions/packageRegistry.js';
+import { createExtensionOAuthRoutes, extensionOAuthInstanceInfo } from './extensionOAuthRoutes.js';
 
-export function createExtensionProfileRoutes(store = new ExtensionProfileStore(db)) {
+export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(db)) {
   const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
-    // Profiles hold sealed per-installation secrets; the demo explains instead of reading them.
+    // The library holds sealed per-installation secrets; the demo explains instead of reading them.
     if (isDemoViewer(req.authorization)) return refuseDemoViewer(req, res, next);
     try {
       if (!req.user?.id) throw new ExtensionError(401, 'Authentication required');
@@ -25,22 +29,39 @@ export function createExtensionProfileRoutes(store = new ExtensionProfileStore(d
   const exact = (req: Request, keys: string[]) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(k => !keys.includes(k))) throw new ExtensionError(400, 'Invalid extension request');
   };
+  const itemRef = (value: unknown): ExtensionLibraryItemRef => {
+    const ref = value as Record<string, unknown> | null;
+    if (ref?.kind === 'server' && typeof ref.name === 'string' && Object.keys(ref).length === 2) return { kind: 'server', name: ref.name };
+    if (ref?.kind === 'skill' && typeof ref.bundleId === 'string' && Object.keys(ref).length === 2) return { kind: 'skill', bundleId: ref.bundleId };
+    throw new ExtensionError(400, 'Invalid extension item');
+  };
   return {
-    list: handle(async (_req, actor) => ({ contract: EXTENSION_PROFILE_CONTRACT, instanceId: await store.instanceId(), profiles: await store.list(actor), bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries() })),
-    save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expected']); return { profile: await store.save(actor, req.body.input, req.body.secrets, req.body.expected) }; }),
-    history: handle(async (req, actor) => ({ revisions: await store.history(actor, String(req.params.profileId)) })),
-    remove: handle(async (req, actor) => { exact(req, ['selection']); await store.delete(actor, req.body.selection); return { deleted: true }; }),
+    ...createExtensionOAuthRoutes(store, handle, store.environment),
+    // The library, the skill bundles it can reference and the operator catalog in one read.
+    // Usage names the automations that add items and the profiles migrated items came from.
+    list: handle(async (_req, actor) => {
+      const library = await store.readLibrary(actor);
+      // OAuth connection state is credential state outside the revision: state, who connected and when, granted scopes. Never tokens.
+      return { contract: EXTENSION_LIBRARY_CONTRACT, instanceId: await store.instanceId(), library, bundles: await store.listSkillBundles(actor), catalog: await store.catalog.publicEntries(), usage: await extensionLibraryUsage(store, library), oauth: await extensionOAuthInstanceInfo(store, library, store.environment) };
+    }),
+    // `acknowledgements` names the package servers whose secret variables the administrator confirmed are readable in the task container.
+    save: handle(async (req, actor) => { exact(req, ['input', 'secrets', 'expectedRevision', 'acknowledgements']); return { library: await store.saveLibrary(actor, req.body.input, req.body.secrets, req.body.expectedRevision, req.body.acknowledgements) }; }),
+    setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
+    replaceSecret: handle(async (req, actor) => { exact(req, ['name', 'secret', 'expectedRevision']); return { library: await store.replaceSecret(actor, req.body.name, req.body.secret, req.body.expectedRevision) }; }),
+    history: handle(async (_req, actor) => ({ revisions: await store.history(actor) })),
     validate: handle(async (req, actor) => {
-      exact(req, ['selection']); const profile = await store.read(actor, req.body.selection);
-      const row = await store.database('extension_profile_revisions').where({ profile_id: profile.profileId, revision: profile.revision }).first();
-      const { unsealExtensionSecrets } = await import('../../core/src/extensions/privateSecrets.js');
-      const secrets = row.secrets_encrypted === '' ? {} : unsealExtensionSecrets(row.secrets_encrypted, `${profile.instanceId}/${profile.profileId}/${profile.revision}`, store.environment);
+      exact(req, []);
+      const { servers, secrets } = await store.validationTargets(actor);
+      const library = { instanceId: await store.instanceId() };
       const results = [];
-      for (const server of profile.mcpServers.filter(s => s.enabled)) {
+      for (const server of servers) {
         let reachable = false;
-        if (server.kind === 'catalog') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
+        // Catalog and package servers run inside the task container; nothing is started here.
+        if (server.kind !== 'https') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
         try {
-          const response = await requestExtensionMcp(server.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'propr-validation', version: '1' } } }, secrets[server.name]) as { result?: unknown };
+          // An OAuth server is validated with its current access token; its library secret is a client secret, never sent upstream.
+          const credential = server.authentication === 'oauth' ? await extensionOAuth(store).accessToken(library.instanceId, server) : secrets[server.name];
+          const response = await requestExtensionMcp(server.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'propr-validation', version: '1' } } }, credential) as { result?: unknown };
           reachable = Boolean(response?.result);
         } catch { /* No response content or error from upstream is disclosed. */ }
         results.push({ name: server.name, reachable, status: reachable ? 'reachable' : 'unavailable' });
@@ -60,6 +81,14 @@ export function createExtensionProfileRoutes(store = new ExtensionProfileStore(d
       const names = tools.flatMap(tool => tool && typeof tool === 'object' && typeof tool.name === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(tool.name) ? [tool.name] : []);
       await store.authorize(actor);
       return { tools: [...new Set(names)] };
+    }),
+    /** "Check" for a package server: registry lookup only. Nothing is downloaded, installed or executed. */
+    resolvePackage: handle(async (req, actor) => {
+      exact(req, ['ecosystem', 'package', 'version', 'bin']);
+      if (req.body.ecosystem !== 'npm') throw new ExtensionError(400, 'Only npm packages are supported');
+      const resolved = await resolveNpmPackage({ package: req.body.package, version: req.body.version, bin: req.body.bin }, store.environment);
+      await store.authorize(actor);
+      return { package: { ecosystem: resolved.ecosystem, package: resolved.package, version: resolved.version, integrity: resolved.integrity, bin: resolved.bin, bins: resolved.bins } };
     }),
     githubSource: handle(async (req, actor) => {
       exact(req, ['repository', 'ref']);
