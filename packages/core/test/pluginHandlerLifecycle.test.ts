@@ -29,7 +29,7 @@ test('a JSON-escaped echo of the credential is scrubbed before the handler can d
     assert.equal(run.outcome, 'succeeded', run.error ?? '');
     return run.result as Record<string, unknown>;
   };
-  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false, parsedHeadersHaveProbe: false, headerNamesHaveProbe: false };
+  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false, parsedHeadersHaveProbe: false, headerNamesHaveProbe: false, urlDecodedHasProbe: false };
 
   // JSON.stringify escaping (the fixture echo transport): `\"` and `\\`.
   assert.deepEqual(await probe(f.http.transport), clean);
@@ -100,6 +100,88 @@ test('text() of a non-JSON body holds no JSON-escaped credential, and a clean JS
 
   const untouched = '{ "a" : [1, 2],\n  "b": "\\u0041" }';
   assert.equal(await (await fetchWith(transportFor(() => untouched))).text(), untouched, 'formatting is kept when no credential was found');
+});
+
+/** A credential with a character `encodeURIComponent` escapes (`/`, as `%2F`). */
+const PERCENT_SECRET = 'plugin/credential-sentinel-5d0e9a';
+/** `encodeURIComponent` with lowercase hex digits (`%2f`), as some encoders write it. */
+const lowerHexEncoded = (value: string) => encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, escape => escape.toLowerCase());
+/** Every character percent-escaped, letters included. */
+const everyCharEscaped = (value: string) => [...value].map(c => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join('');
+/** Whether URL-decoding `text` again and again (each escape alone, as `unescape()` does: `%2f`, `%u002f`) spells `secret`. */
+function urlRecovers(text: string, secret: string): boolean {
+  for (let current = text, round = 0; round < 8; round++) {
+    if (current.includes(secret)) return true;
+    const next = current.replace(/%(?:u[0-9a-f]{4}|[0-9a-f]{2})/gi, escape => String.fromCharCode(parseInt(escape.replace(/^%u?/i, ''), 16)));
+    if (next === current) return false;
+    current = next;
+  }
+  return false;
+}
+
+test('a percent-encoded echo of the credential, in either case of hex digits, is scrubbed before the handler can decode it', async t => {
+  const f = await pluginHandlerFixture(t, { secret: PERCENT_SECRET });
+  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false, parsedHeadersHaveProbe: false, headerNamesHaveProbe: false, urlDecodedHasProbe: false };
+  // The upstream echoes the credential encoded: in a header value, a form-style header and a JSON or form body.
+  const echo = (encode: (secret: string) => string, body: 'json' | 'form' = 'json'): PluginHttpTransport => async request => {
+    const encoded = encode((request.headers.authorization ?? '').slice('Bearer '.length));
+    return { status: 200, headers: { 'x-echo': encoded, 'x-form': `token=${encoded}&page=2` }, body: Buffer.from(body === 'json' ? JSON.stringify({ token: encoded, keep: 'visible' }) : `token=${encoded}&page=2`) };
+  };
+  const probe = async (transport: PluginHttpTransport) => {
+    const run = await runPluginHandler(FIXTURE_ID, 'fetchProbe', invoke({ url: 'https://api.fixture.example/v1', connection: 'api-token', probe: PERCENT_SECRET }), { ...f.options, transport });
+    assert.equal(run.outcome, 'succeeded', run.error ?? '');
+    return run.result;
+  };
+  const encodings: [string, (secret: string) => string][] = [
+    ['lowercase hex', lowerHexEncoded],
+    ['the header value, lowercase hex', secret => lowerHexEncoded(`Bearer ${secret}`)],
+    ['every character escaped', everyCharEscaped],
+    ['every character escaped, uppercase hex', secret => everyCharEscaped(secret).toUpperCase()],
+    ['URL-encoded twice', secret => encodeURIComponent(lowerHexEncoded(secret))],
+    ['%u escapes', secret => secret.replace('/', '%u002f')],
+  ];
+  for (const [name, encode] of encodings) {
+    for (const body of ['json', 'form'] as const) assert.deepEqual(await probe(echo(encode, body)), clean, `${name}, ${body} body`);
+  }
+  // A percent escape inside a JSON escape: JSON.parse turns `\u0025` into the `%` of `%2f`.
+  const viaJson = (secret: string) => secret.replace('/', '\\u00252f');
+  assert.deepEqual(await probe(async request => {
+    const secret = (request.headers.authorization ?? '').slice('Bearer '.length);
+    return { status: 200, headers: { 'x-echo': `"${viaJson(secret)}"` }, body: Buffer.from(`{"token":"${viaJson(secret)}"}`) };
+  }), clean, 'percent escape inside a JSON escape');
+
+  // The returned run (result and logs) holds no spelling that URL-decodes to the credential.
+  const fetched = await runPluginHandler(FIXTURE_ID, 'fetchUrl', invoke({ url: 'https://api.fixture.example/v1', connection: 'api-token' }), { ...f.options, transport: echo(lowerHexEncoded) });
+  assert.equal(fetched.outcome, 'succeeded', fetched.error ?? '');
+  assert.equal(urlRecovers(JSON.stringify(fetched), PERCENT_SECRET), false, JSON.stringify(fetched));
+
+  // A single-level escape is replaced in place, so the rest of the value is kept; escapes that spell nothing secret are untouched.
+  const fetchWith = (transport: PluginHttpTransport) => createPluginHttp({ outboundHosts: ['api.fixture.example'], credential: async () => PERCENT_SECRET, lookup, transport })('https://api.fixture.example/v1');
+  const inPlace = await fetchWith(echo(lowerHexEncoded, 'form'));
+  assert.equal(await inPlace.text(), 'token=[REDACTED]&page=2');
+  assert.equal(inPlace.headers['x-form'], 'token=[REDACTED]&page=2');
+  assert.deepEqual(await (await fetchWith(echo(lowerHexEncoded))).json(), { token: '[REDACTED]', keep: 'visible' });
+  const untouched = 'next=%2fitems%3fpage%3d2 %41%u0042 100% sure';
+  const kept = await fetchWith(async () => ({ status: 200, headers: { 'x-next': untouched }, body: Buffer.from(untouched) }));
+  assert.equal(await kept.text(), untouched);
+  assert.equal(kept.headers['x-next'], untouched);
+});
+
+test('a credential percent-encoded in a handler input never reaches its log lines or result', async t => {
+  const f = await pluginHandlerFixture(t, { secret: PERCENT_SECRET });
+  const logged = async (note: string) => {
+    const run = await runPluginHandler(FIXTURE_ID, 'fetchThenLog', invoke({ url: 'https://api.fixture.example/v1', connection: 'api-token', note }), f.options);
+    assert.equal(run.outcome, 'succeeded', run.error ?? '');
+    return run;
+  };
+  // Lowercase hex is replaced in place, in the message, its fields and the result.
+  const inPlace = await logged(`callback for ${lowerHexEncoded(PERCENT_SECRET)} on page 2`);
+  const expected = 'callback for [REDACTED] on page 2';
+  assert.deepEqual([inPlace.logs.at(-1)?.message, inPlace.logs.at(-1)?.fields, inPlace.result], [expected, { note: expected }, { note: expected }]);
+  for (const note of [everyCharEscaped(PERCENT_SECRET), encodeURIComponent(lowerHexEncoded(PERCENT_SECRET)), `see ${PERCENT_SECRET.replace('/', '%u002f')}`]) {
+    const run = await logged(note);
+    assert.equal(urlRecovers(JSON.stringify(run), PERCENT_SECRET), false, JSON.stringify(run));
+  }
 });
 
 test('a request whose DNS lookup or credential resolves after the handler timed out is never sent', async t => {

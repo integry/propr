@@ -7,7 +7,7 @@ import {
 import logger from '../utils/logger.js';
 import type { ExtensionLookup } from '../extensions/endpointPolicy.js';
 import { redactExtensionOutput } from '../extensions/extensionOutput.js';
-import { createPluginHttp, type PluginHttpTransport } from './pluginHttp.js';
+import { createPluginHttp, scrubCredentialValues, type PluginHttpTransport } from './pluginHttp.js';
 import { githubPluginProprBackend } from './pluginProprBackend.js';
 import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallOutcome, type PluginProprCallRecord } from './pluginProprClient.js';
 import { pluginStateStore, requireInstallation, type PluginStateWriteGuard } from './pluginStateStore.js';
@@ -31,7 +31,7 @@ export interface PluginContextDeps {
 export interface BuiltPluginContext {
   ctx: PluginContext;
   logs: PluginLogLine[];
-  /** Redact a value for the caller: connection credentials used in this run and the general secret patterns. */
+  /** Redact a value for the caller: connection credentials used in this run (in every spelling, percent-escaped too) and the general secret patterns. */
   redact<T>(value: T): T;
 }
 
@@ -83,7 +83,8 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   const environment = deps.environment ?? process.env;
   const credentials: string[] = [];
   const logs: PluginLogLine[] = [];
-  const redact = <T>(value: T): T => redactExtensionOutput(value, credentials) as T;
+  // The extension output redaction matches one URL-encoded spelling only; the response scrubbing also catches `%2f` and other escapes first.
+  const redact = <T>(value: T): T => redactExtensionOutput(scrubCredentialValues(value, credentials), credentials) as T;
   let dropped = false;
 
   const write = (level: PluginLogLevel, message: unknown, fields?: Record<string, unknown>) => {

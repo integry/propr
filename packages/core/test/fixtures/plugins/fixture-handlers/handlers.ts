@@ -58,7 +58,8 @@ export async function fetchProbe(input: PluginHandlerInput, ctx: PluginContext) 
     const response = await ctx.http(connection)(url);
     const text = await response.text();
     const parsed = (() => { try { return JSON.parse(text) as PluginJsonValue; } catch { return null; } })();
-    const json = await response.json<PluginJsonValue>();
+    // A form or HTML body is not JSON: json() refuses it.
+    const json = await response.json<PluginJsonValue>().catch(() => null);
     const decoded = (value: unknown): boolean => typeof value === 'string' ? value.includes(probe) : value !== null && typeof value === 'object' && Object.entries(value).some(([k, v]) => k.includes(probe) || decoded(v));
     // A header value (or one part of a joined value) parsed as JSON by the handler.
     const parsedHeader = (value: string) => [value, ...value.split(', ')].some(part => { try { return decoded(JSON.parse(part)); } catch { return false; } });
@@ -66,14 +67,38 @@ export async function fetchProbe(input: PluginHandlerInput, ctx: PluginContext) 
     const attempt = (decode: () => unknown) => { try { return decode(); } catch { return null; } };
     const nameHasProbe = (name: string) => [name, attempt(() => decodeURIComponent(name)), attempt(() => JSON.parse(`"${name}"`))]
       .some(value => typeof value === 'string' && value.toLowerCase().includes(probe.toLowerCase()));
+    // Every string the handler can see (the text, each parsed or json() string and key, each header value, also parsed as JSON), URL-decoded again and again.
+    const strings = (value: unknown): string[] => typeof value === 'string' ? [value] : value !== null && typeof value === 'object' ? Object.entries(value).flatMap(([k, v]) => [k, ...strings(v)]) : [];
+    const headerValues = Object.values(response.headers);
+    const visible = [text, ...strings(parsed), ...strings(json), ...headerValues, ...headerValues.flatMap(v => [v, ...v.split(', ')].flatMap(part => strings(attempt(() => JSON.parse(part)))))];
+    // decodeURIComponent, or each escape alone as unescape() decodes it (`%2f`, `%u002f`) where it refuses the text.
+    const urlDecode = (value: string) => (attempt(() => decodeURIComponent(value)) as string | null)
+      ?? value.replace(/%(?:u[0-9a-f]{4}|[0-9a-f]{2})/gi, escape => String.fromCharCode(parseInt(escape.replace(/^%u?/i, ''), 16)));
+    const urlDecodes = (value: string) => {
+      for (let current = value, round = 0; round < 8; round++) {
+        const next = urlDecode(current);
+        if (next.includes(probe)) return true;
+        if (next === current) return false;
+        current = next;
+      }
+      return false;
+    };
     return {
       ok: true, textHasProbe: text.includes(probe), parsedHasProbe: decoded(parsed), jsonHasProbe: decoded(json),
-      headersHaveProbe: Object.values(response.headers).some(v => v.includes(probe)), parsedHeadersHaveProbe: Object.values(response.headers).some(parsedHeader),
-      headerNamesHaveProbe: Object.keys(response.headers).some(nameHasProbe),
+      headersHaveProbe: headerValues.some(v => v.includes(probe)), parsedHeadersHaveProbe: headerValues.some(parsedHeader),
+      headerNamesHaveProbe: Object.keys(response.headers).some(nameHasProbe), urlDecodedHasProbe: visible.some(urlDecodes),
     };
   } catch (error) {
     return { ok: false, code: (error as { code?: string }).code ?? null, message: (error as Error).message };
   }
+}
+
+/** Make an authenticated request (the run then holds its credential), then log `note`, a value from the input, and return it. */
+export async function fetchThenLog(input: PluginHandlerInput, ctx: PluginContext) {
+  const { url, connection, note } = payload(input) as { url: string; connection: string; note: string };
+  await ctx.http(connection)(url);
+  ctx.log.info(note, { note });
+  return { note };
 }
 
 /**

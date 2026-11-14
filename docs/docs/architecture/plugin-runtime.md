@@ -163,17 +163,22 @@ the request is sent and is injected as `Authorization: Bearer <secret>`. An
 (`connection_unavailable`). The handler never receives the secret: it is not
 part of `ctx`, and the secret (plain, JSON-escaped, base64, base64url, hex,
 URL-encoded and as the full header value) is replaced with `[REDACTED]` in the
-response headers and body before the handler sees them. A JSON body is also
+response headers and body before the handler sees them. Each of these spellings
+is also replaced where some of its characters are percent-escaped, with
+lowercase or uppercase hex digits (`%2f` as well as `%2F`, or an escaped
+letter), since `decodeURIComponent` recovers all of them. A JSON body is also
 checked after decoding, so an escape such as `\u0041` or `\"` cannot spell the
 secret back; when a decoded string held it, `text()` and `json()` return the
 body re-serialized with the secret replaced. A string that holds the secret
-only after it is parsed again, such as a JSON document serialized inside a JSON
-string, is replaced with `[REDACTED]` whole. A response header or body whose
-text still holds the secret once its JSON escapes are decoded, once or
-repeatedly, is replaced with `[REDACTED]` entirely. This covers a JSON-valued
-header (also inside a longer or joined value), `\uXXXX` escapes in an HTML
-script, and nested serialized JSON. Text still decoding after 32 rounds counts
-as holding it. A response header whose name holds the secret in any of these
+only after it is decoded again, such as a JSON document serialized inside a
+JSON string or a value URL-encoded twice, is replaced with `[REDACTED]` whole.
+A response header or body whose text still holds the secret once its JSON and
+percent escapes (`%2f`, `%u002f`) are decoded, once or repeatedly and in any
+order, is replaced with `[REDACTED]` entirely. This covers a JSON-valued header
+(also inside a longer or joined value), `\uXXXX` escapes in an HTML script,
+nested serialized JSON and a percent escape inside a JSON escape. Text still
+decoding after 32 rounds, or decoding to more than 8 different texts in one
+round, counts as holding it. A response header whose name holds the secret in any of these
 spellings is dropped. Header names arrive lowercased, so they are compared
 case-insensitively. A
 careless upstream that echoes the `Authorization` header cannot hand the secret
@@ -233,11 +238,13 @@ credentials.
 `{ level, message, fields?, at }` to the run's log, which is returned to the
 caller. Messages are cut at 2,000 characters, fields must be JSON of at most
 4 KiB, and a run keeps at most 200 lines, followed by one "log limit reached"
-line. Every message, field, error message and result passes the extension output
-redaction. That redaction removes the connection credentials used in the run in
-every spelling, plus the general secret patterns (GitHub, cloud and API tokens,
-`Authorization` values and secret-like assignments) and headers such as
-`authorization` and `cookie`.
+line. Every message, field, error message and result is scrubbed of the
+connection credentials used in the run as a response is (every spelling, also
+percent-escaped in either case, and a string that still decodes to one is
+replaced whole), then passes the extension output redaction. That redaction
+removes those credentials again, plus the general secret patterns (GitHub,
+cloud and API tokens, `Authorization` values and secret-like assignments) and
+headers such as `authorization` and `cookie`.
 
 ## Import rule
 

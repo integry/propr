@@ -55,29 +55,83 @@ function credentialSpellings(secret: string): string[] {
   // Longest first: the header value's encodings are not made of the secret's.
   return [...new Set([...encodings(`Bearer ${secret}`), ...encodings(secret)])].filter(Boolean).sort((a, b) => b.length - a.length);
 }
-const scrub = (text: string, spellings: readonly string[]) => spellings.reduce((value, spelling) => value.split(spelling).join('[REDACTED]'), text);
+
+/** One percent-escaped ASCII character, its hex digits in either case: `%2f`, `%2F`, `%61`. */
+const ASCII_PERCENT_ESCAPE = /%[0-7][0-9a-fA-F]/g;
+
+/**
+ * `text` with every spelling replaced also where some of its characters are
+ * percent-escaped, whatever the case of the hex digits (`%2f` as well as the
+ * `%2F` of `encodeURIComponent`, or an escaped letter): `decodeURIComponent`
+ * recovers each of them. Connection secrets are printable ASCII, so only
+ * escapes of ASCII characters can spell one. The text is decoded once and each
+ * match is mapped back to the characters and escapes it was decoded from.
+ */
+function scrubPercentEscaped(text: string, spellings: readonly string[]): string {
+  // The decoded position of each escaped character: a decoded index maps back past two more characters per escape before it.
+  const escapes: number[] = [];
+  const decoded = text.replace(ASCII_PERCENT_ESCAPE, (escape, offset: number) => {
+    escapes.push(offset - 2 * escapes.length);
+    return String.fromCharCode(parseInt(escape.slice(1), 16));
+  });
+  if (!escapes.length) return text;
+  const original = (index: number) => {
+    let low = 0; let high = escapes.length;
+    while (low < high) { const middle = (low + high) >> 1; if (escapes[middle] < index) low = middle + 1; else high = middle; }
+    return index + 2 * low;
+  };
+  const matches: [number, number][] = [];
+  for (const spelling of spellings) {
+    for (let at = decoded.indexOf(spelling); at >= 0; at = decoded.indexOf(spelling, at + 1)) matches.push([original(at), original(at + spelling.length)]);
+  }
+  if (!matches.length) return text;
+  // Overlapping matches (the header value holds the secret) become one replacement.
+  let scrubbed = ''; let cursor = 0;
+  for (const [start, end] of matches.sort((a, b) => a[0] - b[0])) {
+    if (start >= cursor) scrubbed += `${text.slice(cursor, start)}[REDACTED]`;
+    cursor = Math.max(cursor, end);
+  }
+  return scrubbed + text.slice(cursor);
+}
+const scrub = (text: string, spellings: readonly string[]) => spellings.length
+  ? scrubPercentEscaped(spellings.reduce((value, spelling) => value.split(spelling).join('[REDACTED]'), text), spellings)
+  : text;
 
 const JSON_ESCAPE = /\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g;
 const SHORT_ESCAPES: Record<string, string> = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 const jsonUnescapeOnce = (value: string) => value.replace(JSON_ESCAPE, (_, escape: string) => escape.length === 5 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : SHORT_ESCAPES[escape] ?? escape);
-/** Rounds of JSON unescaping checked; each nesting level (a JSON document inside a JSON string) takes one. */
+/**
+ * Percent escapes as `decodeURIComponent` and `unescape` decode them, hex
+ * digits in either case (`%2f`, `%2F`, `%u002F`). Each byte becomes one
+ * character: both agree on the ASCII characters a secret is made of.
+ */
+const PERCENT_ESCAPE = /%(?:u[0-9a-fA-F]{4}|[0-9a-fA-F]{2})/g;
+const percentDecodeOnce = (value: string) => value.replace(PERCENT_ESCAPE, escape => String.fromCharCode(parseInt(escape.slice(escape[1] === 'u' ? 2 : 1), 16)));
+/** The decodings a handler can apply to text, in any order and any number of times. */
+const DECODINGS = [jsonUnescapeOnce, percentDecodeOnce];
+/** Rounds of decoding checked; each nesting level (a JSON document inside a JSON string, a value URL-encoded twice) takes one. */
 const UNESCAPE_ROUNDS = 32;
+/** Distinct partly decoded texts followed per round (the decodings taken in different orders); more counts as holding a credential. */
+const DECODED_VARIANTS = 8;
 
 /**
  * Whether `text` (already scrubbed of literal spellings) holds a credential
- * once its JSON escapes are decoded, once or repeatedly: `\uXXXX` escapes in
- * HTML or a header, or a serialized JSON document inside a JSON string. Text
- * still decoding after the last round could hide one deeper, so counts too.
- * `fold` is applied to each decoded round before comparing (header names
- * compare case-insensitively).
+ * once its JSON and percent escapes are decoded, once or repeatedly and in any
+ * order: `\uXXXX` escapes in HTML or a header, a serialized JSON document
+ * inside a JSON string, a value URL-encoded twice or a percent escape inside a
+ * JSON string. Text still decoding after the last round could hide one deeper,
+ * so counts too. `fold` is applied to each decoded text before comparing
+ * (header names compare case-insensitively).
  */
 function revealsCredential(text: string, spellings: readonly string[], fold: (value: string) => string = value => value): boolean {
-  let decoded = text;
+  let variants = [text];
   for (let round = 0; round < UNESCAPE_ROUNDS; round++) {
-    const next = jsonUnescapeOnce(decoded);
-    if (next === decoded) return false;
-    if (spellings.some(spelling => fold(next).includes(spelling))) return true;
-    decoded = next;
+    // Every decoding shortens the text, so no variant comes back.
+    const next = new Set(variants.flatMap(variant => DECODINGS.map(decode => decode(variant)).filter(decoded => decoded !== variant)));
+    if (!next.size) return false;
+    if (next.size > DECODED_VARIANTS) return true;
+    if ([...next].some(variant => { const folded = fold(variant); return spellings.some(spelling => folded.includes(spelling)); })) return true;
+    variants = [...next];
   }
   return true;
 }
@@ -85,7 +139,8 @@ function revealsCredential(text: string, spellings: readonly string[], fold: (va
 /**
  * Scrub every decoded string (keys included) of a parsed JSON value; `changed`
  * when one held a credential. A string that holds one only once decoded again
- * (serialized JSON inside the string) is withheld whole.
+ * (serialized JSON inside the string, a value URL-encoded twice) is withheld
+ * whole.
  */
 function scrubJson(value: unknown, spellings: readonly string[]): { value: unknown; changed: boolean } {
   let changed = false;
@@ -106,12 +161,13 @@ function scrubJson(value: unknown, spellings: readonly string[]): { value: unkno
 }
 
 /**
- * The response text with every credential spelling replaced. A JSON body is
- * also checked after decoding (an escaped credential such as `a\"b` decodes
- * to the credential) and re-serialized scrubbed when a decoded string held one.
- * Any body (HTML, text or JSON) that still holds the credential once its JSON
- * escapes are decoded is withheld entirely: a handler could recover it by
- * parsing the escaped part itself.
+ * The response text with every credential spelling replaced, also where it is
+ * percent-escaped in either case. A JSON body is also checked after decoding
+ * (an escaped credential such as `a\"b` decodes to the credential) and
+ * re-serialized scrubbed when a decoded string held one. Any body (HTML, text
+ * or JSON) that still holds the credential once its JSON and percent escapes
+ * are decoded is withheld entirely: a handler could recover it by decoding the
+ * escaped part itself.
  */
 function scrubbedBody(raw: string, spellings: readonly string[]): string {
   const text = scrub(raw, spellings);
@@ -133,10 +189,12 @@ function scrubbedBody(raw: string, spellings: readonly string[]): string {
 }
 
 /**
- * A response header with every credential spelling replaced. A value that
- * still holds one once its JSON escapes are decoded (a JSON-valued header
- * escaping it as `\uXXXX`, also inside a longer, joined or re-encoded value)
- * is withheld entirely: a handler could recover it with `JSON.parse`.
+ * A response header with every credential spelling replaced, also where it is
+ * percent-escaped in either case. A value that still holds one once its JSON
+ * and percent escapes are decoded (a JSON-valued header escaping it as
+ * `\uXXXX`, also inside a longer, joined or re-encoded value, or a value
+ * URL-encoded twice) is withheld entirely: a handler could recover it with
+ * `JSON.parse` or `decodeURIComponent`.
  */
 function scrubbedHeader(raw: string, spellings: readonly string[]): string {
   const text = scrub(raw, spellings);
@@ -144,12 +202,24 @@ function scrubbedHeader(raw: string, spellings: readonly string[]): string {
   return revealsCredential(text, spellings) ? '[REDACTED]' : text;
 }
 
+/**
+ * `value` (a log line, its JSON fields, an error message or a JSON result) with
+ * the credentials in `secrets` scrubbed from every string and key as a response
+ * is: every spelling replaced, also percent-escaped in either case, and a
+ * string that still decodes to one withheld whole.
+ */
+export function scrubCredentialValues<T>(value: T, secrets: readonly string[]): T {
+  const spellings = [...new Set(secrets.filter(Boolean).flatMap(credentialSpellings))].sort((a, b) => b.length - a.length);
+  return spellings.length ? scrubJson(value, spellings).value as T : value;
+}
+
 const lowerCase = (value: string) => value.toLowerCase();
 /**
  * Whether a response header name (lowercased, as the handler sees it) holds a
  * credential. Names are case-insensitive and arrive folded to lowercase (Node
  * folds them), so an echoed credential, its base64 or its `%2F`-style URL
- * encoding, is compared case-insensitively, also once JSON escapes are decoded.
+ * encoding, is compared case-insensitively, also once JSON and percent escapes
+ * are decoded.
  * A name cannot be scrubbed in place without colliding with others, so a
  * header whose name holds one is dropped.
  */
