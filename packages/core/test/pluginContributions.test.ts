@@ -449,6 +449,41 @@ test('a plugin OAuth connection that permits only pre-registration signs in with
   await assert.rejects(f.plugins.setOAuthClient('1', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id }), refused(409, /does not permit a pre-registered client/));
 });
 
+test('replacing only the secret of a configured client discards the connection and pending sign-ins made with the previous one', async t => {
+  const f = await fixture(t, { advertise: {} });
+  f.setCatalog([exampleManifest(input => { input.connections.find((c: { name: string }) => c.name === 'example-account').registrations = ['preregistered']; })]);
+  await f.enable();
+  const original = { clientId: PREREGISTERED_CLIENT.id, clientSecret: PREREGISTERED_CLIENT.secret };
+  await f.plugins.setOAuthClient('1', ID, 'example-account', original);
+  assert.equal((await f.connect()).connections[0].state, 'connected');
+  // A second sign-in, started from the extension library, is still pending.
+  const { authorizationUrl } = await extensionOAuth(f.library).startSignIn('1', 'session-b', 'example-remote', OAUTH_URLS);
+  const callback = f.synthetic.authorize(authorizationUrl);
+  assert.equal((await f.database('extension_oauth_pending').select()).length, 1);
+
+  // Setting the same client again changes nothing.
+  assert.equal((await f.plugins.setOAuthClient('1', ID, 'example-account', { ...original })).connections[0].state, 'connected');
+  assert.equal((await f.database('extension_oauth_pending').select()).length, 1);
+
+  // The same client id with another secret: everything the connection binding compares is unchanged.
+  const rotated = await f.plugins.setOAuthClient('1', ID, 'example-account', { clientId: PREREGISTERED_CLIENT.id, clientSecret: 'ROTATED_CLIENT_SECRET_0002' });
+  const remote = (await f.head()).servers.find(s => s.name === 'example-remote')!;
+  assert.equal(remote.kind === 'https' && remote.clientId, PREREGISTERED_CLIENT.id, 'the projected client id stays the same');
+  assert.equal(rotated.connections[0].state, 'not_connected');
+  assert.equal((await f.plugins.get('1', ID)).connections[0].state, 'not_connected', 'reads report it not connected');
+  assert.equal((await f.database('extension_oauth_connections').select()).length, 0, 'the connection made with the previous secret is discarded');
+  assert.equal((await f.database('extension_oauth_pending').select()).length, 0, 'the pending sign-in is discarded');
+  assert.deepEqual((await f.database('extension_oauth_audit').where({ action: 'discarded' }).select('server_name', 'actor')).map(r => [r.server_name, r.actor]), [['example-remote', '1']]);
+  assert.deepEqual((await f.run()).remote, [], 'runs no longer include the server');
+  // The sign-in started under the previous secret can no longer complete.
+  await assert.rejects(extensionOAuth(f.library).completeSignIn('1', 'session-b', callback), refused(400, /Unknown, used or expired/));
+  assert.equal((await f.database('extension_oauth_connections').select()).length, 0);
+
+  // Signing in again uses the configured client.
+  await f.plugins.setOAuthClient('1', ID, 'example-account', original);
+  assert.equal((await f.connect()).connections[0].state, 'connected');
+});
+
 test('a configured client signs in with pre-registration even when the connection lists automatic methods first and the provider offers them', async t => {
   // The example connection permits metadata_document, dynamic, preregistered in that order; the provider offers both automatic methods.
   const f = await fixture(t, { advertise: { metadataDocument: true, dynamic: true } });

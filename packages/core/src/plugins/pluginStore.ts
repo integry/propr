@@ -10,7 +10,7 @@ import { sealExtensionSecrets, unsealExtensionSecrets } from '../extensions/priv
 import { officialPluginCatalog, type PluginCatalogSource } from './pluginCatalog.js';
 import { ExtensionError, ExtensionLibraryStore } from '../extensions/extensionProfileStore.js';
 import { extensionOAuth, type ExtensionOAuthUrls } from '../extensions/extensionOAuthStore.js';
-import { OAUTH_PENDING, hasOAuthTables, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
+import { OAUTH_PENDING, discardOAuthConnectionsOf, hasOAuthTables, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
 import { PluginContributions, oauthServersOf, pluginContributionViews, type PluginOAuthClient } from './pluginContributions.js';
 import { pluginTemplateIds } from './pluginTemplates.js';
 import {
@@ -246,8 +246,8 @@ export class PluginStore {
    * pre-registered OAuth client of an `oauth` connection whose `registrations`
    * permit `preregistered`. The client id becomes the managed servers'
    * `clientId`, the secret their sealed client secret; both are sealed here
-   * and never returned. Changing the client discards the servers' OAuth
-   * connections, as a library client change does.
+   * and never returned. Changing the client, its secret alone included,
+   * discards the servers' OAuth connections and pending sign-ins.
    */
   async setOAuthClient(actor: string, id: unknown, name: unknown, client: unknown): Promise<PluginView> {
     const parsed = parseOAuthClient(client);
@@ -255,12 +255,18 @@ export class PluginStore {
       PluginStore.installed(loaded); const manifest = PluginStore.current(loaded);
       const connection = manifest.connections.find(c => c.name === name && c.type === 'oauth');
       if (!connection || connection.type !== 'oauth') throw new PluginError(404, 'OAuth connection not found');
+      if (parsed && !connection.registrations.includes('preregistered')) throw new PluginError(409, `Connection ${connection.name} does not permit a pre-registered client`);
+      // Only a permitted client is projected onto the servers; one that cannot be decrypted counts as changed.
+      const previous = connection.registrations.includes('preregistered') ? await this.oauthClient(pluginId, connection.name, trx).catch(() => undefined) : null;
+      if (JSON.stringify(previous) !== JSON.stringify(parsed)) {
+        const { snapshot } = await this.library.head(trx);
+        await discardOAuthConnectionsOf(trx, snapshot.instanceId, oauthServersOf(manifest, pluginId, snapshot, connection.name).map(s => s.name), actor);
+      }
       if (parsed === null) {
         await trx('plugin_secrets').where({ plugin_id: pluginId, connection_name: connection.name }).delete();
         await trx('plugin_installations').where({ plugin_id: pluginId }).update(this.touched(actor, loaded));
         return { action: 'clear_oauth_client', detail: { connection: connection.name } };
       }
-      if (!connection.registrations.includes('preregistered')) throw new PluginError(409, `Connection ${connection.name} does not permit a pre-registered client`);
       const sealed = sealExtensionSecrets({ clientId: parsed.clientId, ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}) }, pluginSecretIdentity(await this.instanceId(trx), pluginId, connection.name), this.environment);
       await trx('plugin_secrets').insert({ plugin_id: pluginId, connection_name: connection.name, sealed, set_by: actor, set_at: this.now() })
         .onConflict(['plugin_id', 'connection_name']).merge();
