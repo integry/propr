@@ -169,6 +169,22 @@ describe('PluginSettingsForm', () => {
     expect(errorOf('maxItems')).toBe('maxItems must be a whole number');
   });
 
+  it('refuses a number field holding text that is not a number instead of removing the saved value', () => {
+    const { onSave } = renderForm(withSettings(saved));
+    const maxItems = screen.getByLabelText('Maximum items') as HTMLInputElement;
+    // A browser reports `1e` in a number field as an empty value; only validity.badInput tells it from a cleared field.
+    fireEvent.change(maxItems, { target: { value: '' } });
+    Object.defineProperty(maxItems, 'validity', { configurable: true, value: { ...maxItems.validity, badInput: true } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(errorOf('maxItems')).toBe('maxItems must be a number');
+    expect(onSave).not.toHaveBeenCalled();
+
+    // Emptied on purpose, the field removes the setting.
+    Object.defineProperty(maxItems, 'validity', { configurable: true, value: { ...maxItems.validity, badInput: false } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenCalledWith({ ...saved, maxItems: null });
+  });
+
   it('says so when the plugin has no settings', () => {
     const view = withSettings({});
     render(<PluginSettingsForm view={{ ...view, manifest: { ...view.manifest!, settings: { type: 'object', properties: {}, required: [] } } }} busy={false} apiError="" repositories={[]} onSave={vi.fn()} />);

@@ -6,9 +6,24 @@ import { primaryButtonClass } from './pluginUi';
 import { apiSettingErrors, clientSettingErrors, draftsOf, settingsOf, settingsPayload, type SettingDraft } from './pluginSettingsUi';
 
 /**
+ * Number fields holding text the browser cannot read as a number, such as `-` or `1e`. The browser reports such a field's
+ * value as empty, the same as a cleared field, so only its `validity.badInput` tells them apart; read at submit, because
+ * typing into an already empty field changes no value and fires no change event.
+ */
+function unreadableNumberProblems(form: HTMLFormElement): Record<string, string> {
+  const problems: Record<string, string> = {};
+  for (const input of Array.from(form.querySelectorAll<HTMLInputElement>('input[type="number"]'))) {
+    const key = input.closest<HTMLElement>('[data-setting]')?.dataset.setting;
+    if (key && input.validity.badInput) problems[key] = `${key} must be a number`;
+  }
+  return problems;
+}
+
+/**
  * The settings form ProPR generates from the manifest's settings schema. It is validated here with the API's own rules
- * before saving; a refusal from the API is split into the field it names, next to that field. Fields left as they
- * started save their saved values unchanged. Keyed by the saved settings, so a successful save starts it afresh from
+ * before saving, and a number field holding text that is not a number is refused rather than saved as removed; a refusal
+ * from the API is split into the field it names, next to that field. Fields left as they started save their saved
+ * values unchanged. Keyed by the saved settings, so a successful save starts it afresh from
  * what the API returned.
  */
 export function PluginSettingsForm({ view, busy, apiError, repositories, onSave }: {
@@ -35,9 +50,9 @@ export function PluginSettingsForm({ view, busy, apiError, repositories, onSave 
     setEdited(values => (values.includes(key) ? values : [...values, key]));
     setClientErrors(values => Object.fromEntries(Object.entries(values).filter(([other]) => other !== key)));
   };
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const problems = clientSettingErrors(settings, drafts, enabled, saved);
+    const problems = { ...clientSettingErrors(settings, drafts, enabled, saved), ...unreadableNumberProblems(event.currentTarget) };
     setClientErrors(problems);
     if (Object.keys(problems).length) return;
     setEdited([]);

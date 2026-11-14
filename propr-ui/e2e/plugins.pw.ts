@@ -256,6 +256,23 @@ test('installs, connects, configures, enables, shows the managed items, disables
 
   // Invalid input shows the error next to its field.
   const settingsForm = () => step(page, 'Configure').getByRole('form', { name: 'Plugin settings' });
+  // Text the browser cannot read as a number shows an error instead of removing the saved value. The browser reports
+  // it as an empty value, so it is typed key by key (fill refuses it), both over the saved number and into an emptied field.
+  let settingsSaves = 0;
+  page.on('request', request => { if (request.method() === 'PUT' && request.url().endsWith('/settings')) settingsSaves += 1; });
+  const maxItemsError = () => settingsForm().locator('[data-setting="maxItems"]').getByTestId('plugin-setting-error');
+  for (const [fills, typed] of [[['10'], '1e'], [['7', ''], '-']] as const) {
+    for (const value of fills) await settingsForm().getByLabel('Maximum items').fill(value);
+    await expect(maxItemsError()).toHaveCount(0);
+    await settingsForm().getByLabel('Maximum items').press('ControlOrMeta+a');
+    await settingsForm().getByLabel('Maximum items').pressSequentially(typed);
+    expect(await settingsForm().getByLabel('Maximum items').evaluate(input => (input as HTMLInputElement).validity.badInput)).toBe(true);
+    await settingsForm().getByRole('button', { name: 'Save settings' }).click();
+    await expect(maxItemsError()).toHaveText('maxItems must be a number');
+  }
+  expect(settingsSaves).toBe(0);
+  expect(state.settings).toEqual({ greeting: 'hello', maxItems: 10, includeDrafts: false, labels: [] });
+
   await settingsForm().getByLabel('Maximum items').fill('99');
   await settingsForm().getByRole('button', { name: 'Save settings' }).click();
   await expect(settingsForm().locator('[data-setting="maxItems"]').getByTestId('plugin-setting-error')).toHaveText('maxItems must be at most 50');
