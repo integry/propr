@@ -9,7 +9,7 @@ The ProPR Web UI configures repositories and agents, launches work, and shows pr
 
 ## Navigation And Chrome
 
-The sidebar's work area contains **Dashboard**, **Inbox**, **Tasks**, **Goals**, **Automations** and **Plans**. The system area contains **Repositories**, **Coding Agents** (administrators), **Analytics**, the collapsible **Logs** group, **Settings** and **Access** (administrators). Count badges show current work and unread Inbox items. Agent Tank usage appears below navigation when enabled.
+The sidebar's work area contains **Dashboard**, **Inbox**, **Tasks**, **Goals**, **Automations** and **Plans**. The system area contains **Repositories**, **Coding Agents** (administrators), **Analytics**, the collapsible **Logs** group, **Settings**, **Plugins** and **Access** (administrators). Count badges show current work and unread Inbox items. Agent Tank usage appears below navigation when enabled.
 
 The header includes search (`Cmd/Ctrl+K`), activity/review controls, quick add to-do (`Alt+T`) and system health. Search opens a command palette that groups matching repositories, plans and tasks, with a preview of the highlighted item beside the list on wider screens. Tab and Shift+Tab switch between the **All**, **Repos**, **Plans** and **Tasks** tabs, Enter opens the highlighted item, Cmd/Ctrl+Enter opens it on GitHub, and **Search all tasks** runs the term as a full Tasks search. **New Task** is the default creation action. It becomes **New Plan** in Plans/Planner Studio, **New Goal** in Goals and **New Automation** in Automations; the adjacent menu offers the other actions. See [Launching work](./launching-work.md) to choose between them. After quick add confirms **To-Do added**, choose **Add another** to enter the next item without closing the popover. Desktop puts application information in **About ProPR** rather than the sidebar footer.
 
@@ -121,6 +121,17 @@ for the operator walkthrough and the log's filters.
 - **Notifications** configures personal Inbox/push categories, quiet hours and browser subscription. See [Inbox and push](./inbox.md).
 
 ![Settings AI and Models tab showing implementation and planning model controls in a single column](/img/screenshots/0.9.0/settings.png)
+
+## Plugins
+
+**Plugins** (`/plugins`) installs and manages [plugins](./plugins.md#the-plugins-page). It appears in the sidebar (on mobile, under **More**) and as an **Open Plugins** link above **Skills & MCP servers** in Settings, only for durable administrators with `instance.manage_settings`; anyone else who opens the address sees *Administrator access required*.
+
+1. The catalog shows a card per plugin with its name, description, category and a state badge (**Not installed**, **Enabled**, **Off**, **Needs connection**, **Needs approval** or **Degraded**). Filter by category or search by name, then open a card.
+2. **Install** lists what the plugin adds and the permissions it asks for. If a local package server receives secret variables, tick the acknowledgement that names its package, version and variables, then choose **Install**.
+3. **Connect** has one row per connection: **Connect** for an OAuth sign-in (it opens in a new tab), or a write-only field for an API token or signing secret.
+4. **Configure** offers **Limit to repositories**; leave it empty to apply everywhere.
+5. Tick **Enabled**. While something is missing, the checkbox is unavailable and the step lists what to do first. Untick it to disable the plugin and keep its settings.
+6. **What it added** links the plugin's managed items in Skills & MCP servers. **Uninstall…** lists what will be removed before you confirm, and shows the API's message if an automation still uses one of the plugin's items.
 
 ## Access
 

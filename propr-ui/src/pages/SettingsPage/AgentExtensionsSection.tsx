@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import { Link, useInRouterContext } from 'react-router-dom';
+import { useCurrentUser } from '../../contexts/AuthContext';
+import { canManagePlugins } from './settingsPermissions';
 import type { ExtensionLibraryRevision } from '@propr/shared';
 import { extensionLibraryHistory, validateExtensionLibrary } from '../../api/extensionProfilesApi';
 import { SettingsSection } from './SettingsLayout';
@@ -46,6 +49,19 @@ function LibraryTools({ state, library }: { state: ExtensionLibraryState; librar
   );
 }
 
+/** Instance Settings links administrators to the Plugins page, which adds managed items here. */
+function PluginsLink() {
+  const user = useCurrentUser();
+  const routed = useInRouterContext();
+  if (!routed || !canManagePlugins(user)) return null;
+  return (
+    <p data-testid="settings-plugins-link" className="text-sm text-slate-700">
+      Plugins add MCP servers, skills and automation templates in one place, with their connections.{' '}
+      <Link to="/plugins" className="font-medium text-primary-600 underline hover:text-primary-700">Open Plugins</Link>
+    </p>
+  );
+}
+
 /** Instance Settings → Skills & MCP servers: the extension library as two flat lists. */
 export default function AgentExtensionsSection() {
   const state = useExtensionLibrary();
@@ -53,6 +69,7 @@ export default function AgentExtensionsSection() {
   return (
     <SettingsSection title="Skills & MCP servers" description={<AgentExtensionsDescription />}>
       <div className="max-w-4xl space-y-5">
+        <PluginsLink />
         {state.error && <p role="alert" className="rounded-md bg-red-50 p-3 text-sm text-red-800">{state.error}</p>}
         {state.notice && <p role="status" className="text-sm text-teal-800">{state.notice}</p>}
         {!library && !state.error && <p className="text-sm text-slate-500">Loading the extension library…</p>}
