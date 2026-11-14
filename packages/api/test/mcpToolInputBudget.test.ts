@@ -69,7 +69,7 @@ test('the unbounded configuration inputs fit the budget at realistic sizes, and 
 
   // The schema itself accepts a composition far over the budget, so for these
   // inputs the SDK budget is the only bound before the tool runs.
-  const oversized = composition(1, 1_200);
+  const oversized = composition(1, 1_800);
   assert.ok(syntheticAgentConfigSchema.safeParse(oversized).success);
   assert.ok(countElements(oversized) > MCP_MAX_TOOL_INPUT_ELEMENTS);
 });

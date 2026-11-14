@@ -204,6 +204,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MCP plans can hold 50 issues**: `create_plan`, `update_plan` and
+  `publish_plan` accept up to 50 plan issues (previously 20), and
+  `implement_plan` starts up to 50 issues per call. Plans made in Studio were
+  never limited; this lets MCP clients manage the same larger plans. To keep
+  headroom for a 50-issue plan whose issues each name prerequisites, one tool
+  call's arguments may now hold 15,000 array elements and object keys
+  (previously 10,000).
 - **Bundled Claude Code 2.1.323, Codex 0.168.0 and Antigravity CLI 1.5.8**:
   the `propr/agent` image moves from Claude Code 2.1.322, Codex 0.167.2 and
   Antigravity CLI 1.5.6.
@@ -256,6 +263,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CI runs on Ubuntu 24.04 again**: hosted Linux jobs name `ubuntu-24.04`
+  instead of `ubuntu-latest`, which GitHub moved to Ubuntu 26.04. The desktop
+  RPM build fails under that image's `rpmbuild`, so two desktop tests failed
+  in every full test suite run.
 - **MCP-created plans open in Studio at Review**: `create_plan` called with
   plan items stored the draft as `draft`, so Studio opened it at Define and
   showed no issues until it was published. A draft created or updated with

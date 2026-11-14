@@ -12,7 +12,7 @@ concurrency:
 jobs:
   classify:
     name: Classify changed surfaces
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
   route:
     name: Select PR check runners
     if: ${{ vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -71,7 +71,7 @@ jobs:
     # leaves the output empty, which runs the matrix.
     if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
     # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-24.04"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +168,7 @@ jobs:
     name: CLI Node Compatibility Guard
     needs: [classify, project-options]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

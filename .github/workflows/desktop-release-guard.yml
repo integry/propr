@@ -35,7 +35,7 @@ jobs:
   classify:
     name: Classify changed surfaces
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -641,7 +641,7 @@ jobs:
     name: Finalize unsigned validation checksums
     if: ${{ !cancelled() && github.event_name != 'push' }}
     needs: [classify, validation-version, package]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Resolve desktop packaging applicability
@@ -712,7 +712,7 @@ jobs:
   preflight:
     name: Protected read-only trusted release preflight
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'desktop-v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: desktop-release-preflight
     permissions:
@@ -1101,7 +1101,7 @@ jobs:
     name: Revalidate production architectures and finalize checksums
     if: needs.preflight.result == 'success'
     needs: [preflight, release-package]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout exact immutable release SHA
@@ -1144,7 +1144,7 @@ jobs:
     name: Sign trusted update metadata
     if: needs.preflight.result == 'success'
     needs: [preflight, release-finalize]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
       name: desktop-release
@@ -1206,7 +1206,7 @@ jobs:
     name: Publish new immutable desktop release
     if: needs.preflight.result == 'success'
     needs: [preflight, sign]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write

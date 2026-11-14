@@ -40,7 +40,7 @@ in demo mode. Normal API rate limits remain in effect; OAuth endpoints also
 use the SDK's rate limits. No default key or administrator session is created.
 An `/api/mcp` request body is limited to 1 MiB; a larger one is answered
 `413` before authentication. One tool call's arguments may contain at most
-10,000 array elements and object keys combined; a larger call returns a tool
+15,000 array elements and object keys combined; a larger call returns a tool
 error without running the tool.
 
 The reverse proxy must route `/api/mcp`, `/.well-known/*`, `/authorize`,
@@ -365,7 +365,9 @@ Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates
 a draft (with plan items it opens in Studio at Review, so its issues can be
 read before publishing); `publish_plan` creates GitHub issues with the non-executing
-`propr-planned` label. `implement_plan` requires selected issue numbers and
+`propr-planned` label. A plan holds at most 50 issues through MCP
+(`create_plan`, `update_plan`, `publish_plan`), and `implement_plan` starts at
+most 50 issues per call; Studio has no such limit. `implement_plan` requires selected issue numbers and
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
