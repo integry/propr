@@ -116,6 +116,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MCP plans can hold 50 issues**: `create_plan`, `update_plan` and
+  `publish_plan` accept up to 50 plan issues (previously 20), and
+  `implement_plan` starts up to 50 issues per call. Plans made in Studio were
+  never limited; this lets MCP clients manage the same larger plans.
 - **Bundled Claude Code 2.1.323, Codex 0.168.0 and Antigravity CLI 1.5.8**:
   the `propr/agent` image moves from Claude Code 2.1.322, Codex 0.167.2 and
   Antigravity CLI 1.5.6.

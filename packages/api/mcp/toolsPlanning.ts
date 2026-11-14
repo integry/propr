@@ -74,7 +74,7 @@ function failureStage(step: PublicationStep, stage: McpErrorStage | null): McpEr
 
 export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: ReturnType<typeof createPlannerRoutes>): void {
   const planTask = z.object({ id: idSchema.optional(), title: z.string().min(1).max(256), body: textSchema, implementation: textSchema, notes: textSchema.optional() }).strict();
-  const plan = z.array(planTask).min(1).max(20);
+  const plan = z.array(planTask).min(1).max(50);
   
   const { db, policy } = deps;
   tools.push({ name: 'list_plans', description: 'List compact plan summaries with issue progress, agent assignments and pull requests. Filter with status to see only one lifecycle state, such as review or executing; active covers every plan that has not merged or failed.', scope: 'read', readOnly: true,
@@ -215,7 +215,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
     schema: z.object({ ...mutationShape, ...planShape, expectedRevision: z.number().int().min(0), resume: z.boolean().default(false) }).strict(), run: async ({ principal, args, operationId }) => {
       const draft = await db('task_drafts').where({ draft_id: args.planId, mcp_revision: args.expectedRevision }).first();
       if (!draft) throw new McpError('STALE_REVISION', 'Plan revision changed.', 409);
-      const publicationPlan = z.array(planTask.extend({ issue_number: z.number().int().positive().optional(), issue_url: z.string().url().optional() })).min(1).max(20);
+      const publicationPlan = z.array(planTask.extend({ issue_number: z.number().int().positive().optional(), issue_url: z.string().url().optional() })).min(1).max(50);
       const tasks = validatePublicationPlan(draft.plan_json, publicationPlan);
       const initialContext = parseContextConfig(draft.context_config);
       const partial = args.resume ? partialPublication(initialContext.publication) : undefined;
